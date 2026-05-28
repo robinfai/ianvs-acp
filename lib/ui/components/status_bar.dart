@@ -1,0 +1,149 @@
+import 'package:flutter/material.dart';
+
+import '../../state/chat_controller.dart';
+import '../../state/connection_state.dart' as app_state;
+import '../theme/app_design_tokens.dart';
+
+class StatusBar extends StatelessWidget {
+  const StatusBar({super.key, required this.controller});
+
+  final ChatController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 46,
+      decoration: const BoxDecoration(
+        color: AppColors.bg,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _StatusItem(
+                  icon: Icons.folder_open_outlined,
+                  label: controller.cwd,
+                  maxWidth: constraints.maxWidth < 960 ? 260 : 360,
+                ),
+                const SizedBox(width: 24),
+                _StatusItem(
+                  icon: Icons.tag_rounded,
+                  label: controller.currentSession?.shortId ?? 'no session',
+                ),
+                const SizedBox(width: 24),
+                _StatusItem(
+                  icon: Icons.radio_button_checked,
+                  label: controller.status.label,
+                  color: _statusColor(controller.status),
+                ),
+                const SizedBox(width: 24),
+                _StatusItem(
+                  icon: Icons.bolt_outlined,
+                  label: controller.isStreaming ? 'streaming' : 'idle',
+                ),
+                const SizedBox(width: 24),
+                _StatusItem(
+                  icon: Icons.timer_outlined,
+                  label: _latencyLabel(controller.lastLatency),
+                ),
+                if (controller.lastError != null) ...[
+                  const SizedBox(width: 24),
+                  _StatusItem(
+                    icon: Icons.error_outline,
+                    label: controller.lastError!,
+                    color: AppColors.danger,
+                    maxWidth: 320,
+                  ),
+                ],
+                const SizedBox(width: 24),
+                const _StatusIcon(
+                  icon: Icons.settings_outlined,
+                  tooltip: 'Settings',
+                ),
+                const SizedBox(width: 16),
+                const _StatusIcon(
+                  icon: Icons.wb_sunny_outlined,
+                  tooltip: 'Theme',
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Color _statusColor(app_state.ConnectionStatus status) => switch (status) {
+    app_state.ConnectionStatus.connected ||
+    app_state.ConnectionStatus.sessionReady => AppColors.success,
+    app_state.ConnectionStatus.connecting ||
+    app_state.ConnectionStatus.reconnecting ||
+    app_state.ConnectionStatus.streaming => AppColors.primaryDark,
+    app_state.ConnectionStatus.error => AppColors.danger,
+    app_state.ConnectionStatus.disconnected => AppColors.textSecondary,
+  };
+
+  String _latencyLabel(Duration? latency) {
+    if (latency == null) return 'latency --';
+    return 'latency ${latency.inMilliseconds} ms';
+  }
+}
+
+class _StatusItem extends StatelessWidget {
+  const _StatusItem({
+    required this.icon,
+    required this.label,
+    this.color = AppColors.textSecondary,
+    this.maxWidth,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final double? maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth ?? double.infinity),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusIcon extends StatelessWidget {
+  const _StatusIcon({required this.icon, required this.tooltip});
+
+  final IconData icon;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Icon(icon, size: 20, color: AppColors.textSecondary),
+    );
+  }
+}
