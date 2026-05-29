@@ -217,9 +217,17 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (message.role == ChatMessageRole.tool) {
+      return _ToolBubble(message: message);
+    }
+    if (message.role == ChatMessageRole.status &&
+        _stringMetadata(message.metadata, 'kind') != null &&
+        _stringMetadata(message.metadata, 'kind') != 'unknown') {
+      return _StatusBubble(message: message);
+    }
+
     final user = message.role == ChatMessageRole.user;
     final error = message.role == ChatMessageRole.error;
-    final tool = message.role == ChatMessageRole.tool;
     final status = message.role == ChatMessageRole.status;
     final color = switch (message.role) {
       ChatMessageRole.user => AppColors.primary,
@@ -240,14 +248,15 @@ class _MessageBubble extends StatelessWidget {
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
+        constraints: BoxConstraints(maxWidth: user ? 720 : 820),
         child: Container(
+          width: user ? null : double.infinity,
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: color,
             borderRadius: BorderRadius.circular(AppRadius.md),
             border: Border.all(color: borderColor),
-            boxShadow: user || error || tool || status ? null : AppShadows.soft,
+            boxShadow: user || error || status ? null : AppShadows.soft,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -340,4 +349,598 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+class _ToolBubble extends StatelessWidget {
+  const _ToolBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final parsed = _ParsedTool.fromMessage(message);
+    final details = <_DetailEntry>[
+      if (parsed.id.isNotEmpty) _DetailEntry('Call ID', parsed.id),
+      if (parsed.kind.isNotEmpty) _DetailEntry('Kind', parsed.kind),
+      if (parsed.locations.isNotEmpty)
+        _DetailEntry('Locations', parsed.locations.join('\n')),
+      if (parsed.content.isNotEmpty) _DetailEntry('Content', parsed.content),
+      if (parsed.input.isNotEmpty) _DetailEntry('Input', parsed.input),
+      if (parsed.output.isNotEmpty) _DetailEntry('Output', parsed.output),
+    ];
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820),
+        child: Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: const Color(0xfffffbeb),
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: const Color(0xfffde68a)),
+          ),
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: details.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: _ToolHeader(parsed: parsed),
+                  )
+                : Material(
+                    color: Colors.transparent,
+                    child: ExpansionTile(
+                      tilePadding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
+                      childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                      initiallyExpanded: false,
+                      maintainState: true,
+                      leading: const Icon(
+                        Icons.build_circle_outlined,
+                        color: Color(0xff92400e),
+                        size: 20,
+                      ),
+                      title: _ToolHeader(parsed: parsed, compact: true),
+                      children: [
+                        for (final detail in details) ...[
+                          _DetailBlock(entry: detail),
+                          if (detail != details.last)
+                            const SizedBox(height: 10),
+                        ],
+                      ],
+                    ),
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolHeader extends StatelessWidget {
+  const _ToolHeader({required this.parsed, this.compact = false});
+
+  final _ParsedTool parsed;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (!compact) ...[
+          const Icon(
+            Icons.build_circle_outlined,
+            color: Color(0xff92400e),
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Tool',
+                style: TextStyle(
+                  color: Color(0xff92400e),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                parsed.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        _StatusPill(label: parsed.status, color: _statusColor(parsed.status)),
+      ],
+    );
+  }
+}
+
+class _StatusBubble extends StatelessWidget {
+  const _StatusBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final kind = _stringMetadata(message.metadata, 'kind') ?? 'status';
+    final child = switch (kind) {
+      'plan' => _PlanStatus(message: message),
+      'diff' => _DiffStatus(message: message),
+      'commands' => _CommandsStatus(message: message),
+      'mode' => _ModeStatus(message: message),
+      _ => _PlainStatus(message: message),
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceRaised,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _PlanStatus extends StatelessWidget {
+  const _PlanStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _stringMetadata(message.metadata, 'title') ?? message.text;
+    final description = _stringMetadata(message.metadata, 'description');
+    final entries = _mapList(message.metadata['entries']);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(icon: Icons.checklist_rounded, label: title),
+        if (description != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            description,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              height: 1.35,
+            ),
+          ),
+        ],
+        if (entries.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          for (final entry in entries) _PlanEntryRow(entry: entry),
+        ],
+      ],
+    );
+  }
+}
+
+class _PlanEntryRow extends StatelessWidget {
+  const _PlanEntryRow({required this.entry});
+
+  final Map<String, Object?> entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _stringMetadata(entry, 'status') ?? 'pending';
+    final priority = _stringMetadata(entry, 'priority') ?? 'medium';
+    final content = _stringMetadata(entry, 'content') ?? '';
+    final color = _statusColor(status);
+    final icon = switch (status) {
+      'completed' => Icons.check_circle_rounded,
+      'in_progress' => Icons.play_circle_outline_rounded,
+      _ => Icons.radio_button_unchecked_rounded,
+    };
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              content,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                height: 1.35,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _StatusPill(label: priority, color: AppColors.primaryDark),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiffStatus extends StatelessWidget {
+  const _DiffStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = _stringMetadata(message.metadata, 'uri') ?? message.text;
+    final status = _stringMetadata(message.metadata, 'status') ?? 'started';
+    final changes = _mapList(message.metadata['changes']);
+    final additions = changes.where((change) {
+      return _stringMetadata(change, 'type') == 'addition';
+    }).length;
+    final deletions = changes.where((change) {
+      return _stringMetadata(change, 'type') == 'deletion';
+    }).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: _SectionHeader(
+                icon: Icons.difference_outlined,
+                label: 'Diff',
+              ),
+            ),
+            _StatusPill(label: status, color: _statusColor(status)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SelectableText(
+          uri,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        if (changes.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _StatusPill(label: '+$additions', color: AppColors.success),
+              _StatusPill(label: '-$deletions', color: AppColors.danger),
+              _StatusPill(
+                label: '${changes.length} changes',
+                color: AppColors.primaryDark,
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _CommandsStatus extends StatelessWidget {
+  const _CommandsStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final commands = _mapList(message.metadata['commands']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(
+          icon: Icons.terminal_rounded,
+          label: 'Available Commands',
+        ),
+        const SizedBox(height: 10),
+        if (commands.isEmpty)
+          const Text(
+            'No commands available.',
+            style: TextStyle(color: AppColors.textSecondary),
+          )
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final command in commands)
+                Tooltip(
+                  message: _stringMetadata(command, 'description') ?? '',
+                  child: _CommandChip(
+                    label: _stringMetadata(command, 'name') ?? 'command',
+                  ),
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+class _ModeStatus extends StatelessWidget {
+  const _ModeStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final mode = _stringMetadata(message.metadata, 'mode') ?? message.text;
+    return Row(
+      children: [
+        const Expanded(
+          child: _SectionHeader(icon: Icons.tune_rounded, label: 'Mode'),
+        ),
+        _StatusPill(
+          label: mode.isEmpty ? 'default' : mode,
+          color: AppColors.primaryDark,
+        ),
+      ],
+    );
+  }
+}
+
+class _PlainStatus extends StatelessWidget {
+  const _PlainStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      message.text,
+      style: const TextStyle(color: AppColors.textSecondary, height: 1.35),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: AppColors.primaryDark),
+        const SizedBox(width: 7),
+        Flexible(
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Text(
+        _humanizeStatus(label),
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _CommandChip extends StatelessWidget {
+  const _CommandChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.primaryDark,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailBlock extends StatelessWidget {
+  const _DetailBlock({required this.entry});
+
+  final _DetailEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: const Color(0xfffde68a)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            entry.label,
+            style: const TextStyle(
+              color: Color(0xff92400e),
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+          const SizedBox(height: 6),
+          SelectableText(
+            entry.value,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontFamily: 'monospace',
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ParsedTool {
+  const _ParsedTool({
+    required this.title,
+    required this.status,
+    required this.id,
+    required this.kind,
+    required this.content,
+    required this.input,
+    required this.output,
+    required this.locations,
+  });
+
+  final String title;
+  final String status;
+  final String id;
+  final String kind;
+  final String content;
+  final String input;
+  final String output;
+  final List<String> locations;
+
+  factory _ParsedTool.fromMessage(ChatMessage message) {
+    final metadata = message.metadata;
+    var title = _stringMetadata(metadata, 'title') ?? message.text;
+    var status = _stringMetadata(metadata, 'status') ?? '';
+    final legacy = RegExp(r'^\[Tool:\s*(.*?)\]\s*(.*)$').firstMatch(title);
+    if (legacy != null) {
+      title = legacy.group(1)?.trim() ?? title;
+      status = status.isEmpty ? legacy.group(2)?.trim() ?? '' : status;
+    }
+    status = status.replaceFirst('ToolCallStatus.', '');
+    if (status.isEmpty) status = 'completed';
+
+    final locations = _mapList(metadata['locations'])
+        .map((location) {
+          final path = _stringMetadata(location, 'path') ?? '';
+          final line = location['line'];
+          return line == null ? path : '$path:$line';
+        })
+        .where((location) => location.isNotEmpty)
+        .toList();
+
+    return _ParsedTool(
+      title: title.isEmpty ? 'Tool call' : title,
+      status: status,
+      id: _stringMetadata(metadata, 'toolCallId') ?? '',
+      kind: _stringMetadata(metadata, 'kind') == 'tool'
+          ? ''
+          : _stringMetadata(metadata, 'kind') ?? '',
+      content: _previewObject(metadata['content']),
+      input: _previewObject(metadata['rawInput']),
+      output: _previewObject(metadata['rawOutput']),
+      locations: locations,
+    );
+  }
+}
+
+class _DetailEntry {
+  const _DetailEntry(this.label, this.value);
+
+  final String label;
+  final String value;
+}
+
+String? _stringMetadata(Map<String, Object?> metadata, String key) {
+  final value = metadata[key];
+  if (value is String && value.trim().isNotEmpty) return value.trim();
+  return null;
+}
+
+List<Map<String, Object?>> _mapList(Object? value) {
+  if (value is! List) return const [];
+  return value.whereType<Map>().map((entry) {
+    return entry.map((key, value) => MapEntry(key.toString(), value));
+  }).toList();
+}
+
+String _previewObject(Object? value) {
+  if (value == null) return '';
+  final text = value is String ? value : value.toString();
+  final cleaned = text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  if (cleaned.length <= 1200) return cleaned;
+  return '${cleaned.substring(0, 1200)}\n...';
+}
+
+Color _statusColor(String status) {
+  final normalized = status.replaceFirst('ToolCallStatus.', '');
+  return switch (normalized) {
+    'completed' || 'applied' => AppColors.success,
+    'in_progress' || 'started' => AppColors.primaryDark,
+    'failed' || 'error' || 'rejected' => AppColors.danger,
+    'cancelled' => AppColors.textSecondary,
+    _ => AppColors.warning,
+  };
+}
+
+String _humanizeStatus(String value) {
+  final cleaned = value
+      .replaceFirst('ToolCallStatus.', '')
+      .replaceAll('_', ' ');
+  if (cleaned.isEmpty) return 'unknown';
+  return cleaned[0].toUpperCase() + cleaned.substring(1);
 }

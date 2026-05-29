@@ -43,6 +43,7 @@ class FakeAgentClient implements AcpAgentClient {
   bool connected = false;
   bool cancelled = false;
   int sessionCount = 0;
+  String? lastResumeCwd;
 
   @override
   Future<void> connect() async {
@@ -73,6 +74,7 @@ class FakeAgentClient implements AcpAgentClient {
     if (!connected) {
       throw StateError('Fake client is not connected.');
     }
+    lastResumeCwd = cwd;
     return resumeEvents;
   }
 

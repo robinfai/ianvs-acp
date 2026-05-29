@@ -2,19 +2,26 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../acp/codex_session_catalog.dart';
 import '../../state/chat_controller.dart';
 import '../components/agent_toolbar.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/prompt_input.dart';
+import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
 import '../components/status_bar.dart';
 import '../theme/app_design_tokens.dart';
 
 class AppShell extends StatelessWidget {
-  const AppShell({super.key, required this.controller});
+  const AppShell({
+    super.key,
+    required this.controller,
+    this.sessionCatalog = const CodexSessionCatalog(),
+  });
 
   final ChatController controller;
+  final CodexSessionCatalog sessionCatalog;
 
   @override
   Widget build(BuildContext context) {
@@ -82,38 +89,21 @@ class AppShell extends StatelessWidget {
   }
 
   Future<void> _showResumeDialog(BuildContext context) async {
-    final textController = TextEditingController();
-    final sessionId = await showDialog<String>(
+    final selection = await showDialog<ResumeSessionSelection>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Resume Codex Session'),
-          content: TextField(
-            controller: textController,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Session ID',
-              hintText: '019e...',
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(textController.text),
-              child: const Text('Resume'),
-            ),
-          ],
-        );
-      },
+      builder: (context) => ResumeSessionDialog(
+        catalog: sessionCatalog,
+        initialCwd: controller.currentSession?.cwd ?? controller.cwd,
+      ),
     );
-    textController.dispose();
 
-    if (sessionId == null || sessionId.trim().isEmpty) return;
+    if (selection == null) return;
     if (!context.mounted) return;
-    unawaited(controller.resumeSession(sessionId));
+    unawaited(
+      controller.resumeSession(
+        selection.conversation.id,
+        cwd: selection.project.cwd,
+      ),
+    );
   }
 }

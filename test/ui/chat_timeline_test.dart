@@ -56,4 +56,66 @@ void main() {
     expect(find.text('Error'), findsOneWidget);
     expect(find.text('boom'), findsOneWidget);
   });
+
+  testWidgets('ChatTimeline renders compact tool cards', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'exec_command',
+            'status': 'completed',
+            'kind': 'execute',
+            'rawInput': {'cmd': 'flutter test'},
+            'rawOutput': 'All tests passed.',
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('Tool'), findsOneWidget);
+    expect(find.text('exec_command'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('All tests passed.'), findsNothing);
+
+    await tester.tap(find.byType(ExpansionTile));
+    await tester.pumpAndSettle();
+
+    expect(find.text('All tests passed.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline renders plan status entries', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Implementation plan',
+          metadata: const {
+            'kind': 'plan',
+            'title': 'Implementation plan',
+            'entries': [
+              {
+                'content': 'Render tool calls as cards',
+                'priority': 'high',
+                'status': 'completed',
+              },
+              {
+                'content': 'Verify resume flow',
+                'priority': 'medium',
+                'status': 'in_progress',
+              },
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('Implementation plan'), findsOneWidget);
+    expect(find.text('Render tool calls as cards'), findsOneWidget);
+    expect(find.text('Verify resume flow'), findsOneWidget);
+    expect(find.text('High'), findsOneWidget);
+    expect(find.text('Medium'), findsOneWidget);
+  });
 }

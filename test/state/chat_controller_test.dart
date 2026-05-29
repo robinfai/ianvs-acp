@@ -65,6 +65,17 @@ void main() {
     expect(controller.messages[1].text, contains('medium-sized transcript'));
   });
 
+  test('resume session uses selected project cwd', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('resumed-session-2', cwd: '/other/project');
+
+    expect(controller.currentSession?.cwd, '/other/project');
+    expect(fake.lastResumeCwd, '/other/project');
+  });
+
   test('send prompt returns stream chunks appended to one message', () async {
     final controller = ChatController(
       client: FakeAgentClient(),

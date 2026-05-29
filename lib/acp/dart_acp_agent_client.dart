@@ -113,9 +113,11 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.ToolCallUpdate():
+        final toolCall = update.toolCall;
         return AgentEvent(
           type: AgentEventType.toolCall,
-          text: update.text,
+          text: toolCall.title ?? toolCall.toolCallId,
+          metadata: <String, Object?>{'kind': 'tool', ...toolCall.toJson()},
           timestamp: DateTime.now(),
         );
       case acp.TurnEnded():
@@ -124,16 +126,58 @@ class DartAcpAgentClient implements AcpAgentClient {
           text: '',
           timestamp: DateTime.now(),
         );
-      case acp.PlanUpdate() ||
-          acp.DiffUpdate() ||
-          acp.AvailableCommandsUpdate() ||
-          acp.ModeUpdate() ||
-          acp.UnknownUpdate():
+      case acp.PlanUpdate():
+        final plan = update.plan;
+        final text = plan.title ?? 'Plan update';
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: text,
+          metadata: <String, Object?>{
+            'kind': 'plan',
+            'title': plan.title,
+            'description': plan.description,
+            'entries': plan.entries.map((entry) => entry.toJson()).toList(),
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.DiffUpdate():
+        final diff = update.diff;
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: diff.uri ?? diff.id,
+          metadata: <String, Object?>{'kind': 'diff', ...diff.toJson()},
+          timestamp: DateTime.now(),
+        );
+      case acp.AvailableCommandsUpdate():
+        final commands = update.commands;
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: commands.isEmpty
+              ? 'No available commands'
+              : commands.map((command) => command.name).join(', '),
+          metadata: <String, Object?>{
+            'kind': 'commands',
+            'commands': commands.map((command) => command.toJson()).toList(),
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.ModeUpdate():
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: update.currentModeId,
+          metadata: <String, Object?>{
+            'kind': 'mode',
+            'mode': update.currentModeId,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.UnknownUpdate():
         final text = update.text;
         if (text.isEmpty) return null;
         return AgentEvent(
           type: AgentEventType.status,
           text: text,
+          metadata: <String, Object?>{'kind': 'unknown'},
           timestamp: DateTime.now(),
         );
     }

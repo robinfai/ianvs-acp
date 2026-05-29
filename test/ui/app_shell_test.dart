@@ -17,10 +17,22 @@ void main() {
     );
   }
 
+  Future<void> pumpToolbar(
+    WidgetTester tester,
+    app_state.ConnectionStatus status, {
+    Size size = const Size(1400, 720),
+  }) async {
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(toolbar(status));
+  }
+
   testWidgets('AgentToolbar initial rendering shows disconnected', (
     tester,
   ) async {
-    await tester.pumpWidget(toolbar(app_state.ConnectionStatus.disconnected));
+    await pumpToolbar(tester, app_state.ConnectionStatus.disconnected);
 
     expect(find.text('ACP Client'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
@@ -33,16 +45,33 @@ void main() {
   testWidgets('AgentToolbar renders connected and error states', (
     tester,
   ) async {
-    await tester.pumpWidget(toolbar(app_state.ConnectionStatus.connected));
+    await pumpToolbar(tester, app_state.ConnectionStatus.connected);
     expect(find.text('connected'), findsOneWidget);
 
-    await tester.pumpWidget(toolbar(app_state.ConnectionStatus.error));
+    await pumpToolbar(tester, app_state.ConnectionStatus.error);
     expect(find.text('error'), findsOneWidget);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {
-    await tester.pumpWidget(toolbar(app_state.ConnectionStatus.connecting));
+    await pumpToolbar(tester, app_state.ConnectionStatus.connecting);
 
     expect(find.text('connecting'), findsOneWidget);
+  });
+
+  testWidgets('AgentToolbar compacts actions in narrow windows', (
+    tester,
+  ) async {
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.disconnected,
+      size: const Size(800, 720),
+    );
+
+    expect(find.text('ACP Client'), findsOneWidget);
+    expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
+    expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.add_rounded), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
+    expect(find.text('New Session'), findsNothing);
   });
 }

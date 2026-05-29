@@ -21,41 +21,58 @@ class AgentToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 92,
-      padding: const EdgeInsets.fromLTRB(32, 18, 32, 16),
       decoration: const BoxDecoration(color: AppColors.bg),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 980;
-          final actions = [
-            _ToolbarAction(
-              icon: Icons.play_circle_outline,
-              label: 'Resume',
-              onPressed: onResumeSession,
+          final availableWidth = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : MediaQuery.sizeOf(context).width;
+          final compact = availableWidth < 1240;
+          final veryCompact = availableWidth < 620;
+          final horizontalPadding = veryCompact
+              ? 18.0
+              : (compact ? 24.0 : 32.0);
+
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              horizontalPadding,
+              18,
+              horizontalPadding,
+              16,
             ),
-            const SizedBox(width: 12),
-            _ToolbarAction(
-              icon: Icons.refresh_rounded,
-              label: 'Reconnect',
-              onPressed: onReconnect,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: _BrandMark(
+                      status: status,
+                      compact: compact,
+                      veryCompact: veryCompact,
+                    ),
+                  ),
+                ),
+                SizedBox(width: compact ? 12 : 24),
+                _ToolbarAction(
+                  icon: Icons.play_circle_outline,
+                  label: compact ? null : 'Resume',
+                  tooltip: 'Resume',
+                  onPressed: onResumeSession,
+                ),
+                SizedBox(width: compact ? 8 : 12),
+                _ToolbarAction(
+                  icon: Icons.refresh_rounded,
+                  label: compact ? null : 'Reconnect',
+                  tooltip: 'Reconnect',
+                  onPressed: onReconnect,
+                ),
+                SizedBox(width: compact ? 10 : 18),
+                _PrimaryToolbarAction(
+                  compact: compact,
+                  onPressed: onNewSession,
+                ),
+              ],
             ),
-            const SizedBox(width: 18),
-            _PrimaryToolbarAction(onPressed: onNewSession),
-          ];
-
-          final row = Row(
-            mainAxisSize: wide ? MainAxisSize.max : MainAxisSize.min,
-            children: [
-              _BrandMark(status: status),
-              if (wide) const Spacer() else const SizedBox(width: 28),
-              ...actions,
-            ],
-          );
-
-          if (wide) return row;
-
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: row,
           );
         },
       ),
@@ -64,12 +81,20 @@ class AgentToolbar extends StatelessWidget {
 }
 
 class _BrandMark extends StatelessWidget {
-  const _BrandMark({required this.status});
+  const _BrandMark({
+    required this.status,
+    required this.compact,
+    required this.veryCompact,
+  });
 
   final app_state.ConnectionStatus status;
+  final bool compact;
+  final bool veryCompact;
 
   @override
   Widget build(BuildContext context) {
+    final title = veryCompact ? 'ACP' : 'ACP Client';
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -86,20 +111,28 @@ class _BrandMark extends StatelessWidget {
             size: 28,
           ),
         ),
-        const SizedBox(width: 14),
-        const Text(
-          'ACP Client',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 24,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0,
+        SizedBox(width: veryCompact ? 10 : 14),
+        Flexible(
+          child: Text(
+            title,
+            overflow: TextOverflow.ellipsis,
+            softWrap: false,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: veryCompact ? 19 : 24,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
           ),
         ),
-        const SizedBox(width: 22),
-        const _AgentChip(),
-        const SizedBox(width: 14),
-        _ConnectionBadge(status: status),
+        if (!compact) ...[
+          SizedBox(width: compact ? 14 : 22),
+          const _AgentChip(),
+        ],
+        if (!compact) ...[
+          const SizedBox(width: 14),
+          _ConnectionBadge(status: status),
+        ],
       ],
     );
   }
@@ -135,54 +168,64 @@ class _ToolbarAction extends StatelessWidget {
   const _ToolbarAction({
     required this.icon,
     required this.label,
+    required this.tooltip,
     required this.onPressed,
   });
 
   final IconData icon;
-  final String label;
+  final String? label;
+  final String tooltip;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
+    final content = Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: onPressed,
         child: Container(
+          width: label == null ? 44 : null,
           height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
+          padding: label == null
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 14),
           alignment: Alignment.center,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon, color: AppColors.primaryDark, size: 25),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: AppColors.primaryDark,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
+              if (label != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  label!,
+                  style: const TextStyle(
+                    color: AppColors.primaryDark,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
       ),
     );
+
+    return Tooltip(message: tooltip, child: content);
   }
 }
 
 class _PrimaryToolbarAction extends StatelessWidget {
-  const _PrimaryToolbarAction({required this.onPressed});
+  const _PrimaryToolbarAction({required this.compact, required this.onPressed});
 
+  final bool compact;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final content = DecoratedBox(
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           colors: [AppColors.primary, AppColors.primaryDark],
@@ -203,24 +246,30 @@ class _PrimaryToolbarAction extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(AppRadius.pill),
           onTap: onPressed,
-          child: const SizedBox(
+          child: SizedBox(
+            width: compact ? 52 : null,
             height: 52,
             child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 24),
+              padding: compact
+                  ? EdgeInsets.zero
+                  : const EdgeInsets.symmetric(horizontal: 24),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.add_rounded, color: Colors.white, size: 28),
-                  SizedBox(width: 10),
-                  Text(
-                    'New Session',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0,
+                  const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+                  if (!compact) ...[
+                    const SizedBox(width: 10),
+                    const Text(
+                      'New Session',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
@@ -228,6 +277,8 @@ class _PrimaryToolbarAction extends StatelessWidget {
         ),
       ),
     );
+
+    return Tooltip(message: 'New Session', child: content);
   }
 }
 

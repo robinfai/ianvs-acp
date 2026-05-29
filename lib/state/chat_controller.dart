@@ -10,12 +10,17 @@ import 'connection_state.dart';
 enum ChatMessageRole { user, assistant, tool, error, status }
 
 class ChatMessage {
-  ChatMessage({required this.role, required this.text, DateTime? timestamp})
-    : timestamp = timestamp ?? DateTime.now();
+  ChatMessage({
+    required this.role,
+    required this.text,
+    DateTime? timestamp,
+    this.metadata = const <String, Object?>{},
+  }) : timestamp = timestamp ?? DateTime.now();
 
   final ChatMessageRole role;
   String text;
   final DateTime timestamp;
+  final Map<String, Object?> metadata;
 }
 
 class ChatController extends ChangeNotifier {
@@ -61,9 +66,12 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> resumeSession(String sessionId) async {
+  Future<void> resumeSession(String sessionId, {String? cwd}) async {
     final trimmedSessionId = sessionId.trim();
     if (trimmedSessionId.isEmpty || isStreaming) return;
+    final workspaceCwd = cwd == null || cwd.trim().isEmpty
+        ? this.cwd
+        : cwd.trim();
 
     try {
       await _promptSubscription?.cancel();
@@ -81,7 +89,7 @@ class ChatController extends ChangeNotifier {
       lastLatency = null;
       final session = AgentSession(
         id: trimmedSessionId,
-        cwd: cwd,
+        cwd: workspaceCwd,
         createdAt: DateTime.now(),
       );
       currentSession = session;
@@ -92,7 +100,7 @@ class ChatController extends ChangeNotifier {
 
       final replay = await client.resumeSession(
         sessionId: trimmedSessionId,
-        cwd: cwd,
+        cwd: workspaceCwd,
       );
       for (final event in replay) {
         _handleAgentEvent(event, notify: false);
@@ -178,7 +186,13 @@ class ChatController extends ChangeNotifier {
       case AgentEventType.agentTextDone:
         _finishStreaming();
       case AgentEventType.toolCall:
-        messages.add(ChatMessage(role: ChatMessageRole.tool, text: event.text));
+        messages.add(
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: event.text,
+            metadata: event.metadata,
+          ),
+        );
       case AgentEventType.error:
         lastError = event.text;
         messages.add(
@@ -187,7 +201,11 @@ class ChatController extends ChangeNotifier {
         status = ConnectionStatus.error;
       case AgentEventType.status:
         messages.add(
-          ChatMessage(role: ChatMessageRole.status, text: event.text),
+          ChatMessage(
+            role: ChatMessageRole.status,
+            text: event.text,
+            metadata: event.metadata,
+          ),
         );
     }
     if (notify) {
