@@ -1138,8 +1138,108 @@ class _DiffStatus extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 10),
+          _DiffChangesList(changes: changes),
         ],
       ],
+    );
+  }
+}
+
+class _DiffChangesList extends StatelessWidget {
+  const _DiffChangesList({required this.changes});
+
+  final List<Map<String, Object?>> changes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: Material(
+        color: Colors.transparent,
+        child: ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: EdgeInsets.zero,
+          initiallyExpanded: false,
+          title: const Text(
+            'Changed lines',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          children: [
+            for (final change in changes) ...[
+              _DiffChangeRow(change: change),
+              if (change != changes.last) const SizedBox(height: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffChangeRow extends StatelessWidget {
+  const _DiffChangeRow({required this.change});
+
+  final Map<String, Object?> change;
+
+  @override
+  Widget build(BuildContext context) {
+    final type = _stringMetadata(change, 'type') ?? 'change';
+    final line = change['line'];
+    final content = _stringMetadata(change, 'content');
+    final oldContent = _stringMetadata(change, 'oldContent');
+    final newContent = _stringMetadata(change, 'newContent');
+    final body = [
+      ?content,
+      if (oldContent != null) '- $oldContent',
+      if (newContent != null) '+ $newContent',
+    ].join('\n');
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _StatusPill(label: type, color: _statusColor(type)),
+              if (line != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  'line $line',
+                  style: const TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (body.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              body,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1166,20 +1266,112 @@ class _CommandsStatus extends StatelessWidget {
             style: TextStyle(color: AppColors.textSecondary),
           )
         else
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final command in commands)
-                Tooltip(
-                  message: _stringMetadata(command, 'description') ?? '',
-                  child: _CommandChip(
-                    label: _stringMetadata(command, 'name') ?? 'command',
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final command in commands)
+                    Tooltip(
+                      message: _stringMetadata(command, 'description') ?? '',
+                      child: _CommandChip(
+                        label: _stringMetadata(command, 'name') ?? 'command',
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Theme(
+                data: Theme.of(
+                  context,
+                ).copyWith(dividerColor: Colors.transparent),
+                child: Material(
+                  color: Colors.transparent,
+                  child: ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Command details',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    children: [
+                      for (final command in commands) ...[
+                        _CommandDetailCard(command: command),
+                        if (command != commands.last) const SizedBox(height: 8),
+                      ],
+                    ],
                   ),
                 ),
+              ),
             ],
           ),
       ],
+    );
+  }
+}
+
+class _CommandDetailCard extends StatelessWidget {
+  const _CommandDetailCard({required this.command});
+
+  final Map<String, Object?> command;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = _stringMetadata(command, 'name') ?? 'command';
+    final description = _stringMetadata(command, 'description');
+    final input = command['input'];
+    final parameters = command['parameters'];
+    final inputHint = input is Map
+        ? _stringMetadata(_objectMap(input), 'hint')
+        : null;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            name,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+          if (description != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              description,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                height: 1.35,
+              ),
+            ),
+          ],
+          if (inputHint != null) ...[
+            const SizedBox(height: 8),
+            _DetailBlock(entry: _DetailEntry('Input hint', inputHint)),
+          ],
+          if (parameters != null) ...[
+            const SizedBox(height: 8),
+            _DetailBlock(
+              entry: _DetailEntry('Parameters', _previewObject(parameters)),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1426,10 +1618,24 @@ List<Map<String, Object?>> _mapList(Object? value) {
 
 String _previewObject(Object? value) {
   if (value == null) return '';
-  final text = value is String ? value : value.toString();
+  final text = value is String ? value : _jsonPreview(value);
   final cleaned = text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   if (cleaned.length <= 1200) return cleaned;
   return '${cleaned.substring(0, 1200)}\n...';
+}
+
+String _jsonPreview(Object value) {
+  try {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(value);
+  } on Object {
+    return value.toString();
+  }
+}
+
+Map<String, Object?> _objectMap(Object? value) {
+  if (value is! Map) return const <String, Object?>{};
+  return value.map((key, value) => MapEntry(key.toString(), value));
 }
 
 Color _statusColor(String status) {

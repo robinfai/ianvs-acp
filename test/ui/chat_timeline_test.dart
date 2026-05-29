@@ -229,4 +229,77 @@ void main() {
     expect(find.text('text/x-dart'), findsOneWidget);
     expect(find.text('file:///workspace/lib/main.dart'), findsOneWidget);
   });
+
+  testWidgets('ChatTimeline renders diff change details', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'file:///workspace/lib/main.dart',
+          metadata: const {
+            'kind': 'diff',
+            'uri': 'file:///workspace/lib/main.dart',
+            'status': 'started',
+            'changes': [
+              {
+                'type': 'modification',
+                'line': 12,
+                'oldContent': 'final oldValue = true;',
+                'newContent': 'final newValue = true;',
+              },
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('Changed lines'), findsOneWidget);
+    expect(find.text('final oldValue = true;'), findsNothing);
+
+    await tester.tap(find.text('Changed lines'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Modification'), findsOneWidget);
+    expect(find.text('line 12'), findsOneWidget);
+    expect(find.textContaining('final oldValue = true;'), findsOneWidget);
+    expect(find.textContaining('final newValue = true;'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline renders available command details', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'review',
+          metadata: const {
+            'kind': 'commands',
+            'commands': [
+              {
+                'name': 'review',
+                'description': 'Review the current change.',
+                'input': {'hint': 'Optional focus area'},
+                'parameters': {
+                  'type': 'object',
+                  'properties': {'scope': 'string'},
+                },
+              },
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('review'), findsOneWidget);
+    expect(find.text('Command details'), findsOneWidget);
+    expect(find.text('Review the current change.'), findsNothing);
+
+    await tester.tap(find.text('Command details'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Review the current change.'), findsOneWidget);
+    expect(find.text('Input hint'), findsOneWidget);
+    expect(find.text('Optional focus area'), findsOneWidget);
+    expect(find.text('Parameters'), findsOneWidget);
+    expect(find.textContaining('"scope"'), findsOneWidget);
+  });
 }
