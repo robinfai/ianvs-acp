@@ -86,6 +86,64 @@ void main() {
     expect(find.text('All tests passed.'), findsOneWidget);
   });
 
+  testWidgets('ChatTimeline groups consecutive tool calls by tool name', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(role: ChatMessageRole.assistant, text: 'Checking files.'),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'exec_command',
+            'status': 'completed',
+            'rawInput': {'cmd': 'pwd'},
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'toolCallId': 'call-2',
+            'title': 'exec_command',
+            'status': 'completed',
+            'rawInput': {'cmd': 'ls'},
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'web_search',
+          metadata: const {
+            'toolCallId': 'call-3',
+            'title': 'web_search',
+            'status': 'completed',
+            'rawInput': {'q': 'flutter ExpansionTile'},
+          },
+        ),
+        ChatMessage(role: ChatMessageRole.assistant, text: 'Done.'),
+      ]),
+    );
+
+    expect(find.text('3 tool calls'), findsOneWidget);
+    expect(find.text('exec_command'), findsOneWidget);
+    expect(find.text('x2'), findsOneWidget);
+    expect(find.text('web_search'), findsOneWidget);
+    expect(find.text('x1'), findsOneWidget);
+    expect(find.text('call-1'), findsNothing);
+
+    await tester.tap(find.text('3 tool calls'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+    expect(find.text('3'), findsOneWidget);
+    expect(find.text('call-1'), findsNothing);
+    expect(find.text('exec_command'), findsNWidgets(3));
+    expect(find.text('web_search'), findsNWidgets(2));
+  });
+
   testWidgets('ChatTimeline renders plan status entries', (tester) async {
     await tester.pumpWidget(
       timeline([

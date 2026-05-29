@@ -16,16 +16,60 @@ class ChatTimeline extends StatelessWidget {
       return const DotGridBackground(child: Center(child: _EmptyTimeline()));
     }
 
+    final entries = _timelineEntries(messages);
+
     return DotGridBackground(
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(32, 28, 32, 32),
-        itemCount: messages.length,
+        itemCount: entries.length,
         separatorBuilder: (context, index) => const SizedBox(height: 16),
-        itemBuilder: (context, index) =>
-            _MessageBubble(message: messages[index]),
+        itemBuilder: (context, index) {
+          final entry = entries[index];
+          return entry.toolMessages == null
+              ? _MessageBubble(message: entry.message!)
+              : _ToolGroupBubble(messages: entry.toolMessages!);
+        },
       ),
     );
   }
+}
+
+List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {
+  final entries = <_TimelineEntry>[];
+  var index = 0;
+
+  while (index < messages.length) {
+    final message = messages[index];
+    if (message.role != ChatMessageRole.tool) {
+      entries.add(_TimelineEntry.message(message));
+      index += 1;
+      continue;
+    }
+
+    final tools = <ChatMessage>[];
+    while (index < messages.length &&
+        messages[index].role == ChatMessageRole.tool) {
+      tools.add(messages[index]);
+      index += 1;
+    }
+
+    if (tools.length == 1) {
+      entries.add(_TimelineEntry.message(tools.single));
+    } else {
+      entries.add(_TimelineEntry.toolGroup(tools));
+    }
+  }
+
+  return entries;
+}
+
+class _TimelineEntry {
+  const _TimelineEntry.message(this.message) : toolMessages = null;
+
+  const _TimelineEntry.toolGroup(this.toolMessages) : message = null;
+
+  final ChatMessage? message;
+  final List<ChatMessage>? toolMessages;
 }
 
 class _EmptyTimeline extends StatelessWidget {
@@ -359,6 +403,84 @@ class _ToolBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final parsed = _ParsedTool.fromMessage(message);
+    return _ToolFrame(child: _ToolCallCard(parsed: parsed));
+  }
+}
+
+class _ToolGroupBubble extends StatelessWidget {
+  const _ToolGroupBubble({required this.messages});
+
+  final List<ChatMessage> messages;
+
+  @override
+  Widget build(BuildContext context) {
+    final parsedTools = messages.map(_ParsedTool.fromMessage).toList();
+    final counts = <String, int>{};
+    for (final parsed in parsedTools) {
+      counts.update(parsed.title, (value) => value + 1, ifAbsent: () => 1);
+    }
+    final completedCount = parsedTools.where((tool) {
+      return _statusColor(tool.status) == AppColors.success;
+    }).length;
+
+    return _ToolFrame(
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: Material(
+          color: Colors.transparent,
+          child: ExpansionTile(
+            tilePadding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
+            childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+            initiallyExpanded: false,
+            maintainState: true,
+            leading: const Icon(
+              Icons.account_tree_outlined,
+              color: Color(0xff92400e),
+              size: 20,
+            ),
+            title: _ToolGroupHeader(
+              totalCount: messages.length,
+              completedCount: completedCount,
+              counts: counts,
+            ),
+            children: [
+              const Divider(height: 18, color: Color(0xfffde68a)),
+              for (var index = 0; index < parsedTools.length; index++) ...[
+                _ToolSequenceCard(index: index + 1, parsed: parsedTools[index]),
+                if (index != parsedTools.length - 1) const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolFrame extends StatelessWidget {
+  const _ToolFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _ToolCallCard extends StatelessWidget {
+  const _ToolCallCard({required this.parsed});
+
+  final _ParsedTool parsed;
+
+  @override
+  Widget build(BuildContext context) {
     final details = <_DetailEntry>[
       if (parsed.id.isNotEmpty) _DetailEntry('Call ID', parsed.id),
       if (parsed.kind.isNotEmpty) _DetailEntry('Kind', parsed.kind),
@@ -369,48 +491,181 @@ class _ToolBubble extends StatelessWidget {
       if (parsed.output.isNotEmpty) _DetailEntry('Output', parsed.output),
     ];
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 820),
-        child: Container(
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: const Color(0xfffffbeb),
-            borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(color: const Color(0xfffde68a)),
-          ),
-          child: Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: details.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: _ToolHeader(parsed: parsed),
-                  )
-                : Material(
-                    color: Colors.transparent,
-                    child: ExpansionTile(
-                      tilePadding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
-                      childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                      initiallyExpanded: false,
-                      maintainState: true,
-                      leading: const Icon(
-                        Icons.build_circle_outlined,
-                        color: Color(0xff92400e),
-                        size: 20,
-                      ),
-                      title: _ToolHeader(parsed: parsed, compact: true),
-                      children: [
-                        for (final detail in details) ...[
-                          _DetailBlock(entry: detail),
-                          if (detail != details.last)
-                            const SizedBox(height: 10),
-                        ],
-                      ],
-                    ),
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xfffffbeb),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: const Color(0xfffde68a)),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: details.isEmpty
+            ? Padding(
+                padding: const EdgeInsets.all(14),
+                child: _ToolHeader(parsed: parsed),
+              )
+            : Material(
+                color: Colors.transparent,
+                child: ExpansionTile(
+                  tilePadding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
+                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  initiallyExpanded: false,
+                  maintainState: true,
+                  leading: const Icon(
+                    Icons.build_circle_outlined,
+                    color: Color(0xff92400e),
+                    size: 20,
                   ),
+                  title: _ToolHeader(parsed: parsed, compact: true),
+                  children: [
+                    for (final detail in details) ...[
+                      _DetailBlock(entry: detail),
+                      if (detail != details.last) const SizedBox(height: 10),
+                    ],
+                  ],
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+class _ToolSequenceCard extends StatelessWidget {
+  const _ToolSequenceCard({required this.index, required this.parsed});
+
+  final int index;
+  final _ParsedTool parsed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 18),
+          child: _ToolCallCard(parsed: parsed),
+        ),
+        Positioned(
+          left: 0,
+          top: 18,
+          child: Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xfffde68a)),
+              boxShadow: AppShadows.soft,
+            ),
+            child: Text(
+              '$index',
+              style: const TextStyle(
+                color: Color(0xff92400e),
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _ToolGroupHeader extends StatelessWidget {
+  const _ToolGroupHeader({
+    required this.totalCount,
+    required this.completedCount,
+    required this.counts,
+  });
+
+  final int totalCount;
+  final int completedCount;
+  final Map<String, int> counts;
+
+  @override
+  Widget build(BuildContext context) {
+    final pendingCount = totalCount - completedCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '$totalCount tool calls',
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+            _StatusPill(
+              label: pendingCount == 0 ? 'completed' : '$pendingCount pending',
+              color: pendingCount == 0 ? AppColors.success : AppColors.warning,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final entry in counts.entries)
+              _ToolCountChip(label: entry.key, count: entry.value),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ToolCountChip extends StatelessWidget {
+  const _ToolCountChip({required this.label, required this.count});
+
+  final String label;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 260),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: const Color(0xfffde68a)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'x$count',
+            style: const TextStyle(
+              color: Color(0xff92400e),
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0,
+            ),
+          ),
+        ],
       ),
     );
   }
