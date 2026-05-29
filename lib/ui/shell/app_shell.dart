@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../acp/codex_session_catalog.dart';
 import '../../state/chat_controller.dart';
 import '../components/agent_toolbar.dart';
 import '../components/chat_timeline.dart';
@@ -14,14 +13,9 @@ import '../components/status_bar.dart';
 import '../theme/app_design_tokens.dart';
 
 class AppShell extends StatelessWidget {
-  const AppShell({
-    super.key,
-    required this.controller,
-    this.sessionCatalog = const CodexSessionCatalog(),
-  });
+  const AppShell({super.key, required this.controller});
 
   final ChatController controller;
-  final CodexSessionCatalog sessionCatalog;
 
   @override
   Widget build(BuildContext context) {
@@ -92,7 +86,7 @@ class AppShell extends StatelessWidget {
     final selection = await showDialog<ResumeSessionSelection>(
       context: context,
       builder: (context) => ResumeSessionDialog(
-        catalog: sessionCatalog,
+        loadSessions: controller.listSessions,
         initialCwd: controller.currentSession?.cwd ?? controller.cwd,
       ),
     );

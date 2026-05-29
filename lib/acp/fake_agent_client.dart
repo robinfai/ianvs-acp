@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'acp_agent_client.dart';
+import 'acp_session_catalog.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 
@@ -76,6 +77,26 @@ class FakeAgentClient implements AcpAgentClient {
     }
     lastResumeCwd = cwd;
     return resumeEvents;
+  }
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return [
+      AcpProjectSessions(
+        cwd: '/workspace/project-a',
+        sessions: [
+          AcpSessionEntry(
+            id: 'session-a',
+            cwd: '/workspace/project-a',
+            title: 'Resume this project conversation',
+            updatedAt: DateTime(2026, 5, 28, 12),
+          ),
+        ],
+      ),
+    ];
   }
 
   @override

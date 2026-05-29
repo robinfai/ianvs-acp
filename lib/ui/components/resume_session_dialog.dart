@@ -1,8 +1,6 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import '../../acp/codex_session_catalog.dart';
+import '../../acp/acp_session_catalog.dart';
 import '../theme/app_design_tokens.dart';
 
 class ResumeSessionSelection {
@@ -11,18 +9,18 @@ class ResumeSessionSelection {
     required this.conversation,
   });
 
-  final CodexProjectSessions project;
-  final CodexConversationEntry conversation;
+  final AcpProjectSessions project;
+  final AcpSessionEntry conversation;
 }
 
 class ResumeSessionDialog extends StatefulWidget {
   const ResumeSessionDialog({
     super.key,
-    required this.catalog,
+    required this.loadSessions,
     this.initialCwd,
   });
 
-  final CodexSessionCatalog catalog;
+  final Future<List<AcpProjectSessions>> Function() loadSessions;
   final String? initialCwd;
 
   @override
@@ -33,10 +31,9 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   final TextEditingController _projectController = TextEditingController();
   final TextEditingController _conversationController = TextEditingController();
 
-  List<CodexProjectSessions> _projects = const [];
-  final Set<String> _loadingTurnCounts = <String>{};
-  CodexProjectSessions? _selectedProject;
-  CodexConversationEntry? _selectedConversation;
+  List<AcpProjectSessions> _projects = const [];
+  AcpProjectSessions? _selectedProject;
+  AcpSessionEntry? _selectedConversation;
   Object? _error;
   bool _loading = true;
 
@@ -56,7 +53,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Resume Codex Session'),
+      title: const Text('Resume ACP Session'),
       content: SizedBox(
         width: 720,
         child: AnimatedSwitcher(
@@ -102,7 +99,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     if (_error != null) {
       return _MessagePanel(
         icon: Icons.error_outline_rounded,
-        title: 'Could not read Codex sessions',
+        title: 'Could not list ACP sessions',
         message: _error.toString(),
       );
     }
@@ -111,12 +108,13 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       return const _MessagePanel(
         icon: Icons.search_off_rounded,
         title: 'No sessions found',
-        message: 'No local Codex sessions were found under ~/.codex/sessions.',
+        message: 'The connected ACP agent did not return any sessions.',
       );
     }
 
     final selectedProject = _selectedProject;
-    final conversations = selectedProject?.conversations ?? const [];
+    final conversations =
+        selectedProject?.sessions ?? const <AcpSessionEntry>[];
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -132,7 +130,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
               helper: 'Search by project name or path.',
             ),
             const SizedBox(height: 8),
-            DropdownMenu<CodexProjectSessions>(
+            DropdownMenu<AcpProjectSessions>(
               controller: _projectController,
               width: width,
               menuHeight: 280,
@@ -143,7 +141,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
               initialSelection: _selectedProject,
               dropdownMenuEntries: _projects
                   .map(
-                    (project) => DropdownMenuEntry<CodexProjectSessions>(
+                    (project) => DropdownMenuEntry<AcpProjectSessions>(
                       value: project,
                       label: project.dropdownLabel,
                     ),
@@ -153,14 +151,13 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                 if (project == null) return;
                 setState(() {
                   _selectedProject = project;
-                  _selectedConversation = project.conversations.isEmpty
+                  _selectedConversation = project.sessions.isEmpty
                       ? null
-                      : project.conversations.first;
+                      : project.sessions.first;
                   _projectController.text = project.dropdownLabel;
                   _conversationController.text =
                       _selectedConversation?.dropdownLabel ?? '';
                 });
-                unawaited(_loadTurnCountsForProject(project));
               },
             ),
             const SizedBox(height: 18),
@@ -170,7 +167,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
               helper: 'Search by title, short id, or updated time.',
             ),
             const SizedBox(height: 8),
-            DropdownMenu<CodexConversationEntry>(
+            DropdownMenu<AcpSessionEntry>(
               controller: _conversationController,
               width: width,
               menuHeight: 320,
@@ -182,7 +179,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
               initialSelection: _selectedConversation,
               dropdownMenuEntries: conversations
                   .map(
-                    (conversation) => DropdownMenuEntry<CodexConversationEntry>(
+                    (conversation) => DropdownMenuEntry<AcpSessionEntry>(
                       value: conversation,
                       label: conversation.dropdownLabel,
                     ),
@@ -211,16 +208,15 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     });
 
     try {
-      final projects = await widget.catalog.load(includeTurnCounts: false);
+      final projects = await widget.loadSessions();
       if (!mounted) return;
       final selectedProject = _initialProject(projects);
       final selectedConversation =
-          selectedProject == null || selectedProject.conversations.isEmpty
+          selectedProject == null || selectedProject.sessions.isEmpty
           ? null
-          : selectedProject.conversations.first;
+          : selectedProject.sessions.first;
       setState(() {
         _projects = projects;
-        _loadingTurnCounts.clear();
         _selectedProject = selectedProject;
         _selectedConversation = selectedConversation;
         _projectController.text = selectedProject?.dropdownLabel ?? '';
@@ -228,9 +224,6 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
             selectedConversation?.dropdownLabel ?? '';
         _loading = false;
       });
-      if (selectedProject != null) {
-        unawaited(_loadTurnCountsForProject(selectedProject));
-      }
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -240,64 +233,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     }
   }
 
-  Future<void> _loadTurnCountsForProject(CodexProjectSessions project) async {
-    if (_loadingTurnCounts.contains(project.cwd)) return;
-    if (project.conversations.every((conversation) {
-      return conversation.turnCountKnown;
-    })) {
-      return;
-    }
-
-    _loadingTurnCounts.add(project.cwd);
-    try {
-      var conversations = List<CodexConversationEntry>.of(
-        project.conversations,
-      );
-      for (final conversation in project.conversations) {
-        if (conversation.turnCountKnown) continue;
-        final turnCount = await widget.catalog.turnCountFor(conversation);
-        conversations = conversations.map((candidate) {
-          if (candidate.id != conversation.id) return candidate;
-          return candidate.copyWith(turnCount: turnCount, turnCountKnown: true);
-        }).toList();
-
-        if (!mounted) return;
-        setState(() {
-          _replaceProjectConversations(project.cwd, conversations);
-        });
-      }
-    } finally {
-      _loadingTurnCounts.remove(project.cwd);
-    }
-  }
-
-  void _replaceProjectConversations(
-    String cwd,
-    List<CodexConversationEntry> conversations,
-  ) {
-    conversations.sort((a, b) => b.sortTime.compareTo(a.sortTime));
-    _projects = _projects.map((existing) {
-      if (existing.cwd != cwd) return existing;
-      return CodexProjectSessions(
-        cwd: existing.cwd,
-        conversations: conversations,
-      );
-    }).toList()..sort((a, b) => b.sortTime.compareTo(a.sortTime));
-
-    if (_selectedProject?.cwd != cwd) return;
-    _selectedProject = _projects.firstWhere(
-      (candidate) => candidate.cwd == cwd,
-    );
-    final selectedId = _selectedConversation?.id;
-    _selectedConversation = _selectedProject!.conversations.firstWhere(
-      (conversation) => conversation.id == selectedId,
-      orElse: () => _selectedProject!.conversations.first,
-    );
-    _projectController.text = _selectedProject!.dropdownLabel;
-    _conversationController.text = _selectedConversation!.dropdownLabel;
-  }
-
-  CodexProjectSessions? _initialProject(List<CodexProjectSessions> projects) {
+  AcpProjectSessions? _initialProject(List<AcpProjectSessions> projects) {
     if (projects.isEmpty) return null;
     final initialCwd = widget.initialCwd;
     if (initialCwd == null || initialCwd.isEmpty) return projects.first;
@@ -349,7 +285,7 @@ class _FieldLabel extends StatelessWidget {
 class _ConversationPreview extends StatelessWidget {
   const _ConversationPreview({required this.conversation});
 
-  final CodexConversationEntry? conversation;
+  final AcpSessionEntry? conversation;
 
   @override
   Widget build(BuildContext context) {
@@ -358,7 +294,7 @@ class _ConversationPreview extends StatelessWidget {
       return const _MessagePanel(
         icon: Icons.forum_outlined,
         title: 'Select a conversation',
-        message: 'Choose a project first, then select a Codex conversation.',
+        message: 'Choose a project first, then select an ACP session.',
       );
     }
 
@@ -385,11 +321,6 @@ class _ConversationPreview extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _PreviewRow(icon: Icons.tag_rounded, label: conversation.id),
-          const SizedBox(height: 6),
-          _PreviewRow(
-            icon: Icons.forum_outlined,
-            label: conversation.turnCountLabel,
-          ),
           const SizedBox(height: 6),
           _PreviewRow(icon: Icons.folder_outlined, label: conversation.cwd),
           if (conversation.updatedAt != null) ...[

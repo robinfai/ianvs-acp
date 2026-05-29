@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 
 import 'acp_agent_client.dart';
+import 'acp_session_catalog.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 
@@ -17,6 +18,7 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   acp.AcpClient? _client;
   bool _supportsLoadSession = false;
+  bool _supportsListSessions = false;
   String? _activeSessionId;
 
   @override
@@ -28,6 +30,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     try {
       final initializeResult = await client.initialize();
       _supportsLoadSession = initializeResult.supportsLoadSession;
+      _supportsListSessions = initializeResult.supportsListSessions;
     } catch (_) {
       await client.dispose();
       rethrow;
@@ -68,6 +71,39 @@ class DartAcpAgentClient implements AcpAgentClient {
     } finally {
       await subscription.cancel();
     }
+  }
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    final client = _requireClient();
+    if (!_supportsListSessions) {
+      throw StateError('ACP agent does not support session/list.');
+    }
+
+    final sessions = <AcpSessionEntry>[];
+    final seenCursors = <String>{};
+    String? cursor;
+    do {
+      final result = await client.listSessions(cursor: cursor);
+      sessions.addAll(
+        result.sessions.map((session) {
+          return AcpSessionEntry(
+            id: session.sessionId,
+            cwd: session.cwd,
+            title: session.title?.trim().isNotEmpty == true
+                ? session.title!.trim()
+                : session.sessionId,
+            updatedAt: session.updatedAt?.toLocal(),
+          );
+        }),
+      );
+
+      final nextCursor = result.nextCursor;
+      if (nextCursor == null || !seenCursors.add(nextCursor)) break;
+      cursor = nextCursor;
+    } while (true);
+
+    return groupAcpSessionsByProject(sessions);
   }
 
   @override
@@ -196,6 +232,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _client;
     _client = null;
     _supportsLoadSession = false;
+    _supportsListSessions = false;
     _activeSessionId = null;
     await client?.dispose();
   }

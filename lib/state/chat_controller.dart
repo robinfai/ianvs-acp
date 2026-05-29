@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_client.dart';
+import '../acp/acp_session_catalog.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import 'connection_state.dart';
@@ -112,6 +113,17 @@ class ChatController extends ChangeNotifier {
     } catch (error) {
       _setError(error);
     }
+  }
+
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (status == ConnectionStatus.disconnected ||
+        status == ConnectionStatus.error) {
+      await connect();
+      if (status == ConnectionStatus.error) {
+        throw StateError(lastError ?? 'ACP agent connection failed.');
+      }
+    }
+    return client.listSessions();
   }
 
   Future<void> sendPrompt(String text) async {
