@@ -10,6 +10,7 @@ import '../components/error_banner.dart';
 import '../components/prompt_input.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
+import '../components/session_settings_dialog.dart';
 import '../components/status_bar.dart';
 import '../theme/app_design_tokens.dart';
 
@@ -76,6 +77,8 @@ class AppShell extends StatelessWidget {
                 ),
                 StatusBar(
                   controller: controller,
+                  onShowSessionSettings: () =>
+                      _showSessionSettingsDialog(context),
                   onShowCapabilities: () => _showCapabilitiesDialog(context),
                 ),
               ],
@@ -91,6 +94,15 @@ class AppShell extends StatelessWidget {
       context: context,
       builder: (context) {
         return CapabilitiesDialog(capabilities: controller.capabilities);
+      },
+    );
+  }
+
+  Future<void> _showSessionSettingsDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return SessionSettingsDialog(controller: controller);
       },
     );
   }

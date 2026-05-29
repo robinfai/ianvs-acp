@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
 import '../acp/acp_session_catalog.dart';
+import '../acp/acp_session_settings.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import 'connection_state.dart';
@@ -36,8 +37,10 @@ class ChatController extends ChangeNotifier {
   final List<AgentSession> sessions = <AgentSession>[];
   final List<ChatMessage> messages = <ChatMessage>[];
   AcpAgentCapabilities? capabilities;
+  AcpSessionSettings sessionSettings = const AcpSessionSettings();
   String? lastError;
   bool isStreaming = false;
+  bool sessionSettingsLoading = false;
 
   StreamSubscription<AgentEvent>? _promptSubscription;
   DateTime? _lastPromptStartedAt;
@@ -62,6 +65,8 @@ class ChatController extends ChangeNotifier {
       messages.clear();
       lastLatency = null;
       lastError = null;
+      sessionSettings = const AcpSessionSettings();
+      await _loadSessionSettings(session.id, notify: false);
       status = ConnectionStatus.sessionReady;
       notifyListeners();
     } catch (error) {
@@ -90,6 +95,7 @@ class ChatController extends ChangeNotifier {
       lastError = null;
       messages.clear();
       lastLatency = null;
+      sessionSettings = const AcpSessionSettings();
       final session = AgentSession(
         id: trimmedSessionId,
         cwd: workspaceCwd,
@@ -108,6 +114,7 @@ class ChatController extends ChangeNotifier {
       for (final event in replay) {
         _handleAgentEvent(event, notify: false);
       }
+      await _loadSessionSettings(trimmedSessionId, notify: false);
       if (status != ConnectionStatus.error) {
         status = ConnectionStatus.sessionReady;
       }
@@ -175,7 +182,55 @@ class ChatController extends ChangeNotifier {
     isStreaming = false;
     currentSession = null;
     sessions.clear();
+    sessionSettings = const AcpSessionSettings();
+    sessionSettingsLoading = false;
     await _connectWithStatus(ConnectionStatus.reconnecting);
+  }
+
+  Future<void> refreshSessionSettings() async {
+    final sessionId = currentSession?.id;
+    if (sessionId == null) return;
+    await _loadSessionSettings(sessionId);
+  }
+
+  Future<void> setSessionMode(String modeId) async {
+    final sessionId = currentSession?.id;
+    final trimmedModeId = modeId.trim();
+    if (sessionId == null || trimmedModeId.isEmpty || isStreaming) return;
+
+    try {
+      final didSet = await client.setSessionMode(
+        sessionId: sessionId,
+        modeId: trimmedModeId,
+      );
+      if (!didSet) {
+        throw StateError('ACP agent rejected session mode "$trimmedModeId".');
+      }
+      sessionSettings = sessionSettings.withCurrentMode(trimmedModeId);
+      lastError = null;
+      notifyListeners();
+    } catch (error) {
+      _setActionError(error);
+    }
+  }
+
+  Future<void> setConfigOption(String configId, String value) async {
+    final sessionId = currentSession?.id;
+    final trimmedConfigId = configId.trim();
+    if (sessionId == null || trimmedConfigId.isEmpty || isStreaming) return;
+
+    try {
+      final options = await client.setConfigOption(
+        sessionId: sessionId,
+        configId: trimmedConfigId,
+        value: value,
+      );
+      sessionSettings = sessionSettings.copyWith(configOptions: options);
+      lastError = null;
+      notifyListeners();
+    } catch (error) {
+      _setActionError(error);
+    }
   }
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
@@ -242,6 +297,12 @@ class ChatController extends ChangeNotifier {
 
   void _appendStatus(AgentEvent event) {
     final kind = event.metadata['kind'];
+    if (kind == 'mode') {
+      final mode = event.metadata['mode'];
+      if (mode is String && mode.isNotEmpty) {
+        sessionSettings = sessionSettings.withCurrentMode(mode);
+      }
+    }
     final lastMessage = messages.isNotEmpty ? messages.last : null;
     if (kind == 'thought' &&
         lastMessage != null &&
@@ -302,6 +363,33 @@ class ChatController extends ChangeNotifier {
     status = ConnectionStatus.error;
     isStreaming = false;
     notifyListeners();
+  }
+
+  void _setActionError(Object error) {
+    lastError = error.toString();
+    if (status == ConnectionStatus.error) {
+      status = currentSession == null
+          ? ConnectionStatus.connected
+          : ConnectionStatus.sessionReady;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _loadSessionSettings(
+    String sessionId, {
+    bool notify = true,
+  }) async {
+    sessionSettingsLoading = true;
+    if (notify) notifyListeners();
+
+    try {
+      sessionSettings = await client.sessionSettings(sessionId);
+    } catch (_) {
+      sessionSettings = const AcpSessionSettings();
+    } finally {
+      sessionSettingsLoading = false;
+      if (notify) notifyListeners();
+    }
   }
 
   @override

@@ -6,6 +6,7 @@ import 'package:dart_acp/dart_acp.dart' as acp;
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_session_catalog.dart';
+import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 
@@ -22,6 +23,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
   String? _activeSessionId;
+  final Map<String, String> _modeOverridesBySession = <String, String>{};
+  final Map<String, List<AcpConfigOption>> _configOptionsBySession =
+      <String, List<AcpConfigOption>>{};
 
   @override
   AcpAgentCapabilities? get capabilities => _capabilities;
@@ -130,6 +134,59 @@ class DartAcpAgentClient implements AcpAgentClient {
     } while (true);
 
     return groupAcpSessionsByProject(sessions);
+  }
+
+  @override
+  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+    final client = _requireClient();
+    final modes = client.sessionModes(sessionId);
+    final currentModeId =
+        _modeOverridesBySession[sessionId] ?? modes?.currentModeId;
+    final availableModes =
+        modes?.availableModes
+            .map((mode) => AcpSessionMode(id: mode.id, name: mode.name))
+            .where((mode) => mode.id.isNotEmpty)
+            .toList() ??
+        const <AcpSessionMode>[];
+
+    return AcpSessionSettings(
+      modes: AcpSessionModeInfo(
+        currentModeId: currentModeId,
+        availableModes: availableModes,
+      ),
+      configOptions:
+          _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[],
+    );
+  }
+
+  @override
+  Future<bool> setSessionMode({
+    required String sessionId,
+    required String modeId,
+  }) async {
+    final client = _requireClient();
+    final didSet = await client.setMode(sessionId: sessionId, modeId: modeId);
+    if (didSet) {
+      _modeOverridesBySession[sessionId] = modeId;
+    }
+    return didSet;
+  }
+
+  @override
+  Future<List<AcpConfigOption>> setConfigOption({
+    required String sessionId,
+    required String configId,
+    required String value,
+  }) async {
+    final client = _requireClient();
+    final options = await client.setConfigOption(
+      sessionId: sessionId,
+      configId: configId,
+      value: value,
+    );
+    final mapped = options.map(_configOptionFromAcp).toList();
+    _configOptionsBySession[sessionId] = mapped;
+    return mapped;
   }
 
   @override
@@ -246,6 +303,9 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.ModeUpdate():
+        if (update.currentModeId.isNotEmpty && _activeSessionId != null) {
+          _modeOverridesBySession[_activeSessionId!] = update.currentModeId;
+        }
         return AgentEvent(
           type: AgentEventType.status,
           text: update.currentModeId,
@@ -290,6 +350,26 @@ class DartAcpAgentClient implements AcpAgentClient {
     return raw.map((key, value) => MapEntry(key, value as Object?));
   }
 
+  AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
+    return AcpConfigOption(
+      id: option.id,
+      name: option.name,
+      type: option.type,
+      currentValue: option.currentValue,
+      options: option.options
+          .map(
+            (choice) => AcpConfigOptionChoice(
+              value: choice.value,
+              name: choice.name,
+              description: choice.description,
+            ),
+          )
+          .toList(),
+      description: option.description,
+      group: option.group,
+    );
+  }
+
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
@@ -306,6 +386,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsLoadSession = false;
     _supportsListSessions = false;
     _activeSessionId = null;
+    _modeOverridesBySession.clear();
+    _configOptionsBySession.clear();
     await client?.dispose();
   }
 

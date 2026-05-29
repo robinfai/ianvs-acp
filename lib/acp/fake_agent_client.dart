@@ -3,6 +3,7 @@ import 'dart:async';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_session_catalog.dart';
+import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 
@@ -12,6 +13,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.promptError,
     this.chunkDelay = Duration.zero,
     List<AgentEvent>? resumeEvents,
+    AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
            resumeEvents ??
            const [
@@ -35,17 +37,22 @@ class FakeAgentClient implements AcpAgentClient {
                type: AgentEventType.status,
                text: '[Session replayed]',
              ),
-           ];
+           ],
+       _settings = sessionSettings ?? _defaultSessionSettings;
 
   final Object? connectError;
   final Object? promptError;
   final Duration chunkDelay;
   final List<AgentEvent> resumeEvents;
+  AcpSessionSettings _settings;
 
   bool connected = false;
   bool cancelled = false;
   int sessionCount = 0;
   String? lastResumeCwd;
+  String? lastSetModeId;
+  String? lastConfigId;
+  String? lastConfigValue;
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -62,9 +69,9 @@ class FakeAgentClient implements AcpAgentClient {
             list: true,
             resume: false,
             fork: false,
-            configOptions: false,
+            configOptions: true,
             close: true,
-            rawKeys: ['close', 'list'],
+            rawKeys: ['close', 'configOptions', 'list'],
           ),
           client: AcpClientCapabilities(
             fsReadTextFile: false,
@@ -78,6 +85,30 @@ class FakeAgentClient implements AcpAgentClient {
           authMethods: <Map<String, Object?>>[],
         )
       : null;
+
+  static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
+    modes: AcpSessionModeInfo(
+      currentModeId: 'ask',
+      availableModes: [
+        AcpSessionMode(id: 'ask', name: 'Ask'),
+        AcpSessionMode(id: 'edit', name: 'Edit'),
+      ],
+    ),
+    configOptions: [
+      AcpConfigOption(
+        id: 'approval',
+        name: 'Approval mode',
+        type: 'select',
+        currentValue: 'suggest',
+        description: 'Controls how the agent asks before changing files.',
+        group: 'Safety',
+        options: [
+          AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+          AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+        ],
+      ),
+    ],
+  );
 
   @override
   Future<void> connect() async {
@@ -130,6 +161,47 @@ class FakeAgentClient implements AcpAgentClient {
         ],
       ),
     ];
+  }
+
+  @override
+  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return _settings;
+  }
+
+  @override
+  Future<bool> setSessionMode({
+    required String sessionId,
+    required String modeId,
+  }) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    lastSetModeId = modeId;
+    _settings = _settings.withCurrentMode(modeId);
+    return true;
+  }
+
+  @override
+  Future<List<AcpConfigOption>> setConfigOption({
+    required String sessionId,
+    required String configId,
+    required String value,
+  }) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    lastConfigId = configId;
+    lastConfigValue = value;
+    final options = _settings.configOptions.map((option) {
+      return option.id == configId
+          ? option.copyWith(currentValue: value)
+          : option;
+    }).toList();
+    _settings = _settings.copyWith(configOptions: options);
+    return options;
   }
 
   @override

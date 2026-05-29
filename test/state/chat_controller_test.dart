@@ -43,6 +43,7 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.currentSession?.id, 'fake-session-1');
     expect(controller.sessions, hasLength(1));
+    expect(controller.sessionSettings.modes.currentModeId, 'ask');
   });
 
   test('resume session replays history into timeline', () async {
@@ -75,6 +76,37 @@ void main() {
 
     expect(controller.currentSession?.cwd, '/other/project');
     expect(fake.lastResumeCwd, '/other/project');
+    expect(controller.sessionSettings.configOptions.single.id, 'approval');
+  });
+
+  test('set session mode updates ACP session settings', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.setSessionMode('edit');
+
+    expect(fake.lastSetModeId, 'edit');
+    expect(controller.sessionSettings.modes.currentModeId, 'edit');
+    expect(controller.lastError, isNull);
+  });
+
+  test('set config option updates ACP session settings', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.setConfigOption('approval', 'auto');
+
+    expect(fake.lastConfigId, 'approval');
+    expect(fake.lastConfigValue, 'auto');
+    expect(
+      controller.sessionSettings.configOptions.single.currentValue,
+      'auto',
+    );
+    expect(controller.lastError, isNull);
   });
 
   test('agentTextDone stop reason is rendered as a turn status', () async {

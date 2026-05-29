@@ -9,10 +9,12 @@ class StatusBar extends StatelessWidget {
     super.key,
     required this.controller,
     required this.onShowCapabilities,
+    required this.onShowSessionSettings,
   });
 
   final ChatController controller;
   final VoidCallback onShowCapabilities;
+  final VoidCallback onShowSessionSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -39,6 +41,14 @@ class StatusBar extends StatelessWidget {
                   icon: Icons.tag_rounded,
                   label: controller.currentSession?.shortId ?? 'no session',
                 ),
+                if (_currentModeLabel(controller) != null) ...[
+                  const SizedBox(width: 24),
+                  _StatusItem(
+                    icon: Icons.swap_horiz_rounded,
+                    label: _currentModeLabel(controller)!,
+                    color: AppColors.primaryDark,
+                  ),
+                ],
                 const SizedBox(width: 24),
                 _StatusItem(
                   icon: Icons.radio_button_checked,
@@ -65,6 +75,12 @@ class StatusBar extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(width: 24),
+                _StatusIcon(
+                  icon: Icons.tune_rounded,
+                  tooltip: 'Session settings',
+                  onPressed: onShowSessionSettings,
+                ),
+                const SizedBox(width: 16),
                 _StatusIcon(
                   icon: Icons.fact_check_outlined,
                   tooltip: 'ACP compatibility',
@@ -97,6 +113,17 @@ class StatusBar extends StatelessWidget {
   String _latencyLabel(Duration? latency) {
     if (latency == null) return 'latency --';
     return 'latency ${latency.inMilliseconds} ms';
+  }
+
+  String? _currentModeLabel(ChatController controller) {
+    final modeId = controller.sessionSettings.modes.currentModeId;
+    if (modeId == null || modeId.isEmpty) return null;
+    for (final mode in controller.sessionSettings.modes.availableModes) {
+      if (mode.id == modeId) {
+        return 'mode ${mode.label}';
+      }
+    }
+    return 'mode $modeId';
   }
 }
 
