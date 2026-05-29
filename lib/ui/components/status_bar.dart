@@ -5,9 +5,14 @@ import '../../state/connection_state.dart' as app_state;
 import '../theme/app_design_tokens.dart';
 
 class StatusBar extends StatelessWidget {
-  const StatusBar({super.key, required this.controller});
+  const StatusBar({
+    super.key,
+    required this.controller,
+    required this.onShowCapabilities,
+  });
 
   final ChatController controller;
+  final VoidCallback onShowCapabilities;
 
   @override
   Widget build(BuildContext context) {
@@ -60,14 +65,16 @@ class StatusBar extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(width: 24),
-                const _StatusIcon(
-                  icon: Icons.settings_outlined,
-                  tooltip: 'Settings',
+                _StatusIcon(
+                  icon: Icons.fact_check_outlined,
+                  tooltip: 'ACP compatibility',
+                  onPressed: onShowCapabilities,
                 ),
                 const SizedBox(width: 16),
                 const _StatusIcon(
                   icon: Icons.wb_sunny_outlined,
                   tooltip: 'Theme',
+                  onPressed: null,
                 ),
               ],
             ),
@@ -134,16 +141,35 @@ class _StatusItem extends StatelessWidget {
 }
 
 class _StatusIcon extends StatelessWidget {
-  const _StatusIcon({required this.icon, required this.tooltip});
+  const _StatusIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
 
   final IconData icon;
   final String tooltip;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: Icon(icon, size: 20, color: AppColors.textSecondary),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        onTap: onPressed,
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: Icon(
+            icon,
+            size: 20,
+            color: onPressed == null
+                ? AppColors.textTertiary
+                : AppColors.textSecondary,
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
@@ -74,6 +75,29 @@ void main() {
 
     expect(controller.currentSession?.cwd, '/other/project');
     expect(fake.lastResumeCwd, '/other/project');
+  });
+
+  test('agentTextDone stop reason is rendered as a turn status', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.agentTextDone,
+            text: '',
+            metadata: {'stopReason': 'maxTokens', 'kind': 'turn'},
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('resumed-session-3');
+
+    expect(controller.messages, hasLength(1));
+    expect(controller.messages.single.role, ChatMessageRole.status);
+    expect(controller.messages.single.text, contains('token limit'));
+    expect(controller.messages.single.metadata['stopReason'], 'maxTokens');
   });
 
   test('send prompt returns stream chunks appended to one message', () async {

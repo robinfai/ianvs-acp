@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_session_catalog.dart';
 import 'agent_event.dart';
@@ -45,6 +46,38 @@ class FakeAgentClient implements AcpAgentClient {
   bool cancelled = false;
   int sessionCount = 0;
   String? lastResumeCwd;
+
+  @override
+  AcpAgentCapabilities? get capabilities => connected
+      ? const AcpAgentCapabilities(
+          protocolVersion: 1,
+          loadSession: true,
+          prompt: AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: true,
+          ),
+          mcp: AcpMcpCapabilities(http: true, sse: false, acp: false),
+          session: AcpSessionCapabilities(
+            list: true,
+            resume: false,
+            fork: false,
+            configOptions: false,
+            close: true,
+            rawKeys: ['close', 'list'],
+          ),
+          client: AcpClientCapabilities(
+            fsReadTextFile: false,
+            fsWriteTextFile: false,
+            terminal: false,
+            hasFsProvider: false,
+            hasTerminalProvider: false,
+            allowReadOutsideWorkspace: false,
+          ),
+          rawAgentCapabilities: <String, Object?>{},
+          authMethods: <Map<String, Object?>>[],
+        )
+      : null;
 
   @override
   Future<void> connect() async {

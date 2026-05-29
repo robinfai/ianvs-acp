@@ -1,0 +1,73 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
+import 'package:ianvs_acp/ui/components/capabilities_dialog.dart';
+
+void main() {
+  testWidgets('CapabilitiesDialog renders negotiated ACP capabilities', (
+    tester,
+  ) async {
+    const capabilities = AcpAgentCapabilities(
+      protocolVersion: 1,
+      loadSession: true,
+      prompt: AcpPromptCapabilities(
+        image: true,
+        audio: false,
+        embeddedContext: true,
+      ),
+      mcp: AcpMcpCapabilities(http: true, sse: false, acp: false),
+      session: AcpSessionCapabilities(
+        list: true,
+        resume: false,
+        fork: true,
+        configOptions: false,
+        close: true,
+        rawKeys: ['close', 'fork', 'list'],
+      ),
+      client: AcpClientCapabilities(
+        fsReadTextFile: false,
+        fsWriteTextFile: false,
+        terminal: false,
+        hasFsProvider: false,
+        hasTerminalProvider: false,
+        allowReadOutsideWorkspace: false,
+      ),
+      rawAgentCapabilities: {
+        'loadSession': true,
+        'sessionCapabilities': {'list': {}, 'close': {}},
+      },
+      authMethods: [],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: CapabilitiesDialog(capabilities: capabilities)),
+      ),
+    );
+
+    expect(find.text('ACP Compatibility'), findsOneWidget);
+    expect(find.text('Protocol version'), findsOneWidget);
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Image'), findsOneWidget);
+    expect(find.text('Embedded context'), findsOneWidget);
+    expect(find.text('List'), findsOneWidget);
+    expect(find.text('Fork'), findsOneWidget);
+    expect(find.text('Close'), findsWidgets);
+    expect(find.text('Advertise fs/read_text_file'), findsOneWidget);
+  });
+
+  testWidgets('CapabilitiesDialog renders empty disconnected state', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: CapabilitiesDialog(capabilities: null)),
+      ),
+    );
+
+    expect(
+      find.text('Connect to an ACP agent to inspect capabilities.'),
+      findsOneWidget,
+    );
+  });
+}

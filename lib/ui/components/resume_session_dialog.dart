@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_session_catalog.dart';
@@ -330,7 +332,65 @@ class _ConversationPreview extends StatelessWidget {
               label: _formatDateTime(conversation.updatedAt!),
             ),
           ],
+          if (conversation.hasMeta) ...[
+            const SizedBox(height: 12),
+            _MetadataPreview(meta: conversation.meta),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _MetadataPreview extends StatelessWidget {
+  const _MetadataPreview({required this.meta});
+
+  final Map<String, Object?> meta;
+
+  @override
+  Widget build(BuildContext context) {
+    const encoder = JsonEncoder.withIndent('  ');
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: Material(
+        color: Colors.transparent,
+        child: ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: EdgeInsets.zero,
+          title: const Text(
+            'Metadata',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          leading: const Icon(
+            Icons.data_object_rounded,
+            color: AppColors.primaryDark,
+            size: 18,
+          ),
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: SelectableText(
+                encoder.convert(meta),
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

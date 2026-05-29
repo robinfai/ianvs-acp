@@ -1,8 +1,11 @@
+import 'acp_agent_capabilities.dart';
 import 'acp_session_catalog.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 
 abstract class AcpAgentClient {
+  AcpAgentCapabilities? get capabilities;
+
   Future<void> connect();
 
   Future<AgentSession> createSession({required String cwd});

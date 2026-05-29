@@ -20,12 +20,14 @@ class AcpSessionEntry {
     required this.cwd,
     required this.title,
     this.updatedAt,
+    this.meta = const <String, Object?>{},
   });
 
   final String id;
   final String cwd;
   final String title;
   final DateTime? updatedAt;
+  final Map<String, Object?> meta;
 
   String get shortId => id.length <= 8 ? id : id.substring(0, 8);
 
@@ -37,6 +39,8 @@ class AcpSessionEntry {
     final date = updatedAt == null ? '' : ' - ${_formatDateTime(updatedAt!)}';
     return '$title ($shortId)$date';
   }
+
+  bool get hasMeta => meta.isNotEmpty;
 }
 
 List<AcpProjectSessions> groupAcpSessionsByProject(

@@ -176,4 +176,57 @@ void main() {
     expect(find.text('High'), findsOneWidget);
     expect(find.text('Medium'), findsOneWidget);
   });
+
+  testWidgets('ChatTimeline renders thought and turn status updates', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Checking the workspace before answering.',
+          metadata: const {'kind': 'thought'},
+        ),
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Turn ended normally.',
+          metadata: const {'kind': 'turn', 'stopReason': 'endTurn'},
+        ),
+      ]),
+    );
+
+    expect(find.text('Thought'), findsOneWidget);
+    expect(
+      find.text('Checking the workspace before answering.'),
+      findsOneWidget,
+    );
+    expect(find.text('Turn ended normally.'), findsOneWidget);
+    expect(find.text('End turn'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline renders non-text content blocks', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Attached context.',
+          metadata: const {
+            'contentBlocks': [
+              {
+                'type': 'resource_link',
+                'uri': 'file:///workspace/lib/main.dart',
+                'title': 'main.dart',
+                'mimeType': 'text/x-dart',
+              },
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('Attached context.'), findsOneWidget);
+    expect(find.text('main.dart'), findsOneWidget);
+    expect(find.text('text/x-dart'), findsOneWidget);
+    expect(find.text('file:///workspace/lib/main.dart'), findsOneWidget);
+  });
 }

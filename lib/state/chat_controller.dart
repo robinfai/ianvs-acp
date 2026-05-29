@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
 import '../acp/acp_session_catalog.dart';
 import '../acp/agent_event.dart';
@@ -34,6 +35,7 @@ class ChatController extends ChangeNotifier {
   AgentSession? currentSession;
   final List<AgentSession> sessions = <AgentSession>[];
   final List<ChatMessage> messages = <ChatMessage>[];
+  AcpAgentCapabilities? capabilities;
   String? lastError;
   bool isStreaming = false;
 
@@ -182,6 +184,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     try {
       await client.connect();
+      capabilities = client.capabilities;
       status = ConnectionStatus.connected;
       notifyListeners();
     } catch (error) {
@@ -194,8 +197,13 @@ class ChatController extends ChangeNotifier {
       case AgentEventType.userMessage:
         _appendText(ChatMessageRole.user, event.text);
       case AgentEventType.agentTextDelta:
-        _appendText(ChatMessageRole.assistant, event.text);
+        _appendText(
+          ChatMessageRole.assistant,
+          event.text,
+          metadata: event.metadata,
+        );
       case AgentEventType.agentTextDone:
+        _appendTurnStatus(event);
         _finishStreaming();
       case AgentEventType.toolCall:
         messages.add(
@@ -212,26 +220,66 @@ class ChatController extends ChangeNotifier {
         );
         status = ConnectionStatus.error;
       case AgentEventType.status:
-        messages.add(
-          ChatMessage(
-            role: ChatMessageRole.status,
-            text: event.text,
-            metadata: event.metadata,
-          ),
-        );
+        _appendStatus(event);
     }
     if (notify) {
       notifyListeners();
     }
   }
 
-  void _appendText(ChatMessageRole role, String text) {
+  void _appendText(
+    ChatMessageRole role,
+    String text, {
+    Map<String, Object?> metadata = const <String, Object?>{},
+  }) {
     final lastMessage = messages.isNotEmpty ? messages.last : null;
-    if (lastMessage != null && lastMessage.role == role) {
+    if (metadata.isEmpty && lastMessage != null && lastMessage.role == role) {
       lastMessage.text += text;
     } else {
-      messages.add(ChatMessage(role: role, text: text));
+      messages.add(ChatMessage(role: role, text: text, metadata: metadata));
     }
+  }
+
+  void _appendStatus(AgentEvent event) {
+    final kind = event.metadata['kind'];
+    final lastMessage = messages.isNotEmpty ? messages.last : null;
+    if (kind == 'thought' &&
+        lastMessage != null &&
+        lastMessage.role == ChatMessageRole.status &&
+        lastMessage.metadata['kind'] == 'thought') {
+      lastMessage.text += event.text;
+      return;
+    }
+    messages.add(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: event.text,
+        metadata: event.metadata,
+      ),
+    );
+  }
+
+  void _appendTurnStatus(AgentEvent event) {
+    final stopReason = event.metadata['stopReason'];
+    if (stopReason is! String || stopReason.isEmpty) return;
+    messages.add(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: _stopReasonLabel(stopReason),
+        metadata: <String, Object?>{'kind': 'turn', 'stopReason': stopReason},
+      ),
+    );
+  }
+
+  String _stopReasonLabel(String stopReason) {
+    return switch (stopReason) {
+      'endTurn' => 'Turn ended normally.',
+      'maxTokens' => 'Turn stopped after reaching the token limit.',
+      'maxTurnRequests' => 'Turn stopped after too many model requests.',
+      'cancelled' => 'Turn cancelled.',
+      'refusal' => 'Agent refused to continue.',
+      _ => 'Turn ended: $stopReason',
+    };
   }
 
   void _finishStreaming() {

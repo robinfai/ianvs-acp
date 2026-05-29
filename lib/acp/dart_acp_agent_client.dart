@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
 
+import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_session_catalog.dart';
 import 'agent_event.dart';
@@ -17,20 +18,44 @@ class DartAcpAgentClient implements AcpAgentClient {
   final List<String> agentArgs;
 
   acp.AcpClient? _client;
+  AcpAgentCapabilities? _capabilities;
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
   String? _activeSessionId;
 
   @override
+  AcpAgentCapabilities? get capabilities => _capabilities;
+
+  @override
   Future<void> connect() async {
     await dispose();
-    final client = await acp.AcpClient.start(
-      config: acp.AcpConfig(agentCommand: agentCommand, agentArgs: agentArgs),
+    final config = acp.AcpConfig(
+      agentCommand: agentCommand,
+      agentArgs: agentArgs,
+      capabilities: const acp.AcpCapabilities(
+        fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
+      ),
     );
+    final client = await acp.AcpClient.start(config: config);
     try {
       final initializeResult = await client.initialize();
+      final clientCapabilities = Map<String, dynamic>.from(
+        config.capabilities.toJson(),
+      );
+      if (config.terminalProvider != null) {
+        clientCapabilities['terminal'] = true;
+      }
       _supportsLoadSession = initializeResult.supportsLoadSession;
       _supportsListSessions = initializeResult.supportsListSessions;
+      _capabilities = AcpAgentCapabilities.fromInitialize(
+        protocolVersion: initializeResult.protocolVersion,
+        agentCapabilities: initializeResult.agentCapabilities,
+        authMethods: initializeResult.authMethods,
+        clientCapabilities: clientCapabilities,
+        hasFsProvider: config.fsProvider != null,
+        hasTerminalProvider: config.terminalProvider != null,
+        allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
+      );
     } catch (_) {
       await client.dispose();
       rethrow;
@@ -94,6 +119,7 @@ class DartAcpAgentClient implements AcpAgentClient {
                 ? session.title!.trim()
                 : session.sessionId,
             updatedAt: session.updatedAt?.toLocal(),
+            meta: _metadataMap(session.meta),
           );
         }),
       );
@@ -142,10 +168,28 @@ class DartAcpAgentClient implements AcpAgentClient {
     switch (update) {
       case acp.MessageDelta():
         final text = update.text;
-        if (text.isEmpty) return null;
+        final contentBlocks = _contentBlocksFromDelta(update);
+        final hasNonTextContent = contentBlocks.any((block) {
+          return block['type'] != 'text';
+        });
+        if (text.isEmpty && !hasNonTextContent) return null;
+        if (update.isThought) {
+          return AgentEvent(
+            type: AgentEventType.status,
+            text: text,
+            metadata: <String, Object?>{
+              'kind': 'thought',
+              if (contentBlocks.isNotEmpty) 'contentBlocks': contentBlocks,
+            },
+            timestamp: DateTime.now(),
+          );
+        }
         return AgentEvent(
           type: acpRoleToEventType(update.role),
-          text: text,
+          text: text.isEmpty ? _contentBlocksLabel(contentBlocks) : text,
+          metadata: hasNonTextContent
+              ? <String, Object?>{'contentBlocks': contentBlocks}
+              : const <String, Object?>{},
           timestamp: DateTime.now(),
         );
       case acp.ToolCallUpdate():
@@ -160,6 +204,10 @@ class DartAcpAgentClient implements AcpAgentClient {
         return AgentEvent(
           type: AgentEventType.agentTextDone,
           text: '',
+          metadata: <String, Object?>{
+            'stopReason': update.stopReason.name,
+            'kind': 'turn',
+          },
           timestamp: DateTime.now(),
         );
       case acp.PlanUpdate():
@@ -219,6 +267,29 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
+  List<Map<String, Object?>> _contentBlocksFromDelta(acp.MessageDelta update) {
+    return update.content.map((block) {
+      return block.toJson().map(
+        (key, value) => MapEntry(key.toString(), value as Object?),
+      );
+    }).toList();
+  }
+
+  String _contentBlocksLabel(List<Map<String, Object?>> blocks) {
+    final nonText = blocks.where((block) => block['type'] != 'text').toList();
+    if (nonText.isEmpty) return '';
+    if (nonText.length == 1) {
+      final type = nonText.single['type']?.toString() ?? 'content';
+      return 'Received $type content.';
+    }
+    return 'Received ${nonText.length} content blocks.';
+  }
+
+  Map<String, Object?> _metadataMap(Map<String, dynamic>? raw) {
+    if (raw == null) return const <String, Object?>{};
+    return raw.map((key, value) => MapEntry(key, value as Object?));
+  }
+
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
@@ -231,6 +302,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<void> dispose() async {
     final client = _client;
     _client = null;
+    _capabilities = null;
     _supportsLoadSession = false;
     _supportsListSessions = false;
     _activeSessionId = null;

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -325,12 +328,15 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              MarkdownBody(
-                data: message.text,
-                selectable: true,
-                styleSheet: _markdownStyle(context, textColor, user),
-              ),
+              if (message.text.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                MarkdownBody(
+                  data: message.text,
+                  selectable: true,
+                  styleSheet: _markdownStyle(context, textColor, user),
+                ),
+              ],
+              _ContentBlocksPreview(message: message),
             ],
           ),
         ),
@@ -737,6 +743,8 @@ class _StatusBubble extends StatelessWidget {
       'diff' => _DiffStatus(message: message),
       'commands' => _CommandsStatus(message: message),
       'mode' => _ModeStatus(message: message),
+      'thought' => _ThoughtStatus(message: message),
+      'turn' => _TurnStatus(message: message),
       _ => _PlainStatus(message: message),
     };
 
@@ -754,6 +762,249 @@ class _StatusBubble extends StatelessWidget {
           ),
           child: child,
         ),
+      ),
+    );
+  }
+}
+
+class _ThoughtStatus extends StatelessWidget {
+  const _ThoughtStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(
+          icon: Icons.psychology_alt_outlined,
+          label: 'Thought',
+        ),
+        if (message.text.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            message.text,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              height: 1.35,
+            ),
+          ),
+        ],
+        _ContentBlocksPreview(message: message),
+      ],
+    );
+  }
+}
+
+class _TurnStatus extends StatelessWidget {
+  const _TurnStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final stopReason = _stringMetadata(message.metadata, 'stopReason') ?? '';
+    return Row(
+      children: [
+        Expanded(
+          child: _SectionHeader(
+            icon: Icons.flag_circle_outlined,
+            label: message.text.isEmpty ? 'Turn ended' : message.text,
+          ),
+        ),
+        if (stopReason.isNotEmpty)
+          _StatusPill(
+            label: _wireStopReason(stopReason),
+            color: _stopReasonColor(stopReason),
+          ),
+      ],
+    );
+  }
+}
+
+class _ContentBlocksPreview extends StatelessWidget {
+  const _ContentBlocksPreview({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final blocks = _mapList(
+      message.metadata['contentBlocks'],
+    ).where((block) => _stringMetadata(block, 'type') != 'text').toList();
+    if (blocks.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: EdgeInsets.only(top: message.text.isEmpty ? 0 : 10),
+      child: Column(
+        children: [
+          for (final block in blocks) ...[
+            _ContentBlockCard(block: block),
+            if (block != blocks.last) const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ContentBlockCard extends StatelessWidget {
+  const _ContentBlockCard({required this.block});
+
+  final Map<String, Object?> block;
+
+  @override
+  Widget build(BuildContext context) {
+    final type = _stringMetadata(block, 'type') ?? 'unknown';
+    return switch (type) {
+      'image' => _ImageContentBlock(block: block),
+      'resource_link' || 'resource' => _ResourceContentBlock(block: block),
+      _ => _UnknownContentBlock(block: block),
+    };
+  }
+}
+
+class _ImageContentBlock extends StatelessWidget {
+  const _ImageContentBlock({required this.block});
+
+  final Map<String, Object?> block;
+
+  @override
+  Widget build(BuildContext context) {
+    final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
+    final data = _stringMetadata(block, 'data');
+    final bytes = data == null ? null : _tryDecodeBase64(data);
+    return _InlineContentFrame(
+      icon: Icons.image_outlined,
+      title: 'Image',
+      subtitle: '$mimeType${data == null ? '' : ' · ${data.length} chars'}',
+      child: bytes == null
+          ? null
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              child: Image.memory(
+                bytes,
+                height: 160,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) {
+                  return const Text(
+                    'Image preview unavailable.',
+                    style: TextStyle(color: AppColors.textSecondary),
+                  );
+                },
+              ),
+            ),
+    );
+  }
+}
+
+class _ResourceContentBlock extends StatelessWidget {
+  const _ResourceContentBlock({required this.block});
+
+  final Map<String, Object?> block;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = _stringMetadata(block, 'uri') ?? '';
+    final title = _stringMetadata(block, 'title') ?? 'Resource';
+    final mimeType = _stringMetadata(block, 'mimeType');
+    return _InlineContentFrame(
+      icon: Icons.link_rounded,
+      title: title,
+      subtitle: mimeType ?? 'resource link',
+      child: uri.isEmpty
+          ? null
+          : SelectableText(
+              uri,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+    );
+  }
+}
+
+class _UnknownContentBlock extends StatelessWidget {
+  const _UnknownContentBlock({required this.block});
+
+  final Map<String, Object?> block;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InlineContentFrame(
+      icon: Icons.extension_outlined,
+      title: _stringMetadata(block, 'type') ?? 'Unknown content',
+      subtitle: 'raw content block',
+      child: SelectableText(
+        _previewObject(block),
+        style: const TextStyle(
+          color: AppColors.textSecondary,
+          fontFamily: 'monospace',
+          fontSize: 12,
+          height: 1.35,
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineContentFrame extends StatelessWidget {
+  const _InlineContentFrame({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.child,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: AppColors.primaryDark, size: 17),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                subtitle,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          if (child != null) ...[const SizedBox(height: 10), child!],
+        ],
       ),
     );
   }
@@ -1198,4 +1449,31 @@ String _humanizeStatus(String value) {
       .replaceAll('_', ' ');
   if (cleaned.isEmpty) return 'unknown';
   return cleaned[0].toUpperCase() + cleaned.substring(1);
+}
+
+String _wireStopReason(String value) {
+  return switch (value) {
+    'endTurn' => 'end turn',
+    'maxTokens' => 'max tokens',
+    'maxTurnRequests' => 'max turn requests',
+    _ => value.replaceAll('_', ' '),
+  };
+}
+
+Color _stopReasonColor(String value) {
+  return switch (value) {
+    'endTurn' => AppColors.success,
+    'cancelled' => AppColors.textSecondary,
+    'maxTokens' || 'maxTurnRequests' => AppColors.warning,
+    'refusal' => AppColors.danger,
+    _ => AppColors.primaryDark,
+  };
+}
+
+Uint8List? _tryDecodeBase64(String value) {
+  try {
+    return base64Decode(value);
+  } on FormatException {
+    return null;
+  }
 }

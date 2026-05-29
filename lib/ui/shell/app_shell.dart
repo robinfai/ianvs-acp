@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../state/chat_controller.dart';
 import '../components/agent_toolbar.dart';
+import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/prompt_input.dart';
@@ -73,11 +74,23 @@ class AppShell extends StatelessWidget {
                   onSend: controller.sendPrompt,
                   onStop: controller.stop,
                 ),
-                StatusBar(controller: controller),
+                StatusBar(
+                  controller: controller,
+                  onShowCapabilities: () => _showCapabilitiesDialog(context),
+                ),
               ],
             ),
           ),
         );
+      },
+    );
+  }
+
+  Future<void> _showCapabilitiesDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return CapabilitiesDialog(capabilities: controller.capabilities);
       },
     );
   }
