@@ -22,6 +22,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   AcpAgentCapabilities? _capabilities;
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
+  bool _supportsResumeSession = false;
   String? _activeSessionId;
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
@@ -51,6 +52,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
       _supportsLoadSession = initializeResult.supportsLoadSession;
       _supportsListSessions = initializeResult.supportsListSessions;
+      _supportsResumeSession = initializeResult.supportsResumeSession;
       _capabilities = AcpAgentCapabilities.fromInitialize(
         protocolVersion: initializeResult.protocolVersion,
         agentCapabilities: initializeResult.agentCapabilities,
@@ -81,11 +83,23 @@ class DartAcpAgentClient implements AcpAgentClient {
     required String cwd,
   }) async {
     final client = _requireClient();
-    if (!_supportsLoadSession) {
-      throw StateError('Codex ACP agent does not support session/load.');
+    if (!_supportsLoadSession && !_supportsResumeSession) {
+      throw StateError(
+        'ACP agent does not support session/load or session/resume.',
+      );
     }
 
     final events = <AgentEvent>[];
+    if (!_supportsLoadSession) {
+      final result = await client.resumeSession(
+        sessionId: sessionId,
+        workspaceRoot: cwd,
+      );
+      _activeSessionId = sessionId;
+      _cacheConfigOptions(sessionId, result.configOptions);
+      return events;
+    }
+
     final subscription = client.sessionUpdates(sessionId).listen((update) {
       final event = _eventFromAcpUpdate(update);
       if (event != null) {
@@ -184,9 +198,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       configId: configId,
       value: value,
     );
-    final mapped = options.map(_configOptionFromAcp).toList();
-    _configOptionsBySession[sessionId] = mapped;
-    return mapped;
+    return _cacheConfigOptions(sessionId, options);
   }
 
   @override
@@ -370,6 +382,17 @@ class DartAcpAgentClient implements AcpAgentClient {
     );
   }
 
+  List<AcpConfigOption> _cacheConfigOptions(
+    String sessionId,
+    List<acp.ConfigOption>? options,
+  ) {
+    final mapped =
+        options?.map(_configOptionFromAcp).toList() ??
+        const <AcpConfigOption>[];
+    _configOptionsBySession[sessionId] = mapped;
+    return mapped;
+  }
+
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
@@ -385,6 +408,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _capabilities = null;
     _supportsLoadSession = false;
     _supportsListSessions = false;
+    _supportsResumeSession = false;
     _activeSessionId = null;
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
