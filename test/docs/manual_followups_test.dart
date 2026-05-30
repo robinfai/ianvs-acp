@@ -10,7 +10,6 @@ void main() {
     const trackedItems = <String, String>{
       'authenticate': 'auth-authenticate',
       'filesystem and terminal providers': 'fs-terminal-providers',
-      'slash-command picker/autocomplete': 'slash-command-picker',
       'Spark attachments': 'spark-attachments',
     };
 

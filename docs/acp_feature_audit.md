@@ -30,7 +30,7 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Partial to done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is now consumed as complete state. The local model understands official `category` as well as older `group`. Initial `configOptions` returned from `session/new` may still be limited by the current `dart_acp` API, which exposes `newSession` as only a session id. |
-| Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Display-only | `available_commands_update` renders available commands and details. Command invocation is still manual by typing `/command ...`; there is no command picker/autocomplete. Command-list updates now replace the previous command snapshot. |
+| Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Done for advertised commands | `available_commands_update` renders available commands and details. The prompt input now suggests matching advertised commands while typing `/`, and selecting a command inserts the slash invocation. Command-list updates replace the previous command snapshot. |
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Partial | Raw capability `_meta` and session list `_meta` are displayed. No custom extension request UI is implemented. |
 | MCP servers | https://agentclientprotocol.com/protocol/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, shows configured MCP servers in Agent Configuration, and forwards them through `dart_acp` for session creation/loading. |
 
@@ -120,7 +120,6 @@ Detailed tracking and automated acceptance evidence lives in
 
 - Decide whether to expose `authenticate`, including where login state should live in the UI.
 - Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
-- Decide whether to add a slash-command picker/autocomplete instead of only rendering advertised commands.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 
 ## Follow-Up Desktop UX Pass

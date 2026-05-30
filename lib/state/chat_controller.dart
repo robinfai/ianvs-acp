@@ -42,6 +42,7 @@ class ChatController extends ChangeNotifier {
   AgentSession? currentSession;
   final List<AgentSession> sessions = <AgentSession>[];
   final List<ChatMessage> messages = <ChatMessage>[];
+  List<Map<String, Object?>> availableCommands = const <Map<String, Object?>>[];
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings sessionSettings = const AcpSessionSettings();
   String? lastError;
@@ -100,6 +101,7 @@ class ChatController extends ChangeNotifier {
         currentSession = session;
         _upsertSession(session);
         messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
@@ -140,6 +142,7 @@ class ChatController extends ChangeNotifier {
         isStreaming = false;
         lastError = null;
         messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         sessionSettings = const AcpSessionSettings();
         final session = AgentSession(
@@ -268,6 +271,7 @@ class ChatController extends ChangeNotifier {
       isStreaming = false;
       currentSession = null;
       sessions.clear();
+      availableCommands = const <Map<String, Object?>>[];
       sessionSettings = const AcpSessionSettings();
       sessionSettingsLoading = false;
       await _connectWithStatus(ConnectionStatus.reconnecting);
@@ -356,6 +360,7 @@ class ChatController extends ChangeNotifier {
         currentSession = updatedSession;
         _upsertSession(updatedSession);
         messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
@@ -381,6 +386,7 @@ class ChatController extends ChangeNotifier {
         currentSession = null;
         sessions.removeWhere((item) => item.id == session.id);
         messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
@@ -405,6 +411,7 @@ class ChatController extends ChangeNotifier {
         currentSession = null;
         sessions.clear();
         messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
@@ -529,6 +536,9 @@ class ChatController extends ChangeNotifier {
       return;
     }
     if (kind == 'plan' || kind == 'commands') {
+      if (kind == 'commands') {
+        availableCommands = _commandsFromMetadata(event.metadata['commands']);
+      }
       _replaceStatusMessage(event);
       return;
     }
@@ -565,6 +575,16 @@ class ChatController extends ChangeNotifier {
     } else {
       messages[index] = message;
     }
+  }
+
+  List<Map<String, Object?>> _commandsFromMetadata(Object? raw) {
+    if (raw is! List) return const <Map<String, Object?>>[];
+    return raw
+        .whereType<Map>()
+        .map(
+          (item) => item.map((key, value) => MapEntry(key.toString(), value)),
+        )
+        .toList(growable: false);
   }
 
   void _applySessionInfoUpdate(Map<String, Object?> metadata) {

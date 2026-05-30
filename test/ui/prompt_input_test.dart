@@ -9,6 +9,8 @@ void main() {
     required PromptSendCallback onSend,
     VoidCallback? onStop,
     String agentName = 'Codex',
+    List<Map<String, Object?>> availableCommands =
+        const <Map<String, Object?>>[],
     PromptAttachmentPicker? pickAttachments,
   }) {
     return MaterialApp(
@@ -16,6 +18,7 @@ void main() {
         body: PromptInput(
           agentName: agentName,
           isSending: isSending,
+          availableCommands: availableCommands,
           onSend: onSend,
           onStop: onStop ?? () {},
           pickAttachments: pickAttachments,
@@ -81,6 +84,49 @@ void main() {
     await tester.pump();
 
     expect(sentText, 'Line one\nLine two');
+  });
+
+  testWidgets('PromptInput suggests and inserts slash commands', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        availableCommands: const [
+          {'name': 'review', 'description': 'Review the current change.'},
+          {'name': 'summarize', 'description': 'Summarize the session.'},
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+
+    expect(find.text('/review'), findsOneWidget);
+    expect(find.text('Review the current change.'), findsOneWidget);
+    expect(find.text('/summarize'), findsNothing);
+
+    await tester.tap(find.text('/review'));
+    await tester.pump();
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    expect(textField.controller?.text, '/review ');
+    expect(find.text('Review the current change.'), findsNothing);
+  });
+
+  testWidgets('PromptInput hides slash commands while sending', (tester) async {
+    await tester.pumpWidget(
+      input(
+        isSending: true,
+        onSend: (_, _) {},
+        availableCommands: const [
+          {'name': 'review', 'description': 'Review the current change.'},
+        ],
+      ),
+    );
+
+    expect(find.text('/review'), findsNothing);
   });
 
   testWidgets('PromptInput sending state disables Send and enables Stop', (

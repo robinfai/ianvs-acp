@@ -16,6 +16,7 @@ class PromptInput extends StatefulWidget {
     required this.isSending,
     required this.onSend,
     required this.onStop,
+    this.availableCommands = const <Map<String, Object?>>[],
     this.pickAttachments,
   });
 
@@ -23,6 +24,7 @@ class PromptInput extends StatefulWidget {
   final bool isSending;
   final PromptSendCallback onSend;
   final VoidCallback onStop;
+  final List<Map<String, Object?>> availableCommands;
   final PromptAttachmentPicker? pickAttachments;
 
   @override
@@ -37,6 +39,35 @@ class _PromptInputState extends State<PromptInput> {
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
       !widget.isSending;
 
+  List<Map<String, Object?>> get _commandSuggestions {
+    if (widget.isSending || widget.availableCommands.isEmpty) {
+      return const <Map<String, Object?>>[];
+    }
+    final input = _controller.text.trimLeft();
+    if (!input.startsWith('/')) return const <Map<String, Object?>>[];
+    if (RegExp(r'^/\S+\s').hasMatch(input)) {
+      return const <Map<String, Object?>>[];
+    }
+
+    final query = input.substring(1).split(RegExp(r'\s+')).first.toLowerCase();
+    return widget.availableCommands
+        .where((command) {
+          final invocation = _commandInvocation(command);
+          if (invocation.isEmpty) return false;
+          if (query.isEmpty) return true;
+          final name = invocation.startsWith('/')
+              ? invocation.substring(1).toLowerCase()
+              : invocation.toLowerCase();
+          final description = _commandString(
+            command,
+            'description',
+          ).toLowerCase();
+          return name.contains(query) || description.contains(query);
+        })
+        .take(5)
+        .toList(growable: false);
+  }
+
   @override
   void dispose() {
     _controller.dispose();
@@ -45,6 +76,7 @@ class _PromptInputState extends State<PromptInput> {
 
   @override
   Widget build(BuildContext context) {
+    final commandSuggestions = _commandSuggestions;
     return Container(
       color: AppColors.bg,
       padding: const EdgeInsets.fromLTRB(12, 3, 12, 8),
@@ -81,6 +113,11 @@ class _PromptInputState extends State<PromptInput> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (commandSuggestions.isNotEmpty)
+                      _CommandSuggestionPanel(
+                        commands: commandSuggestions,
+                        onSelect: _insertCommand,
+                      ),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -210,6 +247,17 @@ class _PromptInputState extends State<PromptInput> {
     setState(() {});
   }
 
+  void _insertCommand(Map<String, Object?> command) {
+    final invocation = _commandInvocation(command);
+    if (invocation.isEmpty) return;
+    final text = '$invocation ';
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() {});
+  }
+
   Future<void> _pickAttachments() async {
     try {
       final picker = widget.pickAttachments ?? _pickWithFilePicker;
@@ -238,6 +286,117 @@ class _PromptInputState extends State<PromptInput> {
       _attachments.removeWhere((item) => item.path == attachment.path);
     });
   }
+}
+
+class _CommandSuggestionPanel extends StatelessWidget {
+  const _CommandSuggestionPanel({
+    required this.commands,
+    required this.onSelect,
+  });
+
+  final List<Map<String, Object?>> commands;
+  final ValueChanged<Map<String, Object?>> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 154),
+      child: ListView.separated(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
+        itemBuilder: (context, index) {
+          final command = commands[index];
+          final invocation = _commandInvocation(command);
+          final description = _commandString(command, 'description');
+          return _CommandSuggestionTile(
+            invocation: invocation,
+            description: description,
+            onTap: () => onSelect(command),
+          );
+        },
+        separatorBuilder: (_, _) => const SizedBox(height: 3),
+        itemCount: commands.length,
+      ),
+    );
+  }
+}
+
+class _CommandSuggestionTile extends StatelessWidget {
+  const _CommandSuggestionTile({
+    required this.invocation,
+    required this.description,
+    required this.onTap,
+  });
+
+  final String invocation;
+  final String description;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      onTap: onTap,
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceRaised,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.terminal_rounded,
+              color: AppColors.primaryDark,
+              size: 15,
+            ),
+            const SizedBox(width: 7),
+            SizedBox(
+              width: 126,
+              child: Text(
+                invocation,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+            if (description.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  description,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _commandInvocation(Map<String, Object?> command) {
+  final name = _commandString(command, 'name');
+  if (name.isEmpty) return '';
+  return name.startsWith('/') ? name : '/$name';
+}
+
+String _commandString(Map<String, Object?> command, String key) {
+  final value = command[key];
+  return value is String ? value.trim() : '';
 }
 
 Future<List<PromptAttachment>> _pickWithFilePicker() async {

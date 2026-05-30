@@ -61,25 +61,6 @@ Manual decision:
 - Define terminal session lifecycle, cwd/environment handling, and command
   approval UX before advertising terminal support.
 
-### slash-command-picker
-
-Status: product decision needed.
-
-Non-blocking because: command updates already render; invocation works manually
-by typing slash commands, but no picker/autocomplete UX exists.
-
-Automated acceptance:
-
-- `test/ui/chat_timeline_test.dart` verifies available command details render.
-- `test/state/chat_controller_test.dart` verifies command snapshots replace
-  stale command status messages through generic status replacement behavior.
-
-Manual decision:
-
-- Decide whether command invocation belongs in prompt input autocomplete, a
-  separate command palette, or both.
-- Decide how command arguments should be collected and validated.
-
 ### spark-attachments
 
 Status: manual integration validation needed.
