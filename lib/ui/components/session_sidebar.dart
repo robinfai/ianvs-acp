@@ -11,13 +11,15 @@ class SessionSidebar extends StatelessWidget {
     required this.currentSession,
     required this.onNewSession,
     required this.onResumeSession,
+    this.onSelectSession,
   });
 
   final String agentName;
   final List<AgentSession> sessions;
   final AgentSession? currentSession;
-  final VoidCallback onNewSession;
-  final VoidCallback onResumeSession;
+  final VoidCallback? onNewSession;
+  final VoidCallback? onResumeSession;
+  final ValueChanged<AgentSession>? onSelectSession;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +62,11 @@ class SessionSidebar extends StatelessWidget {
                       return _SessionTile(
                         session: session,
                         selected: session.id == currentSession?.id,
+                        onPressed:
+                            onSelectSession == null ||
+                                session.id == currentSession?.id
+                            ? null
+                            : () => onSelectSession!(session),
                       );
                     },
                     separatorBuilder: (context, index) =>
@@ -77,7 +84,7 @@ class _EmptySessions extends StatelessWidget {
   const _EmptySessions({required this.agentName, required this.onNewSession});
 
   final String agentName;
-  final VoidCallback onNewSession;
+  final VoidCallback? onNewSession;
 
   @override
   Widget build(BuildContext context) {
@@ -148,95 +155,113 @@ class _EmptySessions extends StatelessWidget {
 }
 
 class _SessionTile extends StatelessWidget {
-  const _SessionTile({required this.session, required this.selected});
+  const _SessionTile({
+    required this.session,
+    required this.selected,
+    required this.onPressed,
+  });
 
   final AgentSession session;
   final bool selected;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: selected ? AppColors.primaryMist : AppColors.surface,
-        border: Border.all(
-          color: selected
-              ? AppColors.primary.withValues(alpha: 0.22)
-              : AppColors.borderSoft,
-        ),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: selected
-                      ? AppColors.primarySoft
-                      : AppColors.surfaceRaised,
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                ),
-                child: Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 13,
-                  color: selected
-                      ? AppColors.primaryDark
-                      : AppColors.textSecondary,
-                ),
+    final radius = BorderRadius.circular(AppRadius.sm);
+    return Semantics(
+      button: onPressed != null,
+      selected: selected,
+      label: session.displayTitle,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onPressed,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: selected ? AppColors.primaryMist : AppColors.surface,
+              border: Border.all(
+                color: selected
+                    ? AppColors.primary.withValues(alpha: 0.22)
+                    : AppColors.borderSoft,
               ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  session.displayTitle,
+              borderRadius: radius,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? AppColors.primarySoft
+                            : AppColors.surfaceRaised,
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
+                      ),
+                      child: Icon(
+                        Icons.chat_bubble_outline_rounded,
+                        size: 13,
+                        color: selected
+                            ? AppColors.primaryDark
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        session.displayTitle,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                    ),
+                    if (_agentLabel.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      _AgentPill(label: _agentLabel),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  session.cwd,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 12,
-                    letterSpacing: 0,
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    height: 1.3,
                   ),
                 ),
-              ),
-              if (_agentLabel.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                _AgentPill(label: _agentLabel),
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.access_time_rounded,
+                      size: 12,
+                      color: AppColors.textTertiary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _formatCreatedAt(session.displayTime),
+                      style: const TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
               ],
-            ],
-          ),
-          const SizedBox(height: 5),
-          Text(
-            session.cwd,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 11,
-              height: 1.3,
             ),
           ),
-          const SizedBox(height: 5),
-          Row(
-            children: [
-              const Icon(
-                Icons.access_time_rounded,
-                size: 12,
-                color: AppColors.textTertiary,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                _formatCreatedAt(session.displayTime),
-                style: const TextStyle(
-                  color: AppColors.textTertiary,
-                  fontSize: 11,
-                ),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -291,12 +316,13 @@ class _IconShell extends StatelessWidget {
 
   final IconData icon;
   final String tooltip;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
     return Semantics(
       button: true,
+      enabled: onPressed != null,
       label: tooltip,
       child: Tooltip(
         message: tooltip,
@@ -311,7 +337,13 @@ class _IconShell extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppRadius.sm),
               border: Border.all(color: AppColors.border),
             ),
-            child: Icon(icon, color: AppColors.textSecondary, size: 16),
+            child: Icon(
+              icon,
+              color: onPressed == null
+                  ? AppColors.textTertiary
+                  : AppColors.textSecondary,
+              size: 16,
+            ),
           ),
         ),
       ),

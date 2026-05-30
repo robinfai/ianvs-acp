@@ -20,9 +20,9 @@ class AgentToolbar extends StatelessWidget {
 
   final String agentName;
   final app_state.ConnectionStatus status;
-  final VoidCallback onNewSession;
-  final VoidCallback onResumeSession;
-  final VoidCallback onReconnect;
+  final VoidCallback? onNewSession;
+  final VoidCallback? onResumeSession;
+  final VoidCallback? onReconnect;
   final List<AgentServerConfig> agentServers;
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
@@ -411,7 +411,7 @@ class _ToolbarAction extends StatelessWidget {
   final IconData icon;
   final String? label;
   final String tooltip;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -430,13 +430,13 @@ class _ToolbarAction extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: AppColors.primaryDark, size: 18),
+              Icon(icon, color: _color, size: 18),
               if (label != null) ...[
                 const SizedBox(width: 5),
                 Text(
                   label!,
-                  style: const TextStyle(
-                    color: AppColors.primaryDark,
+                  style: TextStyle(
+                    color: _color,
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0,
@@ -451,23 +451,29 @@ class _ToolbarAction extends StatelessWidget {
 
     return Semantics(
       button: true,
+      enabled: onPressed != null,
       label: tooltip,
       child: Tooltip(message: tooltip, child: content),
     );
   }
+
+  Color get _color =>
+      onPressed == null ? AppColors.textTertiary : AppColors.primaryDark;
 }
 
 class _PrimaryToolbarAction extends StatelessWidget {
   const _PrimaryToolbarAction({required this.compact, required this.onPressed});
 
   final bool compact;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
     final style = FilledButton.styleFrom(
       foregroundColor: Colors.white,
+      disabledForegroundColor: AppColors.textTertiary,
       backgroundColor: AppColors.primaryDark,
+      disabledBackgroundColor: AppColors.surfaceRaised,
       elevation: 4,
       shadowColor: AppColors.primary.withValues(alpha: 0.32),
       minimumSize: Size(compact ? 38 : 142, 38),

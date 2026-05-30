@@ -12,7 +12,11 @@ class FakeAgentClient implements AcpAgentClient {
   FakeAgentClient({
     this.connectError,
     this.promptError,
+    this.cancelError,
     this.chunkDelay = Duration.zero,
+    this.connectDelay = Duration.zero,
+    this.createSessionDelay = Duration.zero,
+    this.resumeDelay = Duration.zero,
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
@@ -43,7 +47,11 @@ class FakeAgentClient implements AcpAgentClient {
 
   final Object? connectError;
   final Object? promptError;
+  final Object? cancelError;
   final Duration chunkDelay;
+  final Duration connectDelay;
+  final Duration createSessionDelay;
+  final Duration resumeDelay;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
 
@@ -115,6 +123,9 @@ class FakeAgentClient implements AcpAgentClient {
 
   @override
   Future<void> connect() async {
+    if (connectDelay > Duration.zero) {
+      await Future<void>.delayed(connectDelay);
+    }
     if (connectError != null) {
       throw connectError!;
     }
@@ -125,6 +136,9 @@ class FakeAgentClient implements AcpAgentClient {
   Future<AgentSession> createSession({required String cwd}) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
+    }
+    if (createSessionDelay > Duration.zero) {
+      await Future<void>.delayed(createSessionDelay);
     }
     sessionCount += 1;
     return AgentSession(
@@ -141,6 +155,9 @@ class FakeAgentClient implements AcpAgentClient {
   }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
+    }
+    if (resumeDelay > Duration.zero) {
+      await Future<void>.delayed(resumeDelay);
     }
     lastResumeCwd = cwd;
     return resumeEvents;
@@ -238,6 +255,9 @@ class FakeAgentClient implements AcpAgentClient {
 
   @override
   Future<void> cancel() async {
+    if (cancelError != null) {
+      throw cancelError!;
+    }
     cancelled = true;
   }
 

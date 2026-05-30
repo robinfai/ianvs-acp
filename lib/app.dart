@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'config/acp_client_config.dart';
 import 'state/chat_controller.dart';
@@ -15,10 +16,12 @@ class AcpClientApp extends StatefulWidget {
     super.key,
     this.controller,
     this.config = const AcpClientConfig(),
+    this.startupError,
   });
 
   final ChatController? controller;
   final AcpClientConfig config;
+  final String? startupError;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -63,8 +66,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
       for (final controller in _controllersByAgent.values) {
         controller.dispose();
       }
-    } else {
-      _controller.dispose();
     }
     super.dispose();
   }
@@ -132,9 +133,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
         agentServers: _config.selectableAgentServers,
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
+        startupError: widget.startupError,
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
         onNewSession: (context) => unawaited(_startNewSession(context)),
+        onSelectSession: (session) => unawaited(_selectSession(session)),
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -165,6 +168,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<void> _startNewSession(BuildContext dialogContext) async {
+    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+      return;
+    }
     if (widget.controller != null) {
       await _controller.newSession();
       return;
@@ -198,6 +204,38 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     final controller = _activateAgent(nextConfig);
     await controller.newSession();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _selectSession(AgentSession session) async {
+    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+      return;
+    }
+
+    var controller = _controller;
+    if (widget.controller == null) {
+      final sessionAgentName = session.agentName?.trim();
+      if (sessionAgentName != null &&
+          sessionAgentName.isNotEmpty &&
+          sessionAgentName != _config.agentName) {
+        try {
+          controller = _activateAgent(
+            _config.withActiveAgentServer(sessionAgentName),
+          );
+        } catch (error) {
+          _showSnackBar('Could not select agent: $error');
+          return;
+        }
+      }
+    }
+
+    if (controller.currentSession?.id == session.id) return;
+    await controller.resumeSession(
+      session.id,
+      cwd: session.cwd,
+      title: session.title,
+      updatedAt: session.updatedAt,
+    );
     if (mounted) setState(() {});
   }
 

@@ -80,6 +80,25 @@ void main() {
     ]);
   });
 
+  test(
+    'concurrent new session requests are ignored while one is running',
+    () async {
+      final fake = FakeAgentClient(
+        createSessionDelay: const Duration(milliseconds: 20),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      final first = controller.newSession();
+      final second = controller.newSession();
+      await Future.wait([first, second]);
+
+      expect(fake.sessionCount, 1);
+      expect(controller.sessions, hasLength(1));
+      expect(controller.isSessionOperationRunning, isFalse);
+    },
+  );
+
   test('resume session replays history into timeline', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -351,5 +370,24 @@ void main() {
     expect(fake.cancelled, isTrue);
     expect(controller.isStreaming, isFalse);
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
+  test('stop still finishes streaming when cancel fails', () async {
+    final fake = FakeAgentClient(
+      chunkDelay: const Duration(milliseconds: 50),
+      cancelError: Exception('cancel failed'),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    expect(controller.isStreaming, isTrue);
+
+    await controller.stop();
+
+    expect(controller.isStreaming, isFalse);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+    expect(controller.lastError, contains('cancel failed'));
   });
 }

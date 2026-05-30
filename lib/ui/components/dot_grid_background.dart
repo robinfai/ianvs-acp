@@ -9,10 +9,7 @@ class DotGridBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _DotGridPainter(),
-      child: child,
-    );
+    return CustomPaint(painter: _DotGridPainter(), child: child);
   }
 }
 

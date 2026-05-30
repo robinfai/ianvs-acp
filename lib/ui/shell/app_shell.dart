@@ -25,8 +25,10 @@ class AppShell extends StatelessWidget {
     this.agentServers = const <AgentServerConfig>[],
     this.configPath,
     this.defaultAgentName,
+    this.startupError,
     this.canSwitchAgent = true,
     this.onSelectAgent,
+    this.onSelectSession,
     this.onNewSession,
     this.sessionControllers = const <ChatController>[],
   });
@@ -36,8 +38,10 @@ class AppShell extends StatelessWidget {
   final List<AgentServerConfig> agentServers;
   final String? configPath;
   final String? defaultAgentName;
+  final String? startupError;
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
+  final ValueChanged<AgentSession>? onSelectSession;
   final void Function(BuildContext context)? onNewSession;
   final List<ChatController> sessionControllers;
 
@@ -46,9 +50,13 @@ class AppShell extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final startNewSession = onNewSession == null
-            ? controller.newSession
-            : () => onNewSession!(context);
+        final sessionActionsEnabled =
+            !controller.isStreaming && !controller.isSessionOperationRunning;
+        final VoidCallback? startNewSession = sessionActionsEnabled
+            ? onNewSession == null
+                  ? controller.newSession
+                  : () => onNewSession!(context)
+            : null;
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -59,13 +67,18 @@ class AppShell extends StatelessWidget {
                   agentName: agentName,
                   agentServers: agentServers,
                   status: controller.status,
-                  canSwitchAgent: canSwitchAgent && !controller.isStreaming,
+                  canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
                   onNewSession: startNewSession,
-                  onResumeSession: () => _showResumeDialog(context),
-                  onReconnect: controller.reconnect,
+                  onResumeSession: sessionActionsEnabled
+                      ? () => _showResumeDialog(context)
+                      : null,
+                  onReconnect: sessionActionsEnabled
+                      ? controller.reconnect
+                      : null,
                 ),
+                if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
                   ErrorBanner(message: controller.lastError!),
                 Expanded(
@@ -88,7 +101,12 @@ class AppShell extends StatelessWidget {
                               sessions: _sessions(),
                               currentSession: controller.currentSession,
                               onNewSession: startNewSession,
-                              onResumeSession: () => _showResumeDialog(context),
+                              onResumeSession: sessionActionsEnabled
+                                  ? () => _showResumeDialog(context)
+                                  : null,
+                              onSelectSession: sessionActionsEnabled
+                                  ? onSelectSession
+                                  : null,
                             ),
                           ),
                           const VerticalDivider(

@@ -47,37 +47,44 @@ class ChatController extends ChangeNotifier {
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
+  bool isSessionOperationRunning = false;
 
   StreamSubscription<AgentEvent>? _promptSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? lastLatency;
 
   Future<void> connect() async {
-    await _connectWithStatus(ConnectionStatus.connecting);
+    if (isSessionOperationRunning) return;
+    await _runSessionOperation(() async {
+      await _connectWithStatus(ConnectionStatus.connecting);
+    });
   }
 
   Future<void> newSession() async {
-    try {
-      if (status == ConnectionStatus.disconnected ||
-          status == ConnectionStatus.error) {
-        await connect();
-        if (status == ConnectionStatus.error) return;
+    if (isStreaming || isSessionOperationRunning) return;
+    await _runSessionOperation(() async {
+      try {
+        if (status == ConnectionStatus.disconnected ||
+            status == ConnectionStatus.error) {
+          await _connectWithStatus(ConnectionStatus.connecting);
+          if (status == ConnectionStatus.error) return;
+        }
+        final session = (await client.createSession(
+          cwd: cwd,
+        )).copyWith(agentName: agentName);
+        currentSession = session;
+        _upsertSession(session);
+        messages.clear();
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        await _loadSessionSettings(session.id, notify: false);
+        status = ConnectionStatus.sessionReady;
+        notifyListeners();
+      } catch (error) {
+        _setError(error);
       }
-      final session = (await client.createSession(
-        cwd: cwd,
-      )).copyWith(agentName: agentName);
-      currentSession = session;
-      _upsertSession(session);
-      messages.clear();
-      lastLatency = null;
-      lastError = null;
-      sessionSettings = const AcpSessionSettings();
-      await _loadSessionSettings(session.id, notify: false);
-      status = ConnectionStatus.sessionReady;
-      notifyListeners();
-    } catch (error) {
-      _setError(error);
-    }
+    });
   }
 
   Future<void> resumeSession(
@@ -87,56 +94,63 @@ class ChatController extends ChangeNotifier {
     DateTime? updatedAt,
   }) async {
     final trimmedSessionId = sessionId.trim();
-    if (trimmedSessionId.isEmpty || isStreaming) return;
+    if (trimmedSessionId.isEmpty || isStreaming || isSessionOperationRunning) {
+      return;
+    }
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
         ? this.cwd
         : cwd.trim();
 
-    try {
-      await _promptSubscription?.cancel();
-      _promptSubscription = null;
-      if (status == ConnectionStatus.disconnected ||
-          status == ConnectionStatus.error) {
-        await connect();
-        if (status == ConnectionStatus.error) return;
-      }
+    await _runSessionOperation(() async {
+      try {
+        await _promptSubscription?.cancel();
+        _promptSubscription = null;
+        if (status == ConnectionStatus.disconnected ||
+            status == ConnectionStatus.error) {
+          await _connectWithStatus(ConnectionStatus.connecting);
+          if (status == ConnectionStatus.error) return;
+        }
 
-      status = ConnectionStatus.reconnecting;
-      isStreaming = false;
-      lastError = null;
-      messages.clear();
-      lastLatency = null;
-      sessionSettings = const AcpSessionSettings();
-      final session = AgentSession(
-        id: trimmedSessionId,
-        cwd: workspaceCwd,
-        createdAt: DateTime.now(),
-        title: title,
-        updatedAt: updatedAt,
-        agentName: agentName,
-      );
-      currentSession = session;
-      _upsertSession(session);
-      notifyListeners();
+        status = ConnectionStatus.reconnecting;
+        isStreaming = false;
+        lastError = null;
+        messages.clear();
+        lastLatency = null;
+        sessionSettings = const AcpSessionSettings();
+        final session = AgentSession(
+          id: trimmedSessionId,
+          cwd: workspaceCwd,
+          createdAt: DateTime.now(),
+          title: title,
+          updatedAt: updatedAt,
+          agentName: agentName,
+        );
+        currentSession = session;
+        _upsertSession(session);
+        notifyListeners();
 
-      final replay = await client.resumeSession(
-        sessionId: trimmedSessionId,
-        cwd: workspaceCwd,
-      );
-      for (final event in replay) {
-        _handleAgentEvent(event, notify: false);
+        final replay = await client.resumeSession(
+          sessionId: trimmedSessionId,
+          cwd: workspaceCwd,
+        );
+        for (final event in replay) {
+          _handleAgentEvent(event, notify: false);
+        }
+        await _loadSessionSettings(trimmedSessionId, notify: false);
+        if (status != ConnectionStatus.error) {
+          status = ConnectionStatus.sessionReady;
+        }
+        notifyListeners();
+      } catch (error) {
+        _setError(error);
       }
-      await _loadSessionSettings(trimmedSessionId, notify: false);
-      if (status != ConnectionStatus.error) {
-        status = ConnectionStatus.sessionReady;
-      }
-      notifyListeners();
-    } catch (error) {
-      _setError(error);
-    }
+    });
   }
 
   Future<List<AcpProjectSessions>> listSessions() async {
+    if (isSessionOperationRunning) {
+      throw StateError('Another session operation is already in progress.');
+    }
     if (status == ConnectionStatus.disconnected ||
         status == ConnectionStatus.error) {
       await connect();
@@ -152,7 +166,11 @@ class ChatController extends ChangeNotifier {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async {
     final prompt = text.trim();
-    if ((prompt.isEmpty && attachments.isEmpty) || isStreaming) return;
+    if ((prompt.isEmpty && attachments.isEmpty) ||
+        isStreaming ||
+        isSessionOperationRunning) {
+      return;
+    }
 
     if (currentSession == null) {
       await newSession();
@@ -200,21 +218,33 @@ class ChatController extends ChangeNotifier {
 
   Future<void> stop() async {
     if (!isStreaming) return;
-    await client.cancel();
-    await _promptSubscription?.cancel();
-    _promptSubscription = null;
-    _finishStreaming();
+    Object? cancelError;
+    try {
+      await client.cancel();
+    } catch (error) {
+      cancelError = error;
+    } finally {
+      await _promptSubscription?.cancel();
+      _promptSubscription = null;
+      _finishStreaming();
+    }
+    if (cancelError != null) {
+      _setActionError(cancelError);
+    }
   }
 
   Future<void> reconnect() async {
-    await _promptSubscription?.cancel();
-    _promptSubscription = null;
-    isStreaming = false;
-    currentSession = null;
-    sessions.clear();
-    sessionSettings = const AcpSessionSettings();
-    sessionSettingsLoading = false;
-    await _connectWithStatus(ConnectionStatus.reconnecting);
+    if (isSessionOperationRunning) return;
+    await _runSessionOperation(() async {
+      await _promptSubscription?.cancel();
+      _promptSubscription = null;
+      isStreaming = false;
+      currentSession = null;
+      sessions.clear();
+      sessionSettings = const AcpSessionSettings();
+      sessionSettingsLoading = false;
+      await _connectWithStatus(ConnectionStatus.reconnecting);
+    });
   }
 
   Future<void> refreshSessionSettings() async {
@@ -283,6 +313,17 @@ class ChatController extends ChangeNotifier {
       notifyListeners();
     } catch (error) {
       _setError(error);
+    }
+  }
+
+  Future<void> _runSessionOperation(Future<void> Function() action) async {
+    isSessionOperationRunning = true;
+    notifyListeners();
+    try {
+      await action();
+    } finally {
+      isSessionOperationRunning = false;
+      notifyListeners();
     }
   }
 
