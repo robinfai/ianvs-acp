@@ -13,6 +13,7 @@ void main() {
       'Spark attachments': 'spark-attachments',
       'Permission History': 'tool-permission-ui',
       'Extension Request dialog': 'vendor-extension-workflows',
+      'capability-aware send modes': 'prompt-content-gates',
     };
 
     for (final entry in trackedItems.entries) {

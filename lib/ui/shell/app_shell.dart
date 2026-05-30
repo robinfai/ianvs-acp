@@ -173,6 +173,7 @@ class AppShell extends StatelessWidget {
                   agentName: agentName,
                   isSending: controller.isStreaming,
                   availableCommands: controller.availableCommands,
+                  promptCapabilities: controller.capabilities?.prompt,
                   onSend: (text, attachments) =>
                       controller.sendPrompt(text, attachments: attachments),
                   onStop: controller.stop,

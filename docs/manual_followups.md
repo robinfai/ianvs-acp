@@ -181,16 +181,21 @@ Manual decision:
 
 ### prompt-content-gates
 
-Status: product decision needed.
+Status: future content-source decision needed.
 
 Non-blocking because: text, file resource-link prompts, embedded text-file
 prompts, image prompts, audio prompts, and generic binary embedded resource
-prompts work. Future generated or non-file prompt content should still be gated
-by advertised agent capabilities and picker support.
+prompts work. The file attachment UI now marks selected files with the same
+capability-aware send mode used by the ACP client: Image, Audio, Embed, or Link.
+Future generated or non-file prompt content should still be gated by advertised
+agent capabilities and picker support.
 
 Automated acceptance:
 
-- `test/ui/prompt_input_test.dart` covers the current file attachment UX.
+- `test/acp/prompt_attachment_test.dart` verifies prompt attachment mode
+  classification for media, embedded resources, and resource-link fallbacks.
+- `test/ui/prompt_input_test.dart` covers the current file attachment UX and
+  verifies attachment chips display capability-aware send modes.
 - `test/state/chat_controller_test.dart` verifies prompt attachment forwarding.
 - `test/acp/dart_acp_agent_client_test.dart` verifies embedded text, image,
   audio, and generic binary attachment capability gating.

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/ui/components/prompt_input.dart';
 
@@ -11,6 +12,7 @@ void main() {
     String agentName = 'Codex',
     List<Map<String, Object?>> availableCommands =
         const <Map<String, Object?>>[],
+    AcpPromptCapabilities? promptCapabilities,
     PromptAttachmentPicker? pickAttachments,
   }) {
     return MaterialApp(
@@ -19,6 +21,7 @@ void main() {
           agentName: agentName,
           isSending: isSending,
           availableCommands: availableCommands,
+          promptCapabilities: promptCapabilities,
           onSend: onSend,
           onStop: onStop ?? () {},
           pickAttachments: pickAttachments,
@@ -195,6 +198,42 @@ void main() {
 
     expect(sentAttachments, [attachment]);
     expect(find.text('readme.md'), findsNothing);
+  });
+
+  testWidgets('PromptInput marks attachments by prompt capability mode', (
+    tester,
+  ) async {
+    const readme = PromptAttachment(
+      path: '/workspace/readme.md',
+      name: 'readme.md',
+      mimeType: 'text/markdown',
+    );
+    const screenshot = PromptAttachment(
+      path: '/workspace/screenshot.png',
+      name: 'screenshot.png',
+      mimeType: 'image/png',
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        promptCapabilities: const AcpPromptCapabilities(
+          image: false,
+          audio: false,
+          embeddedContext: true,
+        ),
+        pickAttachments: () async => const [readme, screenshot],
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.pump();
+
+    expect(find.text('readme.md'), findsOneWidget);
+    expect(find.text('screenshot.png'), findsOneWidget);
+    expect(find.text('Embed'), findsOneWidget);
+    expect(find.text('Link'), findsOneWidget);
   });
 
   testWidgets('PromptInput can remove an attachment before sending', (

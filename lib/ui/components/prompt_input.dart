@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../acp/acp_agent_capabilities.dart';
 import '../../acp/prompt_attachment.dart';
 import '../theme/app_design_tokens.dart';
 
@@ -17,6 +18,7 @@ class PromptInput extends StatefulWidget {
     required this.onSend,
     required this.onStop,
     this.availableCommands = const <Map<String, Object?>>[],
+    this.promptCapabilities,
     this.pickAttachments,
   });
 
@@ -25,6 +27,7 @@ class PromptInput extends StatefulWidget {
   final PromptSendCallback onSend;
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
+  final AcpPromptCapabilities? promptCapabilities;
   final PromptAttachmentPicker? pickAttachments;
 
   @override
@@ -177,6 +180,7 @@ class _PromptInputState extends State<PromptInput> {
                     if (_attachments.isNotEmpty)
                       _AttachmentTray(
                         attachments: _attachments,
+                        promptCapabilities: widget.promptCapabilities,
                         onRemove: _removeAttachment,
                       ),
                   ],
@@ -418,9 +422,14 @@ Future<List<PromptAttachment>> _pickWithFilePicker() async {
 }
 
 class _AttachmentTray extends StatelessWidget {
-  const _AttachmentTray({required this.attachments, required this.onRemove});
+  const _AttachmentTray({
+    required this.attachments,
+    required this.promptCapabilities,
+    required this.onRemove,
+  });
 
   final List<PromptAttachment> attachments;
+  final AcpPromptCapabilities? promptCapabilities;
   final ValueChanged<PromptAttachment> onRemove;
 
   @override
@@ -436,6 +445,7 @@ class _AttachmentTray extends StatelessWidget {
             for (final attachment in attachments)
               _AttachmentChip(
                 attachment: attachment,
+                promptCapabilities: promptCapabilities,
                 onRemove: () => onRemove(attachment),
               ),
           ],
@@ -446,16 +456,22 @@ class _AttachmentTray extends StatelessWidget {
 }
 
 class _AttachmentChip extends StatelessWidget {
-  const _AttachmentChip({required this.attachment, required this.onRemove});
+  const _AttachmentChip({
+    required this.attachment,
+    required this.promptCapabilities,
+    required this.onRemove,
+  });
 
   final PromptAttachment attachment;
+  final AcpPromptCapabilities? promptCapabilities;
   final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
     final size = attachment.displaySize;
+    final mode = attachment.promptMode(promptCapabilities);
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 260),
+      constraints: const BoxConstraints(maxWidth: 320),
       child: Container(
         padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
         decoration: BoxDecoration(
@@ -496,6 +512,8 @@ class _AttachmentChip extends StatelessWidget {
                 ),
               ),
             ],
+            const SizedBox(width: 5),
+            _AttachmentModeBadge(mode: mode),
             SizedBox(
               width: 24,
               height: 24,
@@ -514,4 +532,78 @@ class _AttachmentChip extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AttachmentModeBadge extends StatelessWidget {
+  const _AttachmentModeBadge({required this.mode});
+
+  final PromptAttachmentPromptMode mode;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _attachmentModeColor(mode);
+    return Tooltip(
+      message: _attachmentModeTooltip(mode),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.09),
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: color.withValues(alpha: 0.24)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_attachmentModeIcon(mode), size: 11, color: color),
+            const SizedBox(width: 3),
+            Text(
+              _attachmentModeLabel(mode),
+              style: TextStyle(
+                color: color,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+IconData _attachmentModeIcon(PromptAttachmentPromptMode mode) {
+  return switch (mode) {
+    PromptAttachmentPromptMode.image => Icons.image_outlined,
+    PromptAttachmentPromptMode.audio => Icons.graphic_eq_rounded,
+    PromptAttachmentPromptMode.embeddedResource => Icons.data_object_rounded,
+    PromptAttachmentPromptMode.resourceLink => Icons.link_rounded,
+  };
+}
+
+Color _attachmentModeColor(PromptAttachmentPromptMode mode) {
+  return switch (mode) {
+    PromptAttachmentPromptMode.image => AppColors.primaryDark,
+    PromptAttachmentPromptMode.audio => AppColors.primaryDark,
+    PromptAttachmentPromptMode.embeddedResource => AppColors.success,
+    PromptAttachmentPromptMode.resourceLink => AppColors.textSecondary,
+  };
+}
+
+String _attachmentModeLabel(PromptAttachmentPromptMode mode) {
+  return switch (mode) {
+    PromptAttachmentPromptMode.image => 'Image',
+    PromptAttachmentPromptMode.audio => 'Audio',
+    PromptAttachmentPromptMode.embeddedResource => 'Embed',
+    PromptAttachmentPromptMode.resourceLink => 'Link',
+  };
+}
+
+String _attachmentModeTooltip(PromptAttachmentPromptMode mode) {
+  return switch (mode) {
+    PromptAttachmentPromptMode.image => 'Sent as image content',
+    PromptAttachmentPromptMode.audio => 'Sent as audio content',
+    PromptAttachmentPromptMode.embeddedResource => 'Embedded as resource data',
+    PromptAttachmentPromptMode.resourceLink => 'Sent as a resource link',
+  };
 }

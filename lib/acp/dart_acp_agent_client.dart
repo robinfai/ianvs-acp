@@ -821,7 +821,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     PromptAttachment attachment,
   ) async {
     if (_capabilities?.prompt.image != true) return null;
-    final mimeType = _imageMimeType(attachment);
+    final mimeType = attachment.imageMimeType;
     if (mimeType == null) return null;
 
     try {
@@ -844,7 +844,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     PromptAttachment attachment,
   ) async {
     if (_capabilities?.prompt.audio != true) return null;
-    final mimeType = _audioMimeType(attachment);
+    final mimeType = attachment.audioMimeType;
     if (mimeType == null) return null;
 
     try {
@@ -866,7 +866,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     PromptAttachment attachment,
   ) async {
     if (_capabilities?.prompt.embeddedContext != true) return null;
-    if (!_isTextAttachment(attachment)) return null;
+    if (!attachment.isText) return null;
 
     try {
       final file = File(attachment.path);
@@ -887,63 +887,13 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  bool _isTextAttachment(PromptAttachment attachment) {
-    final mimeType = attachment.mimeType?.toLowerCase();
-    if (mimeType != null) {
-      if (mimeType.startsWith('text/')) return true;
-      if (const <String>{
-        'application/json',
-        'application/javascript',
-        'application/toml',
-        'application/xml',
-        'application/x-yaml',
-        'application/yaml',
-      }.contains(mimeType)) {
-        return true;
-      }
-    }
-
-    final name = attachment.name.toLowerCase();
-    return const <String>[
-      '.c',
-      '.cc',
-      '.cpp',
-      '.css',
-      '.csv',
-      '.dart',
-      '.go',
-      '.h',
-      '.html',
-      '.java',
-      '.js',
-      '.json',
-      '.kt',
-      '.log',
-      '.md',
-      '.php',
-      '.py',
-      '.rb',
-      '.rs',
-      '.sh',
-      '.sql',
-      '.swift',
-      '.toml',
-      '.ts',
-      '.txt',
-      '.xml',
-      '.yaml',
-      '.yml',
-      '.zsh',
-    ].any(name.endsWith);
-  }
-
   Future<Map<String, dynamic>?> _embeddedBinaryResourceBlock(
     PromptAttachment attachment,
   ) async {
     if (_capabilities?.prompt.embeddedContext != true) return null;
-    if (_isTextAttachment(attachment)) return null;
-    if (_imageMimeType(attachment) != null) return null;
-    if (_audioMimeType(attachment) != null) return null;
+    if (attachment.isText) return null;
+    if (attachment.isImage) return null;
+    if (attachment.isAudio) return null;
 
     try {
       final file = File(attachment.path);
@@ -962,44 +912,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     } on Object {
       return null;
     }
-  }
-
-  String? _imageMimeType(PromptAttachment attachment) {
-    final mimeType = attachment.mimeType?.toLowerCase();
-    if (mimeType != null && mimeType.startsWith('image/')) {
-      return mimeType;
-    }
-
-    final name = attachment.name.toLowerCase();
-    if (name.endsWith('.png')) return 'image/png';
-    if (name.endsWith('.jpg') || name.endsWith('.jpeg')) {
-      return 'image/jpeg';
-    }
-    if (name.endsWith('.gif')) return 'image/gif';
-    if (name.endsWith('.webp')) return 'image/webp';
-    if (name.endsWith('.bmp')) return 'image/bmp';
-    return null;
-  }
-
-  String? _audioMimeType(PromptAttachment attachment) {
-    final mimeType = attachment.mimeType?.toLowerCase();
-    if (mimeType != null && mimeType.startsWith('audio/')) {
-      return mimeType;
-    }
-
-    final name = attachment.name.toLowerCase();
-    if (name.endsWith('.wav') || name.endsWith('.wave')) return 'audio/wav';
-    if (name.endsWith('.mp3')) return 'audio/mpeg';
-    if (name.endsWith('.m4a')) return 'audio/mp4';
-    if (name.endsWith('.aac')) return 'audio/aac';
-    if (name.endsWith('.flac')) return 'audio/flac';
-    if (name.endsWith('.ogg')) return 'audio/ogg';
-    if (name.endsWith('.opus')) return 'audio/opus';
-    if (name.endsWith('.webm')) return 'audio/webm';
-    if (name.endsWith('.aiff') || name.endsWith('.aif')) {
-      return 'audio/aiff';
-    }
-    return null;
   }
 
   Map<String, dynamic> _resourceLinkBlock(PromptAttachment attachment) {
