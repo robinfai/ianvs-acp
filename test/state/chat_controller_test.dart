@@ -481,6 +481,47 @@ void main() {
   });
 
   test(
+    'stop continues prompt cancellation when permission cancel response fails',
+    () async {
+      final fake = FakeAgentClient(
+        chunkDelay: const Duration(milliseconds: 20),
+        permissionResponseError: StateError('permission response failed'),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('Hi');
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest?.id, 'permission-1');
+
+      await controller.stop();
+
+      expect(fake.lastPermissionRequestId, 'permission-1');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.cancelled, isTrue);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(controller.lastError, contains('permission response failed'));
+    },
+  );
+
+  test(
     'permission history cancels pending request when stream closes',
     () async {
       final fake = FakeAgentClient();

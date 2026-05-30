@@ -20,6 +20,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.authenticateError,
     this.logoutError,
     this.extensionError,
+    this.permissionResponseError,
     this.extensionResponse = const <String, Object?>{'ok': true},
     this.supportsFork = true,
     this.supportsLogout = true,
@@ -68,6 +69,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? authenticateError;
   final Object? logoutError;
   final Object? extensionError;
+  final Object? permissionResponseError;
   final Map<String, Object?> extensionResponse;
   final bool supportsFork;
   final bool supportsLogout;
@@ -425,6 +427,9 @@ class FakeAgentClient implements AcpAgentClient {
   }) async {
     lastPermissionRequestId = id;
     lastPermissionDecision = decision;
+    if (permissionResponseError != null) {
+      throw permissionResponseError!;
+    }
   }
 
   @override

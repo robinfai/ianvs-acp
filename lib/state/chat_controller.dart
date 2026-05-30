@@ -538,14 +538,7 @@ class ChatController extends ChangeNotifier {
     pendingPermissionRequest = null;
     _recordPermissionDecision(request.id, decision);
     _notifyListeners();
-    try {
-      await client.respondToPermissionRequest(
-        id: request.id,
-        decision: decision,
-      );
-    } catch (error) {
-      _setActionError(error);
-    }
+    await _sendPermissionDecision(id: request.id, decision: decision);
   }
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
@@ -635,7 +628,7 @@ class ChatController extends ChangeNotifier {
         source: AcpPermissionDecisionSource.system,
       );
       unawaited(
-        client.respondToPermissionRequest(
+        _sendPermissionDecision(
           id: previous.id,
           decision: AcpPermissionDecision.cancel,
         ),
@@ -652,7 +645,7 @@ class ChatController extends ChangeNotifier {
         source: AcpPermissionDecisionSource.trustRule,
       );
       unawaited(
-        _respondToTrustedPermissionRequest(request.id, trustedDecision),
+        _sendPermissionDecision(id: request.id, decision: trustedDecision),
       );
     }
     _notifyListeners();
@@ -677,10 +670,10 @@ class ChatController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> _respondToTrustedPermissionRequest(
-    String id,
-    AcpPermissionDecision decision,
-  ) async {
+  Future<void> _sendPermissionDecision({
+    required String id,
+    required AcpPermissionDecision decision,
+  }) async {
     try {
       await client.respondToPermissionRequest(id: id, decision: decision);
     } catch (error) {
@@ -697,7 +690,7 @@ class ChatController extends ChangeNotifier {
       AcpPermissionDecision.cancel,
       source: AcpPermissionDecisionSource.system,
     );
-    await client.respondToPermissionRequest(
+    await _sendPermissionDecision(
       id: request.id,
       decision: AcpPermissionDecision.cancel,
     );
