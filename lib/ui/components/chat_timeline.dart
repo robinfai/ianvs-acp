@@ -8,7 +8,7 @@ import '../../state/chat_controller.dart';
 import '../theme/app_design_tokens.dart';
 import 'dot_grid_background.dart';
 
-class ChatTimeline extends StatelessWidget {
+class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
     super.key,
     required this.messages,
@@ -25,24 +25,49 @@ class ChatTimeline extends StatelessWidget {
   final VoidCallback? onNewSession;
 
   @override
+  State<ChatTimeline> createState() => _ChatTimelineState();
+}
+
+class _ChatTimelineState extends State<ChatTimeline> {
+  final ScrollController _scrollController = ScrollController();
+  late int _messageSignature = _messagesSignature(widget.messages);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.messages.isNotEmpty) {
+      _scheduleScrollToBottom();
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (messages.isEmpty) {
+    _syncMessageSignature();
+
+    if (widget.messages.isEmpty) {
       return DotGridBackground(
         child: Center(
           child: _EmptyTimeline(
-            agentName: agentName,
-            hasActiveSession: hasActiveSession,
-            activeSessionLabel: activeSessionLabel,
-            onNewSession: onNewSession,
+            agentName: widget.agentName,
+            hasActiveSession: widget.hasActiveSession,
+            activeSessionLabel: widget.activeSessionLabel,
+            onNewSession: widget.onNewSession,
           ),
         ),
       );
     }
 
-    final entries = _timelineEntries(messages);
+    final entries = _timelineEntries(widget.messages);
 
     return DotGridBackground(
       child: ListView.separated(
+        controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
         itemCount: entries.length,
         separatorBuilder: (context, index) => const SizedBox(height: 10),
@@ -55,6 +80,45 @@ class ChatTimeline extends StatelessWidget {
       ),
     );
   }
+
+  void _syncMessageSignature() {
+    final nextSignature = _messagesSignature(widget.messages);
+    if (nextSignature == _messageSignature) return;
+    _messageSignature = nextSignature;
+    if (widget.messages.isNotEmpty) {
+      _scheduleScrollToBottom();
+    }
+  }
+
+  void _scheduleScrollToBottom({int remainingPasses = 2}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final position = _scrollController.position;
+      if (!position.hasContentDimensions) {
+        _scheduleScrollToBottom(remainingPasses: remainingPasses);
+        return;
+      }
+      final bottom = position.maxScrollExtent;
+      if (bottom.isFinite && (position.pixels - bottom).abs() > 0.5) {
+        _scrollController.jumpTo(bottom);
+      }
+      if (remainingPasses > 0) {
+        _scheduleScrollToBottom(remainingPasses: remainingPasses - 1);
+      }
+    });
+  }
+}
+
+int _messagesSignature(List<ChatMessage> messages) {
+  return Object.hashAll([
+    messages.length,
+    for (final message in messages) ...[
+      message.role,
+      message.text.length,
+      message.text,
+      message.metadata.length,
+    ],
+  ]);
 }
 
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {

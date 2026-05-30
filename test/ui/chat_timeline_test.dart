@@ -112,6 +112,57 @@ void main() {
     expect(find.text('Hello, I am Codex.'), findsOneWidget);
   });
 
+  testWidgets(
+    'ChatTimeline keeps scroll position pinned to bottom on updates',
+    (tester) async {
+      final messages = List<ChatMessage>.generate(
+        20,
+        (index) => ChatMessage(
+          role: index.isEven ? ChatMessageRole.user : ChatMessageRole.assistant,
+          text: 'Message $index\n${List.filled(4, 'line').join('\n')}',
+        ),
+      );
+
+      Widget constrainedTimeline() {
+        return MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 420,
+              height: 240,
+              child: ChatTimeline(messages: messages),
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(constrainedTimeline());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      ScrollPosition timelinePosition() {
+        return tester
+            .widget<ListView>(find.byType(ListView))
+            .controller!
+            .position;
+      }
+
+      var position = timelinePosition();
+      expect(position.maxScrollExtent, greaterThan(0));
+      expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
+
+      messages.last.text +=
+          '\n${List.filled(20, 'streaming output').join('\n')}';
+      await tester.pumpWidget(constrainedTimeline());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      position = timelinePosition();
+      expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
+    },
+  );
+
   testWidgets('ChatTimeline renders error card', (tester) async {
     await tester.pumpWidget(
       timeline([ChatMessage(role: ChatMessageRole.error, text: 'boom')]),
