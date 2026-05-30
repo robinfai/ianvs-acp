@@ -664,12 +664,33 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (token.length < 2) return token;
     final quote = token[0];
     if ((quote != '"' && quote != "'") || token[token.length - 1] != quote) {
-      return token;
+      return _trimUnquotedMentionToken(token);
     }
     return token
         .substring(1, token.length - 1)
         .replaceAll('\\$quote', quote)
         .replaceAll('\\\\', '\\');
+  }
+
+  String _trimUnquotedMentionToken(String token) {
+    var end = token.length;
+    while (end > 0 &&
+        _isTrailingMentionPunctuation(token.codeUnitAt(end - 1))) {
+      end--;
+    }
+    return token.substring(0, end);
+  }
+
+  bool _isTrailingMentionPunctuation(int codeUnit) {
+    return codeUnit == 0x21 || // !
+        codeUnit == 0x29 || // )
+        codeUnit == 0x2c || // ,
+        codeUnit == 0x2e || // .
+        codeUnit == 0x3a || // :
+        codeUnit == 0x3b || // ;
+        codeUnit == 0x3f || // ?
+        codeUnit == 0x5d || // ]
+        codeUnit == 0x7d; // }
   }
 
   Uri? _mentionTokenToUri(String token, String? workspaceRoot) {

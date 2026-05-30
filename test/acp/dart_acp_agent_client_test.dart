@@ -281,18 +281,40 @@ Future<void> main() async {
   test('preserves prompt mentions without selected attachments', () async {
     final promptParams = await _capturePromptParamsForAttachment(
       includeAttachment: false,
-      prompt: 'Please inspect @notes.md',
+      prompt: 'Please inspect @notes.md.',
       extraFiles: const {'notes.md': '# Notes'},
     );
     final prompt = promptParams['prompt'] as List<dynamic>;
 
     expect(prompt, hasLength(2));
-    expect(prompt.first, {'type': 'text', 'text': 'Please inspect @notes.md'});
+    expect(prompt.first, {'type': 'text', 'text': 'Please inspect @notes.md.'});
     final mention = prompt[1] as Map<String, dynamic>;
     expect(mention['type'], 'resource_link');
     expect(mention['name'], 'notes.md');
     expect(mention['uri'], endsWith('/notes.md'));
     expect(mention['mimeType'], 'text/markdown');
+  });
+
+  test('trims sentence punctuation from prompt mention links', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      includeAttachment: false,
+      prompt: 'Compare (@notes.md) with @https://example.com/readme.md.',
+      extraFiles: const {'notes.md': '# Notes'},
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(3));
+    expect(prompt.first, {
+      'type': 'text',
+      'text': 'Compare (@notes.md) with @https://example.com/readme.md.',
+    });
+    final fileMention = prompt[1] as Map<String, dynamic>;
+    expect(fileMention['name'], 'notes.md');
+    expect(fileMention['uri'], endsWith('/notes.md'));
+
+    final urlMention = prompt[2] as Map<String, dynamic>;
+    expect(urlMention['name'], 'readme.md');
+    expect(urlMention['uri'], 'https://example.com/readme.md');
   });
 
   test('sends clientInfo and preserves agentInfo during initialize', () async {
