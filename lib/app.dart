@@ -4,14 +4,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'acp/dart_acp_agent_client.dart';
+import 'config/acp_client_config.dart';
 import 'state/chat_controller.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
 
 class AcpClientApp extends StatefulWidget {
-  const AcpClientApp({super.key, this.controller});
+  const AcpClientApp({
+    super.key,
+    this.controller,
+    this.config = const AcpClientConfig(),
+  });
 
   final ChatController? controller;
+  final AcpClientConfig config;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -28,7 +34,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   late final ChatController _controller =
       widget.controller ??
       ChatController(
-        client: DartAcpAgentClient(),
+        client: _agentClient(widget.config.activeAgentServer),
         cwd: _workspaceCwd.isEmpty ? Directory.current.path : _workspaceCwd,
       );
 
@@ -66,7 +72,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
           selectionColor: AppColors.primary.withValues(alpha: 0.18),
         ),
       ),
-      home: AppShell(controller: _controller),
+      home: AppShell(
+        controller: _controller,
+        agentName: widget.config.agentName,
+      ),
+    );
+  }
+
+  DartAcpAgentClient _agentClient(AgentServerConfig? server) {
+    if (server == null) {
+      return DartAcpAgentClient();
+    }
+    return DartAcpAgentClient(
+      agentCommand: server.command,
+      agentArgs: server.args,
     );
   }
 }

@@ -6,12 +6,14 @@ import '../theme/app_design_tokens.dart';
 class AgentToolbar extends StatelessWidget {
   const AgentToolbar({
     super.key,
+    this.agentName = 'Codex',
     required this.status,
     required this.onNewSession,
     required this.onResumeSession,
     required this.onReconnect,
   });
 
+  final String agentName;
   final app_state.ConnectionStatus status;
   final VoidCallback onNewSession;
   final VoidCallback onResumeSession;
@@ -46,6 +48,7 @@ class AgentToolbar extends StatelessWidget {
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: _BrandMark(
+                      agentName: agentName,
                       status: status,
                       compact: compact,
                       veryCompact: veryCompact,
@@ -82,11 +85,13 @@ class AgentToolbar extends StatelessWidget {
 
 class _BrandMark extends StatelessWidget {
   const _BrandMark({
+    required this.agentName,
     required this.status,
     required this.compact,
     required this.veryCompact,
   });
 
+  final String agentName;
   final app_state.ConnectionStatus status;
   final bool compact;
   final bool veryCompact;
@@ -127,7 +132,7 @@ class _BrandMark extends StatelessWidget {
         ),
         if (!compact) ...[
           SizedBox(width: compact ? 14 : 22),
-          const _AgentChip(),
+          _AgentChip(agentName: agentName),
         ],
         if (!compact) ...[
           const SizedBox(width: 14),
@@ -139,7 +144,9 @@ class _BrandMark extends StatelessWidget {
 }
 
 class _AgentChip extends StatelessWidget {
-  const _AgentChip();
+  const _AgentChip({required this.agentName});
+
+  final String agentName;
 
   @override
   Widget build(BuildContext context) {
@@ -152,12 +159,16 @@ class _AgentChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
       ),
-      child: const Text(
-        'Codex',
-        style: TextStyle(
-          color: AppColors.primaryDark,
-          fontWeight: FontWeight.w800,
-          fontSize: 15,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 190),
+        child: Text(
+          agentName,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: AppColors.primaryDark,
+            fontWeight: FontWeight.w800,
+            fontSize: 15,
+          ),
         ),
       ),
     );

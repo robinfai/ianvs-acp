@@ -7,10 +7,12 @@ void main() {
     required bool isSending,
     required ValueChanged<String> onSend,
     VoidCallback? onStop,
+    String agentName = 'Codex',
   }) {
     return MaterialApp(
       home: Scaffold(
         body: PromptInput(
+          agentName: agentName,
           isSending: isSending,
           onSend: onSend,
           onStop: onStop ?? () {},
@@ -33,6 +35,16 @@ void main() {
     await tester.tap(find.text('Send'));
     await tester.pump();
     expect(sent, isFalse);
+  });
+
+  testWidgets('PromptInput renders custom agent name in placeholder', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(agentName: 'Kimi Code Dev', isSending: false, onSend: (_) {}),
+    );
+
+    expect(find.text('Send a prompt to Kimi Code Dev...'), findsOneWidget);
   });
 
   testWidgets('PromptInput input after typing can send', (tester) async {

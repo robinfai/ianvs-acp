@@ -15,9 +15,14 @@ import '../components/status_bar.dart';
 import '../theme/app_design_tokens.dart';
 
 class AppShell extends StatelessWidget {
-  const AppShell({super.key, required this.controller});
+  const AppShell({
+    super.key,
+    required this.controller,
+    this.agentName = 'Codex',
+  });
 
   final ChatController controller;
+  final String agentName;
 
   @override
   Widget build(BuildContext context) {
@@ -30,6 +35,7 @@ class AppShell extends StatelessWidget {
             child: Column(
               children: [
                 AgentToolbar(
+                  agentName: agentName,
                   status: controller.status,
                   onNewSession: controller.newSession,
                   onResumeSession: () => _showResumeDialog(context),
@@ -53,6 +59,7 @@ class AppShell extends StatelessWidget {
                           SizedBox(
                             width: 308,
                             child: SessionSidebar(
+                              agentName: agentName,
                               sessions: controller.sessions,
                               currentSession: controller.currentSession,
                               onNewSession: controller.newSession,
@@ -63,7 +70,10 @@ class AppShell extends StatelessWidget {
                             color: AppColors.border,
                           ),
                           Expanded(
-                            child: ChatTimeline(messages: controller.messages),
+                            child: ChatTimeline(
+                              messages: controller.messages,
+                              agentName: agentName,
+                            ),
                           ),
                         ],
                       ),
@@ -71,6 +81,7 @@ class AppShell extends StatelessWidget {
                   ),
                 ),
                 PromptInput(
+                  agentName: agentName,
                   isSending: controller.isStreaming,
                   onSend: controller.sendPrompt,
                   onStop: controller.stop,

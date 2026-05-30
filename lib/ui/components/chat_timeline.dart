@@ -9,14 +9,21 @@ import '../theme/app_design_tokens.dart';
 import 'dot_grid_background.dart';
 
 class ChatTimeline extends StatelessWidget {
-  const ChatTimeline({super.key, required this.messages});
+  const ChatTimeline({
+    super.key,
+    required this.messages,
+    this.agentName = 'Codex',
+  });
 
   final List<ChatMessage> messages;
+  final String agentName;
 
   @override
   Widget build(BuildContext context) {
     if (messages.isEmpty) {
-      return const DotGridBackground(child: Center(child: _EmptyTimeline()));
+      return DotGridBackground(
+        child: Center(child: _EmptyTimeline(agentName: agentName)),
+      );
     }
 
     final entries = _timelineEntries(messages);
@@ -76,7 +83,9 @@ class _TimelineEntry {
 }
 
 class _EmptyTimeline extends StatelessWidget {
-  const _EmptyTimeline();
+  const _EmptyTimeline({required this.agentName});
+
+  final String agentName;
 
   @override
   Widget build(BuildContext context) {
@@ -98,7 +107,7 @@ class _EmptyTimeline extends StatelessWidget {
                   _CodeCardIllustration(compact: compact),
                   SizedBox(height: compact ? 18 : 26),
                   Text(
-                    'Start a session to chat with Codex',
+                    'Start a session to chat with $agentName',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textPrimary,

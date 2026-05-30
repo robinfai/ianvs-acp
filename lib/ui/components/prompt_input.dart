@@ -6,11 +6,13 @@ import '../theme/app_design_tokens.dart';
 class PromptInput extends StatefulWidget {
   const PromptInput({
     super.key,
+    this.agentName = 'Codex',
     required this.isSending,
     required this.onSend,
     required this.onStop,
   });
 
+  final String agentName;
   final bool isSending;
   final ValueChanged<String> onSend;
   final VoidCallback onStop;
@@ -78,15 +80,20 @@ class _PromptInputState extends State<PromptInput> {
                         fontSize: 16,
                         height: 1.35,
                       ),
-                      decoration: const InputDecoration(
-                        hintText: 'Send a prompt to Codex...',
-                        hintStyle: TextStyle(
+                      decoration: InputDecoration(
+                        hintText: 'Send a prompt to ${widget.agentName}...',
+                        hintStyle: const TextStyle(
                           color: AppColors.textTertiary,
                           fontSize: 20,
                           fontWeight: FontWeight.w600,
                         ),
                         isCollapsed: true,
-                        contentPadding: EdgeInsets.fromLTRB(24, 20, 24, 44),
+                        contentPadding: const EdgeInsets.fromLTRB(
+                          24,
+                          20,
+                          24,
+                          44,
+                        ),
                         border: InputBorder.none,
                       ),
                     ),

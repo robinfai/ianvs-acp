@@ -6,11 +6,13 @@ import '../theme/app_design_tokens.dart';
 class SessionSidebar extends StatelessWidget {
   const SessionSidebar({
     super.key,
+    this.agentName = 'Codex',
     required this.sessions,
     required this.currentSession,
     required this.onNewSession,
   });
 
+  final String agentName;
   final List<AgentSession> sessions;
   final AgentSession? currentSession;
   final VoidCallback onNewSession;
@@ -45,7 +47,10 @@ class SessionSidebar extends StatelessWidget {
           ),
           Expanded(
             child: sessions.isEmpty
-                ? _EmptySessions(onNewSession: onNewSession)
+                ? _EmptySessions(
+                    agentName: agentName,
+                    onNewSession: onNewSession,
+                  )
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(14, 4, 14, 18),
                     itemBuilder: (context, index) {
@@ -67,8 +72,9 @@ class SessionSidebar extends StatelessWidget {
 }
 
 class _EmptySessions extends StatelessWidget {
-  const _EmptySessions({required this.onNewSession});
+  const _EmptySessions({required this.agentName, required this.onNewSession});
 
+  final String agentName;
   final VoidCallback onNewSession;
 
   @override
@@ -102,7 +108,7 @@ class _EmptySessions extends StatelessWidget {
                   ),
                   SizedBox(height: compact ? 5 : 8),
                   Text(
-                    'Start a new session to chat\nwith Codex.',
+                    'Start a new session to chat\nwith $agentName.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textSecondary,

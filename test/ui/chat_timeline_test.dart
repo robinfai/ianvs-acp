@@ -4,9 +4,11 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
 
 void main() {
-  Widget timeline(List<ChatMessage> messages) {
+  Widget timeline(List<ChatMessage> messages, {String agentName = 'Codex'}) {
     return MaterialApp(
-      home: Scaffold(body: ChatTimeline(messages: messages)),
+      home: Scaffold(
+        body: ChatTimeline(messages: messages, agentName: agentName),
+      ),
     );
   }
 
@@ -14,6 +16,17 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline empty state renders custom agent name', (
+    tester,
+  ) async {
+    await tester.pumpWidget(timeline(const [], agentName: 'Kimi Code Dev'));
+
+    expect(
+      find.text('Start a session to chat with Kimi Code Dev'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('ChatTimeline renders user and assistant messages', (

@@ -4,10 +4,14 @@ import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 
 void main() {
-  Widget toolbar(app_state.ConnectionStatus status) {
+  Widget toolbar(
+    app_state.ConnectionStatus status, {
+    String agentName = 'Codex',
+  }) {
     return MaterialApp(
       home: Scaffold(
         body: AgentToolbar(
+          agentName: agentName,
           status: status,
           onNewSession: () {},
           onResumeSession: () {},
@@ -21,12 +25,13 @@ void main() {
     WidgetTester tester,
     app_state.ConnectionStatus status, {
     Size size = const Size(1400, 720),
+    String agentName = 'Codex',
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(toolbar(status));
+    await tester.pumpWidget(toolbar(status, agentName: agentName));
   }
 
   testWidgets('AgentToolbar initial rendering shows disconnected', (
@@ -50,6 +55,16 @@ void main() {
 
     await pumpToolbar(tester, app_state.ConnectionStatus.error);
     expect(find.text('error'), findsOneWidget);
+  });
+
+  testWidgets('AgentToolbar renders custom agent name', (tester) async {
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      agentName: 'Kimi Code Dev',
+    );
+
+    expect(find.text('Kimi Code Dev'), findsOneWidget);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {
