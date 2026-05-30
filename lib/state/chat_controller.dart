@@ -93,6 +93,10 @@ class ChatController extends ChangeNotifier {
     return supportsAuthLogout && !isStreaming && !isSessionOperationRunning;
   }
 
+  bool get canSendExtensionRequest {
+    return capabilities != null && !isStreaming && !isSessionOperationRunning;
+  }
+
   StreamSubscription<AgentEvent>? _promptSubscription;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   DateTime? _lastPromptStartedAt;
@@ -469,6 +473,35 @@ class ChatController extends ChangeNotifier {
         _setActionError(error);
       }
     });
+  }
+
+  Future<Map<String, Object?>> sendExtensionRequest({
+    required String method,
+    required Map<String, Object?> params,
+  }) async {
+    final trimmedMethod = method.trim();
+    if (trimmedMethod.isEmpty) {
+      throw StateError('Extension method is required.');
+    }
+    if (!trimmedMethod.startsWith('_')) {
+      throw StateError('Extension method must start with underscore (_).');
+    }
+    if (!canSendExtensionRequest) {
+      throw StateError('Connect to an ACP agent before sending extensions.');
+    }
+
+    try {
+      final result = await client.sendExtensionRequest(
+        method: trimmedMethod,
+        params: params,
+      );
+      lastError = null;
+      _notifyListeners();
+      return result;
+    } catch (error) {
+      _setActionError(error);
+      rethrow;
+    }
   }
 
   Future<void> resolvePermissionRequest(AcpPermissionDecision decision) async {

@@ -456,6 +456,25 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
+  Future<Map<String, Object?>> sendExtensionRequest({
+    required String method,
+    required Map<String, Object?> params,
+  }) async {
+    if (!method.startsWith('_')) {
+      throw ArgumentError.value(
+        method,
+        'method',
+        'Extension methods must start with underscore (_).',
+      );
+    }
+    final result = await _requireClient().sendRaw(
+      method,
+      _dynamicJsonMap(params),
+    );
+    return _metadataMap(result);
+  }
+
+  @override
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
@@ -1184,6 +1203,21 @@ class DartAcpAgentClient implements AcpAgentClient {
   Map<String, Object?> _metadataMap(Map? raw) {
     if (raw == null) return const <String, Object?>{};
     return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  Map<String, dynamic> _dynamicJsonMap(Map<String, Object?> raw) {
+    return raw.map((key, value) => MapEntry(key, _dynamicJsonValue(value)));
+  }
+
+  Object? _dynamicJsonValue(Object? value) {
+    if (value is Map<String, Object?>) return _dynamicJsonMap(value);
+    if (value is Map) {
+      return value.map(
+        (key, item) => MapEntry(key.toString(), _dynamicJsonValue(item)),
+      );
+    }
+    if (value is List) return value.map(_dynamicJsonValue).toList();
+    return value;
   }
 
   Map<String, dynamic>? _dynamicMap(Object? raw) {

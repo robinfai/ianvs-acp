@@ -17,6 +17,7 @@ class AgentToolbar extends StatelessWidget {
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onAuthenticate,
+    this.onExtensionRequest,
     this.onLogout,
   });
 
@@ -30,6 +31,7 @@ class AgentToolbar extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onAuthenticate;
+  final VoidCallback? onExtensionRequest;
   final VoidCallback? onLogout;
 
   @override
@@ -77,6 +79,7 @@ class AgentToolbar extends StatelessWidget {
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
                   onAuthenticate: onAuthenticate,
+                  onExtensionRequest: onExtensionRequest,
                   onLogout: onLogout,
                 ),
                 SizedBox(width: compact ? 5 : 8),
@@ -116,6 +119,7 @@ class _AgentMenuButton extends StatelessWidget {
     required this.onSelectAgent,
     required this.onShowAgentConfig,
     required this.onAuthenticate,
+    required this.onExtensionRequest,
     required this.onLogout,
   });
 
@@ -126,6 +130,7 @@ class _AgentMenuButton extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onAuthenticate;
+  final VoidCallback? onExtensionRequest;
   final VoidCallback? onLogout;
 
   @override
@@ -134,6 +139,7 @@ class _AgentMenuButton extends StatelessWidget {
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
         onAuthenticate != null ||
+        onExtensionRequest != null ||
         onLogout != null;
     return PopupMenuButton<_AgentMenuSelection>(
       tooltip: 'Agents',
@@ -147,6 +153,8 @@ class _AgentMenuButton extends StatelessWidget {
             onShowAgentConfig?.call();
           case _AgentMenuSelectionType.authenticate:
             onAuthenticate?.call();
+          case _AgentMenuSelectionType.extensionRequest:
+            onExtensionRequest?.call();
           case _AgentMenuSelectionType.logout:
             onLogout?.call();
         }
@@ -233,10 +241,41 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
-          if (onLogout != null &&
+          if (onExtensionRequest != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
                   onAuthenticate != null))
+            const PopupMenuDivider(),
+          if (onExtensionRequest != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.extensionRequest(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.extension_rounded,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Extension Request',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (onLogout != null &&
+              (agentServers.isNotEmpty ||
+                  onShowAgentConfig != null ||
+                  onAuthenticate != null ||
+                  onExtensionRequest != null))
             const PopupMenuDivider(),
           if (onLogout != null)
             const PopupMenuItem<_AgentMenuSelection>(
@@ -270,7 +309,13 @@ class _AgentMenuButton extends StatelessWidget {
   }
 }
 
-enum _AgentMenuSelectionType { agent, configure, authenticate, logout }
+enum _AgentMenuSelectionType {
+  agent,
+  configure,
+  authenticate,
+  extensionRequest,
+  logout,
+}
 
 class _AgentMenuSelection {
   const _AgentMenuSelection.agent(this.agentName)
@@ -282,6 +327,10 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.authenticate()
     : type = _AgentMenuSelectionType.authenticate,
+      agentName = null;
+
+  const _AgentMenuSelection.extensionRequest()
+    : type = _AgentMenuSelectionType.extensionRequest,
       agentName = null;
 
   const _AgentMenuSelection.logout()
@@ -323,7 +372,7 @@ class _AgentMenuItem extends StatelessWidget {
                 ),
               ),
               Text(
-                server.command,
+                server.isWebSocket ? server.url : server.command,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textTertiary,

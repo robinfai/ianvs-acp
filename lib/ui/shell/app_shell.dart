@@ -11,6 +11,7 @@ import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
+import '../components/extension_request_dialog.dart';
 import '../components/permission_request_banner.dart';
 import '../components/prompt_input.dart';
 import '../components/resume_session_dialog.dart';
@@ -78,6 +79,9 @@ class AppShell extends StatelessWidget {
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
                   onAuthenticate: controller.canAuthenticate
                       ? () => unawaited(_showAuthenticateDialog(context))
+                      : null,
+                  onExtensionRequest: controller.canSendExtensionRequest
+                      ? () => _showExtensionRequestDialog(context)
                       : null,
                   onLogout: controller.canLogout
                       ? () => unawaited(_confirmLogout(context))
@@ -187,6 +191,15 @@ class AppShell extends StatelessWidget {
       context: context,
       builder: (context) {
         return CapabilitiesDialog(capabilities: controller.capabilities);
+      },
+    );
+  }
+
+  Future<void> _showExtensionRequestDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return ExtensionRequestDialog(controller: controller);
       },
     );
   }

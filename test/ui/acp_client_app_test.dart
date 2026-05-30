@@ -94,6 +94,25 @@ void main() {
     expect(fake.connected, isTrue);
   });
 
+  testWidgets('AcpClientApp opens extension request dialog', (tester) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Extension Request'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Extension Request'), findsOneWidget);
+    expect(find.text('Method'), findsOneWidget);
+    expect(find.text('Params JSON'), findsOneWidget);
+  });
+
   testWidgets('AcpClientApp resolves permission requests from banner', (
     tester,
   ) async {

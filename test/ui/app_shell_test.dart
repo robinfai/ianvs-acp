@@ -12,6 +12,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
+    VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
   }) {
     return MaterialApp(
@@ -23,6 +24,7 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onAuthenticate: onAuthenticate,
+          onExtensionRequest: onExtensionRequest,
           onLogout: onLogout,
           onNewSession: () {},
           onResumeSession: () {},
@@ -41,6 +43,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
+    VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
   }) async {
     tester.view.physicalSize = size;
@@ -55,6 +58,7 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onAuthenticate: onAuthenticate,
+        onExtensionRequest: onExtensionRequest,
         onLogout: onLogout,
       ),
     );
@@ -184,6 +188,28 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(authenticated, isTrue);
+  });
+
+  testWidgets('AgentToolbar exposes extension requests when available', (
+    tester,
+  ) async {
+    var openedExtensionDialog = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onExtensionRequest: () {
+        openedExtensionDialog = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Extension Request'), findsOneWidget);
+
+    await tester.tap(find.text('Extension Request'));
+    await tester.pumpAndSettle();
+
+    expect(openedExtensionDialog, isTrue);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {

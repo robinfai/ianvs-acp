@@ -495,6 +495,75 @@ Future<void> main() async {
     }
   });
 
+  test('sends custom extension JSON-RPC requests', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final extensionParamsFile = File('${tempDir.path}/extension_params.json');
+    final agentScript = File('${tempDir.path}/fake_extension_agent.dart');
+    final extensionParamsPath = jsonEncode(extensionParamsFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            '_meta': <String, dynamic>{
+              'example.dev': <String, dynamic>{'ping': true},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == '_example.dev/ping') {
+      await File($extensionParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'pong': true},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      expect(client.capabilities?.extensionMeta['example.dev'], isNotNull);
+      final result = await client
+          .sendExtensionRequest(
+            method: '_example.dev/ping',
+            params: const {'message': 'hello'},
+          )
+          .timeout(const Duration(seconds: 5));
+
+      expect(result, containsPair('pong', true));
+      final extensionParams =
+          jsonDecode(await extensionParamsFile.readAsString())
+              as Map<String, dynamic>;
+      expect(extensionParams, {'message': 'hello'});
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('advertises configured filesystem provider capabilities', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');

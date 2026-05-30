@@ -35,7 +35,7 @@ HTTP/SSE profile and real-agent interoperability.
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is consumed as complete state, including updates emitted immediately after `session/new`. The local model understands official `category` as well as older `group`. Initial `configOptions` returned directly by `session/new` and fallback `session/resume` are captured from the raw session response. |
 | Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Done for advertised commands | `available_commands_update` renders available commands and details. The prompt input now suggests matching advertised commands while typing `/`, and selecting a command inserts the slash invocation. Command-list updates replace the previous command snapshot, including updates emitted immediately after `session/new` or `session/resume`. |
-| Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Partial | Raw capability `_meta` and session list `_meta` are displayed. No custom extension request UI is implemented. |
+| Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Mostly done for manual extension requests | Raw capability `_meta` and session list `_meta` are displayed. The Agents menu exposes an advanced Extension Request dialog that validates underscore-prefixed custom methods, accepts JSON object params, sends JSON-RPC requests, and renders raw results/errors. Vendor-specific workflows remain intentionally unopinionated. |
 | MCP servers | https://agentclientprotocol.com/protocol/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries and known transport types, shows configured MCP servers in Agent Configuration, and forwards compatible entries through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. Unknown transport types are rejected from config and skipped if injected programmatically. |
 
 ## UX Review With Computer Use
@@ -138,6 +138,9 @@ advertises ACP terminal callbacks. Terminal support is off by default; when
 enabled, terminal creation still goes through per-request permission approval,
 uses the session workspace as the default cwd, and renders command lifecycle
 status/output in the timeline.
+When connected, the Agents menu exposes `Extension Request` for advanced
+underscore-prefixed ACP extension methods advertised through `_meta` or otherwise
+coordinated by a specific agent.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 
@@ -158,6 +161,7 @@ Detailed tracking and automated acceptance evidence lives in
 
 - Review filesystem and terminal providers policy: both are available behind explicit user config and per-request permission approval, but first-run UI, audit history, and persistent trust controls remain undecided.
 - Finish remote transport support: WebSocket works for draft remote agents, while Streamable HTTP/SSE and HTTP/2 validation are still pending.
+- Design vendor-specific extension workflows only when a real agent's `_meta` contract requires more than the generic Extension Request dialog.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 
 ## Follow-Up Desktop UX Pass

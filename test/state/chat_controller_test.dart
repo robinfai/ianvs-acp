@@ -605,6 +605,49 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test('send extension request forwards method and params', () async {
+    final fake = FakeAgentClient(
+      extensionResponse: const {
+        'ok': true,
+        'items': ['buffer.dart'],
+      },
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    expect(controller.canSendExtensionRequest, isTrue);
+
+    final result = await controller.sendExtensionRequest(
+      method: '  _example.dev/listBuffers  ',
+      params: const {'language': 'dart'},
+    );
+
+    expect(fake.lastExtensionMethod, '_example.dev/listBuffers');
+    expect(fake.lastExtensionParams, {'language': 'dart'});
+    expect(result['items'], ['buffer.dart']);
+    expect(controller.lastError, isNull);
+  });
+
+  test('send extension request requires underscore-prefixed method', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    await expectLater(
+      controller.sendExtensionRequest(
+        method: 'example.dev/listBuffers',
+        params: const {},
+      ),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(fake.lastExtensionMethod, isNull);
+  });
+
   test('auth required session errors point to authenticate action', () async {
     final controller = ChatController(
       client: FakeAgentClient(

@@ -145,6 +145,32 @@ Manual decision:
   history, or stronger streaming interruption behavior beyond the current
   per-request Allow Once/Deny/Cancel model.
 
+### vendor-extension-workflows
+
+Status: agent-specific product decision needed.
+
+Non-blocking because: raw `_meta` capability data is visible and the Agents menu
+now includes a generic Extension Request dialog for underscore-prefixed custom
+JSON-RPC requests. A polished workflow for any single vendor extension should
+wait until a real agent contract is known.
+
+Automated acceptance:
+
+- `test/acp/dart_acp_agent_client_test.dart` verifies custom extension requests
+  are sent over the ACP client and return raw JSON results.
+- `test/ui/extension_request_dialog_test.dart` verifies the dialog sends
+  extension method/params JSON and rejects non-object params JSON.
+- `test/ui/acp_client_app_test.dart` verifies the app opens the Extension
+  Request dialog from the Agents menu.
+- `test/ui/app_shell_test.dart` verifies the Agents menu exposes Extension
+  Request when available.
+
+Manual decision:
+
+- Decide which advertised `_meta` contracts deserve first-class controls,
+  labels, result rendering, or notification flows beyond the generic JSON
+  request dialog.
+
 ### prompt-content-gates
 
 Status: product decision needed.
