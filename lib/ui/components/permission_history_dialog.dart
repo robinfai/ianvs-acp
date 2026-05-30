@@ -233,6 +233,11 @@ class _PermissionHistoryRow extends StatelessWidget {
                   icon: Icons.done_all_rounded,
                   label: _formatTimestamp(entry.resolvedAt!),
                 ),
+              if (entry.displayDecisionSource != null)
+                _MetaChip(
+                  icon: Icons.rule_rounded,
+                  label: entry.displayDecisionSource!,
+                ),
             ],
           ),
         ],

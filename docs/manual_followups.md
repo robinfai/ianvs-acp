@@ -139,9 +139,11 @@ Status: policy refinement needed.
 Non-blocking because: tool calls are visible and grouped, permission requests
 surface an in-app per-request approval banner with Allow Once, Deny, and Cancel,
 and handled requests are visible in the Agents menu Permission History with JSON
-export. Explicit permission trust rules can auto-allow or auto-deny matching
-requests. Requests still fall back to `cancelled` when no UI listener is active,
-and broader trust policy remains deliberately narrow.
+export. Resolved entries record whether the decision came from a manual action,
+trust rule, or system cancellation. Explicit permission trust rules can
+auto-allow or auto-deny matching requests. Requests still fall back to
+`cancelled` when no UI listener is active, and broader trust policy remains
+deliberately narrow.
 
 Automated acceptance:
 
@@ -154,7 +156,8 @@ Automated acceptance:
   approval back to the agent client and displays the completed request in
   Permission History.
 - `test/ui/permission_history_dialog_test.dart` verifies Permission History
-  exports a JSON audit file payload and disables export when no entries exist.
+  exports a JSON audit file payload with decision source metadata and disables
+  export when no entries exist.
 - `test/state/chat_controller_test.dart` verifies permission requests are
   recorded as pending, resolved to the selected decision, and cancelled when a
   newer pending request supersedes them. It also verifies matching trust rules

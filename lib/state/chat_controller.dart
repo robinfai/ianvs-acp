@@ -610,7 +610,11 @@ class ChatController extends ChangeNotifier {
   void _handlePermissionRequest(AcpPermissionRequest request) {
     final previous = pendingPermissionRequest;
     if (previous != null && previous.id != request.id) {
-      _recordPermissionDecision(previous.id, AcpPermissionDecision.cancel);
+      _recordPermissionDecision(
+        previous.id,
+        AcpPermissionDecision.cancel,
+        source: AcpPermissionDecisionSource.system,
+      );
       unawaited(
         client.respondToPermissionRequest(
           id: previous.id,
@@ -623,7 +627,11 @@ class ChatController extends ChangeNotifier {
     final trustedDecision = _trustedDecisionFor(request);
     if (trustedDecision != null) {
       pendingPermissionRequest = null;
-      _recordPermissionDecision(request.id, trustedDecision);
+      _recordPermissionDecision(
+        request.id,
+        trustedDecision,
+        source: AcpPermissionDecisionSource.trustRule,
+      );
       unawaited(
         _respondToTrustedPermissionRequest(request.id, trustedDecision),
       );
@@ -653,7 +661,11 @@ class ChatController extends ChangeNotifier {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
-    _recordPermissionDecision(request.id, AcpPermissionDecision.cancel);
+    _recordPermissionDecision(
+      request.id,
+      AcpPermissionDecision.cancel,
+      source: AcpPermissionDecisionSource.system,
+    );
     await client.respondToPermissionRequest(
       id: request.id,
       decision: AcpPermissionDecision.cancel,
@@ -678,8 +690,9 @@ class ChatController extends ChangeNotifier {
 
   void _recordPermissionDecision(
     String requestId,
-    AcpPermissionDecision decision,
-  ) {
+    AcpPermissionDecision decision, {
+    AcpPermissionDecisionSource source = AcpPermissionDecisionSource.manual,
+  }) {
     final index = _permissionHistory.indexWhere(
       (entry) => entry.request.id == requestId,
     );
@@ -687,6 +700,7 @@ class ChatController extends ChangeNotifier {
     _permissionHistory[index] = _permissionHistory[index].copyWith(
       status: _permissionAuditStatus(decision),
       resolvedAt: DateTime.now(),
+      decisionSource: source,
     );
   }
 

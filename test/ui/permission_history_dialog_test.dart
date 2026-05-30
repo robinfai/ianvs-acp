@@ -25,6 +25,7 @@ void main() {
       status: AcpPermissionAuditStatus.allowed,
       recordedAt: DateTime.utc(2026, 5, 31, 12),
       resolvedAt: DateTime.utc(2026, 5, 31, 12, 1),
+      decisionSource: AcpPermissionDecisionSource.trustRule,
     );
 
     await tester.pumpWidget(
@@ -51,11 +52,13 @@ void main() {
     final entries = exported['entries'] as List<Object?>;
     final first = entries.single as Map<String, Object?>;
     expect(first['status'], 'allowed');
+    expect(first['decisionSource'], 'trustRule');
     expect(first['recordedAt'], '2026-05-31T12:00:00.000Z');
     expect(first['resolvedAt'], '2026-05-31T12:01:00.000Z');
     final request = first['request'] as Map<String, Object?>;
     expect(request['id'], 'permission-1');
     expect(request['toolName'], 'read_text_file');
+    expect(find.text('Trust rule'), findsOneWidget);
     expect(find.text('Permission history exported.'), findsOneWidget);
   });
 

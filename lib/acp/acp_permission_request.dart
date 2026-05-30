@@ -4,6 +4,8 @@ enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
 
+enum AcpPermissionDecisionSource { manual, trustRule, system }
+
 class AcpPermissionTrustRule {
   const AcpPermissionTrustRule({
     required this.toolName,
@@ -89,24 +91,28 @@ class AcpPermissionAuditEntry {
     required this.status,
     required this.recordedAt,
     this.resolvedAt,
+    this.decisionSource,
   });
 
   final AcpPermissionRequest request;
   final AcpPermissionAuditStatus status;
   final DateTime recordedAt;
   final DateTime? resolvedAt;
+  final AcpPermissionDecisionSource? decisionSource;
 
   AcpPermissionAuditEntry copyWith({
     AcpPermissionRequest? request,
     AcpPermissionAuditStatus? status,
     DateTime? recordedAt,
     DateTime? resolvedAt,
+    AcpPermissionDecisionSource? decisionSource,
   }) {
     return AcpPermissionAuditEntry(
       request: request ?? this.request,
       status: status ?? this.status,
       recordedAt: recordedAt ?? this.recordedAt,
       resolvedAt: resolvedAt ?? this.resolvedAt,
+      decisionSource: decisionSource ?? this.decisionSource,
     );
   }
 
@@ -119,12 +125,22 @@ class AcpPermissionAuditEntry {
     };
   }
 
+  String? get displayDecisionSource {
+    return switch (decisionSource) {
+      AcpPermissionDecisionSource.manual => 'Manual',
+      AcpPermissionDecisionSource.trustRule => 'Trust rule',
+      AcpPermissionDecisionSource.system => 'System',
+      null => null,
+    };
+  }
+
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'status': status.name,
       'recordedAt': recordedAt.toUtc().toIso8601String(),
       if (resolvedAt != null)
         'resolvedAt': resolvedAt!.toUtc().toIso8601String(),
+      if (decisionSource != null) 'decisionSource': decisionSource!.name,
       'request': request.toJson(),
     };
   }

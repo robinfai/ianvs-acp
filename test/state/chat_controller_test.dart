@@ -419,6 +419,10 @@ void main() {
       controller.permissionHistory.single.status,
       AcpPermissionAuditStatus.denied,
     );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.manual,
+    );
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
 
@@ -467,6 +471,10 @@ void main() {
       controller.permissionHistory[1].status,
       AcpPermissionAuditStatus.cancelled,
     );
+    expect(
+      controller.permissionHistory[1].decisionSource,
+      AcpPermissionDecisionSource.system,
+    );
   });
 
   test('permission trust rules auto resolve matching requests', () async {
@@ -505,6 +513,10 @@ void main() {
     expect(
       controller.permissionHistory.single.status,
       AcpPermissionAuditStatus.allowed,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.trustRule,
     );
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
