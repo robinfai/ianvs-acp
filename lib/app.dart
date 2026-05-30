@@ -34,7 +34,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
-  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
@@ -75,7 +74,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return MaterialApp(
       title: 'ACP Client',
       debugShowCheckedModeBanner: false,
-      navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -136,7 +134,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         defaultAgentName: _config.defaultAgentServerName,
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
-        onNewSession: () => unawaited(_startNewSession()),
+        onNewSession: (context) => unawaited(_startNewSession(context)),
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -166,7 +164,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _activateAgent(nextConfig);
   }
 
-  Future<void> _startNewSession() async {
+  Future<void> _startNewSession(BuildContext dialogContext) async {
     if (widget.controller != null) {
       await _controller.newSession();
       return;
@@ -176,12 +174,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (agentServers.isEmpty) {
       await _controller.newSession();
       if (mounted) setState(() {});
-      return;
-    }
-
-    final dialogContext = _navigatorKey.currentContext;
-    if (dialogContext == null) {
-      _showSnackBar('Could not open agent selection.');
       return;
     }
 

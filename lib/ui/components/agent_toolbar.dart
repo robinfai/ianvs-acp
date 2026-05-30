@@ -465,64 +465,43 @@ class _PrimaryToolbarAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final content = DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [AppColors.primary, AppColors.primaryDark],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+    final style = FilledButton.styleFrom(
+      foregroundColor: Colors.white,
+      backgroundColor: AppColors.primaryDark,
+      elevation: 4,
+      shadowColor: AppColors.primary.withValues(alpha: 0.32),
+      minimumSize: Size(compact ? 38 : 142, 38),
+      padding: compact
+          ? EdgeInsets.zero
+          : const EdgeInsets.symmetric(horizontal: 14),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.pill),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.22),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          onTap: onPressed,
-          child: SizedBox(
-            width: compact ? 38 : null,
-            height: 38,
-            child: Padding(
-              padding: compact
-                  ? EdgeInsets.zero
-                  : const EdgeInsets.symmetric(horizontal: 14),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.add_rounded, color: Colors.white, size: 20),
-                  if (!compact) ...[
-                    const SizedBox(width: 6),
-                    const Text(
-                      'New Session',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
 
-    return Semantics(
-      button: true,
-      label: 'New Session',
-      child: Tooltip(message: 'New Session', child: content),
-    );
+    final button = compact
+        ? FilledButton(
+            onPressed: onPressed,
+            style: style,
+            child: const Icon(Icons.add_rounded, size: 20),
+          )
+        : FilledButton.icon(
+            onPressed: onPressed,
+            style: style,
+            icon: const Icon(Icons.add_rounded, size: 20),
+            label: const Text(
+              'New Session',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          );
+
+    return Tooltip(message: 'New Session', child: button);
   }
 }
 

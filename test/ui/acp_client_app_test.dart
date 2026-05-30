@@ -32,4 +32,35 @@ void main() {
     expect(find.text('Kimi Code Dev'), findsWidgets);
     expect(find.text('Codex'), findsOneWidget);
   });
+
+  testWidgets('AcpClientApp toolbar new session opens agent picker', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Kimi Code Dev',
+          'agent_servers': {
+            'Kimi Code Dev': {
+              'type': 'custom',
+              'command': '/usr/local/bin/kimi',
+              'args': ['acp'],
+            },
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@zed-industries/codex-acp'],
+            },
+          },
+        }),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Kimi Code Dev'), findsWidgets);
+    expect(find.text('Codex'), findsOneWidget);
+  });
 }

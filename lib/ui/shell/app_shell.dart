@@ -38,7 +38,7 @@ class AppShell extends StatelessWidget {
   final String? defaultAgentName;
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
-  final VoidCallback? onNewSession;
+  final void Function(BuildContext context)? onNewSession;
   final List<ChatController> sessionControllers;
 
   @override
@@ -46,6 +46,10 @@ class AppShell extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
+        final startNewSession = onNewSession == null
+            ? controller.newSession
+            : () => onNewSession!(context);
+
         return Scaffold(
           backgroundColor: AppColors.bg,
           body: SafeArea(
@@ -58,7 +62,7 @@ class AppShell extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent && !controller.isStreaming,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
-                  onNewSession: onNewSession ?? controller.newSession,
+                  onNewSession: startNewSession,
                   onResumeSession: () => _showResumeDialog(context),
                   onReconnect: controller.reconnect,
                 ),
@@ -83,8 +87,7 @@ class AppShell extends StatelessWidget {
                               agentName: agentName,
                               sessions: _sessions(),
                               currentSession: controller.currentSession,
-                              onNewSession:
-                                  onNewSession ?? controller.newSession,
+                              onNewSession: startNewSession,
                               onResumeSession: () => _showResumeDialog(context),
                             ),
                           ),
@@ -100,8 +103,7 @@ class AppShell extends StatelessWidget {
                                   controller.currentSession != null,
                               activeSessionLabel:
                                   controller.currentSession?.displayTitle,
-                              onNewSession:
-                                  onNewSession ?? controller.newSession,
+                              onNewSession: startNewSession,
                             ),
                           ),
                         ],
