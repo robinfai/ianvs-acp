@@ -70,6 +70,10 @@ class SessionSettingsDialog extends StatelessWidget {
     }
 
     final settings = controller.sessionSettings;
+    final settingsEnabled =
+        !controller.isStreaming &&
+        !controller.isSessionOperationRunning &&
+        !controller.sessionSettingsLoading;
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -83,7 +87,7 @@ class SessionSettingsDialog extends StatelessWidget {
           const SizedBox(height: 8),
           _ModelSection(
             option: settings.modelOption,
-            enabled: !controller.isStreaming,
+            enabled: settingsEnabled,
             onChanged: (modelValue) {
               unawaited(controller.setSessionModel(modelValue));
             },
@@ -91,7 +95,7 @@ class SessionSettingsDialog extends StatelessWidget {
           const SizedBox(height: 8),
           _ModeSection(
             settings: settings,
-            enabled: !controller.isStreaming,
+            enabled: settingsEnabled,
             onChanged: (modeId) {
               unawaited(controller.setSessionMode(modeId));
             },
@@ -99,7 +103,7 @@ class SessionSettingsDialog extends StatelessWidget {
           const SizedBox(height: 8),
           _ConfigSection(
             options: settings.nonModelConfigOptions,
-            enabled: !controller.isStreaming,
+            enabled: settingsEnabled,
             onChanged: (configId, value) {
               unawaited(controller.setConfigOption(configId, value));
             },

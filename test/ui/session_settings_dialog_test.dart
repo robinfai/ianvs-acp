@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
 
@@ -165,6 +168,36 @@ void main() {
     expect(controller.lastError, contains('close failed'));
   });
 
+  testWidgets('SessionSettingsDialog disables settings during operations', (
+    tester,
+  ) async {
+    final fake = _DelayedForkAgentClient(sessionSettings: _settingsWithModel);
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Fork Session'));
+    await fake.forkStarted.future;
+    await tester.pump();
+
+    expect(controller.isSessionOperationRunning, isTrue);
+    final dropdowns = tester.widgetList<DropdownButtonFormField<String>>(
+      find.byType(DropdownButtonFormField<String>),
+    );
+    expect(dropdowns, isNotEmpty);
+    expect(dropdowns.every((dropdown) => dropdown.onChanged == null), isTrue);
+
+    fake.allowFork.complete();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('SessionSettingsDialog forks active session when supported', (
     tester,
   ) async {
@@ -238,3 +271,22 @@ const _settingsWithBoolean = AcpSessionSettings(
     ),
   ],
 );
+
+class _DelayedForkAgentClient extends FakeAgentClient {
+  _DelayedForkAgentClient({super.sessionSettings});
+
+  final Completer<void> forkStarted = Completer<void>();
+  final Completer<void> allowFork = Completer<void>();
+
+  @override
+  Future<AgentSession> forkSession({
+    required String sessionId,
+    required String cwd,
+  }) async {
+    if (!forkStarted.isCompleted) {
+      forkStarted.complete();
+    }
+    await allowFork.future;
+    return super.forkSession(sessionId: sessionId, cwd: cwd);
+  }
+}

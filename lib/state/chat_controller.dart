@@ -326,6 +326,7 @@ class ChatController extends ChangeNotifier {
 
   Future<void> refreshSessionSettings() async {
     final sessionId = currentSession?.id;
+    if (isStreaming || isSessionOperationRunning) return;
     if (sessionId == null) return;
     await _loadSessionSettings(sessionId);
   }
@@ -333,7 +334,12 @@ class ChatController extends ChangeNotifier {
   Future<void> setSessionMode(String modeId) async {
     final sessionId = currentSession?.id;
     final trimmedModeId = modeId.trim();
-    if (sessionId == null || trimmedModeId.isEmpty || isStreaming) return;
+    if (sessionId == null ||
+        trimmedModeId.isEmpty ||
+        isStreaming ||
+        isSessionOperationRunning) {
+      return;
+    }
 
     try {
       final didSet = await client.setSessionMode(
@@ -354,7 +360,12 @@ class ChatController extends ChangeNotifier {
   Future<void> setConfigOption(String configId, Object value) async {
     final sessionId = currentSession?.id;
     final trimmedConfigId = configId.trim();
-    if (sessionId == null || trimmedConfigId.isEmpty || isStreaming) return;
+    if (sessionId == null ||
+        trimmedConfigId.isEmpty ||
+        isStreaming ||
+        isSessionOperationRunning) {
+      return;
+    }
 
     try {
       final options = await client.setConfigOption(

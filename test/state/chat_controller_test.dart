@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -684,6 +687,33 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test(
+    'session settings changes are ignored while a session operation runs',
+    () async {
+      final fake = _DelayedForkAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      final fork = controller.forkCurrentSession();
+      await fake.forkStarted.future;
+
+      expect(controller.isSessionOperationRunning, isTrue);
+
+      await controller.refreshSessionSettings();
+      await controller.setSessionMode('edit');
+      await controller.setConfigOption('approval', 'auto');
+      await controller.setSessionModel('gpt-5');
+
+      expect(fake.lastSetModeId, isNull);
+      expect(fake.lastConfigId, isNull);
+
+      fake.allowFork.complete();
+      await fork;
+    },
+  );
+
   test('fork current session creates independent active session', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -1063,5 +1093,22 @@ class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
       value: value,
     );
     return const <AcpConfigOption>[];
+  }
+}
+
+class _DelayedForkAgentClient extends FakeAgentClient {
+  final Completer<void> forkStarted = Completer<void>();
+  final Completer<void> allowFork = Completer<void>();
+
+  @override
+  Future<AgentSession> forkSession({
+    required String sessionId,
+    required String cwd,
+  }) async {
+    if (!forkStarted.isCompleted) {
+      forkStarted.complete();
+    }
+    await allowFork.future;
+    return super.forkSession(sessionId: sessionId, cwd: cwd);
   }
 }
