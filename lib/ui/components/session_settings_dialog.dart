@@ -13,75 +13,122 @@ class SessionSettingsDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Session Settings'),
-      content: SizedBox(
-        width: 600,
-        child: AnimatedBuilder(
-          animation: controller,
-          builder: (context, _) {
-            final session = controller.currentSession;
-            if (session == null) {
-              return const _EmptyState(
-                icon: Icons.tune_rounded,
-                title: 'No active session',
-                message: 'Create or resume a session to inspect settings.',
-              );
-            }
-
-            final settings = controller.sessionSettings;
-            return SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _SessionHeader(
-                    sessionId: session.shortId,
-                    cwd: session.cwd,
-                    loading: controller.sessionSettingsLoading,
-                  ),
-                  const SizedBox(height: 8),
-                  _ModelSection(
-                    option: settings.modelOption,
-                    enabled: !controller.isStreaming,
-                    onChanged: (modelValue) {
-                      unawaited(controller.setSessionModel(modelValue));
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  _ModeSection(
-                    settings: settings,
-                    enabled: !controller.isStreaming,
-                    onChanged: (modeId) {
-                      unawaited(controller.setSessionMode(modeId));
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  _ConfigSection(
-                    options: settings.nonModelConfigOptions,
-                    enabled: !controller.isStreaming,
-                    onChanged: (configId, value) {
-                      unawaited(controller.setConfigOption(configId, value));
-                    },
-                  ),
-                ],
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return AlertDialog(
+          title: const Text('Session Settings'),
+          content: SizedBox(width: 600, child: _buildContent()),
+          actions: [
+            if (controller.currentSession != null &&
+                controller.capabilities?.session.close == true)
+              TextButton.icon(
+                onPressed: controller.canCloseCurrentSession
+                    ? () => unawaited(_confirmCloseSession(context))
+                    : null,
+                icon: const Icon(Icons.close_rounded),
+                label: const Text('Close Session'),
+                style: TextButton.styleFrom(foregroundColor: AppColors.danger),
               ),
-            );
-          },
-        ),
-      ),
-      actions: [
-        TextButton.icon(
-          onPressed: () => unawaited(controller.refreshSessionSettings()),
-          icon: const Icon(Icons.refresh_rounded),
-          label: const Text('Refresh'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-      ],
+            TextButton.icon(
+              onPressed: () => unawaited(controller.refreshSessionSettings()),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Refresh'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
     );
+  }
+
+  Widget _buildContent() {
+    final session = controller.currentSession;
+    if (session == null) {
+      return const _EmptyState(
+        icon: Icons.tune_rounded,
+        title: 'No active session',
+        message: 'Create or resume a session to inspect settings.',
+      );
+    }
+
+    final settings = controller.sessionSettings;
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SessionHeader(
+            sessionId: session.shortId,
+            cwd: session.cwd,
+            loading: controller.sessionSettingsLoading,
+          ),
+          const SizedBox(height: 8),
+          _ModelSection(
+            option: settings.modelOption,
+            enabled: !controller.isStreaming,
+            onChanged: (modelValue) {
+              unawaited(controller.setSessionModel(modelValue));
+            },
+          ),
+          const SizedBox(height: 8),
+          _ModeSection(
+            settings: settings,
+            enabled: !controller.isStreaming,
+            onChanged: (modeId) {
+              unawaited(controller.setSessionMode(modeId));
+            },
+          ),
+          const SizedBox(height: 8),
+          _ConfigSection(
+            options: settings.nonModelConfigOptions,
+            enabled: !controller.isStreaming,
+            onChanged: (configId, value) {
+              unawaited(controller.setConfigOption(configId, value));
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmCloseSession(BuildContext context) async {
+    final session = controller.currentSession;
+    if (session == null) return;
+    final shouldClose = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Close Session?'),
+          content: Text(
+            'Close "${session.displayTitle}" and release agent resources. '
+            'This does not delete persisted conversation history.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: FilledButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: AppColors.danger,
+              ),
+              child: const Text('Close Session'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldClose != true) return;
+    await controller.closeCurrentSession();
+    if (context.mounted) {
+      Navigator.of(context).pop();
+    }
   }
 }
 
@@ -287,7 +334,7 @@ class _ConfigSection extends StatelessWidget {
 
   final List<AcpConfigOption> options;
   final bool enabled;
-  final void Function(String configId, String value) onChanged;
+  final void Function(String configId, Object value) onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -324,7 +371,7 @@ class _ConfigOptionTile extends StatelessWidget {
 
   final AcpConfigOption option;
   final bool enabled;
-  final ValueChanged<String> onChanged;
+  final ValueChanged<Object> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -388,7 +435,16 @@ class _ConfigOptionTile extends StatelessWidget {
           const SizedBox(width: 10),
           SizedBox(
             width: 180,
-            child: option.options.isEmpty
+            child: option.isBooleanOption
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: Switch.adaptive(
+                      value: option.currentBoolValue,
+                      onChanged: enabled ? (value) => onChanged(value) : null,
+                      activeThumbColor: AppColors.primaryDark,
+                    ),
+                  )
+                : option.options.isEmpty
                 ? _ReadOnlyValue(value: option.currentValue)
                 : DropdownButtonFormField<String>(
                     isExpanded: true,

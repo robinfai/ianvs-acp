@@ -13,6 +13,9 @@ class FakeAgentClient implements AcpAgentClient {
     this.connectError,
     this.promptError,
     this.cancelError,
+    this.closeError,
+    this.logoutError,
+    this.supportsLogout = true,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
     this.createSessionDelay = Duration.zero,
@@ -48,6 +51,9 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? connectError;
   final Object? promptError;
   final Object? cancelError;
+  final Object? closeError;
+  final Object? logoutError;
+  final bool supportsLogout;
   final Duration chunkDelay;
   final Duration connectDelay;
   final Duration createSessionDelay;
@@ -57,26 +63,28 @@ class FakeAgentClient implements AcpAgentClient {
 
   bool connected = false;
   bool cancelled = false;
+  bool loggedOut = false;
   int sessionCount = 0;
   String? lastResumeCwd;
   String? lastSetModeId;
   String? lastConfigId;
-  String? lastConfigValue;
+  Object? lastConfigValue;
+  String? lastClosedSessionId;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
   @override
   AcpAgentCapabilities? get capabilities => connected
-      ? const AcpAgentCapabilities(
+      ? AcpAgentCapabilities(
           protocolVersion: 1,
           loadSession: true,
-          prompt: AcpPromptCapabilities(
+          prompt: const AcpPromptCapabilities(
             image: true,
             audio: false,
             embeddedContext: true,
           ),
-          mcp: AcpMcpCapabilities(http: true, sse: false, acp: false),
-          session: AcpSessionCapabilities(
+          mcp: const AcpMcpCapabilities(http: true, sse: false, acp: false),
+          session: const AcpSessionCapabilities(
             list: true,
             resume: false,
             fork: false,
@@ -84,7 +92,8 @@ class FakeAgentClient implements AcpAgentClient {
             close: true,
             rawKeys: ['close', 'configOptions', 'list'],
           ),
-          client: AcpClientCapabilities(
+          auth: AcpAuthCapabilities(logout: supportsLogout),
+          client: const AcpClientCapabilities(
             fsReadTextFile: false,
             fsWriteTextFile: false,
             terminal: false,
@@ -92,8 +101,10 @@ class FakeAgentClient implements AcpAgentClient {
             hasTerminalProvider: false,
             allowReadOutsideWorkspace: false,
           ),
-          rawAgentCapabilities: <String, Object?>{},
-          authMethods: <Map<String, Object?>>[],
+          rawAgentCapabilities: <String, Object?>{
+            if (supportsLogout) 'auth': <String, Object?>{'logout': true},
+          },
+          authMethods: const <Map<String, Object?>>[],
         )
       : null;
 
@@ -208,7 +219,7 @@ class FakeAgentClient implements AcpAgentClient {
   Future<List<AcpConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
-    required String value,
+    required Object value,
   }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
@@ -222,6 +233,31 @@ class FakeAgentClient implements AcpAgentClient {
     }).toList();
     _settings = _settings.copyWith(configOptions: options);
     return options;
+  }
+
+  @override
+  Future<void> closeSession({required String sessionId}) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    if (closeError != null) {
+      throw closeError!;
+    }
+    lastClosedSessionId = sessionId;
+  }
+
+  @override
+  Future<void> logout() async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    if (!supportsLogout) {
+      throw StateError('Fake client does not support logout.');
+    }
+    if (logoutError != null) {
+      throw logoutError!;
+    }
+    loggedOut = true;
   }
 
   @override

@@ -5,6 +5,7 @@ class AcpAgentCapabilities {
     required this.prompt,
     required this.mcp,
     required this.session,
+    required this.auth,
     required this.client,
     required this.rawAgentCapabilities,
     required this.authMethods,
@@ -26,6 +27,7 @@ class AcpAgentCapabilities {
       prompt: AcpPromptCapabilities.fromRaw(rawAgent['promptCapabilities']),
       mcp: AcpMcpCapabilities.fromRaw(rawAgent['mcpCapabilities']),
       session: AcpSessionCapabilities.fromRaw(rawAgent),
+      auth: AcpAuthCapabilities.fromRaw(rawAgent['auth']),
       client: AcpClientCapabilities.fromRaw(
         clientCapabilities,
         hasFsProvider: hasFsProvider,
@@ -44,6 +46,7 @@ class AcpAgentCapabilities {
   final AcpPromptCapabilities prompt;
   final AcpMcpCapabilities mcp;
   final AcpSessionCapabilities session;
+  final AcpAuthCapabilities auth;
   final AcpClientCapabilities client;
   final Map<String, Object?> rawAgentCapabilities;
   final List<Map<String, Object?>> authMethods;
@@ -52,6 +55,17 @@ class AcpAgentCapabilities {
     final meta = rawAgentCapabilities['_meta'];
     return meta is Map ? _objectMap(meta) : const <String, Object?>{};
   }
+}
+
+class AcpAuthCapabilities {
+  const AcpAuthCapabilities({required this.logout});
+
+  factory AcpAuthCapabilities.fromRaw(Object? raw) {
+    final caps = raw is Map ? _objectMap(raw) : const <String, Object?>{};
+    return AcpAuthCapabilities(logout: caps.containsKey('logout'));
+  }
+
+  final bool logout;
 }
 
 class AcpPromptCapabilities {

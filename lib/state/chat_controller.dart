@@ -49,6 +49,21 @@ class ChatController extends ChangeNotifier {
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
 
+  bool get supportsSessionClose => capabilities?.session.close == true;
+
+  bool get supportsAuthLogout => capabilities?.auth.logout == true;
+
+  bool get canCloseCurrentSession {
+    return currentSession != null &&
+        supportsSessionClose &&
+        !isStreaming &&
+        !isSessionOperationRunning;
+  }
+
+  bool get canLogout {
+    return supportsAuthLogout && !isStreaming && !isSessionOperationRunning;
+  }
+
   StreamSubscription<AgentEvent>? _promptSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? lastLatency;
@@ -274,7 +289,7 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> setConfigOption(String configId, String value) async {
+  Future<void> setConfigOption(String configId, Object value) async {
     final sessionId = currentSession?.id;
     final trimmedConfigId = configId.trim();
     if (sessionId == null || trimmedConfigId.isEmpty || isStreaming) return;
@@ -300,6 +315,55 @@ class ChatController extends ChangeNotifier {
       return;
     }
     await setConfigOption(option.id, modelValue);
+  }
+
+  Future<void> closeCurrentSession() async {
+    final session = currentSession;
+    if (session == null || !supportsSessionClose) return;
+    if (isStreaming || isSessionOperationRunning) return;
+
+    await _runSessionOperation(() async {
+      try {
+        await _promptSubscription?.cancel();
+        _promptSubscription = null;
+        await client.closeSession(sessionId: session.id);
+        currentSession = null;
+        sessions.removeWhere((item) => item.id == session.id);
+        messages.clear();
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        sessionSettingsLoading = false;
+        status = ConnectionStatus.connected;
+        notifyListeners();
+      } catch (error) {
+        _setActionError(error);
+      }
+    });
+  }
+
+  Future<void> logout() async {
+    if (!supportsAuthLogout) return;
+    if (isStreaming || isSessionOperationRunning) return;
+
+    await _runSessionOperation(() async {
+      try {
+        await _promptSubscription?.cancel();
+        _promptSubscription = null;
+        await client.logout();
+        currentSession = null;
+        sessions.clear();
+        messages.clear();
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        sessionSettingsLoading = false;
+        status = ConnectionStatus.connected;
+        notifyListeners();
+      } catch (error) {
+        _setActionError(error);
+      }
+    });
   }
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {

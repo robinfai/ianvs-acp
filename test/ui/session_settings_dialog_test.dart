@@ -60,6 +60,36 @@ void main() {
     expect(controller.sessionSettings.currentModelLabel, 'Claude Sonnet 4');
   });
 
+  testWidgets(
+    'SessionSettingsDialog renders boolean config options as switches',
+    (tester) async {
+      final fake = FakeAgentClient(sessionSettings: _settingsWithBoolean);
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+        ),
+      );
+
+      expect(find.text('Read only'), findsOneWidget);
+      expect(find.byType(Switch), findsOneWidget);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(fake.lastConfigId, 'read_only');
+      expect(fake.lastConfigValue, isTrue);
+      expect(
+        controller.sessionSettings.configOptions.single.currentValue,
+        'true',
+      );
+    },
+  );
+
   testWidgets('SessionSettingsDialog renders no-session empty state', (
     tester,
   ) async {
@@ -80,6 +110,33 @@ void main() {
       find.text('Create or resume a session to inspect settings.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('SessionSettingsDialog confirms and closes active session', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Close Session?'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastClosedSessionId, 'fake-session-1');
+    expect(controller.currentSession, isNull);
   });
 }
 
@@ -116,6 +173,19 @@ const _settingsWithModel = AcpSessionSettings(
         AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
         AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
       ],
+    ),
+  ],
+);
+
+const _settingsWithBoolean = AcpSessionSettings(
+  configOptions: [
+    AcpConfigOption(
+      id: 'read_only',
+      name: 'Read only',
+      type: 'boolean',
+      currentValue: 'false',
+      description: 'Prevent the agent from writing files.',
+      options: [],
     ),
   ],
 );

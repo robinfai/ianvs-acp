@@ -1,17 +1,50 @@
-# ianvs_acp
+# ACP Client
 
-A new Flutter project.
+A Flutter macOS desktop client for local Agent Client Protocol agents.
 
-## Getting Started
+The app can launch stdio ACP agents, create and resume sessions, stream prompt
+turns, display tool calls, render ACP plan and command updates, switch exposed
+session modes/models, close active sessions, and log out when the agent
+advertises those capabilities.
 
-This project is a starting point for a Flutter application.
+## Configuration
 
-A few resources to get you started if this is your first Flutter project:
+By default the app reads:
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```text
+~/.config/ianvs-acp/settings.json
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Example:
+
+```json
+{
+  "default_agent_server": "Codex",
+  "agent_servers": {
+    "Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"]
+    }
+  }
+}
+```
+
+Supported environment overrides:
+
+- `ACP_CONFIG_PATH`
+- `IANVS_ACP_CONFIG`
+- `ACP_WORKSPACE_CWD`
+- `IANVS_ACP_WORKSPACE_CWD`
+- `XDG_CONFIG_HOME`
+
+## Development
+
+```sh
+flutter analyze
+flutter test
+flutter build macos --release
+```
+
+The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
+use `FakeAgentClient` instead of launching a real agent.

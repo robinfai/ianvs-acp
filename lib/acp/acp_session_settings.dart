@@ -93,18 +93,22 @@ class AcpConfigOption {
   final String? category;
   final String? group;
 
-  AcpConfigOption copyWith({String? currentValue}) {
+  AcpConfigOption copyWith({Object? currentValue}) {
     return AcpConfigOption(
       id: id,
       name: name,
       type: type,
-      currentValue: currentValue ?? this.currentValue,
+      currentValue: _stringConfigValue(currentValue) ?? this.currentValue,
       options: options,
       description: description,
       category: category,
       group: group,
     );
   }
+
+  bool get isBooleanOption => type.trim().toLowerCase() == 'boolean';
+
+  bool get currentBoolValue => currentValue.trim().toLowerCase() == 'true';
 
   bool get isModelOption {
     if (options.isEmpty) return false;
@@ -131,6 +135,7 @@ class AcpConfigOption {
   }
 
   String get currentChoiceLabel {
+    if (isBooleanOption) return currentBoolValue ? 'On' : 'Off';
     for (final choice in options) {
       if (choice.value == currentValue) return choice.label;
     }
@@ -150,4 +155,11 @@ class AcpConfigOptionChoice {
   final String? description;
 
   String get label => name.isEmpty ? value : name;
+}
+
+String? _stringConfigValue(Object? value) {
+  if (value == null) return null;
+  if (value is String) return value;
+  if (value is bool) return value.toString();
+  return null;
 }

@@ -11,6 +11,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onLogout,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -20,6 +21,7 @@ void main() {
           status: status,
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
+          onLogout: onLogout,
           onNewSession: () {},
           onResumeSession: () {},
           onReconnect: () {},
@@ -36,6 +38,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onLogout,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -48,6 +51,7 @@ void main() {
         agentServers: agentServers,
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
+        onLogout: onLogout,
       ),
     );
   }
@@ -134,6 +138,26 @@ void main() {
     );
 
     expect(find.text('Kimi Code Dev'), findsOneWidget);
+  });
+
+  testWidgets('AgentToolbar exposes logout when supported', (tester) async {
+    var loggedOut = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onLogout: () {
+        loggedOut = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Log Out'), findsOneWidget);
+
+    await tester.tap(find.text('Log Out'));
+    await tester.pumpAndSettle();
+
+    expect(loggedOut, isTrue);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {

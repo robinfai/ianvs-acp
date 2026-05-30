@@ -115,6 +115,7 @@ class CapabilitiesDialog extends StatelessWidget {
                       icon: Icons.key_outlined,
                       title: 'Auth',
                       children: [
+                        _BoolRow(label: 'Logout', supported: caps.auth.logout),
                         _InfoRow(
                           label: 'Auth methods',
                           value: caps.authMethods.isEmpty

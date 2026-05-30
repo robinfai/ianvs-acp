@@ -29,8 +29,12 @@ abstract class AcpAgentClient {
   Future<List<AcpConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
-    required String value,
+    required Object value,
   });
+
+  Future<void> closeSession({required String sessionId});
+
+  Future<void> logout();
 
   Stream<AgentEvent> sendPrompt({
     required String sessionId,

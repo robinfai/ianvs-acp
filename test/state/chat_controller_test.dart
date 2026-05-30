@@ -267,6 +267,45 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test('close current session clears active state', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue(times: 12);
+    expect(controller.currentSession?.id, 'fake-session-1');
+    expect(controller.messages, isNotEmpty);
+
+    await controller.closeCurrentSession();
+
+    expect(fake.lastClosedSessionId, 'fake-session-1');
+    expect(controller.currentSession, isNull);
+    expect(controller.sessions, isEmpty);
+    expect(controller.messages, isEmpty);
+    expect(controller.status, app_state.ConnectionStatus.connected);
+  });
+
+  test('logout clears local session state', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue(times: 12);
+    expect(controller.canLogout, isTrue);
+
+    await controller.logout();
+
+    expect(fake.loggedOut, isTrue);
+    expect(controller.currentSession, isNull);
+    expect(controller.sessions, isEmpty);
+    expect(controller.messages, isEmpty);
+    expect(controller.status, app_state.ConnectionStatus.connected);
+  });
+
   test('agentTextDone stop reason is rendered as a turn status', () async {
     final controller = ChatController(
       client: FakeAgentClient(

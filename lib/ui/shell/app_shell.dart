@@ -70,6 +70,9 @@ class AppShell extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
+                  onLogout: controller.canLogout
+                      ? () => unawaited(_confirmLogout(context))
+                      : null,
                   onNewSession: startNewSession,
                   onResumeSession: sessionActionsEnabled
                       ? () => _showResumeDialog(context)
@@ -157,6 +160,38 @@ class AppShell extends StatelessWidget {
         return CapabilitiesDialog(capabilities: controller.capabilities);
       },
     );
+  }
+
+  Future<void> _confirmLogout(BuildContext context) async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Log Out?'),
+          content: Text(
+            'Log out of the connected $agentName ACP agent and clear local '
+            'session state.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: FilledButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: AppColors.danger,
+              ),
+              child: const Text('Log Out'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldLogout == true) {
+      await controller.logout();
+    }
   }
 
   List<AgentSession> _sessions() {

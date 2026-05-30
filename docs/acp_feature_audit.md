@@ -9,7 +9,7 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gaps are client-provided filesystem/terminal providers, auth/logout UI, active session close/fork actions, and richer prompt-content support. Those are protocol features, but they need product/security decisions rather than only visual work.
+The largest remaining gaps are client-provided filesystem/terminal providers, authenticate/login UI, active session fork actions, and richer prompt-content support. Those are protocol features, but they need product/security decisions rather than only visual work.
 
 ## Official Feature Index
 
@@ -17,9 +17,9 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | --- | --- | --- | --- |
 | Transport | https://agentclientprotocol.com/protocol/transports | Done for stdio | `dart_acp` launches the configured agent through stdio. User config supports Zed-style `agent_servers` in `~/.config/ianvs-acp/settings.json`. Streamable HTTP is not implemented. |
 | Initialization / capabilities | https://agentclientprotocol.com/protocol/initialization | Partial | The client initializes, parses protocol version, `agentCapabilities`, `authMethods`, prompt/MCP/session capabilities, and shows them in compatibility UI. It does not yet send `clientInfo` or display `agentInfo`. |
-| Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Missing | `authMethods` are counted/displayed, but there is no `authenticate` or `logout` workflow. |
+| Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Partial | `authMethods` are counted/displayed, and the toolbar exposes confirmed logout when the agent advertises `auth.logout`. There is no `authenticate` workflow yet. |
 | Session setup: `session/new`, `session/load`, `session/resume` | https://agentclientprotocol.com/protocol/session-setup | Mostly done | New sessions work. Resume prefers `session/load` when available and falls back to `session/resume`. Empty resumed sessions now render as `Session ready` instead of a misleading new-session empty state. |
-| Session close | https://agentclientprotocol.com/protocol/session-setup | Missing | Capabilities dialog detects `sessionCapabilities.close`, but the client has no close action yet. |
+| Session close | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes a confirmed `Close Session` action when `sessionCapabilities.close` is advertised. Closing clears the active local session and asks the agent to free resources without deleting persisted history. |
 | Session list / metadata | https://agentclientprotocol.com/protocol/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, and supports text search at project and conversation levels. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Attachments are sent as file resource links through `dart_acp` prompt mentions. |
 | Content blocks | https://agentclientprotocol.com/protocol/content | Partial | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side image/audio/embedded resource content is not fully enforced by capability checks. File attachments use resource links, which are baseline ACP content, but model/agent-specific support can still vary; Spark may reject or ignore file context even though ACP can represent it. |
@@ -28,7 +28,7 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | Terminal provider | https://agentclientprotocol.com/protocol/terminals | Missing by design | The client currently advertises no terminal support; no live terminal UI is wired. |
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
-| Session config options | https://agentclientprotocol.com/protocol/session-config-options | Partial to done | `session/set_config_option` is supported and config options render in the session settings dialog. `config_option_update` is now consumed as complete state. The local model understands official `category` as well as older `group`. Initial `configOptions` returned from `session/new` may still be limited by the current `dart_acp` API, which exposes `newSession` as only a session id. |
+| Session config options | https://agentclientprotocol.com/protocol/session-config-options | Partial to done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is now consumed as complete state. The local model understands official `category` as well as older `group`. Initial `configOptions` returned from `session/new` may still be limited by the current `dart_acp` API, which exposes `newSession` as only a session id. |
 | Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Display-only | `available_commands_update` renders available commands and details. Command invocation is still manual by typing `/command ...`; there is no command picker/autocomplete. Command-list updates now replace the previous command snapshot. |
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Partial | Raw capability `_meta` and session list `_meta` are displayed. No custom extension request UI is implemented. |
 | MCP servers | https://agentclientprotocol.com/protocol/session-setup | Partial | The `dart_acp` config can pass MCP server arrays, but the app-level user config currently only covers `agent_servers`; MCP server configuration is not exposed yet. |
@@ -102,8 +102,8 @@ Environment overrides:
 
 These are not blockers for the current UI pass, but need product/security decisions:
 
-- Decide whether to expose `authenticate` / `logout`, including where login state should live in the UI.
-- Decide whether `session/close` should be a visible destructive action, and whether it needs confirmation.
+- Decide whether to expose `authenticate`, including where login state should live in the UI.
+- Decide whether to expose `session/fork`, including how forked sessions should appear in the sidebar.
 - Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
 - Decide whether to add a slash-command picker/autocomplete instead of only rendering advertised commands.
 - Decide whether user config should also include MCP server definitions, not only agent server definitions.

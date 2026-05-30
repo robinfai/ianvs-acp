@@ -197,15 +197,59 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<List<AcpConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
-    required String value,
+    required Object value,
   }) async {
     final client = _requireClient();
+    if (value is bool) {
+      final response = await client.sendRaw(
+        'session/set_config_option',
+        <String, dynamic>{
+          'sessionId': sessionId,
+          'configId': configId,
+          'type': 'boolean',
+          'value': value,
+        },
+      );
+      final configOptions = response['configOptions'];
+      if (configOptions is List) {
+        return _cacheRawConfigOptions(sessionId, configOptions);
+      }
+      return _applyConfigOptionOverride(sessionId, configId, value);
+    }
     final options = await client.setConfigOption(
       sessionId: sessionId,
       configId: configId,
-      value: value,
+      value: value.toString(),
     );
     return _cacheConfigOptions(sessionId, options);
+  }
+
+  @override
+  Future<void> closeSession({required String sessionId}) async {
+    final client = _requireClient();
+    if (_capabilities?.session.close != true) {
+      throw StateError('ACP agent does not support session/close.');
+    }
+    await client.sendRaw('session/close', <String, dynamic>{
+      'sessionId': sessionId,
+    });
+    if (_activeSessionId == sessionId) {
+      _activeSessionId = null;
+    }
+    _modeOverridesBySession.remove(sessionId);
+    _configOptionsBySession.remove(sessionId);
+  }
+
+  @override
+  Future<void> logout() async {
+    final client = _requireClient();
+    if (_capabilities?.auth.logout != true) {
+      throw StateError('ACP agent does not support logout.');
+    }
+    await client.sendRaw('logout', const <String, dynamic>{});
+    _activeSessionId = null;
+    _modeOverridesBySession.clear();
+    _configOptionsBySession.clear();
   }
 
   @override
@@ -503,11 +547,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     final id = raw['id'];
     final name = raw['name'];
     final type = raw['type'];
-    final currentValue = raw['currentValue'];
+    final currentValue = _configValueFromRaw(raw['currentValue']);
     if (id is! String ||
         name is! String ||
         type is! String ||
-        currentValue is! String) {
+        currentValue == null) {
       return null;
     }
 
@@ -533,6 +577,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     );
   }
 
+  String? _configValueFromRaw(Object? raw) {
+    if (raw is String) return raw;
+    if (raw is bool) return raw.toString();
+    return null;
+  }
+
   AcpConfigOptionChoice? _configChoiceFromRawMap(Map<String, Object?> raw) {
     final value = raw['value'];
     final name = raw['name'];
@@ -553,6 +603,28 @@ class DartAcpAgentClient implements AcpAgentClient {
     final mapped =
         options?.map(_configOptionFromAcp).toList() ??
         const <AcpConfigOption>[];
+    _configOptionsBySession[sessionId] = mapped;
+    return mapped;
+  }
+
+  List<AcpConfigOption> _cacheRawConfigOptions(String sessionId, Object? raw) {
+    final mapped = _configOptionsFromRaw(raw);
+    _configOptionsBySession[sessionId] = mapped;
+    return mapped;
+  }
+
+  List<AcpConfigOption> _applyConfigOptionOverride(
+    String sessionId,
+    String configId,
+    Object value,
+  ) {
+    final current =
+        _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
+    final mapped = current.map((option) {
+      return option.id == configId
+          ? option.copyWith(currentValue: value)
+          : option;
+    }).toList();
     _configOptionsBySession[sessionId] = mapped;
     return mapped;
   }

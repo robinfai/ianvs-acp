@@ -24,6 +24,7 @@ void main() {
         close: true,
         rawKeys: ['close', 'fork', 'list'],
       ),
+      auth: AcpAuthCapabilities(logout: true),
       client: AcpClientCapabilities(
         fsReadTextFile: false,
         fsWriteTextFile: false,
@@ -53,6 +54,7 @@ void main() {
     expect(find.text('List'), findsOneWidget);
     expect(find.text('Fork'), findsOneWidget);
     expect(find.text('Close'), findsWidgets);
+    expect(find.text('Logout'), findsOneWidget);
     expect(find.text('Advertise fs/read_text_file'), findsOneWidget);
   });
 

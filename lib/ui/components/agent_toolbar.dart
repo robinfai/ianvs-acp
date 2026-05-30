@@ -16,6 +16,7 @@ class AgentToolbar extends StatelessWidget {
     this.canSwitchAgent = true,
     this.onSelectAgent,
     this.onShowAgentConfig,
+    this.onLogout,
   });
 
   final String agentName;
@@ -27,6 +28,7 @@ class AgentToolbar extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -72,6 +74,7 @@ class AgentToolbar extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
+                  onLogout: onLogout,
                 ),
                 SizedBox(width: compact ? 5 : 8),
                 _ToolbarAction(
@@ -109,6 +112,7 @@ class _AgentMenuButton extends StatelessWidget {
     required this.canSwitchAgent,
     required this.onSelectAgent,
     required this.onShowAgentConfig,
+    required this.onLogout,
   });
 
   final String agentName;
@@ -117,10 +121,14 @@ class _AgentMenuButton extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onLogout;
 
   @override
   Widget build(BuildContext context) {
-    final hasMenu = agentServers.isNotEmpty || onShowAgentConfig != null;
+    final hasMenu =
+        agentServers.isNotEmpty ||
+        onShowAgentConfig != null ||
+        onLogout != null;
     return PopupMenuButton<_AgentMenuSelection>(
       tooltip: 'Agents',
       enabled: hasMenu,
@@ -131,6 +139,8 @@ class _AgentMenuButton extends StatelessWidget {
             if (agentName != null) onSelectAgent?.call(agentName);
           case _AgentMenuSelectionType.configure:
             onShowAgentConfig?.call();
+          case _AgentMenuSelectionType.logout:
+            onLogout?.call();
         }
       },
       itemBuilder: (context) {
@@ -187,6 +197,30 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
+          if (onLogout != null &&
+              (agentServers.isNotEmpty || onShowAgentConfig != null))
+            const PopupMenuDivider(),
+          if (onLogout != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.logout(),
+              child: Row(
+                children: [
+                  Icon(Icons.logout_rounded, size: 17, color: AppColors.danger),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Log Out',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.danger,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ];
       },
       child: _ToolbarButtonShell(
@@ -198,7 +232,7 @@ class _AgentMenuButton extends StatelessWidget {
   }
 }
 
-enum _AgentMenuSelectionType { agent, configure }
+enum _AgentMenuSelectionType { agent, configure, logout }
 
 class _AgentMenuSelection {
   const _AgentMenuSelection.agent(this.agentName)
@@ -206,6 +240,10 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.configure()
     : type = _AgentMenuSelectionType.configure,
+      agentName = null;
+
+  const _AgentMenuSelection.logout()
+    : type = _AgentMenuSelectionType.logout,
       agentName = null;
 
   final _AgentMenuSelectionType type;
