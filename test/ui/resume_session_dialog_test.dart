@@ -108,6 +108,7 @@ void main() {
 
     expect(find.text('other'), findsOneWidget);
     expect(find.textContaining('projotherect-a'), findsNothing);
+    expect(_loadButton(tester).onPressed, isNull);
 
     await tester.tap(find.byKey(const ValueKey('resume-project-dropdown')));
     await tester.pumpAndSettle();
@@ -115,12 +116,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Other chat'), findsOneWidget);
+    expect(_loadButton(tester).onPressed, isNotNull);
 
     await tester.enterText(
       find.byKey(const ValueKey('resume-conversation-search')),
       'beta',
     );
     await tester.pumpAndSettle();
+    expect(_loadButton(tester).onPressed, isNull);
+
     await tester.tap(
       find.byKey(const ValueKey('resume-conversation-dropdown')),
     );
@@ -130,5 +134,10 @@ void main() {
 
     expect(find.text('Beta task'), findsOneWidget);
     expect(find.textContaining('Othbetaer'), findsNothing);
+    expect(_loadButton(tester).onPressed, isNotNull);
   });
+}
+
+FilledButton _loadButton(WidgetTester tester) {
+  return tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Load'));
 }

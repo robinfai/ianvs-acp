@@ -76,7 +76,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
           label: const Text('Refresh'),
         ),
         FilledButton(
-          onPressed: _selectedProject == null || _selectedConversation == null
+          onPressed: !_canLoadSelection()
               ? null
               : () {
                   Navigator.of(context).pop(
@@ -90,6 +90,18 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
         ),
       ],
     );
+  }
+
+  bool _canLoadSelection() {
+    final selectedProject = _selectedProject;
+    final selectedConversation = _selectedConversation;
+    if (_loading || selectedProject == null || selectedConversation == null) {
+      return false;
+    }
+    if (!_filteredProjects().contains(selectedProject)) return false;
+    return _filteredConversations(
+      selectedProject.sessions,
+    ).contains(selectedConversation);
   }
 
   Widget _content() {
