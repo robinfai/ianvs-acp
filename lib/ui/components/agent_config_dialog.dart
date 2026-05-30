@@ -152,23 +152,52 @@ class _McpServersPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final server in servers) ...[
-            _DetailRow(label: 'Name', value: server.name),
-            const SizedBox(height: 6),
-            _DetailRow(label: 'Type', value: server.type),
-            const SizedBox(height: 6),
-            _DetailRow(
-              label: server.command.isNotEmpty ? 'Command' : 'URL',
-              value: server.command.isNotEmpty ? server.command : server.url,
+          for (var index = 0; index < servers.length; index += 1)
+            _McpServerDetails(
+              server: servers[index],
+              isLast: index == servers.length - 1,
             ),
-            if (server != servers.last) ...[
-              const SizedBox(height: 8),
-              const Divider(height: 1, color: AppColors.border),
-              const SizedBox(height: 8),
-            ],
-          ],
         ],
       ),
+    );
+  }
+}
+
+class _McpServerDetails extends StatelessWidget {
+  const _McpServerDetails({required this.server, required this.isLast});
+
+  final McpServerConfig server;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    final headerKeys = server.headerKeys;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DetailRow(label: 'Name', value: server.name),
+        const SizedBox(height: 6),
+        _DetailRow(label: 'Type', value: server.type),
+        const SizedBox(height: 6),
+        _DetailRow(
+          label: server.command.isNotEmpty ? 'Command' : 'URL',
+          value: server.command.isNotEmpty ? server.command : server.url,
+        ),
+        if (server.url.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          _DetailRow(
+            label: 'Headers',
+            value: headerKeys.isEmpty
+                ? 'No header keys'
+                : headerKeys.join(', '),
+          ),
+        ],
+        if (!isLast) ...[
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: AppColors.border),
+          const SizedBox(height: 8),
+        ],
+      ],
     );
   }
 }

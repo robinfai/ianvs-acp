@@ -494,6 +494,24 @@ class McpServerConfig {
 
   String get url => _stringValue(raw['url']) ?? '';
 
+  List<String> get headerKeys {
+    final headers = raw['headers'];
+    final keys = <String>[];
+    if (headers is Map) {
+      for (final key in headers.keys) {
+        if (key is String && key.trim().isNotEmpty) keys.add(key.trim());
+      }
+    } else if (headers is List) {
+      for (final header in headers) {
+        if (header is! Map) continue;
+        final name = _stringValue(header['name']);
+        if (name != null) keys.add(name);
+      }
+    }
+    keys.sort();
+    return List.unmodifiable(keys);
+  }
+
   Map<String, dynamic> toJson() => _jsonMap(raw, fieldName: 'mcp_servers');
 
   factory McpServerConfig.fromJson({required int index, required Map json}) {

@@ -38,6 +38,16 @@ void main() {
                   'command': '/usr/local/bin/mcp-filesystem',
                 },
               ),
+              McpServerConfig(
+                raw: {
+                  'name': 'api-tools',
+                  'type': 'http',
+                  'url': 'https://api.example.com/mcp',
+                  'headers': [
+                    {'name': 'X-MCP-Token', 'value': 'secret'},
+                  ],
+                },
+              ),
             ],
             agentServers: [
               AgentServerConfig(
@@ -77,6 +87,10 @@ void main() {
     expect(find.text('MCP Servers'), findsOneWidget);
     expect(find.text('filesystem'), findsOneWidget);
     expect(find.text('/usr/local/bin/mcp-filesystem'), findsOneWidget);
+    expect(find.text('api-tools'), findsOneWidget);
+    expect(find.text('https://api.example.com/mcp'), findsOneWidget);
+    expect(find.text('X-MCP-Token'), findsOneWidget);
+    expect(find.text('secret'), findsNothing);
     expect(find.text('Client Providers'), findsOneWidget);
     expect(find.text('FS read'), findsOneWidget);
     expect(find.text('Terminal'), findsOneWidget);
