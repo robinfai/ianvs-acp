@@ -102,6 +102,7 @@ class FakeAgentClient implements AcpAgentClient {
 
   final StreamController<AcpPermissionRequest> _permissionRequests =
       StreamController<AcpPermissionRequest>.broadcast();
+  bool _permissionRequestsClosed = false;
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -411,6 +412,12 @@ class FakeAgentClient implements AcpAgentClient {
     _permissionRequests.add(request);
   }
 
+  Future<void> closePermissionRequests() async {
+    if (_permissionRequestsClosed) return;
+    _permissionRequestsClosed = true;
+    await _permissionRequests.close();
+  }
+
   @override
   Future<void> respondToPermissionRequest({
     required String id,
@@ -423,6 +430,6 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     connected = false;
-    await _permissionRequests.close();
+    await closePermissionRequests();
   }
 }

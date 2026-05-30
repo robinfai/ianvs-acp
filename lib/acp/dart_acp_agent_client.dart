@@ -93,7 +93,7 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   @override
   Future<void> connect() async {
-    await dispose();
+    await _disposeActiveClient(closePermissionStream: false);
     final configuredMcpServers = mcpServers
         .map(Map<String, dynamic>.from)
         .toList();
@@ -1411,6 +1411,12 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   @override
   Future<void> dispose() async {
+    await _disposeActiveClient(closePermissionStream: true);
+  }
+
+  Future<void> _disposeActiveClient({
+    required bool closePermissionStream,
+  }) async {
     final client = _client;
     final transport = _transport;
     _client = null;
@@ -1426,7 +1432,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     _configOptionsBySession.clear();
     _pendingRawProtocolRequests.clear();
     _rawSessionResultsBySession.clear();
-    _permissionBridge.cancelAll();
+    if (closePermissionStream) {
+      await _permissionBridge.dispose();
+    } else {
+      _permissionBridge.cancelAll();
+    }
     await _disposeClient(client, transport);
   }
 
@@ -1524,11 +1534,12 @@ class _AcpPermissionBridge {
   final Map<String, _PendingPermissionRequest> _pending =
       <String, _PendingPermissionRequest>{};
   int _nextId = 0;
+  bool _isClosed = false;
 
   Stream<AcpPermissionRequest> get requests => _requests.stream;
 
   Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
-    if (!_requests.hasListener) {
+    if (_isClosed || !_requests.hasListener) {
       return acp.PermissionOutcome.cancelled;
     }
 
@@ -1579,6 +1590,13 @@ class _AcpPermissionBridge {
     for (final id in ids) {
       respond(id: id, decision: AcpPermissionDecision.cancel);
     }
+  }
+
+  Future<void> dispose() async {
+    if (_isClosed) return;
+    _isClosed = true;
+    cancelAll();
+    await _requests.close();
   }
 
   acp.PermissionOutcome _outcomeForDecision(AcpPermissionDecision decision) {

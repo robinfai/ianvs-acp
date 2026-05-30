@@ -144,15 +144,17 @@ export of the newest bounded in-process audit entries. Resolved entries record
 whether the decision came from a manual action, trust rule, or system
 cancellation. Explicit permission trust rules can auto-allow or auto-deny
 matching requests. Requests still fall back to `cancelled` when no UI listener
-is active, and broader trust policy remains deliberately narrow.
+is active, pending requests are system-cancelled when the permission stream
+closes, and broader trust policy remains deliberately narrow.
 
 Automated acceptance:
 
 - `test/ui/chat_timeline_test.dart` verifies tool calls render as compact,
   expandable cards and grouped cards.
 - `test/acp/dart_acp_agent_client_test.dart` verifies agent permission requests
-  receive a `cancelled` outcome when no interactive UI is listening and receive
-  a selected allow option when approved through the interactive response path.
+  receive a `cancelled` outcome when no interactive UI is listening, receive a
+  selected allow option when approved through the interactive response path, and
+  close the permission request stream on client disposal.
 - `test/ui/acp_client_app_test.dart` verifies the permission banner resolves an
   approval back to the agent client and displays the completed request in
   Permission History.
@@ -161,8 +163,9 @@ Automated acceptance:
   export when no entries exist.
 - `test/state/chat_controller_test.dart` verifies permission requests are
   recorded as pending, resolved to the selected decision, cancelled when a newer
-  pending request supersedes them, and trimmed to a bounded in-process audit
-  window. It also verifies matching trust rules auto-resolve requests.
+  pending request supersedes them, system-cancelled when the permission stream
+  closes, and trimmed to a bounded in-process audit window. It also verifies
+  matching trust rules auto-resolve requests.
 - `test/config/acp_client_config_test.dart` verifies permission trust rule
   parsing and invalid config rejection.
 - `test/ui/app_shell_test.dart` verifies the Agents menu exposes Permission

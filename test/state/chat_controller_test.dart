@@ -478,6 +478,41 @@ void main() {
   });
 
   test(
+    'permission history cancels pending request when stream closes',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      await fake.closePermissionRequests();
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+    },
+  );
+
+  test(
     'permission history drops oldest entries over the in-memory limit',
     () async {
       final fake = FakeAgentClient();

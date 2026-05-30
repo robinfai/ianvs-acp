@@ -41,6 +41,7 @@ class ChatController extends ChangeNotifier {
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
+      onDone: _handlePermissionRequestsDone,
     );
   }
 
@@ -641,6 +642,18 @@ class ChatController extends ChangeNotifier {
         _respondToTrustedPermissionRequest(request.id, trustedDecision),
       );
     }
+    _notifyListeners();
+  }
+
+  void _handlePermissionRequestsDone() {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    pendingPermissionRequest = null;
+    _recordPermissionDecision(
+      request.id,
+      AcpPermissionDecision.cancel,
+      source: AcpPermissionDecisionSource.system,
+    );
     _notifyListeners();
   }
 

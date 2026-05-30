@@ -26,6 +26,23 @@ void main() {
     );
   });
 
+  test('dispose closes permission request stream', () async {
+    final client = DartAcpAgentClient(agentCommand: 'unused');
+    var streamClosed = false;
+    final subscription = client.permissionRequests.listen(
+      (_) {},
+      onDone: () {
+        streamClosed = true;
+      },
+    );
+
+    await client.dispose();
+    await pumpEventQueue();
+
+    expect(streamClosed, isTrue);
+    await subscription.cancel();
+  });
+
   test('filters MCP server transports by agent capabilities', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final sessionParamsFile = File('${tempDir.path}/session_params.json');
