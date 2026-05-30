@@ -403,6 +403,88 @@ void main() {
       }),
       throwsA(isA<FormatException>()),
     );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'type': 'http',
+            'command': '/usr/local/bin/mcp-http',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'type': 'http',
+            'url': 'ws://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'stdio-tools',
+            'type': 'stdio',
+            'url': 'https://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'command': '/usr/local/bin/mcp-http',
+            'url': 'https://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'url': 'https://api.example.com/mcp',
+            'headers': [
+              {'name': 'Bad Header', 'value': 'token'},
+            ],
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'url': 'https://api.example.com/mcp',
+            'headers': [
+              {'name': 'Authorization', 'value': 'Bearer\nbad'},
+            ],
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
   });
 
   test('rejects invalid websocket agent server config', () {

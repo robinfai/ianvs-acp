@@ -510,8 +510,40 @@ class McpServerConfig {
     if (command == null && url == null) {
       throw FormatException('MCP server "$name" requires command or url.');
     }
-    if ((type == 'http' || type == 'sse') || (command == null && url != null)) {
-      _ensureNameValueList(raw, key: 'headers', serverName: name);
+    if (type == 'stdio') {
+      if (command == null) {
+        throw FormatException(
+          'MCP server "$name" stdio transport requires command.',
+        );
+      }
+      if (url != null) {
+        throw FormatException(
+          'MCP server "$name" stdio transport must not define url.',
+        );
+      }
+    }
+    if (type == 'http' || type == 'sse') {
+      if (url == null) {
+        throw FormatException(
+          'MCP server "$name" $type transport requires url.',
+        );
+      }
+      if (command != null) {
+        throw FormatException(
+          'MCP server "$name" $type transport must not define command.',
+        );
+      }
+    }
+    if (type == null && command != null && url != null) {
+      throw FormatException(
+        'MCP server "$name" must not define both command and url without type.',
+      );
+    }
+
+    final inferredRemoteHttp = type == null && command == null && url != null;
+    if (type == 'http' || type == 'sse' || inferredRemoteHttp) {
+      _ensureHttpUrl(url!, serverName: name, transportType: type ?? 'http');
+      _ensureRemoteHeaderList(raw, key: 'headers', serverName: name);
     } else {
       _ensureStringList(raw, key: 'args', serverName: name);
       _ensureNameValueList(raw, key: 'env', serverName: name);
@@ -753,5 +785,55 @@ void _ensureNameValueList(
         'MCP server "$serverName" $key entry $index requires name and value.',
       );
     }
+  }
+}
+
+void _ensureRemoteHeaderList(
+  Map<String, dynamic> raw, {
+  required String key,
+  required String serverName,
+}) {
+  final value = raw[key];
+  if (value == null) {
+    raw[key] = const <Map<String, String>>[];
+    return;
+  }
+  if (value is! List) {
+    throw FormatException('MCP server "$serverName" $key must be a list.');
+  }
+  for (var index = 0; index < value.length; index++) {
+    final item = value[index];
+    if (item is! Map) {
+      throw FormatException(
+        'MCP server "$serverName" $key entry $index must be an object.',
+      );
+    }
+    final name = item['name'];
+    final itemValue = item['value'];
+    if (name is! String || itemValue is! String) {
+      throw FormatException(
+        'MCP server "$serverName" $key entry $index requires name and value.',
+      );
+    }
+    _validateHttpHeaderEntry(
+      name: name,
+      value: itemValue,
+      fieldName: key,
+      serverName: serverName,
+      index: index,
+    );
+  }
+}
+
+void _ensureHttpUrl(
+  String url, {
+  required String serverName,
+  required String transportType,
+}) {
+  final uri = Uri.tryParse(url);
+  if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+    throw FormatException(
+      'MCP server "$serverName" $transportType transport url must use http or https.',
+    );
   }
 }
