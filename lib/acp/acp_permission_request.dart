@@ -75,7 +75,16 @@ class AcpPermissionRequest {
     return _permissionOptionLabel(
       options,
       fallback: 'Allow Once',
-      keywords: const ['allow', 'approve', 'accept', 'continue', 'proceed'],
+      keywords: const [
+        'allow',
+        'allowed',
+        'approve',
+        'approved',
+        'accept',
+        'accepted',
+        'continue',
+        'proceed',
+      ],
       genericLabels: const ['allow', 'allow once'],
     );
   }
@@ -84,7 +93,17 @@ class AcpPermissionRequest {
     return _permissionOptionLabel(
       options,
       fallback: 'Deny',
-      keywords: const ['deny', 'reject', 'decline', 'block'],
+      keywords: const [
+        'deny',
+        'denied',
+        'reject',
+        'rejected',
+        'decline',
+        'declined',
+        'block',
+        'blocked',
+        'disallow',
+      ],
       genericLabels: const ['deny', 'reject'],
     );
   }
@@ -183,11 +202,18 @@ String _permissionOptionLabel(
     final label = _normalizedPermissionOption(option);
     if (label.isEmpty) continue;
     final lowerLabel = label.toLowerCase();
-    if (!keywords.any(lowerLabel.contains)) continue;
+    if (!_containsPermissionKeyword(lowerLabel, keywords)) continue;
     if (genericLabels.contains(lowerLabel)) return fallback;
     return _truncatePermissionOptionLabel(label);
   }
   return fallback;
+}
+
+bool _containsPermissionKeyword(String lowerLabel, List<String> keywords) {
+  final words = lowerLabel
+      .split(RegExp(r'[^a-z0-9]+'))
+      .where((word) => word.isNotEmpty);
+  return words.any(keywords.contains);
 }
 
 String _normalizedPermissionOption(String value) {
