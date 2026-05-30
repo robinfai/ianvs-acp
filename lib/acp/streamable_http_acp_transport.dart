@@ -27,6 +27,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       <StreamSubscription<String>>[];
 
   static const Duration _teardownTimeout = Duration(seconds: 2);
+  static const String _protocolVersionHeader = 'Acp-Protocol-Version';
 
   StreamChannelController<String>? _controller;
   StreamSubscription<String>? _outboundSubscription;
@@ -270,6 +271,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final connectionId = _connectionId;
     if (connectionId != null && connectionId.isNotEmpty) {
       request.headers.set('Acp-Connection-Id', connectionId);
+      request.headers.set(_protocolVersionHeader, '1');
     }
     if (sessionId != null && sessionId.isNotEmpty) {
       request.headers.set('Acp-Session-Id', sessionId);

@@ -28,8 +28,8 @@ URL, and draft Streamable HTTP/SSE agents can be configured with
 `agent_servers[].type = "http"` or `"sse"` plus an `http` or `https` URL. The
 new HTTP transport covers long-lived connection/session SSE streams, POST/202
 response routing, `Acp-Connection-Id`, `Acp-Session-Id`, headers, and cookies,
-plus best-effort `DELETE` teardown, but the draft profile still needs HTTP/2
-enforcement and real-agent interoperability testing.
+`Acp-Protocol-Version`, plus best-effort `DELETE` teardown, but the draft
+profile still needs HTTP/2 enforcement and real-agent interoperability testing.
 
 Automated acceptance:
 

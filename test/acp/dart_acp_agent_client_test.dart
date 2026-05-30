@@ -531,6 +531,9 @@ Future<void> main() async {
     String? cookieHeader;
     String? deleteConnectionHeader;
     String? deleteCookieHeader;
+    String? connectionStreamProtocolHeader;
+    String? sessionPostProtocolHeader;
+    String? deleteProtocolHeader;
     var disposed = false;
 
     Future<void> sendSse(
@@ -546,6 +549,9 @@ Future<void> main() async {
 
     Future<void> openSse(HttpRequest request) async {
       final sessionId = request.headers.value('Acp-Session-Id');
+      connectionStreamProtocolHeader ??= request.headers.value(
+        'Acp-Protocol-Version',
+      );
       request.response.bufferOutput = false;
       request.response.headers
         ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
@@ -569,6 +575,7 @@ Future<void> main() async {
       if (request.method == 'DELETE') {
         deleteConnectionHeader = request.headers.value('Acp-Connection-Id');
         deleteCookieHeader = request.headers.value(HttpHeaders.cookieHeader);
+        deleteProtocolHeader = request.headers.value('Acp-Protocol-Version');
         request.response.statusCode = HttpStatus.accepted;
         await request.response.close();
         return;
@@ -613,6 +620,9 @@ Future<void> main() async {
         });
       } else if (method == 'session/prompt') {
         sessionHeader = request.headers.value('Acp-Session-Id');
+        sessionPostProtocolHeader = request.headers.value(
+          'Acp-Protocol-Version',
+        );
         request.response.statusCode = HttpStatus.accepted;
         await request.response.close();
         await sendSse(sessionStream, <String, dynamic>{
@@ -653,7 +663,9 @@ Future<void> main() async {
 
       expect(authorizationHeader, 'Bearer test-token');
       expect(connectionHeader, 'connection-1');
+      expect(connectionStreamProtocolHeader, '1');
       expect(sessionHeader, 'http-session');
+      expect(sessionPostProtocolHeader, '1');
       expect(cookieHeader, contains('sticky=yes'));
       expect(client.capabilities?.agentInfo['name'], 'HTTP Agent');
       expect(session.id, 'http-session');
@@ -663,6 +675,7 @@ Future<void> main() async {
       disposed = true;
       expect(deleteConnectionHeader, 'connection-1');
       expect(deleteCookieHeader, contains('sticky=yes'));
+      expect(deleteProtocolHeader, '1');
     } finally {
       if (!disposed) {
         await client.dispose();
