@@ -332,6 +332,34 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test('fork current session creates independent active session', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue(times: 12);
+
+    expect(controller.canForkCurrentSession, isTrue);
+    expect(controller.sessions.map((session) => session.id), [
+      'fake-session-1',
+    ]);
+
+    await controller.forkCurrentSession();
+
+    expect(fake.lastForkedSessionId, 'fake-session-1');
+    expect(controller.currentSession?.id, 'fake-fork-2');
+    expect(controller.currentSession?.displayTitle, 'Fork of fake-ses');
+    expect(controller.currentSession?.agentName, 'Codex');
+    expect(controller.sessions.map((session) => session.id), [
+      'fake-fork-2',
+      'fake-session-1',
+    ]);
+    expect(controller.messages, isEmpty);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
   test('close current session clears active state', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

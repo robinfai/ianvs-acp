@@ -40,25 +40,6 @@ Manual decision:
 - Decide how credentials or auth handoff state should be stored, refreshed, and
   cleared.
 
-### session-fork
-
-Status: product decision needed.
-
-Non-blocking because: session creation, resume, close, and metadata updates are
-working; fork changes session lineage and sidebar semantics.
-
-Automated acceptance:
-
-- `test/ui/capabilities_dialog_test.dart` verifies fork capability visibility.
-- `test/ui/session_sidebar_test.dart` covers session list rendering behavior that
-  forked sessions would extend.
-
-Manual decision:
-
-- Decide whether forked sessions appear as independent sidebar rows, nested
-  children, or a filtered branch view.
-- Decide whether fork should preserve current model/config state in the UI.
-
 ### fs-terminal-providers
 
 Status: security decision needed.

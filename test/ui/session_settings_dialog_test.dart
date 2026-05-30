@@ -78,6 +78,7 @@ void main() {
       expect(find.text('Read only'), findsOneWidget);
       expect(find.byType(Switch), findsOneWidget);
 
+      await tester.ensureVisible(find.byType(Switch));
       await tester.tap(find.byType(Switch));
       await tester.pumpAndSettle();
 
@@ -137,6 +138,29 @@ void main() {
 
     expect(fake.lastClosedSessionId, 'fake-session-1');
     expect(controller.currentSession, isNull);
+  });
+
+  testWidgets('SessionSettingsDialog forks active session when supported', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Fork Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastForkedSessionId, 'fake-session-1');
+    expect(controller.currentSession?.id, 'fake-fork-2');
+    expect(find.text('Session fake-for'), findsOneWidget);
   });
 }
 

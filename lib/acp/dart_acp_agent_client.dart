@@ -219,6 +219,28 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
+  Future<AgentSession> forkSession({
+    required String sessionId,
+    required String cwd,
+  }) async {
+    final client = _requireClient();
+    if (_capabilities?.session.fork != true) {
+      throw StateError('ACP agent does not support session/fork.');
+    }
+    final result = await client.forkSession(sessionId: sessionId);
+    _activeSessionId = result.sessionId;
+    final configOptions = result.configOptions;
+    if (configOptions != null) {
+      _cacheConfigOptions(result.sessionId, configOptions);
+    }
+    return AgentSession(
+      id: result.sessionId,
+      cwd: cwd,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  @override
   Future<void> closeSession({required String sessionId}) async {
     final client = _requireClient();
     if (_capabilities?.session.close != true) {

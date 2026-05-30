@@ -5,7 +5,8 @@ A Flutter macOS desktop client for local Agent Client Protocol agents.
 The app can launch stdio ACP agents, create and resume sessions, stream prompt
 turns, display tool calls, render ACP plan and command updates, switch exposed
 session modes/models, close active sessions, and log out when the agent
-advertises those capabilities.
+advertises those capabilities. It can also fork active sessions when the agent
+supports `session/fork`.
 
 ## Configuration
 

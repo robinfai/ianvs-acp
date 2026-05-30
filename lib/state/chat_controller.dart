@@ -51,7 +51,16 @@ class ChatController extends ChangeNotifier {
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
+  bool get supportsSessionFork => capabilities?.session.fork == true;
+
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
+
+  bool get canForkCurrentSession {
+    return currentSession != null &&
+        supportsSessionFork &&
+        !isStreaming &&
+        !isSessionOperationRunning;
+  }
 
   bool get canCloseCurrentSession {
     return currentSession != null &&
@@ -321,6 +330,41 @@ class ChatController extends ChangeNotifier {
       return;
     }
     await setConfigOption(option.id, modelValue);
+  }
+
+  Future<void> forkCurrentSession() async {
+    final session = currentSession;
+    if (session == null || !supportsSessionFork) return;
+    if (isStreaming || isSessionOperationRunning) return;
+
+    await _runSessionOperation(() async {
+      try {
+        await _promptSubscription?.cancel();
+        _promptSubscription = null;
+        final forked = await client.forkSession(
+          sessionId: session.id,
+          cwd: session.cwd,
+        );
+        final forkedTitle = forked.title?.trim().isNotEmpty == true
+            ? forked.title
+            : 'Fork of ${session.displayTitle}';
+        final updatedSession = forked.copyWith(
+          title: forkedTitle,
+          agentName: agentName,
+        );
+        currentSession = updatedSession;
+        _upsertSession(updatedSession);
+        messages.clear();
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        await _loadSessionSettings(updatedSession.id, notify: false);
+        status = ConnectionStatus.sessionReady;
+        notifyListeners();
+      } catch (error) {
+        _setActionError(error);
+      }
+    });
   }
 
   Future<void> closeCurrentSession() async {

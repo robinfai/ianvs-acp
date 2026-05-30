@@ -18,8 +18,22 @@ class SessionSettingsDialog extends StatelessWidget {
       builder: (context, _) {
         return AlertDialog(
           title: const Text('Session Settings'),
-          content: SizedBox(width: 600, child: _buildContent()),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+            ),
+            child: SizedBox(width: 600, child: _buildContent()),
+          ),
           actions: [
+            if (controller.currentSession != null &&
+                controller.capabilities?.session.fork == true)
+              TextButton.icon(
+                onPressed: controller.canForkCurrentSession
+                    ? () => unawaited(controller.forkCurrentSession())
+                    : null,
+                icon: const Icon(Icons.call_split_rounded),
+                label: const Text('Fork Session'),
+              ),
             if (controller.currentSession != null &&
                 controller.capabilities?.session.close == true)
               TextButton.icon(

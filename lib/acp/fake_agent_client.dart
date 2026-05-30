@@ -13,8 +13,10 @@ class FakeAgentClient implements AcpAgentClient {
     this.connectError,
     this.promptError,
     this.cancelError,
+    this.forkError,
     this.closeError,
     this.logoutError,
+    this.supportsFork = true,
     this.supportsLogout = true,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
@@ -52,8 +54,10 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? connectError;
   final Object? promptError;
   final Object? cancelError;
+  final Object? forkError;
   final Object? closeError;
   final Object? logoutError;
+  final bool supportsFork;
   final bool supportsLogout;
   final Duration chunkDelay;
   final Duration connectDelay;
@@ -71,6 +75,7 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastSetModeId;
   String? lastConfigId;
   Object? lastConfigValue;
+  String? lastForkedSessionId;
   String? lastClosedSessionId;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
@@ -86,13 +91,18 @@ class FakeAgentClient implements AcpAgentClient {
             embeddedContext: true,
           ),
           mcp: const AcpMcpCapabilities(http: true, sse: false, acp: false),
-          session: const AcpSessionCapabilities(
+          session: AcpSessionCapabilities(
             list: true,
             resume: false,
-            fork: false,
+            fork: supportsFork,
             configOptions: true,
             close: true,
-            rawKeys: ['close', 'configOptions', 'list'],
+            rawKeys: [
+              'close',
+              'configOptions',
+              if (supportsFork) 'fork',
+              'list',
+            ],
           ),
           auth: AcpAuthCapabilities(logout: supportsLogout),
           client: const AcpClientCapabilities(
@@ -238,6 +248,29 @@ class FakeAgentClient implements AcpAgentClient {
     }).toList();
     _settings = _settings.copyWith(configOptions: options);
     return options;
+  }
+
+  @override
+  Future<AgentSession> forkSession({
+    required String sessionId,
+    required String cwd,
+  }) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    if (!supportsFork) {
+      throw StateError('Fake client does not support fork.');
+    }
+    if (forkError != null) {
+      throw forkError!;
+    }
+    lastForkedSessionId = sessionId;
+    sessionCount += 1;
+    return AgentSession(
+      id: 'fake-fork-$sessionCount',
+      cwd: cwd,
+      createdAt: DateTime(2026, 5, 28, 12),
+    );
   }
 
   @override

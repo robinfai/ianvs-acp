@@ -32,6 +32,11 @@ abstract class AcpAgentClient {
     required Object value,
   });
 
+  Future<AgentSession> forkSession({
+    required String sessionId,
+    required String cwd,
+  });
+
   Future<void> closeSession({required String sessionId});
 
   Future<void> logout();

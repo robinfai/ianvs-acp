@@ -9,7 +9,7 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gaps are client-provided filesystem/terminal providers, authenticate/login UI, active session fork actions, and richer prompt-content support. Those are protocol features, but they need product/security decisions rather than only visual work.
+The largest remaining gaps are client-provided filesystem/terminal providers, authenticate/login UI, and richer prompt-content support. Those are protocol features, but they need product/security decisions rather than only visual work.
 
 ## Official Feature Index
 
@@ -20,6 +20,7 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Partial | `authMethods` are counted/displayed, and the toolbar exposes confirmed logout when the agent advertises `auth.logout`. There is no `authenticate` workflow yet. |
 | Session setup: `session/new`, `session/load`, `session/resume` | https://agentclientprotocol.com/protocol/session-setup | Mostly done | New sessions work. Resume prefers `session/load` when available and falls back to `session/resume`. Empty resumed sessions now render as `Session ready` instead of a misleading new-session empty state. |
 | Session close | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes a confirmed `Close Session` action when `sessionCapabilities.close` is advertised. Closing clears the active local session and asks the agent to free resources without deleting persisted history. |
+| Session fork | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes `Fork Session` when `sessionCapabilities.fork` is advertised. Forking creates a new active independent session, keeps the original session in history, and clears the local timeline for the fork. |
 | Session list / metadata | https://agentclientprotocol.com/protocol/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, and supports text search at project and conversation levels. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Attachments are sent as file resource links through `dart_acp` prompt mentions. |
 | Content blocks | https://agentclientprotocol.com/protocol/content | Partial | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side image/audio/embedded resource content is not fully enforced by capability checks. File attachments use resource links, which are baseline ACP content, but model/agent-specific support can still vary; Spark may reject or ignore file context even though ACP can represent it. |
@@ -108,7 +109,6 @@ Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
 - Decide whether to expose `authenticate`, including where login state should live in the UI.
-- Decide whether to expose `session/fork`, including how forked sessions should appear in the sidebar.
 - Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
 - Decide whether to add a slash-command picker/autocomplete instead of only rendering advertised commands.
 - Decide whether user config should also include MCP server definitions, not only agent server definitions.

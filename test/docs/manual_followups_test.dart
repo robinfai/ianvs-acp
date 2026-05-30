@@ -9,7 +9,6 @@ void main() {
   test('manual follow-up document tracks audit checklist items', () {
     const trackedItems = <String, String>{
       'authenticate': 'auth-authenticate',
-      'session/fork': 'session-fork',
       'filesystem and terminal providers': 'fs-terminal-providers',
       'slash-command picker/autocomplete': 'slash-command-picker',
       'MCP server definitions': 'mcp-server-config',
