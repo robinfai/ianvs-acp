@@ -1286,10 +1286,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     AcpAgentCapabilities capabilities,
   ) {
     return switch (_mcpServerTransportType(server)) {
+      'stdio' => true,
       'http' => capabilities.mcp.http,
       'sse' => capabilities.mcp.sse,
       'acp' => capabilities.mcp.acp,
-      _ => true,
+      _ => false,
     };
   }
 

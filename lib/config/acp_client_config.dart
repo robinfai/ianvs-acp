@@ -251,6 +251,12 @@ class McpServerConfig {
     final type = _stringValue(raw['type']);
     final command = _stringValue(raw['command']);
     final url = _stringValue(raw['url']);
+    if (type != null && !_supportedMcpTransportTypes.contains(type)) {
+      throw FormatException(
+        'MCP server "$name" type must be one of: '
+        '${_supportedMcpTransportTypes.join(', ')}.',
+      );
+    }
     if (command == null && url == null) {
       throw FormatException('MCP server "$name" requires command or url.');
     }
@@ -264,6 +270,13 @@ class McpServerConfig {
     return McpServerConfig(raw: raw);
   }
 }
+
+const Set<String> _supportedMcpTransportTypes = <String>{
+  'stdio',
+  'http',
+  'sse',
+  'acp',
+};
 
 String? _stringValue(Object? value) {
   if (value is! String) return null;

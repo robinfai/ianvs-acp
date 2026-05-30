@@ -34,7 +34,7 @@ product/security decisions rather than only visual work.
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is consumed as complete state, including updates emitted immediately after `session/new`. The local model understands official `category` as well as older `group`. Initial `configOptions` returned directly by `session/new` are captured from the raw session response. |
 | Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Done for advertised commands | `available_commands_update` renders available commands and details. The prompt input now suggests matching advertised commands while typing `/`, and selecting a command inserts the slash invocation. Command-list updates replace the previous command snapshot, including updates emitted immediately after `session/new` or `session/resume`. |
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Partial | Raw capability `_meta` and session list `_meta` are displayed. No custom extension request UI is implemented. |
-| MCP servers | https://agentclientprotocol.com/protocol/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, shows configured MCP servers in Agent Configuration, and forwards compatible entries through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. |
+| MCP servers | https://agentclientprotocol.com/protocol/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries and known transport types, shows configured MCP servers in Agent Configuration, and forwards compatible entries through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. Unknown transport types are rejected from config and skipped if injected programmatically. |
 
 ## UX Review With Computer Use
 
@@ -101,9 +101,10 @@ Supported shape:
 
 The toolbar `Agents` menu lists configured servers. `default_agent_server` is only the startup default; after launch, the selected agent belongs to the current/new session and is shown on session rows rather than being written back as global config. Creating a new session asks which configured agent to use when more than one server is available.
 Compatible top-level `mcp_servers` entries are forwarded to every ACP
-`session/new` and `session/load` request for the selected agent. Stdio entries
-are always forwarded; HTTP, SSE, and ACP transport entries require matching
-agent `mcpCapabilities`.
+`session/new` and `session/load` request for the selected agent. Supported MCP
+transport types are `stdio`, `http`, `sse`, and `acp`. Stdio entries are always
+forwarded; HTTP, SSE, and ACP transport entries require matching agent
+`mcpCapabilities`.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 

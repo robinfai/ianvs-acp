@@ -87,6 +87,12 @@ Future<void> main() async {
           'url': 'https://events.example.com/mcp',
           'headers': <Map<String, String>>[],
         },
+        {
+          'name': 'typo-tools',
+          'type': 'htp',
+          'url': 'https://typo.example.com/mcp',
+          'headers': <Map<String, String>>[],
+        },
       ],
     );
 

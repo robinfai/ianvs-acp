@@ -160,6 +160,19 @@ void main() {
       () => AcpClientConfig.fromJson({
         'mcp_servers': [
           {
+            'name': 'typo-tools',
+            'type': 'htp',
+            'url': 'https://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
             'name': 'api-tools',
             'type': 'http',
             'url': 'https://api.example.com/mcp',
