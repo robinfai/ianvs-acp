@@ -279,6 +279,27 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test(
+    'set config option preserves local options when response omits list',
+    () async {
+      final fake = _OmittingConfigOptionsAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.setConfigOption('approval', 'auto');
+
+      expect(fake.lastConfigId, 'approval');
+      expect(fake.lastConfigValue, 'auto');
+      expect(controller.sessionSettings.configOptions, hasLength(1));
+      expect(
+        controller.sessionSettings.configOptions.single.currentValue,
+        'auto',
+      );
+      expect(controller.lastError, isNull);
+    },
+  );
+
   test('set session model updates model config option', () async {
     final fake = FakeAgentClient(
       sessionSettings: const AcpSessionSettings(
@@ -473,4 +494,20 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.lastError, contains('cancel failed'));
   });
+}
+
+class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
+  @override
+  Future<List<AcpConfigOption>> setConfigOption({
+    required String sessionId,
+    required String configId,
+    required Object value,
+  }) async {
+    await super.setConfigOption(
+      sessionId: sessionId,
+      configId: configId,
+      value: value,
+    );
+    return const <AcpConfigOption>[];
+  }
 }

@@ -200,28 +200,22 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Object value,
   }) async {
     final client = _requireClient();
+    final params = <String, dynamic>{
+      'sessionId': sessionId,
+      'configId': configId,
+    };
     if (value is bool) {
-      final response = await client.sendRaw(
-        'session/set_config_option',
-        <String, dynamic>{
-          'sessionId': sessionId,
-          'configId': configId,
-          'type': 'boolean',
-          'value': value,
-        },
-      );
-      final configOptions = response['configOptions'];
-      if (configOptions is List) {
-        return _cacheRawConfigOptions(sessionId, configOptions);
-      }
-      return _applyConfigOptionOverride(sessionId, configId, value);
+      params['type'] = 'boolean';
+      params['value'] = value;
+    } else {
+      params['value'] = value.toString();
     }
-    final options = await client.setConfigOption(
-      sessionId: sessionId,
-      configId: configId,
-      value: value.toString(),
-    );
-    return _cacheConfigOptions(sessionId, options);
+    final response = await client.sendRaw('session/set_config_option', params);
+    final configOptions = response['configOptions'];
+    if (configOptions is List) {
+      return _cacheRawConfigOptions(sessionId, configOptions);
+    }
+    return _applyConfigOptionOverride(sessionId, configId, value);
   }
 
   @override

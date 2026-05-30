@@ -302,7 +302,11 @@ class ChatController extends ChangeNotifier {
         configId: trimmedConfigId,
         value: value,
       );
-      sessionSettings = sessionSettings.copyWith(configOptions: options);
+      sessionSettings = sessionSettings.copyWith(
+        configOptions: options.isEmpty
+            ? _configOptionsWithOverride(trimmedConfigId, value)
+            : options,
+      );
       lastError = null;
       notifyListeners();
     } catch (error) {
@@ -547,6 +551,19 @@ class ChatController extends ChangeNotifier {
       return;
     }
     sessions.insert(0, session);
+  }
+
+  List<AcpConfigOption> _configOptionsWithOverride(
+    String configId,
+    Object value,
+  ) {
+    var didUpdate = false;
+    final options = sessionSettings.configOptions.map((option) {
+      if (option.id != configId) return option;
+      didUpdate = true;
+      return option.copyWith(currentValue: value);
+    }).toList();
+    return didUpdate ? options : sessionSettings.configOptions;
   }
 
   void _appendTurnStatus(AgentEvent event) {
