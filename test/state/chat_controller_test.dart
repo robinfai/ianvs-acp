@@ -99,6 +99,20 @@ void main() {
     },
   );
 
+  test('dispose during pending connect ignores late notifications', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(connectDelay: const Duration(milliseconds: 20)),
+      cwd: '/workspace',
+    );
+
+    final pendingConnect = controller.connect();
+    await pumpEventQueue();
+    expect(controller.isSessionOperationRunning, isTrue);
+
+    controller.dispose();
+    await pendingConnect;
+  });
+
   test('list sessions keeps session operation lock while loading', () async {
     final fake = FakeAgentClient(
       listSessionsDelay: const Duration(milliseconds: 20),

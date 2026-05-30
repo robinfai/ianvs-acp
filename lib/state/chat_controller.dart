@@ -48,6 +48,7 @@ class ChatController extends ChangeNotifier {
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
+  bool _isDisposed = false;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -104,7 +105,7 @@ class ChatController extends ChangeNotifier {
         sessionSettings = const AcpSessionSettings();
         await _loadSessionSettings(session.id, notify: false);
         status = ConnectionStatus.sessionReady;
-        notifyListeners();
+        _notifyListeners();
       } catch (error) {
         _setError(error);
       }
@@ -151,7 +152,7 @@ class ChatController extends ChangeNotifier {
         );
         currentSession = session;
         _upsertSession(session);
-        notifyListeners();
+        _notifyListeners();
 
         final replay = await client.resumeSession(
           sessionId: trimmedSessionId,
@@ -164,7 +165,7 @@ class ChatController extends ChangeNotifier {
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
-        notifyListeners();
+        _notifyListeners();
       } catch (error) {
         _setError(error);
       }
@@ -221,7 +222,7 @@ class ChatController extends ChangeNotifier {
     status = ConnectionStatus.streaming;
     lastError = null;
     _lastPromptStartedAt = DateTime.now();
-    notifyListeners();
+    _notifyListeners();
 
     await _promptSubscription?.cancel();
     _promptSubscription = client
@@ -294,7 +295,7 @@ class ChatController extends ChangeNotifier {
       }
       sessionSettings = sessionSettings.withCurrentMode(trimmedModeId);
       lastError = null;
-      notifyListeners();
+      _notifyListeners();
     } catch (error) {
       _setActionError(error);
     }
@@ -317,7 +318,7 @@ class ChatController extends ChangeNotifier {
             : options,
       );
       lastError = null;
-      notifyListeners();
+      _notifyListeners();
     } catch (error) {
       _setActionError(error);
     }
@@ -360,7 +361,7 @@ class ChatController extends ChangeNotifier {
         sessionSettings = const AcpSessionSettings();
         await _loadSessionSettings(updatedSession.id, notify: false);
         status = ConnectionStatus.sessionReady;
-        notifyListeners();
+        _notifyListeners();
       } catch (error) {
         _setActionError(error);
       }
@@ -385,7 +386,7 @@ class ChatController extends ChangeNotifier {
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
         status = ConnectionStatus.connected;
-        notifyListeners();
+        _notifyListeners();
       } catch (error) {
         _setActionError(error);
       }
@@ -409,7 +410,7 @@ class ChatController extends ChangeNotifier {
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
         status = ConnectionStatus.connected;
-        notifyListeners();
+        _notifyListeners();
       } catch (error) {
         _setActionError(error);
       }
@@ -419,12 +420,12 @@ class ChatController extends ChangeNotifier {
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
     status = connectingStatus;
     lastError = null;
-    notifyListeners();
+    _notifyListeners();
     try {
       await client.connect();
       capabilities = client.capabilities;
       status = ConnectionStatus.connected;
-      notifyListeners();
+      _notifyListeners();
     } catch (error) {
       _setError(error);
     }
@@ -432,12 +433,12 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _runSessionOperation(Future<void> Function() action) async {
     isSessionOperationRunning = true;
-    notifyListeners();
+    _notifyListeners();
     try {
       await action();
     } finally {
       isSessionOperationRunning = false;
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -445,12 +446,12 @@ class ChatController extends ChangeNotifier {
     Future<T> Function() action,
   ) async {
     isSessionOperationRunning = true;
-    notifyListeners();
+    _notifyListeners();
     try {
       return await action();
     } finally {
       isSessionOperationRunning = false;
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -491,7 +492,7 @@ class ChatController extends ChangeNotifier {
         _appendStatus(event);
     }
     if (notify) {
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -645,14 +646,14 @@ class ChatController extends ChangeNotifier {
     if (startedAt != null) {
       lastLatency = DateTime.now().difference(startedAt);
     }
-    notifyListeners();
+    _notifyListeners();
   }
 
   void _setError(Object error) {
     lastError = error.toString();
     status = ConnectionStatus.error;
     isStreaming = false;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void _setActionError(Object error) {
@@ -662,7 +663,7 @@ class ChatController extends ChangeNotifier {
           ? ConnectionStatus.connected
           : ConnectionStatus.sessionReady;
     }
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> _loadSessionSettings(
@@ -670,7 +671,7 @@ class ChatController extends ChangeNotifier {
     bool notify = true,
   }) async {
     sessionSettingsLoading = true;
-    if (notify) notifyListeners();
+    if (notify) _notifyListeners();
 
     try {
       sessionSettings = await client.sessionSettings(sessionId);
@@ -678,14 +679,20 @@ class ChatController extends ChangeNotifier {
       sessionSettings = const AcpSessionSettings();
     } finally {
       sessionSettingsLoading = false;
-      if (notify) notifyListeners();
+      if (notify) _notifyListeners();
     }
   }
 
   @override
   void dispose() {
+    _isDisposed = true;
     unawaited(_promptSubscription?.cancel());
     unawaited(client.dispose());
     super.dispose();
+  }
+
+  void _notifyListeners() {
+    if (_isDisposed) return;
+    notifyListeners();
   }
 }
