@@ -168,6 +168,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       );
       _activeSessionId = sessionId;
       _cacheConfigOptions(sessionId, result.configOptions);
+      events.addAll(await _cacheImmediateSessionUpdates(client, sessionId));
       return events;
     }
 
