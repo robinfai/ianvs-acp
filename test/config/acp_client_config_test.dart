@@ -441,6 +441,15 @@ void main() {
     expect(
       () => AcpClientConfig.fromJson({
         'mcp_servers': [
+          {'name': 'api-tools', 'type': 'http', 'url': 'https:///mcp'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
           {
             'name': 'stdio-tools',
             'type': 'stdio',
@@ -517,6 +526,15 @@ void main() {
     expect(
       () => AcpClientConfig.fromJson({
         'agent_servers': {
+          'Remote Agent': {'type': 'websocket', 'url': 'ws:///acp'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
           'Remote Agent': {
             'type': 'websocket',
             'url': 'ws://127.0.0.1/acp',
@@ -555,6 +573,15 @@ void main() {
       () => AcpClientConfig.fromJson({
         'agent_servers': {
           'HTTP Agent': {'type': 'http', 'url': 'ws://127.0.0.1/acp'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'HTTP Agent': {'type': 'http', 'url': 'https:///acp'},
         },
       }),
       throwsA(isA<FormatException>()),

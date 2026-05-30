@@ -384,10 +384,12 @@ class AgentServerConfig {
       if (url == null || url.isEmpty) {
         throw FormatException('Agent server "$name" requires url.');
       }
-      final uri = Uri.tryParse(url);
-      if (uri == null || (uri.scheme != 'ws' && uri.scheme != 'wss')) {
-        throw FormatException('Agent server "$name" url must use ws or wss.');
-      }
+      _ensureRemoteAgentUrl(
+        url,
+        serverName: name,
+        allowedSchemes: const <String>{'ws', 'wss'},
+        schemeLabel: 'ws or wss',
+      );
       final headersRaw = json['headers'];
       final headers = headersRaw == null
           ? const <String, String>{}
@@ -413,12 +415,12 @@ class AgentServerConfig {
       if (url == null || url.isEmpty) {
         throw FormatException('Agent server "$name" requires url.');
       }
-      final uri = Uri.tryParse(url);
-      if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
-        throw FormatException(
-          'Agent server "$name" url must use http or https.',
-        );
-      }
+      _ensureRemoteAgentUrl(
+        url,
+        serverName: name,
+        allowedSchemes: const <String>{'http', 'https'},
+        schemeLabel: 'http or https',
+      );
       final headersRaw = json['headers'];
       final headers = headersRaw == null
           ? const <String, String>{}
@@ -677,6 +679,23 @@ MapEntry<String, String> _nameValueEntry(
 
 final RegExp _httpHeaderNamePattern = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
 
+void _ensureRemoteAgentUrl(
+  String url, {
+  required String serverName,
+  required Set<String> allowedSchemes,
+  required String schemeLabel,
+}) {
+  final uri = Uri.tryParse(url);
+  if (uri == null || !allowedSchemes.contains(uri.scheme)) {
+    throw FormatException(
+      'Agent server "$serverName" url must use $schemeLabel.',
+    );
+  }
+  if (uri.host.trim().isEmpty) {
+    throw FormatException('Agent server "$serverName" url requires host.');
+  }
+}
+
 void _validateHttpHeaderEntry({
   required String name,
   required String value,
@@ -836,6 +855,11 @@ void _ensureHttpUrl(
   if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
     throw FormatException(
       'MCP server "$serverName" $transportType transport url must use http or https.',
+    );
+  }
+  if (uri.host.trim().isEmpty) {
+    throw FormatException(
+      'MCP server "$serverName" $transportType transport url requires host.',
     );
   }
 }
