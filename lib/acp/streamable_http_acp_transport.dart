@@ -124,7 +124,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       return null;
     }
     if (idKey == null) return null;
-    return _serverRequestSessionsById[idKey];
+    return _serverRequestSessionsById.remove(idKey);
   }
 
   void _handleInitializeResponse(HttpClientResponse response, String body) {

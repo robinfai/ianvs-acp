@@ -28,8 +28,9 @@ URL, and draft Streamable HTTP/SSE agents can be configured with
 `agent_servers[].type = "http"` or `"sse"` plus an `http` or `https` URL. The
 new HTTP transport covers long-lived connection/session SSE streams, POST/202
 response routing, `Acp-Connection-Id`, `Acp-Session-Id`, headers, and cookies,
-`Acp-Protocol-Version`, plus best-effort `DELETE` teardown, but the draft
-profile still needs HTTP/2 enforcement and real-agent interoperability testing.
+`Acp-Protocol-Version`, one-shot session routing for server-request responses,
+plus best-effort `DELETE` teardown, but the draft profile still needs HTTP/2
+enforcement and real-agent interoperability testing.
 
 Automated acceptance:
 
@@ -45,6 +46,8 @@ Automated acceptance:
   `StreamChannel` adapter used by `dart_acp`.
 - `lib/acp/streamable_http_acp_transport.dart` implements the draft HTTP/SSE
   `StreamChannel` adapter used by `dart_acp`.
+- `test/acp/streamable_http_acp_transport_test.dart` verifies session-scoped
+  server-request response headers are not reused after the response is sent.
 
 Manual decision:
 
