@@ -43,6 +43,7 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
+  static const int _maxAudioAttachmentBytes = 8 * 1024 * 1024;
 
   static const Map<String, dynamic> _clientInfo = <String, dynamic>{
     'name': 'ACP Client',
@@ -599,6 +600,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   ) async {
     final image = await _imageContentBlock(attachment);
     if (image != null) return image;
+    final audio = await _audioContentBlock(attachment);
+    if (audio != null) return audio;
     final embedded = await _embeddedTextResourceBlock(attachment);
     return embedded ?? _resourceLinkBlock(attachment);
   }
@@ -620,6 +623,28 @@ class DartAcpAgentClient implements AcpAgentClient {
         'mimeType': mimeType,
         'data': base64Encode(bytes),
         'uri': attachment.uri.toString(),
+      };
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _audioContentBlock(
+    PromptAttachment attachment,
+  ) async {
+    if (_capabilities?.prompt.audio != true) return null;
+    final mimeType = _audioMimeType(attachment);
+    if (mimeType == null) return null;
+
+    try {
+      final file = File(attachment.path);
+      final byteCount = attachment.size ?? await file.length();
+      if (byteCount > _maxAudioAttachmentBytes) return null;
+      final bytes = await file.readAsBytes();
+      return <String, dynamic>{
+        'type': 'audio',
+        'mimeType': mimeType,
+        'data': base64Encode(bytes),
       };
     } on Object {
       return null;
@@ -715,6 +740,27 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (name.endsWith('.gif')) return 'image/gif';
     if (name.endsWith('.webp')) return 'image/webp';
     if (name.endsWith('.bmp')) return 'image/bmp';
+    return null;
+  }
+
+  String? _audioMimeType(PromptAttachment attachment) {
+    final mimeType = attachment.mimeType?.toLowerCase();
+    if (mimeType != null && mimeType.startsWith('audio/')) {
+      return mimeType;
+    }
+
+    final name = attachment.name.toLowerCase();
+    if (name.endsWith('.wav') || name.endsWith('.wave')) return 'audio/wav';
+    if (name.endsWith('.mp3')) return 'audio/mpeg';
+    if (name.endsWith('.m4a')) return 'audio/mp4';
+    if (name.endsWith('.aac')) return 'audio/aac';
+    if (name.endsWith('.flac')) return 'audio/flac';
+    if (name.endsWith('.ogg')) return 'audio/ogg';
+    if (name.endsWith('.opus')) return 'audio/opus';
+    if (name.endsWith('.webm')) return 'audio/webm';
+    if (name.endsWith('.aiff') || name.endsWith('.aif')) {
+      return 'audio/aiff';
+    }
     return null;
   }
 

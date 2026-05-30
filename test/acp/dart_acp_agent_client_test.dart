@@ -178,6 +178,39 @@ Future<void> main() async {
     expect(resourceLink['mimeType'], 'image/png');
   });
 
+  test('embeds audio attachments when audio prompts are advertised', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      audio: true,
+      attachmentName: 'sample.wav',
+      attachmentBytes: _tinyWavBytes,
+      mimeType: 'audio/wav',
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    final audioBlock = prompt.last as Map<String, dynamic>;
+    expect(audioBlock['type'], 'audio');
+    expect(audioBlock['mimeType'], 'audio/wav');
+    expect(audioBlock['data'], base64Encode(_tinyWavBytes));
+    expect(audioBlock, isNot(contains('uri')));
+  });
+
+  test('falls back to resource links without audio prompt support', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      audio: false,
+      attachmentName: 'sample.wav',
+      attachmentBytes: _tinyWavBytes,
+      mimeType: 'audio/wav',
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    final resourceLink = prompt.last as Map<String, dynamic>;
+    expect(resourceLink['type'], 'resource_link');
+    expect(resourceLink['name'], 'sample.wav');
+    expect(resourceLink['mimeType'], 'audio/wav');
+  });
+
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
@@ -576,6 +609,7 @@ Future<void> main() async {
 Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
   bool embeddedContext = false,
   bool image = false,
+  bool audio = false,
   String attachmentName = 'attachment.txt',
   List<int>? attachmentBytes,
   String? mimeType,
@@ -588,6 +622,7 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
   final promptCapabilities = <String>[
     if (embeddedContext) "'embeddedContext': true",
     if (image) "'image': true",
+    if (audio) "'audio': true",
   ].join(', ');
   final agentCapabilities = promptCapabilities.isEmpty
       ? '<String, dynamic>{}'
@@ -732,6 +767,53 @@ const _transparentPngBytes = <int>[
   0x42,
   0x60,
   0x82,
+];
+
+const _tinyWavBytes = <int>[
+  0x52,
+  0x49,
+  0x46,
+  0x46,
+  0x24,
+  0x00,
+  0x00,
+  0x00,
+  0x57,
+  0x41,
+  0x56,
+  0x45,
+  0x66,
+  0x6d,
+  0x74,
+  0x20,
+  0x10,
+  0x00,
+  0x00,
+  0x00,
+  0x01,
+  0x00,
+  0x01,
+  0x00,
+  0x40,
+  0x1f,
+  0x00,
+  0x00,
+  0x80,
+  0x3e,
+  0x00,
+  0x00,
+  0x02,
+  0x00,
+  0x10,
+  0x00,
+  0x64,
+  0x61,
+  0x74,
+  0x61,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
 ];
 
 String _dartExecutable() {
