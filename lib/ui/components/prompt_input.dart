@@ -14,6 +14,7 @@ class PromptInput extends StatefulWidget {
   const PromptInput({
     super.key,
     this.agentName = 'Codex',
+    this.enabled = true,
     required this.isSending,
     required this.onSend,
     required this.onStop,
@@ -23,6 +24,7 @@ class PromptInput extends StatefulWidget {
   });
 
   final String agentName;
+  final bool enabled;
   final bool isSending;
   final PromptSendCallback onSend;
   final VoidCallback onStop;
@@ -40,10 +42,13 @@ class _PromptInputState extends State<PromptInput> {
 
   bool get _canSend =>
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
+      widget.enabled &&
       !widget.isSending;
 
   List<Map<String, Object?>> get _commandSuggestions {
-    if (widget.isSending || widget.availableCommands.isEmpty) {
+    if (!widget.enabled ||
+        widget.isSending ||
+        widget.availableCommands.isEmpty) {
       return const <Map<String, Object?>>[];
     }
     final input = _controller.text.trimLeft();
@@ -131,7 +136,7 @@ class _PromptInputState extends State<PromptInput> {
                             label: 'Attach file',
                             child: IconButton(
                               tooltip: 'Attach file',
-                              onPressed: widget.isSending
+                              onPressed: !widget.enabled || widget.isSending
                                   ? null
                                   : _pickAttachments,
                               icon: const Icon(Icons.attach_file_rounded),
@@ -149,7 +154,7 @@ class _PromptInputState extends State<PromptInput> {
                             minLines: 1,
                             maxLines: 4,
                             keyboardType: TextInputType.multiline,
-                            enabled: !widget.isSending,
+                            enabled: widget.enabled && !widget.isSending,
                             onChanged: (_) => setState(() {}),
                             style: const TextStyle(
                               color: AppColors.textPrimary,
@@ -266,7 +271,7 @@ class _PromptInputState extends State<PromptInput> {
     try {
       final picker = widget.pickAttachments ?? _pickWithFilePicker;
       final selected = await picker();
-      if (!mounted || selected.isEmpty) return;
+      if (!mounted || !widget.enabled || selected.isEmpty) return;
       setState(() {
         for (final attachment in selected) {
           final duplicate = _attachments.any(

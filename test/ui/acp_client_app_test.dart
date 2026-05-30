@@ -94,6 +94,40 @@ void main() {
     expect(fake.connected, isTrue);
   });
 
+  testWidgets('AcpClientApp disables prompt input during session operations', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(
+      listSessionsDelay: const Duration(milliseconds: 20),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.enterText(find.byType(TextField), 'Keep this draft');
+    await tester.pump();
+
+    final loading = controller.listSessions();
+    await tester.pump();
+
+    expect(controller.isSessionOperationRunning, isTrue);
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    final sendButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Send'),
+    );
+    expect(textField.enabled, isFalse);
+    expect(textField.controller?.text, 'Keep this draft');
+    expect(sendButton.onPressed, isNull);
+
+    await tester.pump(const Duration(milliseconds: 20));
+    await loading;
+    await tester.pump();
+
+    expect(controller.isSessionOperationRunning, isFalse);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+  });
+
   testWidgets('AcpClientApp opens extension request dialog', (tester) async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

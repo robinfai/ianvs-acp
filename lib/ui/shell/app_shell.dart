@@ -171,6 +171,7 @@ class AppShell extends StatelessWidget {
                 ),
                 PromptInput(
                   agentName: agentName,
+                  enabled: !controller.isSessionOperationRunning,
                   isSending: controller.isStreaming,
                   availableCommands: controller.availableCommands,
                   promptCapabilities: controller.capabilities?.prompt,

@@ -8,6 +8,7 @@ void main() {
   Widget input({
     required bool isSending,
     required PromptSendCallback onSend,
+    bool enabled = true,
     VoidCallback? onStop,
     String agentName = 'Codex',
     List<Map<String, Object?>> availableCommands =
@@ -19,6 +20,7 @@ void main() {
       home: Scaffold(
         body: PromptInput(
           agentName: agentName,
+          enabled: enabled,
           isSending: isSending,
           availableCommands: availableCommands,
           promptCapabilities: promptCapabilities,
@@ -161,6 +163,48 @@ void main() {
       find.widgetWithText(OutlinedButton, 'Stop'),
     );
     expect(stopButton.onPressed, isNull);
+  });
+
+  testWidgets('PromptInput disabled state preserves draft text', (
+    tester,
+  ) async {
+    var sent = false;
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) => sent = true),
+    );
+
+    await tester.enterText(find.byType(TextField), 'Keep this draft');
+    await tester.pump();
+
+    await tester.pumpWidget(
+      input(enabled: false, isSending: false, onSend: (_, _) => sent = true),
+    );
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    final sendButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Send'),
+    );
+    final stopButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Stop'),
+    );
+    final attachButton = tester.widget<IconButton>(
+      find.ancestor(
+        of: find.byIcon(Icons.attach_file_rounded),
+        matching: find.byType(IconButton),
+      ),
+    );
+
+    expect(textField.enabled, isFalse);
+    expect(textField.controller?.text, 'Keep this draft');
+    expect(sendButton.onPressed, isNull);
+    expect(stopButton.onPressed, isNull);
+    expect(attachButton.onPressed, isNull);
+
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    expect(sent, isFalse);
+    expect(textField.controller?.text, 'Keep this draft');
   });
 
   testWidgets('PromptInput attaches files and sends without text', (
