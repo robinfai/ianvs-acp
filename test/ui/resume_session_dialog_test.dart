@@ -108,6 +108,8 @@ void main() {
 
     expect(find.text('other'), findsOneWidget);
     expect(find.textContaining('projotherect-a'), findsNothing);
+    expect(find.text('Alpha chat'), findsNothing);
+    expect(find.text('Select a conversation'), findsWidgets);
     expect(_loadButton(tester).onPressed, isNull);
 
     await tester.tap(find.byKey(const ValueKey('resume-project-dropdown')));
@@ -123,6 +125,8 @@ void main() {
       'beta',
     );
     await tester.pumpAndSettle();
+    expect(find.text('Other chat'), findsNothing);
+    expect(find.text('Select a conversation'), findsWidgets);
     expect(_loadButton(tester).onPressed, isNull);
 
     await tester.tap(

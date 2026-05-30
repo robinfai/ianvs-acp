@@ -128,14 +128,14 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       );
     }
 
-    final selectedProject = _selectedProject;
-    final conversations =
-        selectedProject?.sessions ?? const <AcpSessionEntry>[];
     final filteredProjects = _filteredProjects();
-    final filteredConversations = _filteredConversations(conversations);
+    final selectedProject = _selectedProject;
     final selectedProjectValue = filteredProjects.contains(selectedProject)
         ? selectedProject
         : null;
+    final conversations =
+        selectedProjectValue?.sessions ?? const <AcpSessionEntry>[];
+    final filteredConversations = _filteredConversations(conversations);
     final selectedConversationValue =
         filteredConversations.contains(_selectedConversation)
         ? _selectedConversation
@@ -248,7 +248,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                         },
                 ),
                 const SizedBox(height: 12),
-                _ConversationPreview(conversation: _selectedConversation),
+                _ConversationPreview(conversation: selectedConversationValue),
               ],
             ),
           ),
