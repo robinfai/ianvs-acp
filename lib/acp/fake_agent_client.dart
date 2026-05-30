@@ -19,6 +19,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
     this.createSessionDelay = Duration.zero,
+    this.listSessionsDelay = Duration.zero,
     this.resumeDelay = Duration.zero,
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
@@ -57,6 +58,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Duration chunkDelay;
   final Duration connectDelay;
   final Duration createSessionDelay;
+  final Duration listSessionsDelay;
   final Duration resumeDelay;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
@@ -178,6 +180,9 @@ class FakeAgentClient implements AcpAgentClient {
   Future<List<AcpProjectSessions>> listSessions() async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
+    }
+    if (listSessionsDelay > Duration.zero) {
+      await Future<void>.delayed(listSessionsDelay);
     }
     return [
       AcpProjectSessions(

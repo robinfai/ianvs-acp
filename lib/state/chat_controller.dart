@@ -166,14 +166,16 @@ class ChatController extends ChangeNotifier {
     if (isSessionOperationRunning) {
       throw StateError('Another session operation is already in progress.');
     }
-    if (status == ConnectionStatus.disconnected ||
-        status == ConnectionStatus.error) {
-      await connect();
-      if (status == ConnectionStatus.error) {
-        throw StateError(lastError ?? 'ACP agent connection failed.');
+    return _runSessionOperationWithResult(() async {
+      if (status == ConnectionStatus.disconnected ||
+          status == ConnectionStatus.error) {
+        await _connectWithStatus(ConnectionStatus.connecting);
+        if (status == ConnectionStatus.error) {
+          throw StateError(lastError ?? 'ACP agent connection failed.');
+        }
       }
-    }
-    return client.listSessions();
+      return client.listSessions();
+    });
   }
 
   Future<void> sendPrompt(
@@ -385,6 +387,19 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     try {
       await action();
+    } finally {
+      isSessionOperationRunning = false;
+      notifyListeners();
+    }
+  }
+
+  Future<T> _runSessionOperationWithResult<T>(
+    Future<T> Function() action,
+  ) async {
+    isSessionOperationRunning = true;
+    notifyListeners();
+    try {
+      return await action();
     } finally {
       isSessionOperationRunning = false;
       notifyListeners();

@@ -99,6 +99,25 @@ void main() {
     },
   );
 
+  test('list sessions keeps session operation lock while loading', () async {
+    final fake = FakeAgentClient(
+      listSessionsDelay: const Duration(milliseconds: 20),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+    final loading = controller.listSessions();
+    await pumpEventQueue();
+
+    expect(controller.isSessionOperationRunning, isTrue);
+
+    final projects = await loading;
+
+    expect(projects.single.cwd, '/workspace/project-a');
+    expect(controller.isSessionOperationRunning, isFalse);
+  });
+
   test('resume session replays history into timeline', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
