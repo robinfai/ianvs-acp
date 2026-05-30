@@ -229,12 +229,15 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final decoded = jsonDecode(line);
     if (decoded is! Map<String, dynamic>) return;
     final idKey = _idKey(decoded['id']);
-    if (idKey != null && decoded.containsKey('result')) {
+    final isResponse =
+        decoded.containsKey('result') || decoded.containsKey('error');
+    if (idKey != null && isResponse) {
       final method = _pendingMethodsById.remove(idKey);
-      if (method == 'session/new' ||
-          method == 'session/load' ||
-          method == 'session/resume' ||
-          method == 'session/fork') {
+      if (decoded.containsKey('result') &&
+          (method == 'session/new' ||
+              method == 'session/load' ||
+              method == 'session/resume' ||
+              method == 'session/fork')) {
         final sessionId = _stringFromPath(decoded, const [
           'result',
           'sessionId',
