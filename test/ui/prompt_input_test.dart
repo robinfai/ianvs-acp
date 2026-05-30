@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
@@ -242,6 +244,54 @@ void main() {
 
     expect(sentAttachments, [attachment]);
     expect(find.text('readme.md'), findsNothing);
+  });
+
+  testWidgets('PromptInput ignores picker results after sending starts', (
+    tester,
+  ) async {
+    var sent = false;
+    final pickerStarted = Completer<void>();
+    final pickerResult = Completer<List<PromptAttachment>>();
+    const attachment = PromptAttachment(
+      path: '/workspace/readme.md',
+      name: 'readme.md',
+      mimeType: 'text/markdown',
+      size: 2048,
+    );
+
+    Future<List<PromptAttachment>> pickAttachments() async {
+      pickerStarted.complete();
+      return pickerResult.future;
+    }
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) => sent = true,
+        pickAttachments: pickAttachments,
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.pump();
+    expect(pickerStarted.isCompleted, isTrue);
+
+    await tester.pumpWidget(
+      input(
+        isSending: true,
+        onSend: (_, _) => sent = true,
+        pickAttachments: pickAttachments,
+      ),
+    );
+    pickerResult.complete(const [attachment]);
+    await tester.pump();
+
+    expect(find.text('readme.md'), findsNothing);
+    final sendButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Send'),
+    );
+    expect(sendButton.onPressed, isNull);
+    expect(sent, isFalse);
   });
 
   testWidgets('PromptInput marks attachments by prompt capability mode', (

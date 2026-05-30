@@ -271,7 +271,9 @@ class _PromptInputState extends State<PromptInput> {
     try {
       final picker = widget.pickAttachments ?? _pickWithFilePicker;
       final selected = await picker();
-      if (!mounted || !widget.enabled || selected.isEmpty) return;
+      if (!mounted || !widget.enabled || widget.isSending || selected.isEmpty) {
+        return;
+      }
       setState(() {
         for (final attachment in selected) {
           final duplicate = _attachments.any(
