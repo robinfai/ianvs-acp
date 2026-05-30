@@ -409,7 +409,13 @@ class ChatController extends ChangeNotifier {
   void _handleAgentEvent(AgentEvent event, {bool notify = true}) {
     switch (event.type) {
       case AgentEventType.userMessage:
-        _appendText(ChatMessageRole.user, event.text);
+        messages.add(
+          ChatMessage(
+            role: ChatMessageRole.user,
+            text: event.text,
+            metadata: event.metadata,
+          ),
+        );
       case AgentEventType.agentTextDelta:
         _appendText(
           ChatMessageRole.assistant,

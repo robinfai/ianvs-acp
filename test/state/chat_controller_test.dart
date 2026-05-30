@@ -140,6 +140,31 @@ void main() {
     expect(controller.messages[1].text, contains('medium-sized transcript'));
   });
 
+  test('resume session preserves consecutive user messages', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(type: AgentEventType.userMessage, text: 'First request'),
+          AgentEvent(type: AgentEventType.userMessage, text: 'Second request'),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('resumed-session-users');
+
+    expect(controller.messages, hasLength(2));
+    expect(controller.messages.map((message) => message.role), [
+      ChatMessageRole.user,
+      ChatMessageRole.user,
+    ]);
+    expect(controller.messages.map((message) => message.text), [
+      'First request',
+      'Second request',
+    ]);
+  });
+
   test('resume session uses selected project cwd', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
