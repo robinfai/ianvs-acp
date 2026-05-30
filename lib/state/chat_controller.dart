@@ -249,7 +249,10 @@ class ChatController extends ChangeNotifier {
           _handleAgentEvent,
           onError: (Object error, StackTrace stackTrace) {
             _handleAgentEvent(
-              AgentEvent(type: AgentEventType.error, text: error.toString()),
+              AgentEvent(
+                type: AgentEventType.error,
+                text: _messageForError(error),
+              ),
             );
             _finishStreaming();
           },
@@ -516,10 +519,9 @@ class ChatController extends ChangeNotifier {
           ),
         );
       case AgentEventType.error:
-        lastError = event.text;
-        messages.add(
-          ChatMessage(role: ChatMessageRole.error, text: event.text),
-        );
+        final message = _messageForAgentError(event);
+        lastError = message;
+        messages.add(ChatMessage(role: ChatMessageRole.error, text: message));
         status = ConnectionStatus.error;
       case AgentEventType.status:
         _appendStatus(event);
@@ -701,20 +703,72 @@ class ChatController extends ChangeNotifier {
   }
 
   void _setError(Object error) {
-    lastError = error.toString();
+    lastError = _messageForError(error);
     status = ConnectionStatus.error;
     isStreaming = false;
     _notifyListeners();
   }
 
   void _setActionError(Object error) {
-    lastError = error.toString();
+    lastError = _messageForError(error);
     if (status == ConnectionStatus.error) {
       status = currentSession == null
           ? ConnectionStatus.connected
           : ConnectionStatus.sessionReady;
     }
     _notifyListeners();
+  }
+
+  String _messageForAgentError(AgentEvent event) {
+    if (_containsAuthRequired(event.text) ||
+        _containsAuthRequired(event.metadata)) {
+      return _authRequiredMessage();
+    }
+    return event.text;
+  }
+
+  String _messageForError(Object error) {
+    if (_containsAuthRequired(error.toString()) ||
+        _containsAuthRequired(_dynamicField(error, 'message')) ||
+        _containsAuthRequired(_dynamicField(error, 'code')) ||
+        _containsAuthRequired(_dynamicField(error, 'data'))) {
+      return _authRequiredMessage();
+    }
+    return error.toString();
+  }
+
+  String _authRequiredMessage() {
+    if (authMethods.isNotEmpty) {
+      return 'Authentication required. Open the Agents menu and choose Authenticate, then try again.';
+    }
+    return 'Authentication required, but this agent did not advertise an authentication method.';
+  }
+
+  bool _containsAuthRequired(Object? value) {
+    if (value == null) return false;
+    if (value is String) return value.toLowerCase().contains('auth_required');
+    if (value is Map) {
+      return value.entries.any((entry) {
+        return _containsAuthRequired(entry.key.toString()) ||
+            _containsAuthRequired(entry.value);
+      });
+    }
+    if (value is Iterable) return value.any(_containsAuthRequired);
+    return false;
+  }
+
+  Object? _dynamicField(Object object, String fieldName) {
+    try {
+      final dynamic value = object;
+      return switch (fieldName) {
+        'code' => value.code,
+        'data' => value.data,
+        'message' => value.message,
+        _ => null,
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _loadSessionSettings(

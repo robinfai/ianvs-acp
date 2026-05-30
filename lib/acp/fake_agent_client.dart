@@ -11,6 +11,7 @@ import 'prompt_attachment.dart';
 class FakeAgentClient implements AcpAgentClient {
   FakeAgentClient({
     this.connectError,
+    this.createSessionError,
     this.promptError,
     this.cancelError,
     this.forkError,
@@ -54,6 +55,7 @@ class FakeAgentClient implements AcpAgentClient {
        _settings = sessionSettings ?? _defaultSessionSettings;
 
   final Object? connectError;
+  final Object? createSessionError;
   final Object? promptError;
   final Object? cancelError;
   final Object? forkError;
@@ -167,6 +169,9 @@ class FakeAgentClient implements AcpAgentClient {
     }
     if (createSessionDelay > Duration.zero) {
       await Future<void>.delayed(createSessionDelay);
+    }
+    if (createSessionError != null) {
+      throw createSessionError!;
     }
     sessionCount += 1;
     return AgentSession(

@@ -471,6 +471,49 @@ void main() {
     expect(controller.isSessionOperationRunning, isFalse);
   });
 
+  test('auth required session errors point to authenticate action', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionError: const _AuthRequiredError(),
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.currentSession, isNull);
+    expect(controller.lastError, contains('Authentication required'));
+    expect(controller.lastError, contains('Agents menu'));
+    expect(controller.lastError, contains('Authenticate'));
+  });
+
+  test('auth required prompt errors point to authenticate action', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        promptError: const _AuthRequiredError(),
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue(times: 4);
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('Agents menu'));
+    expect(controller.messages.last.role, ChatMessageRole.error);
+    expect(controller.messages.last.text, controller.lastError);
+  });
+
   test('agentTextDone stop reason is rendered as a turn status', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -594,6 +637,22 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.lastError, contains('cancel failed'));
   });
+}
+
+class _AuthRequiredError {
+  const _AuthRequiredError();
+
+  int get code => -32001;
+
+  String get message => 'Authentication is required.';
+
+  Map<String, Object?> get data => const <String, Object?>{
+    'code': 'auth_required',
+    'message': 'Sign in before creating a session.',
+  };
+
+  @override
+  String toString() => 'JSON-RPC error -32001';
 }
 
 class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
