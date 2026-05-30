@@ -30,6 +30,11 @@ void main() {
                           command: '/usr/local/bin/npx',
                           args: ['@zed-industries/codex-acp'],
                         ),
+                        AgentServerConfig(
+                          name: 'Remote HTTP Agent',
+                          type: 'http',
+                          url: 'https://agent.example.com/acp',
+                        ),
                       ],
                     ),
                   );
@@ -48,6 +53,10 @@ void main() {
     expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Kimi Code Dev'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('/usr/local/bin/kimi'), findsOneWidget);
+    expect(find.text('/usr/local/bin/npx'), findsOneWidget);
+    expect(find.text('Remote HTTP Agent'), findsOneWidget);
+    expect(find.text('https://agent.example.com/acp'), findsOneWidget);
 
     await tester.tap(find.text('Codex'));
     await tester.pumpAndSettle();

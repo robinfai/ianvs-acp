@@ -98,7 +98,7 @@ class _AgentChoiceTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      server.command,
+                      server.displayTarget,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppColors.textTertiary,

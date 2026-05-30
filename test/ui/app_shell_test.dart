@@ -132,6 +132,33 @@ void main() {
     expect(openedConfig, isTrue);
   });
 
+  testWidgets('AgentToolbar shows remote agent URLs in menu', (tester) async {
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.disconnected,
+      agentName: 'Remote HTTP Agent',
+      agentServers: const [
+        AgentServerConfig(
+          name: 'Remote HTTP Agent',
+          type: 'http',
+          url: 'https://agent.example.com/acp',
+        ),
+        AgentServerConfig(
+          name: 'Remote WS Agent',
+          type: 'websocket',
+          url: 'wss://agent.example.com/acp',
+        ),
+      ],
+      onSelectAgent: (_) {},
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('https://agent.example.com/acp'), findsOneWidget);
+    expect(find.text('wss://agent.example.com/acp'), findsOneWidget);
+  });
+
   testWidgets('AgentToolbar renders connected and error states', (
     tester,
   ) async {

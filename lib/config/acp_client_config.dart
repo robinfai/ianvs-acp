@@ -372,6 +372,8 @@ class AgentServerConfig {
 
   bool get isStdio => !isWebSocket && !isStreamableHttp;
 
+  String get displayTarget => isStdio ? command : url;
+
   factory AgentServerConfig.fromJson({
     required String name,
     required Map<String, dynamic> json,

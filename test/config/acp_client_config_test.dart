@@ -33,6 +33,10 @@ void main() {
       config.activeAgentServer?.command,
       '/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs',
     );
+    expect(
+      config.activeAgentServer?.displayTarget,
+      '/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs',
+    );
     expect(config.activeAgentServer?.args, ['acp']);
     expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
   });
@@ -100,6 +104,10 @@ void main() {
     expect(config.activeAgentServer?.headers, {
       'Authorization': 'Bearer test-token',
     });
+    expect(
+      config.activeAgentServer?.displayTarget,
+      'https://agent.example.com/acp',
+    );
   });
 
   test('loads top-level MCP server config', () {

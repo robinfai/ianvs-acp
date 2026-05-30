@@ -417,7 +417,7 @@ class _AgentMenuItem extends StatelessWidget {
                 ),
               ),
               Text(
-                server.isWebSocket ? server.url : server.command,
+                server.displayTarget,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textTertiary,
