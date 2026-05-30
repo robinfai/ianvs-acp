@@ -12,6 +12,7 @@ void main() {
       'filesystem and terminal providers': 'fs-terminal-providers',
       'Spark attachments': 'spark-attachments',
       'Permission History': 'tool-permission-ui',
+      'exported as JSON': 'tool-permission-ui',
       'Extension Request dialog': 'vendor-extension-workflows',
       'capability-aware send modes': 'prompt-content-gates',
     };

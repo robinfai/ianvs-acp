@@ -1,12 +1,34 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../theme/app_design_tokens.dart';
 
-class PermissionHistoryDialog extends StatelessWidget {
-  const PermissionHistoryDialog({super.key, required this.entries});
+typedef PermissionHistoryExporter =
+    Future<String?> Function(String fileName, String json);
+
+class PermissionHistoryDialog extends StatefulWidget {
+  const PermissionHistoryDialog({
+    super.key,
+    required this.entries,
+    this.exporter,
+  });
 
   final List<AcpPermissionAuditEntry> entries;
+  final PermissionHistoryExporter? exporter;
+
+  @override
+  State<PermissionHistoryDialog> createState() =>
+      _PermissionHistoryDialogState();
+}
+
+class _PermissionHistoryDialogState extends State<PermissionHistoryDialog> {
+  bool _exporting = false;
+  String? _exportMessage;
+  String? _exportError;
 
   @override
   Widget build(BuildContext context) {
@@ -14,27 +36,118 @@ class PermissionHistoryDialog extends StatelessWidget {
       title: const Text('Permission History'),
       content: SizedBox(
         width: 680,
-        child: entries.isEmpty
-            ? const Text('No permission requests yet.')
-            : ConstrainedBox(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.entries.isEmpty)
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('No permission requests yet.'),
+              )
+            else
+              ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 460),
                 child: ListView.separated(
                   shrinkWrap: true,
-                  itemCount: entries.length,
+                  itemCount: widget.entries.length,
                   separatorBuilder: (context, index) =>
                       const SizedBox(height: 8),
                   itemBuilder: (context, index) {
-                    return _PermissionHistoryRow(entry: entries[index]);
+                    return _PermissionHistoryRow(entry: widget.entries[index]);
                   },
                 ),
               ),
+            if (_exportMessage != null || _exportError != null) ...[
+              const SizedBox(height: 10),
+              _ExportStatus(
+                text: _exportError ?? _exportMessage!,
+                isError: _exportError != null,
+              ),
+            ],
+          ],
+        ),
       ),
       actions: [
+        OutlinedButton.icon(
+          onPressed: widget.entries.isEmpty || _exporting ? null : _export,
+          icon: _exporting
+              ? const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.download_rounded, size: 16),
+          label: const Text('Export JSON'),
+        ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Close'),
         ),
       ],
+    );
+  }
+
+  Future<void> _export() async {
+    setState(() {
+      _exporting = true;
+      _exportMessage = null;
+      _exportError = null;
+    });
+
+    try {
+      final exporter = widget.exporter ?? savePermissionHistoryJson;
+      final fileName = _permissionHistoryFileName(DateTime.now());
+      final path = await exporter(
+        fileName,
+        acpPermissionAuditEntriesToJson(widget.entries),
+      );
+      if (!mounted) return;
+      setState(() {
+        _exportMessage = path == null
+            ? 'Export cancelled.'
+            : 'Permission history exported.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _exportError = 'Could not export permission history: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _exporting = false;
+        });
+      }
+    }
+  }
+}
+
+class _ExportStatus extends StatelessWidget {
+  const _ExportStatus({required this.text, required this.isError});
+
+  final String text;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isError ? AppColors.danger : AppColors.success;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+      ),
     );
   }
 }
@@ -192,4 +305,25 @@ String _formatTimestamp(DateTime value) {
       '${local.day.toString().padLeft(2, '0')} '
       '${local.hour.toString().padLeft(2, '0')}:'
       '${local.minute.toString().padLeft(2, '0')}';
+}
+
+Future<String?> savePermissionHistoryJson(String fileName, String json) async {
+  return FilePicker.platform.saveFile(
+    dialogTitle: 'Export Permission History',
+    fileName: fileName,
+    type: FileType.custom,
+    allowedExtensions: const ['json'],
+    bytes: Uint8List.fromList(utf8.encode(json)),
+  );
+}
+
+String _permissionHistoryFileName(DateTime value) {
+  final utc = value.toUtc();
+  return 'ianvs-acp-permission-history-'
+      '${utc.year.toString().padLeft(4, '0')}'
+      '${utc.month.toString().padLeft(2, '0')}'
+      '${utc.day.toString().padLeft(2, '0')}-'
+      '${utc.hour.toString().padLeft(2, '0')}'
+      '${utc.minute.toString().padLeft(2, '0')}'
+      '${utc.second.toString().padLeft(2, '0')}.json';
 }

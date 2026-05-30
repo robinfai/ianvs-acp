@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
@@ -39,6 +41,19 @@ class AcpPermissionRequest {
     final name = toolName.trim();
     return name.isEmpty ? 'operation' : name;
   }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'id': id,
+      'title': title,
+      'rationale': rationale,
+      'sessionId': sessionId,
+      'toolName': toolName,
+      if (toolKind != null) 'toolKind': toolKind,
+      'options': options,
+      'requestedAt': requestedAt.toUtc().toIso8601String(),
+    };
+  }
 }
 
 class AcpPermissionAuditEntry {
@@ -76,4 +91,23 @@ class AcpPermissionAuditEntry {
       AcpPermissionAuditStatus.cancelled => 'Cancelled',
     };
   }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'status': status.name,
+      'recordedAt': recordedAt.toUtc().toIso8601String(),
+      if (resolvedAt != null)
+        'resolvedAt': resolvedAt!.toUtc().toIso8601String(),
+      'request': request.toJson(),
+    };
+  }
+}
+
+String acpPermissionAuditEntriesToJson(List<AcpPermissionAuditEntry> entries) {
+  const encoder = JsonEncoder.withIndent('  ');
+  return encoder.convert(<String, Object?>{
+    'schema': 'ianvs-acp.permission-history.v1',
+    'exportedAt': DateTime.now().toUtc().toIso8601String(),
+    'entries': entries.map((entry) => entry.toJson()).toList(growable: false),
+  });
 }

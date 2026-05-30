@@ -51,8 +51,8 @@ Status: policy refinement needed.
 
 Non-blocking because: filesystem and terminal providers are now available only
 when explicitly enabled through `client_providers`, remain off by default, use
-per-request permission approval, and record decisions in in-process Permission
-History. Terminal support emits lifecycle and output snapshots into the
+per-request permission approval, and record decisions in exportable in-process
+Permission History. Terminal support emits lifecycle and output snapshots into the
 timeline, but deliberately does not yet provide a persistent live terminal panel
 or saved trust rules.
 
@@ -79,8 +79,8 @@ Automated acceptance:
 Manual decision:
 
 - Decide whether filesystem and terminal providers should remain config-only or
-  gain a first-run UI, durable audit controls, persistent trust rules, or broader
-  policy controls.
+  gain a first-run UI, long-term audit retention, persistent trust rules, or
+  broader policy controls.
 - Decide whether terminal support should grow beyond timeline snapshots into a
   live terminal panel with kill/release controls and richer cwd/environment
   visibility.
@@ -127,9 +127,9 @@ Status: policy refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, permission requests
 surface an in-app per-request approval banner with Allow Once, Deny, and Cancel,
-and handled requests are visible in the Agents menu Permission History. Requests
-still fall back to `cancelled` when no UI listener is active, and persistent
-allow/deny rules remain deliberately undefined.
+and handled requests are visible in the Agents menu Permission History with JSON
+export. Requests still fall back to `cancelled` when no UI listener is active,
+and persistent allow/deny rules remain deliberately undefined.
 
 Automated acceptance:
 
@@ -141,6 +141,8 @@ Automated acceptance:
 - `test/ui/acp_client_app_test.dart` verifies the permission banner resolves an
   approval back to the agent client and displays the completed request in
   Permission History.
+- `test/ui/permission_history_dialog_test.dart` verifies Permission History
+  exports a JSON audit file payload and disables export when no entries exist.
 - `test/state/chat_controller_test.dart` verifies permission requests are
   recorded as pending, resolved to the selected decision, and cancelled when a
   newer pending request supersedes them.
@@ -149,9 +151,9 @@ Automated acceptance:
 
 Manual decision:
 
-- Decide whether to add persistent allow/deny rules, request grouping, durable
-  audit export, or stronger streaming interruption behavior beyond the current
-  per-request Allow Once/Deny/Cancel model.
+- Decide whether to add persistent allow/deny rules, request grouping, long-term
+  audit retention, or stronger streaming interruption behavior beyond the
+  current per-request Allow Once/Deny/Cancel model.
 
 ### vendor-extension-workflows
 
