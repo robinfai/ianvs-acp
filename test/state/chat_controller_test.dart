@@ -714,6 +714,36 @@ void main() {
     },
   );
 
+  test(
+    'stale session settings refresh does not overwrite forked session settings',
+    () async {
+      final fake = _StaleSessionSettingsAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      expect(controller.currentSession?.id, 'fake-session-1');
+      expect(controller.sessionSettings.modes.currentModeId, 'ask');
+
+      final refresh = controller.refreshSessionSettings();
+      await fake.staleRefreshStarted.future;
+      expect(controller.sessionSettingsLoading, isTrue);
+
+      await controller.forkCurrentSession();
+
+      expect(controller.currentSession?.id, 'fake-fork-2');
+      expect(controller.sessionSettings.modes.currentModeId, 'edit');
+      expect(controller.sessionSettingsLoading, isFalse);
+
+      fake.allowStaleRefresh.complete();
+      await refresh;
+
+      expect(controller.currentSession?.id, 'fake-fork-2');
+      expect(controller.sessionSettings.modes.currentModeId, 'edit');
+      expect(controller.sessionSettingsLoading, isFalse);
+    },
+  );
+
   test('fork current session creates independent active session', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -1111,4 +1141,41 @@ class _DelayedForkAgentClient extends FakeAgentClient {
     await allowFork.future;
     return super.forkSession(sessionId: sessionId, cwd: cwd);
   }
+}
+
+class _StaleSessionSettingsAgentClient extends FakeAgentClient {
+  final Completer<void> staleRefreshStarted = Completer<void>();
+  final Completer<void> allowStaleRefresh = Completer<void>();
+  int _originalSessionSettingsCalls = 0;
+
+  @override
+  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+    if (sessionId == 'fake-session-1') {
+      _originalSessionSettingsCalls += 1;
+      if (_originalSessionSettingsCalls == 1) {
+        return _settingsWithMode('ask');
+      }
+      if (!staleRefreshStarted.isCompleted) {
+        staleRefreshStarted.complete();
+      }
+      await allowStaleRefresh.future;
+      return _settingsWithMode('ask');
+    }
+    if (sessionId.startsWith('fake-fork-')) {
+      return _settingsWithMode('edit');
+    }
+    return super.sessionSettings(sessionId);
+  }
+}
+
+AcpSessionSettings _settingsWithMode(String modeId) {
+  return AcpSessionSettings(
+    modes: AcpSessionModeInfo(
+      currentModeId: modeId,
+      availableModes: const [
+        AcpSessionMode(id: 'ask', name: 'Ask'),
+        AcpSessionMode(id: 'edit', name: 'Edit'),
+      ],
+    ),
+  );
 }

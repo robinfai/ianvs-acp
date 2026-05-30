@@ -116,6 +116,8 @@ class ChatController extends ChangeNotifier {
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? lastLatency;
+  int _sessionSettingsLoadSerial = 0;
+  int? _activeSessionSettingsLoadId;
 
   Future<void> connect() async {
     if (isSessionOperationRunning) return;
@@ -1054,17 +1056,33 @@ class ChatController extends ChangeNotifier {
     String sessionId, {
     bool notify = true,
   }) async {
+    final loadId = ++_sessionSettingsLoadSerial;
+    _activeSessionSettingsLoadId = loadId;
     sessionSettingsLoading = true;
     if (notify) _notifyListeners();
 
     try {
-      sessionSettings = await client.sessionSettings(sessionId);
+      final settings = await client.sessionSettings(sessionId);
+      if (_isCurrentSessionSettingsLoad(loadId, sessionId)) {
+        sessionSettings = settings;
+      }
     } catch (_) {
-      sessionSettings = const AcpSessionSettings();
+      if (_isCurrentSessionSettingsLoad(loadId, sessionId)) {
+        sessionSettings = const AcpSessionSettings();
+      }
     } finally {
-      sessionSettingsLoading = false;
-      if (notify) _notifyListeners();
+      if (_activeSessionSettingsLoadId == loadId) {
+        _activeSessionSettingsLoadId = null;
+        sessionSettingsLoading = false;
+        if (notify) _notifyListeners();
+      }
     }
+  }
+
+  bool _isCurrentSessionSettingsLoad(int loadId, String sessionId) {
+    return !_isDisposed &&
+        _activeSessionSettingsLoadId == loadId &&
+        currentSession?.id == sessionId;
   }
 
   @override

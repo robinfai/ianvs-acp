@@ -193,6 +193,10 @@ void main() {
     );
     expect(dropdowns, isNotEmpty);
     expect(dropdowns.every((dropdown) => dropdown.onChanged == null), isTrue);
+    final refreshButton = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, 'Refresh'),
+    );
+    expect(refreshButton.onPressed, isNull);
 
     fake.allowFork.complete();
     await tester.pumpAndSettle();

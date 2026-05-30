@@ -45,7 +45,13 @@ class SessionSettingsDialog extends StatelessWidget {
                 style: TextButton.styleFrom(foregroundColor: AppColors.danger),
               ),
             TextButton.icon(
-              onPressed: () => unawaited(controller.refreshSessionSettings()),
+              onPressed:
+                  controller.currentSession != null &&
+                      !controller.isStreaming &&
+                      !controller.isSessionOperationRunning &&
+                      !controller.sessionSettingsLoading
+                  ? () => unawaited(controller.refreshSessionSettings())
+                  : null,
               icon: const Icon(Icons.refresh_rounded),
               label: const Text('Refresh'),
             ),
