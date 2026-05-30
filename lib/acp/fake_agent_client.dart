@@ -27,6 +27,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.resumeDelay = Duration.zero,
     this.authMethods = const <Map<String, Object?>>[],
     this.createSessionEvents = const <AgentEvent>[],
+    this.forkSessionEvents = const <AgentEvent>[],
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
@@ -72,6 +73,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Duration resumeDelay;
   final List<Map<String, Object?>> authMethods;
   final List<AgentEvent> createSessionEvents;
+  final List<AgentEvent> forkSessionEvents;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
 
@@ -283,6 +285,7 @@ class FakeAgentClient implements AcpAgentClient {
       id: 'fake-fork-$sessionCount',
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
+      initialEvents: forkSessionEvents,
     );
   }
 

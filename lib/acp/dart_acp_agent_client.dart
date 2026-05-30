@@ -330,17 +330,26 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.session.fork != true) {
       throw StateError('ACP agent does not support session/fork.');
     }
-    final result = await client.forkSession(sessionId: sessionId);
-    _activeSessionId = result.sessionId;
-    _cwdBySession[result.sessionId] = cwd;
-    final configOptions = result.configOptions;
-    if (configOptions != null) {
-      _cacheConfigOptions(result.sessionId, configOptions);
+    final result = await client.sendRaw('session/fork', <String, dynamic>{
+      'sessionId': sessionId,
+    });
+    final forkedSessionId = result['sessionId'];
+    if (forkedSessionId is! String || forkedSessionId.isEmpty) {
+      throw StateError('ACP agent returned an invalid session/fork response.');
     }
+    _activeSessionId = forkedSessionId;
+    _cwdBySession[forkedSessionId] = cwd;
+    _cacheRawConfigOptions(forkedSessionId, result['configOptions']);
+    _cacheRawModes(forkedSessionId, result['modes']);
+    final initialEvents = await _cacheImmediateSessionUpdates(
+      client,
+      forkedSessionId,
+    );
     return AgentSession(
-      id: result.sessionId,
+      id: forkedSessionId,
       cwd: cwd,
       createdAt: DateTime.now(),
+      initialEvents: initialEvents,
     );
   }
 
@@ -1056,26 +1065,6 @@ class DartAcpAgentClient implements AcpAgentClient {
         .toList();
   }
 
-  AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
-    return AcpConfigOption(
-      id: option.id,
-      name: option.name,
-      type: option.type,
-      currentValue: option.currentValue,
-      options: option.options
-          .map(
-            (choice) => AcpConfigOptionChoice(
-              value: choice.value,
-              name: choice.name,
-              description: choice.description,
-            ),
-          )
-          .toList(),
-      description: option.description,
-      group: option.group,
-    );
-  }
-
   List<AcpConfigOption> _configOptionsFromRaw(Object? raw) {
     if (raw is! List) return const <AcpConfigOption>[];
     return raw
@@ -1136,17 +1125,6 @@ class DartAcpAgentClient implements AcpAgentClient {
           ? raw['description'] as String
           : null,
     );
-  }
-
-  List<AcpConfigOption> _cacheConfigOptions(
-    String sessionId,
-    List<acp.ConfigOption>? options,
-  ) {
-    final mapped =
-        options?.map(_configOptionFromAcp).toList() ??
-        const <AcpConfigOption>[];
-    _configOptionsBySession[sessionId] = mapped;
-    return mapped;
   }
 
   List<AcpConfigOption> _cacheRawConfigOptions(String sessionId, Object? raw) {

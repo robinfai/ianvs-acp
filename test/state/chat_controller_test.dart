@@ -440,6 +440,35 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
   });
 
+  test('fork current session applies initial fork events', () async {
+    final fake = FakeAgentClient(
+      forkSessionEvents: const [
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'review',
+          metadata: <String, Object?>{
+            'kind': 'commands',
+            'commands': [
+              <String, Object?>{
+                'name': 'review',
+                'description': 'Review the forked session.',
+              },
+            ],
+          },
+        ),
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.forkCurrentSession();
+
+    expect(controller.currentSession?.id, 'fake-fork-2');
+    expect(controller.availableCommands.single['name'], 'review');
+    expect(controller.messages.single.metadata['kind'], 'commands');
+  });
+
   test('close current session clears active state', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
