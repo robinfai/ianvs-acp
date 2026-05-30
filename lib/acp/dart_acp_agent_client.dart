@@ -39,9 +39,13 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _supportsResumeSession = false;
   String? _activeSessionId;
   final Map<String, String> _modeOverridesBySession = <String, String>{};
+  final Map<String, AcpSessionModeInfo> _modesBySession =
+      <String, AcpSessionModeInfo>{};
   final Map<String, String> _cwdBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
+  List<Map<String, dynamic>> _compatibleMcpServers =
+      const <Map<String, dynamic>>[];
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
@@ -127,11 +131,16 @@ class DartAcpAgentClient implements AcpAgentClient {
       _supportsListSessions = capabilities.session.list;
       _supportsResumeSession = capabilities.session.resume;
       _capabilities = capabilities;
+      final compatibleMcpServers = _mcpServersForCapabilities(
+        configuredMcpServers,
+        capabilities,
+      );
       sessionMcpServers
         ..clear()
-        ..addAll(
-          _mcpServersForCapabilities(configuredMcpServers, capabilities),
-        );
+        ..addAll(compatibleMcpServers);
+      _compatibleMcpServers = List<Map<String, dynamic>>.unmodifiable(
+        compatibleMcpServers.map(Map<String, dynamic>.unmodifiable),
+      );
     } catch (_) {
       await _disposeClient(client, transport);
       rethrow;
@@ -143,9 +152,18 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<AgentSession> createSession({required String cwd}) async {
     final client = _requireClient();
-    final sessionId = await client.newSession(cwd);
+    final response = await client.sendRaw('session/new', <String, dynamic>{
+      'cwd': cwd,
+      'mcpServers': _mcpServersForSessionRequest(),
+    });
+    final sessionId = response['sessionId'];
+    if (sessionId is! String || sessionId.isEmpty) {
+      throw StateError('ACP agent returned an invalid session/new response.');
+    }
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
+    _cacheRawConfigOptions(sessionId, response['configOptions']);
+    _cacheRawModes(sessionId, response['modes']);
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       sessionId,
@@ -238,14 +256,20 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<AcpSessionSettings> sessionSettings(String sessionId) async {
     final client = _requireClient();
     final modes = client.sessionModes(sessionId);
+    final cachedModes = _modesBySession[sessionId];
     final currentModeId =
-        _modeOverridesBySession[sessionId] ?? modes?.currentModeId;
-    final availableModes =
+        _modeOverridesBySession[sessionId] ??
+        modes?.currentModeId ??
+        cachedModes?.currentModeId;
+    final packageModes =
         modes?.availableModes
             .map((mode) => AcpSessionMode(id: mode.id, name: mode.name))
             .where((mode) => mode.id.isNotEmpty)
             .toList() ??
         const <AcpSessionMode>[];
+    final availableModes = cachedModes?.availableModes.isNotEmpty == true
+        ? cachedModes!.availableModes
+        : packageModes;
 
     return AcpSessionSettings(
       modes: AcpSessionModeInfo(
@@ -330,6 +354,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
+    _modesBySession.remove(sessionId);
     _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
@@ -366,6 +391,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     await client.sendRaw('logout', const <String, dynamic>{});
     _activeSessionId = null;
+    _modesBySession.clear();
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
@@ -380,29 +406,17 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _requireClient();
     _activeSessionId = sessionId;
     try {
-      if (attachments.isEmpty) {
-        await for (final update in client.prompt(
-          sessionId: sessionId,
-          content: prompt,
-        )) {
-          final event = _eventFromAcpUpdate(update, includeUserMessages: false);
-          if (event != null) {
-            yield event;
-          }
-        }
-      } else {
-        final content = await _promptContentBlocks(
-          prompt,
-          attachments,
-          workspaceRoot: _cwdBySession[sessionId],
-        );
-        await for (final event in _sendRawPrompt(
-          client: client,
-          sessionId: sessionId,
-          content: content,
-        )) {
-          yield event;
-        }
+      final content = await _promptContentBlocks(
+        prompt,
+        attachments,
+        workspaceRoot: _cwdBySession[sessionId],
+      );
+      await for (final event in _sendRawPrompt(
+        client: client,
+        sessionId: sessionId,
+        content: content,
+      )) {
+        yield event;
       }
     } catch (error) {
       final details = _agentErrorDetails(error);
@@ -1118,6 +1132,41 @@ class DartAcpAgentClient implements AcpAgentClient {
     return mapped;
   }
 
+  void _cacheRawModes(String sessionId, Object? raw) {
+    final modes = _modeInfoFromRaw(raw);
+    if (modes != null) {
+      _modesBySession[sessionId] = modes;
+    }
+  }
+
+  AcpSessionModeInfo? _modeInfoFromRaw(Object? raw) {
+    if (raw is! Map) return null;
+    final map = _metadataMap(raw);
+    final currentModeId = map['currentModeId'] is String
+        ? map['currentModeId'] as String
+        : null;
+    final availableModes = map['availableModes'] is List
+        ? (map['availableModes'] as List)
+              .whereType<Map>()
+              .map((item) {
+                final mode = _metadataMap(item);
+                final id = mode['id'];
+                if (id is! String || id.isEmpty) return null;
+                return AcpSessionMode(
+                  id: id,
+                  name: mode['name'] is String ? mode['name'] as String : id,
+                );
+              })
+              .whereType<AcpSessionMode>()
+              .toList()
+        : const <AcpSessionMode>[];
+    if (currentModeId == null && availableModes.isEmpty) return null;
+    return AcpSessionModeInfo(
+      currentModeId: currentModeId,
+      availableModes: availableModes,
+    );
+  }
+
   List<AcpConfigOption> _applyConfigOptionOverride(
     String sessionId,
     String configId,
@@ -1172,6 +1221,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsListSessions = false;
     _supportsResumeSession = false;
     _activeSessionId = null;
+    _compatibleMcpServers = const <Map<String, dynamic>>[];
+    _modesBySession.clear();
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
@@ -1193,6 +1244,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }
     return 'npx';
+  }
+
+  List<Map<String, dynamic>> _mcpServersForSessionRequest() {
+    return _compatibleMcpServers.map(Map<String, dynamic>.from).toList();
   }
 
   static List<Map<String, dynamic>> _mcpServersForCapabilities(
