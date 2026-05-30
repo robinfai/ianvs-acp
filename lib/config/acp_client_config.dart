@@ -821,8 +821,31 @@ void _ensureRemoteHeaderList(
     raw[key] = const <Map<String, String>>[];
     return;
   }
+  final headers = <Map<String, String>>[];
+  if (value is Map) {
+    for (final entry in value.entries) {
+      final name = entry.key;
+      final itemValue = entry.value;
+      if (name is! String || itemValue is! String) {
+        throw FormatException(
+          'MCP server "$serverName" $key entries must be strings.',
+        );
+      }
+      _validateHttpHeaderEntry(
+        name: name,
+        value: itemValue,
+        fieldName: key,
+        serverName: serverName,
+      );
+      headers.add(<String, String>{'name': name, 'value': itemValue});
+    }
+    raw[key] = headers;
+    return;
+  }
   if (value is! List) {
-    throw FormatException('MCP server "$serverName" $key must be a list.');
+    throw FormatException(
+      'MCP server "$serverName" $key must be an object or list.',
+    );
   }
   for (var index = 0; index < value.length; index++) {
     final item = value[index];
@@ -845,7 +868,9 @@ void _ensureRemoteHeaderList(
       serverName: serverName,
       index: index,
     );
+    headers.add(<String, String>{'name': name, 'value': itemValue});
   }
+  raw[key] = headers;
 }
 
 void _ensureHttpUrl(

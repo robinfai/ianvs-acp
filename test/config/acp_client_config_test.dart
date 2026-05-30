@@ -125,9 +125,7 @@ void main() {
           'name': 'api-tools',
           'type': 'http',
           'url': 'https://api.example.com/mcp',
-          'headers': [
-            {'name': 'Authorization', 'value': 'Bearer test-token'},
-          ],
+          'headers': {'Authorization': 'Bearer test-token'},
         },
       ],
       'default_agent_server': 'Codex',
@@ -147,6 +145,9 @@ void main() {
     expect(config.mcpServers.last.url, 'https://api.example.com/mcp');
     expect(config.mcpServers.first.toJson()['env'], [
       {'name': 'ROOT', 'value': '/workspace'},
+    ]);
+    expect(config.mcpServers.last.toJson()['headers'], [
+      {'name': 'Authorization', 'value': 'Bearer test-token'},
     ]);
 
     final selected = config.withActiveAgentServer('Codex');
@@ -489,6 +490,19 @@ void main() {
             'name': 'api-tools',
             'command': '/usr/local/bin/mcp-http',
             'url': 'https://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'url': 'https://api.example.com/mcp',
+            'headers': {'Bad Header': 'token'},
           },
         ],
       }),

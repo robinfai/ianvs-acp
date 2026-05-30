@@ -45,6 +45,9 @@ Example:
 }
 ```
 
+Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
+`headers`; headers may be either an object or a `name`/`value` list.
+
 Supported environment overrides:
 
 - `ACP_CONFIG_PATH`
