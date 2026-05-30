@@ -1179,12 +1179,16 @@ class DartAcpAgentClient implements AcpAgentClient {
         .toList();
   }
 
-  AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
+  AcpConfigOption? _configOptionFromAcp(acp.ConfigOption option) {
+    final type = _configOptionType(option.type);
+    if (type == null) return null;
+    final currentValue = _configValueFromRaw(option.currentValue, type: type);
+    if (currentValue == null) return null;
     return AcpConfigOption(
       id: option.id,
       name: option.name,
-      type: option.type,
-      currentValue: option.currentValue,
+      type: type,
+      currentValue: currentValue,
       options: option.options
           .map(
             (choice) => AcpConfigOptionChoice(
@@ -1211,12 +1215,12 @@ class DartAcpAgentClient implements AcpAgentClient {
   AcpConfigOption? _configOptionFromRawMap(Map<String, Object?> raw) {
     final id = raw['id'];
     final name = raw['name'];
-    final type = raw['type'];
-    final currentValue = _configValueFromRaw(raw['currentValue']);
-    if (id is! String ||
-        name is! String ||
-        type is! String ||
-        currentValue == null) {
+    final type = _configOptionType(raw['type']);
+    if (id is! String || name is! String || type == null) {
+      return null;
+    }
+    final currentValue = _configValueFromRaw(raw['currentValue'], type: type);
+    if (currentValue == null) {
       return null;
     }
 
@@ -1242,9 +1246,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     );
   }
 
-  String? _configValueFromRaw(Object? raw) {
+  String? _configOptionType(Object? raw) {
+    if (raw is! String) return null;
+    final type = raw.trim().toLowerCase();
+    if (type != 'select' && type != 'boolean') return null;
+    return type;
+  }
+
+  String? _configValueFromRaw(Object? raw, {required String type}) {
     if (raw is String) return raw;
-    if (raw is bool) return raw.toString();
+    if (type == 'boolean' && raw is bool) return raw.toString();
     return null;
   }
 
@@ -1272,7 +1283,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     List<acp.ConfigOption>? options,
   ) {
     final mapped =
-        options?.map(_configOptionFromAcp).toList() ??
+        options
+            ?.map(_configOptionFromAcp)
+            .whereType<AcpConfigOption>()
+            .toList() ??
         const <AcpConfigOption>[];
     _configOptionsBySession[sessionId] = mapped;
     return mapped;
