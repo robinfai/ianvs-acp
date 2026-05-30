@@ -99,3 +99,25 @@ These are not blockers for the current UI pass, but need product/security decisi
 - Decide whether to add a slash-command picker/autocomplete instead of only rendering advertised commands.
 - Decide whether user config should also include MCP server definitions, not only agent server definitions.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
+
+## Follow-Up Desktop UX Pass
+
+Date: 2026-05-30
+
+Scope:
+
+- Launched the debug macOS app from the built `.app` bundle to approximate a normal desktop user path.
+- Computer Use could list running apps, but `get_app_state` returned `cgWindowNotFound` and coordinate clicks timed out across multiple apps. System window enumeration and window screenshots still worked, so this pass used screenshots for visual review.
+
+Fixed:
+
+- The macOS title bar and bundle name showed the engineering name `ianvs_acp`; the app now uses `ACP Client`.
+- Launching the app through Finder/`open` made `Directory.current.path` resolve to `/`, so new ACP sessions defaulted to the filesystem root. The client now resolves the workspace from `ACP_WORKSPACE_CWD` / `IANVS_ACP_WORKSPACE_CWD`, then a useful current directory, then `PWD`, then `HOME`.
+- The main empty timeline said to start a session but had no local action. It now exposes a primary `New Session` button alongside the sidebar action.
+- The macOS window was freely resizable below the fixed desktop layout's usable width. The window now has a minimum size of 760 x 560.
+
+Recorded non-blockers:
+
+- At the default compact macOS size, top-right toolbar secondary actions collapse to icons only. Tooltips/semantics exist, and the main empty state now provides a visible primary action.
+- The bottom status bar intentionally prioritizes current state controls on the right; long workspace paths may be truncated in compact windows.
+- This environment still needs manual interaction validation once Computer Use accessibility/window capture works again, especially text-field focus, attachment picker, and real agent connection flows.

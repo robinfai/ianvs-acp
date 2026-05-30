@@ -15,12 +15,14 @@ class ChatTimeline extends StatelessWidget {
     this.agentName = 'Codex',
     this.hasActiveSession = false,
     this.activeSessionLabel,
+    this.onNewSession,
   });
 
   final List<ChatMessage> messages;
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final VoidCallback? onNewSession;
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +33,7 @@ class ChatTimeline extends StatelessWidget {
             agentName: agentName,
             hasActiveSession: hasActiveSession,
             activeSessionLabel: activeSessionLabel,
+            onNewSession: onNewSession,
           ),
         ),
       );
@@ -97,11 +100,13 @@ class _EmptyTimeline extends StatelessWidget {
     required this.agentName,
     required this.hasActiveSession,
     this.activeSessionLabel,
+    this.onNewSession,
   });
 
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final VoidCallback? onNewSession;
 
   @override
   Widget build(BuildContext context) {
@@ -146,6 +151,28 @@ class _EmptyTimeline extends StatelessWidget {
                       height: 1.4,
                     ),
                   ),
+                  if (!hasActiveSession && onNewSession != null) ...[
+                    SizedBox(height: compact ? 12 : 16),
+                    FilledButton.icon(
+                      onPressed: onNewSession,
+                      icon: const Icon(Icons.add_rounded, size: 18),
+                      label: const Text('New Session'),
+                      style: FilledButton.styleFrom(
+                        foregroundColor: AppColors.primaryDark,
+                        backgroundColor: AppColors.primarySoft,
+                        elevation: 0,
+                        minimumSize: Size(154, compact ? 36 : 40),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

@@ -78,6 +78,7 @@ class AppShell extends StatelessWidget {
                                   controller.currentSession != null,
                               activeSessionLabel:
                                   controller.currentSession?.displayTitle,
+                              onNewSession: controller.newSession,
                             ),
                           ),
                         ],

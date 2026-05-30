@@ -27,15 +27,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
   static const String _initialResumeSessionId = String.fromEnvironment(
     'ACP_RESUME_SESSION_ID',
   );
-  static const String _workspaceCwd = String.fromEnvironment(
-    'ACP_WORKSPACE_CWD',
-  );
 
   late final ChatController _controller =
       widget.controller ??
       ChatController(
         client: _agentClient(widget.config.activeAgentServer),
-        cwd: _workspaceCwd.isEmpty ? Directory.current.path : _workspaceCwd,
+        cwd: AcpClientConfig.resolveWorkspaceCwd(
+          currentDirectory: Directory.current.path,
+        ),
       );
 
   @override

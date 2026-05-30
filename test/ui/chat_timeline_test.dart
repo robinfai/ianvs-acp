@@ -9,6 +9,7 @@ void main() {
     String agentName = 'Codex',
     bool hasActiveSession = false,
     String? activeSessionLabel,
+    VoidCallback? onNewSession,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -17,6 +18,7 @@ void main() {
           agentName: agentName,
           hasActiveSession: hasActiveSession,
           activeSessionLabel: activeSessionLabel,
+          onNewSession: onNewSession,
         ),
       ),
     );
@@ -26,6 +28,25 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline empty state exposes primary new session action', (
+    tester,
+  ) async {
+    var starts = 0;
+    await tester.pumpWidget(
+      timeline(
+        const [],
+        onNewSession: () {
+          starts += 1;
+        },
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'New Session'));
+    await tester.pump();
+
+    expect(starts, 1);
   });
 
   testWidgets('ChatTimeline empty state renders custom agent name', (
@@ -56,6 +77,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Start a session to chat with Codex'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'New Session'), findsNothing);
   });
 
   testWidgets('ChatTimeline renders user and assistant messages', (

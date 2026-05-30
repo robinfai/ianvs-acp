@@ -88,6 +88,33 @@ class AcpClientConfig {
     if (home == null || home.trim().isEmpty) return null;
     return '${home.trim()}/.config/$appConfigDirectoryName/$settingsFileName';
   }
+
+  static String resolveWorkspaceCwd({
+    Map<String, String>? environment,
+    String? currentDirectory,
+  }) {
+    const dartDefineCwd = String.fromEnvironment('ACP_WORKSPACE_CWD');
+    if (dartDefineCwd.trim().isNotEmpty) return dartDefineCwd.trim();
+
+    final env = environment ?? Platform.environment;
+    final envCwd = env['ACP_WORKSPACE_CWD'] ?? env['IANVS_ACP_WORKSPACE_CWD'];
+    if (envCwd != null && envCwd.trim().isNotEmpty) {
+      return envCwd.trim();
+    }
+
+    final current = (currentDirectory ?? Directory.current.path).trim();
+    if (current.isNotEmpty && current != '/') return current;
+
+    final pwd = env['PWD'];
+    if (pwd != null && pwd.trim().isNotEmpty && pwd.trim() != '/') {
+      return pwd.trim();
+    }
+
+    final home = env['HOME'];
+    if (home != null && home.trim().isNotEmpty) return home.trim();
+
+    return current.isEmpty ? Directory.current.path : current;
+  }
 }
 
 class AgentServerConfig {

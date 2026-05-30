@@ -81,4 +81,43 @@ void main() {
 
     expect(path, '/Users/example/.config-alt/ianvs-acp/settings.json');
   });
+
+  test('resolves workspace cwd from explicit environment override', () {
+    final cwd = AcpClientConfig.resolveWorkspaceCwd(
+      currentDirectory: '/Users/example/app',
+      environment: const {'ACP_WORKSPACE_CWD': '/Users/example/workspace'},
+    );
+
+    expect(cwd, '/Users/example/workspace');
+  });
+
+  test('resolves workspace cwd from current directory when useful', () {
+    final cwd = AcpClientConfig.resolveWorkspaceCwd(
+      currentDirectory: '/Users/example/app',
+      environment: const {'HOME': '/Users/example'},
+    );
+
+    expect(cwd, '/Users/example/app');
+  });
+
+  test('falls back to home when GUI launch current directory is root', () {
+    final cwd = AcpClientConfig.resolveWorkspaceCwd(
+      currentDirectory: '/',
+      environment: const {'HOME': '/Users/example'},
+    );
+
+    expect(cwd, '/Users/example');
+  });
+
+  test('uses PWD before home when current directory is root', () {
+    final cwd = AcpClientConfig.resolveWorkspaceCwd(
+      currentDirectory: '/',
+      environment: const {
+        'HOME': '/Users/example',
+        'PWD': '/Users/example/project',
+      },
+    );
+
+    expect(cwd, '/Users/example/project');
+  });
 }
