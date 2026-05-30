@@ -13,6 +13,7 @@ import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 import 'prompt_attachment.dart';
+import 'streamable_http_acp_transport.dart';
 import 'web_socket_acp_transport.dart';
 
 class DartAcpAgentClient implements AcpAgentClient {
@@ -21,6 +22,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     List<String>? agentArgs,
     Map<String, String>? envOverrides,
     this.agentWebSocketUrl,
+    this.agentHttpUrl,
     Map<String, String>? agentHeaders,
     List<Map<String, dynamic>>? mcpServers,
     this.enableFilesystemReadTextFile = false,
@@ -39,6 +41,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final List<String> agentArgs;
   final Map<String, String> envOverrides;
   final Uri? agentWebSocketUrl;
+  final Uri? agentHttpUrl;
   final Map<String, String> agentHeaders;
   final List<Map<String, dynamic>> mcpServers;
   final bool enableFilesystemReadTextFile;
@@ -185,6 +188,15 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (webSocketUrl != null) {
       return WebSocketAcpTransport(
         endpoint: webSocketUrl,
+        headers: agentHeaders,
+        onProtocolOut: _captureProtocolOut,
+        onProtocolIn: _captureProtocolIn,
+      );
+    }
+    final httpUrl = agentHttpUrl;
+    if (httpUrl != null) {
+      return StreamableHttpAcpTransport(
+        endpoint: httpUrl,
         headers: agentHeaders,
         onProtocolOut: _captureProtocolOut,
         onProtocolIn: _captureProtocolIn,

@@ -52,6 +52,12 @@ void main() {
                 command: '/usr/local/bin/npx',
                 args: ['@zed-industries/codex-acp'],
               ),
+              AgentServerConfig(
+                name: 'Remote HTTP Agent',
+                type: 'http',
+                url: 'https://agent.example.com/acp',
+                headers: {'Authorization': 'Bearer test-token'},
+              ),
             ],
           ),
         ),
@@ -65,6 +71,9 @@ void main() {
     );
     expect(find.text('Kimi Code Dev'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Remote HTTP Agent'), findsOneWidget);
+    expect(find.text('https://agent.example.com/acp'), findsOneWidget);
+    expect(find.text('Authorization'), findsOneWidget);
     expect(find.text('MCP Servers'), findsOneWidget);
     expect(find.text('filesystem'), findsOneWidget);
     expect(find.text('/usr/local/bin/mcp-filesystem'), findsOneWidget);

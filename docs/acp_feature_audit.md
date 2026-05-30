@@ -9,17 +9,18 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gap is full Streamable HTTP/SSE transport. Filesystem and
-terminal providers are now available only behind explicit user config and
-per-request approval, and remote WebSocket agent transport is available for the
-draft remote-transport path, so remaining transport work is focused on the
-HTTP/SSE profile and real-agent interoperability.
+The largest remaining transport gap is real-agent remote interoperability.
+Filesystem and terminal providers are now available only behind explicit user
+config and permission approval. WebSocket remote agents are supported, and the
+draft Streamable HTTP/SSE path now has a client transport for the RFD's
+connection/session SSE model, but HTTP/2 enforcement and live agent validation
+still need a dedicated pass.
 
 ## Official Feature Index
 
 | ACP area | Official reference | Current status | Implementation notes |
 | --- | --- | --- | --- |
-| Transport | https://agentclientprotocol.com/protocol/transports | Partial: stdio and WebSocket | `dart_acp` launches configured agents through stdio. User config also supports `agent_servers` with `type: "websocket"` and a `ws`/`wss` URL; the client connects over WebSocket, sends JSON-RPC frames, and supports server-to-client requests on that channel. The Streamable HTTP/SSE profile from the draft RFD remains unimplemented. |
+| Transport | https://agentclientprotocol.com/protocol/transports | Partial: stdio, WebSocket, and draft Streamable HTTP/SSE | `dart_acp` launches configured agents through stdio. User config also supports `agent_servers` with `type: "websocket"` and a `ws`/`wss` URL, plus `type: "http"`/`"sse"` and an `http`/`https` URL for the draft Streamable HTTP/SSE profile. The HTTP transport handles `initialize` over POST, keeps `Acp-Connection-Id`/cookies across requests, opens connection- and session-scoped SSE streams, routes session POSTs with `Acp-Session-Id`, and handles 202-delivered JSON-RPC responses. HTTP/2 enforcement, DELETE teardown, and real remote-agent interoperability remain hardening follow-ups while the RFD is draft. |
 | Initialization / capabilities | https://agentclientprotocol.com/protocol/initialization | Done for metadata/capability negotiation | The client initializes with `clientInfo`, parses protocol version, `agentCapabilities`, `agentInfo`, `authMethods`, prompt/MCP/session capabilities, and shows negotiated metadata in compatibility UI. |
 | Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Done for agent-handled auth | `authMethods` are counted/displayed, the Agent menu exposes `Authenticate` when the agent advertises methods, and the client calls ACP `authenticate` with the selected `methodId`. `auth_required` errors are surfaced as an Authenticate action hint. Confirmed logout remains available when the agent advertises `auth.logout`. The client does not persist credentials. |
 | Session setup: `session/new`, `session/load`, `session/resume` | https://agentclientprotocol.com/protocol/session-setup | Mostly done | New sessions capture initial `session/new` response data such as modes and config options. Resume prefers `session/load` when available and falls back to `session/resume`; fallback `session/resume` also captures initial modes and config options. Empty resumed sessions now render as `Session ready` instead of a misleading new-session empty state. Initial state updates emitted immediately after `session/new` or `session/resume` are captured for settings and command suggestions. |
@@ -95,6 +96,13 @@ Supported shape:
       "headers": {
         "Authorization": "Bearer ..."
       }
+    },
+    "Remote HTTP Agent": {
+      "type": "http",
+      "url": "https://agent.example.com/acp",
+      "headers": {
+        "Authorization": "Bearer ..."
+      }
     }
   },
   "mcp_servers": [
@@ -128,11 +136,12 @@ Supported shape:
 ```
 
 The toolbar `Agents` menu lists configured servers. Stdio/custom agent servers
-use `command`, `args`, and `env`; WebSocket agent servers use `url` plus optional
-`headers`. `default_agent_server` is only the startup default; after launch, the
-selected agent belongs to the current/new session and is shown on session rows
-rather than being written back as global config. Creating a new session asks
-which configured agent to use when more than one server is available.
+use `command`, `args`, and `env`; remote WebSocket and Streamable HTTP/SSE agent
+servers use `url` plus optional `headers`. `default_agent_server` is only the
+startup default; after launch, the selected agent belongs to the current/new
+session and is shown on session rows rather than being written back as global
+config. Creating a new session asks which configured agent to use when more than
+one server is available.
 Compatible top-level `mcp_servers` entries are forwarded to every ACP
 `session/new` and `session/load` request for the selected agent. Supported MCP
 transport types are `stdio`, `http`, `sse`, and `acp`. Stdio entries are always
@@ -173,7 +182,7 @@ Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
 - Review filesystem and terminal providers policy: both are available behind explicit user config, permission approval, explicit trust rules, and exportable in-process permission history, but first-run UI, long-term audit retention, and broader trust controls remain undecided.
-- Finish remote transport support: WebSocket works for draft remote agents, while Streamable HTTP/SSE and HTTP/2 validation are still pending.
+- Finish remote transport hardening: WebSocket and draft Streamable HTTP/SSE work in automated local tests, while HTTP/2 enforcement, DELETE teardown, and real remote-agent validation are still pending.
 - Design vendor-specific extension workflows only when a real agent's `_meta` contract requires more than the generic Extension Request dialog.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 

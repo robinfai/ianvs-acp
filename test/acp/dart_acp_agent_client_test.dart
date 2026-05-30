@@ -495,6 +495,145 @@ Future<void> main() async {
     }
   });
 
+  test('connects to streamable HTTP ACP agent servers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final connectionStream = Completer<HttpResponse>();
+    final sessionStream = Completer<HttpResponse>();
+    String? authorizationHeader;
+    String? connectionHeader;
+    String? sessionHeader;
+    String? cookieHeader;
+
+    Future<void> sendSse(
+      Completer<HttpResponse> stream,
+      Map<String, dynamic> message,
+    ) async {
+      final response = await stream.future;
+      response
+        ..write('event: message\n')
+        ..write('data: ${jsonEncode(message)}\n\n');
+      await response.flush();
+    }
+
+    Future<void> openSse(HttpRequest request) async {
+      final sessionId = request.headers.value('Acp-Session-Id');
+      request.response.bufferOutput = false;
+      request.response.headers
+        ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+        ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+      request.response.write(': connected\n\n');
+      await request.response.flush();
+      openResponses.add(request.response);
+      if (sessionId == null) {
+        if (!connectionStream.isCompleted) {
+          connectionStream.complete(request.response);
+        }
+      } else if (!sessionStream.isCompleted) {
+        sessionStream.complete(request.response);
+      }
+    }
+
+    final serverSubscription = server.listen((request) async {
+      authorizationHeader ??= request.headers.value(
+        HttpHeaders.authorizationHeader,
+      );
+      if (request.method == 'GET') {
+        await openSse(request);
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final id = message['id'];
+      final method = message['method'];
+      if (method == 'initialize') {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..cookies.add(Cookie('sticky', 'yes'))
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{
+                'connectionId': 'connection-1',
+                'protocolVersion': 1,
+                'agentInfo': <String, dynamic>{'name': 'HTTP Agent'},
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+        await request.response.close();
+      } else if (method == 'session/new') {
+        connectionHeader = request.headers.value('Acp-Connection-Id');
+        cookieHeader = request.headers.value(HttpHeaders.cookieHeader);
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        await sendSse(connectionStream, <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{'sessionId': 'http-session'},
+        });
+      } else if (method == 'session/prompt') {
+        sessionHeader = request.headers.value('Acp-Session-Id');
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        await sendSse(sessionStream, <String, dynamic>{
+          'jsonrpc': '2.0',
+          'method': 'session/update',
+          'params': <String, dynamic>{
+            'sessionId': 'http-session',
+            'update': <String, dynamic>{
+              'sessionUpdate': 'agent_message_chunk',
+              'content': <String, dynamic>{
+                'type': 'text',
+                'text': 'hello http',
+              },
+            },
+          },
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+        await sendSse(sessionStream, <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        });
+      }
+    });
+
+    final client = DartAcpAgentClient(
+      agentHttpUrl: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      agentHeaders: const {'Authorization': 'Bearer test-token'},
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'say hi')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      expect(authorizationHeader, 'Bearer test-token');
+      expect(connectionHeader, 'connection-1');
+      expect(sessionHeader, 'http-session');
+      expect(cookieHeader, contains('sticky=yes'));
+      expect(client.capabilities?.agentInfo['name'], 'HTTP Agent');
+      expect(session.id, 'http-session');
+      expect(events.map((event) => event.text), contains('hello http'));
+      expect(events.last.metadata['stopReason'], 'endTurn');
+    } finally {
+      await client.dispose();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('sends custom extension JSON-RPC requests', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final extensionParamsFile = File('${tempDir.path}/extension_params.json');

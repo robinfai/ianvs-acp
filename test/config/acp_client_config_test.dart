@@ -78,6 +78,30 @@ void main() {
     });
   });
 
+  test('loads streamable HTTP agent server config', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'HTTP Agent',
+      'agent_servers': {
+        'HTTP Agent': {
+          'type': 'http',
+          'url': 'https://agent.example.com/acp',
+          'headers': [
+            {'name': 'Authorization', 'value': 'Bearer test-token'},
+          ],
+        },
+      },
+    });
+
+    expect(config.agentName, 'HTTP Agent');
+    expect(config.activeAgentServer?.type, 'http');
+    expect(config.activeAgentServer?.isStreamableHttp, isTrue);
+    expect(config.activeAgentServer?.isStdio, isFalse);
+    expect(config.activeAgentServer?.url, 'https://agent.example.com/acp');
+    expect(config.activeAgentServer?.headers, {
+      'Authorization': 'Bearer test-token',
+    });
+  });
+
   test('loads top-level MCP server config', () {
     final config = AcpClientConfig.fromJson({
       'mcp_servers': [
@@ -395,6 +419,26 @@ void main() {
       () => AcpClientConfig.fromJson({
         'agent_servers': {
           'Remote Agent': {'type': 'websocket', 'url': 'https://127.0.0.1/acp'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects invalid streamable HTTP agent server config', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'HTTP Agent': {'type': 'http'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'HTTP Agent': {'type': 'http', 'url': 'ws://127.0.0.1/acp'},
         },
       }),
       throwsA(isA<FormatException>()),

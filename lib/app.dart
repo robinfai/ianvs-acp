@@ -281,6 +281,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentArgs: server.isStdio ? server.args : const <String>[],
       envOverrides: server.isStdio ? server.env : const <String, String>{},
       agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
+      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
       agentHeaders: server.headers,
       mcpServers: mcpServers,
       enableFilesystemReadTextFile:

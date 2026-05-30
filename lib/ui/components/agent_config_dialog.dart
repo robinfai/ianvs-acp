@@ -217,7 +217,7 @@ class _AgentServerPanel extends StatelessWidget {
         children: [
           _DetailRow(label: 'Type', value: server.type),
           const SizedBox(height: 6),
-          if (server.isWebSocket) ...[
+          if (!server.isStdio) ...[
             _DetailRow(label: 'URL', value: server.url),
             const SizedBox(height: 6),
             _DetailRow(

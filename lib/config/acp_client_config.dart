@@ -363,7 +363,14 @@ class AgentServerConfig {
 
   bool get isWebSocket => type == 'websocket' || type == 'ws';
 
-  bool get isStdio => !isWebSocket;
+  bool get isStreamableHttp =>
+      type == 'http' ||
+      type == 'https' ||
+      type == 'sse' ||
+      type == 'streamable_http' ||
+      type == 'streamable-http';
+
+  bool get isStdio => !isWebSocket && !isStreamableHttp;
 
   factory AgentServerConfig.fromJson({
     required String name,
@@ -395,10 +402,41 @@ class AgentServerConfig {
       );
     }
 
+    if (type == 'http' ||
+        type == 'https' ||
+        type == 'sse' ||
+        type == 'streamable_http' ||
+        type == 'streamable-http') {
+      final url = _stringValue(json['url']);
+      if (url == null || url.isEmpty) {
+        throw FormatException('Agent server "$name" requires url.');
+      }
+      final uri = Uri.tryParse(url);
+      if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+        throw FormatException(
+          'Agent server "$name" url must use http or https.',
+        );
+      }
+      final headersRaw = json['headers'];
+      final headers = headersRaw == null
+          ? const <String, String>{}
+          : _stringMapOrNameValueList(
+              headersRaw,
+              fieldName: 'headers',
+              serverName: name,
+            );
+      return AgentServerConfig(
+        name: name,
+        type: type,
+        url: url,
+        headers: headers,
+      );
+    }
+
     if (type != 'custom' && type != 'stdio') {
       throw FormatException(
         'Unsupported agent server type "$type". '
-        'Supported types: custom, stdio, websocket.',
+        'Supported types: custom, stdio, websocket, http, sse.',
       );
     }
 

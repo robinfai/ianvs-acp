@@ -20,30 +20,38 @@ today, plus the manual decision or validation still needed before implementation
 
 ### remote-transports
 
-Status: Streamable HTTP/SSE implementation needed.
+Status: remote interoperability and HTTP/2 hardening needed.
 
-Non-blocking because: local stdio remains supported and WebSocket remote agents
-can now be configured with `agent_servers[].type = "websocket"` plus a `ws` or
-`wss` URL. Full Streamable HTTP/SSE is still a draft transport profile that
-requires long-lived GET streams, POST/202 response routing, HTTP/2 validation,
-connection/session headers, and real-agent interoperability testing.
+Non-blocking because: local stdio remains supported, WebSocket remote agents can
+be configured with `agent_servers[].type = "websocket"` plus a `ws` or `wss`
+URL, and draft Streamable HTTP/SSE agents can be configured with
+`agent_servers[].type = "http"` or `"sse"` plus an `http` or `https` URL. The
+new HTTP transport covers long-lived connection/session SSE streams, POST/202
+response routing, `Acp-Connection-Id`, `Acp-Session-Id`, headers, and cookies,
+but the draft profile still needs HTTP/2 enforcement, DELETE teardown, and
+real-agent interoperability testing.
 
 Automated acceptance:
 
-- `test/config/acp_client_config_test.dart` verifies WebSocket agent server
-  config parsing and invalid WebSocket config rejection.
+- `test/config/acp_client_config_test.dart` verifies WebSocket and Streamable
+  HTTP/SSE agent server config parsing plus invalid config rejection.
 - `test/acp/dart_acp_agent_client_test.dart` verifies the client connects to a
   local WebSocket ACP agent, forwards custom headers, initializes, creates a
-  session, receives session updates, and completes a prompt turn.
+  session, receives session updates, and completes a prompt turn. It also
+  verifies a local Streamable HTTP/SSE ACP agent path, including headers,
+  cookies, connection/session stream routing, and prompt completion.
 - `lib/acp/web_socket_acp_transport.dart` implements the JSON-RPC
+  `StreamChannel` adapter used by `dart_acp`.
+- `lib/acp/streamable_http_acp_transport.dart` implements the draft HTTP/SSE
   `StreamChannel` adapter used by `dart_acp`.
 
 Manual decision:
 
-- Decide when to implement the Streamable HTTP/SSE profile from the draft RFD,
-  including HTTP/2 requirements, cookie/header handling, and whether WebSocket
-  fallback should be preferred or user-selectable.
-- Validate against a real remote ACP agent that implements the draft endpoint.
+- Decide whether to enforce HTTP/2 at connection time before the RFD stabilizes,
+  and whether WebSocket fallback should be preferred or user-selectable.
+- Validate WebSocket and Streamable HTTP/SSE against real remote ACP agents that
+  implement the draft endpoint, then decide whether DELETE teardown is required
+  before release.
 
 ### fs-terminal-providers
 
