@@ -4,6 +4,9 @@ import 'dart:io';
 class AcpClientConfig {
   const AcpClientConfig({this.activeAgentServer});
 
+  static const String appConfigDirectoryName = 'ianvs-acp';
+  static const String settingsFileName = 'settings.json';
+
   final AgentServerConfig? activeAgentServer;
 
   String get agentName => activeAgentServer?.name ?? 'Codex';
@@ -76,9 +79,14 @@ class AcpClientConfig {
       return envPath.trim();
     }
 
+    final xdgConfigHome = env['XDG_CONFIG_HOME'];
+    if (xdgConfigHome != null && xdgConfigHome.trim().isNotEmpty) {
+      return '${xdgConfigHome.trim()}/$appConfigDirectoryName/$settingsFileName';
+    }
+
     final home = env['HOME'];
     if (home == null || home.trim().isEmpty) return null;
-    return '${home.trim()}/.ianvs_acp/config.json';
+    return '${home.trim()}/.config/$appConfigDirectoryName/$settingsFileName';
   }
 }
 
@@ -88,12 +96,14 @@ class AgentServerConfig {
     required this.type,
     required this.command,
     this.args = const <String>[],
+    this.env = const <String, String>{},
   });
 
   final String name;
   final String type;
   final String command;
   final List<String> args;
+  final Map<String, String> env;
 
   factory AgentServerConfig.fromJson({
     required String name,
@@ -113,12 +123,17 @@ class AgentServerConfig {
     final args = argsRaw == null
         ? const <String>[]
         : _stringList(argsRaw, fieldName: 'args', serverName: name);
+    final envRaw = json['env'];
+    final env = envRaw == null
+        ? const <String, String>{}
+        : _stringMap(envRaw, fieldName: 'env', serverName: name);
 
     return AgentServerConfig(
       name: name,
       type: type,
       command: command,
       args: args,
+      env: env,
     );
   }
 }
@@ -147,4 +162,24 @@ List<String> _stringList(
     }
     return item;
   }).toList();
+}
+
+Map<String, String> _stringMap(
+  Object? value, {
+  required String fieldName,
+  required String serverName,
+}) {
+  if (value is! Map) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName must be an object.',
+    );
+  }
+  return value.map((key, item) {
+    if (key is! String || item is! String) {
+      throw FormatException(
+        'Agent server "$serverName" $fieldName entries must be strings.',
+      );
+    }
+    return MapEntry(key, item);
+  });
 }

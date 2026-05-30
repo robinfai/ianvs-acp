@@ -14,7 +14,10 @@ void main() {
     "Kimi Code Dev": {
       "type": "custom",
       "command": "/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs",
-      "args": ["acp"]
+      "args": ["acp"],
+      "env": {
+        "KIMI_API_KEY": "test-key"
+      }
     }
   }
 }
@@ -28,6 +31,7 @@ void main() {
       '/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs',
     );
     expect(config.activeAgentServer?.args, ['acp']);
+    expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
   });
 
   test('uses requested default agent server when multiple are configured', () {
@@ -39,12 +43,14 @@ void main() {
           'type': 'custom',
           'command': '/usr/local/bin/kimi',
           'args': ['acp'],
+          'env': {'KIMI_API_KEY': 'test-key'},
         },
       },
     });
 
     expect(config.agentName, 'Kimi Code Dev');
     expect(config.activeAgentServer?.command, '/usr/local/bin/kimi');
+    expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
   });
 
   test('missing config file keeps built-in Codex default', () async {
@@ -62,6 +68,17 @@ void main() {
       environment: const {'HOME': '/Users/example'},
     );
 
-    expect(path, '/Users/example/.ianvs_acp/config.json');
+    expect(path, '/Users/example/.config/ianvs-acp/settings.json');
+  });
+
+  test('resolves default config path from XDG_CONFIG_HOME', () {
+    final path = AcpClientConfig.resolveConfigPath(
+      environment: const {
+        'HOME': '/Users/example',
+        'XDG_CONFIG_HOME': '/Users/example/.config-alt',
+      },
+    );
+
+    expect(path, '/Users/example/.config-alt/ianvs-acp/settings.json');
   });
 }

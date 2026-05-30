@@ -86,6 +86,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return DartAcpAgentClient(
       agentCommand: server.command,
       agentArgs: server.args,
+      envOverrides: server.env,
     );
   }
 }

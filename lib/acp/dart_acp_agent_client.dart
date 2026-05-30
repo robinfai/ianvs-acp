@@ -11,12 +11,17 @@ import 'agent_event.dart';
 import 'agent_session.dart';
 
 class DartAcpAgentClient implements AcpAgentClient {
-  DartAcpAgentClient({String? agentCommand, List<String>? agentArgs})
-    : agentCommand = agentCommand ?? _defaultAgentCommand(),
-      agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'];
+  DartAcpAgentClient({
+    String? agentCommand,
+    List<String>? agentArgs,
+    Map<String, String>? envOverrides,
+  }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
+       agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
+       envOverrides = envOverrides ?? const <String, String>{};
 
   final String agentCommand;
   final List<String> agentArgs;
+  final Map<String, String> envOverrides;
 
   acp.AcpClient? _client;
   AcpAgentCapabilities? _capabilities;
@@ -37,6 +42,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final config = acp.AcpConfig(
       agentCommand: agentCommand,
       agentArgs: agentArgs,
+      envOverrides: envOverrides,
       capabilities: const acp.AcpCapabilities(
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),
