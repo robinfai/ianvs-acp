@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
@@ -41,6 +42,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, List<AcpConfigOption>>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
+  static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
 
   static const Map<String, dynamic> _clientInfo = <String, dynamic>{
     'name': 'ACP Client',
@@ -595,8 +597,33 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<Map<String, dynamic>> _contentBlockForAttachment(
     PromptAttachment attachment,
   ) async {
+    final image = await _imageContentBlock(attachment);
+    if (image != null) return image;
     final embedded = await _embeddedTextResourceBlock(attachment);
     return embedded ?? _resourceLinkBlock(attachment);
+  }
+
+  Future<Map<String, dynamic>?> _imageContentBlock(
+    PromptAttachment attachment,
+  ) async {
+    if (_capabilities?.prompt.image != true) return null;
+    final mimeType = _imageMimeType(attachment);
+    if (mimeType == null) return null;
+
+    try {
+      final file = File(attachment.path);
+      final byteCount = attachment.size ?? await file.length();
+      if (byteCount > _maxImageAttachmentBytes) return null;
+      final bytes = await file.readAsBytes();
+      return <String, dynamic>{
+        'type': 'image',
+        'mimeType': mimeType,
+        'data': base64Encode(bytes),
+        'uri': attachment.uri.toString(),
+      };
+    } on Object {
+      return null;
+    }
   }
 
   Future<Map<String, dynamic>?> _embeddedTextResourceBlock(
@@ -672,6 +699,23 @@ class DartAcpAgentClient implements AcpAgentClient {
       '.yml',
       '.zsh',
     ].any(name.endsWith);
+  }
+
+  String? _imageMimeType(PromptAttachment attachment) {
+    final mimeType = attachment.mimeType?.toLowerCase();
+    if (mimeType != null && mimeType.startsWith('image/')) {
+      return mimeType;
+    }
+
+    final name = attachment.name.toLowerCase();
+    if (name.endsWith('.png')) return 'image/png';
+    if (name.endsWith('.jpg') || name.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (name.endsWith('.gif')) return 'image/gif';
+    if (name.endsWith('.webp')) return 'image/webp';
+    if (name.endsWith('.bmp')) return 'image/bmp';
+    return null;
   }
 
   Map<String, dynamic> _resourceLinkBlock(PromptAttachment attachment) {

@@ -145,6 +145,39 @@ Future<void> main() async {
     },
   );
 
+  test('embeds image attachments when image prompts are advertised', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      image: true,
+      attachmentName: 'pixel.png',
+      attachmentBytes: _transparentPngBytes,
+      mimeType: 'image/png',
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    final imageBlock = prompt.last as Map<String, dynamic>;
+    expect(imageBlock['type'], 'image');
+    expect(imageBlock['mimeType'], 'image/png');
+    expect(imageBlock['data'], base64Encode(_transparentPngBytes));
+    expect(imageBlock['uri'], startsWith('file://'));
+  });
+
+  test('falls back to resource links without image prompt support', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      image: false,
+      attachmentName: 'pixel.png',
+      attachmentBytes: _transparentPngBytes,
+      mimeType: 'image/png',
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    final resourceLink = prompt.last as Map<String, dynamic>;
+    expect(resourceLink['type'], 'resource_link');
+    expect(resourceLink['name'], 'pixel.png');
+    expect(resourceLink['mimeType'], 'image/png');
+  });
+
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
@@ -541,17 +574,26 @@ Future<void> main() async {
 }
 
 Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
-  required bool embeddedContext,
+  bool embeddedContext = false,
+  bool image = false,
+  String attachmentName = 'attachment.txt',
+  List<int>? attachmentBytes,
+  String? mimeType,
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
   final promptParamsFile = File('${tempDir.path}/prompt_params.json');
-  final attachmentFile = File('${tempDir.path}/attachment.txt');
+  final attachmentFile = File('${tempDir.path}/$attachmentName');
   final agentScript = File('${tempDir.path}/fake_prompt_agent.dart');
   final promptParamsPath = jsonEncode(promptParamsFile.path);
-  final agentCapabilities = embeddedContext
-      ? "<String, dynamic>{'promptCapabilities': <String, dynamic>{'embeddedContext': true}}"
-      : '<String, dynamic>{}';
-  await attachmentFile.writeAsString('embedded attachment text');
+  final promptCapabilities = <String>[
+    if (embeddedContext) "'embeddedContext': true",
+    if (image) "'image': true",
+  ].join(', ');
+  final agentCapabilities = promptCapabilities.isEmpty
+      ? '<String, dynamic>{}'
+      : "<String, dynamic>{'promptCapabilities': <String, dynamic>{$promptCapabilities}}";
+  final bytes = attachmentBytes ?? utf8.encode('embedded attachment text');
+  await attachmentFile.writeAsBytes(bytes);
   await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
@@ -606,6 +648,7 @@ Future<void> main() async {
           attachments: [
             PromptAttachment.fromPath(
               path: attachmentFile.path,
+              mimeType: mimeType,
               size: await attachmentFile.length(),
             ),
           ],
@@ -620,6 +663,76 @@ Future<void> main() async {
     await tempDir.delete(recursive: true);
   }
 }
+
+const _transparentPngBytes = <int>[
+  0x89,
+  0x50,
+  0x4e,
+  0x47,
+  0x0d,
+  0x0a,
+  0x1a,
+  0x0a,
+  0x00,
+  0x00,
+  0x00,
+  0x0d,
+  0x49,
+  0x48,
+  0x44,
+  0x52,
+  0x00,
+  0x00,
+  0x00,
+  0x01,
+  0x00,
+  0x00,
+  0x00,
+  0x01,
+  0x08,
+  0x06,
+  0x00,
+  0x00,
+  0x00,
+  0x1f,
+  0x15,
+  0xc4,
+  0x89,
+  0x00,
+  0x00,
+  0x00,
+  0x0a,
+  0x49,
+  0x44,
+  0x41,
+  0x54,
+  0x78,
+  0x9c,
+  0x63,
+  0x00,
+  0x01,
+  0x00,
+  0x00,
+  0x05,
+  0x00,
+  0x01,
+  0x0d,
+  0x0a,
+  0x2d,
+  0xb4,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0x49,
+  0x45,
+  0x4e,
+  0x44,
+  0xae,
+  0x42,
+  0x60,
+  0x82,
+];
 
 String _dartExecutable() {
   final executable = Platform.resolvedExecutable;
