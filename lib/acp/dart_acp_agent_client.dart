@@ -35,7 +35,7 @@ class DartAcpAgentClient implements AcpAgentClient {
        agentHeaders = agentHeaders ?? const <String, String>{},
        mcpServers = mcpServers == null
            ? const <Map<String, dynamic>>[]
-           : List.unmodifiable(mcpServers.map(Map<String, dynamic>.from));
+           : List.unmodifiable(mcpServers.map(_copyMcpServerConfig));
 
   final String agentCommand;
   final List<String> agentArgs;
@@ -1465,6 +1465,17 @@ class DartAcpAgentClient implements AcpAgentClient {
         .where((server) => _mcpServerSupportedByAgent(server, capabilities))
         .map(Map<String, dynamic>.from)
         .toList();
+  }
+
+  static Map<String, dynamic> _copyMcpServerConfig(
+    Map<String, dynamic> server,
+  ) {
+    final copy = Map<String, dynamic>.from(server);
+    final type = copy['type'];
+    if (type is String && type.trim().isNotEmpty) {
+      copy['type'] = type.trim().toLowerCase();
+    }
+    return copy;
   }
 
   static bool _mcpServerSupportedByAgent(

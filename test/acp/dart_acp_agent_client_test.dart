@@ -11,6 +11,7 @@ void main() {
   test('copies configured MCP servers for session setup', () {
     final mcpServer = <String, dynamic>{
       'name': 'filesystem',
+      'type': ' STDIO ',
       'command': '/usr/local/bin/mcp-filesystem',
       'args': ['--mode', 'readonly'],
     };
@@ -20,6 +21,7 @@ void main() {
 
     expect(client.mcpServers, hasLength(1));
     expect(client.mcpServers.single['name'], 'filesystem');
+    expect(client.mcpServers.single['type'], 'stdio');
     expect(
       client.mcpServers.single['command'],
       '/usr/local/bin/mcp-filesystem',
@@ -101,7 +103,7 @@ Future<void> main() async {
         },
         {
           'name': 'sse-tools',
-          'type': 'sse',
+          'type': ' SSE ',
           'url': 'https://events.example.com/mcp',
           'headers': <Map<String, String>>[],
         },
@@ -129,6 +131,7 @@ Future<void> main() async {
         ),
         ['stdio-tools', 'sse-tools'],
       );
+      expect(forwardedServers.cast<Map<String, dynamic>>().last['type'], 'sse');
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
