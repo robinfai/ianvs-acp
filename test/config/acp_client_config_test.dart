@@ -156,6 +156,28 @@ void main() {
     ]);
   });
 
+  test('normalizes MCP server transport type casing', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {
+          'name': 'stdio-tools',
+          'type': ' STDIO ',
+          'command': '/usr/local/bin/mcp-filesystem',
+        },
+        {
+          'name': 'api-tools',
+          'type': ' HTTP ',
+          'url': 'https://api.example.com/mcp',
+        },
+      ],
+    });
+
+    expect(config.mcpServers.first.type, 'stdio');
+    expect(config.mcpServers.first.toJson()['type'], 'stdio');
+    expect(config.mcpServers.last.type, 'http');
+    expect(config.mcpServers.last.toJson()['type'], 'http');
+  });
+
   test('loads opt-in client filesystem provider config', () {
     final config = AcpClientConfig.fromJson({
       'client_providers': {

@@ -487,7 +487,8 @@ class McpServerConfig {
   String get name => _stringValue(raw['name']) ?? 'MCP server';
 
   String get type =>
-      _stringValue(raw['type']) ?? (url.isEmpty ? 'stdio' : 'http');
+      _stringValue(raw['type'])?.toLowerCase() ??
+      (url.isEmpty ? 'stdio' : 'http');
 
   String get command => _stringValue(raw['command']) ?? '';
 
@@ -502,7 +503,8 @@ class McpServerConfig {
       throw FormatException('MCP server at index $index requires name.');
     }
 
-    final type = _stringValue(raw['type']);
+    final type = _stringValue(raw['type'])?.toLowerCase();
+    if (type != null) raw['type'] = type;
     final command = _stringValue(raw['command']);
     final url = _stringValue(raw['url']);
     if (type != null && !_supportedMcpTransportTypes.contains(type)) {
