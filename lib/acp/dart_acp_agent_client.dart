@@ -1387,10 +1387,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     try {
       final message = jsonDecode(line);
       if (message is! Map) return;
-      final id = message['id'];
+      final id = _jsonRpcIdKey(message['id']);
       final method = message['method'];
       if (id == null || method is! String) return;
-      _pendingRawProtocolRequests[id.toString()] = _RawProtocolRequest(
+      _pendingRawProtocolRequests[id] = _RawProtocolRequest(
         method: method,
         params: _dynamicMap(message['params']) ?? const <String, dynamic>{},
       );
@@ -1403,9 +1403,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     try {
       final message = jsonDecode(line);
       if (message is! Map) return;
-      final id = message['id'];
+      if (!message.containsKey('result') && !message.containsKey('error')) {
+        return;
+      }
+      final id = _jsonRpcIdKey(message['id']);
       if (id == null) return;
-      final request = _pendingRawProtocolRequests.remove(id.toString());
+      final request = _pendingRawProtocolRequests.remove(id);
       if (request == null || !_isSessionResultMethod(request.method)) return;
       final result = _dynamicMap(message['result']);
       if (result == null) return;
@@ -1421,6 +1424,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     } on Object {
       return;
     }
+  }
+
+  String? _jsonRpcIdKey(Object? id) {
+    if (id == null) return null;
+    return jsonEncode(id);
   }
 
   bool _isSessionResultMethod(String method) {

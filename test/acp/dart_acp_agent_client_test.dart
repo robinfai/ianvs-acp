@@ -1590,6 +1590,98 @@ Future<void> main() async {
     },
   );
 
+  test('raw session result capture ignores colliding agent requests', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File(
+      '${tempDir.path}/fake_colliding_request_agent.dart',
+    );
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'session-1',
+          'toolCall': <String, dynamic>{
+            'title': 'Read file',
+            'kind': 'read',
+          },
+          'options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'optionId': 'deny',
+              'kind': 'reject_once',
+              'name': 'Deny',
+            },
+          ],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-1',
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'gpt-5',
+              'category': 'model',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'gpt-5', 'name': 'GPT-5'},
+              ],
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final session = await client.createSession(cwd: '/workspace');
+      final settings = await client.sessionSettings(session.id);
+
+      expect(session.id, 'session-1');
+      expect(settings.configOptions.map((option) => option.id), ['model']);
+      expect(settings.currentModelLabel, 'GPT-5');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('ignores unsupported raw config option types', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_unknown_config_agent.dart');
