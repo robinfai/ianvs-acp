@@ -50,7 +50,8 @@ void main() {
     expect(controller.currentSession?.id, 'fake-session-1');
     expect(controller.currentSession?.agentName, 'Codex');
     expect(controller.sessions, hasLength(1));
-    expect(controller.sessionSettings.modes.currentModeId, 'ask');
+    expect(controller.sessionSettings.configOptions.single.id, 'approval');
+    expect(controller.sessionSettings.modes.currentModeId, isNull);
   });
 
   test('created sessions keep selected agent name', () async {
@@ -669,7 +670,7 @@ void main() {
       await controller.setSessionMode('edit');
 
       expect(fake.lastSetModeId, isNull);
-      expect(controller.sessionSettings.modes.currentModeId, 'ask');
+      expect(controller.sessionSettings.modes.currentModeId, isNull);
       expect(controller.lastError, isNull);
     },
   );
@@ -689,6 +690,25 @@ void main() {
       'auto',
     );
     expect(controller.lastError, isNull);
+  });
+
+  test('runtime config option updates clear legacy modes', () async {
+    final controller = ChatController(
+      client: _ConfigOptionUpdateAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    expect(controller.sessionSettings.modes.currentModeId, 'ask');
+
+    await controller.sendPrompt('Update settings');
+    await pumpEventQueue(times: 4);
+
+    expect(controller.sessionSettings.configOptions.single.id, 'model');
+    expect(controller.sessionSettings.currentModelLabel, 'GPT-5');
+    expect(controller.sessionSettings.modes.currentModeId, isNull);
+    expect(controller.sessionSettings.modes.availableModes, isEmpty);
   });
 
   test(
@@ -1180,6 +1200,41 @@ class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
       value: value,
     );
     return const <AcpConfigOption>[];
+  }
+}
+
+class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
+  _ConfigOptionUpdateAgentClient()
+    : super(sessionSettings: _settingsWithMode('ask'));
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    yield AgentEvent(
+      type: AgentEventType.status,
+      text: 'Session config options updated.',
+      metadata: const <String, Object?>{
+        'kind': 'config_option_update',
+        'configOptions': <AcpConfigOption>[
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            category: 'model',
+            options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+          ),
+        ],
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime(2026, 5, 28, 12),
+    );
   }
 }
 

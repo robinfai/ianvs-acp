@@ -376,10 +376,11 @@ class ChatController extends ChangeNotifier {
         configId: trimmedConfigId,
         value: value,
       );
-      sessionSettings = sessionSettings.copyWith(
-        configOptions: options.isEmpty
-            ? _configOptionsWithOverride(trimmedConfigId, value)
-            : options,
+      final updatedOptions = options.isEmpty
+          ? _configOptionsWithOverride(trimmedConfigId, value)
+          : options;
+      sessionSettings = sessionSettings.withPreferredConfigOptions(
+        updatedOptions,
       );
       lastError = null;
       _notifyListeners();
@@ -772,7 +773,7 @@ class ChatController extends ChangeNotifier {
     if (kind == 'config_option_update') {
       final options = event.metadata['configOptions'];
       if (options is List<AcpConfigOption>) {
-        sessionSettings = sessionSettings.copyWith(configOptions: options);
+        sessionSettings = sessionSettings.withPreferredConfigOptions(options);
       }
       return;
     }
@@ -1058,7 +1059,7 @@ class ChatController extends ChangeNotifier {
     try {
       final settings = await client.sessionSettings(sessionId);
       if (_isCurrentSessionSettingsLoad(loadId, sessionId)) {
-        sessionSettings = settings;
+        sessionSettings = settings.withConfigOptionsPreference;
       }
     } catch (_) {
       if (_isCurrentSessionSettingsLoad(loadId, sessionId)) {

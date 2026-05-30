@@ -40,6 +40,16 @@ class AcpSessionSettings {
     );
   }
 
+  AcpSessionSettings get withConfigOptionsPreference {
+    if (configOptions.isEmpty) return this;
+    return AcpSessionSettings(configOptions: configOptions);
+  }
+
+  AcpSessionSettings withPreferredConfigOptions(List<AcpConfigOption> options) {
+    if (options.isEmpty) return copyWith(configOptions: options);
+    return AcpSessionSettings(configOptions: options);
+  }
+
   AcpSessionSettings withCurrentMode(String modeId) {
     return copyWith(modes: modes.copyWith(currentModeId: modeId));
   }
