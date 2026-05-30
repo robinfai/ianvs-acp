@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../acp/acp_permission_request.dart';
 import '../../config/acp_client_config.dart';
 import '../theme/app_design_tokens.dart';
 
@@ -118,10 +119,22 @@ class _ClientProvidersPanel extends StatelessWidget {
                 ? '${permissions.trustRules.length}'
                 : 'None',
           ),
+          for (final rule in permissions.trustRules) ...[
+            const SizedBox(height: 6),
+            _DetailRow(label: 'Rule', value: _permissionTrustRuleLabel(rule)),
+          ],
         ],
       ),
     );
   }
+}
+
+String _permissionTrustRuleLabel(AcpPermissionTrustRule rule) {
+  final kind = rule.toolKind?.trim();
+  final target = kind == null || kind.isEmpty
+      ? rule.toolName.trim()
+      : '${rule.toolName.trim()} / $kind';
+  return '$target -> ${rule.displayDecision}';
 }
 
 class _McpServersPanel extends StatelessWidget {

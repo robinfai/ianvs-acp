@@ -82,8 +82,8 @@ Automated acceptance:
   permission trust rules auto-resolve requests.
 - `test/ui/chat_timeline_test.dart` verifies terminal status output renders in
   the timeline.
-- `test/ui/agent_config_dialog_test.dart` verifies filesystem and terminal
-  provider config is visible in Agent Configuration.
+- `test/ui/agent_config_dialog_test.dart` verifies filesystem, terminal, and
+  permission trust rule config is visible in Agent Configuration.
 - `lib/acp/dart_acp_agent_client.dart` still defaults ACP filesystem and
   terminal capabilities to disabled unless the user opts in.
 

@@ -159,7 +159,8 @@ renders command lifecycle status/output in the timeline.
 Configured `client_providers.permissions.trust_rules` can auto-resolve matching
 permission requests with an explicit `allow` or `deny` decision. Rules match by
 `tool_name` and can optionally narrow by `tool_kind`; no rules are configured by
-default.
+default. Agent Configuration shows each configured trust rule target and
+decision so the active policy is inspectable before connecting.
 When connected, the Agents menu exposes `Extension Request` for advanced
 underscore-prefixed ACP extension methods advertised through `_meta` or otherwise
 coordinated by a specific agent.

@@ -81,6 +81,8 @@ void main() {
     expect(find.text('FS read'), findsOneWidget);
     expect(find.text('Terminal'), findsOneWidget);
     expect(find.text('Trust rules'), findsOneWidget);
+    expect(find.text('Rule'), findsOneWidget);
+    expect(find.text('read_text_file / read -> Allow'), findsOneWidget);
     expect(find.text('1'), findsWidgets);
     expect(find.text('Enabled'), findsWidgets);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
