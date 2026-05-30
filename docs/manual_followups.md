@@ -138,8 +138,9 @@ Manual validation:
 Status: policy refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, permission requests
-surface an in-app per-request approval banner with Allow Once, Deny, and Cancel,
-and handled requests are visible in the Agents menu Permission History with JSON
+surface an in-app per-request approval banner with Allow Once, Deny, and Cancel
+actions, using agent-provided allow/deny labels when they are more specific.
+Handled requests are visible in the Agents menu Permission History with JSON
 export of the newest bounded in-process audit entries. Resolved entries record
 whether the decision came from a manual action, trust rule, or system
 cancellation. Explicit permission trust rules can auto-allow or auto-deny

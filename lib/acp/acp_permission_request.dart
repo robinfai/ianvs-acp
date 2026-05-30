@@ -71,6 +71,24 @@ class AcpPermissionRequest {
     return name.isEmpty ? 'operation' : name;
   }
 
+  String get allowActionLabel {
+    return _permissionOptionLabel(
+      options,
+      fallback: 'Allow Once',
+      keywords: const ['allow', 'approve', 'accept', 'continue', 'proceed'],
+      genericLabels: const ['allow', 'allow once'],
+    );
+  }
+
+  String get denyActionLabel {
+    return _permissionOptionLabel(
+      options,
+      fallback: 'Deny',
+      keywords: const ['deny', 'reject', 'decline', 'block'],
+      genericLabels: const ['deny', 'reject'],
+    );
+  }
+
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'id': id,
@@ -153,4 +171,31 @@ String acpPermissionAuditEntriesToJson(List<AcpPermissionAuditEntry> entries) {
     'exportedAt': DateTime.now().toUtc().toIso8601String(),
     'entries': entries.map((entry) => entry.toJson()).toList(growable: false),
   });
+}
+
+String _permissionOptionLabel(
+  List<String> options, {
+  required String fallback,
+  required List<String> keywords,
+  required List<String> genericLabels,
+}) {
+  for (final option in options) {
+    final label = _normalizedPermissionOption(option);
+    if (label.isEmpty) continue;
+    final lowerLabel = label.toLowerCase();
+    if (!keywords.any(lowerLabel.contains)) continue;
+    if (genericLabels.contains(lowerLabel)) return fallback;
+    return _truncatePermissionOptionLabel(label);
+  }
+  return fallback;
+}
+
+String _normalizedPermissionOption(String value) {
+  return value.trim().replaceAll(RegExp(r'\s+'), ' ');
+}
+
+String _truncatePermissionOptionLabel(String value) {
+  const maxLength = 24;
+  if (value.length <= maxLength) return value;
+  return '${value.substring(0, maxLength - 3).trimRight()}...';
 }

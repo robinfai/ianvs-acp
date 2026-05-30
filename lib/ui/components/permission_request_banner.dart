@@ -72,13 +72,13 @@ class PermissionRequestBanner extends StatelessWidget {
             TextButton.icon(
               onPressed: onDeny,
               icon: const Icon(Icons.block_rounded, size: 15),
-              label: const Text('Deny'),
+              label: Text(request.denyActionLabel),
             ),
             const SizedBox(width: 4),
             FilledButton.icon(
               onPressed: onAllow,
               icon: const Icon(Icons.check_rounded, size: 15),
-              label: const Text('Allow Once'),
+              label: Text(request.allowActionLabel),
             ),
             IconButton(
               tooltip: 'Cancel permission request',
