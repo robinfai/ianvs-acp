@@ -61,8 +61,9 @@ Automated acceptance:
   embedded resources when `embeddedContext` is advertised, image attachments
   become image content when `image` is advertised, audio attachments become
   audio content when `audio` is advertised, generic binary attachments become
-  embedded resource blobs when `embeddedContext` is advertised, and all fall
-  back to resource links otherwise.
+  embedded resource blobs when `embeddedContext` is advertised, prompt-side
+  `@file` mentions remain resource links when attachments are present, and all
+  attachments fall back to resource links otherwise.
 - `test/ui/chat_timeline_test.dart` verifies non-text/resource-link content
   renders in the timeline.
 

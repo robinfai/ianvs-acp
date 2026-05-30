@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:mime/mime.dart' as mime;
 
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
@@ -38,6 +39,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _supportsResumeSession = false;
   String? _activeSessionId;
   final Map<String, String> _modeOverridesBySession = <String, String>{};
+  final Map<String, String> _cwdBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
 
@@ -45,6 +47,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
   static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
   static const int _maxAudioAttachmentBytes = 8 * 1024 * 1024;
+  static final RegExp _promptMentionPattern = RegExp(
+    r'''@("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)''',
+  );
 
   static const Map<String, dynamic> _clientInfo = <String, dynamic>{
     'name': 'ACP Client',
@@ -140,6 +145,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _requireClient();
     final sessionId = await client.newSession(cwd);
     _activeSessionId = sessionId;
+    _cwdBySession[sessionId] = cwd;
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       sessionId,
@@ -171,6 +177,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         workspaceRoot: cwd,
       );
       _activeSessionId = sessionId;
+      _cwdBySession[sessionId] = cwd;
       _cacheConfigOptions(sessionId, result.configOptions);
       events.addAll(await _cacheImmediateSessionUpdates(client, sessionId));
       return events;
@@ -186,6 +193,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       await client.loadSession(sessionId: sessionId, workspaceRoot: cwd);
       await Future<void>.delayed(Duration.zero);
       _activeSessionId = sessionId;
+      _cwdBySession[sessionId] = cwd;
       return events;
     } finally {
       await subscription.cancel();
@@ -298,6 +306,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     final result = await client.forkSession(sessionId: sessionId);
     _activeSessionId = result.sessionId;
+    _cwdBySession[result.sessionId] = cwd;
     final configOptions = result.configOptions;
     if (configOptions != null) {
       _cacheConfigOptions(result.sessionId, configOptions);
@@ -321,6 +330,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
+    _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
   }
@@ -356,6 +366,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     await client.sendRaw('logout', const <String, dynamic>{});
     _activeSessionId = null;
+    _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
   }
@@ -380,7 +391,11 @@ class DartAcpAgentClient implements AcpAgentClient {
           }
         }
       } else {
-        final content = await _promptContentBlocks(prompt, attachments);
+        final content = await _promptContentBlocks(
+          prompt,
+          attachments,
+          workspaceRoot: _cwdBySession[sessionId],
+        );
         await for (final event in _sendRawPrompt(
           client: client,
           sessionId: sessionId,
@@ -584,16 +599,97 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<List<Map<String, dynamic>>> _promptContentBlocks(
     String prompt,
-    List<PromptAttachment> attachments,
-  ) async {
+    List<PromptAttachment> attachments, {
+    String? workspaceRoot,
+  }) async {
     final blocks = <Map<String, dynamic>>[];
     if (prompt.trim().isNotEmpty) {
       blocks.add(<String, dynamic>{'type': 'text', 'text': prompt});
     }
+    blocks.addAll(
+      _mentionResourceLinkBlocks(prompt, workspaceRoot: workspaceRoot),
+    );
     for (final attachment in attachments) {
       blocks.add(await _contentBlockForAttachment(attachment));
     }
     return blocks;
+  }
+
+  List<Map<String, dynamic>> _mentionResourceLinkBlocks(
+    String prompt, {
+    String? workspaceRoot,
+  }) {
+    return _promptMentionPattern
+        .allMatches(prompt)
+        .map(
+          (match) =>
+              _mentionTokenToResourceLink(match.group(1)!, workspaceRoot),
+        )
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  Map<String, dynamic>? _mentionTokenToResourceLink(
+    String token,
+    String? workspaceRoot,
+  ) {
+    final uri = _mentionTokenToUri(_unquoteMentionToken(token), workspaceRoot);
+    if (uri == null) return null;
+    final uriText = uri.toString();
+    final mimeType =
+        mime.lookupMimeType(uri.path) ?? mime.lookupMimeType(uriText);
+    return <String, dynamic>{
+      'type': 'resource_link',
+      'name': _mentionDisplayName(uri),
+      'uri': uriText,
+      'mimeType': ?mimeType,
+    };
+  }
+
+  String _unquoteMentionToken(String token) {
+    if (token.length < 2) return token;
+    final quote = token[0];
+    if ((quote != '"' && quote != "'") || token[token.length - 1] != quote) {
+      return token;
+    }
+    return token
+        .substring(1, token.length - 1)
+        .replaceAll('\\$quote', quote)
+        .replaceAll('\\\\', '\\');
+  }
+
+  Uri? _mentionTokenToUri(String token, String? workspaceRoot) {
+    if (token.startsWith('http://') || token.startsWith('https://')) {
+      return Uri.tryParse(token);
+    }
+
+    var path = token;
+    if (path == '~') {
+      path = Platform.environment['HOME'] ?? path;
+    } else if (path.startsWith('~/')) {
+      final home = Platform.environment['HOME'];
+      if (home != null && home.isNotEmpty) {
+        path = '$home/${path.substring(2)}';
+      }
+    }
+
+    if (!path.startsWith('/')) {
+      final base = workspaceRoot;
+      if (base != null && base.isNotEmpty) {
+        path = '${base.replaceAll(RegExp(r'/+$'), '')}/$path';
+      } else {
+        path = File(path).absolute.path;
+      }
+    }
+    return Uri.file(path);
+  }
+
+  String _mentionDisplayName(Uri uri) {
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      return uri.pathSegments.isEmpty ? uri.host : uri.pathSegments.last;
+    }
+    final path = uri.toFilePath();
+    return path.replaceAll('\\', '/').split('/').last;
   }
 
   Future<Map<String, dynamic>> _contentBlockForAttachment(
@@ -1076,6 +1172,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsListSessions = false;
     _supportsResumeSession = false;
     _activeSessionId = null;
+    _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
     await _disposeClient(client, transport);

@@ -251,6 +251,33 @@ Future<void> main() async {
     },
   );
 
+  test('preserves prompt mentions when sending attachments', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      prompt: 'Please inspect @notes.md with this.',
+      attachmentName: 'attachment.bin',
+      attachmentBytes: _binaryBytes,
+      mimeType: 'application/octet-stream',
+      extraFiles: const {'notes.md': '# Notes'},
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(3));
+    expect(prompt.first, {
+      'type': 'text',
+      'text': 'Please inspect @notes.md with this.',
+    });
+    final mention = prompt[1] as Map<String, dynamic>;
+    expect(mention['type'], 'resource_link');
+    expect(mention['name'], 'notes.md');
+    expect(mention['uri'], endsWith('/notes.md'));
+    expect(mention['mimeType'], 'text/markdown');
+
+    final attachment = prompt[2] as Map<String, dynamic>;
+    expect(attachment['type'], 'resource_link');
+    expect(attachment['name'], 'attachment.bin');
+    expect(attachment['mimeType'], 'application/octet-stream');
+  });
+
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
@@ -650,9 +677,11 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
   bool embeddedContext = false,
   bool image = false,
   bool audio = false,
+  String prompt = 'Please inspect this.',
   String attachmentName = 'attachment.txt',
   List<int>? attachmentBytes,
   String? mimeType,
+  Map<String, String> extraFiles = const <String, String>{},
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
   final promptParamsFile = File('${tempDir.path}/prompt_params.json');
@@ -669,6 +698,9 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
       : "<String, dynamic>{'promptCapabilities': <String, dynamic>{$promptCapabilities}}";
   final bytes = attachmentBytes ?? utf8.encode('embedded attachment text');
   await attachmentFile.writeAsBytes(bytes);
+  for (final entry in extraFiles.entries) {
+    await File('${tempDir.path}/${entry.key}').writeAsString(entry.value);
+  }
   await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
@@ -719,7 +751,7 @@ Future<void> main() async {
     final events = await client
         .sendPrompt(
           sessionId: session.id,
-          prompt: 'Please inspect this.',
+          prompt: prompt,
           attachments: [
             PromptAttachment.fromPath(
               path: attachmentFile.path,
