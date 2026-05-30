@@ -54,11 +54,17 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> connect() async {
     await dispose();
+    final configuredMcpServers = mcpServers
+        .map(Map<String, dynamic>.from)
+        .toList();
+    final sessionMcpServers = configuredMcpServers
+        .map(Map<String, dynamic>.from)
+        .toList();
     final config = acp.AcpConfig(
       agentCommand: agentCommand,
       agentArgs: agentArgs,
       envOverrides: envOverrides,
-      mcpServers: mcpServers.map(Map<String, dynamic>.from).toList(),
+      mcpServers: sessionMcpServers,
       capabilities: const acp.AcpCapabilities(
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),
@@ -110,6 +116,11 @@ class DartAcpAgentClient implements AcpAgentClient {
       _supportsListSessions = capabilities.session.list;
       _supportsResumeSession = capabilities.session.resume;
       _capabilities = capabilities;
+      sessionMcpServers
+        ..clear()
+        ..addAll(
+          _mcpServersForCapabilities(configuredMcpServers, capabilities),
+        );
     } catch (_) {
       await _disposeClient(client, transport);
       rethrow;
@@ -792,6 +803,38 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }
     return 'npx';
+  }
+
+  static List<Map<String, dynamic>> _mcpServersForCapabilities(
+    List<Map<String, dynamic>> servers,
+    AcpAgentCapabilities capabilities,
+  ) {
+    return servers
+        .where((server) => _mcpServerSupportedByAgent(server, capabilities))
+        .map(Map<String, dynamic>.from)
+        .toList();
+  }
+
+  static bool _mcpServerSupportedByAgent(
+    Map<String, dynamic> server,
+    AcpAgentCapabilities capabilities,
+  ) {
+    return switch (_mcpServerTransportType(server)) {
+      'http' => capabilities.mcp.http,
+      'sse' => capabilities.mcp.sse,
+      'acp' => capabilities.mcp.acp,
+      _ => true,
+    };
+  }
+
+  static String _mcpServerTransportType(Map<String, dynamic> server) {
+    final type = server['type'];
+    if (type is String && type.trim().isNotEmpty) {
+      return type.trim().toLowerCase();
+    }
+    final url = server['url'];
+    if (url is String && url.trim().isNotEmpty) return 'http';
+    return 'stdio';
   }
 
   Future<void> _disposeClient(
