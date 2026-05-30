@@ -33,18 +33,23 @@ class ChatController extends ChangeNotifier {
     required this.client,
     required this.cwd,
     this.agentName = 'Codex',
+    this.permissionHistoryLimit = defaultPermissionHistoryLimit,
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
-  }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
+  }) : assert(permissionHistoryLimit > 0),
+       permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
     );
   }
 
+  static const int defaultPermissionHistoryLimit = 500;
+
   final AcpAgentClient client;
   final String cwd;
   final String agentName;
+  final int permissionHistoryLimit;
   final List<AcpPermissionTrustRule> permissionTrustRules;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
@@ -683,9 +688,18 @@ class ChatController extends ChangeNotifier {
     );
     if (index == -1) {
       _permissionHistory.insert(0, entry);
+      _trimPermissionHistory();
     } else {
       _permissionHistory[index] = entry;
     }
+  }
+
+  void _trimPermissionHistory() {
+    if (_permissionHistory.length <= permissionHistoryLimit) return;
+    _permissionHistory.removeRange(
+      permissionHistoryLimit,
+      _permissionHistory.length,
+    );
   }
 
   void _recordPermissionDecision(

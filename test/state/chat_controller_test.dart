@@ -477,6 +477,51 @@ void main() {
     );
   });
 
+  test(
+    'permission history drops oldest entries over the in-memory limit',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionHistoryLimit: 2,
+      );
+      addTearDown(controller.dispose);
+
+      for (var index = 1; index <= 3; index += 1) {
+        fake.emitPermissionRequest(
+          AcpPermissionRequest(
+            id: 'permission-$index',
+            title: 'Permission $index',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'read_text_file',
+            options: const ['Allow', 'Deny'],
+            requestedAt: DateTime(2026, 5, 31, 12, index),
+          ),
+        );
+        await pumpEventQueue();
+      }
+
+      expect(controller.permissionHistory.map((entry) => entry.request.id), [
+        'permission-3',
+        'permission-2',
+      ]);
+      expect(
+        controller.permissionHistory[0].status,
+        AcpPermissionAuditStatus.pending,
+      );
+      expect(
+        controller.permissionHistory[1].status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory[1].decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+    },
+  );
+
   test('permission trust rules auto resolve matching requests', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(

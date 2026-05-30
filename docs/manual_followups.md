@@ -59,11 +59,11 @@ Status: policy refinement needed.
 
 Non-blocking because: filesystem and terminal providers are now available only
 when explicitly enabled through `client_providers`, remain off by default, use
-per-request permission approval, and record decisions in exportable in-process
-Permission History. Explicit permission trust rules can auto-allow or auto-deny
-matching requests. Terminal support emits lifecycle and output snapshots into
-the timeline, but deliberately does not yet provide a persistent live terminal
-panel or broader policy controls.
+per-request permission approval, and record decisions in exportable bounded
+in-process Permission History. Explicit permission trust rules can auto-allow or
+auto-deny matching requests. Terminal support emits lifecycle and output
+snapshots into the timeline, but deliberately does not yet provide a persistent
+live terminal panel or broader policy controls.
 
 Automated acceptance:
 
@@ -78,8 +78,9 @@ Automated acceptance:
   are advertised and that approved terminal requests emit created/exited/output
   lifecycle events.
 - `test/state/chat_controller_test.dart` verifies terminal lifecycle updates for
-  the same terminal id merge into one timeline status row and matching
-  permission trust rules auto-resolve requests.
+  the same terminal id merge into one timeline status row, matching permission
+  trust rules auto-resolve requests, and Permission History keeps a bounded
+  in-process audit window.
 - `test/ui/chat_timeline_test.dart` verifies terminal status output renders in
   the timeline.
 - `test/ui/agent_config_dialog_test.dart` verifies filesystem, terminal, and
@@ -139,11 +140,11 @@ Status: policy refinement needed.
 Non-blocking because: tool calls are visible and grouped, permission requests
 surface an in-app per-request approval banner with Allow Once, Deny, and Cancel,
 and handled requests are visible in the Agents menu Permission History with JSON
-export. Resolved entries record whether the decision came from a manual action,
-trust rule, or system cancellation. Explicit permission trust rules can
-auto-allow or auto-deny matching requests. Requests still fall back to
-`cancelled` when no UI listener is active, and broader trust policy remains
-deliberately narrow.
+export of the newest bounded in-process audit entries. Resolved entries record
+whether the decision came from a manual action, trust rule, or system
+cancellation. Explicit permission trust rules can auto-allow or auto-deny
+matching requests. Requests still fall back to `cancelled` when no UI listener
+is active, and broader trust policy remains deliberately narrow.
 
 Automated acceptance:
 
@@ -159,9 +160,9 @@ Automated acceptance:
   exports a JSON audit file payload with decision source metadata and disables
   export when no entries exist.
 - `test/state/chat_controller_test.dart` verifies permission requests are
-  recorded as pending, resolved to the selected decision, and cancelled when a
-  newer pending request supersedes them. It also verifies matching trust rules
-  auto-resolve requests.
+  recorded as pending, resolved to the selected decision, cancelled when a newer
+  pending request supersedes them, and trimmed to a bounded in-process audit
+  window. It also verifies matching trust rules auto-resolve requests.
 - `test/config/acp_client_config_test.dart` verifies permission trust rule
   parsing and invalid config rejection.
 - `test/ui/app_shell_test.dart` verifies the Agents menu exposes Permission
@@ -170,8 +171,8 @@ Automated acceptance:
 Manual decision:
 
 - Decide whether to add request grouping, trust rule management UI, long-term
-  audit retention, or stronger streaming interruption behavior beyond the
-  current per-request Allow Once/Deny/Cancel model.
+  persisted audit retention, or stronger streaming interruption behavior beyond
+  the current per-request Allow Once/Deny/Cancel model.
 
 ### vendor-extension-workflows
 
