@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/ui/components/prompt_input.dart';
 
 void main() {
   Widget input({
     required bool isSending,
-    required ValueChanged<String> onSend,
+    required PromptSendCallback onSend,
     VoidCallback? onStop,
     String agentName = 'Codex',
+    PromptAttachmentPicker? pickAttachments,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -16,6 +18,7 @@ void main() {
           isSending: isSending,
           onSend: onSend,
           onStop: onStop ?? () {},
+          pickAttachments: pickAttachments,
         ),
       ),
     );
@@ -24,7 +27,7 @@ void main() {
   testWidgets('PromptInput empty input cannot send', (tester) async {
     var sent = false;
     await tester.pumpWidget(
-      input(isSending: false, onSend: (_) => sent = true),
+      input(isSending: false, onSend: (_, _) => sent = true),
     );
 
     final sendButton = tester.widget<FilledButton>(
@@ -41,7 +44,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      input(agentName: 'Kimi Code Dev', isSending: false, onSend: (_) {}),
+      input(agentName: 'Kimi Code Dev', isSending: false, onSend: (_, _) {}),
     );
 
     expect(find.text('Send a prompt to Kimi Code Dev...'), findsOneWidget);
@@ -50,7 +53,7 @@ void main() {
   testWidgets('PromptInput input after typing can send', (tester) async {
     String? sentText;
     await tester.pumpWidget(
-      input(isSending: false, onSend: (text) => sentText = text),
+      input(isSending: false, onSend: (text, _) => sentText = text),
     );
 
     await tester.enterText(find.byType(TextField), 'Hello Codex');
@@ -66,12 +69,26 @@ void main() {
     expect(sentText, 'Hello Codex');
   });
 
+  testWidgets('PromptInput preserves multiline prompts', (tester) async {
+    String? sentText;
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (text, _) => sentText = text),
+    );
+
+    await tester.enterText(find.byType(TextField), 'Line one\nLine two');
+    await tester.pump();
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    expect(sentText, 'Line one\nLine two');
+  });
+
   testWidgets('PromptInput sending state disables Send and enables Stop', (
     tester,
   ) async {
     var stopped = false;
     await tester.pumpWidget(
-      input(isSending: true, onSend: (_) {}, onStop: () => stopped = true),
+      input(isSending: true, onSend: (_, _) {}, onStop: () => stopped = true),
     );
 
     final sendButton = tester.widget<FilledButton>(
@@ -89,11 +106,76 @@ void main() {
   });
 
   testWidgets('PromptInput Stop disabled when not sending', (tester) async {
-    await tester.pumpWidget(input(isSending: false, onSend: (_) {}));
+    await tester.pumpWidget(input(isSending: false, onSend: (_, _) {}));
 
     final stopButton = tester.widget<OutlinedButton>(
       find.widgetWithText(OutlinedButton, 'Stop'),
     );
     expect(stopButton.onPressed, isNull);
+  });
+
+  testWidgets('PromptInput attaches files and sends without text', (
+    tester,
+  ) async {
+    List<PromptAttachment>? sentAttachments;
+    const attachment = PromptAttachment(
+      path: '/workspace/readme.md',
+      name: 'readme.md',
+      mimeType: 'text/markdown',
+      size: 2048,
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, attachments) => sentAttachments = attachments,
+        pickAttachments: () async => const [attachment],
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.pump();
+
+    expect(find.text('readme.md'), findsOneWidget);
+    expect(find.text('2.0 KB'), findsOneWidget);
+
+    final sendButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Send'),
+    );
+    expect(sendButton.onPressed, isNotNull);
+
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    expect(sentAttachments, [attachment]);
+    expect(find.text('readme.md'), findsNothing);
+  });
+
+  testWidgets('PromptInput can remove an attachment before sending', (
+    tester,
+  ) async {
+    var sent = false;
+    const attachment = PromptAttachment(
+      path: '/workspace/readme.md',
+      name: 'readme.md',
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) => sent = true,
+        pickAttachments: () async => const [attachment],
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.close_rounded));
+    await tester.pump();
+
+    expect(find.text('readme.md'), findsNothing);
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+    expect(sent, isFalse);
   });
 }

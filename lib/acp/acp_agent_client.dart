@@ -3,6 +3,7 @@ import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
+import 'prompt_attachment.dart';
 
 abstract class AcpAgentClient {
   AcpAgentCapabilities? get capabilities;
@@ -34,6 +35,7 @@ abstract class AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
   });
 
   Future<void> cancel();

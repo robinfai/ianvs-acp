@@ -16,7 +16,7 @@ class CapabilitiesDialog extends StatelessWidget {
     return AlertDialog(
       title: const Text('ACP Compatibility'),
       content: SizedBox(
-        width: 760,
+        width: 680,
         child: caps == null
             ? const _EmptyState()
             : SingleChildScrollView(
@@ -146,7 +146,7 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 220,
+      height: 150,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
@@ -157,7 +157,7 @@ class _EmptyState extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.info_outline_rounded, color: AppColors.primaryDark),
-          SizedBox(height: 10),
+          SizedBox(height: 8),
           Text(
             'Connect to an ACP agent to inspect capabilities.',
             style: TextStyle(color: AppColors.textSecondary),
@@ -183,8 +183,8 @@ class _Section extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -195,8 +195,8 @@ class _Section extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 17, color: AppColors.primaryDark),
-              const SizedBox(width: 8),
+              Icon(icon, size: 15, color: AppColors.primaryDark),
+              const SizedBox(width: 6),
               Text(
                 title,
                 style: const TextStyle(
@@ -207,8 +207,8 @@ class _Section extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Wrap(spacing: 10, runSpacing: 10, children: children),
+          const SizedBox(height: 8),
+          Wrap(spacing: 7, runSpacing: 7, children: children),
         ],
       ),
     );
@@ -254,7 +254,7 @@ class _Pill extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 320),
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.09),
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -269,18 +269,18 @@ class _Pill extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0,
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Text(
             value,
             style: TextStyle(
               color: color,
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: FontWeight.w900,
               letterSpacing: 0,
             ),
@@ -302,7 +302,7 @@ class _RawSection extends StatelessWidget {
       color: Colors.transparent,
       child: ExpansionTile(
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
-        childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
+        childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
         title: const Text(
           'Raw capability data',
           style: TextStyle(
@@ -317,7 +317,7 @@ class _RawSection extends StatelessWidget {
             value: capabilities.rawAgentCapabilities,
           ),
           if (capabilities.authMethods.isNotEmpty) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
             _RawBlock(label: 'authMethods', value: capabilities.authMethods),
           ],
         ],
@@ -337,7 +337,7 @@ class _RawBlock extends StatelessWidget {
     const encoder = JsonEncoder.withIndent('  ');
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -354,7 +354,7 @@ class _RawBlock extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           SelectableText(
             encoder.convert(value),
             style: const TextStyle(

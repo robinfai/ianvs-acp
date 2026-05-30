@@ -10,12 +10,14 @@ class SessionSidebar extends StatelessWidget {
     required this.sessions,
     required this.currentSession,
     required this.onNewSession,
+    required this.onResumeSession,
   });
 
   final String agentName;
   final List<AgentSession> sessions;
   final AgentSession? currentSession;
   final VoidCallback onNewSession;
+  final VoidCallback onResumeSession;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +27,7 @@ class SessionSidebar extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(22, 22, 18, 12),
+            padding: const EdgeInsets.fromLTRB(12, 10, 10, 6),
             child: Row(
               children: [
                 Text(
@@ -38,9 +40,9 @@ class SessionSidebar extends StatelessWidget {
                 ),
                 const Spacer(),
                 _IconShell(
-                  icon: Icons.tune_rounded,
-                  tooltip: 'Session filters',
-                  onPressed: () {},
+                  icon: Icons.history_rounded,
+                  tooltip: 'Resume session',
+                  onPressed: onResumeSession,
                 ),
               ],
             ),
@@ -52,7 +54,7 @@ class SessionSidebar extends StatelessWidget {
                     onNewSession: onNewSession,
                   )
                 : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(14, 4, 14, 18),
+                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
                     itemBuilder: (context, index) {
                       final session = sessions[index];
                       return _SessionTile(
@@ -61,7 +63,7 @@ class SessionSidebar extends StatelessWidget {
                       );
                     },
                     separatorBuilder: (context, index) =>
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 5),
                     itemCount: sessions.length,
                   ),
           ),
@@ -83,7 +85,7 @@ class _EmptySessions extends StatelessWidget {
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 360;
         return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(24, compact ? 10 : 12, 24, 28),
+          padding: EdgeInsets.fromLTRB(14, compact ? 6 : 8, 14, 18),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               minHeight: constraints.maxHeight > 28
@@ -94,42 +96,42 @@ class _EmptySessions extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _ChatIllustration(size: compact ? 82 : 118),
-                  SizedBox(height: compact ? 12 : 18),
+                  _ChatIllustration(size: compact ? 62 : 78),
+                  SizedBox(height: compact ? 8 : 10),
                   Text(
                     'No sessions yet',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textPrimary,
-                      fontSize: compact ? 19 : 22,
+                      fontSize: compact ? 15 : 16,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0,
                     ),
                   ),
-                  SizedBox(height: compact ? 5 : 8),
+                  SizedBox(height: compact ? 3 : 5),
                   Text(
                     'Start a new session to chat\nwith $agentName.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textSecondary,
-                      fontSize: compact ? 14 : 16,
+                      fontSize: compact ? 11 : 12,
                       height: 1.35,
                     ),
                   ),
-                  SizedBox(height: compact ? 18 : 28),
+                  SizedBox(height: compact ? 10 : 14),
                   OutlinedButton.icon(
                     onPressed: onNewSession,
-                    icon: const Icon(Icons.add_rounded, size: 24),
+                    icon: const Icon(Icons.add_rounded, size: 16),
                     label: const Text('New Session'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.primaryDark,
-                      minimumSize: Size(196, compact ? 50 : 58),
+                      minimumSize: Size(130, compact ? 32 : 34),
                       side: const BorderSide(color: Color(0xffd8c8ff)),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(AppRadius.pill),
                       ),
                       textStyle: TextStyle(
-                        fontSize: compact ? 16 : 18,
+                        fontSize: compact ? 12 : 13,
                         fontWeight: FontWeight.w800,
                         letterSpacing: 0,
                       ),
@@ -154,7 +156,7 @@ class _SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: selected ? AppColors.primaryMist : AppColors.surface,
         border: Border.all(
@@ -162,8 +164,7 @@ class _SessionTile extends StatelessWidget {
               ? AppColors.primary.withValues(alpha: 0.22)
               : AppColors.borderSoft,
         ),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        boxShadow: selected ? AppShadows.soft : null,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -171,8 +172,8 @@ class _SessionTile extends StatelessWidget {
           Row(
             children: [
               Container(
-                width: 30,
-                height: 30,
+                width: 22,
+                height: 22,
                 decoration: BoxDecoration(
                   color: selected
                       ? AppColors.primarySoft
@@ -181,51 +182,52 @@ class _SessionTile extends StatelessWidget {
                 ),
                 child: Icon(
                   Icons.chat_bubble_outline_rounded,
-                  size: 16,
+                  size: 13,
                   color: selected
                       ? AppColors.primaryDark
                       : AppColors.textSecondary,
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  session.shortId,
+                  session.displayTitle,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontWeight: FontWeight.w800,
+                    fontSize: 12,
                     letterSpacing: 0,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 5),
           Text(
             session.cwd,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: AppColors.textSecondary,
-              fontSize: 12,
-              height: 1.35,
+              fontSize: 11,
+              height: 1.3,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 5),
           Row(
             children: [
               const Icon(
                 Icons.access_time_rounded,
-                size: 13,
+                size: 12,
                 color: AppColors.textTertiary,
               ),
-              const SizedBox(width: 5),
+              const SizedBox(width: 4),
               Text(
-                _formatCreatedAt(session.createdAt),
+                _formatCreatedAt(session.displayTime),
                 style: const TextStyle(
                   color: AppColors.textTertiary,
-                  fontSize: 12,
+                  fontSize: 11,
                 ),
               ),
             ],
@@ -255,20 +257,24 @@ class _IconShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        onTap: onPressed,
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: AppColors.border),
+    return Semantics(
+      button: true,
+      label: tooltip,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          onTap: onPressed,
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Icon(icon, color: AppColors.textSecondary, size: 16),
           ),
-          child: Icon(icon, color: AppColors.textSecondary, size: 22),
         ),
       ),
     );

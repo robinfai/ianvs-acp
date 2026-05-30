@@ -9,6 +9,7 @@ import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
+import 'prompt_attachment.dart';
 
 class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
@@ -211,23 +212,27 @@ class DartAcpAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     final client = _requireClient();
     _activeSessionId = sessionId;
+    final content = _promptWithAttachments(prompt, attachments);
     try {
       await for (final update in client.prompt(
         sessionId: sessionId,
-        content: prompt,
+        content: content,
       )) {
-        final event = _eventFromAcpUpdate(update);
+        final event = _eventFromAcpUpdate(update, includeUserMessages: false);
         if (event != null) {
           yield event;
         }
       }
     } catch (error) {
+      final details = _agentErrorDetails(error);
       yield AgentEvent(
         type: AgentEventType.error,
-        text: error.toString(),
+        text: details.text,
+        metadata: details.metadata,
         timestamp: DateTime.now(),
       );
     }
@@ -239,9 +244,13 @@ class DartAcpAgentClient implements AcpAgentClient {
         : AgentEventType.agentTextDelta;
   }
 
-  AgentEvent? _eventFromAcpUpdate(acp.AcpUpdate update) {
+  AgentEvent? _eventFromAcpUpdate(
+    acp.AcpUpdate update, {
+    bool includeUserMessages = true,
+  }) {
     switch (update) {
       case acp.MessageDelta():
+        if (update.role == 'user' && !includeUserMessages) return null;
         final text = update.text;
         final contentBlocks = _contentBlocksFromDelta(update);
         final hasNonTextContent = contentBlocks.any((block) {
@@ -334,6 +343,8 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.UnknownUpdate():
+        final mapped = _eventFromUnknownUpdate(update);
+        if (mapped != null) return mapped;
         final text = update.text;
         if (text.isEmpty) return null;
         return AgentEvent(
@@ -343,6 +354,52 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
     }
+  }
+
+  AgentEvent? _eventFromUnknownUpdate(acp.UnknownUpdate update) {
+    final raw = update.raw;
+    final sessionId = raw['sessionId'];
+    final body = raw['update'];
+    if (body is! Map<String, dynamic>) return null;
+
+    final kind = body['sessionUpdate'];
+    if (kind == 'config_option_update') {
+      final options = _configOptionsFromRaw(body['configOptions']);
+      if (sessionId is String && sessionId.isNotEmpty) {
+        _configOptionsBySession[sessionId] = options;
+      }
+      return AgentEvent(
+        type: AgentEventType.status,
+        text: 'Session config options updated.',
+        metadata: <String, Object?>{
+          'kind': 'config_option_update',
+          'configOptions': options,
+        },
+        timestamp: DateTime.now(),
+      );
+    }
+
+    if (kind == 'session_info_update') {
+      final title = body['title'];
+      final updatedAt = body['updatedAt'];
+      final meta = body['_meta'];
+      return AgentEvent(
+        type: AgentEventType.status,
+        text: title is String && title.trim().isNotEmpty
+            ? title.trim()
+            : 'Session info updated.',
+        metadata: <String, Object?>{
+          'kind': 'session_info_update',
+          if (sessionId is String) 'sessionId': sessionId,
+          if (title is String) 'title': title,
+          if (updatedAt is String) 'updatedAt': updatedAt,
+          if (meta is Map) 'meta': _metadataMap(meta),
+        },
+        timestamp: DateTime.now(),
+      );
+    }
+
+    return null;
   }
 
   List<Map<String, Object?>> _contentBlocksFromDelta(acp.MessageDelta update) {
@@ -363,9 +420,54 @@ class DartAcpAgentClient implements AcpAgentClient {
     return 'Received ${nonText.length} content blocks.';
   }
 
-  Map<String, Object?> _metadataMap(Map<String, dynamic>? raw) {
+  String _promptWithAttachments(
+    String prompt,
+    List<PromptAttachment> attachments,
+  ) {
+    if (attachments.isEmpty) return prompt;
+    final mentions = attachments
+        .map((item) => item.toPromptMention())
+        .join('\n');
+    if (prompt.trim().isEmpty) return mentions;
+    return '$prompt\n\n$mentions';
+  }
+
+  ({String text, Map<String, Object?> metadata}) _agentErrorDetails(
+    Object error,
+  ) {
+    final data = _dynamicField(error, 'data');
+    if (data is Map) {
+      final message = data['message'];
+      final errorInfo = data['codex_error_info'];
+      return (
+        text: message is String && message.trim().isNotEmpty
+            ? message
+            : error.toString(),
+        metadata: <String, Object?>{
+          'rawError': error.toString(),
+          if (errorInfo is String && errorInfo.isNotEmpty)
+            'codexErrorInfo': errorInfo,
+        },
+      );
+    }
+    return (text: error.toString(), metadata: const <String, Object?>{});
+  }
+
+  Object? _dynamicField(Object object, String fieldName) {
+    try {
+      final dynamic value = object;
+      return switch (fieldName) {
+        'data' => value.data,
+        _ => null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, Object?> _metadataMap(Map? raw) {
     if (raw == null) return const <String, Object?>{};
-    return raw.map((key, value) => MapEntry(key, value as Object?));
+    return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
   }
 
   AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
@@ -385,6 +487,62 @@ class DartAcpAgentClient implements AcpAgentClient {
           .toList(),
       description: option.description,
       group: option.group,
+    );
+  }
+
+  List<AcpConfigOption> _configOptionsFromRaw(Object? raw) {
+    if (raw is! List) return const <AcpConfigOption>[];
+    return raw
+        .whereType<Map>()
+        .map((item) => _configOptionFromRawMap(_metadataMap(item)))
+        .whereType<AcpConfigOption>()
+        .toList();
+  }
+
+  AcpConfigOption? _configOptionFromRawMap(Map<String, Object?> raw) {
+    final id = raw['id'];
+    final name = raw['name'];
+    final type = raw['type'];
+    final currentValue = raw['currentValue'];
+    if (id is! String ||
+        name is! String ||
+        type is! String ||
+        currentValue is! String) {
+      return null;
+    }
+
+    final choices = raw['options'] is List
+        ? (raw['options'] as List)
+              .whereType<Map>()
+              .map((item) => _configChoiceFromRawMap(_metadataMap(item)))
+              .whereType<AcpConfigOptionChoice>()
+              .toList()
+        : const <AcpConfigOptionChoice>[];
+
+    return AcpConfigOption(
+      id: id,
+      name: name,
+      type: type,
+      currentValue: currentValue,
+      options: choices,
+      description: raw['description'] is String
+          ? raw['description'] as String
+          : null,
+      category: raw['category'] is String ? raw['category'] as String : null,
+      group: raw['group'] is String ? raw['group'] as String : null,
+    );
+  }
+
+  AcpConfigOptionChoice? _configChoiceFromRawMap(Map<String, Object?> raw) {
+    final value = raw['value'];
+    final name = raw['name'];
+    if (value is! String || name is! String) return null;
+    return AcpConfigOptionChoice(
+      value: value,
+      name: name,
+      description: raw['description'] is String
+          ? raw['description'] as String
+          : null,
     );
   }
 

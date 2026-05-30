@@ -13,16 +13,26 @@ class ChatTimeline extends StatelessWidget {
     super.key,
     required this.messages,
     this.agentName = 'Codex',
+    this.hasActiveSession = false,
+    this.activeSessionLabel,
   });
 
   final List<ChatMessage> messages;
   final String agentName;
+  final bool hasActiveSession;
+  final String? activeSessionLabel;
 
   @override
   Widget build(BuildContext context) {
     if (messages.isEmpty) {
       return DotGridBackground(
-        child: Center(child: _EmptyTimeline(agentName: agentName)),
+        child: Center(
+          child: _EmptyTimeline(
+            agentName: agentName,
+            hasActiveSession: hasActiveSession,
+            activeSessionLabel: activeSessionLabel,
+          ),
+        ),
       );
     }
 
@@ -30,9 +40,9 @@ class ChatTimeline extends StatelessWidget {
 
     return DotGridBackground(
       child: ListView.separated(
-        padding: const EdgeInsets.fromLTRB(32, 28, 32, 32),
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
         itemCount: entries.length,
-        separatorBuilder: (context, index) => const SizedBox(height: 16),
+        separatorBuilder: (context, index) => const SizedBox(height: 10),
         itemBuilder: (context, index) {
           final entry = entries[index];
           return entry.toolMessages == null
@@ -83,9 +93,15 @@ class _TimelineEntry {
 }
 
 class _EmptyTimeline extends StatelessWidget {
-  const _EmptyTimeline({required this.agentName});
+  const _EmptyTimeline({
+    required this.agentName,
+    required this.hasActiveSession,
+    this.activeSessionLabel,
+  });
 
   final String agentName;
+  final bool hasActiveSession;
+  final String? activeSessionLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -93,7 +109,7 @@ class _EmptyTimeline extends StatelessWidget {
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 360;
         return SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
+          padding: const EdgeInsets.all(18),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               minHeight: constraints.maxHeight > 56
@@ -105,24 +121,28 @@ class _EmptyTimeline extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _CodeCardIllustration(compact: compact),
-                  SizedBox(height: compact ? 18 : 26),
+                  SizedBox(height: compact ? 12 : 14),
                   Text(
-                    'Start a session to chat with $agentName',
+                    hasActiveSession
+                        ? 'Session ready'
+                        : 'Start a session to chat with $agentName',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textPrimary,
-                      fontSize: compact ? 20 : 24,
-                      fontWeight: FontWeight.w900,
+                      fontSize: compact ? 17 : 19,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: 0,
                     ),
                   ),
-                  SizedBox(height: compact ? 8 : 12),
+                  SizedBox(height: compact ? 5 : 6),
                   Text(
-                    'Ask questions, get help with code, and more.',
+                    hasActiveSession
+                        ? _activeSessionSubtitle()
+                        : 'Ask questions, get help with code, and more.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textSecondary,
-                      fontSize: compact ? 14 : 16,
+                      fontSize: compact ? 12 : 13,
                       height: 1.4,
                     ),
                   ),
@@ -134,6 +154,12 @@ class _EmptyTimeline extends StatelessWidget {
       },
     );
   }
+
+  String _activeSessionSubtitle() {
+    final label = activeSessionLabel?.trim();
+    final prefix = label == null || label.isEmpty ? '' : '$label loaded. ';
+    return '${prefix}No replayed messages were returned; continue below.';
+  }
 }
 
 class _CodeCardIllustration extends StatelessWidget {
@@ -144,8 +170,8 @@ class _CodeCardIllustration extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: compact ? 154 : 210,
-      height: compact ? 112 : 164,
+      width: compact ? 120 : 152,
+      height: compact ? 82 : 108,
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -156,7 +182,7 @@ class _CodeCardIllustration extends StatelessWidget {
       child: Column(
         children: [
           Container(
-            height: 28,
+            height: 19,
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 colors: [Color(0xffb29cff), AppColors.primary],
@@ -168,9 +194,9 @@ class _CodeCardIllustration extends StatelessWidget {
               children: List.generate(
                 3,
                 (index) => Container(
-                  width: 7,
-                  height: 7,
-                  margin: EdgeInsets.only(left: index == 0 ? 14 : 6),
+                  width: 4,
+                  height: 4,
+                  margin: EdgeInsets.only(left: index == 0 ? 10 : 4),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.62),
                     shape: BoxShape.circle,
@@ -182,17 +208,17 @@ class _CodeCardIllustration extends StatelessWidget {
           Expanded(
             child: Padding(
               padding: EdgeInsets.fromLTRB(
-                compact ? 14 : 20,
-                compact ? 14 : 20,
-                compact ? 14 : 20,
-                compact ? 12 : 18,
+                compact ? 10 : 13,
+                compact ? 10 : 13,
+                compact ? 10 : 13,
+                compact ? 8 : 11,
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Container(
-                    width: compact ? 36 : 48,
-                    height: compact ? 36 : 48,
+                    width: compact ? 26 : 32,
+                    height: compact ? 26 : 32,
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                         colors: [Color(0xffb196ff), AppColors.primary],
@@ -204,32 +230,32 @@ class _CodeCardIllustration extends StatelessWidget {
                     child: const Icon(
                       Icons.code_rounded,
                       color: Colors.white,
-                      size: 26,
+                      size: 18,
                     ),
                   ),
-                  SizedBox(width: compact ? 12 : 16),
+                  SizedBox(width: compact ? 8 : 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         _IllustrationLine(
                           widthFactor: 0.78,
-                          height: compact ? 6 : 8,
+                          height: compact ? 4 : 5,
                         ),
-                        SizedBox(height: compact ? 8 : 14),
+                        SizedBox(height: compact ? 6 : 8),
                         _IllustrationLine(
                           widthFactor: 1,
-                          height: compact ? 6 : 8,
+                          height: compact ? 4 : 5,
                         ),
-                        SizedBox(height: compact ? 10 : 28),
+                        SizedBox(height: compact ? 7 : 12),
                         _IllustrationLine(
                           widthFactor: 0.72,
-                          height: compact ? 6 : 8,
+                          height: compact ? 4 : 5,
                         ),
-                        SizedBox(height: compact ? 6 : 12),
+                        SizedBox(height: compact ? 4 : 6),
                         _IllustrationLine(
                           widthFactor: 0.58,
-                          height: compact ? 6 : 8,
+                          height: compact ? 4 : 5,
                         ),
                       ],
                     ),
@@ -283,8 +309,6 @@ class _MessageBubble extends StatelessWidget {
     }
 
     final user = message.role == ChatMessageRole.user;
-    final error = message.role == ChatMessageRole.error;
-    final status = message.role == ChatMessageRole.status;
     final color = switch (message.role) {
       ChatMessageRole.user => AppColors.primary,
       ChatMessageRole.assistant => AppColors.surface,
@@ -307,12 +331,11 @@ class _MessageBubble extends StatelessWidget {
         constraints: BoxConstraints(maxWidth: user ? 720 : 820),
         child: Container(
           width: user ? null : double.infinity,
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(11),
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: borderColor),
-            boxShadow: user || error || status ? null : AppShadows.soft,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -338,7 +361,7 @@ class _MessageBubble extends StatelessWidget {
                 ],
               ),
               if (message.text.isNotEmpty) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 MarkdownBody(
                   data: message.text,
                   selectable: true,
@@ -374,7 +397,7 @@ class _MessageBubble extends StatelessWidget {
       listBullet: baseTextStyle,
       blockSpacing: 8,
       listIndent: 24,
-      codeblockPadding: const EdgeInsets.all(10),
+      codeblockPadding: const EdgeInsets.all(7),
       codeblockDecoration: BoxDecoration(
         color: codeBackground,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -444,14 +467,14 @@ class _ToolGroupBubble extends StatelessWidget {
         child: Material(
           color: Colors.transparent,
           child: ExpansionTile(
-            tilePadding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-            childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+            tilePadding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
+            childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
             initiallyExpanded: false,
             maintainState: true,
             leading: const Icon(
               Icons.account_tree_outlined,
               color: Color(0xff92400e),
-              size: 20,
+              size: 18,
             ),
             title: _ToolGroupHeader(
               totalCount: messages.length,
@@ -459,10 +482,10 @@ class _ToolGroupBubble extends StatelessWidget {
               counts: counts,
             ),
             children: [
-              const Divider(height: 18, color: Color(0xfffde68a)),
+              const Divider(height: 12, color: Color(0xfffde68a)),
               for (var index = 0; index < parsedTools.length; index++) ...[
                 _ToolSequenceCard(index: index + 1, parsed: parsedTools[index]),
-                if (index != parsedTools.length - 1) const SizedBox(height: 10),
+                if (index != parsedTools.length - 1) const SizedBox(height: 6),
               ],
             ],
           ),
@@ -510,33 +533,33 @@ class _ToolCallCard extends StatelessWidget {
       width: double.infinity,
       decoration: BoxDecoration(
         color: const Color(0xfffffbeb),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: const Color(0xfffde68a)),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: details.isEmpty
             ? Padding(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(10),
                 child: _ToolHeader(parsed: parsed),
               )
             : Material(
                 color: Colors.transparent,
                 child: ExpansionTile(
-                  tilePadding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
-                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  tilePadding: const EdgeInsets.fromLTRB(10, 0, 10, 0),
+                  childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                   initiallyExpanded: false,
                   maintainState: true,
                   leading: const Icon(
                     Icons.build_circle_outlined,
                     color: Color(0xff92400e),
-                    size: 20,
+                    size: 18,
                   ),
                   title: _ToolHeader(parsed: parsed, compact: true),
                   children: [
                     for (final detail in details) ...[
                       _DetailBlock(entry: detail),
-                      if (detail != details.last) const SizedBox(height: 10),
+                      if (detail != details.last) const SizedBox(height: 6),
                     ],
                   ],
                 ),
@@ -557,27 +580,26 @@ class _ToolSequenceCard extends StatelessWidget {
     return Stack(
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 18),
+          padding: const EdgeInsets.only(left: 14),
           child: _ToolCallCard(parsed: parsed),
         ),
         Positioned(
           left: 0,
           top: 18,
           child: Container(
-            width: 28,
-            height: 28,
+            width: 22,
+            height: 22,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
               border: Border.all(color: const Color(0xfffde68a)),
-              boxShadow: AppShadows.soft,
             ),
             child: Text(
               '$index',
               style: const TextStyle(
                 color: Color(0xff92400e),
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 0,
               ),
@@ -613,7 +635,7 @@ class _ToolGroupHeader extends StatelessWidget {
                 '$totalCount tool calls',
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: FontWeight.w800,
                   letterSpacing: 0,
                 ),
@@ -625,7 +647,7 @@ class _ToolGroupHeader extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 5),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -649,7 +671,7 @@ class _ToolCountChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 260),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -664,7 +686,7 @@ class _ToolCountChip extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w800,
                 letterSpacing: 0,
               ),
@@ -675,7 +697,7 @@ class _ToolCountChip extends StatelessWidget {
             'x$count',
             style: const TextStyle(
               color: Color(0xff92400e),
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: FontWeight.w900,
               letterSpacing: 0,
             ),
@@ -702,7 +724,7 @@ class _ToolHeader extends StatelessWidget {
             color: Color(0xff92400e),
             size: 20,
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 7),
         ],
         Expanded(
           child: Column(
@@ -717,14 +739,14 @@ class _ToolHeader extends StatelessWidget {
                   letterSpacing: 0,
                 ),
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 1),
               Text(
                 parsed.title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0,
                 ),
@@ -732,7 +754,7 @@ class _ToolHeader extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 8),
         _StatusPill(label: parsed.status, color: _statusColor(parsed.status)),
       ],
     );
@@ -763,10 +785,10 @@ class _StatusBubble extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 820),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: AppColors.surfaceRaised,
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: AppColors.border),
           ),
           child: child,
@@ -791,7 +813,7 @@ class _ThoughtStatus extends StatelessWidget {
           label: 'Thought',
         ),
         if (message.text.isNotEmpty) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(
             message.text,
             style: const TextStyle(
@@ -845,12 +867,12 @@ class _ContentBlocksPreview extends StatelessWidget {
     if (blocks.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: EdgeInsets.only(top: message.text.isEmpty ? 0 : 10),
+      padding: EdgeInsets.only(top: message.text.isEmpty ? 0 : 8),
       child: Column(
         children: [
           for (final block in blocks) ...[
             _ContentBlockCard(block: block),
-            if (block != blocks.last) const SizedBox(height: 8),
+            if (block != blocks.last) const SizedBox(height: 6),
           ],
         ],
       ),
@@ -894,7 +916,7 @@ class _ImageContentBlock extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppRadius.sm),
               child: Image.memory(
                 bytes,
-                height: 160,
+                height: 132,
                 fit: BoxFit.contain,
                 errorBuilder: (context, error, stackTrace) {
                   return const Text(
@@ -916,12 +938,17 @@ class _ResourceContentBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uri = _stringMetadata(block, 'uri') ?? '';
-    final title = _stringMetadata(block, 'title') ?? 'Resource';
+    final title =
+        _stringMetadata(block, 'title') ??
+        _stringMetadata(block, 'name') ??
+        'Resource';
     final mimeType = _stringMetadata(block, 'mimeType');
+    final size = _numberMetadata(block, 'size');
+    final details = [?mimeType, if (size != null) _formatByteCount(size)];
     return _InlineContentFrame(
       icon: Icons.link_rounded,
       title: title,
-      subtitle: mimeType ?? 'resource link',
+      subtitle: details.isEmpty ? 'resource link' : details.join(' · '),
       child: uri.isEmpty
           ? null
           : SelectableText(
@@ -977,7 +1004,7 @@ class _InlineContentFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -988,8 +1015,8 @@ class _InlineContentFrame extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, color: AppColors.primaryDark, size: 17),
-              const SizedBox(width: 8),
+              Icon(icon, color: AppColors.primaryDark, size: 15),
+              const SizedBox(width: 7),
               Expanded(
                 child: Text(
                   title,
@@ -1001,18 +1028,18 @@ class _InlineContentFrame extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 7),
               Text(
                 subtitle,
                 style: const TextStyle(
                   color: AppColors.textTertiary,
-                  fontSize: 12,
+                  fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
               ),
             ],
           ),
-          if (child != null) ...[const SizedBox(height: 10), child!],
+          if (child != null) ...[const SizedBox(height: 8), child!],
         ],
       ),
     );
@@ -1045,7 +1072,7 @@ class _PlanStatus extends StatelessWidget {
           ),
         ],
         if (entries.isNotEmpty) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           for (final entry in entries) _PlanEntryRow(entry: entry),
         ],
       ],
@@ -1071,12 +1098,12 @@ class _PlanEntryRow extends StatelessWidget {
     };
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 8),
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 7),
           Expanded(
             child: Text(
               content,
@@ -1086,7 +1113,7 @@ class _PlanEntryRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 7),
           _StatusPill(label: priority, color: AppColors.primaryDark),
         ],
       ),
@@ -1125,7 +1152,7 @@ class _DiffStatus extends StatelessWidget {
             _StatusPill(label: status, color: _statusColor(status)),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         SelectableText(
           uri,
           style: const TextStyle(
@@ -1134,7 +1161,7 @@ class _DiffStatus extends StatelessWidget {
           ),
         ),
         if (changes.isNotEmpty) ...[
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -1147,7 +1174,7 @@ class _DiffStatus extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           _DiffChangesList(changes: changes),
         ],
       ],
@@ -1181,7 +1208,7 @@ class _DiffChangesList extends StatelessWidget {
           children: [
             for (final change in changes) ...[
               _DiffChangeRow(change: change),
-              if (change != changes.last) const SizedBox(height: 8),
+              if (change != changes.last) const SizedBox(height: 6),
             ],
           ],
         ),
@@ -1210,7 +1237,7 @@ class _DiffChangeRow extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -1223,7 +1250,7 @@ class _DiffChangeRow extends StatelessWidget {
             children: [
               _StatusPill(label: type, color: _statusColor(type)),
               if (line != null) ...[
-                const SizedBox(width: 8),
+                const SizedBox(width: 7),
                 Text(
                   'line $line',
                   style: const TextStyle(
@@ -1236,7 +1263,7 @@ class _DiffChangeRow extends StatelessWidget {
             ],
           ),
           if (body.isNotEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             SelectableText(
               body,
               style: const TextStyle(
@@ -1268,7 +1295,7 @@ class _CommandsStatus extends StatelessWidget {
           icon: Icons.terminal_rounded,
           label: 'Available Commands',
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         if (commands.isEmpty)
           const Text(
             'No commands available.',
@@ -1291,7 +1318,7 @@ class _CommandsStatus extends StatelessWidget {
                     ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Theme(
                 data: Theme.of(
                   context,
@@ -1312,7 +1339,7 @@ class _CommandsStatus extends StatelessWidget {
                     children: [
                       for (final command in commands) ...[
                         _CommandDetailCard(command: command),
-                        if (command != commands.last) const SizedBox(height: 8),
+                        if (command != commands.last) const SizedBox(height: 6),
                       ],
                     ],
                   ),
@@ -1342,7 +1369,7 @@ class _CommandDetailCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -1360,7 +1387,7 @@ class _CommandDetailCard extends StatelessWidget {
             ),
           ),
           if (description != null) ...[
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             Text(
               description,
               style: const TextStyle(
@@ -1370,11 +1397,11 @@ class _CommandDetailCard extends StatelessWidget {
             ),
           ],
           if (inputHint != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             _DetailBlock(entry: _DetailEntry('Input hint', inputHint)),
           ],
           if (parameters != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             _DetailBlock(
               entry: _DetailEntry('Parameters', _previewObject(parameters)),
             ),
@@ -1432,8 +1459,8 @@ class _SectionHeader extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 16, color: AppColors.primaryDark),
-        const SizedBox(width: 7),
+        Icon(icon, size: 15, color: AppColors.primaryDark),
+        const SizedBox(width: 6),
         Flexible(
           child: Text(
             label,
@@ -1486,7 +1513,7 @@ class _CommandChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: AppColors.primarySoft,
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -1496,7 +1523,7 @@ class _CommandChip extends StatelessWidget {
         label,
         style: const TextStyle(
           color: AppColors.primaryDark,
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: FontWeight.w800,
           letterSpacing: 0,
         ),
@@ -1514,7 +1541,7 @@ class _DetailBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -1532,7 +1559,7 @@ class _DetailBlock extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           SelectableText(
             entry.value,
             style: const TextStyle(
@@ -1616,6 +1643,23 @@ String? _stringMetadata(Map<String, Object?> metadata, String key) {
   final value = metadata[key];
   if (value is String && value.trim().isNotEmpty) return value.trim();
   return null;
+}
+
+int? _numberMetadata(Map<String, Object?> metadata, String key) {
+  final value = metadata[key];
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return null;
+}
+
+String _formatByteCount(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kb = bytes / 1024;
+  if (kb < 1024) return '${kb.toStringAsFixed(kb < 10 ? 1 : 0)} KB';
+  final mb = kb / 1024;
+  if (mb < 1024) return '${mb.toStringAsFixed(mb < 10 ? 1 : 0)} MB';
+  final gb = mb / 1024;
+  return '${gb.toStringAsFixed(gb < 10 ? 1 : 0)} GB';
 }
 
 List<Map<String, Object?>> _mapList(Object? value) {

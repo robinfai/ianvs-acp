@@ -8,6 +8,7 @@ import '../acp/acp_session_catalog.dart';
 import '../acp/acp_session_settings.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
+import '../acp/prompt_attachment.dart';
 import 'connection_state.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
@@ -74,7 +75,12 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> resumeSession(String sessionId, {String? cwd}) async {
+  Future<void> resumeSession(
+    String sessionId, {
+    String? cwd,
+    String? title,
+    DateTime? updatedAt,
+  }) async {
     final trimmedSessionId = sessionId.trim();
     if (trimmedSessionId.isEmpty || isStreaming) return;
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
@@ -100,6 +106,8 @@ class ChatController extends ChangeNotifier {
         id: trimmedSessionId,
         cwd: workspaceCwd,
         createdAt: DateTime.now(),
+        title: title,
+        updatedAt: updatedAt,
       );
       currentSession = session;
       sessions
@@ -135,9 +143,12 @@ class ChatController extends ChangeNotifier {
     return client.listSessions();
   }
 
-  Future<void> sendPrompt(String text) async {
+  Future<void> sendPrompt(
+    String text, {
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async {
     final prompt = text.trim();
-    if (prompt.isEmpty || isStreaming) return;
+    if ((prompt.isEmpty && attachments.isEmpty) || isStreaming) return;
 
     if (currentSession == null) {
       await newSession();
@@ -146,7 +157,18 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return;
 
-    messages.add(ChatMessage(role: ChatMessageRole.user, text: prompt));
+    final contentBlocks = attachments
+        .map((attachment) => attachment.toResourceLink())
+        .toList();
+    messages.add(
+      ChatMessage(
+        role: ChatMessageRole.user,
+        text: prompt,
+        metadata: contentBlocks.isEmpty
+            ? const <String, Object?>{}
+            : <String, Object?>{'contentBlocks': contentBlocks},
+      ),
+    );
     isStreaming = true;
     status = ConnectionStatus.streaming;
     lastError = null;
@@ -155,7 +177,11 @@ class ChatController extends ChangeNotifier {
 
     await _promptSubscription?.cancel();
     _promptSubscription = client
-        .sendPrompt(sessionId: session.id, prompt: prompt)
+        .sendPrompt(
+          sessionId: session.id,
+          prompt: prompt,
+          attachments: attachments,
+        )
         .listen(
           _handleAgentEvent,
           onError: (Object error, StackTrace stackTrace) {
@@ -303,6 +329,21 @@ class ChatController extends ChangeNotifier {
         sessionSettings = sessionSettings.withCurrentMode(mode);
       }
     }
+    if (kind == 'config_option_update') {
+      final options = event.metadata['configOptions'];
+      if (options is List<AcpConfigOption>) {
+        sessionSettings = sessionSettings.copyWith(configOptions: options);
+      }
+      return;
+    }
+    if (kind == 'session_info_update') {
+      _applySessionInfoUpdate(event.metadata);
+      return;
+    }
+    if (kind == 'plan' || kind == 'commands') {
+      _replaceStatusMessage(event);
+      return;
+    }
     final lastMessage = messages.isNotEmpty ? messages.last : null;
     if (kind == 'thought' &&
         lastMessage != null &&
@@ -318,6 +359,49 @@ class ChatController extends ChangeNotifier {
         metadata: event.metadata,
       ),
     );
+  }
+
+  void _replaceStatusMessage(AgentEvent event) {
+    final kind = event.metadata['kind'];
+    final message = ChatMessage(
+      role: ChatMessageRole.status,
+      text: event.text,
+      metadata: event.metadata,
+    );
+    final index = messages.indexWhere((item) {
+      return item.role == ChatMessageRole.status &&
+          item.metadata['kind'] == kind;
+    });
+    if (index == -1) {
+      messages.add(message);
+    } else {
+      messages[index] = message;
+    }
+  }
+
+  void _applySessionInfoUpdate(Map<String, Object?> metadata) {
+    final session = currentSession;
+    if (session == null) return;
+    final sessionId = metadata['sessionId'];
+    if (sessionId is String &&
+        sessionId.isNotEmpty &&
+        sessionId != session.id) {
+      return;
+    }
+
+    final title = metadata['title'] is String
+        ? metadata['title'] as String
+        : null;
+    final updatedAtRaw = metadata['updatedAt'];
+    final updatedAt = updatedAtRaw is String
+        ? DateTime.tryParse(updatedAtRaw)?.toLocal()
+        : null;
+    final updatedSession = session.copyWith(title: title, updatedAt: updatedAt);
+    currentSession = updatedSession;
+    final index = sessions.indexWhere((item) => item.id == session.id);
+    if (index != -1) {
+      sessions[index] = updatedSession;
+    }
   }
 
   void _appendTurnStatus(AgentEvent event) {

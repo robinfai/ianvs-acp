@@ -3,12 +3,12 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  static const Color bg = Color(0xfff8f9fd);
+  static const Color bg = Color(0xfffafbfe);
   static const Color surface = Color(0xffffffff);
-  static const Color surfaceMuted = Color(0xfff3f0ff);
-  static const Color surfaceRaised = Color(0xfffbfcff);
+  static const Color surfaceMuted = Color(0xfff5f2ff);
+  static const Color surfaceRaised = Color(0xfffcfdff);
   static const Color border = Color(0xffe2e5f0);
-  static const Color borderSoft = Color(0xffedf0f7);
+  static const Color borderSoft = Color(0xffedf0f6);
 
   static const Color textPrimary = Color(0xff111827);
   static const Color textSecondary = Color(0xff667085);
@@ -39,10 +39,10 @@ class AppSpacing {
 class AppRadius {
   const AppRadius._();
 
-  static const double sm = 10;
-  static const double md = 14;
-  static const double lg = 18;
-  static const double xl = 24;
+  static const double sm = 6;
+  static const double md = 8;
+  static const double lg = 12;
+  static const double xl = 16;
   static const double pill = 999;
 }
 
@@ -50,10 +50,10 @@ class AppShadows {
   const AppShadows._();
 
   static const List<BoxShadow> soft = [
-    BoxShadow(color: Color(0x0f4f2bc7), blurRadius: 24, offset: Offset(0, 12)),
+    BoxShadow(color: Color(0x074f2bc7), blurRadius: 12, offset: Offset(0, 4)),
   ];
 
   static const List<BoxShadow> raised = [
-    BoxShadow(color: Color(0x14525f7f), blurRadius: 34, offset: Offset(0, 18)),
+    BoxShadow(color: Color(0x0c525f7f), blurRadius: 18, offset: Offset(0, 8)),
   ];
 }

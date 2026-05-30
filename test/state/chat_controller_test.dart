@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 
@@ -79,6 +80,78 @@ void main() {
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
   });
 
+  test('resume session keeps ACP session title metadata', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Updated session title',
+            metadata: {
+              'kind': 'session_info_update',
+              'sessionId': 'resumed-session-title',
+              'title': 'Updated session title',
+              'updatedAt': '2026-05-30T04:12:00Z',
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession(
+      'resumed-session-title',
+      title: 'Original session title',
+    );
+
+    expect(controller.messages, isEmpty);
+    expect(controller.currentSession?.displayTitle, 'Updated session title');
+    expect(controller.sessions.single.displayTitle, 'Updated session title');
+  });
+
+  test('plan status updates replace previous plan snapshot', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Initial plan',
+            metadata: {
+              'kind': 'plan',
+              'title': 'Initial plan',
+              'entries': [
+                {'content': 'Inspect', 'priority': 'high', 'status': 'pending'},
+              ],
+            },
+          ),
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Updated plan',
+            metadata: {
+              'kind': 'plan',
+              'title': 'Updated plan',
+              'entries': [
+                {
+                  'content': 'Inspect',
+                  'priority': 'high',
+                  'status': 'completed',
+                },
+              ],
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('resumed-session-plan');
+
+    expect(controller.messages, hasLength(1));
+    expect(controller.messages.single.text, 'Updated plan');
+  });
+
   test('set session mode updates ACP session settings', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -151,6 +224,36 @@ void main() {
     expect(controller.messages.last.role, ChatMessageRole.assistant);
     expect(controller.messages.last.text, 'Hello, I am Codex.');
   });
+
+  test(
+    'send prompt forwards attachments and renders resource metadata',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      const attachment = PromptAttachment(
+        path: '/workspace/readme.md',
+        name: 'readme.md',
+        mimeType: 'text/markdown',
+        size: 2048,
+      );
+
+      await controller.newSession();
+      await controller.sendPrompt(
+        'Review this file',
+        attachments: [attachment],
+      );
+      await pumpEventQueue(times: 12);
+
+      expect(fake.lastPrompt, 'Review this file');
+      expect(fake.lastAttachments, [attachment]);
+      expect(controller.messages.first.role, ChatMessageRole.user);
+      expect(controller.messages.first.text, 'Review this file');
+      expect(controller.messages.first.metadata['contentBlocks'], [
+        attachment.toResourceLink(),
+      ]);
+    },
+  );
 
   test('send prompt error is rendered as error message', () async {
     final controller = ChatController(

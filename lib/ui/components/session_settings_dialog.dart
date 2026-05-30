@@ -16,7 +16,7 @@ class SessionSettingsDialog extends StatelessWidget {
     return AlertDialog(
       title: const Text('Session Settings'),
       content: SizedBox(
-        width: 680,
+        width: 600,
         child: AnimatedBuilder(
           animation: controller,
           builder: (context, _) {
@@ -40,7 +40,7 @@ class SessionSettingsDialog extends StatelessWidget {
                     cwd: session.cwd,
                     loading: controller.sessionSettingsLoading,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _ModeSection(
                     settings: settings,
                     enabled: !controller.isStreaming,
@@ -48,7 +48,7 @@ class SessionSettingsDialog extends StatelessWidget {
                       unawaited(controller.setSessionMode(modeId));
                     },
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _ConfigSection(
                     options: settings.configOptions,
                     enabled: !controller.isStreaming,
@@ -92,7 +92,7 @@ class _SessionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.primaryMist,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -101,8 +101,8 @@ class _SessionHeader extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 36,
-            height: 36,
+            width: 28,
+            height: 28,
             decoration: BoxDecoration(
               color: AppColors.primarySoft,
               borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -110,10 +110,10 @@ class _SessionHeader extends StatelessWidget {
             child: const Icon(
               Icons.settings_suggest_outlined,
               color: AppColors.primaryDark,
-              size: 20,
+              size: 16,
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -127,7 +127,7 @@ class _SessionHeader extends StatelessWidget {
                     letterSpacing: 0,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   cwd,
                   overflow: TextOverflow.ellipsis,
@@ -142,7 +142,7 @@ class _SessionHeader extends StatelessWidget {
             ),
           ),
           if (loading) ...[
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             const SizedBox(
               width: 18,
               height: 18,
@@ -238,7 +238,7 @@ class _ConfigSection extends StatelessWidget {
                     enabled: enabled,
                     onChanged: (value) => onChanged(option.id, value),
                   ),
-                  if (option != options.last) const SizedBox(height: 10),
+                  if (option != options.last) const SizedBox(height: 8),
                 ],
               ],
             ),
@@ -266,10 +266,10 @@ class _ConfigOptionTile extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: AppColors.borderSoft),
       ),
       child: Row(
@@ -288,19 +288,21 @@ class _ConfigOptionTile extends StatelessWidget {
                       option.name.isEmpty ? option.id : option.name,
                       style: const TextStyle(
                         color: AppColors.textPrimary,
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.w900,
                         letterSpacing: 0,
                       ),
                     ),
                     _TinyPill(option.type),
+                    if (option.category != null && option.category!.isNotEmpty)
+                      _TinyPill(option.category!),
                     if (option.group != null && option.group!.isNotEmpty)
                       _TinyPill(option.group!),
                   ],
                 ),
                 if (option.description != null &&
                     option.description!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 5),
                   Text(
                     option.description!,
                     style: const TextStyle(
@@ -314,9 +316,9 @@ class _ConfigOptionTile extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 10),
           SizedBox(
-            width: 220,
+            width: 180,
             child: option.options.isEmpty
                 ? _ReadOnlyValue(value: option.currentValue)
                 : DropdownButtonFormField<String>(
@@ -364,7 +366,7 @@ class _Panel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -376,7 +378,7 @@ class _Panel extends StatelessWidget {
           Row(
             children: [
               Icon(icon, size: 17, color: AppColors.primaryDark),
-              const SizedBox(width: 8),
+              const SizedBox(width: 7),
               Text(
                 title,
                 style: const TextStyle(
@@ -387,7 +389,7 @@ class _Panel extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           child,
         ],
       ),
@@ -403,9 +405,9 @@ class _ReadOnlyValue extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 48,
+      height: 38,
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: AppColors.bg,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -432,7 +434,7 @@ class _TinyPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         color: AppColors.primarySoft,
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -473,7 +475,7 @@ class _EmptyState extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         Icon(icon, color: AppColors.primaryDark, size: inline ? 18 : 24),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Flexible(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -490,7 +492,7 @@ class _EmptyState extends StatelessWidget {
                     letterSpacing: 0,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
               ],
               Text(
                 message,
@@ -511,9 +513,9 @@ class _EmptyState extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      height: inline ? null : 220,
+      height: inline ? null : 150,
       alignment: Alignment.center,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -530,7 +532,7 @@ InputDecoration _inputDecoration(String label) {
     filled: true,
     fillColor: AppColors.surface,
     isDense: true,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(AppRadius.sm),
       borderSide: const BorderSide(color: AppColors.border),

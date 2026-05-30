@@ -45,11 +45,11 @@ class AppShell extends StatelessWidget {
                   ErrorBanner(message: controller.lastError!),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 10, 24, 18),
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                     child: Container(
                       decoration: BoxDecoration(
                         color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.lg),
+                        borderRadius: BorderRadius.circular(AppRadius.md),
                         border: Border.all(color: AppColors.border),
                         boxShadow: AppShadows.soft,
                       ),
@@ -57,12 +57,13 @@ class AppShell extends StatelessWidget {
                       child: Row(
                         children: [
                           SizedBox(
-                            width: 308,
+                            width: 244,
                             child: SessionSidebar(
                               agentName: agentName,
                               sessions: controller.sessions,
                               currentSession: controller.currentSession,
                               onNewSession: controller.newSession,
+                              onResumeSession: () => _showResumeDialog(context),
                             ),
                           ),
                           const VerticalDivider(
@@ -73,6 +74,10 @@ class AppShell extends StatelessWidget {
                             child: ChatTimeline(
                               messages: controller.messages,
                               agentName: agentName,
+                              hasActiveSession:
+                                  controller.currentSession != null,
+                              activeSessionLabel:
+                                  controller.currentSession?.displayTitle,
                             ),
                           ),
                         ],
@@ -83,7 +88,8 @@ class AppShell extends StatelessWidget {
                 PromptInput(
                   agentName: agentName,
                   isSending: controller.isStreaming,
-                  onSend: controller.sendPrompt,
+                  onSend: (text, attachments) =>
+                      controller.sendPrompt(text, attachments: attachments),
                   onStop: controller.stop,
                 ),
                 StatusBar(
@@ -133,6 +139,8 @@ class AppShell extends StatelessWidget {
       controller.resumeSession(
         selection.conversation.id,
         cwd: selection.project.cwd,
+        title: selection.conversation.title,
+        updatedAt: selection.conversation.updatedAt,
       ),
     );
   }

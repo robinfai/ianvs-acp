@@ -22,7 +22,7 @@ class AgentToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 92,
+      height: 60,
       decoration: const BoxDecoration(color: AppColors.bg),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -32,15 +32,15 @@ class AgentToolbar extends StatelessWidget {
           final compact = availableWidth < 1240;
           final veryCompact = availableWidth < 620;
           final horizontalPadding = veryCompact
-              ? 18.0
-              : (compact ? 24.0 : 32.0);
+              ? 14.0
+              : (compact ? 18.0 : 24.0);
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
               horizontalPadding,
-              18,
+              8,
               horizontalPadding,
-              16,
+              8,
             ),
             child: Row(
               children: [
@@ -55,21 +55,21 @@ class AgentToolbar extends StatelessWidget {
                     ),
                   ),
                 ),
-                SizedBox(width: compact ? 12 : 24),
+                SizedBox(width: compact ? 8 : 14),
                 _ToolbarAction(
                   icon: Icons.play_circle_outline,
                   label: compact ? null : 'Resume',
                   tooltip: 'Resume',
                   onPressed: onResumeSession,
                 ),
-                SizedBox(width: compact ? 8 : 12),
+                SizedBox(width: compact ? 5 : 8),
                 _ToolbarAction(
                   icon: Icons.refresh_rounded,
                   label: compact ? null : 'Reconnect',
                   tooltip: 'Reconnect',
                   onPressed: onReconnect,
                 ),
-                SizedBox(width: compact ? 10 : 18),
+                SizedBox(width: compact ? 6 : 10),
                 _PrimaryToolbarAction(
                   compact: compact,
                   onPressed: onNewSession,
@@ -104,8 +104,8 @@ class _BrandMark extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 42,
-          height: 42,
+          width: 30,
+          height: 30,
           decoration: BoxDecoration(
             color: AppColors.primarySoft,
             borderRadius: BorderRadius.circular(AppRadius.md),
@@ -113,10 +113,10 @@ class _BrandMark extends StatelessWidget {
           child: const Icon(
             Icons.hub_outlined,
             color: AppColors.primary,
-            size: 28,
+            size: 19,
           ),
         ),
-        SizedBox(width: veryCompact ? 10 : 14),
+        SizedBox(width: veryCompact ? 7 : 10),
         Flexible(
           child: Text(
             title,
@@ -124,18 +124,18 @@ class _BrandMark extends StatelessWidget {
             softWrap: false,
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: veryCompact ? 19 : 24,
+              fontSize: veryCompact ? 16 : 19,
               fontWeight: FontWeight.w800,
               letterSpacing: 0,
             ),
           ),
         ),
         if (!compact) ...[
-          SizedBox(width: compact ? 14 : 22),
+          SizedBox(width: compact ? 10 : 14),
           _AgentChip(agentName: agentName),
         ],
         if (!compact) ...[
-          const SizedBox(width: 14),
+          const SizedBox(width: 8),
           _ConnectionBadge(status: status),
         ],
       ],
@@ -151,8 +151,8 @@ class _AgentChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: AppColors.primarySoft,
@@ -167,7 +167,7 @@ class _AgentChip extends StatelessWidget {
           style: const TextStyle(
             color: AppColors.primaryDark,
             fontWeight: FontWeight.w800,
-            fontSize: 15,
+            fontSize: 12,
           ),
         ),
       ),
@@ -196,23 +196,23 @@ class _ToolbarAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: onPressed,
         child: Container(
-          width: label == null ? 44 : null,
-          height: 44,
+          width: label == null ? 32 : null,
+          height: 32,
           padding: label == null
               ? EdgeInsets.zero
-              : const EdgeInsets.symmetric(horizontal: 14),
+              : const EdgeInsets.symmetric(horizontal: 8),
           alignment: Alignment.center,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: AppColors.primaryDark, size: 25),
+              Icon(icon, color: AppColors.primaryDark, size: 18),
               if (label != null) ...[
-                const SizedBox(width: 8),
+                const SizedBox(width: 5),
                 Text(
                   label!,
                   style: const TextStyle(
                     color: AppColors.primaryDark,
-                    fontSize: 17,
+                    fontSize: 13,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0,
                   ),
@@ -224,7 +224,11 @@ class _ToolbarAction extends StatelessWidget {
       ),
     );
 
-    return Tooltip(message: tooltip, child: content);
+    return Semantics(
+      button: true,
+      label: tooltip,
+      child: Tooltip(message: tooltip, child: content),
+    );
   }
 }
 
@@ -247,8 +251,8 @@ class _PrimaryToolbarAction extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             color: AppColors.primary.withValues(alpha: 0.22),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
@@ -258,24 +262,24 @@ class _PrimaryToolbarAction extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppRadius.pill),
           onTap: onPressed,
           child: SizedBox(
-            width: compact ? 52 : null,
-            height: 52,
+            width: compact ? 38 : null,
+            height: 38,
             child: Padding(
               padding: compact
                   ? EdgeInsets.zero
-                  : const EdgeInsets.symmetric(horizontal: 24),
+                  : const EdgeInsets.symmetric(horizontal: 14),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+                  const Icon(Icons.add_rounded, color: Colors.white, size: 20),
                   if (!compact) ...[
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 6),
                     const Text(
                       'New Session',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 17,
+                        fontSize: 13,
                         fontWeight: FontWeight.w800,
                         letterSpacing: 0,
                       ),
@@ -289,7 +293,11 @@ class _PrimaryToolbarAction extends StatelessWidget {
       ),
     );
 
-    return Tooltip(message: 'New Session', child: content);
+    return Semantics(
+      button: true,
+      label: 'New Session',
+      child: Tooltip(message: 'New Session', child: content),
+    );
   }
 }
 
@@ -323,8 +331,8 @@ class _ConnectionBadge extends StatelessWidget {
     };
 
     return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -334,17 +342,17 @@ class _ConnectionBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 7,
-            height: 7,
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
-          const SizedBox(width: 7),
+          const SizedBox(width: 6),
           Text(
             status.label,
             style: TextStyle(
               color: color,
               fontWeight: FontWeight.w800,
-              fontSize: 15,
+              fontSize: 12,
             ),
           ),
         ],

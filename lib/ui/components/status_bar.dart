@@ -19,80 +19,85 @@ class StatusBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 46,
+      height: 30,
       decoration: const BoxDecoration(
         color: AppColors.bg,
         border: Border(top: BorderSide(color: AppColors.border)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _StatusItem(
-                  icon: Icons.folder_open_outlined,
-                  label: controller.cwd,
-                  maxWidth: constraints.maxWidth < 960 ? 260 : 360,
-                ),
-                const SizedBox(width: 24),
-                _StatusItem(
-                  icon: Icons.tag_rounded,
-                  label: controller.currentSession?.shortId ?? 'no session',
-                ),
-                if (_currentModeLabel(controller) != null) ...[
-                  const SizedBox(width: 24),
+          return Align(
+            alignment: Alignment.centerRight,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   _StatusItem(
-                    icon: Icons.swap_horiz_rounded,
-                    label: _currentModeLabel(controller)!,
-                    color: AppColors.primaryDark,
+                    icon: Icons.folder_open_outlined,
+                    label: controller.cwd,
+                    maxWidth: constraints.maxWidth < 960 ? 220 : 320,
+                  ),
+                  const SizedBox(width: 14),
+                  _StatusItem(
+                    icon: Icons.tag_rounded,
+                    label: controller.currentSession?.shortId ?? 'no session',
+                  ),
+                  if (_currentModeLabel(controller) != null) ...[
+                    const SizedBox(width: 14),
+                    _StatusItem(
+                      icon: Icons.swap_horiz_rounded,
+                      label: _currentModeLabel(controller)!,
+                      color: AppColors.primaryDark,
+                    ),
+                  ],
+                  const SizedBox(width: 14),
+                  _StatusItem(
+                    icon: Icons.radio_button_checked,
+                    label: controller.status.label,
+                    color: _statusColor(controller.status),
+                  ),
+                  const SizedBox(width: 14),
+                  _StatusItem(
+                    icon: Icons.bolt_outlined,
+                    label: controller.isStreaming ? 'streaming' : 'idle',
+                  ),
+                  const SizedBox(width: 14),
+                  _StatusItem(
+                    icon: Icons.timer_outlined,
+                    label: _latencyLabel(controller.lastLatency),
+                  ),
+                  if (controller.lastError != null) ...[
+                    const SizedBox(width: 14),
+                    _StatusItem(
+                      icon: Icons.error_outline,
+                      label: controller.lastError!,
+                      color: AppColors.danger,
+                      maxWidth: 320,
+                    ),
+                  ],
+                  const SizedBox(width: 14),
+                  _StatusIcon(
+                    icon: Icons.tune_rounded,
+                    tooltip: 'Session settings',
+                    onPressed: onShowSessionSettings,
+                  ),
+                  const SizedBox(width: 8),
+                  _StatusIcon(
+                    icon: Icons.fact_check_outlined,
+                    tooltip: 'ACP compatibility',
+                    onPressed: onShowCapabilities,
+                  ),
+                  const SizedBox(width: 8),
+                  const _StatusIcon(
+                    icon: Icons.wb_sunny_outlined,
+                    tooltip: 'Theme',
+                    onPressed: null,
                   ),
                 ],
-                const SizedBox(width: 24),
-                _StatusItem(
-                  icon: Icons.radio_button_checked,
-                  label: controller.status.label,
-                  color: _statusColor(controller.status),
-                ),
-                const SizedBox(width: 24),
-                _StatusItem(
-                  icon: Icons.bolt_outlined,
-                  label: controller.isStreaming ? 'streaming' : 'idle',
-                ),
-                const SizedBox(width: 24),
-                _StatusItem(
-                  icon: Icons.timer_outlined,
-                  label: _latencyLabel(controller.lastLatency),
-                ),
-                if (controller.lastError != null) ...[
-                  const SizedBox(width: 24),
-                  _StatusItem(
-                    icon: Icons.error_outline,
-                    label: controller.lastError!,
-                    color: AppColors.danger,
-                    maxWidth: 320,
-                  ),
-                ],
-                const SizedBox(width: 24),
-                _StatusIcon(
-                  icon: Icons.tune_rounded,
-                  tooltip: 'Session settings',
-                  onPressed: onShowSessionSettings,
-                ),
-                const SizedBox(width: 16),
-                _StatusIcon(
-                  icon: Icons.fact_check_outlined,
-                  tooltip: 'ACP compatibility',
-                  onPressed: onShowCapabilities,
-                ),
-                const SizedBox(width: 16),
-                const _StatusIcon(
-                  icon: Icons.wb_sunny_outlined,
-                  tooltip: 'Theme',
-                  onPressed: null,
-                ),
-              ],
+              ),
             ),
           );
         },
@@ -147,15 +152,15 @@ class _StatusItem extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(width: 8),
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 5),
           Flexible(
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: color,
-                fontSize: 14,
+                fontSize: 11,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
@@ -180,20 +185,25 @@ class _StatusIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        onTap: onPressed,
-        child: SizedBox(
-          width: 28,
-          height: 28,
-          child: Icon(
-            icon,
-            size: 20,
-            color: onPressed == null
-                ? AppColors.textTertiary
-                : AppColors.textSecondary,
+    return Semantics(
+      button: true,
+      enabled: onPressed != null,
+      label: tooltip,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: Icon(
+              icon,
+              size: 15,
+              color: onPressed == null
+                  ? AppColors.textTertiary
+                  : AppColors.textSecondary,
+            ),
           ),
         ),
       ),

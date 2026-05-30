@@ -63,6 +63,7 @@ class AcpConfigOption {
     required this.currentValue,
     required this.options,
     this.description,
+    this.category,
     this.group,
   });
 
@@ -72,6 +73,7 @@ class AcpConfigOption {
   final String currentValue;
   final List<AcpConfigOptionChoice> options;
   final String? description;
+  final String? category;
   final String? group;
 
   AcpConfigOption copyWith({String? currentValue}) {
@@ -82,6 +84,7 @@ class AcpConfigOption {
       currentValue: currentValue ?? this.currentValue,
       options: options,
       description: description,
+      category: category,
       group: group,
     );
   }

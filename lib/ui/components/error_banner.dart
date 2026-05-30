@@ -10,10 +10,10 @@ class ErrorBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+      padding: const EdgeInsets.fromLTRB(18, 0, 18, 6),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
           color: const Color(0xfffff1f2),
           borderRadius: BorderRadius.circular(AppRadius.md),
@@ -21,13 +21,14 @@ class ErrorBanner extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.error_outline, color: AppColors.danger, size: 18),
-            const SizedBox(width: 8),
+            const Icon(Icons.error_outline, color: AppColors.danger, size: 16),
+            const SizedBox(width: 7),
             Expanded(
               child: Text(
                 message,
                 style: const TextStyle(
                   color: AppColors.danger,
+                  fontSize: 13,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0,
                 ),

@@ -4,10 +4,20 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
 
 void main() {
-  Widget timeline(List<ChatMessage> messages, {String agentName = 'Codex'}) {
+  Widget timeline(
+    List<ChatMessage> messages, {
+    String agentName = 'Codex',
+    bool hasActiveSession = false,
+    String? activeSessionLabel,
+  }) {
     return MaterialApp(
       home: Scaffold(
-        body: ChatTimeline(messages: messages, agentName: agentName),
+        body: ChatTimeline(
+          messages: messages,
+          agentName: agentName,
+          hasActiveSession: hasActiveSession,
+          activeSessionLabel: activeSessionLabel,
+        ),
       ),
     );
   }
@@ -27,6 +37,25 @@ void main() {
       find.text('Start a session to chat with Kimi Code Dev'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('ChatTimeline empty state reflects active resumed session', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline(
+        const [],
+        hasActiveSession: true,
+        activeSessionLabel: 'Implement attachment flow',
+      ),
+    );
+
+    expect(find.text('Session ready'), findsOneWidget);
+    expect(
+      find.textContaining('Implement attachment flow loaded.'),
+      findsOneWidget,
+    );
+    expect(find.text('Start a session to chat with Codex'), findsNothing);
   });
 
   testWidgets('ChatTimeline renders user and assistant messages', (

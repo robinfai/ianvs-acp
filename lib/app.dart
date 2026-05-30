@@ -66,7 +66,45 @@ class _AcpClientAppState extends State<AcpClientApp> {
         ),
         scaffoldBackgroundColor: AppColors.bg,
         useMaterial3: true,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         fontFamily: 'SF Pro Display',
+        iconButtonTheme: IconButtonThemeData(
+          style: IconButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+          ),
+          titleTextStyle: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0,
+          ),
+        ),
         textSelectionTheme: TextSelectionThemeData(
           cursorColor: AppColors.primary,
           selectionColor: AppColors.primary.withValues(alpha: 0.18),

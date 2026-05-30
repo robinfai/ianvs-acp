@@ -59,7 +59,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     return AlertDialog(
       title: const Text('Resume ACP Session'),
       content: SizedBox(
-        width: 720,
+        width: 640,
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 180),
           child: _content(),
@@ -95,7 +95,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   Widget _content() {
     if (_loading) {
       return const SizedBox(
-        height: 240,
+        height: 160,
         child: Center(child: CircularProgressIndicator()),
       );
     }
@@ -144,14 +144,14 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   label: 'Project',
                   helper: 'Search by project name or path.',
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 _SearchField(
                   key: const ValueKey('resume-project-search'),
                   controller: _projectSearchController,
                   hintText: 'Filter projects...',
                   onChanged: (_) => setState(() {}),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 DropdownButtonFormField<AcpProjectSessions>(
                   key: const ValueKey('resume-project-dropdown'),
                   initialValue: selectedProjectValue,
@@ -187,13 +187,13 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                           });
                         },
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 12),
                 _FieldLabel(
                   icon: Icons.chat_bubble_outline_rounded,
                   label: 'Conversation',
                   helper: 'Search by title, short id, or updated time.',
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 _SearchField(
                   key: const ValueKey('resume-conversation-search'),
                   controller: _conversationSearchController,
@@ -201,7 +201,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   enabled: conversations.isNotEmpty,
                   onChanged: (_) => setState(() {}),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 DropdownButtonFormField<AcpSessionEntry>(
                   key: const ValueKey('resume-conversation-dropdown'),
                   initialValue: selectedConversationValue,
@@ -235,7 +235,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                           });
                         },
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 12),
                 _ConversationPreview(conversation: _selectedConversation),
               ],
             ),
@@ -337,7 +337,7 @@ class _SearchField extends StatelessWidget {
       onChanged: onChanged,
       style: const TextStyle(
         color: AppColors.textPrimary,
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: FontWeight.w700,
         letterSpacing: 0,
       ),
@@ -358,14 +358,14 @@ InputDecoration _inputDecoration({
     hintText: hintText,
     hintStyle: const TextStyle(
       color: AppColors.textTertiary,
-      fontSize: 13,
+      fontSize: 12,
       fontWeight: FontWeight.w600,
       letterSpacing: 0,
     ),
     filled: true,
     fillColor: AppColors.surface,
     isDense: true,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(AppRadius.sm),
       borderSide: const BorderSide(color: AppColors.border),
@@ -400,8 +400,8 @@ class _FieldLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, size: 18, color: AppColors.primaryDark),
-        const SizedBox(width: 8),
+        Icon(icon, size: 16, color: AppColors.primaryDark),
+        const SizedBox(width: 7),
         Text(
           label,
           style: const TextStyle(
@@ -410,7 +410,7 @@ class _FieldLabel extends StatelessWidget {
             letterSpacing: 0,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Expanded(
           child: Text(
             helper,
@@ -441,7 +441,7 @@ class _ConversationPreview extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         border: Border.all(color: AppColors.border),
@@ -460,19 +460,19 @@ class _ConversationPreview extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           _PreviewRow(icon: Icons.tag_rounded, label: conversation.id),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           _PreviewRow(icon: Icons.folder_outlined, label: conversation.cwd),
           if (conversation.updatedAt != null) ...[
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             _PreviewRow(
               icon: Icons.access_time_rounded,
               label: _formatDateTime(conversation.updatedAt!),
             ),
           ],
           if (conversation.hasMeta) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             _MetadataPreview(meta: conversation.meta),
           ],
         ],
@@ -512,7 +512,7 @@ class _MetadataPreview extends StatelessWidget {
           children: [
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(9),
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -546,7 +546,7 @@ class _PreviewRow extends StatelessWidget {
     return Row(
       children: [
         Icon(icon, size: 15, color: AppColors.textTertiary),
-        const SizedBox(width: 8),
+        const SizedBox(width: 7),
         Expanded(
           child: Text(
             label,
@@ -577,9 +577,9 @@ class _MessagePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 240,
+      height: 160,
       width: double.infinity,
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         border: Border.all(color: AppColors.border),
@@ -588,8 +588,8 @@ class _MessagePanel extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: AppColors.primaryDark, size: 34),
-          const SizedBox(height: 12),
+          Icon(icon, color: AppColors.primaryDark, size: 28),
+          const SizedBox(height: 8),
           Text(
             title,
             style: const TextStyle(
@@ -598,7 +598,7 @@ class _MessagePanel extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(
             message,
             textAlign: TextAlign.center,

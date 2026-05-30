@@ -6,6 +6,7 @@ import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
+import 'prompt_attachment.dart';
 
 class FakeAgentClient implements AcpAgentClient {
   FakeAgentClient({
@@ -53,6 +54,8 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastSetModeId;
   String? lastConfigId;
   String? lastConfigValue;
+  String? lastPrompt;
+  List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -208,7 +211,10 @@ class FakeAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
+    lastPrompt = prompt;
+    lastAttachments = attachments;
     if (promptError != null) {
       throw promptError!;
     }
