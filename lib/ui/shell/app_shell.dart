@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
@@ -10,6 +11,7 @@ import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
+import '../components/permission_request_banner.dart';
 import '../components/prompt_input.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
@@ -89,6 +91,25 @@ class AppShell extends StatelessWidget {
                 if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
                   ErrorBanner(message: controller.lastError!),
+                if (controller.pendingPermissionRequest != null)
+                  PermissionRequestBanner(
+                    request: controller.pendingPermissionRequest!,
+                    onAllow: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.allow,
+                      ),
+                    ),
+                    onDeny: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.deny,
+                      ),
+                    ),
+                    onCancel: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.cancel,
+                      ),
+                    ),
+                  ),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),

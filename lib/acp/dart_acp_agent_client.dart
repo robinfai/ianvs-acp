@@ -7,6 +7,7 @@ import 'package:mime/mime.dart' as mime;
 
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
@@ -34,6 +35,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
   AcpAgentCapabilities? _capabilities;
+  final _AcpPermissionBridge _permissionBridge = _AcpPermissionBridge();
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
   bool _supportsResumeSession = false;
@@ -67,6 +69,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   AcpAgentCapabilities? get capabilities => _capabilities;
 
   @override
+  Stream<AcpPermissionRequest> get permissionRequests =>
+      _permissionBridge.requests;
+
+  @override
   Future<void> connect() async {
     await dispose();
     final configuredMcpServers = mcpServers
@@ -83,7 +89,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       capabilities: const acp.AcpCapabilities(
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),
-      permissionProvider: const _CancelPermissionProvider(),
+      permissionProvider: _InteractivePermissionProvider(_permissionBridge),
     );
     final transport = acp.StdioTransport(
       command: agentCommand,
@@ -1208,7 +1214,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     final sessionId = _activeSessionId;
     final client = _client;
     if (client == null || sessionId == null) return;
+    _permissionBridge.cancelSession(sessionId);
     await client.cancel(sessionId: sessionId);
+  }
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+  }) async {
+    _permissionBridge.respond(id: id, decision: decision);
   }
 
   @override
@@ -1227,6 +1242,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _permissionBridge.cancelAll();
     await _disposeClient(client, transport);
   }
 
@@ -1298,11 +1314,95 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 }
 
-class _CancelPermissionProvider implements acp.PermissionProvider {
-  const _CancelPermissionProvider();
+class _InteractivePermissionProvider implements acp.PermissionProvider {
+  const _InteractivePermissionProvider(this.bridge);
+
+  final _AcpPermissionBridge bridge;
 
   @override
   Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
-    return acp.PermissionOutcome.cancelled;
+    return bridge.request(options);
   }
+}
+
+class _AcpPermissionBridge {
+  final StreamController<AcpPermissionRequest> _requests =
+      StreamController<AcpPermissionRequest>.broadcast(sync: true);
+  final Map<String, _PendingPermissionRequest> _pending =
+      <String, _PendingPermissionRequest>{};
+  int _nextId = 0;
+
+  Stream<AcpPermissionRequest> get requests => _requests.stream;
+
+  Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
+    if (!_requests.hasListener) {
+      return acp.PermissionOutcome.cancelled;
+    }
+
+    final id = 'permission-${++_nextId}';
+    final completer = Completer<acp.PermissionOutcome>();
+    _pending[id] = _PendingPermissionRequest(
+      sessionId: options.sessionId,
+      completer: completer,
+    );
+    _requests.add(
+      AcpPermissionRequest(
+        id: id,
+        title: options.title,
+        rationale: options.rationale,
+        sessionId: options.sessionId,
+        toolName: options.toolName,
+        toolKind: options.toolKind,
+        options: List<String>.unmodifiable(options.options),
+        requestedAt: DateTime.now(),
+      ),
+    );
+
+    try {
+      return await completer.future;
+    } finally {
+      _pending.remove(id);
+    }
+  }
+
+  void respond({required String id, required AcpPermissionDecision decision}) {
+    final pending = _pending[id];
+    if (pending == null || pending.completer.isCompleted) return;
+    pending.completer.complete(_outcomeForDecision(decision));
+  }
+
+  void cancelSession(String sessionId) {
+    final ids = _pending.entries
+        .where((entry) => entry.value.sessionId == sessionId)
+        .map((entry) => entry.key)
+        .toList();
+    for (final id in ids) {
+      respond(id: id, decision: AcpPermissionDecision.cancel);
+    }
+  }
+
+  void cancelAll() {
+    final ids = _pending.keys.toList();
+    for (final id in ids) {
+      respond(id: id, decision: AcpPermissionDecision.cancel);
+    }
+  }
+
+  acp.PermissionOutcome _outcomeForDecision(AcpPermissionDecision decision) {
+    return switch (decision) {
+      AcpPermissionDecision.allow => acp.PermissionOutcome.allow,
+      AcpPermissionDecision.deny => acp.PermissionOutcome.deny,
+      AcpPermissionDecision.cancel => acp.PermissionOutcome.cancelled,
+    };
+  }
+}
+
+class _PendingPermissionRequest {
+  const _PendingPermissionRequest({
+    required this.sessionId,
+    required this.completer,
+  });
+
+  final String sessionId;
+  final Completer<acp.PermissionOutcome> completer;
 }

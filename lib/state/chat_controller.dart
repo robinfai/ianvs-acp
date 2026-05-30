@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
+import '../acp/acp_permission_request.dart';
 import '../acp/acp_session_catalog.dart';
 import '../acp/acp_session_settings.dart';
 import '../acp/agent_event.dart';
@@ -32,7 +33,12 @@ class ChatController extends ChangeNotifier {
     required this.client,
     required this.cwd,
     this.agentName = 'Codex',
-  });
+  }) {
+    _permissionSubscription = client.permissionRequests.listen(
+      _handlePermissionRequest,
+      onError: (Object error, StackTrace stackTrace) => _setActionError(error),
+    );
+  }
 
   final AcpAgentClient client;
   final String cwd;
@@ -45,6 +51,7 @@ class ChatController extends ChangeNotifier {
   List<Map<String, Object?>> availableCommands = const <Map<String, Object?>>[];
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings sessionSettings = const AcpSessionSettings();
+  AcpPermissionRequest? pendingPermissionRequest;
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
@@ -87,6 +94,7 @@ class ChatController extends ChangeNotifier {
   }
 
   StreamSubscription<AgentEvent>? _promptSubscription;
+  late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? lastLatency;
 
@@ -267,6 +275,7 @@ class ChatController extends ChangeNotifier {
     if (!isStreaming) return;
     Object? cancelError;
     try {
+      await _cancelPendingPermissionRequest();
       await client.cancel();
     } catch (error) {
       cancelError = error;
@@ -286,6 +295,7 @@ class ChatController extends ChangeNotifier {
       await _promptSubscription?.cancel();
       _promptSubscription = null;
       isStreaming = false;
+      await _cancelPendingPermissionRequest();
       currentSession = null;
       sessions.clear();
       availableCommands = const <Map<String, Object?>>[];
@@ -411,6 +421,7 @@ class ChatController extends ChangeNotifier {
         lastError = null;
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
+        await _cancelPendingPermissionRequest();
         status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
@@ -436,6 +447,7 @@ class ChatController extends ChangeNotifier {
         lastError = null;
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
+        await _cancelPendingPermissionRequest();
         status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
@@ -457,6 +469,21 @@ class ChatController extends ChangeNotifier {
         _setActionError(error);
       }
     });
+  }
+
+  Future<void> resolvePermissionRequest(AcpPermissionDecision decision) async {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    pendingPermissionRequest = null;
+    _notifyListeners();
+    try {
+      await client.respondToPermissionRequest(
+        id: request.id,
+        decision: decision,
+      );
+    } catch (error) {
+      _setActionError(error);
+    }
   }
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
@@ -535,6 +562,30 @@ class ChatController extends ChangeNotifier {
     if (notify) {
       _notifyListeners();
     }
+  }
+
+  void _handlePermissionRequest(AcpPermissionRequest request) {
+    final previous = pendingPermissionRequest;
+    if (previous != null && previous.id != request.id) {
+      unawaited(
+        client.respondToPermissionRequest(
+          id: previous.id,
+          decision: AcpPermissionDecision.cancel,
+        ),
+      );
+    }
+    pendingPermissionRequest = request;
+    _notifyListeners();
+  }
+
+  Future<void> _cancelPendingPermissionRequest() async {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    pendingPermissionRequest = null;
+    await client.respondToPermissionRequest(
+      id: request.id,
+      decision: AcpPermissionDecision.cancel,
+    );
   }
 
   void _appendText(
@@ -798,6 +849,7 @@ class ChatController extends ChangeNotifier {
   void dispose() {
     _isDisposed = true;
     unawaited(_promptSubscription?.cancel());
+    unawaited(_permissionSubscription.cancel());
     unawaited(client.dispose());
     super.dispose();
   }

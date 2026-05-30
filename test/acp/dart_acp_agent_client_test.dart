@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 
@@ -396,7 +397,7 @@ Future<void> main() async {
   });
 
   test(
-    'cancels agent permission requests until interactive UI exists',
+    'cancels agent permission requests when no interactive UI is listening',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final permissionResponseFile = File(
@@ -472,6 +473,112 @@ Future<void> main() async {
           containsPair('outcome', containsPair('outcome', 'cancelled')),
         );
       } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'approves agent permission requests through interactive response',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final permissionResponseFile = File(
+        '${tempDir.path}/permission_response.json',
+      );
+      final agentScript = File('${tempDir.path}/fake_permission_agent.dart');
+      final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'permission-1',
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'session-1',
+          'toolCall': <String, dynamic>{
+            'title': 'Read file',
+            'kind': 'read',
+          },
+          'options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'optionId': 'allow',
+              'kind': 'allow_once',
+              'name': 'Allow',
+            },
+            <String, dynamic>{
+              'optionId': 'deny',
+              'kind': 'reject_once',
+              'name': 'Deny',
+            },
+          ],
+        },
+      }));
+    } else if (message['id'] == 'permission-1') {
+      await File($permissionResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+      late final DartAcpAgentClient client;
+      client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+      final requestCompleter = Completer<AcpPermissionRequest>();
+      final subscription = client.permissionRequests.listen((request) {
+        if (!requestCompleter.isCompleted) {
+          requestCompleter.complete(request);
+        }
+        unawaited(
+          client.respondToPermissionRequest(
+            id: request.id,
+            decision: AcpPermissionDecision.allow,
+          ),
+        );
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final request = await requestCompleter.future.timeout(
+          const Duration(seconds: 5),
+        );
+        await _waitForFile(permissionResponseFile);
+
+        expect(request.displayTitle, 'Read file');
+        expect(request.displayKind, 'read');
+        final permissionResponse =
+            jsonDecode(await permissionResponseFile.readAsString())
+                as Map<String, dynamic>;
+        expect(permissionResponse['id'], 'permission-1');
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('outcome', 'selected')),
+        );
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('optionId', 'allow')),
+        );
+      } finally {
+        await subscription.cancel();
         await client.dispose();
         await tempDir.delete(recursive: true);
       }

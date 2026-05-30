@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
-import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 
 void main() {
@@ -91,5 +92,38 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
 
     expect(fake.connected, isTrue);
+  });
+
+  testWidgets('AcpClientApp resolves permission requests from banner', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        toolKind: 'read',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Read file'), findsOneWidget);
+    expect(find.text('Allow Once'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
+    await tester.pump();
+
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(find.text('Read file'), findsNothing);
   });
 }

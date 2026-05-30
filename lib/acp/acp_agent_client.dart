@@ -1,4 +1,5 @@
 import 'acp_agent_capabilities.dart';
+import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
@@ -7,6 +8,8 @@ import 'prompt_attachment.dart';
 
 abstract class AcpAgentClient {
   AcpAgentCapabilities? get capabilities;
+
+  Stream<AcpPermissionRequest> get permissionRequests;
 
   Future<void> connect();
 
@@ -50,6 +53,11 @@ abstract class AcpAgentClient {
   });
 
   Future<void> cancel();
+
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+  });
 
   Future<void> dispose();
 }

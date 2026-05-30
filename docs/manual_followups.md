@@ -77,24 +77,28 @@ Manual validation:
 
 ### tool-permission-ui
 
-Status: security/product decision needed.
+Status: policy refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, and permission
-requests are conservatively cancelled until an interactive approval model
-exists. Interactive permission approval still requires a clear trust and
-interruption model.
+requests now surface an in-app per-request approval banner with Allow Once,
+Deny, and Cancel. Requests still fall back to `cancelled` when no UI listener is
+active, and persistent allow/deny rules remain deliberately undefined.
 
 Automated acceptance:
 
 - `test/ui/chat_timeline_test.dart` verifies tool calls render as compact,
   expandable cards and grouped cards.
 - `test/acp/dart_acp_agent_client_test.dart` verifies agent permission requests
-  receive a `cancelled` outcome while there is no interactive permission UI.
+  receive a `cancelled` outcome when no interactive UI is listening and receive
+  a selected allow option when approved through the interactive response path.
+- `test/ui/acp_client_app_test.dart` verifies the permission banner resolves an
+  approval back to the agent client.
 
 Manual decision:
 
-- Define approval timing, allow/deny persistence, cancellation behavior, and
-  how permission requests interact with streaming output.
+- Decide whether to add persistent allow/deny rules, request grouping, audit
+  history, or stronger streaming interruption behavior beyond the current
+  per-request Allow Once/Deny/Cancel model.
 
 ### prompt-content-gates
 

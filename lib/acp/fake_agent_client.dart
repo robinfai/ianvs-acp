@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
@@ -85,11 +86,16 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastSetModeId;
   String? lastConfigId;
   Object? lastConfigValue;
+  String? lastPermissionRequestId;
+  AcpPermissionDecision? lastPermissionDecision;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
   String? lastAuthenticatedMethodId;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
+
+  final StreamController<AcpPermissionRequest> _permissionRequests =
+      StreamController<AcpPermissionRequest>.broadcast();
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -130,6 +136,10 @@ class FakeAgentClient implements AcpAgentClient {
           authMethods: authMethods,
         )
       : null;
+
+  @override
+  Stream<AcpPermissionRequest> get permissionRequests =>
+      _permissionRequests.stream;
 
   static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
     modes: AcpSessionModeInfo(
@@ -368,8 +378,22 @@ class FakeAgentClient implements AcpAgentClient {
     cancelled = true;
   }
 
+  void emitPermissionRequest(AcpPermissionRequest request) {
+    _permissionRequests.add(request);
+  }
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+  }) async {
+    lastPermissionRequestId = id;
+    lastPermissionDecision = decision;
+  }
+
   @override
   Future<void> dispose() async {
     connected = false;
+    await _permissionRequests.close();
   }
 }
