@@ -807,6 +807,94 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test('caches config options and modes returned by session resume', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_resume_settings_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'resume': <String, dynamic>{},
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/resume') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'modes': <String, dynamic>{
+            'currentModeId': 'act',
+            'availableModes': <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'plan', 'name': 'Plan'},
+              <String, dynamic>{'id': 'act', 'name': 'Act'},
+            ],
+          },
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'gpt-5-mini',
+              'category': 'model',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{
+                  'value': 'gpt-5-mini',
+                  'name': 'GPT-5 Mini',
+                },
+              ],
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final events = await client.resumeSession(
+        sessionId: 'session-resume',
+        cwd: '/workspace',
+      );
+      final settings = await client.sessionSettings('session-resume');
+
+      expect(events, isEmpty);
+      expect(settings.currentModelLabel, 'GPT-5 Mini');
+      expect(settings.modes.currentModeId, 'act');
+      expect(settings.modes.availableModes.map((mode) => mode.id), [
+        'plan',
+        'act',
+      ]);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
 }
 
 Future<Map<String, dynamic>> _capturePromptParamsForAttachment({

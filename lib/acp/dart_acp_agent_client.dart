@@ -190,13 +190,15 @@ class DartAcpAgentClient implements AcpAgentClient {
 
     final events = <AgentEvent>[];
     if (!_supportsLoadSession) {
-      final result = await client.resumeSession(
-        sessionId: sessionId,
-        workspaceRoot: cwd,
-      );
+      final result = await client.sendRaw('session/resume', <String, dynamic>{
+        'sessionId': sessionId,
+        'cwd': cwd,
+        'mcpServers': _mcpServersForSessionRequest(),
+      });
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
-      _cacheConfigOptions(sessionId, result.configOptions);
+      _cacheRawConfigOptions(sessionId, result['configOptions']);
+      _cacheRawModes(sessionId, result['modes']);
       events.addAll(await _cacheImmediateSessionUpdates(client, sessionId));
       return events;
     }
