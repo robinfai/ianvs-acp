@@ -20,22 +20,31 @@ today, plus the manual decision or validation still needed before implementation
 
 ### fs-terminal-providers
 
-Status: security decision needed.
+Status: terminal security decision needed.
 
-Non-blocking because: the client deliberately advertises filesystem and terminal
-support as unavailable until permission UX exists.
+Non-blocking because: filesystem support is now available only when explicitly
+enabled through `client_providers.filesystem`, remains off by default, and still
+uses per-request permission approval. Terminal support remains unavailable until
+its lifecycle and command-approval model is defined.
 
 Automated acceptance:
 
 - `test/ui/capabilities_dialog_test.dart` verifies filesystem and terminal
   capability visibility.
-- `lib/acp/dart_acp_agent_client.dart` currently constructs ACP capabilities
-  with `readTextFile: false` and `writeTextFile: false`.
+- `test/config/acp_client_config_test.dart` verifies filesystem provider config
+  parsing and invalid config rejection.
+- `test/acp/dart_acp_agent_client_test.dart` verifies configured filesystem
+  capabilities are advertised and that approved read requests are served from a
+  workspace-jailed provider.
+- `test/ui/agent_config_dialog_test.dart` verifies filesystem provider config is
+  visible in Agent Configuration.
+- `lib/acp/dart_acp_agent_client.dart` still defaults ACP filesystem
+  capabilities to disabled unless the user opts in.
 
 Manual decision:
 
-- Define read/write filesystem permission prompts, scope, audit logging, and
-  denial behavior.
+- Decide whether filesystem providers should remain config-only or gain a
+  first-run UI, audit history, or broader policy controls.
 - Define terminal session lifecycle, cwd/environment handling, and command
   approval UX before advertising terminal support.
 

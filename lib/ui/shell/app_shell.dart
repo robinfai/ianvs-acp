@@ -26,6 +26,7 @@ class AppShell extends StatelessWidget {
     this.agentName = 'Codex',
     this.agentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
+    this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentName,
     this.startupError,
@@ -40,6 +41,7 @@ class AppShell extends StatelessWidget {
   final String agentName;
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final AcpClientProviderConfig clientProviders;
   final String? configPath;
   final String? defaultAgentName;
   final String? startupError;
@@ -277,6 +279,7 @@ class AppShell extends StatelessWidget {
         return AgentConfigDialog(
           agentServers: agentServers,
           mcpServers: mcpServers,
+          clientProviders: clientProviders,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,

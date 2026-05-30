@@ -132,6 +132,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
         mcpServers: _config.mcpServers,
+        clientProviders: _config.clientProviders,
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: widget.startupError,
@@ -263,13 +264,27 @@ class _AcpClientAppState extends State<AcpClientApp> {
         .map((server) => server.toJson())
         .toList();
     if (server == null) {
-      return DartAcpAgentClient(mcpServers: mcpServers);
+      return DartAcpAgentClient(
+        mcpServers: mcpServers,
+        enableFilesystemReadTextFile:
+            config.clientProviders.filesystem.readTextFile,
+        enableFilesystemWriteTextFile:
+            config.clientProviders.filesystem.writeTextFile,
+        allowFilesystemReadOutsideWorkspace:
+            config.clientProviders.filesystem.allowReadOutsideWorkspace,
+      );
     }
     return DartAcpAgentClient(
       agentCommand: server.command,
       agentArgs: server.args,
       envOverrides: server.env,
       mcpServers: mcpServers,
+      enableFilesystemReadTextFile:
+          config.clientProviders.filesystem.readTextFile,
+      enableFilesystemWriteTextFile:
+          config.clientProviders.filesystem.writeTextFile,
+      allowFilesystemReadOutsideWorkspace:
+          config.clientProviders.filesystem.allowReadOutsideWorkspace,
     );
   }
 

@@ -9,12 +9,14 @@ class AgentConfigDialog extends StatelessWidget {
     required this.agentServers,
     required this.activeAgentName,
     this.mcpServers = const <McpServerConfig>[],
+    this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentName,
   });
 
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final AcpClientProviderConfig clientProviders;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -34,6 +36,11 @@ class AgentConfigDialog extends StatelessWidget {
               if (mcpServers.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 _McpServersPanel(servers: mcpServers),
+              ],
+              if (clientProviders.filesystem.enabled ||
+                  clientProviders.filesystem.allowReadOutsideWorkspace) ...[
+                const SizedBox(height: 10),
+                _ClientProvidersPanel(providers: clientProviders),
               ],
               const SizedBox(height: 10),
               if (agentServers.isEmpty)
@@ -62,6 +69,41 @@ class AgentConfigDialog extends StatelessWidget {
           child: const Text('Close'),
         ),
       ],
+    );
+  }
+}
+
+class _ClientProvidersPanel extends StatelessWidget {
+  const _ClientProvidersPanel({required this.providers});
+
+  final AcpClientProviderConfig providers;
+
+  @override
+  Widget build(BuildContext context) {
+    final fs = providers.filesystem;
+    return _Panel(
+      icon: Icons.security_rounded,
+      title: 'Client Providers',
+      accent: AppColors.warning,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _DetailRow(
+            label: 'FS read',
+            value: fs.readTextFile ? 'Enabled' : 'Disabled',
+          ),
+          const SizedBox(height: 6),
+          _DetailRow(
+            label: 'FS write',
+            value: fs.writeTextFile ? 'Enabled' : 'Disabled',
+          ),
+          const SizedBox(height: 6),
+          _DetailRow(
+            label: 'Outside',
+            value: fs.allowReadOutsideWorkspace ? 'Read allowed' : 'Jailed',
+          ),
+        ],
+      ),
     );
   }
 }

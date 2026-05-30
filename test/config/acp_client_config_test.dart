@@ -102,6 +102,58 @@ void main() {
     ]);
   });
 
+  test('loads opt-in client filesystem provider config', () {
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'filesystem': {
+          'read_text_file': true,
+          'write_text_file': false,
+          'allow_read_outside_workspace': true,
+        },
+      },
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    expect(config.clientProviders.filesystem.readTextFile, isTrue);
+    expect(config.clientProviders.filesystem.writeTextFile, isFalse);
+    expect(config.clientProviders.filesystem.allowReadOutsideWorkspace, isTrue);
+
+    final selected = config.withActiveAgentServer('Codex');
+    expect(selected.clientProviders.filesystem.readTextFile, isTrue);
+  });
+
+  test('rejects invalid client provider config', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': ['filesystem'],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {'filesystem': true},
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'filesystem': {'read_text_file': 'yes'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('fills required MCP transport arrays when omitted', () {
     final config = AcpClientConfig.fromJson({
       'mcp_servers': [

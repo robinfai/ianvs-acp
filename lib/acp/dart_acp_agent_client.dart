@@ -20,6 +20,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     List<String>? agentArgs,
     Map<String, String>? envOverrides,
     List<Map<String, dynamic>>? mcpServers,
+    this.enableFilesystemReadTextFile = false,
+    this.enableFilesystemWriteTextFile = false,
+    this.allowFilesystemReadOutsideWorkspace = false,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
        envOverrides = envOverrides ?? const <String, String>{},
@@ -31,6 +34,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   final List<String> agentArgs;
   final Map<String, String> envOverrides;
   final List<Map<String, dynamic>> mcpServers;
+  final bool enableFilesystemReadTextFile;
+  final bool enableFilesystemWriteTextFile;
+  final bool allowFilesystemReadOutsideWorkspace;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -46,8 +52,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Map<String, String> _cwdBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
-  List<Map<String, dynamic>> _compatibleMcpServers =
-      const <Map<String, dynamic>>[];
+  final Map<String, _RawProtocolRequest> _pendingRawProtocolRequests =
+      <String, _RawProtocolRequest>{};
+  final Map<String, Map<String, dynamic>> _rawSessionResultsBySession =
+      <String, Map<String, dynamic>>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
@@ -81,21 +89,36 @@ class DartAcpAgentClient implements AcpAgentClient {
     final sessionMcpServers = configuredMcpServers
         .map(Map<String, dynamic>.from)
         .toList();
+    final enableFilesystemProvider =
+        enableFilesystemReadTextFile || enableFilesystemWriteTextFile;
     final config = acp.AcpConfig(
       agentCommand: agentCommand,
       agentArgs: agentArgs,
       envOverrides: envOverrides,
       mcpServers: sessionMcpServers,
-      capabilities: const acp.AcpCapabilities(
-        fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
+      capabilities: acp.AcpCapabilities(
+        fs: acp.FsCapabilities(
+          readTextFile: enableFilesystemReadTextFile,
+          writeTextFile: enableFilesystemWriteTextFile,
+        ),
       ),
-      permissionProvider: _InteractivePermissionProvider(_permissionBridge),
+      fsProvider: enableFilesystemProvider
+          ? acp.DefaultFsProvider(workspaceRoot: '/')
+          : null,
+      permissionProvider: _InteractivePermissionProvider(
+        _permissionBridge,
+        allowFilesystemReadTextFile: enableFilesystemReadTextFile,
+        allowFilesystemWriteTextFile: enableFilesystemWriteTextFile,
+      ),
+      allowReadOutsideWorkspace: allowFilesystemReadOutsideWorkspace,
     );
     final transport = acp.StdioTransport(
       command: agentCommand,
       args: agentArgs,
       envOverrides: envOverrides,
       logger: config.logger,
+      onProtocolOut: _captureProtocolOut,
+      onProtocolIn: _captureProtocolIn,
     );
     final client = await acp.AcpClient.start(
       config: config,
@@ -144,9 +167,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       sessionMcpServers
         ..clear()
         ..addAll(compatibleMcpServers);
-      _compatibleMcpServers = List<Map<String, dynamic>>.unmodifiable(
-        compatibleMcpServers.map(Map<String, dynamic>.unmodifiable),
-      );
     } catch (_) {
       await _disposeClient(client, transport);
       rethrow;
@@ -158,16 +178,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<AgentSession> createSession({required String cwd}) async {
     final client = _requireClient();
-    final response = await client.sendRaw('session/new', <String, dynamic>{
-      'cwd': cwd,
-      'mcpServers': _mcpServersForSessionRequest(),
-    });
-    final sessionId = response['sessionId'];
-    if (sessionId is! String || sessionId.isEmpty) {
-      throw StateError('ACP agent returned an invalid session/new response.');
-    }
+    final sessionId = await client.newSession(cwd);
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
+    final response = _takeRawSessionResult(sessionId);
     _cacheRawConfigOptions(sessionId, response['configOptions']);
     _cacheRawModes(sessionId, response['modes']);
     final initialEvents = await _cacheImmediateSessionUpdates(
@@ -196,15 +210,18 @@ class DartAcpAgentClient implements AcpAgentClient {
 
     final events = <AgentEvent>[];
     if (!_supportsLoadSession) {
-      final result = await client.sendRaw('session/resume', <String, dynamic>{
-        'sessionId': sessionId,
-        'cwd': cwd,
-        'mcpServers': _mcpServersForSessionRequest(),
-      });
+      final result = await client.resumeSession(
+        sessionId: sessionId,
+        workspaceRoot: cwd,
+      );
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
-      _cacheRawConfigOptions(sessionId, result['configOptions']);
-      _cacheRawModes(sessionId, result['modes']);
+      final response = _takeRawSessionResult(sessionId);
+      _cacheSessionResult(
+        sessionId: sessionId,
+        rawResponse: response,
+        typedConfigOptions: result.configOptions,
+      );
       events.addAll(await _cacheImmediateSessionUpdates(client, sessionId));
       return events;
     }
@@ -336,17 +353,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.session.fork != true) {
       throw StateError('ACP agent does not support session/fork.');
     }
-    final result = await client.sendRaw('session/fork', <String, dynamic>{
-      'sessionId': sessionId,
-    });
-    final forkedSessionId = result['sessionId'];
-    if (forkedSessionId is! String || forkedSessionId.isEmpty) {
-      throw StateError('ACP agent returned an invalid session/fork response.');
-    }
+    final result = await client.forkSession(sessionId: sessionId);
+    final forkedSessionId = result.sessionId;
     _activeSessionId = forkedSessionId;
     _cwdBySession[forkedSessionId] = cwd;
-    _cacheRawConfigOptions(forkedSessionId, result['configOptions']);
-    _cacheRawModes(forkedSessionId, result['modes']);
+    final response = _takeRawSessionResult(forkedSessionId);
+    _cacheSessionResult(
+      sessionId: forkedSessionId,
+      rawResponse: response,
+      typedConfigOptions: result.configOptions,
+    );
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       forkedSessionId,
@@ -1071,6 +1087,26 @@ class DartAcpAgentClient implements AcpAgentClient {
         .toList();
   }
 
+  AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
+    return AcpConfigOption(
+      id: option.id,
+      name: option.name,
+      type: option.type,
+      currentValue: option.currentValue,
+      options: option.options
+          .map(
+            (choice) => AcpConfigOptionChoice(
+              value: choice.value,
+              name: choice.name,
+              description: choice.description,
+            ),
+          )
+          .toList(),
+      description: option.description,
+      group: option.group,
+    );
+  }
+
   List<AcpConfigOption> _configOptionsFromRaw(Object? raw) {
     if (raw is! List) return const <AcpConfigOption>[];
     return raw
@@ -1137,6 +1173,35 @@ class DartAcpAgentClient implements AcpAgentClient {
     final mapped = _configOptionsFromRaw(raw);
     _configOptionsBySession[sessionId] = mapped;
     return mapped;
+  }
+
+  List<AcpConfigOption> _cacheConfigOptions(
+    String sessionId,
+    List<acp.ConfigOption>? options,
+  ) {
+    final mapped =
+        options?.map(_configOptionFromAcp).toList() ??
+        const <AcpConfigOption>[];
+    _configOptionsBySession[sessionId] = mapped;
+    return mapped;
+  }
+
+  void _cacheSessionResult({
+    required String sessionId,
+    required Map<String, dynamic> rawResponse,
+    List<acp.ConfigOption>? typedConfigOptions,
+  }) {
+    if (rawResponse.isNotEmpty || typedConfigOptions == null) {
+      _cacheRawConfigOptions(sessionId, rawResponse['configOptions']);
+    } else {
+      _cacheConfigOptions(sessionId, typedConfigOptions);
+    }
+    _cacheRawModes(sessionId, rawResponse['modes']);
+  }
+
+  Map<String, dynamic> _takeRawSessionResult(String sessionId) {
+    return _rawSessionResultsBySession.remove(sessionId) ??
+        const <String, dynamic>{};
   }
 
   void _cacheRawModes(String sessionId, Object? raw) {
@@ -1209,6 +1274,52 @@ class DartAcpAgentClient implements AcpAgentClient {
     return events;
   }
 
+  void _captureProtocolOut(String line) {
+    try {
+      final message = jsonDecode(line);
+      if (message is! Map) return;
+      final id = message['id'];
+      final method = message['method'];
+      if (id == null || method is! String) return;
+      _pendingRawProtocolRequests[id.toString()] = _RawProtocolRequest(
+        method: method,
+        params: _dynamicMap(message['params']) ?? const <String, dynamic>{},
+      );
+    } on Object {
+      return;
+    }
+  }
+
+  void _captureProtocolIn(String line) {
+    try {
+      final message = jsonDecode(line);
+      if (message is! Map) return;
+      final id = message['id'];
+      if (id == null) return;
+      final request = _pendingRawProtocolRequests.remove(id.toString());
+      if (request == null || !_isSessionResultMethod(request.method)) return;
+      final result = _dynamicMap(message['result']);
+      if (result == null) return;
+      final resultSessionId = result['sessionId'];
+      final requestSessionId = request.params['sessionId'];
+      final sessionId = resultSessionId is String
+          ? resultSessionId
+          : requestSessionId is String
+          ? requestSessionId
+          : null;
+      if (sessionId == null || sessionId.isEmpty) return;
+      _rawSessionResultsBySession[sessionId] = result;
+    } on Object {
+      return;
+    }
+  }
+
+  bool _isSessionResultMethod(String method) {
+    return method == 'session/new' ||
+        method == 'session/resume' ||
+        method == 'session/fork';
+  }
+
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
@@ -1237,11 +1348,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsListSessions = false;
     _supportsResumeSession = false;
     _activeSessionId = null;
-    _compatibleMcpServers = const <Map<String, dynamic>>[];
     _modesBySession.clear();
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _pendingRawProtocolRequests.clear();
+    _rawSessionResultsBySession.clear();
     _permissionBridge.cancelAll();
     await _disposeClient(client, transport);
   }
@@ -1261,10 +1373,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }
     return 'npx';
-  }
-
-  List<Map<String, dynamic>> _mcpServersForSessionRequest() {
-    return _compatibleMcpServers.map(Map<String, dynamic>.from).toList();
   }
 
   static List<Map<String, dynamic>> _mcpServersForCapabilities(
@@ -1315,12 +1423,25 @@ class DartAcpAgentClient implements AcpAgentClient {
 }
 
 class _InteractivePermissionProvider implements acp.PermissionProvider {
-  const _InteractivePermissionProvider(this.bridge);
+  const _InteractivePermissionProvider(
+    this.bridge, {
+    required this.allowFilesystemReadTextFile,
+    required this.allowFilesystemWriteTextFile,
+  });
 
   final _AcpPermissionBridge bridge;
+  final bool allowFilesystemReadTextFile;
+  final bool allowFilesystemWriteTextFile;
 
   @override
   Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
+    if (options.toolName == 'read_text_file' && !allowFilesystemReadTextFile) {
+      return acp.PermissionOutcome.deny;
+    }
+    if (options.toolName == 'write_text_file' &&
+        !allowFilesystemWriteTextFile) {
+      return acp.PermissionOutcome.deny;
+    }
     return bridge.request(options);
   }
 }
@@ -1405,4 +1526,11 @@ class _PendingPermissionRequest {
 
   final String sessionId;
   final Completer<acp.PermissionOutcome> completer;
+}
+
+class _RawProtocolRequest {
+  const _RawProtocolRequest({required this.method, required this.params});
+
+  final String method;
+  final Map<String, dynamic> params;
 }

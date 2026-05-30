@@ -6,6 +6,7 @@ class AcpClientConfig {
     this.activeAgentServer,
     this.agentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
+    this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentServerName,
   });
@@ -16,6 +17,7 @@ class AcpClientConfig {
   final AgentServerConfig? activeAgentServer;
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final AcpClientProviderConfig clientProviders;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -47,6 +49,7 @@ class AcpClientConfig {
       activeAgentServer: server,
       agentServers: agentServers,
       mcpServers: mcpServers,
+      clientProviders: clientProviders,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
     );
@@ -80,9 +83,16 @@ class AcpClientConfig {
     final mcpServers = _mcpServerList(
       json['mcp_servers'] ?? json['mcpServers'],
     );
+    final clientProviders = AcpClientProviderConfig.fromJson(
+      json['client_providers'] ?? json['clientProviders'],
+    );
     final serversRaw = json['agent_servers'];
     if (serversRaw == null) {
-      return AcpClientConfig(configPath: configPath, mcpServers: mcpServers);
+      return AcpClientConfig(
+        configPath: configPath,
+        mcpServers: mcpServers,
+        clientProviders: clientProviders,
+      );
     }
     if (serversRaw is! Map<String, dynamic>) {
       throw const FormatException('agent_servers must be a JSON object.');
@@ -101,7 +111,11 @@ class AcpClientConfig {
     }
 
     if (servers.isEmpty) {
-      return AcpClientConfig(configPath: configPath, mcpServers: mcpServers);
+      return AcpClientConfig(
+        configPath: configPath,
+        mcpServers: mcpServers,
+        clientProviders: clientProviders,
+      );
     }
 
     final preferredName = _stringValue(json['default_agent_server']);
@@ -115,6 +129,7 @@ class AcpClientConfig {
       activeAgentServer: active,
       agentServers: servers.values.toList(),
       mcpServers: mcpServers,
+      clientProviders: clientProviders,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );
@@ -165,6 +180,65 @@ class AcpClientConfig {
     if (home != null && home.trim().isNotEmpty) return home.trim();
 
     return current.isEmpty ? Directory.current.path : current;
+  }
+}
+
+class AcpClientProviderConfig {
+  const AcpClientProviderConfig({
+    this.filesystem = const AcpFilesystemProviderConfig(),
+  });
+
+  final AcpFilesystemProviderConfig filesystem;
+
+  factory AcpClientProviderConfig.fromJson(Object? raw) {
+    if (raw == null) return const AcpClientProviderConfig();
+    if (raw is! Map) {
+      throw const FormatException('client_providers must be a JSON object.');
+    }
+    final map = _jsonMap(raw, fieldName: 'client_providers');
+    return AcpClientProviderConfig(
+      filesystem: AcpFilesystemProviderConfig.fromJson(
+        map['filesystem'] ?? map['fs'],
+      ),
+    );
+  }
+}
+
+class AcpFilesystemProviderConfig {
+  const AcpFilesystemProviderConfig({
+    this.readTextFile = false,
+    this.writeTextFile = false,
+    this.allowReadOutsideWorkspace = false,
+  });
+
+  final bool readTextFile;
+  final bool writeTextFile;
+  final bool allowReadOutsideWorkspace;
+
+  bool get enabled => readTextFile || writeTextFile;
+
+  factory AcpFilesystemProviderConfig.fromJson(Object? raw) {
+    if (raw == null) return const AcpFilesystemProviderConfig();
+    if (raw is! Map) {
+      throw const FormatException(
+        'client_providers.filesystem must be a JSON object.',
+      );
+    }
+    final map = _jsonMap(raw, fieldName: 'client_providers.filesystem');
+    return AcpFilesystemProviderConfig(
+      readTextFile: _boolConfigValue(
+        map['read_text_file'] ?? map['readTextFile'],
+        fieldName: 'client_providers.filesystem.read_text_file',
+      ),
+      writeTextFile: _boolConfigValue(
+        map['write_text_file'] ?? map['writeTextFile'],
+        fieldName: 'client_providers.filesystem.write_text_file',
+      ),
+      allowReadOutsideWorkspace: _boolConfigValue(
+        map['allow_read_outside_workspace'] ?? map['allowReadOutsideWorkspace'],
+        fieldName: 'client_providers.filesystem.allow_read_outside_workspace',
+      ),
+    );
   }
 }
 
@@ -364,6 +438,12 @@ Object? _jsonValue(Object? value, {required String fieldName}) {
   }
   if (value is Map) return _jsonMap(value, fieldName: fieldName);
   throw FormatException('$fieldName must be JSON-compatible.');
+}
+
+bool _boolConfigValue(Object? value, {required String fieldName}) {
+  if (value == null) return false;
+  if (value is bool) return value;
+  throw FormatException('$fieldName must be a boolean.');
 }
 
 void _ensureStringList(

@@ -396,6 +396,237 @@ Future<void> main() async {
     }
   });
 
+  test('advertises configured filesystem provider capabilities', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
+    final agentScript = File('${tempDir.path}/fake_fs_caps_agent.dart');
+    final initializeParamsPath = jsonEncode(initializeParamsFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      await File($initializeParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      enableFilesystemReadTextFile: true,
+      enableFilesystemWriteTextFile: true,
+      allowFilesystemReadOutsideWorkspace: true,
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final capabilities = client.capabilities;
+      expect(capabilities?.client.fsReadTextFile, isTrue);
+      expect(capabilities?.client.fsWriteTextFile, isTrue);
+      expect(capabilities?.client.hasFsProvider, isTrue);
+      expect(capabilities?.client.allowReadOutsideWorkspace, isTrue);
+
+      final initializeParams =
+          jsonDecode(await initializeParamsFile.readAsString())
+              as Map<String, dynamic>;
+      expect(
+        initializeParams['clientCapabilities'],
+        containsPair('fs', containsPair('readTextFile', true)),
+      );
+      expect(
+        initializeParams['clientCapabilities'],
+        containsPair('fs', containsPair('writeTextFile', true)),
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('serves filesystem read requests after permission approval', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final workspace = Directory('${tempDir.path}/workspace');
+    await workspace.create();
+    await File('${workspace.path}/fixture.txt').writeAsString('hello fs');
+    final fsResponseFile = File('${tempDir.path}/fs_response.json');
+    final agentScript = File('${tempDir.path}/fake_fs_read_agent.dart');
+    final fsResponsePath = jsonEncode(fsResponseFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-fs'},
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'fs-read-1',
+        'method': 'fs/read_text_file',
+        'params': <String, dynamic>{
+          'sessionId': 'session-fs',
+          'path': 'fixture.txt',
+        },
+      }));
+    } else if (message['id'] == 'fs-read-1') {
+      await File($fsResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+    late final DartAcpAgentClient client;
+    client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      enableFilesystemReadTextFile: true,
+    );
+    final subscription = client.permissionRequests.listen((request) {
+      unawaited(
+        client.respondToPermissionRequest(
+          id: request.id,
+          decision: AcpPermissionDecision.allow,
+        ),
+      );
+    });
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: workspace.path);
+      await _waitForFile(fsResponseFile);
+
+      expect(session.id, 'session-fs');
+      final fsResponse =
+          jsonDecode(await fsResponseFile.readAsString())
+              as Map<String, dynamic>;
+      expect(fsResponse['id'], 'fs-read-1');
+      expect(fsResponse['result'], containsPair('content', 'hello fs'));
+    } finally {
+      await subscription.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('rejects unadvertised filesystem write requests', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final workspace = Directory('${tempDir.path}/workspace');
+    await workspace.create();
+    final fsResponseFile = File('${tempDir.path}/fs_response.json');
+    final agentScript = File('${tempDir.path}/fake_fs_write_agent.dart');
+    final fsResponsePath = jsonEncode(fsResponseFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-fs'},
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'fs-write-1',
+        'method': 'fs/write_text_file',
+        'params': <String, dynamic>{
+          'sessionId': 'session-fs',
+          'path': 'created.txt',
+          'content': 'should not write',
+        },
+      }));
+    } else if (message['id'] == 'fs-write-1') {
+      await File($fsResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+    late final DartAcpAgentClient client;
+    client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      enableFilesystemReadTextFile: true,
+      enableFilesystemWriteTextFile: false,
+    );
+    final subscription = client.permissionRequests.listen((request) {
+      unawaited(
+        client.respondToPermissionRequest(
+          id: request.id,
+          decision: AcpPermissionDecision.allow,
+        ),
+      );
+    });
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      await client.createSession(cwd: workspace.path);
+      await _waitForFile(fsResponseFile);
+
+      final fsResponse =
+          jsonDecode(await fsResponseFile.readAsString())
+              as Map<String, dynamic>;
+      expect(fsResponse['id'], 'fs-write-1');
+      expect(fsResponse, contains('error'));
+      expect(await File('${workspace.path}/created.txt').exists(), isFalse);
+    } finally {
+      await subscription.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test(
     'cancels agent permission requests when no interactive UI is listening',
     () async {

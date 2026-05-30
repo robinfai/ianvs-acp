@@ -14,6 +14,12 @@ void main() {
             configPath: '/Users/example/.config/ianvs-acp/settings.json',
             activeAgentName: 'Codex',
             defaultAgentName: 'Kimi Code Dev',
+            clientProviders: AcpClientProviderConfig(
+              filesystem: AcpFilesystemProviderConfig(
+                readTextFile: true,
+                writeTextFile: false,
+              ),
+            ),
             mcpServers: [
               McpServerConfig(
                 raw: {
@@ -51,6 +57,9 @@ void main() {
     expect(find.text('MCP Servers'), findsOneWidget);
     expect(find.text('filesystem'), findsOneWidget);
     expect(find.text('/usr/local/bin/mcp-filesystem'), findsOneWidget);
+    expect(find.text('Client Providers'), findsOneWidget);
+    expect(find.text('FS read'), findsOneWidget);
+    expect(find.text('Enabled'), findsOneWidget);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
     expect(find.text('Current'), findsOneWidget);
     expect(find.text('Default'), findsOneWidget);

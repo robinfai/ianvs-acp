@@ -9,9 +9,11 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gaps are client-provided filesystem/terminal providers
-and Streamable HTTP transport. Those are protocol features, but they need
+The largest remaining gaps are client-provided terminal provider support and
+Streamable HTTP transport. Those are protocol features, but they need
 product/security decisions or transport-layer work beyond only visual polish.
+The earlier filesystem and terminal providers follow-up is now split:
+filesystem support is config-gated, while terminal support remains pending.
 
 ## Official Feature Index
 
@@ -27,7 +29,7 @@ product/security decisions or transport-layer work beyond only visual polish.
 | Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link/embedded file prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource.text` when the agent advertises `promptCapabilities.embeddedContext`; image and audio attachments are embedded as `image`/`audio` content when the agent advertises matching prompt capabilities; small generic binary attachments are embedded as `resource.blob` when embedded context is advertised. Prompt-side `@file` and URL mentions are preserved as `resource_link` content even when selected attachments force the raw prompt path, with sentence-ending punctuation kept out of link targets. Unsupported or oversized attachments fall back to `resource_link`. |
 | Content blocks | https://agentclientprotocol.com/protocol/content | Mostly done | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`. File links remain available as fallback, but model/agent-specific support can still vary. |
 | Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click. `session/request_permission` now surfaces an in-app approval banner with Allow Once, Deny, and Cancel. When no UI listener is active, requests are still conservatively returned as `cancelled` instead of being auto-approved. Persistent trust rules remain a product/security follow-up. |
-| File system provider | https://agentclientprotocol.com/protocol/file-system | Missing by design | The client currently advertises `fs/read_text_file=false` and `fs/write_text_file=false`; no provider is wired. |
+| File system provider | https://agentclientprotocol.com/protocol/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed by default and still require the interactive permission approval path. `allow_read_outside_workspace` only relaxes reads, never writes. |
 | Terminal provider | https://agentclientprotocol.com/protocol/terminals | Missing by design | The client currently advertises no terminal support; no live terminal UI is wired. |
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
@@ -95,7 +97,14 @@ Supported shape:
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
       "env": []
     }
-  ]
+  ],
+  "client_providers": {
+    "filesystem": {
+      "read_text_file": true,
+      "write_text_file": false,
+      "allow_read_outside_workspace": false
+    }
+  }
 }
 ```
 
@@ -105,6 +114,10 @@ Compatible top-level `mcp_servers` entries are forwarded to every ACP
 transport types are `stdio`, `http`, `sse`, and `acp`. Stdio entries are always
 forwarded; HTTP, SSE, and ACP transport entries require matching agent
 `mcpCapabilities`.
+Configured `client_providers.filesystem` controls whether the client advertises
+ACP file-system callbacks. Filesystem providers are off by default; when enabled,
+read/write requests still go through per-request permission approval, and writes
+remain confined to the session workspace.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 
@@ -123,7 +136,7 @@ These are not blockers for the current UI pass, but need product/security decisi
 Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
-- Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
+- Decide whether to enable terminal providers. Filesystem providers are available behind explicit user config and per-request permission approval.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 
 ## Follow-Up Desktop UX Pass
