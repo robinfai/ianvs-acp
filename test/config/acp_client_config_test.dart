@@ -423,6 +423,32 @@ void main() {
       }),
       throwsA(isA<FormatException>()),
     );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Remote Agent': {
+            'type': 'websocket',
+            'url': 'ws://127.0.0.1/acp',
+            'headers': {'': 'Bearer test-token'},
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Remote Agent': {
+            'type': 'websocket',
+            'url': 'ws://127.0.0.1/acp',
+            'headers': {'Authorization': ''},
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
   });
 
   test('rejects invalid streamable HTTP agent server config', () {
@@ -439,6 +465,36 @@ void main() {
       () => AcpClientConfig.fromJson({
         'agent_servers': {
           'HTTP Agent': {'type': 'http', 'url': 'ws://127.0.0.1/acp'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'HTTP Agent': {
+            'type': 'http',
+            'url': 'https://agent.example.com/acp',
+            'headers': [
+              {'name': 'Bad Header', 'value': 'token'},
+            ],
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'HTTP Agent': {
+            'type': 'http',
+            'url': 'https://agent.example.com/acp',
+            'headers': [
+              {'name': 'Authorization', 'value': 'Bearer\nbad'},
+            ],
+          },
         },
       }),
       throwsA(isA<FormatException>()),

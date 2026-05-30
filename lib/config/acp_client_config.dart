@@ -580,7 +580,20 @@ Map<String, String> _stringMapOrNameValueList(
   required String serverName,
 }) {
   if (value is Map) {
-    return _stringMap(value, fieldName: fieldName, serverName: serverName);
+    return value.map((key, item) {
+      if (key is! String || item is! String) {
+        throw FormatException(
+          'Agent server "$serverName" $fieldName entries must be strings.',
+        );
+      }
+      _validateHttpHeaderEntry(
+        name: key,
+        value: item,
+        fieldName: fieldName,
+        serverName: serverName,
+      );
+      return MapEntry(key, item);
+    });
   }
   if (value is! List) {
     throw FormatException(
@@ -613,15 +626,39 @@ MapEntry<String, String> _nameValueEntry(
   }
   final name = value['name'];
   final itemValue = value['value'];
-  if (name is! String ||
-      name.trim().isEmpty ||
-      itemValue is! String ||
-      itemValue.trim().isEmpty) {
+  if (name is! String || itemValue is! String) {
     throw FormatException(
       'Agent server "$serverName" $fieldName entry $index requires name and value.',
     );
   }
+  _validateHttpHeaderEntry(
+    name: name,
+    value: itemValue,
+    fieldName: fieldName,
+    serverName: serverName,
+    index: index,
+  );
   return MapEntry(name, itemValue);
+}
+
+final RegExp _httpHeaderNamePattern = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+
+void _validateHttpHeaderEntry({
+  required String name,
+  required String value,
+  required String fieldName,
+  required String serverName,
+  int? index,
+}) {
+  final location = index == null
+      ? 'Agent server "$serverName" $fieldName'
+      : 'Agent server "$serverName" $fieldName entry $index';
+  if (!_httpHeaderNamePattern.hasMatch(name)) {
+    throw FormatException('$location requires a valid HTTP header name.');
+  }
+  if (value.trim().isEmpty || value.contains('\n') || value.contains('\r')) {
+    throw FormatException('$location requires a non-empty HTTP header value.');
+  }
 }
 
 List<McpServerConfig> _mcpServerList(Object? value) {
