@@ -1,3 +1,5 @@
+import 'agent_event.dart';
+
 class AgentSession {
   const AgentSession({
     required this.id,
@@ -6,6 +8,7 @@ class AgentSession {
     this.title,
     this.updatedAt,
     this.agentName,
+    this.initialEvents = const <AgentEvent>[],
   });
 
   final String id;
@@ -14,6 +17,7 @@ class AgentSession {
   final String? title;
   final DateTime? updatedAt;
   final String? agentName;
+  final List<AgentEvent> initialEvents;
 
   String get shortId => id.length <= 8 ? id : id.substring(0, 8);
 
@@ -28,6 +32,7 @@ class AgentSession {
     String? title,
     DateTime? updatedAt,
     String? agentName,
+    List<AgentEvent>? initialEvents,
   }) {
     return AgentSession(
       id: id,
@@ -36,6 +41,7 @@ class AgentSession {
       title: title ?? this.title,
       updatedAt: updatedAt ?? this.updatedAt,
       agentName: agentName ?? this.agentName,
+      initialEvents: initialEvents ?? this.initialEvents,
     );
   }
 }

@@ -116,6 +116,9 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
+        for (final event in session.initialEvents) {
+          _handleAgentEvent(event, notify: false);
+        }
         await _loadSessionSettings(session.id, notify: false);
         status = ConnectionStatus.sessionReady;
         _notifyListeners();

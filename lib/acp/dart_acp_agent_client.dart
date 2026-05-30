@@ -123,8 +123,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _requireClient();
     final sessionId = await client.newSession(cwd);
     _activeSessionId = sessionId;
-    await _cacheImmediateSessionUpdates(client, sessionId);
-    return AgentSession(id: sessionId, cwd: cwd, createdAt: DateTime.now());
+    final initialEvents = await _cacheImmediateSessionUpdates(
+      client,
+      sessionId,
+    );
+    return AgentSession(
+      id: sessionId,
+      cwd: cwd,
+      createdAt: DateTime.now(),
+      initialEvents: initialEvents,
+    );
   }
 
   @override
@@ -726,18 +734,23 @@ class DartAcpAgentClient implements AcpAgentClient {
     return mapped;
   }
 
-  Future<void> _cacheImmediateSessionUpdates(
+  Future<List<AgentEvent>> _cacheImmediateSessionUpdates(
     acp.AcpClient client,
     String sessionId,
   ) async {
-    final subscription = client
-        .sessionUpdates(sessionId)
-        .listen(_eventFromAcpUpdate, onError: (_) {});
+    final events = <AgentEvent>[];
+    final subscription = client.sessionUpdates(sessionId).listen((update) {
+      final event = _eventFromAcpUpdate(update);
+      if (event != null) {
+        events.add(event);
+      }
+    }, onError: (_) {});
     try {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     } finally {
       await subscription.cancel();
     }
+    return events;
   }
 
   @override

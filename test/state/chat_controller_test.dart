@@ -296,6 +296,39 @@ void main() {
     },
   );
 
+  test(
+    'new session applies initial command updates to prompt suggestions',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(
+          createSessionEvents: const [
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'review',
+              metadata: {
+                'kind': 'commands',
+                'commands': [
+                  {
+                    'name': 'review',
+                    'description': 'Review the current change.',
+                  },
+                ],
+              },
+            ),
+          ],
+        ),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      expect(controller.availableCommands, hasLength(1));
+      expect(controller.availableCommands.single['name'], 'review');
+      expect(controller.messages.single.metadata['kind'], 'commands');
+    },
+  );
+
   test('set session mode updates ACP session settings', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
