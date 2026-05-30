@@ -62,7 +62,7 @@ class AcpAuthCapabilities {
 
   factory AcpAuthCapabilities.fromRaw(Object? raw) {
     final caps = raw is Map ? _objectMap(raw) : const <String, Object?>{};
-    return AcpAuthCapabilities(logout: caps.containsKey('logout'));
+    return AcpAuthCapabilities(logout: _capabilityAdvertised(caps['logout']));
   }
 
   final bool logout;
@@ -127,11 +127,11 @@ class AcpSessionCapabilities {
         ? _objectMap(agentCaps['session'])
         : const <String, Object?>{};
     return AcpSessionCapabilities(
-      list: raw.containsKey('list'),
-      resume: raw.containsKey('resume'),
-      fork: raw.containsKey('fork'),
-      configOptions: raw.containsKey('configOptions'),
-      close: raw.containsKey('close'),
+      list: _capabilityAdvertised(raw['list']),
+      resume: _capabilityAdvertised(raw['resume']),
+      fork: _capabilityAdvertised(raw['fork']),
+      configOptions: _capabilityAdvertised(raw['configOptions']),
+      close: _capabilityAdvertised(raw['close']),
       rawKeys: raw.keys.toList()..sort(),
     );
   }
@@ -190,4 +190,8 @@ Object? _jsonValue(Object? value) {
   if (value is Map) return _objectMap(value);
   if (value is List) return value.map(_jsonValue).toList();
   return value;
+}
+
+bool _capabilityAdvertised(Object? value) {
+  return value is Map || value == true;
 }

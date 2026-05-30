@@ -63,10 +63,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       if (config.terminalProvider != null) {
         clientCapabilities['terminal'] = true;
       }
-      _supportsLoadSession = initializeResult.supportsLoadSession;
-      _supportsListSessions = initializeResult.supportsListSessions;
-      _supportsResumeSession = initializeResult.supportsResumeSession;
-      _capabilities = AcpAgentCapabilities.fromInitialize(
+      final capabilities = AcpAgentCapabilities.fromInitialize(
         protocolVersion: initializeResult.protocolVersion,
         agentCapabilities: initializeResult.agentCapabilities,
         authMethods: initializeResult.authMethods,
@@ -75,6 +72,10 @@ class DartAcpAgentClient implements AcpAgentClient {
         hasTerminalProvider: config.terminalProvider != null,
         allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       );
+      _supportsLoadSession = capabilities.loadSession;
+      _supportsListSessions = capabilities.session.list;
+      _supportsResumeSession = capabilities.session.resume;
+      _capabilities = capabilities;
     } catch (_) {
       await client.dispose();
       rethrow;
