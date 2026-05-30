@@ -62,6 +62,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       capabilities: const acp.AcpCapabilities(
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),
+      permissionProvider: const _CancelPermissionProvider(),
     );
     final transport = acp.StdioTransport(
       command: agentCommand,
@@ -776,5 +777,14 @@ class DartAcpAgentClient implements AcpAgentClient {
       // The underlying package can wait for a still-open JSON-RPC stream while
       // shutting down. The stdio process has already been stopped above.
     }
+  }
+}
+
+class _CancelPermissionProvider implements acp.PermissionProvider {
+  const _CancelPermissionProvider();
+
+  @override
+  Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
+    return acp.PermissionOutcome.cancelled;
   }
 }

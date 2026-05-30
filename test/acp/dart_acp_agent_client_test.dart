@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -94,6 +95,89 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test(
+    'cancels agent permission requests until interactive UI exists',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final permissionResponseFile = File(
+        '${tempDir.path}/permission_response.json',
+      );
+      final agentScript = File('${tempDir.path}/fake_permission_agent.dart');
+      final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'permission-1',
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'session-1',
+          'toolCall': <String, dynamic>{
+            'title': 'Read file',
+            'kind': 'read',
+          },
+          'options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'optionId': 'allow',
+              'kind': 'allow_once',
+              'name': 'Allow',
+            },
+            <String, dynamic>{
+              'optionId': 'deny',
+              'kind': 'reject_once',
+              'name': 'Deny',
+            },
+          ],
+        },
+      }));
+    } else if (message['id'] == 'permission-1') {
+      await File($permissionResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        await _waitForFile(permissionResponseFile);
+
+        final permissionResponse =
+            jsonDecode(await permissionResponseFile.readAsString())
+                as Map<String, dynamic>;
+        expect(permissionResponse['id'], 'permission-1');
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('outcome', 'cancelled')),
+        );
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 }
 
 String _dartExecutable() {
@@ -113,4 +197,14 @@ String _dartExecutable() {
   return executable.endsWith('${Platform.pathSeparator}dart')
       ? executable
       : 'dart';
+}
+
+Future<void> _waitForFile(File file) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!await file.exists()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Timed out waiting for ${file.path}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+  }
 }

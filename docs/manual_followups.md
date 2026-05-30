@@ -67,13 +67,17 @@ Manual validation:
 
 Status: security/product decision needed.
 
-Non-blocking because: tool calls are visible and grouped, but interactive
-permission approval requires a clear trust and interruption model.
+Non-blocking because: tool calls are visible and grouped, and permission
+requests are conservatively cancelled until an interactive approval model
+exists. Interactive permission approval still requires a clear trust and
+interruption model.
 
 Automated acceptance:
 
 - `test/ui/chat_timeline_test.dart` verifies tool calls render as compact,
   expandable cards and grouped cards.
+- `test/acp/dart_acp_agent_client_test.dart` verifies agent permission requests
+  receive a `cancelled` outcome while there is no interactive permission UI.
 
 Manual decision:
 
