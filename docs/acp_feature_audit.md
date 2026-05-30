@@ -96,11 +96,16 @@ Environment overrides:
 
 - `ACP_CONFIG_PATH`
 - `IANVS_ACP_CONFIG`
+- `ACP_WORKSPACE_CWD`
+- `IANVS_ACP_WORKSPACE_CWD`
 - `XDG_CONFIG_HOME`
 
 ## Manual Follow-Ups
 
 These are not blockers for the current UI pass, but need product/security decisions:
+
+Detailed tracking and automated acceptance evidence lives in
+`docs/manual_followups.md`.
 
 - Decide whether to expose `authenticate`, including where login state should live in the UI.
 - Decide whether to expose `session/fork`, including how forked sessions should appear in the sidebar.
