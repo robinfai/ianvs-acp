@@ -30,8 +30,10 @@ class ResumeSessionDialog extends StatefulWidget {
 }
 
 class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
-  final TextEditingController _projectController = TextEditingController();
-  final TextEditingController _conversationController = TextEditingController();
+  final TextEditingController _projectSearchController =
+      TextEditingController();
+  final TextEditingController _conversationSearchController =
+      TextEditingController();
 
   List<AcpProjectSessions> _projects = const [];
   AcpProjectSessions? _selectedProject;
@@ -47,8 +49,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
 
   @override
   void dispose() {
-    _projectController.dispose();
-    _conversationController.dispose();
+    _projectSearchController.dispose();
+    _conversationSearchController.dispose();
     super.dispose();
   }
 
@@ -117,87 +119,127 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     final selectedProject = _selectedProject;
     final conversations =
         selectedProject?.sessions ?? const <AcpSessionEntry>[];
+    final filteredProjects = _filteredProjects();
+    final filteredConversations = _filteredConversations(conversations);
+    final selectedProjectValue = filteredProjects.contains(selectedProject)
+        ? selectedProject
+        : null;
+    final selectedConversationValue =
+        filteredConversations.contains(_selectedConversation)
+        ? _selectedConversation
+        : null;
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        return Column(
+        return SingleChildScrollView(
           key: const ValueKey('loaded'),
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _FieldLabel(
-              icon: Icons.folder_open_rounded,
-              label: 'Project',
-              helper: 'Search by project name or path.',
-            ),
-            const SizedBox(height: 8),
-            DropdownMenu<AcpProjectSessions>(
-              controller: _projectController,
-              width: width,
-              menuHeight: 280,
-              enableFilter: true,
-              enableSearch: true,
-              requestFocusOnTap: true,
-              leadingIcon: const Icon(Icons.folder_outlined),
-              initialSelection: _selectedProject,
-              dropdownMenuEntries: _projects
-                  .map(
-                    (project) => DropdownMenuEntry<AcpProjectSessions>(
-                      value: project,
-                      label: project.dropdownLabel,
-                    ),
-                  )
-                  .toList(),
-              onSelected: (project) {
-                if (project == null) return;
-                setState(() {
-                  _selectedProject = project;
-                  _selectedConversation = project.sessions.isEmpty
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _FieldLabel(
+                  icon: Icons.folder_open_rounded,
+                  label: 'Project',
+                  helper: 'Search by project name or path.',
+                ),
+                const SizedBox(height: 8),
+                _SearchField(
+                  key: const ValueKey('resume-project-search'),
+                  controller: _projectSearchController,
+                  hintText: 'Filter projects...',
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<AcpProjectSessions>(
+                  key: const ValueKey('resume-project-dropdown'),
+                  initialValue: selectedProjectValue,
+                  isExpanded: true,
+                  decoration: _inputDecoration(
+                    icon: Icons.folder_outlined,
+                    hintText: filteredProjects.isEmpty
+                        ? 'No matching projects'
+                        : 'Select a project',
+                  ),
+                  menuMaxHeight: 280,
+                  items: filteredProjects
+                      .map(
+                        (project) => DropdownMenuItem<AcpProjectSessions>(
+                          value: project,
+                          child: Text(
+                            project.dropdownLabel,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: filteredProjects.isEmpty
                       ? null
-                      : project.sessions.first;
-                  _projectController.text = project.dropdownLabel;
-                  _conversationController.text =
-                      _selectedConversation?.dropdownLabel ?? '';
-                });
-              },
+                      : (project) {
+                          if (project == null) return;
+                          setState(() {
+                            _selectedProject = project;
+                            _selectedConversation = project.sessions.isEmpty
+                                ? null
+                                : project.sessions.first;
+                            _conversationSearchController.clear();
+                          });
+                        },
+                ),
+                const SizedBox(height: 18),
+                _FieldLabel(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  label: 'Conversation',
+                  helper: 'Search by title, short id, or updated time.',
+                ),
+                const SizedBox(height: 8),
+                _SearchField(
+                  key: const ValueKey('resume-conversation-search'),
+                  controller: _conversationSearchController,
+                  hintText: 'Filter conversations...',
+                  enabled: conversations.isNotEmpty,
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<AcpSessionEntry>(
+                  key: const ValueKey('resume-conversation-dropdown'),
+                  initialValue: selectedConversationValue,
+                  isExpanded: true,
+                  decoration: _inputDecoration(
+                    icon: Icons.forum_outlined,
+                    hintText: conversations.isEmpty
+                        ? 'No conversations'
+                        : filteredConversations.isEmpty
+                        ? 'No matching conversations'
+                        : 'Select a conversation',
+                  ),
+                  menuMaxHeight: 320,
+                  items: filteredConversations
+                      .map(
+                        (conversation) => DropdownMenuItem<AcpSessionEntry>(
+                          value: conversation,
+                          child: Text(
+                            conversation.dropdownLabel,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: filteredConversations.isEmpty
+                      ? null
+                      : (conversation) {
+                          if (conversation == null) return;
+                          setState(() {
+                            _selectedConversation = conversation;
+                          });
+                        },
+                ),
+                const SizedBox(height: 18),
+                _ConversationPreview(conversation: _selectedConversation),
+              ],
             ),
-            const SizedBox(height: 18),
-            _FieldLabel(
-              icon: Icons.chat_bubble_outline_rounded,
-              label: 'Conversation',
-              helper: 'Search by title, short id, or updated time.',
-            ),
-            const SizedBox(height: 8),
-            DropdownMenu<AcpSessionEntry>(
-              controller: _conversationController,
-              width: width,
-              menuHeight: 320,
-              enabled: conversations.isNotEmpty,
-              enableFilter: true,
-              enableSearch: true,
-              requestFocusOnTap: true,
-              leadingIcon: const Icon(Icons.forum_outlined),
-              initialSelection: _selectedConversation,
-              dropdownMenuEntries: conversations
-                  .map(
-                    (conversation) => DropdownMenuEntry<AcpSessionEntry>(
-                      value: conversation,
-                      label: conversation.dropdownLabel,
-                    ),
-                  )
-                  .toList(),
-              onSelected: (conversation) {
-                if (conversation == null) return;
-                setState(() {
-                  _selectedConversation = conversation;
-                  _conversationController.text = conversation.dropdownLabel;
-                });
-              },
-            ),
-            const SizedBox(height: 18),
-            _ConversationPreview(conversation: _selectedConversation),
-          ],
+          ),
         );
       },
     );
@@ -221,9 +263,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
         _projects = projects;
         _selectedProject = selectedProject;
         _selectedConversation = selectedConversation;
-        _projectController.text = selectedProject?.dropdownLabel ?? '';
-        _conversationController.text =
-            selectedConversation?.dropdownLabel ?? '';
+        _projectSearchController.clear();
+        _conversationSearchController.clear();
         _loading = false;
       });
     } catch (error) {
@@ -244,6 +285,104 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     }
     return projects.first;
   }
+
+  List<AcpProjectSessions> _filteredProjects() {
+    final query = _projectSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return _projects;
+    return _projects.where((project) {
+      return project.name.toLowerCase().contains(query) ||
+          project.cwd.toLowerCase().contains(query) ||
+          project.dropdownLabel.toLowerCase().contains(query);
+    }).toList();
+  }
+
+  List<AcpSessionEntry> _filteredConversations(
+    List<AcpSessionEntry> conversations,
+  ) {
+    final query = _conversationSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return conversations;
+    return conversations.where((conversation) {
+      final updatedAt = conversation.updatedAt == null
+          ? ''
+          : _formatDateTime(conversation.updatedAt!);
+      return conversation.title.toLowerCase().contains(query) ||
+          conversation.id.toLowerCase().contains(query) ||
+          conversation.shortId.toLowerCase().contains(query) ||
+          conversation.cwd.toLowerCase().contains(query) ||
+          conversation.dropdownLabel.toLowerCase().contains(query) ||
+          updatedAt.toLowerCase().contains(query);
+    }).toList();
+  }
+}
+
+class _SearchField extends StatelessWidget {
+  const _SearchField({
+    super.key,
+    required this.controller,
+    required this.hintText,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final TextEditingController controller;
+  final String hintText;
+  final ValueChanged<String> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      enabled: enabled,
+      onChanged: onChanged,
+      style: const TextStyle(
+        color: AppColors.textPrimary,
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0,
+      ),
+      decoration: _inputDecoration(
+        icon: Icons.search_rounded,
+        hintText: hintText,
+      ),
+    );
+  }
+}
+
+InputDecoration _inputDecoration({
+  required IconData icon,
+  required String hintText,
+}) {
+  return InputDecoration(
+    prefixIcon: Icon(icon, size: 18, color: AppColors.textSecondary),
+    hintText: hintText,
+    hintStyle: const TextStyle(
+      color: AppColors.textTertiary,
+      fontSize: 13,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0,
+    ),
+    filled: true,
+    fillColor: AppColors.surface,
+    isDense: true,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderSide: const BorderSide(color: AppColors.primary),
+    ),
+    disabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderSide: const BorderSide(color: AppColors.borderSoft),
+    ),
+  );
 }
 
 class _FieldLabel extends StatelessWidget {
