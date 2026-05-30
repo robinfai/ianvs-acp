@@ -26,6 +26,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final List<StreamSubscription<String>> _streamSubscriptions =
       <StreamSubscription<String>>[];
 
+  static const Duration _teardownTimeout = Duration(seconds: 2);
+
   StreamChannelController<String>? _controller;
   StreamSubscription<String>? _outboundSubscription;
   String? _connectionId;
@@ -300,9 +302,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   @override
   Future<void> stop() async {
     _stopping = true;
-    _client.close(force: true);
     await _outboundSubscription?.cancel();
     _outboundSubscription = null;
+    await _terminateConnection();
+    _client.close(force: true);
     for (final subscription in _streamSubscriptions) {
       try {
         await subscription.cancel();
@@ -320,5 +323,22 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     _serverRequestSessionsById.clear();
     _streamStartsByKey.clear();
     _cookiesByName.clear();
+  }
+
+  Future<void> _terminateConnection() async {
+    final connectionId = _connectionId;
+    if (connectionId == null || connectionId.isEmpty) return;
+    try {
+      final request = await _client
+          .deleteUrl(endpoint)
+          .timeout(_teardownTimeout);
+      _applyRequestHeaders(request);
+      request.headers.set('Acp-Connection-Id', connectionId);
+      final response = await request.close().timeout(_teardownTimeout);
+      _storeCookies(response.cookies);
+      await response.drain<void>().timeout(_teardownTimeout);
+    } on Object {
+      // Remote teardown is best effort; local disposal must always finish.
+    }
   }
 }

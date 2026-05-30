@@ -504,6 +504,9 @@ Future<void> main() async {
     String? connectionHeader;
     String? sessionHeader;
     String? cookieHeader;
+    String? deleteConnectionHeader;
+    String? deleteCookieHeader;
+    var disposed = false;
 
     Future<void> sendSse(
       Completer<HttpResponse> stream,
@@ -538,6 +541,13 @@ Future<void> main() async {
       authorizationHeader ??= request.headers.value(
         HttpHeaders.authorizationHeader,
       );
+      if (request.method == 'DELETE') {
+        deleteConnectionHeader = request.headers.value('Acp-Connection-Id');
+        deleteCookieHeader = request.headers.value(HttpHeaders.cookieHeader);
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
       if (request.method == 'GET') {
         await openSse(request);
         return;
@@ -624,8 +634,14 @@ Future<void> main() async {
       expect(session.id, 'http-session');
       expect(events.map((event) => event.text), contains('hello http'));
       expect(events.last.metadata['stopReason'], 'endTurn');
+      await client.dispose().timeout(const Duration(seconds: 5));
+      disposed = true;
+      expect(deleteConnectionHeader, 'connection-1');
+      expect(deleteCookieHeader, contains('sticky=yes'));
     } finally {
-      await client.dispose();
+      if (!disposed) {
+        await client.dispose();
+      }
       for (final response in openResponses) {
         await response.close();
       }

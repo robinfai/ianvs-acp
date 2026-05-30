@@ -28,8 +28,8 @@ URL, and draft Streamable HTTP/SSE agents can be configured with
 `agent_servers[].type = "http"` or `"sse"` plus an `http` or `https` URL. The
 new HTTP transport covers long-lived connection/session SSE streams, POST/202
 response routing, `Acp-Connection-Id`, `Acp-Session-Id`, headers, and cookies,
-but the draft profile still needs HTTP/2 enforcement, DELETE teardown, and
-real-agent interoperability testing.
+plus best-effort `DELETE` teardown, but the draft profile still needs HTTP/2
+enforcement and real-agent interoperability testing.
 
 Automated acceptance:
 
@@ -39,7 +39,8 @@ Automated acceptance:
   local WebSocket ACP agent, forwards custom headers, initializes, creates a
   session, receives session updates, and completes a prompt turn. It also
   verifies a local Streamable HTTP/SSE ACP agent path, including headers,
-  cookies, connection/session stream routing, and prompt completion.
+  cookies, connection/session stream routing, prompt completion, and best-effort
+  `DELETE` teardown.
 - `lib/acp/web_socket_acp_transport.dart` implements the JSON-RPC
   `StreamChannel` adapter used by `dart_acp`.
 - `lib/acp/streamable_http_acp_transport.dart` implements the draft HTTP/SSE
@@ -50,8 +51,7 @@ Manual decision:
 - Decide whether to enforce HTTP/2 at connection time before the RFD stabilizes,
   and whether WebSocket fallback should be preferred or user-selectable.
 - Validate WebSocket and Streamable HTTP/SSE against real remote ACP agents that
-  implement the draft endpoint, then decide whether DELETE teardown is required
-  before release.
+  implement the draft endpoint.
 
 ### fs-terminal-providers
 
