@@ -98,14 +98,16 @@ class SessionSettingsDialog extends StatelessWidget {
               unawaited(controller.setSessionModel(modelValue));
             },
           ),
-          const SizedBox(height: 8),
-          _ModeSection(
-            settings: settings,
-            enabled: settingsEnabled,
-            onChanged: (modeId) {
-              unawaited(controller.setSessionMode(modeId));
-            },
-          ),
+          if (settings.shouldUseLegacyModes) ...[
+            const SizedBox(height: 8),
+            _ModeSection(
+              settings: settings,
+              enabled: settingsEnabled,
+              onChanged: (modeId) {
+                unawaited(controller.setSessionMode(modeId));
+              },
+            ),
+          ],
           const SizedBox(height: 8),
           _ConfigSection(
             options: settings.nonModelConfigOptions,

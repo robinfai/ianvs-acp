@@ -219,8 +219,15 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
     final response = _takeRawSessionResult(sessionId);
-    _cacheRawConfigOptions(sessionId, response['configOptions']);
-    _cacheRawModes(sessionId, response['modes']);
+    final configOptions = _cacheRawConfigOptions(
+      sessionId,
+      response['configOptions'],
+    );
+    if (configOptions.isEmpty) {
+      _cacheRawModes(sessionId, response['modes']);
+    } else {
+      _modesBySession.remove(sessionId);
+    }
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       sessionId,
@@ -317,6 +324,12 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<AcpSessionSettings> sessionSettings(String sessionId) async {
     final client = _requireClient();
+    final configOptions =
+        _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
+    if (configOptions.isNotEmpty) {
+      return AcpSessionSettings(configOptions: configOptions);
+    }
+
     final modes = client.sessionModes(sessionId);
     final cachedModes = _modesBySession[sessionId];
     final currentModeId =
@@ -332,14 +345,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     final availableModes = cachedModes?.availableModes.isNotEmpty == true
         ? cachedModes!.availableModes
         : packageModes;
-
     return AcpSessionSettings(
       modes: AcpSessionModeInfo(
         currentModeId: currentModeId,
         availableModes: availableModes,
       ),
-      configOptions:
-          _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[],
+      configOptions: configOptions,
     );
   }
 
@@ -610,8 +621,13 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.ModeUpdate():
-        if (update.currentModeId.isNotEmpty && _activeSessionId != null) {
-          _modeOverridesBySession[_activeSessionId!] = update.currentModeId;
+        final activeSessionId = _activeSessionId;
+        if (activeSessionId != null &&
+            (_configOptionsBySession[activeSessionId]?.isNotEmpty ?? false)) {
+          return null;
+        }
+        if (update.currentModeId.isNotEmpty && activeSessionId != null) {
+          _modeOverridesBySession[activeSessionId] = update.currentModeId;
         }
         return AgentEvent(
           type: AgentEventType.status,
@@ -647,6 +663,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       final options = _configOptionsFromRaw(body['configOptions']);
       if (sessionId is String && sessionId.isNotEmpty) {
         _configOptionsBySession[sessionId] = options;
+        if (options.isNotEmpty) {
+          _modesBySession.remove(sessionId);
+          _modeOverridesBySession.remove(sessionId);
+        }
       }
       return AgentEvent(
         type: AgentEventType.status,
@@ -1263,12 +1283,15 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Map<String, dynamic> rawResponse,
     List<acp.ConfigOption>? typedConfigOptions,
   }) {
-    if (rawResponse.isNotEmpty || typedConfigOptions == null) {
-      _cacheRawConfigOptions(sessionId, rawResponse['configOptions']);
+    final configOptions = rawResponse.isNotEmpty || typedConfigOptions == null
+        ? _cacheRawConfigOptions(sessionId, rawResponse['configOptions'])
+        : _cacheConfigOptions(sessionId, typedConfigOptions);
+    if (configOptions.isEmpty) {
+      _cacheRawModes(sessionId, rawResponse['modes']);
     } else {
-      _cacheConfigOptions(sessionId, typedConfigOptions);
+      _modesBySession.remove(sessionId);
+      _modeOverridesBySession.remove(sessionId);
     }
-    _cacheRawModes(sessionId, rawResponse['modes']);
   }
 
   Map<String, dynamic> _takeRawSessionResult(String sessionId) {

@@ -646,7 +646,7 @@ void main() {
   });
 
   test('set session mode updates ACP session settings', () async {
-    final fake = FakeAgentClient();
+    final fake = FakeAgentClient(sessionSettings: _settingsWithMode('ask'));
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
@@ -657,6 +657,22 @@ void main() {
     expect(controller.sessionSettings.modes.currentModeId, 'edit');
     expect(controller.lastError, isNull);
   });
+
+  test(
+    'set session mode is ignored when config options are available',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.setSessionMode('edit');
+
+      expect(fake.lastSetModeId, isNull);
+      expect(controller.sessionSettings.modes.currentModeId, 'ask');
+      expect(controller.lastError, isNull);
+    },
+  );
 
   test('set config option updates ACP session settings', () async {
     final fake = FakeAgentClient();

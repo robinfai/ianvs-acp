@@ -9,7 +9,7 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
 
 void main() {
-  testWidgets('SessionSettingsDialog renders modes and config options', (
+  testWidgets('SessionSettingsDialog prefers config options over modes', (
     tester,
   ) async {
     final controller = ChatController(
@@ -27,12 +27,39 @@ void main() {
     );
 
     expect(find.text('Session Settings'), findsOneWidget);
-    expect(find.text('Mode'), findsOneWidget);
-    expect(find.text('Ask'), findsOneWidget);
+    expect(find.text('Mode'), findsNothing);
+    expect(find.text('Ask'), findsNothing);
     expect(find.text('Config Options'), findsOneWidget);
     expect(find.text('Approval mode'), findsOneWidget);
     expect(find.text('Suggest first'), findsOneWidget);
   });
+
+  testWidgets(
+    'SessionSettingsDialog renders legacy modes without config options',
+    (tester) async {
+      final controller = ChatController(
+        client: FakeAgentClient(sessionSettings: _settingsWithModesOnly),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+        ),
+      );
+
+      expect(find.text('Mode'), findsOneWidget);
+      expect(find.text('Ask'), findsOneWidget);
+      expect(find.text('Config Options'), findsOneWidget);
+      expect(
+        find.text('No config options exposed by this session.'),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets('SessionSettingsDialog promotes model config option', (
     tester,
@@ -261,6 +288,16 @@ const _settingsWithModel = AcpSessionSettings(
       ],
     ),
   ],
+);
+
+const _settingsWithModesOnly = AcpSessionSettings(
+  modes: AcpSessionModeInfo(
+    currentModeId: 'ask',
+    availableModes: [
+      AcpSessionMode(id: 'ask', name: 'Ask'),
+      AcpSessionMode(id: 'edit', name: 'Edit'),
+    ],
+  ),
 );
 
 const _settingsWithBoolean = AcpSessionSettings(

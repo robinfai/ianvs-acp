@@ -1360,7 +1360,7 @@ Future<void> main() async {
   );
 
   test(
-    'caches config options and modes returned by session creation',
+    'prefers config options over modes returned by session creation',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final agentScript = File(
@@ -1438,17 +1438,80 @@ Future<void> main() async {
         expect(session.id, 'session-1');
         expect(settings.configOptions, hasLength(1));
         expect(settings.currentModelLabel, 'GPT-5');
-        expect(settings.modes.currentModeId, 'plan');
-        expect(settings.modes.availableModes.map((mode) => mode.id), [
-          'plan',
-          'act',
-        ]);
+        expect(settings.modes.currentModeId, isNull);
+        expect(settings.modes.availableModes, isEmpty);
       } finally {
         await client.dispose();
         await tempDir.delete(recursive: true);
       }
     },
   );
+
+  test('caches legacy modes when config options are omitted', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_legacy_modes_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-legacy',
+          'modes': <String, dynamic>{
+            'currentModeId': 'plan',
+            'availableModes': <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'plan', 'name': 'Plan'},
+              <String, dynamic>{'id': 'act', 'name': 'Act'},
+            ],
+          },
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final session = await client.createSession(cwd: '/workspace');
+      final settings = await client.sessionSettings(session.id);
+
+      expect(session.id, 'session-legacy');
+      expect(settings.configOptions, isEmpty);
+      expect(settings.modes.currentModeId, 'plan');
+      expect(settings.modes.availableModes.map((mode) => mode.id), [
+        'plan',
+        'act',
+      ]);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
 
   test(
     'caches immediate config option updates after session creation',
@@ -1689,10 +1752,14 @@ Future<void> main() async {
     }
   });
 
-  test('caches config options and modes returned by session resume', () async {
-    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
-    final agentScript = File('${tempDir.path}/fake_resume_settings_agent.dart');
-    await agentScript.writeAsString('''
+  test(
+    'prefers config options over modes returned by session resume',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File(
+        '${tempDir.path}/fake_resume_settings_agent.dart',
+      );
+      await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
 
@@ -1750,34 +1817,32 @@ Future<void> main() async {
 }
 ''');
 
-    final client = DartAcpAgentClient(
-      agentCommand: _dartExecutable(),
-      agentArgs: [agentScript.path],
-    );
-
-    try {
-      await client.connect().timeout(const Duration(seconds: 5));
-
-      final events = await client.resumeSession(
-        sessionId: 'session-resume',
-        cwd: '/workspace',
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
       );
-      final settings = await client.sessionSettings('session-resume');
 
-      expect(events, isEmpty);
-      expect(settings.currentModelLabel, 'GPT-5 Mini');
-      expect(settings.modes.currentModeId, 'act');
-      expect(settings.modes.availableModes.map((mode) => mode.id), [
-        'plan',
-        'act',
-      ]);
-    } finally {
-      await client.dispose();
-      await tempDir.delete(recursive: true);
-    }
-  });
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
 
-  test('caches config options and modes returned by session fork', () async {
+        final events = await client.resumeSession(
+          sessionId: 'session-resume',
+          cwd: '/workspace',
+        );
+        final settings = await client.sessionSettings('session-resume');
+
+        expect(events, isEmpty);
+        expect(settings.currentModelLabel, 'GPT-5 Mini');
+        expect(settings.modes.currentModeId, isNull);
+        expect(settings.modes.availableModes, isEmpty);
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('prefers config options over modes returned by session fork', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_fork_settings_agent.dart');
     await agentScript.writeAsString('''
@@ -1856,11 +1921,8 @@ Future<void> main() async {
       expect(forked.id, 'session-forked');
       expect(forked.initialEvents, isEmpty);
       expect(settings.currentModelLabel, 'GPT-5');
-      expect(settings.modes.currentModeId, 'review');
-      expect(settings.modes.availableModes.map((mode) => mode.id), [
-        'act',
-        'review',
-      ]);
+      expect(settings.modes.currentModeId, isNull);
+      expect(settings.modes.availableModes, isEmpty);
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);

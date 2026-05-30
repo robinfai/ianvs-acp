@@ -338,6 +338,7 @@ class ChatController extends ChangeNotifier {
     final trimmedModeId = modeId.trim();
     if (sessionId == null ||
         trimmedModeId.isEmpty ||
+        !sessionSettings.shouldUseLegacyModes ||
         isStreaming ||
         isSessionOperationRunning) {
       return;
