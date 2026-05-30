@@ -8,7 +8,6 @@ void main() {
 
   test('manual follow-up document tracks audit checklist items', () {
     const trackedItems = <String, String>{
-      'authenticate': 'auth-authenticate',
       'filesystem and terminal providers': 'fs-terminal-providers',
       'Spark attachments': 'spark-attachments',
     };

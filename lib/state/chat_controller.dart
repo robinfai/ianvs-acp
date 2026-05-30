@@ -57,6 +57,17 @@ class ChatController extends ChangeNotifier {
 
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
 
+  List<Map<String, Object?>> get authMethods {
+    return capabilities?.authMethods
+            .where((method) => _stringFromMap(method, 'id').isNotEmpty)
+            .toList(growable: false) ??
+        const <Map<String, Object?>>[];
+  }
+
+  bool get canAuthenticate {
+    return authMethods.isNotEmpty && !isStreaming && !isSessionOperationRunning;
+  }
+
   bool get canForkCurrentSession {
     return currentSession != null &&
         supportsSessionFork &&
@@ -424,6 +435,21 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  Future<void> authenticate(String methodId) async {
+    final trimmedMethodId = methodId.trim();
+    if (trimmedMethodId.isEmpty || !canAuthenticate) return;
+
+    await _runSessionOperation(() async {
+      try {
+        await client.authenticate(methodId: trimmedMethodId);
+        lastError = null;
+        _notifyListeners();
+      } catch (error) {
+        _setActionError(error);
+      }
+    });
+  }
+
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
     status = connectingStatus;
     lastError = null;
@@ -585,6 +611,11 @@ class ChatController extends ChangeNotifier {
           (item) => item.map((key, value) => MapEntry(key.toString(), value)),
         )
         .toList(growable: false);
+  }
+
+  String _stringFromMap(Map<String, Object?> map, String key) {
+    final value = map[key];
+    return value is String ? value.trim() : '';
   }
 
   void _applySessionInfoUpdate(Map<String, Object?> metadata) {

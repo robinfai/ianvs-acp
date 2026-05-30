@@ -72,6 +72,9 @@ class AppShell extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
+                  onAuthenticate: controller.canAuthenticate
+                      ? () => unawaited(_showAuthenticateDialog(context))
+                      : null,
                   onLogout: controller.canLogout
                       ? () => unawaited(_confirmLogout(context))
                       : null,
@@ -197,6 +200,44 @@ class AppShell extends StatelessWidget {
     }
   }
 
+  Future<void> _showAuthenticateDialog(BuildContext context) async {
+    final methods = controller.authMethods;
+    if (methods.isEmpty) return;
+    final methodId = methods.length == 1
+        ? _authMethodId(methods.single)
+        : await showDialog<String>(
+            context: context,
+            builder: (context) {
+              return AlertDialog(
+                title: const Text('Authenticate'),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final method in methods)
+                        _AuthMethodTile(
+                          id: _authMethodId(method),
+                          name: _authMethodLabel(method),
+                          description: _authMethodDescription(method),
+                        ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              );
+            },
+          );
+    if (methodId == null || methodId.isEmpty) return;
+    if (!context.mounted) return;
+    await controller.authenticate(methodId);
+  }
+
   List<AgentSession> _sessions() {
     final controllers = sessionControllers.isEmpty
         ? <ChatController>[controller]
@@ -252,4 +293,62 @@ class AppShell extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AuthMethodTile extends StatelessWidget {
+  const _AuthMethodTile({
+    required this.id,
+    required this.name,
+    required this.description,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.login_rounded, color: AppColors.primaryDark),
+      title: Text(
+        name,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+      ),
+      subtitle: description.isEmpty
+          ? null
+          : Text(
+              description,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+      onTap: () => Navigator.of(context).pop(id),
+    );
+  }
+}
+
+String _authMethodId(Map<String, Object?> method) {
+  final id = method['id'];
+  return id is String ? id.trim() : '';
+}
+
+String _authMethodLabel(Map<String, Object?> method) {
+  final name = method['name'];
+  if (name is String && name.trim().isNotEmpty) return name.trim();
+  final id = _authMethodId(method);
+  return id.isEmpty ? 'Authenticate' : id;
+}
+
+String _authMethodDescription(Map<String, Object?> method) {
+  final description = method['description'];
+  return description is String ? description.trim() : '';
 }

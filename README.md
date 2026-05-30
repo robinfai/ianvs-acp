@@ -7,7 +7,8 @@ turns, display tool calls, render ACP plan and command updates, switch exposed
 session modes/models, close active sessions, and log out when the agent
 advertises those capabilities. It can also fork active sessions when the agent
 supports `session/fork` and suggest advertised slash commands in the prompt
-input.
+input. When an agent advertises authentication methods, the Agent menu can start
+the agent-handled ACP `authenticate` flow.
 
 ## Configuration
 

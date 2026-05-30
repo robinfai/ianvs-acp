@@ -9,7 +9,10 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gaps are client-provided filesystem/terminal providers, authenticate/login UI, and richer prompt-content support. Those are protocol features, but they need product/security decisions rather than only visual work.
+The largest remaining gaps are client-provided filesystem/terminal providers,
+interactive permission UI, and richer prompt-content support. Those are
+protocol features, but they need product/security decisions rather than only
+visual work.
 
 ## Official Feature Index
 
@@ -17,7 +20,7 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | --- | --- | --- | --- |
 | Transport | https://agentclientprotocol.com/protocol/transports | Done for stdio | `dart_acp` launches the configured agent through stdio. User config supports Zed-style `agent_servers` in `~/.config/ianvs-acp/settings.json`. Streamable HTTP is not implemented. |
 | Initialization / capabilities | https://agentclientprotocol.com/protocol/initialization | Partial | The client initializes, parses protocol version, `agentCapabilities`, `authMethods`, prompt/MCP/session capabilities, and shows them in compatibility UI. It does not yet send `clientInfo` or display `agentInfo`. |
-| Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Partial | `authMethods` are counted/displayed, and the toolbar exposes confirmed logout when the agent advertises `auth.logout`. There is no `authenticate` workflow yet. |
+| Authentication / logout | https://agentclientprotocol.com/protocol/authentication | Done for agent-handled auth | `authMethods` are counted/displayed, the Agent menu exposes `Authenticate` when the agent advertises methods, and the client calls ACP `authenticate` with the selected `methodId`. Confirmed logout remains available when the agent advertises `auth.logout`. The client does not persist credentials. |
 | Session setup: `session/new`, `session/load`, `session/resume` | https://agentclientprotocol.com/protocol/session-setup | Mostly done | New sessions work. Resume prefers `session/load` when available and falls back to `session/resume`. Empty resumed sessions now render as `Session ready` instead of a misleading new-session empty state. |
 | Session close | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes a confirmed `Close Session` action when `sessionCapabilities.close` is advertised. Closing clears the active local session and asks the agent to free resources without deleting persisted history. |
 | Session fork | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes `Fork Session` when `sessionCapabilities.fork` is advertised. Forking creates a new active independent session, keeps the original session in history, and clears the local timeline for the fork. |
@@ -118,7 +121,6 @@ These are not blockers for the current UI pass, but need product/security decisi
 Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
-- Decide whether to expose `authenticate`, including where login state should live in the UI.
 - Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 

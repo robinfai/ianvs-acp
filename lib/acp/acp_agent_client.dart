@@ -39,6 +39,8 @@ abstract class AcpAgentClient {
 
   Future<void> closeSession({required String sessionId});
 
+  Future<void> authenticate({required String methodId});
+
   Future<void> logout();
 
   Stream<AgentEvent> sendPrompt({

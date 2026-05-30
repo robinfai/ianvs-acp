@@ -263,6 +263,29 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
+  Future<void> authenticate({required String methodId}) async {
+    final client = _requireClient();
+    final trimmedMethodId = methodId.trim();
+    if (trimmedMethodId.isEmpty) {
+      throw StateError('Authentication method id is required.');
+    }
+    final supportsMethod =
+        _capabilities?.authMethods.any((method) {
+          final id = method['id'];
+          return id is String && id == trimmedMethodId;
+        }) ??
+        false;
+    if (!supportsMethod) {
+      throw StateError(
+        'ACP agent did not advertise authentication method "$trimmedMethodId".',
+      );
+    }
+    await client.sendRaw('authenticate', <String, dynamic>{
+      'methodId': trimmedMethodId,
+    });
+  }
+
+  @override
   Future<void> logout() async {
     final client = _requireClient();
     if (_capabilities?.auth.logout != true) {

@@ -15,6 +15,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.cancelError,
     this.forkError,
     this.closeError,
+    this.authenticateError,
     this.logoutError,
     this.supportsFork = true,
     this.supportsLogout = true,
@@ -23,6 +24,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.createSessionDelay = Duration.zero,
     this.listSessionsDelay = Duration.zero,
     this.resumeDelay = Duration.zero,
+    this.authMethods = const <Map<String, Object?>>[],
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
@@ -56,6 +58,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? cancelError;
   final Object? forkError;
   final Object? closeError;
+  final Object? authenticateError;
   final Object? logoutError;
   final bool supportsFork;
   final bool supportsLogout;
@@ -64,6 +67,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Duration createSessionDelay;
   final Duration listSessionsDelay;
   final Duration resumeDelay;
+  final List<Map<String, Object?>> authMethods;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
 
@@ -77,6 +81,7 @@ class FakeAgentClient implements AcpAgentClient {
   Object? lastConfigValue;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
+  String? lastAuthenticatedMethodId;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
@@ -116,7 +121,7 @@ class FakeAgentClient implements AcpAgentClient {
           rawAgentCapabilities: <String, Object?>{
             if (supportsLogout) 'auth': <String, Object?>{'logout': true},
           },
-          authMethods: const <Map<String, Object?>>[],
+          authMethods: authMethods,
         )
       : null;
 
@@ -282,6 +287,20 @@ class FakeAgentClient implements AcpAgentClient {
       throw closeError!;
     }
     lastClosedSessionId = sessionId;
+  }
+
+  @override
+  Future<void> authenticate({required String methodId}) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    if (!authMethods.any((method) => method['id'] == methodId)) {
+      throw StateError('Fake client does not support auth method "$methodId".');
+    }
+    if (authenticateError != null) {
+      throw authenticateError!;
+    }
+    lastAuthenticatedMethodId = methodId;
   }
 
   @override

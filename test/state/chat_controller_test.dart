@@ -446,6 +446,31 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.connected);
   });
 
+  test('authenticate invokes advertised auth method', () async {
+    final fake = FakeAgentClient(
+      authMethods: const [
+        {
+          'id': 'browser',
+          'name': 'Browser sign-in',
+          'description': 'Continue in the agent browser flow.',
+        },
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    expect(controller.canAuthenticate, isTrue);
+    expect(controller.authMethods.single['id'], 'browser');
+
+    await controller.authenticate('browser');
+
+    expect(fake.lastAuthenticatedMethodId, 'browser');
+    expect(controller.lastError, isNull);
+    expect(controller.isSessionOperationRunning, isFalse);
+  });
+
   test('agentTextDone stop reason is rendered as a turn status', () async {
     final controller = ChatController(
       client: FakeAgentClient(

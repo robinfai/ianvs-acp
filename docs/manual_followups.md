@@ -18,28 +18,6 @@ today, plus the manual decision or validation still needed before implementation
 
 ## Checklist
 
-### auth-authenticate
-
-Status: product decision needed.
-
-Non-blocking because: logout is implemented for agents that advertise
-`auth.logout`; the missing authenticate flow needs UX decisions for entry point,
-login state display, and credential lifetime.
-
-Automated acceptance:
-
-- `test/ui/capabilities_dialog_test.dart` verifies auth capability rendering.
-- `test/state/chat_controller_test.dart` verifies logout clears local session
-  state.
-- `test/ui/app_shell_test.dart` verifies the toolbar exposes logout when
-  supported.
-
-Manual decision:
-
-- Choose the authenticate entry point and logged-in/logged-out UI state.
-- Decide how credentials or auth handoff state should be stored, refreshed, and
-  cleared.
-
 ### fs-terminal-providers
 
 Status: security decision needed.

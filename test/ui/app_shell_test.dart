@@ -11,6 +11,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onAuthenticate,
     VoidCallback? onLogout,
   }) {
     return MaterialApp(
@@ -21,6 +22,7 @@ void main() {
           status: status,
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
+          onAuthenticate: onAuthenticate,
           onLogout: onLogout,
           onNewSession: () {},
           onResumeSession: () {},
@@ -38,6 +40,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onAuthenticate,
     VoidCallback? onLogout,
   }) async {
     tester.view.physicalSize = size;
@@ -51,6 +54,7 @@ void main() {
         agentServers: agentServers,
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
+        onAuthenticate: onAuthenticate,
         onLogout: onLogout,
       ),
     );
@@ -158,6 +162,28 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(loggedOut, isTrue);
+  });
+
+  testWidgets('AgentToolbar exposes authenticate when auth methods exist', (
+    tester,
+  ) async {
+    var authenticated = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onAuthenticate: () {
+        authenticated = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Authenticate'), findsOneWidget);
+
+    await tester.tap(find.text('Authenticate'));
+    await tester.pumpAndSettle();
+
+    expect(authenticated, isTrue);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {

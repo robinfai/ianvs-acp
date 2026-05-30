@@ -16,6 +16,7 @@ class AgentToolbar extends StatelessWidget {
     this.canSwitchAgent = true,
     this.onSelectAgent,
     this.onShowAgentConfig,
+    this.onAuthenticate,
     this.onLogout,
   });
 
@@ -28,6 +29,7 @@ class AgentToolbar extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onAuthenticate;
   final VoidCallback? onLogout;
 
   @override
@@ -74,6 +76,7 @@ class AgentToolbar extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
+                  onAuthenticate: onAuthenticate,
                   onLogout: onLogout,
                 ),
                 SizedBox(width: compact ? 5 : 8),
@@ -112,6 +115,7 @@ class _AgentMenuButton extends StatelessWidget {
     required this.canSwitchAgent,
     required this.onSelectAgent,
     required this.onShowAgentConfig,
+    required this.onAuthenticate,
     required this.onLogout,
   });
 
@@ -121,6 +125,7 @@ class _AgentMenuButton extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onAuthenticate;
   final VoidCallback? onLogout;
 
   @override
@@ -128,6 +133,7 @@ class _AgentMenuButton extends StatelessWidget {
     final hasMenu =
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
+        onAuthenticate != null ||
         onLogout != null;
     return PopupMenuButton<_AgentMenuSelection>(
       tooltip: 'Agents',
@@ -139,6 +145,8 @@ class _AgentMenuButton extends StatelessWidget {
             if (agentName != null) onSelectAgent?.call(agentName);
           case _AgentMenuSelectionType.configure:
             onShowAgentConfig?.call();
+          case _AgentMenuSelectionType.authenticate:
+            onAuthenticate?.call();
           case _AgentMenuSelectionType.logout:
             onLogout?.call();
         }
@@ -197,8 +205,38 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
-          if (onLogout != null &&
+          if (onAuthenticate != null &&
               (agentServers.isNotEmpty || onShowAgentConfig != null))
+            const PopupMenuDivider(),
+          if (onAuthenticate != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.authenticate(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.login_rounded,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Authenticate',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (onLogout != null &&
+              (agentServers.isNotEmpty ||
+                  onShowAgentConfig != null ||
+                  onAuthenticate != null))
             const PopupMenuDivider(),
           if (onLogout != null)
             const PopupMenuItem<_AgentMenuSelection>(
@@ -232,7 +270,7 @@ class _AgentMenuButton extends StatelessWidget {
   }
 }
 
-enum _AgentMenuSelectionType { agent, configure, logout }
+enum _AgentMenuSelectionType { agent, configure, authenticate, logout }
 
 class _AgentMenuSelection {
   const _AgentMenuSelection.agent(this.agentName)
@@ -240,6 +278,10 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.configure()
     : type = _AgentMenuSelectionType.configure,
+      agentName = null;
+
+  const _AgentMenuSelection.authenticate()
+    : type = _AgentMenuSelectionType.authenticate,
       agentName = null;
 
   const _AgentMenuSelection.logout()
