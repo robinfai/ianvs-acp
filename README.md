@@ -36,7 +36,8 @@ Example:
         "-y",
         "@modelcontextprotocol/server-filesystem",
         "/Users/example/project"
-      ]
+      ],
+      "env": []
     }
   ]
 }

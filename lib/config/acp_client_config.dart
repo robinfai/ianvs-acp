@@ -248,10 +248,17 @@ class McpServerConfig {
       throw FormatException('MCP server at index $index requires name.');
     }
 
+    final type = _stringValue(raw['type']);
     final command = _stringValue(raw['command']);
     final url = _stringValue(raw['url']);
     if (command == null && url == null) {
       throw FormatException('MCP server "$name" requires command or url.');
+    }
+    if ((type == 'http' || type == 'sse') || (command == null && url != null)) {
+      _ensureNameValueList(raw, key: 'headers', serverName: name);
+    } else {
+      _ensureStringList(raw, key: 'args', serverName: name);
+      _ensureNameValueList(raw, key: 'env', serverName: name);
     }
 
     return McpServerConfig(raw: raw);
@@ -344,4 +351,51 @@ Object? _jsonValue(Object? value, {required String fieldName}) {
   }
   if (value is Map) return _jsonMap(value, fieldName: fieldName);
   throw FormatException('$fieldName must be JSON-compatible.');
+}
+
+void _ensureStringList(
+  Map<String, dynamic> raw, {
+  required String key,
+  required String serverName,
+}) {
+  final value = raw[key];
+  if (value == null) {
+    raw[key] = const <String>[];
+    return;
+  }
+  if (value is! List || value.any((item) => item is! String)) {
+    throw FormatException(
+      'MCP server "$serverName" $key must be a string list.',
+    );
+  }
+}
+
+void _ensureNameValueList(
+  Map<String, dynamic> raw, {
+  required String key,
+  required String serverName,
+}) {
+  final value = raw[key];
+  if (value == null) {
+    raw[key] = const <Map<String, String>>[];
+    return;
+  }
+  if (value is! List) {
+    throw FormatException('MCP server "$serverName" $key must be a list.');
+  }
+  for (var index = 0; index < value.length; index++) {
+    final item = value[index];
+    if (item is! Map) {
+      throw FormatException(
+        'MCP server "$serverName" $key entry $index must be an object.',
+      );
+    }
+    final name = item['name'];
+    final itemValue = item['value'];
+    if (name is! String || name.trim().isEmpty || itemValue is! String) {
+      throw FormatException(
+        'MCP server "$serverName" $key entry $index requires name and value.',
+      );
+    }
+  }
 }

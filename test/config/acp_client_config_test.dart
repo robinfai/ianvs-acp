@@ -102,6 +102,32 @@ void main() {
     ]);
   });
 
+  test('fills required MCP transport arrays when omitted', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {'name': 'stdio-tools', 'command': '/usr/local/bin/mcp-tools'},
+        {
+          'name': 'api-tools',
+          'type': 'http',
+          'url': 'https://api.example.com/mcp',
+        },
+      ],
+    });
+
+    expect(config.mcpServers.first.toJson(), {
+      'name': 'stdio-tools',
+      'command': '/usr/local/bin/mcp-tools',
+      'args': <String>[],
+      'env': <Map<String, String>>[],
+    });
+    expect(config.mcpServers.last.toJson(), {
+      'name': 'api-tools',
+      'type': 'http',
+      'url': 'https://api.example.com/mcp',
+      'headers': <Map<String, String>>[],
+    });
+  });
+
   test('rejects invalid MCP server config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -116,6 +142,31 @@ void main() {
       () => AcpClientConfig.fromJson({
         'mcp_servers': [
           {'name': 'filesystem'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'name': 'filesystem', 'command': '/usr/local/bin/mcp', 'args': 42},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'type': 'http',
+            'url': 'https://api.example.com/mcp',
+            'headers': [
+              {'name': 'Authorization'},
+            ],
+          },
         ],
       }),
       throwsA(isA<FormatException>()),

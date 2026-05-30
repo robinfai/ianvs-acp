@@ -90,7 +90,8 @@ Supported shape:
     {
       "name": "filesystem",
       "command": "/opt/homebrew/bin/npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": []
     }
   ]
 }
