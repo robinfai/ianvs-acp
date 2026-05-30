@@ -45,6 +45,14 @@ class StatusBar extends StatelessWidget {
                     icon: Icons.tag_rounded,
                     label: controller.currentSession?.shortId ?? 'no session',
                   ),
+                  if (_currentModelLabel(controller) != null) ...[
+                    const SizedBox(width: 14),
+                    _StatusItem(
+                      icon: Icons.memory_rounded,
+                      label: _currentModelLabel(controller)!,
+                      color: AppColors.primaryDark,
+                    ),
+                  ],
                   if (_currentModeLabel(controller) != null) ...[
                     const SizedBox(width: 14),
                     _StatusItem(
@@ -118,6 +126,12 @@ class StatusBar extends StatelessWidget {
   String _latencyLabel(Duration? latency) {
     if (latency == null) return 'latency --';
     return 'latency ${latency.inMilliseconds} ms';
+  }
+
+  String? _currentModelLabel(ChatController controller) {
+    final modelLabel = controller.sessionSettings.currentModelLabel;
+    if (modelLabel == null || modelLabel.isEmpty) return null;
+    return 'model $modelLabel';
   }
 
   String? _currentModeLabel(ChatController controller) {

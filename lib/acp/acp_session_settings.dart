@@ -11,6 +11,23 @@ class AcpSessionSettings {
 
   bool get hasConfigOptions => configOptions.isNotEmpty;
 
+  AcpConfigOption? get modelOption {
+    for (final option in configOptions) {
+      if (option.isModelOption) return option;
+    }
+    return null;
+  }
+
+  List<AcpConfigOption> get nonModelConfigOptions {
+    return configOptions.where((option) => !option.isModelOption).toList();
+  }
+
+  String? get currentModelLabel {
+    final option = modelOption;
+    if (option == null) return null;
+    return option.currentChoiceLabel;
+  }
+
   AcpSessionSettings copyWith({
     AcpSessionModeInfo? modes,
     List<AcpConfigOption>? configOptions,
@@ -87,6 +104,37 @@ class AcpConfigOption {
       category: category,
       group: group,
     );
+  }
+
+  bool get isModelOption {
+    if (options.isEmpty) return false;
+    final tokens = <String>[id, name, category ?? '', group ?? '']
+        .map((value) => value.trim().toLowerCase())
+        .where((value) {
+          return value.isNotEmpty;
+        });
+
+    for (final token in tokens) {
+      if (token == 'model' ||
+          token == '模型' ||
+          token.endsWith('_model') ||
+          token.endsWith('-model') ||
+          token.contains('model id') ||
+          token.contains('model_id') ||
+          token.contains('model-id') ||
+          token.contains('model name') ||
+          token.contains('模型')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String get currentChoiceLabel {
+    for (final choice in options) {
+      if (choice.value == currentValue) return choice.label;
+    }
+    return currentValue;
   }
 }
 

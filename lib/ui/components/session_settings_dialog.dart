@@ -41,6 +41,14 @@ class SessionSettingsDialog extends StatelessWidget {
                     loading: controller.sessionSettingsLoading,
                   ),
                   const SizedBox(height: 8),
+                  _ModelSection(
+                    option: settings.modelOption,
+                    enabled: !controller.isStreaming,
+                    onChanged: (modelValue) {
+                      unawaited(controller.setSessionModel(modelValue));
+                    },
+                  ),
+                  const SizedBox(height: 8),
                   _ModeSection(
                     settings: settings,
                     enabled: !controller.isStreaming,
@@ -50,7 +58,7 @@ class SessionSettingsDialog extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   _ConfigSection(
-                    options: settings.configOptions,
+                    options: settings.nonModelConfigOptions,
                     enabled: !controller.isStreaming,
                     onChanged: (configId, value) {
                       unawaited(controller.setConfigOption(configId, value));
@@ -151,6 +159,67 @@ class _SessionHeader extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _ModelSection extends StatelessWidget {
+  const _ModelSection({
+    required this.option,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final AcpConfigOption? option;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final modelOption = option;
+    final selectedValue =
+        modelOption?.options.any(
+              (choice) => choice.value == modelOption.currentValue,
+            ) ==
+            true
+        ? modelOption!.currentValue
+        : null;
+
+    return _Panel(
+      icon: Icons.memory_rounded,
+      title: 'Model',
+      child: modelOption == null
+          ? const _EmptyState.inline(
+              icon: Icons.info_outline_rounded,
+              message: 'No model option exposed by this session.',
+            )
+          : DropdownButtonFormField<String>(
+              isExpanded: true,
+              initialValue: selectedValue,
+              decoration: _inputDecoration('Current model'),
+              items: modelOption.options
+                  .map(
+                    (choice) => DropdownMenuItem<String>(
+                      value: choice.value,
+                      child: Text(
+                        choice.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              hint: modelOption.currentValue.isEmpty
+                  ? null
+                  : Text(
+                      modelOption.currentValue,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+              onChanged: enabled
+                  ? (value) {
+                      if (value != null) onChanged(value);
+                    }
+                  : null,
+            ),
     );
   }
 }

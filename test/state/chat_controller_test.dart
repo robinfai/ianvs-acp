@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
@@ -212,6 +213,38 @@ void main() {
       controller.sessionSettings.configOptions.single.currentValue,
       'auto',
     );
+    expect(controller.lastError, isNull);
+  });
+
+  test('set session model updates model config option', () async {
+    final fake = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            options: [
+              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              AcpConfigOptionChoice(
+                value: 'claude-sonnet-4',
+                name: 'Claude Sonnet 4',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.setSessionModel('claude-sonnet-4');
+
+    expect(fake.lastConfigId, 'model');
+    expect(fake.lastConfigValue, 'claude-sonnet-4');
+    expect(controller.sessionSettings.currentModelLabel, 'Claude Sonnet 4');
     expect(controller.lastError, isNull);
   });
 

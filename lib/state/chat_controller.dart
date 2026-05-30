@@ -263,6 +263,15 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  Future<void> setSessionModel(String modelValue) async {
+    final option = sessionSettings.modelOption;
+    if (option == null) {
+      _setActionError(StateError('No model option exposed by this session.'));
+      return;
+    }
+    await setConfigOption(option.id, modelValue);
+  }
+
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
     status = connectingStatus;
     lastError = null;
