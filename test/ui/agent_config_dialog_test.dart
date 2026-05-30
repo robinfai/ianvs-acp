@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 
@@ -20,6 +21,15 @@ void main() {
                 writeTextFile: false,
               ),
               terminal: AcpTerminalProviderConfig(enabled: true),
+              permissions: AcpPermissionProviderConfig(
+                trustRules: [
+                  AcpPermissionTrustRule(
+                    toolName: 'read_text_file',
+                    toolKind: 'read',
+                    decision: AcpPermissionDecision.allow,
+                  ),
+                ],
+              ),
             ),
             mcpServers: [
               McpServerConfig(
@@ -61,6 +71,8 @@ void main() {
     expect(find.text('Client Providers'), findsOneWidget);
     expect(find.text('FS read'), findsOneWidget);
     expect(find.text('Terminal'), findsOneWidget);
+    expect(find.text('Trust rules'), findsOneWidget);
+    expect(find.text('1'), findsWidgets);
     expect(find.text('Enabled'), findsWidgets);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
     expect(find.text('Current'), findsOneWidget);

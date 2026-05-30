@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
@@ -171,6 +172,44 @@ void main() {
     expect(selected.clientProviders.terminal.enabled, isTrue);
   });
 
+  test('loads opt-in client permission trust rules', () {
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'permissions': {
+          'trust_rules': [
+            {
+              'tool_name': 'read_text_file',
+              'tool_kind': 'read',
+              'decision': 'allow',
+            },
+            {'toolName': 'terminal', 'decision': 'deny'},
+          ],
+        },
+      },
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    final rules = config.clientProviders.permissions.trustRules;
+    expect(rules, hasLength(2));
+    expect(config.clientProviders.permissions.hasTrustRules, isTrue);
+    expect(rules[0].toolName, 'read_text_file');
+    expect(rules[0].toolKind, 'read');
+    expect(rules[0].decision, AcpPermissionDecision.allow);
+    expect(rules[1].toolName, 'terminal');
+    expect(rules[1].toolKind, isNull);
+    expect(rules[1].decision, AcpPermissionDecision.deny);
+
+    final selected = config.withActiveAgentServer('Codex');
+    expect(selected.clientProviders.permissions.trustRules, hasLength(2));
+  });
+
   test('rejects invalid client provider config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -199,6 +238,59 @@ void main() {
       () => AcpClientConfig.fromJson({
         'client_providers': {
           'terminal': {'enabled': 'yes'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {'permissions': true},
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {'trust_rules': 'always'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'trust_rules': ['read_text_file'],
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'trust_rules': [
+              {'decision': 'allow'},
+            ],
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'trust_rules': [
+              {'tool_name': 'read_text_file', 'decision': 'cancel'},
+            ],
+          },
         },
       }),
       throwsA(isA<FormatException>()),

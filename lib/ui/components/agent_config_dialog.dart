@@ -39,7 +39,8 @@ class AgentConfigDialog extends StatelessWidget {
               ],
               if (clientProviders.filesystem.enabled ||
                   clientProviders.filesystem.allowReadOutsideWorkspace ||
-                  clientProviders.terminal.enabled) ...[
+                  clientProviders.terminal.enabled ||
+                  clientProviders.permissions.hasTrustRules) ...[
                 const SizedBox(height: 10),
                 _ClientProvidersPanel(providers: clientProviders),
               ],
@@ -83,6 +84,7 @@ class _ClientProvidersPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final fs = providers.filesystem;
     final terminal = providers.terminal;
+    final permissions = providers.permissions;
     return _Panel(
       icon: Icons.security_rounded,
       title: 'Client Providers',
@@ -108,6 +110,13 @@ class _ClientProvidersPanel extends StatelessWidget {
           _DetailRow(
             label: 'Terminal',
             value: terminal.enabled ? 'Enabled' : 'Disabled',
+          ),
+          const SizedBox(height: 6),
+          _DetailRow(
+            label: 'Trust rules',
+            value: permissions.hasTrustRules
+                ? '${permissions.trustRules.length}'
+                : 'None',
           ),
         ],
       ),

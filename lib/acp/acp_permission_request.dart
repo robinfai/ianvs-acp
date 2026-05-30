@@ -4,6 +4,33 @@ enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
 
+class AcpPermissionTrustRule {
+  const AcpPermissionTrustRule({
+    required this.toolName,
+    required this.decision,
+    this.toolKind,
+  });
+
+  final String toolName;
+  final String? toolKind;
+  final AcpPermissionDecision decision;
+
+  bool matches(AcpPermissionRequest request) {
+    if (request.toolName.trim() != toolName.trim()) return false;
+    final kind = toolKind?.trim();
+    if (kind == null || kind.isEmpty) return true;
+    return request.toolKind?.trim() == kind;
+  }
+
+  String get displayDecision {
+    return switch (decision) {
+      AcpPermissionDecision.allow => 'Allow',
+      AcpPermissionDecision.deny => 'Deny',
+      AcpPermissionDecision.cancel => 'Cancel',
+    };
+  }
+}
+
 class AcpPermissionRequest {
   const AcpPermissionRequest({
     required this.id,

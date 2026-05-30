@@ -152,6 +152,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       client: _agentClient(config),
       cwd: _cwd,
       agentName: config.agentName,
+      permissionTrustRules: config.clientProviders.permissions.trustRules,
     );
   }
 

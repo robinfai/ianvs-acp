@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../acp/acp_permission_request.dart';
+
 class AcpClientConfig {
   const AcpClientConfig({
     this.activeAgentServer,
@@ -187,10 +189,12 @@ class AcpClientProviderConfig {
   const AcpClientProviderConfig({
     this.filesystem = const AcpFilesystemProviderConfig(),
     this.terminal = const AcpTerminalProviderConfig(),
+    this.permissions = const AcpPermissionProviderConfig(),
   });
 
   final AcpFilesystemProviderConfig filesystem;
   final AcpTerminalProviderConfig terminal;
+  final AcpPermissionProviderConfig permissions;
 
   factory AcpClientProviderConfig.fromJson(Object? raw) {
     if (raw == null) return const AcpClientProviderConfig();
@@ -203,8 +207,79 @@ class AcpClientProviderConfig {
         map['filesystem'] ?? map['fs'],
       ),
       terminal: AcpTerminalProviderConfig.fromJson(map['terminal']),
+      permissions: AcpPermissionProviderConfig.fromJson(map['permissions']),
     );
   }
+}
+
+class AcpPermissionProviderConfig {
+  const AcpPermissionProviderConfig({
+    this.trustRules = const <AcpPermissionTrustRule>[],
+  });
+
+  final List<AcpPermissionTrustRule> trustRules;
+
+  bool get hasTrustRules => trustRules.isNotEmpty;
+
+  factory AcpPermissionProviderConfig.fromJson(Object? raw) {
+    if (raw == null) return const AcpPermissionProviderConfig();
+    if (raw is! Map) {
+      throw const FormatException(
+        'client_providers.permissions must be a JSON object.',
+      );
+    }
+    final map = _jsonMap(raw, fieldName: 'client_providers.permissions');
+    final rulesRaw = map['trust_rules'] ?? map['trustRules'] ?? map['rules'];
+    if (rulesRaw == null) return const AcpPermissionProviderConfig();
+    if (rulesRaw is! List) {
+      throw const FormatException(
+        'client_providers.permissions.trust_rules must be a JSON array.',
+      );
+    }
+    return AcpPermissionProviderConfig(
+      trustRules: rulesRaw.map(_permissionTrustRule).toList(growable: false),
+    );
+  }
+}
+
+AcpPermissionTrustRule _permissionTrustRule(Object? raw) {
+  if (raw is! Map) {
+    throw const FormatException(
+      'client_providers.permissions.trust_rules entries must be JSON objects.',
+    );
+  }
+  final map = _jsonMap(
+    raw,
+    fieldName: 'client_providers.permissions.trust_rules[]',
+  );
+  final toolName = _stringValue(map['tool_name'] ?? map['toolName']);
+  if (toolName == null || toolName.isEmpty) {
+    throw const FormatException(
+      'client_providers.permissions.trust_rules[].tool_name is required.',
+    );
+  }
+  final decision = _permissionTrustDecision(
+    map['decision'],
+    fieldName: 'client_providers.permissions.trust_rules[].decision',
+  );
+  final toolKind = _stringValue(map['tool_kind'] ?? map['toolKind']);
+  return AcpPermissionTrustRule(
+    toolName: toolName,
+    toolKind: toolKind,
+    decision: decision,
+  );
+}
+
+AcpPermissionDecision _permissionTrustDecision(
+  Object? raw, {
+  required String fieldName,
+}) {
+  final value = _stringValue(raw)?.toLowerCase();
+  return switch (value) {
+    'allow' || 'allowed' => AcpPermissionDecision.allow,
+    'deny' || 'denied' || 'reject' || 'rejected' => AcpPermissionDecision.deny,
+    _ => throw FormatException('$fieldName must be allow or deny.'),
+  };
 }
 
 class AcpTerminalProviderConfig {

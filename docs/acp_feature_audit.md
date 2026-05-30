@@ -28,9 +28,9 @@ HTTP/SSE profile and real-agent interoperability.
 | Session list / metadata | https://agentclientprotocol.com/protocol/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, and supports text search at project and conversation levels. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link/embedded file prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource.text` when the agent advertises `promptCapabilities.embeddedContext`; image and audio attachments are embedded as `image`/`audio` content when the agent advertises matching prompt capabilities; small generic binary attachments are embedded as `resource.blob` when embedded context is advertised. Prompt-side `@file` and URL mentions are preserved as `resource_link` content even when selected attachments force the raw prompt path, with sentence-ending punctuation kept out of link targets. Unsupported or oversized attachments fall back to `resource_link`. The prompt input marks selected files with capability-aware send modes: Image, Audio, Embed, or Link. |
 | Content blocks | https://agentclientprotocol.com/protocol/content | Mostly done | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`, with the same mode classification reused by the prompt UI. File links remain available as fallback, but model/agent-specific support can still vary. |
-| Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval and exportable in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click. `session/request_permission` now surfaces an in-app approval banner with Allow Once, Deny, and Cancel. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, and can be exported as JSON. When no UI listener is active, requests are still conservatively returned as `cancelled` instead of being auto-approved. Persistent trust rules and long-term audit retention remain product/security follow-ups. |
-| File system provider | https://agentclientprotocol.com/protocol/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed by default and still require the interactive permission approval path. `allow_read_outside_workspace` only relaxes reads, never writes. |
-| Terminal provider | https://agentclientprotocol.com/protocol/terminals | Done when explicitly configured | The client defaults to no terminal support. User config can opt into `client_providers.terminal.enabled`; terminal creation still requires the interactive permission approval path, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
+| Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval, explicit trust rules, and exportable in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click. `session/request_permission` now surfaces an in-app approval banner with Allow Once, Deny, and Cancel. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, and can be exported as JSON. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests. When no UI listener is active, requests are still conservatively returned as `cancelled` instead of being auto-approved. Long-term audit retention and broader trust policy remain product/security follow-ups. |
+| File system provider | https://agentclientprotocol.com/protocol/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed by default and still require permission approval unless matched by an explicit permission trust rule. `allow_read_outside_workspace` only relaxes reads, never writes. |
+| Terminal provider | https://agentclientprotocol.com/protocol/terminals | Done when explicitly configured | The client defaults to no terminal support. User config can opt into `client_providers.terminal.enabled`; terminal creation still requires permission approval unless matched by an explicit permission trust rule, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is consumed as complete state, including updates emitted immediately after `session/new`. The local model understands official `category` as well as older `group`. Initial `configOptions` returned directly by `session/new` and fallback `session/resume` are captured from the raw session response. |
@@ -113,6 +113,15 @@ Supported shape:
     },
     "terminal": {
       "enabled": false
+    },
+    "permissions": {
+      "trust_rules": [
+        {
+          "tool_name": "read_text_file",
+          "tool_kind": "read",
+          "decision": "allow"
+        }
+      ]
     }
   }
 }
@@ -131,13 +140,17 @@ forwarded; HTTP, SSE, and ACP transport entries require matching agent
 `mcpCapabilities`.
 Configured `client_providers.filesystem` controls whether the client advertises
 ACP file-system callbacks. Filesystem providers are off by default; when enabled,
-read/write requests still go through per-request permission approval, and writes
-remain confined to the session workspace.
+read/write requests still go through permission approval unless matched by an
+explicit trust rule, and writes remain confined to the session workspace.
 Configured `client_providers.terminal.enabled` controls whether the client
 advertises ACP terminal callbacks. Terminal support is off by default; when
-enabled, terminal creation still goes through per-request permission approval,
-uses the session workspace as the default cwd, and renders command lifecycle
-status/output in the timeline.
+enabled, terminal creation still goes through permission approval unless matched
+by an explicit trust rule, uses the session workspace as the default cwd, and
+renders command lifecycle status/output in the timeline.
+Configured `client_providers.permissions.trust_rules` can auto-resolve matching
+permission requests with an explicit `allow` or `deny` decision. Rules match by
+`tool_name` and can optionally narrow by `tool_kind`; no rules are configured by
+default.
 When connected, the Agents menu exposes `Extension Request` for advanced
 underscore-prefixed ACP extension methods advertised through `_meta` or otherwise
 coordinated by a specific agent.
@@ -159,7 +172,7 @@ These are not blockers for the current UI pass, but need product/security decisi
 Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
-- Review filesystem and terminal providers policy: both are available behind explicit user config, per-request permission approval, and exportable in-process permission history, but first-run UI, long-term audit retention, and persistent trust controls remain undecided.
+- Review filesystem and terminal providers policy: both are available behind explicit user config, permission approval, explicit trust rules, and exportable in-process permission history, but first-run UI, long-term audit retention, and broader trust controls remain undecided.
 - Finish remote transport support: WebSocket works for draft remote agents, while Streamable HTTP/SSE and HTTP/2 validation are still pending.
 - Design vendor-specific extension workflows only when a real agent's `_meta` contract requires more than the generic Extension Request dialog.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.

@@ -469,6 +469,46 @@ void main() {
     );
   });
 
+  test('permission trust rules auto resolve matching requests', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionTrustRules: const [
+        AcpPermissionTrustRule(
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          decision: AcpPermissionDecision.allow,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        toolKind: 'read',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(controller.permissionHistory, hasLength(1));
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+    expect(controller.permissionHistory.single.resolvedAt, isNotNull);
+  });
+
   test('set session mode updates ACP session settings', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

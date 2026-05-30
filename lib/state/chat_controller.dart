@@ -33,7 +33,9 @@ class ChatController extends ChangeNotifier {
     required this.client,
     required this.cwd,
     this.agentName = 'Codex',
-  }) {
+    List<AcpPermissionTrustRule> permissionTrustRules =
+        const <AcpPermissionTrustRule>[],
+  }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
@@ -43,6 +45,7 @@ class ChatController extends ChangeNotifier {
   final AcpAgentClient client;
   final String cwd;
   final String agentName;
+  final List<AcpPermissionTrustRule> permissionTrustRules;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? currentSession;
@@ -617,7 +620,33 @@ class ChatController extends ChangeNotifier {
     }
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
+    final trustedDecision = _trustedDecisionFor(request);
+    if (trustedDecision != null) {
+      pendingPermissionRequest = null;
+      _recordPermissionDecision(request.id, trustedDecision);
+      unawaited(
+        _respondToTrustedPermissionRequest(request.id, trustedDecision),
+      );
+    }
     _notifyListeners();
+  }
+
+  AcpPermissionDecision? _trustedDecisionFor(AcpPermissionRequest request) {
+    for (final rule in permissionTrustRules) {
+      if (rule.matches(request)) return rule.decision;
+    }
+    return null;
+  }
+
+  Future<void> _respondToTrustedPermissionRequest(
+    String id,
+    AcpPermissionDecision decision,
+  ) async {
+    try {
+      await client.respondToPermissionRequest(id: id, decision: decision);
+    } catch (error) {
+      _setActionError(error);
+    }
   }
 
   Future<void> _cancelPendingPermissionRequest() async {
