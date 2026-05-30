@@ -42,6 +42,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, List<AcpConfigOption>>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
+  static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
   static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
   static const int _maxAudioAttachmentBytes = 8 * 1024 * 1024;
 
@@ -603,7 +604,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     final audio = await _audioContentBlock(attachment);
     if (audio != null) return audio;
     final embedded = await _embeddedTextResourceBlock(attachment);
-    return embedded ?? _resourceLinkBlock(attachment);
+    if (embedded != null) return embedded;
+    final binary = await _embeddedBinaryResourceBlock(attachment);
+    return binary ?? _resourceLinkBlock(attachment);
   }
 
   Future<Map<String, dynamic>?> _imageContentBlock(
@@ -724,6 +727,33 @@ class DartAcpAgentClient implements AcpAgentClient {
       '.yml',
       '.zsh',
     ].any(name.endsWith);
+  }
+
+  Future<Map<String, dynamic>?> _embeddedBinaryResourceBlock(
+    PromptAttachment attachment,
+  ) async {
+    if (_capabilities?.prompt.embeddedContext != true) return null;
+    if (_isTextAttachment(attachment)) return null;
+    if (_imageMimeType(attachment) != null) return null;
+    if (_audioMimeType(attachment) != null) return null;
+
+    try {
+      final file = File(attachment.path);
+      final byteCount = attachment.size ?? await file.length();
+      if (byteCount > _maxEmbeddedBinaryAttachmentBytes) return null;
+      final bytes = await file.readAsBytes();
+      return <String, dynamic>{
+        'type': 'resource',
+        'resource': <String, dynamic>{
+          'uri': attachment.uri.toString(),
+          if (attachment.mimeType?.isNotEmpty == true)
+            'mimeType': attachment.mimeType,
+          'blob': base64Encode(bytes),
+        },
+      };
+    } on Object {
+      return null;
+    }
   }
 
   String? _imageMimeType(PromptAttachment attachment) {

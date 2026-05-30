@@ -211,6 +211,46 @@ Future<void> main() async {
     expect(resourceLink['mimeType'], 'audio/wav');
   });
 
+  test(
+    'embeds binary attachments when embedded context is advertised',
+    () async {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'sample.bin',
+        attachmentBytes: _binaryBytes,
+        mimeType: 'application/octet-stream',
+      );
+      final prompt = promptParams['prompt'] as List<dynamic>;
+
+      expect(prompt, hasLength(2));
+      final resourceBlock = prompt.last as Map<String, dynamic>;
+      expect(resourceBlock['type'], 'resource');
+      final resource = resourceBlock['resource'] as Map<String, dynamic>;
+      expect(resource['mimeType'], 'application/octet-stream');
+      expect(resource['blob'], base64Encode(_binaryBytes));
+      expect(resource['uri'], startsWith('file://'));
+    },
+  );
+
+  test(
+    'falls back to resource links for binary attachments without embedded context',
+    () async {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: false,
+        attachmentName: 'sample.bin',
+        attachmentBytes: _binaryBytes,
+        mimeType: 'application/octet-stream',
+      );
+      final prompt = promptParams['prompt'] as List<dynamic>;
+
+      expect(prompt, hasLength(2));
+      final resourceLink = prompt.last as Map<String, dynamic>;
+      expect(resourceLink['type'], 'resource_link');
+      expect(resourceLink['name'], 'sample.bin');
+      expect(resourceLink['mimeType'], 'application/octet-stream');
+    },
+  );
+
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
@@ -815,6 +855,8 @@ const _tinyWavBytes = <int>[
   0x00,
   0x00,
 ];
+
+const _binaryBytes = <int>[0x00, 0xff, 0x10, 0x80, 0x42, 0x24];
 
 String _dartExecutable() {
   final executable = Platform.resolvedExecutable;
