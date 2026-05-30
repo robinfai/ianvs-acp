@@ -336,6 +336,22 @@ void main() {
             ],
           },
         ),
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Embedded resource.',
+          metadata: const {
+            'contentBlocks': [
+              {
+                'type': 'resource',
+                'resource': {
+                  'uri': 'file:///workspace/README.md',
+                  'mimeType': 'text/markdown',
+                  'text': '# Project notes',
+                },
+              },
+            ],
+          },
+        ),
       ]),
     );
 
@@ -343,6 +359,11 @@ void main() {
     expect(find.text('main.dart'), findsOneWidget);
     expect(find.text('text/x-dart'), findsOneWidget);
     expect(find.text('file:///workspace/lib/main.dart'), findsOneWidget);
+    expect(find.text('Embedded resource.'), findsOneWidget);
+    expect(find.text('README.md'), findsOneWidget);
+    expect(find.textContaining('text/markdown'), findsOneWidget);
+    expect(find.text('file:///workspace/README.md'), findsOneWidget);
+    expect(find.text('# Project notes'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline renders diff change details', (tester) async {

@@ -1029,28 +1029,74 @@ class _ResourceContentBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final uri = _stringMetadata(block, 'uri') ?? '';
+    final resource = _mapMetadata(block['resource']);
+    final payload = resource.isEmpty ? block : resource;
+    final uri =
+        _stringMetadata(block, 'uri') ?? _stringMetadata(payload, 'uri') ?? '';
     final title =
         _stringMetadata(block, 'title') ??
         _stringMetadata(block, 'name') ??
+        _stringMetadata(payload, 'title') ??
+        _stringMetadata(payload, 'name') ??
+        _resourceTitleFromUri(uri) ??
         'Resource';
-    final mimeType = _stringMetadata(block, 'mimeType');
-    final size = _numberMetadata(block, 'size');
-    final details = [?mimeType, if (size != null) _formatByteCount(size)];
+    final mimeType =
+        _stringMetadata(block, 'mimeType') ??
+        _stringMetadata(payload, 'mimeType');
+    final size =
+        _numberMetadata(block, 'size') ?? _numberMetadata(payload, 'size');
+    final text = _stringMetadata(payload, 'text');
+    final blob = _stringMetadata(payload, 'blob');
+    final details = [
+      ?mimeType,
+      if (size != null) _formatByteCount(size),
+      if (text != null) 'text',
+      if (blob != null) 'blob ${blob.length} chars',
+    ];
     return _InlineContentFrame(
       icon: Icons.link_rounded,
       title: title,
-      subtitle: details.isEmpty ? 'resource link' : details.join(' · '),
-      child: uri.isEmpty
+      subtitle: details.isEmpty ? 'resource' : details.join(' · '),
+      child: uri.isEmpty && text == null
           ? null
-          : SelectableText(
-              uri,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-                height: 1.35,
-              ),
+          : _ResourceContentDetails(uri: uri, text: text),
+    );
+  }
+}
+
+class _ResourceContentDetails extends StatelessWidget {
+  const _ResourceContentDetails({required this.uri, required this.text});
+
+  final String uri;
+  final String? text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (uri.isNotEmpty)
+          SelectableText(
+            uri,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              height: 1.35,
             ),
+          ),
+        if (text != null) ...[
+          if (uri.isNotEmpty) const SizedBox(height: 8),
+          SelectableText(
+            _previewObject(text),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontFamily: 'monospace',
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
@@ -1843,6 +1889,18 @@ List<Map<String, Object?>> _mapList(Object? value) {
   return value.whereType<Map>().map((entry) {
     return entry.map((key, value) => MapEntry(key.toString(), value));
   }).toList();
+}
+
+Map<String, Object?> _mapMetadata(Object? value) {
+  if (value is! Map) return const <String, Object?>{};
+  return value.map((key, value) => MapEntry(key.toString(), value));
+}
+
+String? _resourceTitleFromUri(String uri) {
+  final parsed = Uri.tryParse(uri);
+  if (parsed == null) return null;
+  if (parsed.pathSegments.isNotEmpty) return parsed.pathSegments.last;
+  return parsed.host.isEmpty ? null : parsed.host;
 }
 
 String _previewObject(Object? value) {
