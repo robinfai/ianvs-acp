@@ -2,14 +2,52 @@ import 'dart:convert';
 import 'dart:io';
 
 class AcpClientConfig {
-  const AcpClientConfig({this.activeAgentServer});
+  const AcpClientConfig({
+    this.activeAgentServer,
+    this.agentServers = const <AgentServerConfig>[],
+    this.configPath,
+    this.defaultAgentServerName,
+  });
 
   static const String appConfigDirectoryName = 'ianvs-acp';
   static const String settingsFileName = 'settings.json';
 
   final AgentServerConfig? activeAgentServer;
+  final List<AgentServerConfig> agentServers;
+  final String? configPath;
+  final String? defaultAgentServerName;
 
   String get agentName => activeAgentServer?.name ?? 'Codex';
+
+  List<AgentServerConfig> get selectableAgentServers {
+    if (agentServers.isNotEmpty) return List.unmodifiable(agentServers);
+    final active = activeAgentServer;
+    return active == null
+        ? const <AgentServerConfig>[]
+        : <AgentServerConfig>[active];
+  }
+
+  AgentServerConfig? agentServerNamed(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return null;
+    for (final server in selectableAgentServers) {
+      if (server.name == trimmed) return server;
+    }
+    return null;
+  }
+
+  AcpClientConfig withActiveAgentServer(String name) {
+    final server = agentServerNamed(name);
+    if (server == null) {
+      throw FormatException('Unknown agent server "$name".');
+    }
+    return AcpClientConfig(
+      activeAgentServer: server,
+      agentServers: agentServers,
+      configPath: configPath,
+      defaultAgentServerName: defaultAgentServerName,
+    );
+  }
 
   static Future<AcpClientConfig> load({
     String? path,
@@ -17,25 +55,28 @@ class AcpClientConfig {
   }) async {
     final configPath = path ?? resolveConfigPath(environment: environment);
     if (configPath == null || configPath.trim().isEmpty) {
-      return const AcpClientConfig();
+      return AcpClientConfig(configPath: configPath);
     }
 
     final file = File(configPath);
     if (!await file.exists()) {
-      return const AcpClientConfig();
+      return AcpClientConfig(configPath: configPath);
     }
 
     final raw = jsonDecode(await file.readAsString());
     if (raw is! Map<String, dynamic>) {
       throw const FormatException('ACP config root must be a JSON object.');
     }
-    return AcpClientConfig.fromJson(raw);
+    return AcpClientConfig.fromJson(raw, configPath: configPath);
   }
 
-  factory AcpClientConfig.fromJson(Map<String, dynamic> json) {
+  factory AcpClientConfig.fromJson(
+    Map<String, dynamic> json, {
+    String? configPath,
+  }) {
     final serversRaw = json['agent_servers'];
     if (serversRaw == null) {
-      return const AcpClientConfig();
+      return AcpClientConfig(configPath: configPath);
     }
     if (serversRaw is! Map<String, dynamic>) {
       throw const FormatException('agent_servers must be a JSON object.');
@@ -54,19 +95,22 @@ class AcpClientConfig {
     }
 
     if (servers.isEmpty) {
-      return const AcpClientConfig();
+      return AcpClientConfig(configPath: configPath);
     }
 
-    final preferredName =
-        _stringValue(json['default_agent_server']) ??
-        _stringValue(json['active_agent_server']);
+    final preferredName = _stringValue(json['default_agent_server']);
     final active = preferredName == null
         ? servers.values.first
         : servers[preferredName];
     if (active == null) {
       throw FormatException('Unknown default agent server "$preferredName".');
     }
-    return AcpClientConfig(activeAgentServer: active);
+    return AcpClientConfig(
+      activeAgentServer: active,
+      agentServers: servers.values.toList(),
+      configPath: configPath,
+      defaultAgentServerName: preferredName,
+    );
   }
 
   static String? resolveConfigPath({Map<String, String>? environment}) {
@@ -162,6 +206,15 @@ class AgentServerConfig {
       args: args,
       env: env,
     );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'type': type,
+      'command': command,
+      if (args.isNotEmpty) 'args': args,
+      if (env.isNotEmpty) 'env': env,
+    };
   }
 }
 

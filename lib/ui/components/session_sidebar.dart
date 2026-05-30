@@ -201,6 +201,10 @@ class _SessionTile extends StatelessWidget {
                   ),
                 ),
               ),
+              if (_agentLabel.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                _AgentPill(label: _agentLabel),
+              ],
             ],
           ),
           const SizedBox(height: 5),
@@ -241,6 +245,40 @@ class _SessionTile extends StatelessWidget {
     String two(int value) => value.toString().padLeft(2, '0');
     return '${createdAt.year}-${two(createdAt.month)}-${two(createdAt.day)} '
         '${two(createdAt.hour)}:${two(createdAt.minute)}';
+  }
+
+  String get _agentLabel => session.agentName?.trim() ?? '';
+}
+
+class _AgentPill extends StatelessWidget {
+  const _AgentPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 86),
+      child: Container(
+        height: 20,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.primarySoft,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+        ),
+        child: Text(
+          label,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: AppColors.primaryDark,
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
   }
 }
 

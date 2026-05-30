@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../acp/agent_session.dart';
+import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
+import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
@@ -19,10 +22,24 @@ class AppShell extends StatelessWidget {
     super.key,
     required this.controller,
     this.agentName = 'Codex',
+    this.agentServers = const <AgentServerConfig>[],
+    this.configPath,
+    this.defaultAgentName,
+    this.canSwitchAgent = true,
+    this.onSelectAgent,
+    this.onNewSession,
+    this.sessionControllers = const <ChatController>[],
   });
 
   final ChatController controller;
   final String agentName;
+  final List<AgentServerConfig> agentServers;
+  final String? configPath;
+  final String? defaultAgentName;
+  final bool canSwitchAgent;
+  final ValueChanged<String>? onSelectAgent;
+  final VoidCallback? onNewSession;
+  final List<ChatController> sessionControllers;
 
   @override
   Widget build(BuildContext context) {
@@ -36,8 +53,12 @@ class AppShell extends StatelessWidget {
               children: [
                 AgentToolbar(
                   agentName: agentName,
+                  agentServers: agentServers,
                   status: controller.status,
-                  onNewSession: controller.newSession,
+                  canSwitchAgent: canSwitchAgent && !controller.isStreaming,
+                  onSelectAgent: onSelectAgent,
+                  onShowAgentConfig: () => _showAgentConfigDialog(context),
+                  onNewSession: onNewSession ?? controller.newSession,
                   onResumeSession: () => _showResumeDialog(context),
                   onReconnect: controller.reconnect,
                 ),
@@ -60,9 +81,10 @@ class AppShell extends StatelessWidget {
                             width: 244,
                             child: SessionSidebar(
                               agentName: agentName,
-                              sessions: controller.sessions,
+                              sessions: _sessions(),
                               currentSession: controller.currentSession,
-                              onNewSession: controller.newSession,
+                              onNewSession:
+                                  onNewSession ?? controller.newSession,
                               onResumeSession: () => _showResumeDialog(context),
                             ),
                           ),
@@ -78,7 +100,8 @@ class AppShell extends StatelessWidget {
                                   controller.currentSession != null,
                               activeSessionLabel:
                                   controller.currentSession?.displayTitle,
-                              onNewSession: controller.newSession,
+                              onNewSession:
+                                  onNewSession ?? controller.newSession,
                             ),
                           ),
                         ],
@@ -112,6 +135,31 @@ class AppShell extends StatelessWidget {
       context: context,
       builder: (context) {
         return CapabilitiesDialog(capabilities: controller.capabilities);
+      },
+    );
+  }
+
+  List<AgentSession> _sessions() {
+    final controllers = sessionControllers.isEmpty
+        ? <ChatController>[controller]
+        : sessionControllers;
+    final sessions = <AgentSession>[
+      for (final controller in controllers) ...controller.sessions,
+    ];
+    sessions.sort((a, b) => b.displayTime.compareTo(a.displayTime));
+    return sessions;
+  }
+
+  Future<void> _showAgentConfigDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AgentConfigDialog(
+          agentServers: agentServers,
+          activeAgentName: agentName,
+          configPath: configPath,
+          defaultAgentName: defaultAgentName,
+        );
       },
     );
   }

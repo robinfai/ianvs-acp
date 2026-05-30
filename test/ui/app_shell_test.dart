@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 
@@ -7,12 +8,18 @@ void main() {
   Widget toolbar(
     app_state.ConnectionStatus status, {
     String agentName = 'Codex',
+    List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
+    ValueChanged<String>? onSelectAgent,
+    VoidCallback? onShowAgentConfig,
   }) {
     return MaterialApp(
       home: Scaffold(
         body: AgentToolbar(
           agentName: agentName,
+          agentServers: agentServers,
           status: status,
+          onSelectAgent: onSelectAgent,
+          onShowAgentConfig: onShowAgentConfig,
           onNewSession: () {},
           onResumeSession: () {},
           onReconnect: () {},
@@ -26,12 +33,23 @@ void main() {
     app_state.ConnectionStatus status, {
     Size size = const Size(1400, 720),
     String agentName = 'Codex',
+    List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
+    ValueChanged<String>? onSelectAgent,
+    VoidCallback? onShowAgentConfig,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(toolbar(status, agentName: agentName));
+    await tester.pumpWidget(
+      toolbar(
+        status,
+        agentName: agentName,
+        agentServers: agentServers,
+        onSelectAgent: onSelectAgent,
+        onShowAgentConfig: onShowAgentConfig,
+      ),
+    );
   }
 
   testWidgets('AgentToolbar initial rendering shows disconnected', (
@@ -45,6 +63,57 @@ void main() {
     expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Resume'), findsOneWidget);
     expect(find.text('Reconnect'), findsOneWidget);
+  });
+
+  testWidgets('AgentToolbar lets users select configured agents', (
+    tester,
+  ) async {
+    String? selectedAgent;
+    var openedConfig = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.disconnected,
+      agentName: 'Kimi Code Dev',
+      agentServers: const [
+        AgentServerConfig(
+          name: 'Kimi Code Dev',
+          type: 'custom',
+          command: '/usr/local/bin/kimi',
+          args: ['acp'],
+        ),
+        AgentServerConfig(
+          name: 'Codex',
+          type: 'custom',
+          command: '/usr/local/bin/npx',
+          args: ['@zed-industries/codex-acp'],
+        ),
+      ],
+      onSelectAgent: (name) {
+        selectedAgent = name;
+      },
+      onShowAgentConfig: () {
+        openedConfig = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Kimi Code Dev'), findsWidgets);
+    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Agent Configuration'), findsOneWidget);
+
+    await tester.tap(find.text('Codex'));
+    await tester.pumpAndSettle();
+
+    expect(selectedAgent, 'Codex');
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent Configuration'));
+    await tester.pumpAndSettle();
+
+    expect(openedConfig, isTrue);
   });
 
   testWidgets('AgentToolbar renders connected and error states', (
@@ -84,9 +153,11 @@ void main() {
 
     expect(find.text('ACP Client'), findsOneWidget);
     expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
+    expect(find.byIcon(Icons.manage_accounts_outlined), findsOneWidget);
     expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
     expect(find.byIcon(Icons.add_rounded), findsOneWidget);
     expect(find.text('Codex'), findsNothing);
+    expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
   });
 }

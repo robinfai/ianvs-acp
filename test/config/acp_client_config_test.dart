@@ -26,6 +26,8 @@ void main() {
     final config = await AcpClientConfig.load(path: file.path);
 
     expect(config.agentName, 'Kimi Code Dev');
+    expect(config.agentServers.map((server) => server.name), ['Kimi Code Dev']);
+    expect(config.configPath, file.path);
     expect(
       config.activeAgentServer?.command,
       '/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs',
@@ -51,6 +53,57 @@ void main() {
     expect(config.agentName, 'Kimi Code Dev');
     expect(config.activeAgentServer?.command, '/usr/local/bin/kimi');
     expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
+    expect(config.defaultAgentServerName, 'Kimi Code Dev');
+  });
+
+  test('system config active agent does not override default', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Kimi Code Dev',
+      'active_agent_server': 'Codex',
+      'agent_servers': {
+        'Kimi Code Dev': {
+          'type': 'custom',
+          'command': '/usr/local/bin/kimi',
+          'args': ['acp'],
+        },
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    expect(config.agentName, 'Kimi Code Dev');
+    expect(config.activeAgentServer?.command, '/usr/local/bin/kimi');
+    expect(config.agentServers.map((server) => server.name), [
+      'Kimi Code Dev',
+      'Codex',
+    ]);
+  });
+
+  test('selecting an agent is a runtime config change only', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Kimi Code Dev',
+      'agent_servers': {
+        'Kimi Code Dev': {
+          'type': 'custom',
+          'command': '/usr/local/bin/kimi',
+          'args': ['acp'],
+        },
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    final selected = config.withActiveAgentServer('Codex');
+
+    expect(selected.agentName, 'Codex');
+    expect(selected.defaultAgentServerName, 'Kimi Code Dev');
+    expect(config.agentName, 'Kimi Code Dev');
   });
 
   test('missing config file keeps built-in Codex default', () async {
@@ -61,6 +114,7 @@ void main() {
 
     expect(config.agentName, 'Codex');
     expect(config.activeAgentServer, isNull);
+    expect(config.configPath, '/tmp/ianvs-acp-does-not-exist.json');
   });
 
   test('resolves default config path under user home', () {

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'config/acp_client_config.dart';
 import 'state/chat_controller.dart';
+import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
 
@@ -28,18 +29,28 @@ class _AcpClientAppState extends State<AcpClientApp> {
     'ACP_RESUME_SESSION_ID',
   );
 
-  late final ChatController _controller =
-      widget.controller ??
-      ChatController(
-        client: _agentClient(widget.config.activeAgentServer),
-        cwd: AcpClientConfig.resolveWorkspaceCwd(
-          currentDirectory: Directory.current.path,
-        ),
-      );
+  late AcpClientConfig _config;
+  late ChatController _controller;
+  late final String _cwd;
+  final Map<String, ChatController> _controllersByAgent =
+      <String, ChatController>{};
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
 
   @override
   void initState() {
     super.initState();
+    _config = widget.config;
+    _cwd = AcpClientConfig.resolveWorkspaceCwd(
+      currentDirectory: Directory.current.path,
+    );
+    if (widget.controller == null) {
+      _controller = _controllerFor(_config);
+      _controllersByAgent[_config.agentName] = _controller;
+    } else {
+      _controller = widget.controller!;
+    }
     if (_initialResumeSessionId.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_controller.resumeSession(_initialResumeSessionId));
@@ -49,7 +60,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (widget.controller == null) {
+      for (final controller in _controllersByAgent.values) {
+        controller.dispose();
+      }
+    } else {
+      _controller.dispose();
+    }
     super.dispose();
   }
 
@@ -58,6 +75,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return MaterialApp(
       title: 'ACP Client',
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
+      scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: AppColors.primary,
@@ -111,9 +130,100 @@ class _AcpClientAppState extends State<AcpClientApp> {
       ),
       home: AppShell(
         controller: _controller,
-        agentName: widget.config.agentName,
+        agentName: _config.agentName,
+        agentServers: _config.selectableAgentServers,
+        configPath: _config.configPath,
+        defaultAgentName: _config.defaultAgentServerName,
+        canSwitchAgent: widget.controller == null,
+        sessionControllers: _sessionControllers,
+        onNewSession: () => unawaited(_startNewSession()),
+        onSelectAgent: widget.controller == null
+            ? (agentName) => unawaited(_selectAgent(agentName))
+            : null,
       ),
     );
+  }
+
+  ChatController _controllerFor(AcpClientConfig config) {
+    return ChatController(
+      client: _agentClient(config.activeAgentServer),
+      cwd: _cwd,
+      agentName: config.agentName,
+    );
+  }
+
+  Future<void> _selectAgent(String agentName) async {
+    if (agentName == _config.agentName) return;
+
+    late final AcpClientConfig nextConfig;
+    try {
+      nextConfig = _config.withActiveAgentServer(agentName);
+    } catch (error) {
+      _showSnackBar('Could not select agent: $error');
+      return;
+    }
+
+    _activateAgent(nextConfig);
+  }
+
+  Future<void> _startNewSession() async {
+    if (widget.controller != null) {
+      await _controller.newSession();
+      return;
+    }
+
+    final agentServers = _config.selectableAgentServers;
+    if (agentServers.isEmpty) {
+      await _controller.newSession();
+      if (mounted) setState(() {});
+      return;
+    }
+
+    final dialogContext = _navigatorKey.currentContext;
+    if (dialogContext == null) {
+      _showSnackBar('Could not open agent selection.');
+      return;
+    }
+
+    final selected = agentServers.length == 1
+        ? agentServers.single
+        : await showDialog<AgentServerConfig>(
+            context: dialogContext,
+            builder: (context) => NewSessionAgentDialog(
+              agentServers: agentServers,
+              currentAgentName: _config.agentName,
+            ),
+          );
+    if (selected == null) return;
+
+    late final AcpClientConfig nextConfig;
+    try {
+      nextConfig = _config.withActiveAgentServer(selected.name);
+    } catch (error) {
+      _showSnackBar('Could not select agent: $error');
+      return;
+    }
+
+    final controller = _activateAgent(nextConfig);
+    await controller.newSession();
+    if (mounted) setState(() {});
+  }
+
+  ChatController _activateAgent(AcpClientConfig nextConfig) {
+    final controller = _controllersByAgent.putIfAbsent(
+      nextConfig.agentName,
+      () => _controllerFor(nextConfig),
+    );
+    setState(() {
+      _config = nextConfig;
+      _controller = controller;
+    });
+    return controller;
+  }
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
   }
 
   DartAcpAgentClient _agentClient(AgentServerConfig? server) {
@@ -125,5 +235,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentArgs: server.args,
       envOverrides: server.env,
     );
+  }
+
+  List<ChatController> get _sessionControllers {
+    if (widget.controller != null) return <ChatController>[_controller];
+    return _controllersByAgent.values.toList();
   }
 }

@@ -28,10 +28,15 @@ class ChatMessage {
 }
 
 class ChatController extends ChangeNotifier {
-  ChatController({required this.client, required this.cwd});
+  ChatController({
+    required this.client,
+    required this.cwd,
+    this.agentName = 'Codex',
+  });
 
   final AcpAgentClient client;
   final String cwd;
+  final String agentName;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? currentSession;
@@ -58,11 +63,11 @@ class ChatController extends ChangeNotifier {
         await connect();
         if (status == ConnectionStatus.error) return;
       }
-      final session = await client.createSession(cwd: cwd);
+      final session = (await client.createSession(
+        cwd: cwd,
+      )).copyWith(agentName: agentName);
       currentSession = session;
-      sessions
-        ..clear()
-        ..add(session);
+      _upsertSession(session);
       messages.clear();
       lastLatency = null;
       lastError = null;
@@ -108,11 +113,10 @@ class ChatController extends ChangeNotifier {
         createdAt: DateTime.now(),
         title: title,
         updatedAt: updatedAt,
+        agentName: agentName,
       );
       currentSession = session;
-      sessions
-        ..clear()
-        ..add(session);
+      _upsertSession(session);
       notifyListeners();
 
       final replay = await client.resumeSession(
@@ -398,10 +402,16 @@ class ChatController extends ChangeNotifier {
         : null;
     final updatedSession = session.copyWith(title: title, updatedAt: updatedAt);
     currentSession = updatedSession;
+    _upsertSession(updatedSession);
+  }
+
+  void _upsertSession(AgentSession session) {
     final index = sessions.indexWhere((item) => item.id == session.id);
     if (index != -1) {
-      sessions[index] = updatedSession;
+      sessions[index] = session;
+      return;
     }
+    sessions.insert(0, session);
   }
 
   void _appendTurnStatus(AgentEvent event) {

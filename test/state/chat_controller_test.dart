@@ -43,8 +43,40 @@ void main() {
 
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.currentSession?.id, 'fake-session-1');
+    expect(controller.currentSession?.agentName, 'Codex');
     expect(controller.sessions, hasLength(1));
     expect(controller.sessionSettings.modes.currentModeId, 'ask');
+  });
+
+  test('created sessions keep selected agent name', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Kimi Code Dev',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.currentSession?.agentName, 'Kimi Code Dev');
+    expect(controller.sessions.single.agentName, 'Kimi Code Dev');
+  });
+
+  test('new sessions append to sidebar history', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.newSession();
+
+    expect(controller.currentSession?.id, 'fake-session-2');
+    expect(controller.sessions.map((session) => session.id), [
+      'fake-session-2',
+      'fake-session-1',
+    ]);
   });
 
   test('resume session replays history into timeline', () async {
@@ -58,6 +90,7 @@ void main() {
 
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.currentSession?.id, 'resumed-session-1');
+    expect(controller.currentSession?.agentName, 'Codex');
     expect(controller.sessions, hasLength(1));
     expect(controller.messages.map((message) => message.role), [
       ChatMessageRole.user,

@@ -78,10 +78,17 @@ Supported shape:
       "env": {
         "KIMI_API_KEY": "..."
       }
+    },
+    "Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"]
     }
   }
 }
 ```
+
+The toolbar `Agents` menu lists configured servers. `default_agent_server` is only the startup default; after launch, the selected agent belongs to the current/new session and is shown on session rows rather than being written back as global config. Creating a new session asks which configured agent to use when more than one server is available.
 
 Environment overrides:
 

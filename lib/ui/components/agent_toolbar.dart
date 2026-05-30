@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../config/acp_client_config.dart';
 import '../../state/connection_state.dart' as app_state;
 import '../theme/app_design_tokens.dart';
 
@@ -11,6 +12,10 @@ class AgentToolbar extends StatelessWidget {
     required this.onNewSession,
     required this.onResumeSession,
     required this.onReconnect,
+    this.agentServers = const <AgentServerConfig>[],
+    this.canSwitchAgent = true,
+    this.onSelectAgent,
+    this.onShowAgentConfig,
   });
 
   final String agentName;
@@ -18,6 +23,10 @@ class AgentToolbar extends StatelessWidget {
   final VoidCallback onNewSession;
   final VoidCallback onResumeSession;
   final VoidCallback onReconnect;
+  final List<AgentServerConfig> agentServers;
+  final bool canSwitchAgent;
+  final ValueChanged<String>? onSelectAgent;
+  final VoidCallback? onShowAgentConfig;
 
   @override
   Widget build(BuildContext context) {
@@ -56,6 +65,15 @@ class AgentToolbar extends StatelessWidget {
                   ),
                 ),
                 SizedBox(width: compact ? 8 : 14),
+                _AgentMenuButton(
+                  agentName: agentName,
+                  agentServers: agentServers,
+                  compact: compact,
+                  canSwitchAgent: canSwitchAgent,
+                  onSelectAgent: onSelectAgent,
+                  onShowAgentConfig: onShowAgentConfig,
+                ),
+                SizedBox(width: compact ? 5 : 8),
                 _ToolbarAction(
                   icon: Icons.play_circle_outline,
                   label: compact ? null : 'Resume',
@@ -78,6 +96,213 @@ class AgentToolbar extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _AgentMenuButton extends StatelessWidget {
+  const _AgentMenuButton({
+    required this.agentName,
+    required this.agentServers,
+    required this.compact,
+    required this.canSwitchAgent,
+    required this.onSelectAgent,
+    required this.onShowAgentConfig,
+  });
+
+  final String agentName;
+  final List<AgentServerConfig> agentServers;
+  final bool compact;
+  final bool canSwitchAgent;
+  final ValueChanged<String>? onSelectAgent;
+  final VoidCallback? onShowAgentConfig;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasMenu = agentServers.isNotEmpty || onShowAgentConfig != null;
+    return PopupMenuButton<_AgentMenuSelection>(
+      tooltip: 'Agents',
+      enabled: hasMenu,
+      onSelected: (selection) {
+        switch (selection.type) {
+          case _AgentMenuSelectionType.agent:
+            final agentName = selection.agentName;
+            if (agentName != null) onSelectAgent?.call(agentName);
+          case _AgentMenuSelectionType.configure:
+            onShowAgentConfig?.call();
+        }
+      },
+      itemBuilder: (context) {
+        return [
+          const PopupMenuItem<_AgentMenuSelection>(
+            enabled: false,
+            height: 32,
+            child: Text(
+              'Agents',
+              style: TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          for (final server in agentServers)
+            PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.agent(server.name),
+              enabled:
+                  canSwitchAgent &&
+                  onSelectAgent != null &&
+                  server.name != agentName,
+              child: _AgentMenuItem(
+                server: server,
+                selected: server.name == agentName,
+              ),
+            ),
+          if (agentServers.isNotEmpty && onShowAgentConfig != null)
+            const PopupMenuDivider(),
+          if (onShowAgentConfig != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.configure(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.tune_rounded,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Agent Configuration',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ];
+      },
+      child: _ToolbarButtonShell(
+        icon: Icons.manage_accounts_outlined,
+        label: compact ? null : 'Agents',
+        enabled: hasMenu,
+      ),
+    );
+  }
+}
+
+enum _AgentMenuSelectionType { agent, configure }
+
+class _AgentMenuSelection {
+  const _AgentMenuSelection.agent(this.agentName)
+    : type = _AgentMenuSelectionType.agent;
+
+  const _AgentMenuSelection.configure()
+    : type = _AgentMenuSelectionType.configure,
+      agentName = null;
+
+  final _AgentMenuSelectionType type;
+  final String? agentName;
+}
+
+class _AgentMenuItem extends StatelessWidget {
+  const _AgentMenuItem({required this.server, required this.selected});
+
+  final AgentServerConfig server;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+          size: 17,
+          color: selected ? AppColors.success : AppColors.textTertiary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                server.name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+              Text(
+                server.command,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ToolbarButtonShell extends StatelessWidget {
+  const _ToolbarButtonShell({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+  });
+
+  final IconData icon;
+  final String? label;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? AppColors.primaryDark : AppColors.textTertiary;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label ?? 'Agents',
+      child: Container(
+        width: label == null ? 32 : null,
+        height: 32,
+        padding: label == null
+            ? EdgeInsets.zero
+            : const EdgeInsets.symmetric(horizontal: 8),
+        alignment: Alignment.center,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 18),
+            if (label != null) ...[
+              const SizedBox(width: 5),
+              Text(
+                label!,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
