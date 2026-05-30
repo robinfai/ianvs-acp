@@ -139,7 +139,9 @@ class SessionSettingsDialog extends StatelessWidget {
       },
     );
     if (shouldClose != true) return;
+    final closingSessionId = session.id;
     await controller.closeCurrentSession();
+    if (controller.currentSession?.id == closingSessionId) return;
     if (context.mounted) {
       Navigator.of(context).pop();
     }
