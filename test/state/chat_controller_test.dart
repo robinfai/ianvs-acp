@@ -471,6 +471,24 @@ void main() {
     expect(controller.isSessionOperationRunning, isFalse);
   });
 
+  test('authenticate trims advertised auth method ids', () async {
+    final fake = FakeAgentClient(
+      authMethods: const [
+        {'id': ' browser ', 'name': 'Browser sign-in'},
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    expect(controller.canAuthenticate, isTrue);
+    await controller.authenticate('browser');
+
+    expect(fake.lastAuthenticatedMethodId, 'browser');
+    expect(controller.lastError, isNull);
+  });
+
   test('auth required session errors point to authenticate action', () async {
     final controller = ChatController(
       client: FakeAgentClient(

@@ -308,7 +308,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final supportsMethod =
         _capabilities?.authMethods.any((method) {
           final id = method['id'];
-          return id is String && id == trimmedMethodId;
+          return id is String && id.trim() == trimmedMethodId;
         }) ??
         false;
     if (!supportsMethod) {

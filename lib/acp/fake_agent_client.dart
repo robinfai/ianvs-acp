@@ -299,7 +299,10 @@ class FakeAgentClient implements AcpAgentClient {
     if (!connected) {
       throw StateError('Fake client is not connected.');
     }
-    if (!authMethods.any((method) => method['id'] == methodId)) {
+    if (!authMethods.any((method) {
+      final id = method['id'];
+      return id is String && id.trim() == methodId;
+    })) {
       throw StateError('Fake client does not support auth method "$methodId".');
     }
     if (authenticateError != null) {
