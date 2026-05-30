@@ -545,6 +545,7 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
     status = connectingStatus;
+    capabilities = null;
     lastError = null;
     _notifyListeners();
     try {

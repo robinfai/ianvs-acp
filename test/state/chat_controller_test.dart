@@ -37,6 +37,26 @@ void main() {
     expect(controller.lastError, contains('codex missing'));
   });
 
+  test('reconnect failure clears stale capabilities', () async {
+    final fake = _FailingReconnectAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    expect(controller.capabilities, isNotNull);
+    expect(controller.canLogout, isTrue);
+    expect(controller.canSendExtensionRequest, isTrue);
+
+    await controller.reconnect();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.capabilities, isNull);
+    expect(controller.canLogout, isFalse);
+    expect(controller.canSendExtensionRequest, isFalse);
+    expect(controller.lastError, contains('connection dropped'));
+  });
+
   test('create session success sets current session', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -1200,6 +1220,21 @@ class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
       value: value,
     );
     return const <AcpConfigOption>[];
+  }
+}
+
+class _FailingReconnectAgentClient extends FakeAgentClient {
+  int _connectAttempts = 0;
+
+  @override
+  Future<void> connect() async {
+    _connectAttempts += 1;
+    if (_connectAttempts == 1) {
+      await super.connect();
+      return;
+    }
+    connected = false;
+    throw Exception('connection dropped');
   }
 }
 
