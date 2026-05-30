@@ -396,6 +396,105 @@ Future<void> main() async {
     }
   });
 
+  test('connects to websocket ACP agent servers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
+    String? authorizationHeader;
+    final serverSubscription = server.listen((request) async {
+      authorizationHeader = request.headers.value(
+        HttpHeaders.authorizationHeader,
+      );
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((data) async {
+        final message = jsonDecode(data as String) as Map<String, dynamic>;
+        final id = message['id'];
+        final method = message['method'];
+        if (method == 'initialize') {
+          await initializeParamsFile.writeAsString(
+            jsonEncode(message['params']),
+          );
+          socket.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{
+                'protocolVersion': 1,
+                'agentInfo': <String, dynamic>{'name': 'Remote Agent'},
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+        } else if (method == 'session/new') {
+          socket.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{'sessionId': 'ws-session'},
+            }),
+          );
+        } else if (method == 'session/prompt') {
+          socket.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': <String, dynamic>{
+                'sessionId': 'ws-session',
+                'update': <String, dynamic>{
+                  'sessionUpdate': 'agent_message_chunk',
+                  'content': <String, dynamic>{
+                    'type': 'text',
+                    'text': 'hello websocket',
+                  },
+                },
+              },
+            }),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+          socket.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{'stopReason': 'end_turn'},
+            }),
+          );
+        }
+      });
+    });
+    final client = DartAcpAgentClient(
+      agentWebSocketUrl: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      agentHeaders: const {'Authorization': 'Bearer test-token'},
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'say hi')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      expect(authorizationHeader, 'Bearer test-token');
+      expect(client.capabilities?.agentInfo['name'], 'Remote Agent');
+      expect(session.id, 'ws-session');
+      expect(events.map((event) => event.text), contains('hello websocket'));
+      expect(events.last.metadata['stopReason'], 'endTurn');
+      final initializeParams =
+          jsonDecode(await initializeParamsFile.readAsString())
+              as Map<String, dynamic>;
+      expect(
+        initializeParams['clientInfo'],
+        containsPair('name', 'ACP Client'),
+      );
+    } finally {
+      await client.dispose();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('advertises configured filesystem provider capabilities', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');

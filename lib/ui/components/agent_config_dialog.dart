@@ -189,6 +189,7 @@ class _AgentServerPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final args = server.args.isEmpty ? 'No args' : server.args.join(' ');
     final envKeys = server.env.keys.toList()..sort();
+    final headerKeys = server.headers.keys.toList()..sort();
 
     return _Panel(
       icon: selected ? Icons.check_circle_rounded : Icons.hub_outlined,
@@ -205,14 +206,27 @@ class _AgentServerPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _DetailRow(label: 'Command', value: server.command),
+          _DetailRow(label: 'Type', value: server.type),
           const SizedBox(height: 6),
-          _DetailRow(label: 'Args', value: args),
-          const SizedBox(height: 6),
-          _DetailRow(
-            label: 'Env',
-            value: envKeys.isEmpty ? 'No env keys' : envKeys.join(', '),
-          ),
+          if (server.isWebSocket) ...[
+            _DetailRow(label: 'URL', value: server.url),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Headers',
+              value: headerKeys.isEmpty
+                  ? 'No header keys'
+                  : headerKeys.join(', '),
+            ),
+          ] else ...[
+            _DetailRow(label: 'Command', value: server.command),
+            const SizedBox(height: 6),
+            _DetailRow(label: 'Args', value: args),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Env',
+              value: envKeys.isEmpty ? 'No env keys' : envKeys.join(', '),
+            ),
+          ],
         ],
       ),
     );

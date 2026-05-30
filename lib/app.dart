@@ -276,9 +276,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
       );
     }
     return DartAcpAgentClient(
-      agentCommand: server.command,
-      agentArgs: server.args,
-      envOverrides: server.env,
+      agentCommand: server.isStdio ? server.command : null,
+      agentArgs: server.isStdio ? server.args : const <String>[],
+      envOverrides: server.isStdio ? server.env : const <String, String>{},
+      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
+      agentHeaders: server.headers,
       mcpServers: mcpServers,
       enableFilesystemReadTextFile:
           config.clientProviders.filesystem.readTextFile,

@@ -56,6 +56,27 @@ void main() {
     expect(config.defaultAgentServerName, 'Kimi Code Dev');
   });
 
+  test('loads websocket agent server config', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Remote Agent',
+      'agent_servers': {
+        'Remote Agent': {
+          'type': 'websocket',
+          'url': 'ws://127.0.0.1:8765/acp',
+          'headers': {'Authorization': 'Bearer test-token'},
+        },
+      },
+    });
+
+    expect(config.agentName, 'Remote Agent');
+    expect(config.activeAgentServer?.type, 'websocket');
+    expect(config.activeAgentServer?.isWebSocket, isTrue);
+    expect(config.activeAgentServer?.url, 'ws://127.0.0.1:8765/acp');
+    expect(config.activeAgentServer?.headers, {
+      'Authorization': 'Bearer test-token',
+    });
+  });
+
   test('loads top-level MCP server config', () {
     final config = AcpClientConfig.fromJson({
       'mcp_servers': [
@@ -263,6 +284,26 @@ void main() {
             ],
           },
         ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects invalid websocket agent server config', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Remote Agent': {'type': 'websocket'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Remote Agent': {'type': 'websocket', 'url': 'https://127.0.0.1/acp'},
+        },
       }),
       throwsA(isA<FormatException>()),
     );

@@ -271,24 +271,60 @@ class AgentServerConfig {
   const AgentServerConfig({
     required this.name,
     required this.type,
-    required this.command,
+    this.command = '',
+    this.url = '',
     this.args = const <String>[],
     this.env = const <String, String>{},
+    this.headers = const <String, String>{},
   });
 
   final String name;
   final String type;
   final String command;
+  final String url;
   final List<String> args;
   final Map<String, String> env;
+  final Map<String, String> headers;
+
+  bool get isWebSocket => type == 'websocket' || type == 'ws';
+
+  bool get isStdio => !isWebSocket;
 
   factory AgentServerConfig.fromJson({
     required String name,
     required Map<String, dynamic> json,
   }) {
-    final type = _stringValue(json['type']) ?? 'custom';
-    if (type != 'custom') {
-      throw FormatException('Unsupported agent server type "$type".');
+    final type = (_stringValue(json['type']) ?? 'custom').toLowerCase();
+    if (type == 'websocket' || type == 'ws') {
+      final url = _stringValue(json['url']);
+      if (url == null || url.isEmpty) {
+        throw FormatException('Agent server "$name" requires url.');
+      }
+      final uri = Uri.tryParse(url);
+      if (uri == null || (uri.scheme != 'ws' && uri.scheme != 'wss')) {
+        throw FormatException('Agent server "$name" url must use ws or wss.');
+      }
+      final headersRaw = json['headers'];
+      final headers = headersRaw == null
+          ? const <String, String>{}
+          : _stringMapOrNameValueList(
+              headersRaw,
+              fieldName: 'headers',
+              serverName: name,
+            );
+      return AgentServerConfig(
+        name: name,
+        type: type,
+        url: url,
+        headers: headers,
+      );
+    }
+
+    if (type != 'custom' && type != 'stdio') {
+      throw FormatException(
+        'Unsupported agent server type "$type". '
+        'Supported types: custom, stdio, websocket.',
+      );
     }
 
     final command = _stringValue(json['command']);
@@ -317,9 +353,11 @@ class AgentServerConfig {
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'type': type,
-      'command': command,
+      if (command.isNotEmpty) 'command': command,
+      if (url.isNotEmpty) 'url': url,
       if (args.isNotEmpty) 'args': args,
       if (env.isNotEmpty) 'env': env,
+      if (headers.isNotEmpty) 'headers': headers,
     };
   }
 }
@@ -421,6 +459,56 @@ Map<String, String> _stringMap(
     }
     return MapEntry(key, item);
   });
+}
+
+Map<String, String> _stringMapOrNameValueList(
+  Object? value, {
+  required String fieldName,
+  required String serverName,
+}) {
+  if (value is Map) {
+    return _stringMap(value, fieldName: fieldName, serverName: serverName);
+  }
+  if (value is! List) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName must be an object or list.',
+    );
+  }
+  final result = <String, String>{};
+  for (var index = 0; index < value.length; index++) {
+    final entry = _nameValueEntry(
+      value[index],
+      fieldName: fieldName,
+      serverName: serverName,
+      index: index,
+    );
+    result[entry.key] = entry.value;
+  }
+  return result;
+}
+
+MapEntry<String, String> _nameValueEntry(
+  Object? value, {
+  required String fieldName,
+  required String serverName,
+  required int index,
+}) {
+  if (value is! Map) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName entry $index must be an object.',
+    );
+  }
+  final name = value['name'];
+  final itemValue = value['value'];
+  if (name is! String ||
+      name.trim().isEmpty ||
+      itemValue is! String ||
+      itemValue.trim().isEmpty) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName entry $index requires name and value.',
+    );
+  }
+  return MapEntry(name, itemValue);
 }
 
 List<McpServerConfig> _mcpServerList(Object? value) {

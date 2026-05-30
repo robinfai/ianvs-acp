@@ -18,6 +18,33 @@ today, plus the manual decision or validation still needed before implementation
 
 ## Checklist
 
+### remote-transports
+
+Status: Streamable HTTP/SSE implementation needed.
+
+Non-blocking because: local stdio remains supported and WebSocket remote agents
+can now be configured with `agent_servers[].type = "websocket"` plus a `ws` or
+`wss` URL. Full Streamable HTTP/SSE is still a draft transport profile that
+requires long-lived GET streams, POST/202 response routing, HTTP/2 validation,
+connection/session headers, and real-agent interoperability testing.
+
+Automated acceptance:
+
+- `test/config/acp_client_config_test.dart` verifies WebSocket agent server
+  config parsing and invalid WebSocket config rejection.
+- `test/acp/dart_acp_agent_client_test.dart` verifies the client connects to a
+  local WebSocket ACP agent, forwards custom headers, initializes, creates a
+  session, receives session updates, and completes a prompt turn.
+- `lib/acp/web_socket_acp_transport.dart` implements the JSON-RPC
+  `StreamChannel` adapter used by `dart_acp`.
+
+Manual decision:
+
+- Decide when to implement the Streamable HTTP/SSE profile from the draft RFD,
+  including HTTP/2 requirements, cookie/header handling, and whether WebSocket
+  fallback should be preferred or user-selectable.
+- Validate against a real remote ACP agent that implements the draft endpoint.
+
 ### fs-terminal-providers
 
 Status: policy refinement needed.

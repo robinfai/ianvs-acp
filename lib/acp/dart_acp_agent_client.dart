@@ -13,12 +13,15 @@ import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 import 'prompt_attachment.dart';
+import 'web_socket_acp_transport.dart';
 
 class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
     String? agentCommand,
     List<String>? agentArgs,
     Map<String, String>? envOverrides,
+    this.agentWebSocketUrl,
+    Map<String, String>? agentHeaders,
     List<Map<String, dynamic>>? mcpServers,
     this.enableFilesystemReadTextFile = false,
     this.enableFilesystemWriteTextFile = false,
@@ -27,6 +30,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
        envOverrides = envOverrides ?? const <String, String>{},
+       agentHeaders = agentHeaders ?? const <String, String>{},
        mcpServers = mcpServers == null
            ? const <Map<String, dynamic>>[]
            : List.unmodifiable(mcpServers.map(Map<String, dynamic>.from));
@@ -34,6 +38,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   final String agentCommand;
   final List<String> agentArgs;
   final Map<String, String> envOverrides;
+  final Uri? agentWebSocketUrl;
+  final Map<String, String> agentHeaders;
   final List<Map<String, dynamic>> mcpServers;
   final bool enableFilesystemReadTextFile;
   final bool enableFilesystemWriteTextFile;
@@ -118,14 +124,7 @@ class DartAcpAgentClient implements AcpAgentClient {
           ? acp.DefaultTerminalProvider()
           : null,
     );
-    final transport = acp.StdioTransport(
-      command: agentCommand,
-      args: agentArgs,
-      envOverrides: envOverrides,
-      logger: config.logger,
-      onProtocolOut: _captureProtocolOut,
-      onProtocolIn: _captureProtocolIn,
-    );
+    final transport = _transportForConfig(config);
     final client = await acp.AcpClient.start(
       config: config,
       transport: transport,
@@ -179,6 +178,26 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     _client = client;
     _transport = transport;
+  }
+
+  acp.AcpTransport _transportForConfig(acp.AcpConfig config) {
+    final webSocketUrl = agentWebSocketUrl;
+    if (webSocketUrl != null) {
+      return WebSocketAcpTransport(
+        endpoint: webSocketUrl,
+        headers: agentHeaders,
+        onProtocolOut: _captureProtocolOut,
+        onProtocolIn: _captureProtocolIn,
+      );
+    }
+    return acp.StdioTransport(
+      command: agentCommand,
+      args: agentArgs,
+      envOverrides: envOverrides,
+      logger: config.logger,
+      onProtocolOut: _captureProtocolOut,
+      onProtocolIn: _captureProtocolIn,
+    );
   }
 
   @override
