@@ -11,6 +11,7 @@ void main() {
       'Streamable HTTP/SSE': 'remote-transports',
       'filesystem and terminal providers': 'fs-terminal-providers',
       'Spark attachments': 'spark-attachments',
+      'Permission History': 'tool-permission-ui',
       'Extension Request dialog': 'vendor-extension-workflows',
     };
 

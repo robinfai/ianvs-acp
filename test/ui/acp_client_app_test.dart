@@ -144,5 +144,15 @@ void main() {
     expect(fake.lastPermissionRequestId, 'permission-1');
     expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
     expect(find.text('Read file'), findsNothing);
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Permission History'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Permission History'), findsOneWidget);
+    expect(find.text('Read file'), findsOneWidget);
+    expect(find.text('Allowed'), findsOneWidget);
   });
 }

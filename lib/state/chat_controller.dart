@@ -52,6 +52,8 @@ class ChatController extends ChangeNotifier {
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings sessionSettings = const AcpSessionSettings();
   AcpPermissionRequest? pendingPermissionRequest;
+  final List<AcpPermissionAuditEntry> _permissionHistory =
+      <AcpPermissionAuditEntry>[];
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
@@ -95,6 +97,10 @@ class ChatController extends ChangeNotifier {
 
   bool get canSendExtensionRequest {
     return capabilities != null && !isStreaming && !isSessionOperationRunning;
+  }
+
+  List<AcpPermissionAuditEntry> get permissionHistory {
+    return List.unmodifiable(_permissionHistory);
   }
 
   StreamSubscription<AgentEvent>? _promptSubscription;
@@ -508,6 +514,7 @@ class ChatController extends ChangeNotifier {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
+    _recordPermissionDecision(request.id, decision);
     _notifyListeners();
     try {
       await client.respondToPermissionRequest(
@@ -600,6 +607,7 @@ class ChatController extends ChangeNotifier {
   void _handlePermissionRequest(AcpPermissionRequest request) {
     final previous = pendingPermissionRequest;
     if (previous != null && previous.id != request.id) {
+      _recordPermissionDecision(previous.id, AcpPermissionDecision.cancel);
       unawaited(
         client.respondToPermissionRequest(
           id: previous.id,
@@ -608,6 +616,7 @@ class ChatController extends ChangeNotifier {
       );
     }
     pendingPermissionRequest = request;
+    _recordPermissionRequest(request);
     _notifyListeners();
   }
 
@@ -615,10 +624,51 @@ class ChatController extends ChangeNotifier {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
+    _recordPermissionDecision(request.id, AcpPermissionDecision.cancel);
     await client.respondToPermissionRequest(
       id: request.id,
       decision: AcpPermissionDecision.cancel,
     );
+  }
+
+  void _recordPermissionRequest(AcpPermissionRequest request) {
+    final index = _permissionHistory.indexWhere(
+      (entry) => entry.request.id == request.id,
+    );
+    final entry = AcpPermissionAuditEntry(
+      request: request,
+      status: AcpPermissionAuditStatus.pending,
+      recordedAt: request.requestedAt,
+    );
+    if (index == -1) {
+      _permissionHistory.insert(0, entry);
+    } else {
+      _permissionHistory[index] = entry;
+    }
+  }
+
+  void _recordPermissionDecision(
+    String requestId,
+    AcpPermissionDecision decision,
+  ) {
+    final index = _permissionHistory.indexWhere(
+      (entry) => entry.request.id == requestId,
+    );
+    if (index == -1) return;
+    _permissionHistory[index] = _permissionHistory[index].copyWith(
+      status: _permissionAuditStatus(decision),
+      resolvedAt: DateTime.now(),
+    );
+  }
+
+  AcpPermissionAuditStatus _permissionAuditStatus(
+    AcpPermissionDecision decision,
+  ) {
+    return switch (decision) {
+      AcpPermissionDecision.allow => AcpPermissionAuditStatus.allowed,
+      AcpPermissionDecision.deny => AcpPermissionAuditStatus.denied,
+      AcpPermissionDecision.cancel => AcpPermissionAuditStatus.cancelled,
+    };
   }
 
   void _appendText(

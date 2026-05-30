@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -381,6 +382,91 @@ void main() {
     expect(controller.messages.single.metadata['terminalEvent'], 'released');
     expect(controller.messages.single.metadata['command'], 'printf');
     expect(controller.messages.single.metadata['output'], 'terminal-output');
+  });
+
+  test('permission history records user decisions', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        toolKind: 'read',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest?.id, 'permission-1');
+    expect(controller.permissionHistory, hasLength(1));
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.pending,
+    );
+
+    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.deny);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.denied,
+    );
+    expect(controller.permissionHistory.single.resolvedAt, isNotNull);
+  });
+
+  test('permission history cancels superseded pending requests', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-2',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12, 1),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest?.id, 'permission-2');
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(controller.permissionHistory.map((entry) => entry.request.id), [
+      'permission-2',
+      'permission-1',
+    ]);
+    expect(
+      controller.permissionHistory[0].status,
+      AcpPermissionAuditStatus.pending,
+    );
+    expect(
+      controller.permissionHistory[1].status,
+      AcpPermissionAuditStatus.cancelled,
+    );
   });
 
   test('set session mode updates ACP session settings', () async {

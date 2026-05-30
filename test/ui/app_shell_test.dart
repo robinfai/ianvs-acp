@@ -12,6 +12,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
+    VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
   }) {
@@ -24,6 +25,7 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onAuthenticate: onAuthenticate,
+          onShowPermissionHistory: onShowPermissionHistory,
           onExtensionRequest: onExtensionRequest,
           onLogout: onLogout,
           onNewSession: () {},
@@ -43,6 +45,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
+    VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
   }) async {
@@ -58,6 +61,7 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onAuthenticate: onAuthenticate,
+        onShowPermissionHistory: onShowPermissionHistory,
         onExtensionRequest: onExtensionRequest,
         onLogout: onLogout,
       ),
@@ -188,6 +192,28 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(authenticated, isTrue);
+  });
+
+  testWidgets('AgentToolbar exposes permission history when available', (
+    tester,
+  ) async {
+    var openedPermissionHistory = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onShowPermissionHistory: () {
+        openedPermissionHistory = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Permission History'), findsOneWidget);
+
+    await tester.tap(find.text('Permission History'));
+    await tester.pumpAndSettle();
+
+    expect(openedPermissionHistory, isTrue);
   });
 
   testWidgets('AgentToolbar exposes extension requests when available', (
