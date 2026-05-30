@@ -462,6 +462,64 @@ Future<void> main() async {
     }
   });
 
+  test('advertises configured terminal provider capabilities', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
+    final agentScript = File('${tempDir.path}/fake_terminal_caps_agent.dart');
+    final initializeParamsPath = jsonEncode(initializeParamsFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      await File($initializeParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      enableTerminalProvider: true,
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final capabilities = client.capabilities;
+      expect(capabilities?.client.terminal, isTrue);
+      expect(capabilities?.client.hasTerminalProvider, isTrue);
+
+      final initializeParams =
+          jsonDecode(await initializeParamsFile.readAsString())
+              as Map<String, dynamic>;
+      expect(
+        initializeParams['clientCapabilities'],
+        containsPair('terminal', true),
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('serves filesystem read requests after permission approval', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final workspace = Directory('${tempDir.path}/workspace');
@@ -620,6 +678,143 @@ Future<void> main() async {
       expect(fsResponse['id'], 'fs-write-1');
       expect(fsResponse, contains('error'));
       expect(await File('${workspace.path}/created.txt').exists(), isFalse);
+    } finally {
+      await subscription.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('emits terminal lifecycle events after permission approval', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final workspace = Directory('${tempDir.path}/workspace');
+    await workspace.create();
+    final terminalResponseFile = File('${tempDir.path}/terminal_response.json');
+    final agentScript = File('${tempDir.path}/fake_terminal_agent.dart');
+    final terminalResponsePath = jsonEncode(terminalResponseFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  Object? promptId;
+  String? terminalId;
+
+  void respond(Object? id, Object? result) {
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'result': result,
+    }));
+  }
+
+  void request(String id, String method, Map<String, dynamic> params) {
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      'params': params,
+    }));
+  }
+
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      respond(message['id'], <String, dynamic>{
+        'protocolVersion': 1,
+        'agentCapabilities': <String, dynamic>{},
+        'authMethods': <Map<String, dynamic>>[],
+      });
+    } else if (message['method'] == 'session/new') {
+      respond(message['id'], <String, dynamic>{'sessionId': 'session-term'});
+    } else if (message['method'] == 'session/prompt') {
+      promptId = message['id'];
+      request('terminal-create-1', 'terminal/create', <String, dynamic>{
+        'sessionId': 'session-term',
+        'command': 'printf terminal-output',
+        'args': <String>[],
+      });
+    } else if (message['id'] == 'terminal-create-1') {
+      terminalId = (message['result'] as Map<String, dynamic>)['terminalId']
+          as String;
+      request('terminal-wait-1', 'terminal/wait_for_exit', <String, dynamic>{
+        'terminalId': terminalId,
+      });
+    } else if (message['id'] == 'terminal-wait-1') {
+      request('terminal-output-1', 'terminal/output', <String, dynamic>{
+        'terminalId': terminalId,
+      });
+    } else if (message['id'] == 'terminal-output-1') {
+      await File($terminalResponsePath).writeAsString(jsonEncode(message));
+      request('terminal-release-1', 'terminal/release', <String, dynamic>{
+        'terminalId': terminalId,
+      });
+    } else if (message['id'] == 'terminal-release-1') {
+      respond(promptId, <String, dynamic>{'stopReason': 'end_turn'});
+    }
+  }
+}
+''');
+
+    late final DartAcpAgentClient client;
+    client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      enableTerminalProvider: true,
+    );
+    final permissionRequests = <AcpPermissionRequest>[];
+    final subscription = client.permissionRequests.listen((request) {
+      permissionRequests.add(request);
+      unawaited(
+        client.respondToPermissionRequest(
+          id: request.id,
+          decision: AcpPermissionDecision.allow,
+        ),
+      );
+    });
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: workspace.path);
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'run command')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+      await _waitForFile(terminalResponseFile);
+
+      expect(permissionRequests, hasLength(1));
+      expect(permissionRequests.single.toolName, 'terminal');
+      expect(permissionRequests.single.toolKind, 'execute');
+
+      final terminalEvents = events
+          .where((event) => event.metadata['kind'] == 'terminal')
+          .toList();
+      expect(
+        terminalEvents.map((event) => event.metadata['terminalEvent']),
+        containsAll(['created', 'exited', 'output', 'released']),
+      );
+      expect(
+        terminalEvents.first.metadata['command'],
+        'printf terminal-output',
+      );
+      expect(
+        terminalEvents
+            .where((event) => event.metadata['terminalEvent'] == 'output')
+            .single
+            .metadata['output'],
+        'terminal-output',
+      );
+      expect(events.last.metadata['stopReason'], 'endTurn');
+
+      final terminalResponse =
+          jsonDecode(await terminalResponseFile.readAsString())
+              as Map<String, dynamic>;
+      expect(
+        terminalResponse['result'],
+        containsPair('outputmode', 'terminal-output'),
+      );
     } finally {
       await subscription.cancel();
       await client.dispose();

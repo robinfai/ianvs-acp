@@ -23,6 +23,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.enableFilesystemReadTextFile = false,
     this.enableFilesystemWriteTextFile = false,
     this.allowFilesystemReadOutsideWorkspace = false,
+    this.enableTerminalProvider = false,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
        envOverrides = envOverrides ?? const <String, String>{},
@@ -37,6 +38,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final bool enableFilesystemReadTextFile;
   final bool enableFilesystemWriteTextFile;
   final bool allowFilesystemReadOutsideWorkspace;
+  final bool enableTerminalProvider;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -101,6 +103,7 @@ class DartAcpAgentClient implements AcpAgentClient {
           readTextFile: enableFilesystemReadTextFile,
           writeTextFile: enableFilesystemWriteTextFile,
         ),
+        terminal: enableTerminalProvider,
       ),
       fsProvider: enableFilesystemProvider
           ? acp.DefaultFsProvider(workspaceRoot: '/')
@@ -111,6 +114,9 @@ class DartAcpAgentClient implements AcpAgentClient {
         allowFilesystemWriteTextFile: enableFilesystemWriteTextFile,
       ),
       allowReadOutsideWorkspace: allowFilesystemReadOutsideWorkspace,
+      terminalProvider: enableTerminalProvider
+          ? acp.DefaultTerminalProvider()
+          : null,
     );
     final transport = acp.StdioTransport(
       command: agentCommand,
@@ -971,6 +977,18 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) async* {
     final events = StreamController<AgentEvent>();
     var acceptingUpdates = false;
+    final terminalSubscription = client.terminalEvents.listen(
+      (update) {
+        if (!acceptingUpdates || events.isClosed) return;
+        final event = _eventFromTerminalEvent(update, sessionId);
+        if (event != null) {
+          events.add(event);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!events.isClosed) events.addError(error, stackTrace);
+      },
+    );
     final subscription = client
         .sessionUpdates(sessionId)
         .listen(
@@ -1012,11 +1030,88 @@ class DartAcpAgentClient implements AcpAgentClient {
         yield event;
       }
     } finally {
+      await terminalSubscription.cancel();
       await subscription.cancel();
       if (!events.isClosed) {
         await events.close();
       }
     }
+  }
+
+  AgentEvent? _eventFromTerminalEvent(
+    acp.TerminalEvent update,
+    String sessionId,
+  ) {
+    switch (update) {
+      case acp.TerminalCreated():
+        if (update.sessionId != sessionId) return null;
+        final command = [
+          update.command,
+          ...update.args,
+        ].where((part) => part.trim().isNotEmpty).join(' ');
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: command.isEmpty ? 'Terminal started.' : command,
+          metadata: <String, Object?>{
+            'kind': 'terminal',
+            'terminalEvent': 'created',
+            'terminalId': update.terminalId,
+            'status': 'running',
+            'command': update.command,
+            'args': update.args,
+            if (update.cwd?.trim().isNotEmpty == true) 'cwd': update.cwd,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.TerminalOutputEvent():
+        if (!update.terminalId.startsWith('$sessionId:')) return null;
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Terminal output.',
+          metadata: <String, Object?>{
+            'kind': 'terminal',
+            'terminalEvent': 'output',
+            'terminalId': update.terminalId,
+            'status': _terminalStatusFromExitCode(update.exitCode),
+            'output': update.output,
+            'truncated': update.truncated,
+            if (update.exitCode != null) 'exitCode': update.exitCode,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.TerminalExited():
+        if (!update.terminalId.startsWith('$sessionId:')) return null;
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Terminal exited.',
+          metadata: <String, Object?>{
+            'kind': 'terminal',
+            'terminalEvent': 'exited',
+            'terminalId': update.terminalId,
+            'status': _terminalStatusFromExitCode(update.code),
+            'exitCode': update.code,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.TerminalReleased():
+        if (!update.terminalId.startsWith('$sessionId:')) return null;
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Terminal released.',
+          metadata: <String, Object?>{
+            'kind': 'terminal',
+            'terminalEvent': 'released',
+            'terminalId': update.terminalId,
+            'status': 'released',
+          },
+          timestamp: DateTime.now(),
+        );
+    }
+  }
+
+  String _terminalStatusFromExitCode(int? exitCode) {
+    if (exitCode == null) return 'running';
+    return exitCode == 0 ? 'completed' : 'failed';
   }
 
   AgentEvent _eventFromPromptResponse(Map<String, dynamic> response) {

@@ -9,11 +9,10 @@ https://agentclientprotocol.com/llms.txt
 
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
-The largest remaining gaps are client-provided terminal provider support and
-Streamable HTTP transport. Those are protocol features, but they need
-product/security decisions or transport-layer work beyond only visual polish.
-The earlier filesystem and terminal providers follow-up is now split:
-filesystem support is config-gated, while terminal support remains pending.
+The largest remaining gap is Streamable HTTP transport. Filesystem and terminal
+providers are now available only behind explicit user config and per-request
+approval, so their remaining work is policy/UX refinement rather than protocol
+plumbing.
 
 ## Official Feature Index
 
@@ -30,7 +29,7 @@ filesystem support is config-gated, while terminal support remains pending.
 | Content blocks | https://agentclientprotocol.com/protocol/content | Mostly done | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`. File links remain available as fallback, but model/agent-specific support can still vary. |
 | Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click. `session/request_permission` now surfaces an in-app approval banner with Allow Once, Deny, and Cancel. When no UI listener is active, requests are still conservatively returned as `cancelled` instead of being auto-approved. Persistent trust rules remain a product/security follow-up. |
 | File system provider | https://agentclientprotocol.com/protocol/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed by default and still require the interactive permission approval path. `allow_read_outside_workspace` only relaxes reads, never writes. |
-| Terminal provider | https://agentclientprotocol.com/protocol/terminals | Missing by design | The client currently advertises no terminal support; no live terminal UI is wired. |
+| Terminal provider | https://agentclientprotocol.com/protocol/terminals | Done when explicitly configured | The client defaults to no terminal support. User config can opt into `client_providers.terminal.enabled`; terminal creation still requires the interactive permission approval path, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode`. ACP says config options supersede this API, so this remains fallback-compatible. |
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is consumed as complete state, including updates emitted immediately after `session/new`. The local model understands official `category` as well as older `group`. Initial `configOptions` returned directly by `session/new` and fallback `session/resume` are captured from the raw session response. |
@@ -103,6 +102,9 @@ Supported shape:
       "read_text_file": true,
       "write_text_file": false,
       "allow_read_outside_workspace": false
+    },
+    "terminal": {
+      "enabled": false
     }
   }
 }
@@ -118,6 +120,11 @@ Configured `client_providers.filesystem` controls whether the client advertises
 ACP file-system callbacks. Filesystem providers are off by default; when enabled,
 read/write requests still go through per-request permission approval, and writes
 remain confined to the session workspace.
+Configured `client_providers.terminal.enabled` controls whether the client
+advertises ACP terminal callbacks. Terminal support is off by default; when
+enabled, terminal creation still goes through per-request permission approval,
+uses the session workspace as the default cwd, and renders command lifecycle
+status/output in the timeline.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 
@@ -136,7 +143,7 @@ These are not blockers for the current UI pass, but need product/security decisi
 Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
-- Decide whether to enable terminal providers. Filesystem providers are available behind explicit user config and per-request permission approval.
+- Review filesystem and terminal providers policy: both are available behind explicit user config and per-request permission approval, but first-run UI, audit history, and persistent trust controls remain undecided.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 
 ## Follow-Up Desktop UX Pass

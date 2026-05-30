@@ -272,6 +272,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
             config.clientProviders.filesystem.writeTextFile,
         allowFilesystemReadOutsideWorkspace:
             config.clientProviders.filesystem.allowReadOutsideWorkspace,
+        enableTerminalProvider: config.clientProviders.terminal.enabled,
       );
     }
     return DartAcpAgentClient(
@@ -285,6 +286,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           config.clientProviders.filesystem.writeTextFile,
       allowFilesystemReadOutsideWorkspace:
           config.clientProviders.filesystem.allowReadOutsideWorkspace,
+      enableTerminalProvider: config.clientProviders.terminal.enabled,
     );
   }
 

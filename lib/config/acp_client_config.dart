@@ -186,9 +186,11 @@ class AcpClientConfig {
 class AcpClientProviderConfig {
   const AcpClientProviderConfig({
     this.filesystem = const AcpFilesystemProviderConfig(),
+    this.terminal = const AcpTerminalProviderConfig(),
   });
 
   final AcpFilesystemProviderConfig filesystem;
+  final AcpTerminalProviderConfig terminal;
 
   factory AcpClientProviderConfig.fromJson(Object? raw) {
     if (raw == null) return const AcpClientProviderConfig();
@@ -199,6 +201,29 @@ class AcpClientProviderConfig {
     return AcpClientProviderConfig(
       filesystem: AcpFilesystemProviderConfig.fromJson(
         map['filesystem'] ?? map['fs'],
+      ),
+      terminal: AcpTerminalProviderConfig.fromJson(map['terminal']),
+    );
+  }
+}
+
+class AcpTerminalProviderConfig {
+  const AcpTerminalProviderConfig({this.enabled = false});
+
+  final bool enabled;
+
+  factory AcpTerminalProviderConfig.fromJson(Object? raw) {
+    if (raw == null) return const AcpTerminalProviderConfig();
+    if (raw is! Map) {
+      throw const FormatException(
+        'client_providers.terminal must be a JSON object.',
+      );
+    }
+    final map = _jsonMap(raw, fieldName: 'client_providers.terminal');
+    return AcpTerminalProviderConfig(
+      enabled: _boolConfigValue(
+        map['enabled'],
+        fieldName: 'client_providers.terminal.enabled',
       ),
     );
   }

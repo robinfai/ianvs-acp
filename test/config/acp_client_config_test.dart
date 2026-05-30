@@ -129,6 +129,27 @@ void main() {
     expect(selected.clientProviders.filesystem.readTextFile, isTrue);
   });
 
+  test('loads opt-in client terminal provider config', () {
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'terminal': {'enabled': true},
+      },
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    expect(config.clientProviders.terminal.enabled, isTrue);
+
+    final selected = config.withActiveAgentServer('Codex');
+    expect(selected.clientProviders.terminal.enabled, isTrue);
+  });
+
   test('rejects invalid client provider config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -148,6 +169,15 @@ void main() {
       () => AcpClientConfig.fromJson({
         'client_providers': {
           'filesystem': {'read_text_file': 'yes'},
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'terminal': {'enabled': 'yes'},
         },
       }),
       throwsA(isA<FormatException>()),

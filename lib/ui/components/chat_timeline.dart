@@ -864,6 +864,7 @@ class _StatusBubble extends StatelessWidget {
       'plan' => _PlanStatus(message: message),
       'diff' => _DiffStatus(message: message),
       'commands' => _CommandsStatus(message: message),
+      'terminal' => _TerminalStatus(message: message),
       'mode' => _ModeStatus(message: message),
       'thought' => _ThoughtStatus(message: message),
       'turn' => _TurnStatus(message: message),
@@ -1525,6 +1526,76 @@ class _ModeStatus extends StatelessWidget {
   }
 }
 
+class _TerminalStatus extends StatelessWidget {
+  const _TerminalStatus({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _stringMetadata(message.metadata, 'status') ?? 'running';
+    final event = _stringMetadata(message.metadata, 'terminalEvent');
+    final command = _terminalCommand(message);
+    final cwd = _stringMetadata(message.metadata, 'cwd');
+    final output = _stringMetadata(message.metadata, 'output');
+    final exitCode = _numberMetadata(message.metadata, 'exitCode');
+    final truncated = message.metadata['truncated'] == true;
+    final details = <String>[
+      if (event != null) _humanizeStatus(event),
+      if (exitCode != null) 'exit $exitCode',
+      ?cwd,
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: _SectionHeader(
+                icon: Icons.terminal_rounded,
+                label: 'Terminal',
+              ),
+            ),
+            _StatusPill(label: status, color: _statusColor(status)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SelectableText(
+          command.isEmpty ? 'Command unavailable' : command,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            height: 1.35,
+          ),
+        ),
+        if (details.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            details.join(' · '),
+            style: const TextStyle(
+              color: AppColors.textTertiary,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+        if (output != null) ...[
+          const SizedBox(height: 8),
+          _DetailBlock(
+            entry: _DetailEntry(
+              truncated ? 'Output (truncated)' : 'Output',
+              _previewObject(output),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 class _PlainStatus extends StatelessWidget {
   const _PlainStatus({required this.message});
 
@@ -1741,6 +1812,20 @@ int? _numberMetadata(Map<String, Object?> metadata, String key) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return null;
+}
+
+String _terminalCommand(ChatMessage message) {
+  final command = _stringMetadata(message.metadata, 'command');
+  final args = message.metadata['args'];
+  if (command == null) return message.text.trim();
+  if (args is! List || args.isEmpty) return command;
+  final normalizedArgs = args
+      .whereType<Object>()
+      .map((value) => value.toString().trim())
+      .where((value) => value.isNotEmpty)
+      .toList();
+  if (normalizedArgs.isEmpty) return command;
+  return '$command ${normalizedArgs.join(' ')}';
 }
 
 String _formatByteCount(int bytes) {

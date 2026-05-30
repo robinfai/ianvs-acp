@@ -620,6 +620,10 @@ class ChatController extends ChangeNotifier {
       _applySessionInfoUpdate(event.metadata);
       return;
     }
+    if (kind == 'terminal') {
+      _upsertTerminalStatusMessage(event);
+      return;
+    }
     if (kind == 'plan' || kind == 'commands') {
       if (kind == 'commands') {
         availableCommands = _commandsFromMetadata(event.metadata['commands']);
@@ -642,6 +646,60 @@ class ChatController extends ChangeNotifier {
         metadata: event.metadata,
       ),
     );
+  }
+
+  void _upsertTerminalStatusMessage(AgentEvent event) {
+    final terminalId = event.metadata['terminalId'];
+    if (terminalId is! String || terminalId.trim().isEmpty) {
+      messages.add(
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: event.text,
+          metadata: event.metadata,
+        ),
+      );
+      return;
+    }
+
+    final index = messages.indexWhere((item) {
+      return item.role == ChatMessageRole.status &&
+          item.metadata['kind'] == 'terminal' &&
+          item.metadata['terminalId'] == terminalId;
+    });
+    if (index == -1) {
+      messages.add(
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: event.text,
+          metadata: event.metadata,
+        ),
+      );
+      return;
+    }
+
+    final previous = messages[index];
+    final metadata = <String, Object?>{...previous.metadata, ...event.metadata};
+    if (event.metadata['status'] == 'released' &&
+        (previous.metadata['status'] == 'completed' ||
+            previous.metadata['status'] == 'failed')) {
+      metadata['status'] = previous.metadata['status'];
+    }
+    messages[index] = ChatMessage(
+      role: ChatMessageRole.status,
+      text: _terminalStatusText(event.text, previous.text),
+      metadata: metadata,
+    );
+  }
+
+  String _terminalStatusText(String incoming, String fallback) {
+    final text = incoming.trim();
+    if (text.isEmpty ||
+        text == 'Terminal output.' ||
+        text == 'Terminal exited.' ||
+        text == 'Terminal released.') {
+      return fallback;
+    }
+    return text;
   }
 
   void _replaceStatusMessage(AgentEvent event) {

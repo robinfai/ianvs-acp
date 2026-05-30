@@ -329,6 +329,60 @@ void main() {
     },
   );
 
+  test('terminal status updates merge by terminal id', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'printf terminal-output',
+            metadata: {
+              'kind': 'terminal',
+              'terminalEvent': 'created',
+              'terminalId': 'session-1:terminal-1',
+              'status': 'running',
+              'command': 'printf',
+              'args': ['terminal-output'],
+            },
+          ),
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Terminal output.',
+            metadata: {
+              'kind': 'terminal',
+              'terminalEvent': 'output',
+              'terminalId': 'session-1:terminal-1',
+              'status': 'completed',
+              'output': 'terminal-output',
+              'exitCode': 0,
+            },
+          ),
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Terminal released.',
+            metadata: {
+              'kind': 'terminal',
+              'terminalEvent': 'released',
+              'terminalId': 'session-1:terminal-1',
+              'status': 'released',
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('session-1');
+
+    expect(controller.messages, hasLength(1));
+    expect(controller.messages.single.text, 'printf terminal-output');
+    expect(controller.messages.single.metadata['status'], 'completed');
+    expect(controller.messages.single.metadata['terminalEvent'], 'released');
+    expect(controller.messages.single.metadata['command'], 'printf');
+    expect(controller.messages.single.metadata['output'], 'terminal-output');
+  });
+
   test('set session mode updates ACP session settings', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

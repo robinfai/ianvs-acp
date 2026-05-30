@@ -417,4 +417,33 @@ void main() {
     expect(find.text('Parameters'), findsOneWidget);
     expect(find.textContaining('"scope"'), findsOneWidget);
   });
+
+  testWidgets('ChatTimeline renders terminal status output', (tester) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'printf terminal-output',
+          metadata: const {
+            'kind': 'terminal',
+            'terminalEvent': 'output',
+            'terminalId': 'session-1:terminal-1',
+            'status': 'completed',
+            'command': 'printf',
+            'args': ['terminal-output'],
+            'cwd': '/workspace',
+            'output': 'terminal-output',
+            'exitCode': 0,
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('Terminal'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('printf terminal-output'), findsOneWidget);
+    expect(find.textContaining('exit 0'), findsOneWidget);
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.text('terminal-output'), findsOneWidget);
+  });
 }

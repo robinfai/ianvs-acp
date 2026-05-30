@@ -19,6 +19,7 @@ void main() {
                 readTextFile: true,
                 writeTextFile: false,
               ),
+              terminal: AcpTerminalProviderConfig(enabled: true),
             ),
             mcpServers: [
               McpServerConfig(
@@ -59,7 +60,8 @@ void main() {
     expect(find.text('/usr/local/bin/mcp-filesystem'), findsOneWidget);
     expect(find.text('Client Providers'), findsOneWidget);
     expect(find.text('FS read'), findsOneWidget);
-    expect(find.text('Enabled'), findsOneWidget);
+    expect(find.text('Terminal'), findsOneWidget);
+    expect(find.text('Enabled'), findsWidgets);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
     expect(find.text('Current'), findsOneWidget);
     expect(find.text('Default'), findsOneWidget);

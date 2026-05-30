@@ -20,33 +20,42 @@ today, plus the manual decision or validation still needed before implementation
 
 ### fs-terminal-providers
 
-Status: terminal security decision needed.
+Status: policy refinement needed.
 
-Non-blocking because: filesystem support is now available only when explicitly
-enabled through `client_providers.filesystem`, remains off by default, and still
-uses per-request permission approval. Terminal support remains unavailable until
-its lifecycle and command-approval model is defined.
+Non-blocking because: filesystem and terminal providers are now available only
+when explicitly enabled through `client_providers`, remain off by default, and
+still use per-request permission approval. Terminal support emits lifecycle and
+output snapshots into the timeline, but deliberately does not yet provide a
+persistent live terminal panel or saved trust rules.
 
 Automated acceptance:
 
 - `test/ui/capabilities_dialog_test.dart` verifies filesystem and terminal
   capability visibility.
-- `test/config/acp_client_config_test.dart` verifies filesystem provider config
-  parsing and invalid config rejection.
+- `test/config/acp_client_config_test.dart` verifies filesystem and terminal
+  provider config parsing and invalid config rejection.
 - `test/acp/dart_acp_agent_client_test.dart` verifies configured filesystem
   capabilities are advertised and that approved read requests are served from a
-  workspace-jailed provider.
-- `test/ui/agent_config_dialog_test.dart` verifies filesystem provider config is
-  visible in Agent Configuration.
-- `lib/acp/dart_acp_agent_client.dart` still defaults ACP filesystem
-  capabilities to disabled unless the user opts in.
+  workspace-jailed provider. It also verifies configured terminal capabilities
+  are advertised and that approved terminal requests emit created/exited/output
+  lifecycle events.
+- `test/state/chat_controller_test.dart` verifies terminal lifecycle updates for
+  the same terminal id merge into one timeline status row.
+- `test/ui/chat_timeline_test.dart` verifies terminal status output renders in
+  the timeline.
+- `test/ui/agent_config_dialog_test.dart` verifies filesystem and terminal
+  provider config is visible in Agent Configuration.
+- `lib/acp/dart_acp_agent_client.dart` still defaults ACP filesystem and
+  terminal capabilities to disabled unless the user opts in.
 
 Manual decision:
 
-- Decide whether filesystem providers should remain config-only or gain a
-  first-run UI, audit history, or broader policy controls.
-- Define terminal session lifecycle, cwd/environment handling, and command
-  approval UX before advertising terminal support.
+- Decide whether filesystem and terminal providers should remain config-only or
+  gain a first-run UI, audit history, persistent trust rules, or broader policy
+  controls.
+- Decide whether terminal support should grow beyond timeline snapshots into a
+  live terminal panel with kill/release controls and richer cwd/environment
+  visibility.
 
 ### spark-attachments
 
