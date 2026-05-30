@@ -27,7 +27,18 @@ Example:
       "command": "/opt/homebrew/bin/npx",
       "args": ["@zed-industries/codex-acp"]
     }
-  }
+  },
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "/opt/homebrew/bin/npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/example/project"
+      ]
+    }
+  ]
 }
 ```
 

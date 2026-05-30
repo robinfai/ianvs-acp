@@ -1,6 +1,6 @@
 # Non-Blocking Manual Follow-Ups
 
-Date: 2026-05-30
+Date: 2026-05-31
 
 This document keeps product, security, and environment-dependent work visible
 without treating those items as release blockers for the current ACP client
@@ -79,27 +79,6 @@ Manual decision:
 - Decide whether command invocation belongs in prompt input autocomplete, a
   separate command palette, or both.
 - Decide how command arguments should be collected and validated.
-
-### mcp-server-config
-
-Status: product/config decision needed.
-
-Non-blocking because: agent server configuration is stable; exposing MCP server
-configuration changes the user config schema and validation surface.
-
-Automated acceptance:
-
-- `test/config/acp_client_config_test.dart` verifies the current supported
-  user-level `agent_servers` configuration.
-- `test/ui/agent_config_dialog_test.dart` verifies configured agents render in
-  the UI.
-
-Manual decision:
-
-- Decide whether MCP servers live beside `agent_servers`, inside each agent
-  server, or in profiles.
-- Decide how secrets, environment variables, and transport-specific MCP settings
-  should be represented.
 
 ### spark-attachments
 

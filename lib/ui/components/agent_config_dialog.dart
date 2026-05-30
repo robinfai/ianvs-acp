@@ -8,11 +8,13 @@ class AgentConfigDialog extends StatelessWidget {
     super.key,
     required this.agentServers,
     required this.activeAgentName,
+    this.mcpServers = const <McpServerConfig>[],
     this.configPath,
     this.defaultAgentName,
   });
 
   final List<AgentServerConfig> agentServers;
+  final List<McpServerConfig> mcpServers;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -29,6 +31,10 @@ class AgentConfigDialog extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _ConfigPathPanel(path: configPath),
+              if (mcpServers.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _McpServersPanel(servers: mcpServers),
+              ],
               const SizedBox(height: 10),
               if (agentServers.isEmpty)
                 const _EmptyState()
@@ -56,6 +62,42 @@ class AgentConfigDialog extends StatelessWidget {
           child: const Text('Close'),
         ),
       ],
+    );
+  }
+}
+
+class _McpServersPanel extends StatelessWidget {
+  const _McpServersPanel({required this.servers});
+
+  final List<McpServerConfig> servers;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      icon: Icons.extension_rounded,
+      title: 'MCP Servers',
+      accent: AppColors.success,
+      trailing: _TinyPill('${servers.length}', AppColors.success),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final server in servers) ...[
+            _DetailRow(label: 'Name', value: server.name),
+            const SizedBox(height: 6),
+            _DetailRow(label: 'Type', value: server.type),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: server.command.isNotEmpty ? 'Command' : 'URL',
+              value: server.command.isNotEmpty ? server.command : server.url,
+            ),
+            if (server != servers.last) ...[
+              const SizedBox(height: 8),
+              const Divider(height: 1, color: AppColors.border),
+              const SizedBox(height: 8),
+            ],
+          ],
+        ],
+      ),
     );
   }
 }

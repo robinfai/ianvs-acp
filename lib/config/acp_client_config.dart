@@ -5,6 +5,7 @@ class AcpClientConfig {
   const AcpClientConfig({
     this.activeAgentServer,
     this.agentServers = const <AgentServerConfig>[],
+    this.mcpServers = const <McpServerConfig>[],
     this.configPath,
     this.defaultAgentServerName,
   });
@@ -14,6 +15,7 @@ class AcpClientConfig {
 
   final AgentServerConfig? activeAgentServer;
   final List<AgentServerConfig> agentServers;
+  final List<McpServerConfig> mcpServers;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -44,6 +46,7 @@ class AcpClientConfig {
     return AcpClientConfig(
       activeAgentServer: server,
       agentServers: agentServers,
+      mcpServers: mcpServers,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
     );
@@ -74,9 +77,12 @@ class AcpClientConfig {
     Map<String, dynamic> json, {
     String? configPath,
   }) {
+    final mcpServers = _mcpServerList(
+      json['mcp_servers'] ?? json['mcpServers'],
+    );
     final serversRaw = json['agent_servers'];
     if (serversRaw == null) {
-      return AcpClientConfig(configPath: configPath);
+      return AcpClientConfig(configPath: configPath, mcpServers: mcpServers);
     }
     if (serversRaw is! Map<String, dynamic>) {
       throw const FormatException('agent_servers must be a JSON object.');
@@ -95,7 +101,7 @@ class AcpClientConfig {
     }
 
     if (servers.isEmpty) {
-      return AcpClientConfig(configPath: configPath);
+      return AcpClientConfig(configPath: configPath, mcpServers: mcpServers);
     }
 
     final preferredName = _stringValue(json['default_agent_server']);
@@ -108,6 +114,7 @@ class AcpClientConfig {
     return AcpClientConfig(
       activeAgentServer: active,
       agentServers: servers.values.toList(),
+      mcpServers: mcpServers,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );
@@ -218,6 +225,39 @@ class AgentServerConfig {
   }
 }
 
+class McpServerConfig {
+  const McpServerConfig({required this.raw});
+
+  final Map<String, dynamic> raw;
+
+  String get name => _stringValue(raw['name']) ?? 'MCP server';
+
+  String get type =>
+      _stringValue(raw['type']) ?? (url.isEmpty ? 'stdio' : 'http');
+
+  String get command => _stringValue(raw['command']) ?? '';
+
+  String get url => _stringValue(raw['url']) ?? '';
+
+  Map<String, dynamic> toJson() => _jsonMap(raw, fieldName: 'mcp_servers');
+
+  factory McpServerConfig.fromJson({required int index, required Map json}) {
+    final raw = _jsonMap(json, fieldName: 'mcp_servers[$index]');
+    final name = _stringValue(raw['name']);
+    if (name == null) {
+      throw FormatException('MCP server at index $index requires name.');
+    }
+
+    final command = _stringValue(raw['command']);
+    final url = _stringValue(raw['url']);
+    if (command == null && url == null) {
+      throw FormatException('MCP server "$name" requires command or url.');
+    }
+
+    return McpServerConfig(raw: raw);
+  }
+}
+
 String? _stringValue(Object? value) {
   if (value is! String) return null;
   final trimmed = value.trim();
@@ -262,4 +302,46 @@ Map<String, String> _stringMap(
     }
     return MapEntry(key, item);
   });
+}
+
+List<McpServerConfig> _mcpServerList(Object? value) {
+  if (value == null) return const <McpServerConfig>[];
+  if (value is! List) {
+    throw const FormatException('mcp_servers must be a list.');
+  }
+  final servers = <McpServerConfig>[];
+  for (var index = 0; index < value.length; index++) {
+    final json = value[index];
+    if (json is! Map) {
+      throw FormatException('MCP server at index $index must be an object.');
+    }
+    servers.add(McpServerConfig.fromJson(index: index, json: json));
+  }
+  return servers;
+}
+
+Map<String, dynamic> _jsonMap(Map raw, {required String fieldName}) {
+  final result = <String, dynamic>{};
+  for (final entry in raw.entries) {
+    final key = entry.key;
+    if (key is! String) {
+      throw FormatException('$fieldName keys must be strings.');
+    }
+    result[key] = _jsonValue(entry.value, fieldName: '$fieldName.$key');
+  }
+  return result;
+}
+
+Object? _jsonValue(Object? value, {required String fieldName}) {
+  if (value == null || value is String || value is num || value is bool) {
+    return value;
+  }
+  if (value is List) {
+    return [
+      for (var index = 0; index < value.length; index++)
+        _jsonValue(value[index], fieldName: '$fieldName[$index]'),
+    ];
+  }
+  if (value is Map) return _jsonMap(value, fieldName: fieldName);
+  throw FormatException('$fieldName must be JSON-compatible.');
 }

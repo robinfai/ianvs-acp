@@ -11,7 +11,6 @@ void main() {
       'authenticate': 'auth-authenticate',
       'filesystem and terminal providers': 'fs-terminal-providers',
       'slash-command picker/autocomplete': 'slash-command-picker',
-      'MCP server definitions': 'mcp-server-config',
       'Spark attachments': 'spark-attachments',
     };
 

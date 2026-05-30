@@ -14,6 +14,14 @@ void main() {
             configPath: '/Users/example/.config/ianvs-acp/settings.json',
             activeAgentName: 'Codex',
             defaultAgentName: 'Kimi Code Dev',
+            mcpServers: [
+              McpServerConfig(
+                raw: {
+                  'name': 'filesystem',
+                  'command': '/usr/local/bin/mcp-filesystem',
+                },
+              ),
+            ],
             agentServers: [
               AgentServerConfig(
                 name: 'Kimi Code Dev',
@@ -40,6 +48,9 @@ void main() {
     );
     expect(find.text('Kimi Code Dev'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('MCP Servers'), findsOneWidget);
+    expect(find.text('filesystem'), findsOneWidget);
+    expect(find.text('/usr/local/bin/mcp-filesystem'), findsOneWidget);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
     expect(find.text('Current'), findsOneWidget);
     expect(find.text('Default'), findsOneWidget);

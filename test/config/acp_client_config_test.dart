@@ -56,6 +56,72 @@ void main() {
     expect(config.defaultAgentServerName, 'Kimi Code Dev');
   });
 
+  test('loads top-level MCP server config', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {
+          'name': 'filesystem',
+          'command': '/usr/local/bin/mcp-filesystem',
+          'args': ['--mode', 'readonly'],
+          'env': [
+            {'name': 'ROOT', 'value': '/workspace'},
+          ],
+        },
+        {
+          'name': 'api-tools',
+          'type': 'http',
+          'url': 'https://api.example.com/mcp',
+          'headers': [
+            {'name': 'Authorization', 'value': 'Bearer test-token'},
+          ],
+        },
+      ],
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    expect(config.mcpServers, hasLength(2));
+    expect(config.mcpServers.first.name, 'filesystem');
+    expect(config.mcpServers.first.command, '/usr/local/bin/mcp-filesystem');
+    expect(config.mcpServers.last.type, 'http');
+    expect(config.mcpServers.last.url, 'https://api.example.com/mcp');
+    expect(config.mcpServers.first.toJson()['env'], [
+      {'name': 'ROOT', 'value': '/workspace'},
+    ]);
+
+    final selected = config.withActiveAgentServer('Codex');
+    expect(selected.mcpServers.map((server) => server.name), [
+      'filesystem',
+      'api-tools',
+    ]);
+  });
+
+  test('rejects invalid MCP server config', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'command': '/usr/local/bin/mcp-filesystem'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'name': 'filesystem'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('system config active agent does not override default', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Kimi Code Dev',

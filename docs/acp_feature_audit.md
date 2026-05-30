@@ -1,6 +1,6 @@
 # ACP Client protocol feature audit
 
-Date: 2026-05-30
+Date: 2026-05-31
 
 This audit uses the official ACP documentation index as the feature list:
 https://agentclientprotocol.com/llms.txt
@@ -32,7 +32,7 @@ The largest remaining gaps are client-provided filesystem/terminal providers, au
 | Session config options | https://agentclientprotocol.com/protocol/session-config-options | Partial to done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format. `config_option_update` is now consumed as complete state. The local model understands official `category` as well as older `group`. Initial `configOptions` returned from `session/new` may still be limited by the current `dart_acp` API, which exposes `newSession` as only a session id. |
 | Slash commands | https://agentclientprotocol.com/protocol/slash-commands | Display-only | `available_commands_update` renders available commands and details. Command invocation is still manual by typing `/command ...`; there is no command picker/autocomplete. Command-list updates now replace the previous command snapshot. |
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/extensibility | Partial | Raw capability `_meta` and session list `_meta` are displayed. No custom extension request UI is implemented. |
-| MCP servers | https://agentclientprotocol.com/protocol/session-setup | Partial | The `dart_acp` config can pass MCP server arrays, but the app-level user config currently only covers `agent_servers`; MCP server configuration is not exposed yet. |
+| MCP servers | https://agentclientprotocol.com/protocol/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, shows configured MCP servers in Agent Configuration, and forwards them through `dart_acp` for session creation/loading. |
 
 ## UX Review With Computer Use
 
@@ -85,11 +85,20 @@ Supported shape:
       "command": "/opt/homebrew/bin/npx",
       "args": ["@zed-industries/codex-acp"]
     }
-  }
+  },
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    }
+  ]
 }
 ```
 
 The toolbar `Agents` menu lists configured servers. `default_agent_server` is only the startup default; after launch, the selected agent belongs to the current/new session and is shown on session rows rather than being written back as global config. Creating a new session asks which configured agent to use when more than one server is available.
+Top-level `mcp_servers` entries are forwarded to every ACP `session/new` and
+`session/load` request for the selected agent.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 
@@ -111,7 +120,6 @@ Detailed tracking and automated acceptance evidence lives in
 - Decide whether to expose `authenticate`, including where login state should live in the UI.
 - Decide whether to enable ACP client filesystem and terminal providers. These require clear permission UX before advertising capabilities.
 - Decide whether to add a slash-command picker/autocomplete instead of only rendering advertised commands.
-- Decide whether user config should also include MCP server definitions, not only agent server definitions.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.
 
 ## Follow-Up Desktop UX Pass

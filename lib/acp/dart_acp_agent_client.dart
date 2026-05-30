@@ -16,13 +16,18 @@ class DartAcpAgentClient implements AcpAgentClient {
     String? agentCommand,
     List<String>? agentArgs,
     Map<String, String>? envOverrides,
+    List<Map<String, dynamic>>? mcpServers,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
-       envOverrides = envOverrides ?? const <String, String>{};
+       envOverrides = envOverrides ?? const <String, String>{},
+       mcpServers = mcpServers == null
+           ? const <Map<String, dynamic>>[]
+           : List.unmodifiable(mcpServers.map(Map<String, dynamic>.from));
 
   final String agentCommand;
   final List<String> agentArgs;
   final Map<String, String> envOverrides;
+  final List<Map<String, dynamic>> mcpServers;
 
   acp.AcpClient? _client;
   AcpAgentCapabilities? _capabilities;
@@ -44,6 +49,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       agentCommand: agentCommand,
       agentArgs: agentArgs,
       envOverrides: envOverrides,
+      mcpServers: mcpServers.map(Map<String, dynamic>.from).toList(),
       capabilities: const acp.AcpCapabilities(
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),

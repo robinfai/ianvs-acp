@@ -131,6 +131,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         controller: _controller,
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
+        mcpServers: _config.mcpServers,
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: widget.startupError,
@@ -147,7 +148,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   ChatController _controllerFor(AcpClientConfig config) {
     return ChatController(
-      client: _agentClient(config.activeAgentServer),
+      client: _agentClient(config),
       cwd: _cwd,
       agentName: config.agentName,
     );
@@ -256,14 +257,19 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
   }
 
-  DartAcpAgentClient _agentClient(AgentServerConfig? server) {
+  DartAcpAgentClient _agentClient(AcpClientConfig config) {
+    final server = config.activeAgentServer;
+    final mcpServers = config.mcpServers
+        .map((server) => server.toJson())
+        .toList();
     if (server == null) {
-      return DartAcpAgentClient();
+      return DartAcpAgentClient(mcpServers: mcpServers);
     }
     return DartAcpAgentClient(
       agentCommand: server.command,
       agentArgs: server.args,
       envOverrides: server.env,
+      mcpServers: mcpServers,
     );
   }
 

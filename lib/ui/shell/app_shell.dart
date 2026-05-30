@@ -23,6 +23,7 @@ class AppShell extends StatelessWidget {
     required this.controller,
     this.agentName = 'Codex',
     this.agentServers = const <AgentServerConfig>[],
+    this.mcpServers = const <McpServerConfig>[],
     this.configPath,
     this.defaultAgentName,
     this.startupError,
@@ -36,6 +37,7 @@ class AppShell extends StatelessWidget {
   final ChatController controller;
   final String agentName;
   final List<AgentServerConfig> agentServers;
+  final List<McpServerConfig> mcpServers;
   final String? configPath;
   final String? defaultAgentName;
   final String? startupError;
@@ -211,6 +213,7 @@ class AppShell extends StatelessWidget {
       builder: (context) {
         return AgentConfigDialog(
           agentServers: agentServers,
+          mcpServers: mcpServers,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
