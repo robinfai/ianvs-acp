@@ -233,7 +233,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final method = _pendingMethodsById.remove(idKey);
       if (method == 'session/new' ||
           method == 'session/load' ||
-          method == 'session/resume') {
+          method == 'session/resume' ||
+          method == 'session/fork') {
         final sessionId = _stringFromPath(decoded, const [
           'result',
           'sessionId',

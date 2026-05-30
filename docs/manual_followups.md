@@ -39,8 +39,8 @@ Automated acceptance:
   local WebSocket ACP agent, forwards custom headers, initializes, creates a
   session, receives session updates, and completes a prompt turn. It also
   verifies a local Streamable HTTP/SSE ACP agent path, including headers,
-  cookies, connection/session stream routing, prompt completion, and best-effort
-  `DELETE` teardown.
+  cookies, connection/session stream routing, forked session streams, prompt
+  completion, and best-effort `DELETE` teardown.
 - `lib/acp/web_socket_acp_transport.dart` implements the JSON-RPC
   `StreamChannel` adapter used by `dart_acp`.
 - `lib/acp/streamable_http_acp_transport.dart` implements the draft HTTP/SSE

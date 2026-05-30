@@ -688,6 +688,136 @@ Future<void> main() async {
     }
   });
 
+  test('opens streamable HTTP SSE stream for forked sessions', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final connectionStream = Completer<HttpResponse>();
+    final originalSessionStream = Completer<HttpResponse>();
+    final forkedSessionStream = Completer<HttpResponse>();
+    String? forkPostSessionHeader;
+    var disposed = false;
+
+    Future<void> sendSse(
+      Completer<HttpResponse> stream,
+      Map<String, dynamic> message,
+    ) async {
+      final response = await stream.future;
+      response
+        ..write('event: message\n')
+        ..write('data: ${jsonEncode(message)}\n\n');
+      await response.flush();
+    }
+
+    Future<void> openSse(HttpRequest request) async {
+      final sessionId = request.headers.value('Acp-Session-Id');
+      request.response.bufferOutput = false;
+      request.response.headers
+        ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+        ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+      request.response.write(': connected\n\n');
+      await request.response.flush();
+      openResponses.add(request.response);
+      if (sessionId == null) {
+        if (!connectionStream.isCompleted) {
+          connectionStream.complete(request.response);
+        }
+      } else if (sessionId == 'http-session') {
+        if (!originalSessionStream.isCompleted) {
+          originalSessionStream.complete(request.response);
+        }
+      } else if (sessionId == 'http-fork') {
+        if (!forkedSessionStream.isCompleted) {
+          forkedSessionStream.complete(request.response);
+        }
+      }
+    }
+
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        await openSse(request);
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final id = message['id'];
+      final method = message['method'];
+      if (method == 'initialize') {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{
+                'connectionId': 'connection-1',
+                'protocolVersion': 1,
+                'agentCapabilities': <String, dynamic>{
+                  'sessionCapabilities': <String, dynamic>{
+                    'fork': <String, dynamic>{},
+                  },
+                },
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+        await request.response.close();
+      } else if (method == 'session/new') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        await sendSse(connectionStream, <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{'sessionId': 'http-session'},
+        });
+      } else if (method == 'session/fork') {
+        forkPostSessionHeader = request.headers.value('Acp-Session-Id');
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        await sendSse(originalSessionStream, <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{'sessionId': 'http-fork'},
+        });
+      }
+    });
+
+    final client = DartAcpAgentClient(
+      agentHttpUrl: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final forked = await client
+          .forkSession(sessionId: session.id, cwd: '/workspace')
+          .timeout(const Duration(seconds: 5));
+
+      await forkedSessionStream.future.timeout(const Duration(seconds: 5));
+
+      expect(session.id, 'http-session');
+      expect(forked.id, 'http-fork');
+      expect(forkPostSessionHeader, 'http-session');
+      await client.dispose().timeout(const Duration(seconds: 5));
+      disposed = true;
+    } finally {
+      if (!disposed) {
+        await client.dispose();
+      }
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('sends custom extension JSON-RPC requests', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final extensionParamsFile = File('${tempDir.path}/extension_params.json');
