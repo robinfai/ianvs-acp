@@ -40,6 +40,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
 
+  static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
+
   static const Map<String, dynamic> _clientInfo = <String, dynamic>{
     'name': 'ACP Client',
     'version': String.fromEnvironment(
@@ -361,14 +363,24 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) async* {
     final client = _requireClient();
     _activeSessionId = sessionId;
-    final content = _promptWithAttachments(prompt, attachments);
     try {
-      await for (final update in client.prompt(
-        sessionId: sessionId,
-        content: content,
-      )) {
-        final event = _eventFromAcpUpdate(update, includeUserMessages: false);
-        if (event != null) {
+      if (attachments.isEmpty) {
+        await for (final update in client.prompt(
+          sessionId: sessionId,
+          content: prompt,
+        )) {
+          final event = _eventFromAcpUpdate(update, includeUserMessages: false);
+          if (event != null) {
+            yield event;
+          }
+        }
+      } else {
+        final content = await _promptContentBlocks(prompt, attachments);
+        await for (final event in _sendRawPrompt(
+          client: client,
+          sessionId: sessionId,
+          content: content,
+        )) {
           yield event;
         }
       }
@@ -565,16 +577,176 @@ class DartAcpAgentClient implements AcpAgentClient {
     return 'Received ${nonText.length} content blocks.';
   }
 
-  String _promptWithAttachments(
+  Future<List<Map<String, dynamic>>> _promptContentBlocks(
     String prompt,
     List<PromptAttachment> attachments,
-  ) {
-    if (attachments.isEmpty) return prompt;
-    final mentions = attachments
-        .map((item) => item.toPromptMention())
-        .join('\n');
-    if (prompt.trim().isEmpty) return mentions;
-    return '$prompt\n\n$mentions';
+  ) async {
+    final blocks = <Map<String, dynamic>>[];
+    if (prompt.trim().isNotEmpty) {
+      blocks.add(<String, dynamic>{'type': 'text', 'text': prompt});
+    }
+    for (final attachment in attachments) {
+      blocks.add(await _contentBlockForAttachment(attachment));
+    }
+    return blocks;
+  }
+
+  Future<Map<String, dynamic>> _contentBlockForAttachment(
+    PromptAttachment attachment,
+  ) async {
+    final embedded = await _embeddedTextResourceBlock(attachment);
+    return embedded ?? _resourceLinkBlock(attachment);
+  }
+
+  Future<Map<String, dynamic>?> _embeddedTextResourceBlock(
+    PromptAttachment attachment,
+  ) async {
+    if (_capabilities?.prompt.embeddedContext != true) return null;
+    if (!_isTextAttachment(attachment)) return null;
+
+    try {
+      final file = File(attachment.path);
+      final byteCount = attachment.size ?? await file.length();
+      if (byteCount > _maxEmbeddedAttachmentBytes) return null;
+      final text = await file.readAsString();
+      return <String, dynamic>{
+        'type': 'resource',
+        'resource': <String, dynamic>{
+          'uri': attachment.uri.toString(),
+          if (attachment.mimeType?.isNotEmpty == true)
+            'mimeType': attachment.mimeType,
+          'text': text,
+        },
+      };
+    } on Object {
+      return null;
+    }
+  }
+
+  bool _isTextAttachment(PromptAttachment attachment) {
+    final mimeType = attachment.mimeType?.toLowerCase();
+    if (mimeType != null) {
+      if (mimeType.startsWith('text/')) return true;
+      if (const <String>{
+        'application/json',
+        'application/javascript',
+        'application/toml',
+        'application/xml',
+        'application/x-yaml',
+        'application/yaml',
+      }.contains(mimeType)) {
+        return true;
+      }
+    }
+
+    final name = attachment.name.toLowerCase();
+    return const <String>[
+      '.c',
+      '.cc',
+      '.cpp',
+      '.css',
+      '.csv',
+      '.dart',
+      '.go',
+      '.h',
+      '.html',
+      '.java',
+      '.js',
+      '.json',
+      '.kt',
+      '.log',
+      '.md',
+      '.php',
+      '.py',
+      '.rb',
+      '.rs',
+      '.sh',
+      '.sql',
+      '.swift',
+      '.toml',
+      '.ts',
+      '.txt',
+      '.xml',
+      '.yaml',
+      '.yml',
+      '.zsh',
+    ].any(name.endsWith);
+  }
+
+  Map<String, dynamic> _resourceLinkBlock(PromptAttachment attachment) {
+    return attachment.toResourceLink().map<String, dynamic>(
+      (key, value) => MapEntry(key, value),
+    );
+  }
+
+  Stream<AgentEvent> _sendRawPrompt({
+    required acp.AcpClient client,
+    required String sessionId,
+    required List<Map<String, dynamic>> content,
+  }) async* {
+    final events = StreamController<AgentEvent>();
+    var acceptingUpdates = false;
+    final subscription = client
+        .sessionUpdates(sessionId)
+        .listen(
+          (update) {
+            if (!acceptingUpdates || events.isClosed) return;
+            final event = _eventFromAcpUpdate(
+              update,
+              includeUserMessages: false,
+            );
+            if (event != null) {
+              events.add(event);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!events.isClosed) events.addError(error, stackTrace);
+          },
+        );
+    try {
+      await Future<void>.delayed(Duration.zero);
+      acceptingUpdates = true;
+      unawaited(() async {
+        try {
+          final response = await client.sendRaw(
+            'session/prompt',
+            <String, dynamic>{'sessionId': sessionId, 'prompt': content},
+          );
+          if (!events.isClosed) {
+            events.add(_eventFromPromptResponse(response));
+          }
+        } catch (error, stackTrace) {
+          if (!events.isClosed) events.addError(error, stackTrace);
+        } finally {
+          if (!events.isClosed) {
+            await events.close();
+          }
+        }
+      }());
+      await for (final event in events.stream) {
+        yield event;
+      }
+    } finally {
+      await subscription.cancel();
+      if (!events.isClosed) {
+        await events.close();
+      }
+    }
+  }
+
+  AgentEvent _eventFromPromptResponse(Map<String, dynamic> response) {
+    final stopReason = response['stopReason'];
+    return AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      metadata: <String, Object?>{
+        'stopReason': stopReason is String
+            ? acp.stopReasonFromWire(stopReason).name
+            : acp.StopReason.other.name,
+        'kind': 'turn',
+      },
+      timestamp: DateTime.now(),
+    );
   }
 
   ({String text, Map<String, Object?> metadata}) _agentErrorDetails(

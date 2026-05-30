@@ -10,9 +10,9 @@ https://agentclientprotocol.com/llms.txt
 The desktop client is now mostly protocol-shaped rather than Codex-specific. Resume discovery uses ACP `session/list`, the selected conversation is loaded through `session/load` or `session/resume`, session settings use ACP session configuration APIs, and timeline rendering is driven by generic ACP session updates.
 
 The largest remaining gaps are client-provided filesystem/terminal providers,
-interactive permission UI, and richer prompt-content support. Those are
-protocol features, but they need product/security decisions rather than only
-visual work.
+interactive permission UI, and richer prompt-side image/audio/binary content
+support. Those are protocol features, but they need product/security decisions
+rather than only visual work.
 
 ## Official Feature Index
 
@@ -25,8 +25,8 @@ visual work.
 | Session close | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes a confirmed `Close Session` action when `sessionCapabilities.close` is advertised. Closing clears the active local session and asks the agent to free resources without deleting persisted history. |
 | Session fork | https://agentclientprotocol.com/protocol/session-setup | Done | Session settings exposes `Fork Session` when `sessionCapabilities.fork` is advertised. Forking creates a new active independent session, keeps the original session in history, and clears the local timeline for the fork. |
 | Session list / metadata | https://agentclientprotocol.com/protocol/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, and supports text search at project and conversation levels. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
-| Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Attachments are sent as file resource links through `dart_acp` prompt mentions. |
-| Content blocks | https://agentclientprotocol.com/protocol/content | Partial | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side image/audio/embedded resource content is not fully enforced by capability checks. File attachments use resource links, which are baseline ACP content, but model/agent-specific support can still vary; Spark may reject or ignore file context even though ACP can represent it. |
+| Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link/embedded text prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource` content when the agent advertises `promptCapabilities.embeddedContext`; otherwise attachments fall back to `resource_link`. |
+| Content blocks | https://agentclientprotocol.com/protocol/content | Partial | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text attachments are gated by `embeddedContext`; prompt-side image/audio/binary embedded content is not yet exposed or gated in the picker. File links remain available as fallback, but model/agent-specific support can still vary. |
 | Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Partial | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click. Until interactive permission UI exists, agent permission requests are conservatively returned as `cancelled` instead of being auto-approved. |
 | File system provider | https://agentclientprotocol.com/protocol/file-system | Missing by design | The client currently advertises `fs/read_text_file=false` and `fs/write_text_file=false`; no provider is wired. |
 | Terminal provider | https://agentclientprotocol.com/protocol/terminals | Missing by design | The client currently advertises no terminal support; no live terminal UI is wired. |
@@ -101,8 +101,10 @@ Supported shape:
 ```
 
 The toolbar `Agents` menu lists configured servers. `default_agent_server` is only the startup default; after launch, the selected agent belongs to the current/new session and is shown on session rows rather than being written back as global config. Creating a new session asks which configured agent to use when more than one server is available.
-Top-level `mcp_servers` entries are forwarded to every ACP `session/new` and
-`session/load` request for the selected agent.
+Compatible top-level `mcp_servers` entries are forwarded to every ACP
+`session/new` and `session/load` request for the selected agent. Stdio entries
+are always forwarded; HTTP, SSE, and ACP transport entries require matching
+agent `mcpCapabilities`.
 
 Session-level model switching uses ACP `configOptions`: when an agent exposes a model-like select option, Session Settings promotes it into a dedicated `Model` dropdown and the status bar shows the current model. Other agent-specific options remain under Config Options.
 

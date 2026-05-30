@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
+import 'package:ianvs_acp/acp/prompt_attachment.dart';
 
 void main() {
   test('copies configured MCP servers for session setup', () {
@@ -109,6 +110,40 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test('embeds text attachments when embedded context is advertised', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      embeddedContext: true,
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    expect(prompt.first, {'type': 'text', 'text': 'Please inspect this.'});
+
+    final resourceBlock = prompt.last as Map<String, dynamic>;
+    expect(resourceBlock['type'], 'resource');
+    expect(
+      resourceBlock['resource'],
+      containsPair('text', 'embedded attachment text'),
+    );
+    expect(resourceBlock['resource'], containsPair('mimeType', 'text/plain'));
+  });
+
+  test(
+    'falls back to resource links without embedded context support',
+    () async {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: false,
+      );
+      final prompt = promptParams['prompt'] as List<dynamic>;
+
+      expect(prompt, hasLength(2));
+      final resourceLink = prompt.last as Map<String, dynamic>;
+      expect(resourceLink['type'], 'resource_link');
+      expect(resourceLink['name'], 'attachment.txt');
+      expect(resourceLink['uri'], startsWith('file://'));
+    },
+  );
 
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
@@ -425,6 +460,87 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+}
+
+Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
+  required bool embeddedContext,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final promptParamsFile = File('${tempDir.path}/prompt_params.json');
+  final attachmentFile = File('${tempDir.path}/attachment.txt');
+  final agentScript = File('${tempDir.path}/fake_prompt_agent.dart');
+  final promptParamsPath = jsonEncode(promptParamsFile.path);
+  final agentCapabilities = embeddedContext
+      ? "<String, dynamic>{'promptCapabilities': <String, dynamic>{'embeddedContext': true}}"
+      : '<String, dynamic>{}';
+  await attachmentFile.writeAsString('embedded attachment text');
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': $agentCapabilities,
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: [agentScript.path],
+  );
+
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    final session = await client.createSession(cwd: tempDir.path);
+    final events = await client
+        .sendPrompt(
+          sessionId: session.id,
+          prompt: 'Please inspect this.',
+          attachments: [
+            PromptAttachment.fromPath(
+              path: attachmentFile.path,
+              size: await attachmentFile.length(),
+            ),
+          ],
+        )
+        .toList()
+        .timeout(const Duration(seconds: 5));
+    expect(events.last.metadata['stopReason'], 'endTurn');
+    return jsonDecode(await promptParamsFile.readAsString())
+        as Map<String, dynamic>;
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
 }
 
 String _dartExecutable() {

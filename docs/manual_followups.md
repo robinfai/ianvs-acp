@@ -43,9 +43,10 @@ Manual decision:
 
 Status: manual integration validation needed.
 
-Non-blocking because: ACP resource links are generated and forwarded, but a
-specific agent/model can still decline, ignore, or reinterpret attachment
-context.
+Non-blocking because: small text attachments are embedded when the agent
+advertises embedded context support, and other attachments are still forwarded
+as ACP resource links. A specific agent/model can still decline, ignore, or
+reinterpret attachment context.
 
 Automated acceptance:
 
@@ -53,13 +54,16 @@ Automated acceptance:
   removed, and sent without text.
 - `test/state/chat_controller_test.dart` verifies attachments are forwarded as
   resource link content metadata.
+- `test/acp/dart_acp_agent_client_test.dart` verifies text attachments become
+  embedded resources when `embeddedContext` is advertised and fall back to
+  resource links otherwise.
 - `test/ui/chat_timeline_test.dart` verifies non-text/resource-link content
   renders in the timeline.
 
 Manual validation:
 
-- Run a real Spark-backed session and confirm whether attached file resource
-  links are accepted, ignored, or rejected.
+- Run a real Spark-backed session and confirm whether embedded text attachments
+  and file resource links are accepted, ignored, or rejected.
 - Record any agent-specific limitations in user-facing docs if Spark behavior is
   intentionally narrower than ACP's representation.
 
@@ -88,20 +92,23 @@ Manual decision:
 
 Status: product decision needed.
 
-Non-blocking because: text and file resource-link prompts work; richer
-prompt-side image/audio/embedded content should be gated by advertised agent
-capabilities and picker support.
+Non-blocking because: text, file resource-link prompts, and embedded text-file
+prompts work; richer prompt-side image/audio/binary embedded content should be
+gated by advertised agent capabilities and picker support.
 
 Automated acceptance:
 
 - `test/ui/prompt_input_test.dart` covers the current file attachment UX.
 - `test/state/chat_controller_test.dart` verifies prompt attachment forwarding.
+- `test/acp/dart_acp_agent_client_test.dart` verifies embedded text attachment
+  capability gating.
 - `test/ui/chat_timeline_test.dart` verifies output content block rendering.
 
 Manual decision:
 
-- Decide which prompt-side content types to expose first and how to disable or
-  explain unavailable types when the agent does not advertise support.
+- Decide which prompt-side image/audio/binary content types to expose first and
+  how to disable or explain unavailable types when the agent does not advertise
+  support.
 
 ### desktop-manual-qa
 
