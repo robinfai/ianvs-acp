@@ -172,6 +172,16 @@ class _McpServerDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final headerKeys = server.headerKeys;
+    final targetLabel = server.type == 'acp' && server.id.isNotEmpty
+        ? 'ID'
+        : server.command.isNotEmpty
+        ? 'Command'
+        : 'URL';
+    final targetValue = server.type == 'acp' && server.id.isNotEmpty
+        ? server.id
+        : server.command.isNotEmpty
+        ? server.command
+        : server.url;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -179,10 +189,7 @@ class _McpServerDetails extends StatelessWidget {
         const SizedBox(height: 6),
         _DetailRow(label: 'Type', value: server.type),
         const SizedBox(height: 6),
-        _DetailRow(
-          label: server.command.isNotEmpty ? 'Command' : 'URL',
-          value: server.command.isNotEmpty ? server.command : server.url,
-        ),
+        _DetailRow(label: targetLabel, value: targetValue),
         if (server.url.isNotEmpty) ...[
           const SizedBox(height: 6),
           _DetailRow(

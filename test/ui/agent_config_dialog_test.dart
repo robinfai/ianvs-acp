@@ -48,6 +48,13 @@ void main() {
                   ],
                 },
               ),
+              McpServerConfig(
+                raw: {
+                  'name': 'nested-agent-tools',
+                  'type': 'acp',
+                  'id': 'nested-agent',
+                },
+              ),
             ],
             agentServers: [
               AgentServerConfig(
@@ -90,6 +97,8 @@ void main() {
     expect(find.text('api-tools'), findsOneWidget);
     expect(find.text('https://api.example.com/mcp'), findsOneWidget);
     expect(find.text('X-MCP-Token'), findsOneWidget);
+    expect(find.text('nested-agent-tools'), findsOneWidget);
+    expect(find.text('nested-agent'), findsOneWidget);
     expect(find.text('secret'), findsNothing);
     expect(find.text('Client Providers'), findsOneWidget);
     expect(find.text('FS read'), findsOneWidget);

@@ -66,7 +66,7 @@ Future<void> main() async {
         'result': <String, dynamic>{
           'protocolVersion': 1,
           'agentCapabilities': <String, dynamic>{
-            'mcpCapabilities': <String, dynamic>{'sse': true},
+            'mcpCapabilities': <String, dynamic>{'sse': true, 'acp': true},
           },
           'authMethods': <Map<String, dynamic>>[],
         },
@@ -107,6 +107,7 @@ Future<void> main() async {
           'url': 'https://events.example.com/mcp',
           'headers': <Map<String, String>>[],
         },
+        {'name': 'acp-tools', 'type': 'acp', 'id': 'nested-agent'},
         {
           'name': 'typo-tools',
           'type': 'htp',
@@ -129,9 +130,13 @@ Future<void> main() async {
         forwardedServers.cast<Map<String, dynamic>>().map(
           (server) => server['name'],
         ),
-        ['stdio-tools', 'sse-tools'],
+        ['stdio-tools', 'sse-tools', 'acp-tools'],
       );
-      expect(forwardedServers.cast<Map<String, dynamic>>().last['type'], 'sse');
+      expect(forwardedServers.cast<Map<String, dynamic>>()[1]['type'], 'sse');
+      expect(
+        forwardedServers.cast<Map<String, dynamic>>().last['id'],
+        'nested-agent',
+      );
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);

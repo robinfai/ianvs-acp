@@ -46,7 +46,9 @@ Example:
 ```
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; headers may be either an object or a `name`/`value` list.
+`headers`; headers may be either an object or a `name`/`value` list. ACP
+transport MCP servers use `type: "acp"` with an `id` provided by the component
+that owns the MCP server.
 
 Supported environment overrides:
 

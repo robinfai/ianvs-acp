@@ -157,6 +157,23 @@ void main() {
     ]);
   });
 
+  test('loads ACP transport MCP server config', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {'name': 'nested-agent-tools', 'type': 'acp', 'id': 'nested-agent'},
+      ],
+    });
+
+    expect(config.mcpServers.single.name, 'nested-agent-tools');
+    expect(config.mcpServers.single.type, 'acp');
+    expect(config.mcpServers.single.id, 'nested-agent');
+    expect(config.mcpServers.single.toJson(), {
+      'name': 'nested-agent-tools',
+      'type': 'acp',
+      'id': 'nested-agent',
+    });
+  });
+
   test('normalizes MCP server transport type casing', () {
     final config = AcpClientConfig.fromJson({
       'mcp_servers': [
@@ -465,6 +482,43 @@ void main() {
       () => AcpClientConfig.fromJson({
         'mcp_servers': [
           {'name': 'api-tools', 'type': 'http', 'url': 'https:///mcp'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'name': 'nested-agent-tools', 'type': 'acp'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'nested-agent-tools',
+            'type': 'acp',
+            'id': 'nested-agent',
+            'url': 'https://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'nested-agent-tools',
+            'type': 'acp',
+            'id': 'nested-agent',
+            'command': '/usr/local/bin/mcp',
+          },
         ],
       }),
       throwsA(isA<FormatException>()),

@@ -144,8 +144,9 @@ config. Creating a new session asks which configured agent to use when more than
 one server is available.
 Compatible top-level `mcp_servers` entries are forwarded to every ACP
 `session/new` and `session/load` request for the selected agent. Supported MCP
-transport types are `stdio`, `http`, `sse`, and `acp`. Stdio entries are always
-forwarded; HTTP, SSE, and ACP transport entries require matching agent
+transport types are `stdio`, `http`, `sse`, and `acp`; ACP transport entries
+use a component-provided `id` instead of `command` or `url`. Stdio entries are
+always forwarded; HTTP, SSE, and ACP transport entries require matching agent
 `mcpCapabilities`.
 Configured `client_providers.filesystem` controls whether the client advertises
 ACP file-system callbacks. Filesystem providers are off by default; when enabled,
