@@ -32,6 +32,16 @@ class CapabilitiesDialog extends StatelessWidget {
                           label: 'Protocol version',
                           value: caps.protocolVersion.toString(),
                         ),
+                        if (caps.clientInfo.isNotEmpty)
+                          _InfoRow(
+                            label: 'Client',
+                            value: _implementationLabel(caps.clientInfo),
+                          ),
+                        if (caps.agentInfo.isNotEmpty)
+                          _InfoRow(
+                            label: 'Agent',
+                            value: _implementationLabel(caps.agentInfo),
+                          ),
                         _BoolRow(
                           label: 'session/load replay',
                           supported: caps.loadSession,
@@ -317,6 +327,14 @@ class _RawSection extends StatelessWidget {
             label: 'agentCapabilities',
             value: capabilities.rawAgentCapabilities,
           ),
+          if (capabilities.agentInfo.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _RawBlock(label: 'agentInfo', value: capabilities.agentInfo),
+          ],
+          if (capabilities.clientInfo.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _RawBlock(label: 'clientInfo', value: capabilities.clientInfo),
+          ],
           if (capabilities.authMethods.isNotEmpty) ...[
             const SizedBox(height: 6),
             _RawBlock(label: 'authMethods', value: capabilities.authMethods),
@@ -325,6 +343,18 @@ class _RawSection extends StatelessWidget {
       ),
     );
   }
+}
+
+String _implementationLabel(Map<String, Object?> info) {
+  final name = info['name'];
+  final version = info['version'];
+  final label = name is String && name.trim().isNotEmpty
+      ? name.trim()
+      : 'Unknown';
+  if (version is String && version.trim().isNotEmpty) {
+    return '$label ${version.trim()}';
+  }
+  return label;
 }
 
 class _RawBlock extends StatelessWidget {

@@ -63,26 +63,6 @@ Manual validation:
 - Record any agent-specific limitations in user-facing docs if Spark behavior is
   intentionally narrower than ACP's representation.
 
-### initialization-metadata
-
-Status: product/API decision needed.
-
-Non-blocking because: negotiated capabilities are visible; `clientInfo` and
-`agentInfo` are useful compatibility metadata but are not required for the
-current stdio session flow.
-
-Automated acceptance:
-
-- `test/ui/capabilities_dialog_test.dart` verifies capability rendering and raw
-  capability data.
-- `lib/acp/acp_agent_capabilities.dart` preserves raw agent capability metadata.
-
-Manual decision:
-
-- Decide which `clientInfo` values the app should advertise.
-- Decide where `agentInfo` should appear in the UI, and whether it should affect
-  agent selection or diagnostics.
-
 ### tool-permission-ui
 
 Status: security/product decision needed.

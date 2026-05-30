@@ -9,6 +9,8 @@ class AcpAgentCapabilities {
     required this.client,
     required this.rawAgentCapabilities,
     required this.authMethods,
+    this.agentInfo = const <String, Object?>{},
+    this.clientInfo = const <String, Object?>{},
   });
 
   factory AcpAgentCapabilities.fromInitialize({
@@ -19,6 +21,8 @@ class AcpAgentCapabilities {
     required bool hasFsProvider,
     required bool hasTerminalProvider,
     required bool allowReadOutsideWorkspace,
+    Map<String, dynamic>? agentInfo,
+    Map<String, dynamic>? clientInfo,
   }) {
     final rawAgent = _objectMap(agentCapabilities);
     return AcpAgentCapabilities(
@@ -38,6 +42,8 @@ class AcpAgentCapabilities {
       authMethods:
           authMethods?.map((method) => _objectMap(method)).toList() ??
           const <Map<String, Object?>>[],
+      agentInfo: _objectMap(agentInfo),
+      clientInfo: _objectMap(clientInfo),
     );
   }
 
@@ -50,6 +56,8 @@ class AcpAgentCapabilities {
   final AcpClientCapabilities client;
   final Map<String, Object?> rawAgentCapabilities;
   final List<Map<String, Object?>> authMethods;
+  final Map<String, Object?> agentInfo;
+  final Map<String, Object?> clientInfo;
 
   Map<String, Object?> get extensionMeta {
     final meta = rawAgentCapabilities['_meta'];

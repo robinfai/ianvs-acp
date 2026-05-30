@@ -30,6 +30,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final List<Map<String, dynamic>> mcpServers;
 
   acp.AcpClient? _client;
+  acp.AcpTransport? _transport;
   AcpAgentCapabilities? _capabilities;
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
@@ -38,6 +39,14 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
+
+  static const Map<String, dynamic> _clientInfo = <String, dynamic>{
+    'name': 'ACP Client',
+    'version': String.fromEnvironment(
+      'IANVS_ACP_VERSION',
+      defaultValue: '1.0.0',
+    ),
+  };
 
   @override
   AcpAgentCapabilities? get capabilities => _capabilities;
@@ -54,19 +63,43 @@ class DartAcpAgentClient implements AcpAgentClient {
         fs: acp.FsCapabilities(readTextFile: false, writeTextFile: false),
       ),
     );
-    final client = await acp.AcpClient.start(config: config);
+    final transport = acp.StdioTransport(
+      command: agentCommand,
+      args: agentArgs,
+      envOverrides: envOverrides,
+      logger: config.logger,
+    );
+    final client = await acp.AcpClient.start(
+      config: config,
+      transport: transport,
+    );
     try {
-      final initializeResult = await client.initialize();
       final clientCapabilities = Map<String, dynamic>.from(
         config.capabilities.toJson(),
       );
       if (config.terminalProvider != null) {
         clientCapabilities['terminal'] = true;
       }
+      final initializeResult = await client
+          .sendRaw('initialize', <String, dynamic>{
+            'protocolVersion': 1,
+            'clientCapabilities': clientCapabilities,
+            'clientInfo': _clientInfo,
+          });
+      final protocolVersion =
+          (initializeResult['protocolVersion'] as num?)?.toInt() ?? 0;
+      if (protocolVersion < acp.AcpConfig.minimumProtocolVersion) {
+        throw StateError(
+          'Unsupported ACP protocol version: $protocolVersion. '
+          'Minimum required: ${acp.AcpConfig.minimumProtocolVersion}.',
+        );
+      }
       final capabilities = AcpAgentCapabilities.fromInitialize(
-        protocolVersion: initializeResult.protocolVersion,
-        agentCapabilities: initializeResult.agentCapabilities,
-        authMethods: initializeResult.authMethods,
+        protocolVersion: protocolVersion,
+        agentCapabilities: _dynamicMap(initializeResult['agentCapabilities']),
+        agentInfo: _dynamicMap(initializeResult['agentInfo']),
+        authMethods: _dynamicMapList(initializeResult['authMethods']),
+        clientInfo: _clientInfo,
         clientCapabilities: clientCapabilities,
         hasFsProvider: config.fsProvider != null,
         hasTerminalProvider: config.terminalProvider != null,
@@ -77,10 +110,11 @@ class DartAcpAgentClient implements AcpAgentClient {
       _supportsResumeSession = capabilities.session.resume;
       _capabilities = capabilities;
     } catch (_) {
-      await client.dispose();
+      await _disposeClient(client, transport);
       rethrow;
     }
     _client = client;
+    _transport = transport;
   }
 
   @override
@@ -560,6 +594,21 @@ class DartAcpAgentClient implements AcpAgentClient {
     return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
   }
 
+  Map<String, dynamic>? _dynamicMap(Object? raw) {
+    if (raw is! Map) return null;
+    return raw.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  List<Map<String, dynamic>>? _dynamicMapList(Object? raw) {
+    if (raw is! List) return null;
+    return raw
+        .whereType<Map>()
+        .map(
+          (item) => item.map((key, value) => MapEntry(key.toString(), value)),
+        )
+        .toList();
+  }
+
   AcpConfigOption _configOptionFromAcp(acp.ConfigOption option) {
     return AcpConfigOption(
       id: option.id,
@@ -686,7 +735,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     final client = _client;
+    final transport = _transport;
     _client = null;
+    _transport = null;
     _capabilities = null;
     _supportsLoadSession = false;
     _supportsListSessions = false;
@@ -694,7 +745,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = null;
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
-    await client?.dispose();
+    await _disposeClient(client, transport);
   }
 
   acp.AcpClient _requireClient() {
@@ -712,5 +763,18 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }
     return 'npx';
+  }
+
+  Future<void> _disposeClient(
+    acp.AcpClient? client,
+    acp.AcpTransport? transport,
+  ) async {
+    await transport?.stop();
+    try {
+      await client?.dispose().timeout(const Duration(milliseconds: 500));
+    } on TimeoutException {
+      // The underlying package can wait for a still-open JSON-RPC stream while
+      // shutting down. The stdio process has already been stopped above.
+    }
   }
 }

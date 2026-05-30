@@ -57,4 +57,29 @@ void main() {
     expect(capabilities.session.configOptions, isTrue);
     expect(capabilities.session.close, isTrue);
   });
+
+  test('initialization metadata is preserved', () {
+    final capabilities = AcpAgentCapabilities.fromInitialize(
+      protocolVersion: 1,
+      agentCapabilities: const <String, dynamic>{},
+      authMethods: const <Map<String, dynamic>>[],
+      clientCapabilities: const <String, dynamic>{},
+      hasFsProvider: false,
+      hasTerminalProvider: false,
+      allowReadOutsideWorkspace: false,
+      agentInfo: const <String, dynamic>{
+        'name': 'Example Agent',
+        'version': '2.0.0',
+      },
+      clientInfo: const <String, dynamic>{
+        'name': 'ACP Client',
+        'version': '1.0.0',
+      },
+    );
+
+    expect(capabilities.agentInfo['name'], 'Example Agent');
+    expect(capabilities.agentInfo['version'], '2.0.0');
+    expect(capabilities.clientInfo['name'], 'ACP Client');
+    expect(capabilities.clientInfo['version'], '1.0.0');
+  });
 }
