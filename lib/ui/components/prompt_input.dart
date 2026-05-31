@@ -12,6 +12,13 @@ typedef PromptSendCallback =
     void Function(String text, List<PromptAttachment> attachments);
 typedef PromptAttachmentPicker = Future<List<PromptAttachment>> Function();
 
+const Color _permissionAccent = Color(0xffea580c);
+const Color _permissionAccentDark = Color(0xff9a3412);
+const Color _permissionAccentSoft = Color(0xfffff7ed);
+const Color _permissionAccentMist = Color(0xffffedd5);
+const Color _permissionAccentBorder = Color(0xfffb923c);
+const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
+
 class PromptInput extends StatefulWidget {
   const PromptInput({
     super.key,
@@ -132,23 +139,33 @@ class _PromptInputState extends State<PromptInput> {
                 borderRadius: BorderRadius.circular(AppRadius.md),
                 border: Border.all(
                   color: hasPendingPermission
-                      ? const Color(0xfff97316)
+                      ? _permissionAccent
                       : AppColors.border,
-                  width: hasPendingPermission ? 1.4 : 1,
+                  width: hasPendingPermission ? 2 : 1,
                 ),
                 boxShadow: [
                   BoxShadow(
                     color: hasPendingPermission
-                        ? const Color(0xfff97316).withValues(alpha: 0.18)
+                        ? _permissionAccent.withValues(alpha: 0.24)
                         : AppColors.textPrimary.withValues(alpha: 0.05),
-                    blurRadius: hasPendingPermission ? 22 : 16,
-                    offset: Offset(0, hasPendingPermission ? 7 : 5),
+                    blurRadius: hasPendingPermission ? 30 : 16,
+                    offset: Offset(0, hasPendingPermission ? 9 : 5),
                   ),
                 ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (pendingPermissionRequest != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                      child: _PromptPermissionCard(
+                        request: pendingPermissionRequest,
+                        onAllow: widget.onAllowPermission,
+                        onDeny: widget.onDenyPermission,
+                        onCancel: widget.onCancelPermission,
+                      ),
+                    ),
                   if (commandSuggestions.isNotEmpty)
                     _CommandSuggestionPanel(
                       commands: commandSuggestions,
@@ -178,16 +195,6 @@ class _PromptInputState extends State<PromptInput> {
                       border: InputBorder.none,
                     ),
                   ),
-                  if (pendingPermissionRequest != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 1, 8, 8),
-                      child: _PromptPermissionCard(
-                        request: pendingPermissionRequest,
-                        onAllow: widget.onAllowPermission,
-                        onDeny: widget.onDenyPermission,
-                        onCancel: widget.onCancelPermission,
-                      ),
-                    ),
                   if (_attachments.isNotEmpty)
                     _AttachmentTray(
                       attachments: _attachments,
@@ -291,9 +298,16 @@ class _PromptPermissionCard extends StatelessWidget {
       key: const Key('prompt-permission-card'),
       width: double.infinity,
       decoration: BoxDecoration(
-        color: const Color(0xfffff7ed),
+        color: _permissionAccentSoft,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: const Color(0xfffb923c), width: 1.3),
+        border: Border.all(color: _permissionAccentBorder, width: 1.6),
+        boxShadow: [
+          BoxShadow(
+            color: _permissionAccent.withValues(alpha: 0.18),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       clipBehavior: Clip.antiAlias,
       child: Stack(
@@ -302,78 +316,103 @@ class _PromptPermissionCard extends StatelessWidget {
             left: 0,
             top: 0,
             bottom: 0,
-            width: 5,
-            child: ColoredBox(color: Color(0xfff97316)),
+            width: 6,
+            child: ColoredBox(color: _permissionAccent),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
+            padding: const EdgeInsets.fromLTRB(17, 11, 11, 11),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final compact = constraints.maxWidth < 700;
-                final details = Column(
+                final details = Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.privacy_tip_rounded,
-                          color: Color(0xffc2410c),
-                          size: 17,
-                        ),
-                        const SizedBox(width: 7),
-                        Flexible(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 7,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: const Color(0xffffedd5),
-                              borderRadius: BorderRadius.circular(
-                                AppRadius.pill,
-                              ),
-                              border: Border.all(
-                                color: const Color(0xfffed7aa),
-                              ),
-                            ),
-                            child: const Text(
-                              'Tool call needs approval',
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: Color(0xff9a3412),
-                                fontSize: 11,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 0,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      request.displayTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0,
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: const BoxDecoration(
+                        color: _permissionAccent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.privacy_tip_rounded,
+                        color: Colors.white,
+                        size: 18,
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${request.displayRationale} (${request.displayKind})',
-                      maxLines: compact ? 2 : 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Wrap(
+                            spacing: 7,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              const Text(
+                                'Tool call needs approval',
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: _permissionAccentDark,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 0,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _permissionAccentMist,
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.pill,
+                                  ),
+                                  border: Border.all(
+                                    color: _permissionAccentBorderSoft,
+                                  ),
+                                ),
+                                child: Text(
+                                  request.displayKind,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: _permissionAccentDark,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            request.displayTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            request.displayRationale,
+                            maxLines: compact ? 2 : 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -389,8 +428,9 @@ class _PromptPermissionCard extends StatelessWidget {
                       label: Text(request.denyActionLabel),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.danger,
-                        minimumSize: const Size(0, 32),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        backgroundColor: Colors.white,
+                        minimumSize: const Size(0, 34),
+                        padding: const EdgeInsets.symmetric(horizontal: 11),
                         side: const BorderSide(color: Color(0xfffecaca)),
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         visualDensity: VisualDensity.compact,
@@ -403,8 +443,8 @@ class _PromptPermissionCard extends StatelessWidget {
                       style: FilledButton.styleFrom(
                         foregroundColor: Colors.white,
                         backgroundColor: const Color(0xffc2410c),
-                        minimumSize: const Size(0, 32),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 34),
+                        padding: const EdgeInsets.symmetric(horizontal: 11),
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         visualDensity: VisualDensity.compact,
                       ),
@@ -415,8 +455,8 @@ class _PromptPermissionCard extends StatelessWidget {
                       icon: const Icon(Icons.close_rounded, size: 18),
                       color: AppColors.textSecondary,
                       constraints: const BoxConstraints.tightFor(
-                        width: 32,
-                        height: 32,
+                        width: 34,
+                        height: 34,
                       ),
                       visualDensity: VisualDensity.compact,
                     ),
@@ -428,16 +468,17 @@ class _PromptPermissionCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       details,
-                      const SizedBox(height: 9),
+                      const SizedBox(height: 10),
                       SizedBox(width: double.infinity, child: actions),
                     ],
                   );
                 }
 
                 return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(child: details),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 12),
                     actions,
                   ],
                 );

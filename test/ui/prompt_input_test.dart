@@ -405,14 +405,18 @@ void main() {
       ),
       findsOneWidget,
     );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('prompt-permission-card'))).dy,
+      lessThan(tester.getTopLeft(find.byType(TextField)).dy),
+    );
 
     final surface = tester.widget<Container>(
       find.byKey(const Key('prompt-input-surface')),
     );
     final decoration = surface.decoration as BoxDecoration;
     final border = decoration.border as Border;
-    expect(border.top.color, const Color(0xfff97316));
-    expect(border.top.width, 1.4);
+    expect(border.top.color, const Color(0xffea580c));
+    expect(border.top.width, 2);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
     await tester.pump();
