@@ -56,6 +56,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   Future<void> _sendLine(String line) async {
     if (_stopping) return;
     onProtocolOut?.call(line);
+    String? pendingMethodIdKey;
     try {
       final message = jsonDecode(line);
       if (message is! Map<String, dynamic>) {
@@ -67,6 +68,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final method = message['method'];
       if (idKey != null && method is String) {
         _pendingMethodsById[idKey] = method;
+        pendingMethodIdKey = idKey;
       }
 
       final sessionId = _sessionIdForOutbound(message, idKey);
@@ -105,6 +107,9 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         uri: endpoint,
       );
     } catch (error, stackTrace) {
+      if (pendingMethodIdKey != null) {
+        _pendingMethodsById.remove(pendingMethodIdKey);
+      }
       if (!_stopping) {
         _controller?.local.sink.addError(error, stackTrace);
       }
