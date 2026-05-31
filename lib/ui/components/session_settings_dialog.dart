@@ -90,14 +90,16 @@ class SessionSettingsDialog extends StatelessWidget {
             cwd: session.cwd,
             loading: controller.sessionSettingsLoading,
           ),
-          const SizedBox(height: 8),
-          _ModelSection(
-            option: settings.modelOption,
-            enabled: settingsEnabled,
-            onChanged: (modelValue) {
-              unawaited(controller.setSessionModel(modelValue));
-            },
-          ),
+          if (settings.modelOption case final modelOption?) ...[
+            const SizedBox(height: 8),
+            _ModelSection(
+              option: modelOption,
+              enabled: settingsEnabled,
+              onChanged: (modelValue) {
+                unawaited(controller.setSessionModel(modelValue));
+              },
+            ),
+          ],
           if (settings.shouldUseLegacyModes) ...[
             const SizedBox(height: 8),
             _ModeSection(
@@ -245,56 +247,41 @@ class _ModelSection extends StatelessWidget {
     required this.onChanged,
   });
 
-  final AcpConfigOption? option;
+  final AcpConfigOption option;
   final bool enabled;
   final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final modelOption = option;
     final selectedValue =
-        modelOption?.options.any(
-              (choice) => choice.value == modelOption.currentValue,
-            ) ==
-            true
-        ? modelOption!.currentValue
+        option.options.any((choice) => choice.value == option.currentValue)
+        ? option.currentValue
         : null;
 
     return _Panel(
       icon: Icons.memory_rounded,
       title: 'Model',
-      child: modelOption == null
-          ? const _EmptyState.inline(
-              icon: Icons.info_outline_rounded,
-              message: 'No model option exposed by this session.',
+      child: DropdownButtonFormField<String>(
+        isExpanded: true,
+        initialValue: selectedValue,
+        decoration: _inputDecoration('Current model'),
+        items: option.options
+            .map(
+              (choice) => DropdownMenuItem<String>(
+                value: choice.value,
+                child: Text(choice.label, overflow: TextOverflow.ellipsis),
+              ),
             )
-          : DropdownButtonFormField<String>(
-              isExpanded: true,
-              initialValue: selectedValue,
-              decoration: _inputDecoration('Current model'),
-              items: modelOption.options
-                  .map(
-                    (choice) => DropdownMenuItem<String>(
-                      value: choice.value,
-                      child: Text(
-                        choice.label,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  )
-                  .toList(),
-              hint: modelOption.currentValue.isEmpty
-                  ? null
-                  : Text(
-                      modelOption.currentValue,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-              onChanged: enabled
-                  ? (value) {
-                      if (value != null) onChanged(value);
-                    }
-                  : null,
-            ),
+            .toList(),
+        hint: option.currentValue.isEmpty
+            ? null
+            : Text(option.currentValue, overflow: TextOverflow.ellipsis),
+        onChanged: enabled
+            ? (value) {
+                if (value != null) onChanged(value);
+              }
+            : null,
+      ),
     );
   }
 }

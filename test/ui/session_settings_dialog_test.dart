@@ -27,6 +27,8 @@ void main() {
     );
 
     expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('Model'), findsNothing);
+    expect(find.text('No model option exposed by this session.'), findsNothing);
     expect(find.text('Mode'), findsNothing);
     expect(find.text('Ask'), findsNothing);
     expect(find.text('Config Options'), findsOneWidget);
