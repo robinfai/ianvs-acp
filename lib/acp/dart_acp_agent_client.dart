@@ -271,7 +271,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
 
     final subscription = client.sessionUpdates(sessionId).listen((update) {
-      final event = _eventFromAcpUpdate(update);
+      final event = _eventFromAcpUpdate(update, sessionId: sessionId);
       if (event != null) {
         events.add(event);
       }
@@ -544,6 +544,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   AgentEvent? _eventFromAcpUpdate(
     acp.AcpUpdate update, {
     bool includeUserMessages = true,
+    String? sessionId,
   }) {
     switch (update) {
       case acp.MessageDelta():
@@ -627,13 +628,13 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.ModeUpdate():
-        final activeSessionId = _activeSessionId;
-        if (activeSessionId != null &&
-            (_configOptionsBySession[activeSessionId]?.isNotEmpty ?? false)) {
+        final updateSessionId = sessionId ?? _activeSessionId;
+        if (updateSessionId != null &&
+            (_configOptionsBySession[updateSessionId]?.isNotEmpty ?? false)) {
           return null;
         }
-        if (update.currentModeId.isNotEmpty && activeSessionId != null) {
-          _modeOverridesBySession[activeSessionId] = update.currentModeId;
+        if (update.currentModeId.isNotEmpty && updateSessionId != null) {
+          _modeOverridesBySession[updateSessionId] = update.currentModeId;
         }
         return AgentEvent(
           type: AgentEventType.status,
@@ -985,6 +986,7 @@ class DartAcpAgentClient implements AcpAgentClient {
             final event = _eventFromAcpUpdate(
               update,
               includeUserMessages: false,
+              sessionId: sessionId,
             );
             if (event != null) {
               events.add(event);
@@ -1376,7 +1378,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   ) async {
     final events = <AgentEvent>[];
     final subscription = client.sessionUpdates(sessionId).listen((update) {
-      final event = _eventFromAcpUpdate(update);
+      final event = _eventFromAcpUpdate(update, sessionId: sessionId);
       if (event != null) {
         events.add(event);
       }
