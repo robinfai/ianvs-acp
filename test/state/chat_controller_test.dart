@@ -216,6 +216,47 @@ void main() {
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
   });
 
+  test('failed resume restores previous active session state', () async {
+    final fake = _FailingResumeAgentClient(
+      createSessionEvents: const [
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'review',
+          metadata: {
+            'kind': 'commands',
+            'commands': [
+              {'name': 'review', 'description': 'Review current changes.'},
+            ],
+          },
+        ),
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    final previousMessages = controller.messages
+        .map((message) => message.text)
+        .toList();
+
+    await controller.resumeSession('failed-session', cwd: '/other/project');
+
+    expect(fake.lastResumeCwd, '/other/project');
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('resume failed'));
+    expect(controller.currentSession?.id, 'fake-session-1');
+    expect(controller.sessions.map((session) => session.id), [
+      'fake-session-1',
+    ]);
+    expect(
+      controller.messages.map((message) => message.text),
+      previousMessages,
+    );
+    expect(controller.availableCommands.single['name'], 'review');
+    expect(controller.sessionSettings.configOptions.single.id, 'approval');
+  });
+
   test('resume session keeps ACP session title metadata', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -1266,6 +1307,19 @@ class _FailingReconnectAgentClient extends FakeAgentClient {
     }
     connected = false;
     throw Exception('connection dropped');
+  }
+}
+
+class _FailingResumeAgentClient extends FakeAgentClient {
+  _FailingResumeAgentClient({super.createSessionEvents});
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+  }) async {
+    lastResumeCwd = cwd;
+    throw StateError('resume failed');
   }
 }
 

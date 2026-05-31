@@ -172,6 +172,14 @@ class ChatController extends ChangeNotifier {
         : cwd.trim();
 
     await _runSessionOperation(() async {
+      final previousSession = currentSession;
+      final previousSessions = List<AgentSession>.from(sessions);
+      final previousMessages = List<ChatMessage>.from(messages);
+      final previousAvailableCommands = availableCommands;
+      final previousLastLatency = lastLatency;
+      final previousSessionSettings = sessionSettings;
+      final previousSessionSettingsLoading = sessionSettingsLoading;
+      final previousSettingsLoadId = _activeSessionSettingsLoadId;
       try {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
@@ -213,6 +221,18 @@ class ChatController extends ChangeNotifier {
         }
         _notifyListeners();
       } catch (error) {
+        currentSession = previousSession;
+        sessions
+          ..clear()
+          ..addAll(previousSessions);
+        messages
+          ..clear()
+          ..addAll(previousMessages);
+        availableCommands = previousAvailableCommands;
+        lastLatency = previousLastLatency;
+        sessionSettings = previousSessionSettings;
+        sessionSettingsLoading = previousSessionSettingsLoading;
+        _activeSessionSettingsLoadId = previousSettingsLoadId;
         _setError(error);
       }
     });
