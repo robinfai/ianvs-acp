@@ -14,6 +14,14 @@ import 'connection_state.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
 
+const List<String> _toolCallIdMetadataKeys = [
+  'toolCallId',
+  'tool_call_id',
+  'id',
+  'callId',
+  'call_id',
+];
+
 class ChatMessage {
   ChatMessage({
     required this.role,
@@ -1149,7 +1157,7 @@ class ChatController extends ChangeNotifier {
   }
 
   String _toolCallIdFromMetadata(Map<String, Object?> metadata) {
-    for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+    for (final key in _toolCallIdMetadataKeys) {
       final value = _stringFromMap(metadata, key);
       if (value.isNotEmpty) return value;
     }
@@ -1158,7 +1166,7 @@ class ChatController extends ChangeNotifier {
       final nestedMetadata = nested.map(
         (key, value) => MapEntry(key.toString(), value),
       );
-      for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+      for (final key in _toolCallIdMetadataKeys) {
         final value = _stringFromMap(nestedMetadata, key);
         if (value.isNotEmpty) return value;
       }

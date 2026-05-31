@@ -464,6 +464,52 @@ void main() {
     expect(find.text('hi'), findsOneWidget);
   });
 
+  testWidgets(
+    'ChatTimeline coalesces tool call chunks by snake case id alias',
+    (tester) async {
+      await tester.pumpWidget(
+        timeline([
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Running command.',
+          ),
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: 'Bash',
+            metadata: const {
+              'tool_call_id': 'call-1',
+              'title': 'Bash',
+              'status': 'pending',
+            },
+          ),
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: 'Bash',
+            metadata: const {
+              'tool_call_id': 'call-1',
+              'title': 'Bash',
+              'status': 'completed',
+              'raw_input': {'command': 'echo hi'},
+              'raw_output': 'hi',
+            },
+          ),
+        ]),
+      );
+
+      expect(find.text('2 tool calls'), findsNothing);
+      expect(find.text('Bash'), findsOneWidget);
+      expect(find.text('Completed'), findsOneWidget);
+      expect(find.text('call-1'), findsNothing);
+
+      await tester.tap(find.byType(ExpansionTile));
+      await tester.pumpAndSettle();
+
+      expect(find.text('call-1'), findsOneWidget);
+      expect(find.textContaining('echo hi'), findsOneWidget);
+      expect(find.text('hi'), findsOneWidget);
+    },
+  );
+
   testWidgets('ChatTimeline renders plan status entries', (tester) async {
     await tester.pumpWidget(
       timeline([

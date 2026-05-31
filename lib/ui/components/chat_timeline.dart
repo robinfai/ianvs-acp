@@ -8,6 +8,14 @@ import '../../state/chat_controller.dart';
 import '../theme/app_design_tokens.dart';
 import 'dot_grid_background.dart';
 
+const List<String> _toolCallIdMetadataKeys = [
+  'toolCallId',
+  'tool_call_id',
+  'id',
+  'callId',
+  'call_id',
+];
+
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
     super.key,
@@ -1957,8 +1965,12 @@ class _ParsedTool {
           ? ''
           : _stringMetadata(metadata, 'kind') ?? '',
       content: _previewObject(metadata['content']),
-      input: _previewObject(metadata['rawInput']),
-      output: _previewObject(metadata['rawOutput']),
+      input: _previewObject(
+        _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
+      ),
+      output: _previewObject(
+        _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
+      ),
       locations: locations,
     );
   }
@@ -1978,7 +1990,7 @@ String? _stringMetadata(Map<String, Object?> metadata, String key) {
 }
 
 String? _toolCallIdMetadata(Map<String, Object?> metadata) {
-  for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+  for (final key in _toolCallIdMetadataKeys) {
     final value = _stringMetadata(metadata, key);
     if (value != null) return value;
   }
@@ -1987,10 +1999,18 @@ String? _toolCallIdMetadata(Map<String, Object?> metadata) {
     final nestedMetadata = nested.map(
       (key, value) => MapEntry(key.toString(), value),
     );
-    for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+    for (final key in _toolCallIdMetadataKeys) {
       final value = _stringMetadata(nestedMetadata, key);
       if (value != null) return value;
     }
+  }
+  return null;
+}
+
+Object? _firstMetadataValue(Map<String, Object?> metadata, List<String> keys) {
+  for (final key in keys) {
+    final value = metadata[key];
+    if (value != null) return value;
   }
   return null;
 }

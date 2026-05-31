@@ -1865,6 +1865,32 @@ void main() {
   });
 
   test(
+    'send prompt coalesces tool call chunks by snake case id alias',
+    () async {
+      final controller = ChatController(
+        client: _SnakeCaseToolCallChunkAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('Run command');
+      await pumpEventQueue(times: 8);
+
+      expect(controller.status, app_state.ConnectionStatus.sessionReady);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.messages, hasLength(2));
+
+      final toolMessage = controller.messages.last;
+      expect(toolMessage.role, ChatMessageRole.tool);
+      expect(toolMessage.text, 'Bash');
+      expect(toolMessage.metadata['tool_call_id'], 'call-1');
+      expect(toolMessage.metadata['status'], 'completed');
+      expect(toolMessage.metadata['raw_output'], 'hi');
+    },
+  );
+
+  test(
     'send prompt forwards attachments and renders resource metadata',
     () async {
       final fake = FakeAgentClient();
@@ -2228,6 +2254,42 @@ class _AliasToolCallChunkAgentClient extends FakeAgentClient {
         'title': 'Bash',
         'status': 'completed',
         'rawOutput': 'hi',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime(2026, 5, 28, 12),
+    );
+  }
+}
+
+class _SnakeCaseToolCallChunkAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'tool_call_id': 'call-1',
+        'title': 'Bash',
+        'status': 'pending',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'tool_call_id': 'call-1',
+        'title': 'Bash',
+        'status': 'completed',
+        'raw_output': 'hi',
       },
     );
     yield AgentEvent(
