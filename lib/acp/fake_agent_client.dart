@@ -23,6 +23,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.permissionResponseError,
     this.extensionResponse = const <String, Object?>{'ok': true},
     this.supportsFork = true,
+    this.supportsListSessions = true,
     this.supportsLogout = true,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
@@ -72,6 +73,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? permissionResponseError;
   final Map<String, Object?> extensionResponse;
   final bool supportsFork;
+  final bool supportsListSessions;
   final bool supportsLogout;
   final Duration chunkDelay;
   final Duration connectDelay;
@@ -118,7 +120,7 @@ class FakeAgentClient implements AcpAgentClient {
           ),
           mcp: const AcpMcpCapabilities(http: true, sse: false, acp: false),
           session: AcpSessionCapabilities(
-            list: true,
+            list: supportsListSessions,
             resume: false,
             fork: supportsFork,
             configOptions: true,
@@ -127,7 +129,7 @@ class FakeAgentClient implements AcpAgentClient {
               'close',
               'configOptions',
               if (supportsFork) 'fork',
-              'list',
+              if (supportsListSessions) 'list',
             ],
           ),
           auth: AcpAuthCapabilities(logout: supportsLogout),
@@ -224,6 +226,9 @@ class FakeAgentClient implements AcpAgentClient {
   Future<List<AcpProjectSessions>> listSessions() async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
+    }
+    if (!supportsListSessions) {
+      throw StateError('Fake client does not support session/list.');
     }
     if (listSessionsDelay > Duration.zero) {
       await Future<void>.delayed(listSessionsDelay);

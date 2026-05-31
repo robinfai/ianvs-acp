@@ -73,6 +73,8 @@ class ChatController extends ChangeNotifier {
 
   bool get supportsSessionFork => capabilities?.session.fork == true;
 
+  bool get supportsSessionList => capabilities?.session.list == true;
+
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
 
   List<Map<String, Object?>> get authMethods {
@@ -98,6 +100,14 @@ class ChatController extends ChangeNotifier {
         supportsSessionClose &&
         !isStreaming &&
         !isSessionOperationRunning;
+  }
+
+  bool get canListSessions {
+    return !isStreaming &&
+        !isSessionOperationRunning &&
+        (status == ConnectionStatus.disconnected ||
+            status == ConnectionStatus.error ||
+            supportsSessionList);
   }
 
   bool get canLogout {

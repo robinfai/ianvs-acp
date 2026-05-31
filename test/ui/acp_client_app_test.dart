@@ -128,6 +128,24 @@ void main() {
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
   });
 
+  testWidgets('AcpClientApp disables resume when agent cannot list sessions', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(supportsListSessions: false);
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+
+    expect(controller.canListSessions, isFalse);
+
+    await tester.tap(find.byTooltip('Resume'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+  });
+
   testWidgets('AcpClientApp opens extension request dialog', (tester) async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

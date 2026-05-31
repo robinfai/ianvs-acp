@@ -92,7 +92,7 @@ class AppShell extends StatelessWidget {
                       ? () => unawaited(_confirmLogout(context))
                       : null,
                   onNewSession: startNewSession,
-                  onResumeSession: sessionActionsEnabled
+                  onResumeSession: controller.canListSessions
                       ? () => _showResumeDialog(context)
                       : null,
                   onReconnect: sessionActionsEnabled
@@ -141,7 +141,7 @@ class AppShell extends StatelessWidget {
                               sessions: _sessions(),
                               currentSession: controller.currentSession,
                               onNewSession: startNewSession,
-                              onResumeSession: sessionActionsEnabled
+                              onResumeSession: controller.canListSessions
                                   ? () => _showResumeDialog(context)
                                   : null,
                               onSelectSession: sessionActionsEnabled
