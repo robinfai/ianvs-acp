@@ -104,21 +104,14 @@ class _PromptInputState extends State<PromptInput> {
   @override
   Widget build(BuildContext context) {
     final commandSuggestions = _commandSuggestions;
+    final pendingPermissionRequest = widget.pendingPermissionRequest;
+    final hasPendingPermission = pendingPermissionRequest != null;
     return Container(
       color: AppColors.bg,
       padding: const EdgeInsets.fromLTRB(12, 3, 12, 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (widget.pendingPermissionRequest != null) ...[
-            _PromptPermissionCard(
-              request: widget.pendingPermissionRequest!,
-              onAllow: widget.onAllowPermission,
-              onDeny: widget.onDenyPermission,
-              onCancel: widget.onCancelPermission,
-            ),
-            const SizedBox(height: 6),
-          ],
           Focus(
             onKeyEvent: (node, event) {
               if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -132,16 +125,24 @@ class _PromptInputState extends State<PromptInput> {
               return KeyEventResult.handled;
             },
             child: Container(
+              key: const Key('prompt-input-surface'),
               constraints: const BoxConstraints(minHeight: 78),
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(color: AppColors.border),
+                border: Border.all(
+                  color: hasPendingPermission
+                      ? const Color(0xfff97316)
+                      : AppColors.border,
+                  width: hasPendingPermission ? 1.4 : 1,
+                ),
                 boxShadow: [
                   BoxShadow(
-                    color: AppColors.textPrimary.withValues(alpha: 0.05),
-                    blurRadius: 16,
-                    offset: const Offset(0, 5),
+                    color: hasPendingPermission
+                        ? const Color(0xfff97316).withValues(alpha: 0.18)
+                        : AppColors.textPrimary.withValues(alpha: 0.05),
+                    blurRadius: hasPendingPermission ? 22 : 16,
+                    offset: Offset(0, hasPendingPermission ? 7 : 5),
                   ),
                 ],
               ),
@@ -177,6 +178,16 @@ class _PromptInputState extends State<PromptInput> {
                       border: InputBorder.none,
                     ),
                   ),
+                  if (pendingPermissionRequest != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 1, 8, 8),
+                      child: _PromptPermissionCard(
+                        request: pendingPermissionRequest,
+                        onAllow: widget.onAllowPermission,
+                        onDeny: widget.onDenyPermission,
+                        onCancel: widget.onCancelPermission,
+                      ),
+                    ),
                   if (_attachments.isNotEmpty)
                     _AttachmentTray(
                       attachments: _attachments,
@@ -277,140 +288,163 @@ class _PromptPermissionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      key: const Key('prompt-permission-card'),
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
       decoration: BoxDecoration(
         color: const Color(0xfffff7ed),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: const Color(0xfffb923c), width: 1.2),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xfffb923c).withValues(alpha: 0.16),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: const Color(0xfffb923c), width: 1.3),
       ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final compact = constraints.maxWidth < 720;
-          final details = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.privacy_tip_rounded,
-                    color: Color(0xffc2410c),
-                    size: 17,
-                  ),
-                  const SizedBox(width: 7),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 2,
+      clipBehavior: Clip.antiAlias,
+      child: Stack(
+        children: [
+          const Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 5,
+            child: ColoredBox(color: Color(0xfff97316)),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 10, 10),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 700;
+                final details = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.privacy_tip_rounded,
+                          color: Color(0xffc2410c),
+                          size: 17,
+                        ),
+                        const SizedBox(width: 7),
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xffffedd5),
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.pill,
+                              ),
+                              border: Border.all(
+                                color: const Color(0xfffed7aa),
+                              ),
+                            ),
+                            child: const Text(
+                              'Tool call needs approval',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Color(0xff9a3412),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xffffedd5),
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
-                      border: Border.all(color: const Color(0xfffed7aa)),
-                    ),
-                    child: const Text(
-                      'Tool call needs approval',
-                      style: TextStyle(
-                        color: Color(0xff9a3412),
-                        fontSize: 11,
+                    const SizedBox(height: 6),
+                    Text(
+                      request.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 14,
                         fontWeight: FontWeight.w900,
                         letterSpacing: 0,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                request.displayTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '${request.displayRationale} (${request.displayKind})',
-                maxLines: compact ? 2 : 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0,
-                ),
-              ),
-            ],
-          );
-          final actions = Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            alignment: WrapAlignment.end,
-            children: [
-              OutlinedButton.icon(
-                onPressed: onDeny,
-                icon: const Icon(Icons.block_rounded, size: 15),
-                label: Text(request.denyActionLabel),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.danger,
-                  side: const BorderSide(color: Color(0xfffecaca)),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
-              FilledButton.icon(
-                onPressed: onAllow,
-                icon: const Icon(Icons.check_rounded, size: 15),
-                label: Text(request.allowActionLabel),
-                style: FilledButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  backgroundColor: const Color(0xffc2410c),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
-              IconButton(
-                tooltip: 'Cancel permission request',
-                onPressed: onCancel,
-                icon: const Icon(Icons.close_rounded, size: 18),
-                color: AppColors.textSecondary,
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          );
+                    const SizedBox(height: 2),
+                    Text(
+                      '${request.displayRationale} (${request.displayKind})',
+                      maxLines: compact ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ],
+                );
+                final actions = Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: onDeny,
+                      icon: const Icon(Icons.block_rounded, size: 15),
+                      label: Text(request.denyActionLabel),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.danger,
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        side: const BorderSide(color: Color(0xfffecaca)),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    FilledButton.icon(
+                      onPressed: onAllow,
+                      icon: const Icon(Icons.check_rounded, size: 15),
+                      label: Text(request.allowActionLabel),
+                      style: FilledButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: const Color(0xffc2410c),
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Cancel permission request',
+                      onPressed: onCancel,
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      color: AppColors.textSecondary,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 32,
+                        height: 32,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                );
 
-          if (compact) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                details,
-                const SizedBox(height: 9),
-                Align(alignment: Alignment.centerRight, child: actions),
-              ],
-            );
-          }
+                if (compact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      details,
+                      const SizedBox(height: 9),
+                      SizedBox(width: double.infinity, child: actions),
+                    ],
+                  );
+                }
 
-          return Row(
-            children: [
-              Expanded(child: details),
-              const SizedBox(width: 10),
-              actions,
-            ],
-          );
-        },
+                return Row(
+                  children: [
+                    Expanded(child: details),
+                    const SizedBox(width: 10),
+                    actions,
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

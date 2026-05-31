@@ -373,7 +373,7 @@ void main() {
     expect(sent, isFalse);
   });
 
-  testWidgets('PromptInput renders permission request beside composer', (
+  testWidgets('PromptInput renders permission request inside composer', (
     tester,
   ) async {
     var allowed = false;
@@ -398,10 +398,57 @@ void main() {
     expect(find.text('Tool call needs approval'), findsOneWidget);
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allow Once'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('prompt-input-surface')),
+        matching: find.byKey(const Key('prompt-permission-card')),
+      ),
+      findsOneWidget,
+    );
+
+    final surface = tester.widget<Container>(
+      find.byKey(const Key('prompt-input-surface')),
+    );
+    final decoration = surface.decoration as BoxDecoration;
+    final border = decoration.border as Border;
+    expect(border.top.color, const Color(0xfff97316));
+    expect(border.top.width, 1.4);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
     await tester.pump();
     expect(allowed, isTrue);
+  });
+
+  testWidgets('PromptInput keeps permission actions usable in narrow widths', (
+    tester,
+  ) async {
+    var denied = false;
+    await tester.pumpWidget(
+      input(
+        width: 320,
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Read workspace file',
+          rationale: 'The agent needs a local file before continuing',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+        onDenyPermission: () => denied = true,
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('prompt-permission-card')), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
+    await tester.pump();
+    expect(denied, isTrue);
   });
 
   testWidgets('PromptInput changes tool call execution policy', (tester) async {
@@ -417,6 +464,12 @@ void main() {
     expect(find.text('自动审查'), findsOneWidget);
     await tester.tap(find.text('自动审查'));
     await tester.pumpAndSettle();
+    expect(find.text('默认权限'), findsOneWidget);
+    expect(find.text('完全访问权限'), findsOneWidget);
+    expect(find.text('所有请求都由你确认'), findsOneWidget);
+    expect(find.text('使用信任规则，未命中时再确认'), findsOneWidget);
+    expect(find.text('自动允许所有 tool call'), findsOneWidget);
+
     await tester.tap(find.text('完全访问权限'));
     await tester.pumpAndSettle();
 
