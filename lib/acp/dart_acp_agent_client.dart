@@ -443,6 +443,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
+    _permissionBridge.cancelSession(sessionId);
   }
 
   @override
@@ -480,6 +481,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _permissionBridge.cancelAll();
   }
 
   @override
