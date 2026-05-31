@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -33,10 +34,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   );
 
   late AcpClientConfig _config;
+  late String _widgetConfigSignature;
   late ChatController _controller;
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
+  final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
@@ -44,12 +47,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   void initState() {
     super.initState();
     _config = widget.config;
+    _widgetConfigSignature = _configSignature(widget.config);
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
       currentDirectory: Directory.current.path,
     );
     if (widget.controller == null) {
-      _controller = _controllerFor(_config);
-      _controllersByAgent[_config.agentName] = _controller;
+      _controller = _cachedControllerFor(_config);
     } else {
       _controller = widget.controller!;
     }
@@ -61,11 +64,41 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   @override
+  void didUpdateWidget(covariant AcpClientApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final nextConfigSignature = _configSignature(widget.config);
+    final configChanged = nextConfigSignature != _widgetConfigSignature;
+    final controllerChanged = oldWidget.controller != widget.controller;
+
+    if (controllerChanged) {
+      if (oldWidget.controller == null) _disposeCachedControllers();
+      _config = widget.config;
+      _widgetConfigSignature = nextConfigSignature;
+      _controller = widget.controller ?? _cachedControllerFor(_config);
+      return;
+    }
+
+    if (!configChanged) {
+      if (widget.controller != null) _controller = widget.controller!;
+      return;
+    }
+
+    _config = widget.config;
+    _widgetConfigSignature = nextConfigSignature;
+    if (widget.controller != null) {
+      _controller = widget.controller!;
+      return;
+    }
+
+    _reconcileControllerCache(_config);
+    _controller = _cachedControllerFor(_config);
+  }
+
+  @override
   void dispose() {
     if (widget.controller == null) {
-      for (final controller in _controllersByAgent.values) {
-        controller.dispose();
-      }
+      _disposeCachedControllers();
     }
     super.dispose();
   }
@@ -156,6 +189,51 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
   }
 
+  ChatController _cachedControllerFor(AcpClientConfig config) {
+    final agentName = config.agentName;
+    final signature = _controllerSignature(config);
+    final existing = _controllersByAgent[agentName];
+    if (existing != null &&
+        _controllerSignaturesByAgent[agentName] == signature) {
+      return existing;
+    }
+
+    existing?.dispose();
+    final controller = _controllerFor(config);
+    _controllersByAgent[agentName] = controller;
+    _controllerSignaturesByAgent[agentName] = signature;
+    return controller;
+  }
+
+  void _reconcileControllerCache(AcpClientConfig config) {
+    for (final entry in _controllersByAgent.entries.toList()) {
+      final nextAgentConfig = _configForAgent(config, entry.key);
+      final nextSignature = nextAgentConfig == null
+          ? null
+          : _controllerSignature(nextAgentConfig);
+      if (nextSignature == _controllerSignaturesByAgent[entry.key]) continue;
+
+      entry.value.dispose();
+      _controllersByAgent.remove(entry.key);
+      _controllerSignaturesByAgent.remove(entry.key);
+    }
+  }
+
+  AcpClientConfig? _configForAgent(AcpClientConfig config, String agentName) {
+    if (config.agentName == agentName) return config;
+    return config.agentServerNamed(agentName) == null
+        ? null
+        : config.withActiveAgentServer(agentName);
+  }
+
+  void _disposeCachedControllers() {
+    for (final controller in _controllersByAgent.values) {
+      controller.dispose();
+    }
+    _controllersByAgent.clear();
+    _controllerSignaturesByAgent.clear();
+  }
+
   Future<void> _selectAgent(String agentName) async {
     if (agentName == _config.agentName) return;
 
@@ -243,10 +321,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
-    final controller = _controllersByAgent.putIfAbsent(
-      nextConfig.agentName,
-      () => _controllerFor(nextConfig),
-    );
+    final controller = _cachedControllerFor(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
@@ -297,5 +372,61 @@ class _AcpClientAppState extends State<AcpClientApp> {
   List<ChatController> get _sessionControllers {
     if (widget.controller != null) return <ChatController>[_controller];
     return _controllersByAgent.values.toList();
+  }
+
+  String _configSignature(AcpClientConfig config) {
+    return jsonEncode(<String, Object?>{
+      'activeAgentServer': _agentServerSignature(config.activeAgentServer),
+      'agentServers': config.agentServers
+          .map(_agentServerSignature)
+          .toList(growable: false),
+      'mcpServers': config.mcpServers
+          .map((server) => server.toJson())
+          .toList(growable: false),
+      'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'configPath': config.configPath,
+      'defaultAgentServerName': config.defaultAgentServerName,
+    });
+  }
+
+  String _controllerSignature(AcpClientConfig config) {
+    return jsonEncode(<String, Object?>{
+      'agentName': config.agentName,
+      'activeAgentServer': _agentServerSignature(config.activeAgentServer),
+      'mcpServers': config.mcpServers
+          .map((server) => server.toJson())
+          .toList(growable: false),
+      'clientProviders': _clientProvidersSignature(config.clientProviders),
+    });
+  }
+
+  Map<String, Object?>? _agentServerSignature(AgentServerConfig? server) {
+    if (server == null) return null;
+    return <String, Object?>{'name': server.name, ...server.toJson()};
+  }
+
+  Map<String, Object?> _clientProvidersSignature(
+    AcpClientProviderConfig providers,
+  ) {
+    return <String, Object?>{
+      'filesystem': <String, Object?>{
+        'readTextFile': providers.filesystem.readTextFile,
+        'writeTextFile': providers.filesystem.writeTextFile,
+        'allowReadOutsideWorkspace':
+            providers.filesystem.allowReadOutsideWorkspace,
+      },
+      'terminal': <String, Object?>{'enabled': providers.terminal.enabled},
+      'permissions': <String, Object?>{
+        'trustRules': providers.permissions.trustRules
+            .map(
+              (rule) => <String, Object?>{
+                'toolName': rule.toolName,
+                'toolKind': rule.toolKind,
+                'decision': rule.decision.name,
+              },
+            )
+            .toList(growable: false),
+      },
+    };
   }
 }

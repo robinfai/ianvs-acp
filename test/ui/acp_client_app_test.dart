@@ -67,6 +67,59 @@ void main() {
     expect(find.text('Codex'), findsOneWidget);
   });
 
+  testWidgets('AcpClientApp applies updated config from parent', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Kimi Code Dev',
+          'agent_servers': {
+            'Kimi Code Dev': {
+              'type': 'custom',
+              'command': '/usr/local/bin/kimi',
+              'args': ['acp'],
+            },
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@zed-industries/codex-acp'],
+            },
+          },
+        }),
+      ),
+    );
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Claude Code',
+          'agent_servers': {
+            'Claude Code': {
+              'type': 'custom',
+              'command': '/usr/local/bin/claude',
+              'args': ['acp'],
+            },
+            'Gemini': {
+              'type': 'custom',
+              'command': '/usr/local/bin/gemini',
+              'args': ['--experimental-acp'],
+            },
+          },
+        }),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Kimi Code Dev'), findsNothing);
+    expect(find.text('Codex'), findsNothing);
+    expect(find.text('Claude Code'), findsWidgets);
+    expect(find.text('Gemini'), findsOneWidget);
+  });
+
   testWidgets('AcpClientApp shows startup config errors without crashing', (
     tester,
   ) async {
