@@ -452,6 +452,33 @@ void main() {
     expect(selectedModel, 'mini');
   });
 
+  testWidgets('PromptInput hides model selector without choices', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, onModelSelected: (_) {}),
+    );
+
+    expect(find.text('Model'), findsNothing);
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        modelOption: const AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'gpt-5',
+          options: [],
+        ),
+        onModelSelected: (_) {},
+      ),
+    );
+
+    expect(find.text('Model'), findsNothing);
+  });
+
   testWidgets('PromptInput wraps composer controls in narrow widths', (
     tester,
   ) async {

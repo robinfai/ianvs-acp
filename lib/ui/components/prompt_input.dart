@@ -477,11 +477,13 @@ class _ComposerControlBar extends StatelessWidget {
       enabled: enabled && onToolCallExecutionPolicyChanged != null,
       onChanged: onToolCallExecutionPolicyChanged,
     );
-    final model = _ModelSelector(
-      option: modelOption,
-      enabled: enabled && !isSending && onModelSelected != null,
-      onSelected: onModelSelected,
-    );
+    final model = modelOption != null && modelOption!.options.isNotEmpty
+        ? _ModelSelector(
+            option: modelOption,
+            enabled: enabled && !isSending && onModelSelected != null,
+            onSelected: onModelSelected,
+          )
+        : null;
     final action = _PromptActionButton(
       isSending: isSending,
       canSend: canSend,
@@ -509,8 +511,10 @@ class _ComposerControlBar extends StatelessWidget {
                   action,
                 ],
               ),
-              const SizedBox(height: 6),
-              Align(alignment: Alignment.centerRight, child: model),
+              if (model != null) ...[
+                const SizedBox(height: 6),
+                Align(alignment: Alignment.centerRight, child: model),
+              ],
             ],
           );
         }
@@ -523,10 +527,12 @@ class _ComposerControlBar extends StatelessWidget {
               child: Align(alignment: Alignment.centerLeft, child: policy),
             ),
             const Spacer(),
-            Flexible(
-              child: Align(alignment: Alignment.centerRight, child: model),
-            ),
-            const SizedBox(width: 8),
+            if (model != null) ...[
+              Flexible(
+                child: Align(alignment: Alignment.centerRight, child: model),
+              ),
+              const SizedBox(width: 8),
+            ],
             action,
           ],
         );
