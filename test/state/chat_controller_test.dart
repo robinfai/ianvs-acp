@@ -74,6 +74,27 @@ void main() {
     expect(controller.sessionSettings.modes.currentModeId, isNull);
   });
 
+  test('new session preserves initial error events', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionEvents: const [
+          AgentEvent(type: AgentEventType.error, text: 'session setup failed'),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.currentSession?.id, 'fake-session-1');
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('session setup failed'));
+    expect(controller.messages.map((message) => message.role), [
+      ChatMessageRole.error,
+    ]);
+  });
+
   test('created sessions keep selected agent name', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -1115,6 +1136,26 @@ void main() {
     expect(controller.currentSession?.id, 'fake-fork-2');
     expect(controller.availableCommands.single['name'], 'review');
     expect(controller.messages.single.metadata['kind'], 'commands');
+  });
+
+  test('fork current session preserves initial error events', () async {
+    final fake = FakeAgentClient(
+      forkSessionEvents: const [
+        AgentEvent(type: AgentEventType.error, text: 'fork setup failed'),
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.forkCurrentSession();
+
+    expect(controller.currentSession?.id, 'fake-fork-2');
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('fork setup failed'));
+    expect(controller.messages.map((message) => message.role), [
+      ChatMessageRole.error,
+    ]);
   });
 
   test('close current session clears active state', () async {

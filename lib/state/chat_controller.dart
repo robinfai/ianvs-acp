@@ -172,7 +172,9 @@ class ChatController extends ChangeNotifier {
           _handleAgentEvent(event, notify: false);
         }
         await _loadSessionSettings(session.id, notify: false);
-        status = ConnectionStatus.sessionReady;
+        if (status != ConnectionStatus.error) {
+          status = ConnectionStatus.sessionReady;
+        }
         _notifyListeners();
       } catch (error) {
         _setError(error);
@@ -495,7 +497,9 @@ class ChatController extends ChangeNotifier {
           _handleAgentEvent(event, notify: false);
         }
         await _loadSessionSettings(updatedSession.id, notify: false);
-        status = ConnectionStatus.sessionReady;
+        if (status != ConnectionStatus.error) {
+          status = ConnectionStatus.sessionReady;
+        }
         _notifyListeners();
       } catch (error) {
         _setActionError(error);
