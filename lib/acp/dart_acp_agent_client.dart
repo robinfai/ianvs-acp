@@ -67,8 +67,8 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, _RawProtocolRequest>{};
   final Map<String, Map<String, dynamic>> _rawSessionResultsBySession =
       <String, Map<String, dynamic>>{};
-  final Map<String, List<String>> _rawToolCallEventIdsBySession =
-      <String, List<String>>{};
+  final Map<String, List<Map<String, Object?>>> _rawToolCallEventsBySession =
+      <String, List<Map<String, Object?>>>{};
   final Map<String, Map<String, Map<String, Object?>>>
   _rawToolCallStatesBySession = <String, Map<String, Map<String, Object?>>>{};
 
@@ -448,7 +448,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
-    _rawToolCallEventIdsBySession.remove(sessionId);
+    _rawToolCallEventsBySession.remove(sessionId);
     _rawToolCallStatesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);
   }
@@ -488,7 +488,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
-    _rawToolCallEventIdsBySession.clear();
+    _rawToolCallEventsBySession.clear();
     _rawToolCallStatesBySession.clear();
     _permissionBridge.cancelAll();
   }
@@ -585,16 +585,15 @@ class DartAcpAgentClient implements AcpAgentClient {
         );
       case acp.ToolCallUpdate():
         final toolCall = update.toolCall;
-        final metadata = <String, Object?>{
-          'kind': 'tool',
-          ...toolCall.toJson(),
-        };
         final rawToolCallState = sessionId == null
             ? null
             : _takeRawToolCallState(sessionId);
-        if (rawToolCallState != null) {
-          metadata.addAll(_normalizedRawToolCallMetadata(rawToolCallState));
-        }
+        final metadata = rawToolCallState == null
+            ? <String, Object?>{'kind': 'tool', ...toolCall.toJson()}
+            : <String, Object?>{
+                'kind': 'tool',
+                ..._normalizedRawToolCallMetadata(rawToolCallState),
+              };
         final title = metadata['title'];
         final toolCallId = metadata['toolCallId'];
         return AgentEvent(
@@ -1502,24 +1501,31 @@ class DartAcpAgentClient implements AcpAgentClient {
       'toolCallId': toolCallId,
     };
 
-    final eventIds = _rawToolCallEventIdsBySession.putIfAbsent(
+    final rawSnapshot = Map<String, Object?>.from(states[toolCallId]!);
+    final events = _rawToolCallEventsBySession.putIfAbsent(
       sessionId,
-      () => <String>[],
+      () => <Map<String, Object?>>[],
     );
-    eventIds.add(toolCallId);
-    if (eventIds.length > _maxRawToolCallEventIds) {
-      eventIds.removeRange(0, eventIds.length - _maxRawToolCallEventIds);
+    events.add(rawSnapshot);
+    if (events.length > _maxRawToolCallEventIds) {
+      events.removeRange(0, events.length - _maxRawToolCallEventIds);
+    }
+    if (_isTerminalRawToolCallStatus(rawSnapshot['status'])) {
+      states.remove(toolCallId);
+      if (states.isEmpty) {
+        _rawToolCallStatesBySession.remove(sessionId);
+      }
     }
   }
 
   Map<String, Object?>? _takeRawToolCallState(String sessionId) {
-    final eventIds = _rawToolCallEventIdsBySession[sessionId];
-    if (eventIds == null || eventIds.isEmpty) return null;
-    final toolCallId = eventIds.removeAt(0);
-    if (eventIds.isEmpty) {
-      _rawToolCallEventIdsBySession.remove(sessionId);
+    final events = _rawToolCallEventsBySession[sessionId];
+    if (events == null || events.isEmpty) return null;
+    final raw = events.removeAt(0);
+    if (events.isEmpty) {
+      _rawToolCallEventsBySession.remove(sessionId);
     }
-    return _rawToolCallStatesBySession[sessionId]?[toolCallId];
+    return raw;
   }
 
   Map<String, Object?> _normalizedRawToolCallMetadata(
@@ -1559,6 +1565,17 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }
     return null;
+  }
+
+  bool _isTerminalRawToolCallStatus(Object? status) {
+    if (status is! String) return false;
+    final normalized = status.trim().toLowerCase();
+    return normalized == 'completed' ||
+        normalized == 'failed' ||
+        normalized == 'cancelled' ||
+        normalized == 'rejected' ||
+        normalized == 'error' ||
+        normalized == 'applied';
   }
 
   String? _jsonRpcIdKey(Object? id) {
@@ -1613,7 +1630,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _configOptionsBySession.clear();
     _pendingRawProtocolRequests.clear();
     _rawSessionResultsBySession.clear();
-    _rawToolCallEventIdsBySession.clear();
+    _rawToolCallEventsBySession.clear();
     _rawToolCallStatesBySession.clear();
     if (closePermissionStream) {
       await _permissionBridge.dispose();

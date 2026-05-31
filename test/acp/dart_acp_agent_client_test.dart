@@ -544,6 +544,7 @@ void sendSessionUpdate(Map<String, dynamic> update) {
 }
 
 Future<void> main() async {
+  var promptCount = 0;
   await for (final line in stdin
       .transform(utf8.decoder)
       .transform(const LineSplitter())) {
@@ -565,6 +566,22 @@ Future<void> main() async {
         'result': <String, dynamic>{'sessionId': 'session-1'},
       });
     } else if (message['method'] == 'session/prompt') {
+      promptCount += 1;
+      if (promptCount == 2) {
+        sendSessionUpdate(<String, dynamic>{
+          'sessionUpdate': 'tool_call_update',
+          'tool_call_id': 'call-a',
+          'status': 'pending',
+          'raw_output': 'new orphan update',
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        });
+        continue;
+      }
       sendSessionUpdate(<String, dynamic>{
         'sessionUpdate': 'tool_call',
         'tool_call_id': 'call-a',
@@ -623,6 +640,12 @@ Future<void> main() async {
         'call-a',
         'call-b',
       ]);
+      expect(toolEvents.map((event) => event.metadata['status']), [
+        'pending',
+        'pending',
+        'completed',
+        'completed',
+      ]);
       expect(toolEvents[2].text, 'Bash A');
       expect(toolEvents[2].metadata['title'], 'Bash A');
       expect(toolEvents[2].metadata['status'], 'completed');
@@ -631,6 +654,24 @@ Future<void> main() async {
       expect(toolEvents[3].metadata['title'], 'Bash B');
       expect(toolEvents[3].metadata['status'], 'completed');
       expect(toolEvents[3].metadata['rawOutput'], 'b done');
+
+      final reusedEvents = await client
+          .sendPrompt(sessionId: session.id, prompt: 'run orphan update')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+      final reusedToolEvents = reusedEvents
+          .where((event) => event.type == AgentEventType.toolCall)
+          .toList();
+
+      expect(reusedToolEvents, hasLength(1));
+      expect(reusedToolEvents.single.text, 'call-a');
+      expect(reusedToolEvents.single.metadata['toolCallId'], 'call-a');
+      expect(reusedToolEvents.single.metadata['title'], isNull);
+      expect(reusedToolEvents.single.metadata['status'], 'pending');
+      expect(
+        reusedToolEvents.single.metadata['rawOutput'],
+        'new orphan update',
+      );
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
