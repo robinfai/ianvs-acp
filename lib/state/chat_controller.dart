@@ -75,6 +75,11 @@ class ChatController extends ChangeNotifier {
 
   bool get supportsSessionList => capabilities?.session.list == true;
 
+  bool get supportsSessionResume {
+    return capabilities?.loadSession == true ||
+        capabilities?.session.resume == true;
+  }
+
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
 
   List<Map<String, Object?>> get authMethods {
@@ -108,6 +113,14 @@ class ChatController extends ChangeNotifier {
         (status == ConnectionStatus.disconnected ||
             status == ConnectionStatus.error ||
             supportsSessionList);
+  }
+
+  bool get canResumeSessions {
+    return !isStreaming &&
+        !isSessionOperationRunning &&
+        (status == ConnectionStatus.disconnected ||
+            status == ConnectionStatus.error ||
+            (supportsSessionList && supportsSessionResume));
   }
 
   bool get canLogout {

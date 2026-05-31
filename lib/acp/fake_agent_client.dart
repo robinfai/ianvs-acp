@@ -24,6 +24,8 @@ class FakeAgentClient implements AcpAgentClient {
     this.extensionResponse = const <String, Object?>{'ok': true},
     this.supportsFork = true,
     this.supportsListSessions = true,
+    this.supportsLoadSession = true,
+    this.supportsResumeSession = false,
     this.supportsLogout = true,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
@@ -74,6 +76,8 @@ class FakeAgentClient implements AcpAgentClient {
   final Map<String, Object?> extensionResponse;
   final bool supportsFork;
   final bool supportsListSessions;
+  final bool supportsLoadSession;
+  final bool supportsResumeSession;
   final bool supportsLogout;
   final Duration chunkDelay;
   final Duration connectDelay;
@@ -112,7 +116,7 @@ class FakeAgentClient implements AcpAgentClient {
   AcpAgentCapabilities? get capabilities => connected
       ? AcpAgentCapabilities(
           protocolVersion: 1,
-          loadSession: true,
+          loadSession: supportsLoadSession,
           prompt: const AcpPromptCapabilities(
             image: true,
             audio: false,
@@ -121,7 +125,7 @@ class FakeAgentClient implements AcpAgentClient {
           mcp: const AcpMcpCapabilities(http: true, sse: false, acp: false),
           session: AcpSessionCapabilities(
             list: supportsListSessions,
-            resume: false,
+            resume: supportsResumeSession,
             fork: supportsFork,
             configOptions: true,
             close: true,
@@ -130,6 +134,7 @@ class FakeAgentClient implements AcpAgentClient {
               'configOptions',
               if (supportsFork) 'fork',
               if (supportsListSessions) 'list',
+              if (supportsResumeSession) 'resume',
             ],
           ),
           auth: AcpAuthCapabilities(logout: supportsLogout),
@@ -214,6 +219,9 @@ class FakeAgentClient implements AcpAgentClient {
   }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
+    }
+    if (!supportsLoadSession && !supportsResumeSession) {
+      throw StateError('Fake client does not support session load or resume.');
     }
     if (resumeDelay > Duration.zero) {
       await Future<void>.delayed(resumeDelay);
