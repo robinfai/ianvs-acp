@@ -13,7 +13,6 @@ import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/extension_request_dialog.dart';
 import '../components/permission_history_dialog.dart';
-import '../components/permission_request_banner.dart';
 import '../components/prompt_input.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
@@ -102,25 +101,6 @@ class AppShell extends StatelessWidget {
                 if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
                   ErrorBanner(message: controller.lastError!),
-                if (controller.pendingPermissionRequest != null)
-                  PermissionRequestBanner(
-                    request: controller.pendingPermissionRequest!,
-                    onAllow: () => unawaited(
-                      controller.resolvePermissionRequest(
-                        AcpPermissionDecision.allow,
-                      ),
-                    ),
-                    onDeny: () => unawaited(
-                      controller.resolvePermissionRequest(
-                        AcpPermissionDecision.deny,
-                      ),
-                    ),
-                    onCancel: () => unawaited(
-                      controller.resolvePermissionRequest(
-                        AcpPermissionDecision.cancel,
-                      ),
-                    ),
-                  ),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
@@ -175,6 +155,30 @@ class AppShell extends StatelessWidget {
                   isSending: controller.isStreaming,
                   availableCommands: controller.availableCommands,
                   promptCapabilities: controller.capabilities?.prompt,
+                  pendingPermissionRequest: controller.pendingPermissionRequest,
+                  onAllowPermission: () => unawaited(
+                    controller.resolvePermissionRequest(
+                      AcpPermissionDecision.allow,
+                    ),
+                  ),
+                  onDenyPermission: () => unawaited(
+                    controller.resolvePermissionRequest(
+                      AcpPermissionDecision.deny,
+                    ),
+                  ),
+                  onCancelPermission: () => unawaited(
+                    controller.resolvePermissionRequest(
+                      AcpPermissionDecision.cancel,
+                    ),
+                  ),
+                  toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
+                  onToolCallExecutionPolicyChanged:
+                      controller.setToolCallExecutionPolicy,
+                  modelOption: controller.sessionSettings.modelOption,
+                  onModelSelected:
+                      controller.currentSession != null && sessionActionsEnabled
+                      ? (value) => unawaited(controller.setSessionModel(value))
+                      : null,
                   onSend: (text, attachments) =>
                       controller.sendPrompt(text, attachments: attachments),
                   onStop: controller.stop,

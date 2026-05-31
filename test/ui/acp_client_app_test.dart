@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -167,7 +168,10 @@ void main() {
     expect(controller.isSessionOperationRunning, isTrue);
     final textField = tester.widget<TextField>(find.byType(TextField));
     final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
+      find.ancestor(
+        of: find.byIcon(Icons.arrow_upward_rounded),
+        matching: find.byType(FilledButton),
+      ),
     );
     expect(textField.enabled, isFalse);
     expect(textField.controller?.text, 'Keep this draft');
@@ -266,6 +270,63 @@ void main() {
     expect(find.text('Extension Request'), findsOneWidget);
     expect(find.text('Method'), findsOneWidget);
     expect(find.text('Params JSON'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp changes tool policy from prompt composer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+
+    await tester.tap(find.text('自动审查'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完全访问权限'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.toolCallExecutionPolicy,
+      AcpToolCallExecutionPolicy.fullAccess,
+    );
+  });
+
+  testWidgets('AcpClientApp changes model from prompt composer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            options: [
+              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+            ],
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+    expect(find.text('GPT-5'), findsOneWidget);
+
+    await tester.tap(find.text('GPT-5'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('GPT-5 Mini'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastConfigId, 'model');
+    expect(fake.lastConfigValue, 'mini');
+    expect(controller.sessionSettings.currentModelLabel, 'GPT-5 Mini');
   });
 
   testWidgets('AcpClientApp resolves permission requests from banner', (

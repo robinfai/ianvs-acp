@@ -61,6 +61,8 @@ class ChatController extends ChangeNotifier {
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings sessionSettings = const AcpSessionSettings();
   AcpPermissionRequest? pendingPermissionRequest;
+  AcpToolCallExecutionPolicy toolCallExecutionPolicy =
+      AcpToolCallExecutionPolicy.autoReview;
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
   final Set<String> _resolvingPermissionRequestIds = <String>{};
@@ -468,6 +470,16 @@ class ChatController extends ChangeNotifier {
     await setConfigOption(option.id, modelValue);
   }
 
+  void setToolCallExecutionPolicy(AcpToolCallExecutionPolicy policy) {
+    if (toolCallExecutionPolicy == policy) return;
+    toolCallExecutionPolicy = policy;
+    final request = pendingPermissionRequest;
+    if (request != null) {
+      _resolvePendingPermissionForPolicy(request);
+    }
+    _notifyListeners();
+  }
+
   Future<void> forkCurrentSession() async {
     final session = currentSession;
     if (session == null || !supportsSessionFork) return;
@@ -777,16 +789,7 @@ class ChatController extends ChangeNotifier {
     }
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
-    final trustedDecision = _trustedDecisionFor(request);
-    if (trustedDecision != null) {
-      unawaited(
-        _resolvePermissionRequest(
-          request,
-          trustedDecision,
-          source: AcpPermissionDecisionSource.trustRule,
-        ),
-      );
-    }
+    _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
   }
 
@@ -815,6 +818,33 @@ class ChatController extends ChangeNotifier {
       if (rule.matches(request)) return rule.decision;
     }
     return null;
+  }
+
+  void _resolvePendingPermissionForPolicy(AcpPermissionRequest request) {
+    switch (toolCallExecutionPolicy) {
+      case AcpToolCallExecutionPolicy.defaultPermissions:
+        return;
+      case AcpToolCallExecutionPolicy.autoReview:
+        final trustedDecision = _trustedDecisionFor(request);
+        if (trustedDecision == null) return;
+        unawaited(
+          _resolvePermissionRequest(
+            request,
+            trustedDecision,
+            source: AcpPermissionDecisionSource.trustRule,
+          ),
+        );
+        return;
+      case AcpToolCallExecutionPolicy.fullAccess:
+        unawaited(
+          _resolvePermissionRequest(
+            request,
+            AcpPermissionDecision.allow,
+            source: AcpPermissionDecisionSource.policy,
+          ),
+        );
+        return;
+    }
   }
 
   Future<void> _resolvePermissionRequest(

@@ -990,6 +990,119 @@ void main() {
   });
 
   test(
+    'default permission policy keeps matching trust rule requests manual',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionTrustRules: const [
+          AcpPermissionTrustRule(
+            toolName: 'read_text_file',
+            decision: AcpPermissionDecision.allow,
+          ),
+        ],
+      );
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.defaultPermissions,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest?.id, 'permission-1');
+      expect(fake.lastPermissionRequestId, isNull);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.pending,
+      );
+    },
+  );
+
+  test('full access permission policy allows requests automatically', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.fullAccess,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.policy,
+    );
+  });
+
+  test(
+    'switching to full access resolves the current pending request',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+      expect(controller.pendingPermissionRequest?.id, 'permission-1');
+
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(fake.lastPermissionRequestId, 'permission-1');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.policy,
+      );
+    },
+  );
+
+  test(
     'failed trust rule permission responses keep the request pending',
     () async {
       final fake = FakeAgentClient(

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
+import '../../acp/acp_permission_request.dart';
+import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
 import '../theme/app_design_tokens.dart';
 
@@ -20,6 +22,14 @@ class PromptInput extends StatefulWidget {
     required this.onStop,
     this.availableCommands = const <Map<String, Object?>>[],
     this.promptCapabilities,
+    this.pendingPermissionRequest,
+    this.onAllowPermission,
+    this.onDenyPermission,
+    this.onCancelPermission,
+    this.toolCallExecutionPolicy = AcpToolCallExecutionPolicy.autoReview,
+    this.onToolCallExecutionPolicyChanged,
+    this.modelOption,
+    this.onModelSelected,
     this.pickAttachments,
   });
 
@@ -30,6 +40,15 @@ class PromptInput extends StatefulWidget {
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
   final AcpPromptCapabilities? promptCapabilities;
+  final AcpPermissionRequest? pendingPermissionRequest;
+  final VoidCallback? onAllowPermission;
+  final VoidCallback? onDenyPermission;
+  final VoidCallback? onCancelPermission;
+  final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
+  final ValueChanged<AcpToolCallExecutionPolicy>?
+  onToolCallExecutionPolicyChanged;
+  final AcpConfigOption? modelOption;
+  final ValueChanged<String>? onModelSelected;
   final PromptAttachmentPicker? pickAttachments;
 
   @override
@@ -88,156 +107,130 @@ class _PromptInputState extends State<PromptInput> {
     return Container(
       color: AppColors.bg,
       padding: const EdgeInsets.fromLTRB(12, 3, 12, 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: Focus(
-              onKeyEvent: (node, event) {
-                if (event is! KeyDownEvent) return KeyEventResult.ignored;
-                if (event.logicalKey != LogicalKeyboardKey.enter) {
-                  return KeyEventResult.ignored;
-                }
-                if (HardwareKeyboard.instance.isShiftPressed) {
-                  return KeyEventResult.ignored;
-                }
-                _submit();
-                return KeyEventResult.handled;
-              },
-              child: Container(
-                constraints: const BoxConstraints(minHeight: 52),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(AppRadius.md),
-                  border: Border.all(color: AppColors.border),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.textPrimary.withValues(alpha: 0.04),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
+          if (widget.pendingPermissionRequest != null) ...[
+            _PromptPermissionCard(
+              request: widget.pendingPermissionRequest!,
+              onAllow: widget.onAllowPermission,
+              onDeny: widget.onDenyPermission,
+              onCancel: widget.onCancelPermission,
+            ),
+            const SizedBox(height: 6),
+          ],
+          Focus(
+            onKeyEvent: (node, event) {
+              if (event is! KeyDownEvent) return KeyEventResult.ignored;
+              if (event.logicalKey != LogicalKeyboardKey.enter) {
+                return KeyEventResult.ignored;
+              }
+              if (HardwareKeyboard.instance.isShiftPressed) {
+                return KeyEventResult.ignored;
+              }
+              _submit();
+              return KeyEventResult.handled;
+            },
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 78),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                border: Border.all(color: AppColors.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.textPrimary.withValues(alpha: 0.05),
+                    blurRadius: 16,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (commandSuggestions.isNotEmpty)
+                    _CommandSuggestionPanel(
+                      commands: commandSuggestions,
+                      onSelect: _insertCommand,
                     ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (commandSuggestions.isNotEmpty)
-                      _CommandSuggestionPanel(
-                        commands: commandSuggestions,
-                        onSelect: _insertCommand,
+                  TextField(
+                    controller: _controller,
+                    minLines: 1,
+                    maxLines: 4,
+                    keyboardType: TextInputType.multiline,
+                    enabled: widget.enabled && !widget.isSending,
+                    onChanged: (_) => setState(() {}),
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Send a prompt to ${widget.agentName}...',
+                      hintStyle: const TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      isCollapsed: true,
+                      contentPadding: const EdgeInsets.fromLTRB(13, 12, 13, 8),
+                      border: InputBorder.none,
+                    ),
+                  ),
+                  if (_attachments.isNotEmpty)
+                    _AttachmentTray(
+                      attachments: _attachments,
+                      promptCapabilities: widget.promptCapabilities,
+                      onRemove: _removeAttachment,
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+                    child: Row(
                       children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(6, 6, 2, 0),
-                          child: Semantics(
-                            button: true,
-                            label: 'Attach file',
-                            child: IconButton(
-                              tooltip: 'Attach file',
-                              onPressed: !widget.enabled || widget.isSending
-                                  ? null
-                                  : _pickAttachments,
-                              icon: const Icon(Icons.attach_file_rounded),
-                              color: AppColors.textSecondary,
-                              disabledColor: AppColors.textTertiary,
-                              iconSize: 17,
-                              visualDensity: VisualDensity.compact,
-                              splashRadius: 18,
-                            ),
+                        Semantics(
+                          button: true,
+                          label: 'Attach file',
+                          child: IconButton(
+                            tooltip: 'Attach file',
+                            onPressed: !widget.enabled || widget.isSending
+                                ? null
+                                : _pickAttachments,
+                            icon: const Icon(Icons.add_rounded),
+                            color: AppColors.textSecondary,
+                            disabledColor: AppColors.textTertiary,
+                            iconSize: 20,
+                            visualDensity: VisualDensity.compact,
+                            splashRadius: 18,
                           ),
                         ),
-                        Expanded(
-                          child: TextField(
-                            controller: _controller,
-                            minLines: 1,
-                            maxLines: 4,
-                            keyboardType: TextInputType.multiline,
-                            enabled: widget.enabled && !widget.isSending,
-                            onChanged: (_) => setState(() {}),
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 13,
-                              height: 1.35,
-                            ),
-                            decoration: InputDecoration(
-                              hintText:
-                                  'Send a prompt to ${widget.agentName}...',
-                              hintStyle: const TextStyle(
-                                color: AppColors.textTertiary,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              isCollapsed: true,
-                              contentPadding: const EdgeInsets.fromLTRB(
-                                4,
-                                12,
-                                12,
-                                10,
-                              ),
-                              border: InputBorder.none,
-                            ),
-                          ),
+                        const _ComposerDivider(),
+                        _ToolCallPolicySelector(
+                          value: widget.toolCallExecutionPolicy,
+                          enabled:
+                              widget.enabled &&
+                              widget.onToolCallExecutionPolicyChanged != null,
+                          onChanged: widget.onToolCallExecutionPolicyChanged,
+                        ),
+                        const Spacer(),
+                        _ModelSelector(
+                          option: widget.modelOption,
+                          enabled:
+                              widget.enabled &&
+                              !widget.isSending &&
+                              widget.onModelSelected != null,
+                          onSelected: widget.onModelSelected,
+                        ),
+                        const SizedBox(width: 8),
+                        _PromptActionButton(
+                          isSending: widget.isSending,
+                          canSend: _canSend,
+                          onSend: _submit,
+                          onStop: widget.onStop,
                         ),
                       ],
                     ),
-                    if (_attachments.isNotEmpty)
-                      _AttachmentTray(
-                        attachments: _attachments,
-                        promptCapabilities: widget.promptCapabilities,
-                        onRemove: _removeAttachment,
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 112,
-            height: 38,
-            child: FilledButton.icon(
-              onPressed: _canSend ? _submit : null,
-              icon: const Icon(Icons.near_me_outlined, size: 17),
-              label: const Text('Send'),
-              style: FilledButton.styleFrom(
-                foregroundColor: AppColors.primaryDark,
-                disabledForegroundColor: AppColors.textTertiary,
-                backgroundColor: AppColors.primarySoft,
-                disabledBackgroundColor: AppColors.primarySoft,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 102,
-            height: 38,
-            child: OutlinedButton.icon(
-              onPressed: widget.isSending ? widget.onStop : null,
-              icon: const Icon(Icons.stop_circle_outlined, size: 17),
-              label: const Text('Stop'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.textSecondary,
-                disabledForegroundColor: AppColors.textTertiary,
-                side: const BorderSide(color: AppColors.border),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadius.pill),
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
-                ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -297,6 +290,440 @@ class _PromptInputState extends State<PromptInput> {
       _attachments.removeWhere((item) => item.path == attachment.path);
     });
   }
+}
+
+class _PromptPermissionCard extends StatelessWidget {
+  const _PromptPermissionCard({
+    required this.request,
+    required this.onAllow,
+    required this.onDeny,
+    required this.onCancel,
+  });
+
+  final AcpPermissionRequest request;
+  final VoidCallback? onAllow;
+  final VoidCallback? onDeny;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: const Color(0xfffff7ed),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: const Color(0xfffb923c), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xfffb923c).withValues(alpha: 0.16),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 720;
+          final details = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.privacy_tip_rounded,
+                    color: Color(0xffc2410c),
+                    size: 17,
+                  ),
+                  const SizedBox(width: 7),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xffffedd5),
+                      borderRadius: BorderRadius.circular(AppRadius.pill),
+                      border: Border.all(color: const Color(0xfffed7aa)),
+                    ),
+                    child: const Text(
+                      'Tool call needs approval',
+                      style: TextStyle(
+                        color: Color(0xff9a3412),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                request.displayTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '${request.displayRationale} (${request.displayKind})',
+                maxLines: compact ? 2 : 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          );
+          final actions = Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            alignment: WrapAlignment.end,
+            children: [
+              OutlinedButton.icon(
+                onPressed: onDeny,
+                icon: const Icon(Icons.block_rounded, size: 15),
+                label: Text(request.denyActionLabel),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  side: const BorderSide(color: Color(0xfffecaca)),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: onAllow,
+                icon: const Icon(Icons.check_rounded, size: 15),
+                label: Text(request.allowActionLabel),
+                style: FilledButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: const Color(0xffc2410c),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Cancel permission request',
+                onPressed: onCancel,
+                icon: const Icon(Icons.close_rounded, size: 18),
+                color: AppColors.textSecondary,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          );
+
+          if (compact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                details,
+                const SizedBox(height: 9),
+                Align(alignment: Alignment.centerRight, child: actions),
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              Expanded(child: details),
+              const SizedBox(width: 10),
+              actions,
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ComposerDivider extends StatelessWidget {
+  const _ComposerDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 1,
+      height: 24,
+      margin: const EdgeInsets.symmetric(horizontal: 6),
+      color: AppColors.border,
+    );
+  }
+}
+
+class _ToolCallPolicySelector extends StatelessWidget {
+  const _ToolCallPolicySelector({
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final AcpToolCallExecutionPolicy value;
+  final bool enabled;
+  final ValueChanged<AcpToolCallExecutionPolicy>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<AcpToolCallExecutionPolicy>(
+      tooltip: 'Tool call execution policy',
+      enabled: enabled,
+      onSelected: onChanged,
+      itemBuilder: (context) => [
+        for (final policy in AcpToolCallExecutionPolicy.values)
+          PopupMenuItem<AcpToolCallExecutionPolicy>(
+            value: policy,
+            child: _PopupChoiceRow(
+              selected: policy == value,
+              icon: _policyIcon(policy),
+              label: _policyLabel(policy),
+              description: _policyDescription(policy),
+            ),
+          ),
+      ],
+      child: _ComposerControlButton(
+        icon: _policyIcon(value),
+        label: _policyLabel(value),
+        enabled: enabled,
+        emphasized: value == AcpToolCallExecutionPolicy.fullAccess,
+      ),
+    );
+  }
+}
+
+class _ModelSelector extends StatelessWidget {
+  const _ModelSelector({
+    required this.option,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final AcpConfigOption? option;
+  final bool enabled;
+  final ValueChanged<String>? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final modelOption = option;
+    final label = modelOption?.currentChoiceLabel ?? 'Model';
+    final hasChoices = modelOption != null && modelOption.options.isNotEmpty;
+    return PopupMenuButton<String>(
+      tooltip: 'Model',
+      enabled: enabled && hasChoices,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        for (final choice
+            in modelOption?.options ?? const <AcpConfigOptionChoice>[])
+          PopupMenuItem<String>(
+            value: choice.value,
+            child: _PopupChoiceRow(
+              selected: choice.value == modelOption?.currentValue,
+              icon: Icons.memory_rounded,
+              label: choice.label,
+              description: choice.description ?? '',
+            ),
+          ),
+      ],
+      child: _ComposerControlButton(
+        icon: Icons.memory_rounded,
+        label: label,
+        enabled: enabled && hasChoices,
+      ),
+    );
+  }
+}
+
+class _ComposerControlButton extends StatelessWidget {
+  const _ComposerControlButton({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    this.emphasized = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool enabled;
+  final bool emphasized;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = !enabled
+        ? AppColors.textTertiary
+        : emphasized
+        ? AppColors.danger
+        : AppColors.primaryDark;
+    final background = emphasized
+        ? const Color(0xfffef2f2)
+        : AppColors.primarySoft;
+    final borderColor = emphasized
+        ? const Color(0xfffecaca)
+        : AppColors.primary.withValues(alpha: 0.14);
+    return Container(
+      height: 30,
+      constraints: const BoxConstraints(maxWidth: 190),
+      padding: const EdgeInsets.symmetric(horizontal: 9),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: enabled ? borderColor : AppColors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          const SizedBox(width: 3),
+          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 17),
+        ],
+      ),
+    );
+  }
+}
+
+class _PopupChoiceRow extends StatelessWidget {
+  const _PopupChoiceRow({
+    required this.selected,
+    required this.icon,
+    required this.label,
+    required this.description,
+  });
+
+  final bool selected;
+  final IconData icon;
+  final String label;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          selected ? Icons.check_circle_rounded : icon,
+          size: 17,
+          color: selected ? AppColors.success : AppColors.primaryDark,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+              if (description.isNotEmpty)
+                Text(
+                  description,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PromptActionButton extends StatelessWidget {
+  const _PromptActionButton({
+    required this.isSending,
+    required this.canSend,
+    required this.onSend,
+    required this.onStop,
+  });
+
+  final bool isSending;
+  final bool canSend;
+  final VoidCallback onSend;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = isSending ? Icons.stop_rounded : Icons.arrow_upward_rounded;
+    final tooltip = isSending ? 'Stop' : 'Send';
+    final onPressed = isSending ? onStop : (canSend ? onSend : null);
+    return SizedBox(
+      width: 38,
+      height: 38,
+      child: Tooltip(
+        message: tooltip,
+        child: FilledButton(
+          onPressed: onPressed,
+          style: FilledButton.styleFrom(
+            foregroundColor: Colors.white,
+            disabledForegroundColor: AppColors.textTertiary,
+            backgroundColor: isSending
+                ? AppColors.danger
+                : AppColors.textPrimary,
+            disabledBackgroundColor: AppColors.surfaceRaised,
+            elevation: onPressed == null ? 0 : 2,
+            padding: EdgeInsets.zero,
+            shape: const CircleBorder(),
+          ),
+          child: Icon(icon, size: 20),
+        ),
+      ),
+    );
+  }
+}
+
+IconData _policyIcon(AcpToolCallExecutionPolicy policy) {
+  return switch (policy) {
+    AcpToolCallExecutionPolicy.defaultPermissions =>
+      Icons.admin_panel_settings_outlined,
+    AcpToolCallExecutionPolicy.autoReview => Icons.verified_user_outlined,
+    AcpToolCallExecutionPolicy.fullAccess => Icons.all_inclusive_rounded,
+  };
+}
+
+String _policyLabel(AcpToolCallExecutionPolicy policy) {
+  return switch (policy) {
+    AcpToolCallExecutionPolicy.defaultPermissions => '默认权限',
+    AcpToolCallExecutionPolicy.autoReview => '自动审查',
+    AcpToolCallExecutionPolicy.fullAccess => '完全访问权限',
+  };
+}
+
+String _policyDescription(AcpToolCallExecutionPolicy policy) {
+  return switch (policy) {
+    AcpToolCallExecutionPolicy.defaultPermissions => '所有请求都由你确认',
+    AcpToolCallExecutionPolicy.autoReview => '使用信任规则，未命中时再确认',
+    AcpToolCallExecutionPolicy.fullAccess => '自动允许所有 tool call',
+  };
 }
 
 class _CommandSuggestionPanel extends StatelessWidget {

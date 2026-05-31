@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
+import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/ui/components/prompt_input.dart';
 
@@ -16,6 +18,15 @@ void main() {
     List<Map<String, Object?>> availableCommands =
         const <Map<String, Object?>>[],
     AcpPromptCapabilities? promptCapabilities,
+    AcpPermissionRequest? pendingPermissionRequest,
+    VoidCallback? onAllowPermission,
+    VoidCallback? onDenyPermission,
+    VoidCallback? onCancelPermission,
+    AcpToolCallExecutionPolicy toolCallExecutionPolicy =
+        AcpToolCallExecutionPolicy.autoReview,
+    ValueChanged<AcpToolCallExecutionPolicy>? onToolCallExecutionPolicyChanged,
+    AcpConfigOption? modelOption,
+    ValueChanged<String>? onModelSelected,
     PromptAttachmentPicker? pickAttachments,
   }) {
     return MaterialApp(
@@ -26,11 +37,28 @@ void main() {
           isSending: isSending,
           availableCommands: availableCommands,
           promptCapabilities: promptCapabilities,
+          pendingPermissionRequest: pendingPermissionRequest,
+          onAllowPermission: onAllowPermission,
+          onDenyPermission: onDenyPermission,
+          onCancelPermission: onCancelPermission,
+          toolCallExecutionPolicy: toolCallExecutionPolicy,
+          onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
+          modelOption: modelOption,
+          onModelSelected: onModelSelected,
           onSend: onSend,
           onStop: onStop ?? () {},
           pickAttachments: pickAttachments,
         ),
       ),
+    );
+  }
+
+  Finder sendIcon() => find.byIcon(Icons.arrow_upward_rounded);
+  Finder stopIcon() => find.byIcon(Icons.stop_rounded);
+  Finder attachFinder() => find.byTooltip('Attach file');
+  FilledButton actionButton(WidgetTester tester, Finder iconFinder) {
+    return tester.widget<FilledButton>(
+      find.ancestor(of: iconFinder, matching: find.byType(FilledButton)),
     );
   }
 
@@ -40,12 +68,10 @@ void main() {
       input(isSending: false, onSend: (_, _) => sent = true),
     );
 
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
+    final sendButton = actionButton(tester, sendIcon());
     expect(sendButton.onPressed, isNull);
 
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
     expect(sent, isFalse);
   });
@@ -69,12 +95,10 @@ void main() {
     await tester.enterText(find.byType(TextField), 'Hello Codex');
     await tester.pump();
 
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
+    final sendButton = actionButton(tester, sendIcon());
     expect(sendButton.onPressed, isNotNull);
 
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
     expect(sentText, 'Hello Codex');
   });
@@ -87,7 +111,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'Line one\nLine two');
     await tester.pump();
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
 
     expect(sentText, 'Line one\nLine two');
@@ -136,7 +160,7 @@ void main() {
     expect(find.text('/review'), findsNothing);
   });
 
-  testWidgets('PromptInput sending state disables Send and enables Stop', (
+  testWidgets('PromptInput sending state switches action button to Stop', (
     tester,
   ) async {
     var stopped = false;
@@ -144,27 +168,23 @@ void main() {
       input(isSending: true, onSend: (_, _) {}, onStop: () => stopped = true),
     );
 
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
-    final stopButton = tester.widget<OutlinedButton>(
-      find.widgetWithText(OutlinedButton, 'Stop'),
-    );
-    expect(sendButton.onPressed, isNull);
+    expect(sendIcon(), findsNothing);
+    final stopButton = actionButton(tester, stopIcon());
     expect(stopButton.onPressed, isNotNull);
 
-    await tester.tap(find.text('Stop'));
+    await tester.tap(stopIcon());
     await tester.pump();
     expect(stopped, isTrue);
   });
 
-  testWidgets('PromptInput Stop disabled when not sending', (tester) async {
+  testWidgets('PromptInput idle state shows one disabled Send action', (
+    tester,
+  ) async {
     await tester.pumpWidget(input(isSending: false, onSend: (_, _) {}));
 
-    final stopButton = tester.widget<OutlinedButton>(
-      find.widgetWithText(OutlinedButton, 'Stop'),
-    );
-    expect(stopButton.onPressed, isNull);
+    expect(stopIcon(), findsNothing);
+    final sendButton = actionButton(tester, sendIcon());
+    expect(sendButton.onPressed, isNull);
   });
 
   testWidgets('PromptInput disabled state preserves draft text', (
@@ -183,26 +203,17 @@ void main() {
     );
 
     final textField = tester.widget<TextField>(find.byType(TextField));
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
-    final stopButton = tester.widget<OutlinedButton>(
-      find.widgetWithText(OutlinedButton, 'Stop'),
-    );
     final attachButton = tester.widget<IconButton>(
-      find.ancestor(
-        of: find.byIcon(Icons.attach_file_rounded),
-        matching: find.byType(IconButton),
-      ),
+      find.ancestor(of: attachFinder(), matching: find.byType(IconButton)),
     );
+    final sendButton = actionButton(tester, sendIcon());
 
     expect(textField.enabled, isFalse);
     expect(textField.controller?.text, 'Keep this draft');
     expect(sendButton.onPressed, isNull);
-    expect(stopButton.onPressed, isNull);
     expect(attachButton.onPressed, isNull);
 
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
 
     expect(sent, isFalse);
@@ -228,18 +239,16 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.tap(attachFinder());
     await tester.pump();
 
     expect(find.text('readme.md'), findsOneWidget);
     expect(find.text('2.0 KB'), findsOneWidget);
 
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
+    final sendButton = actionButton(tester, sendIcon());
     expect(sendButton.onPressed, isNotNull);
 
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
 
     expect(sentAttachments, [attachment]);
@@ -272,7 +281,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.tap(attachFinder());
     await tester.pump();
     expect(pickerStarted.isCompleted, isTrue);
 
@@ -287,10 +296,9 @@ void main() {
     await tester.pump();
 
     expect(find.text('readme.md'), findsNothing);
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Send'),
-    );
-    expect(sendButton.onPressed, isNull);
+    expect(sendIcon(), findsNothing);
+    final stopButton = actionButton(tester, stopIcon());
+    expect(stopButton.onPressed, isNotNull);
     expect(sent, isFalse);
   });
 
@@ -321,7 +329,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.tap(attachFinder());
     await tester.pump();
 
     expect(find.text('readme.md'), findsOneWidget);
@@ -347,14 +355,93 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byIcon(Icons.attach_file_rounded));
+    await tester.tap(attachFinder());
     await tester.pump();
     await tester.tap(find.byIcon(Icons.close_rounded));
     await tester.pump();
 
     expect(find.text('readme.md'), findsNothing);
-    await tester.tap(find.text('Send'));
+    await tester.tap(sendIcon());
     await tester.pump();
     expect(sent, isFalse);
+  });
+
+  testWidgets('PromptInput renders permission request beside composer', (
+    tester,
+  ) async {
+    var allowed = false;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+        onAllowPermission: () => allowed = true,
+      ),
+    );
+
+    expect(find.text('Tool call needs approval'), findsOneWidget);
+    expect(find.text('Read file'), findsOneWidget);
+    expect(find.text('Allow Once'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
+    await tester.pump();
+    expect(allowed, isTrue);
+  });
+
+  testWidgets('PromptInput changes tool call execution policy', (tester) async {
+    AcpToolCallExecutionPolicy? selected;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        onToolCallExecutionPolicyChanged: (policy) => selected = policy,
+      ),
+    );
+
+    expect(find.text('自动审查'), findsOneWidget);
+    await tester.tap(find.text('自动审查'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完全访问权限'));
+    await tester.pumpAndSettle();
+
+    expect(selected, AcpToolCallExecutionPolicy.fullAccess);
+  });
+
+  testWidgets('PromptInput changes exposed model option', (tester) async {
+    String? selectedModel;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        modelOption: const AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'gpt-5',
+          options: [
+            AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+            AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+          ],
+        ),
+        onModelSelected: (value) => selectedModel = value,
+      ),
+    );
+
+    expect(find.text('GPT-5'), findsOneWidget);
+    await tester.tap(find.text('GPT-5'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('GPT-5 Mini'));
+    await tester.pumpAndSettle();
+
+    expect(selectedModel, 'mini');
   });
 }

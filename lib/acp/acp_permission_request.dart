@@ -4,7 +4,9 @@ enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
 
-enum AcpPermissionDecisionSource { manual, trustRule, system }
+enum AcpPermissionDecisionSource { manual, trustRule, policy, system }
+
+enum AcpToolCallExecutionPolicy { defaultPermissions, autoReview, fullAccess }
 
 class AcpPermissionTrustRule {
   const AcpPermissionTrustRule({
@@ -166,6 +168,7 @@ class AcpPermissionAuditEntry {
     return switch (decisionSource) {
       AcpPermissionDecisionSource.manual => 'Manual',
       AcpPermissionDecisionSource.trustRule => 'Trust rule',
+      AcpPermissionDecisionSource.policy => 'Policy',
       AcpPermissionDecisionSource.system => 'System',
       null => null,
     };
