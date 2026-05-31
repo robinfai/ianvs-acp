@@ -1374,9 +1374,11 @@ class _PlanEntryRow extends StatelessWidget {
     final priority = _stringMetadata(entry, 'priority') ?? 'medium';
     final content = _stringMetadata(entry, 'content') ?? '';
     final color = _statusColor(status);
-    final icon = switch (status) {
+    final icon = switch (_normalizedStatusToken(status)) {
       'completed' => Icons.check_circle_rounded,
       'in_progress' => Icons.play_circle_outline_rounded,
+      'failed' || 'error' || 'rejected' => Icons.error_outline_rounded,
+      'cancelled' || 'canceled' => Icons.cancel_outlined,
       _ => Icons.radio_button_unchecked_rounded,
     };
 

@@ -574,6 +574,44 @@ void main() {
     expect(find.text('Medium'), findsOneWidget);
   });
 
+  testWidgets('ChatTimeline normalizes plan entry status icons', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Implementation plan',
+          metadata: const {
+            'kind': 'plan',
+            'entries': [
+              {
+                'content': 'Run active command',
+                'priority': 'medium',
+                'status': 'inProgress',
+              },
+              {
+                'content': 'Handle failed check',
+                'priority': 'high',
+                'status': 'rejected',
+              },
+              {
+                'content': 'Skip stale task',
+                'priority': 'low',
+                'status': 'canceled',
+              },
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.byIcon(Icons.play_circle_outline_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.error_outline_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.cancel_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.radio_button_unchecked_rounded), findsNothing);
+  });
+
   testWidgets('ChatTimeline renders thought and turn status updates', (
     tester,
   ) async {
