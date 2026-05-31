@@ -1305,15 +1305,31 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Map<String, dynamic> rawResponse,
     List<acp.ConfigOption>? typedConfigOptions,
   }) {
-    final configOptions = rawResponse.isNotEmpty || typedConfigOptions == null
-        ? _cacheRawConfigOptions(sessionId, rawResponse['configOptions'])
-        : _cacheConfigOptions(sessionId, typedConfigOptions);
+    final configOptions = _cacheSessionResultConfigOptions(
+      sessionId: sessionId,
+      rawResponse: rawResponse,
+      typedConfigOptions: typedConfigOptions,
+    );
     if (configOptions.isEmpty) {
       _cacheRawModes(sessionId, rawResponse['modes']);
     } else {
       _modesBySession.remove(sessionId);
       _modeOverridesBySession.remove(sessionId);
     }
+  }
+
+  List<AcpConfigOption> _cacheSessionResultConfigOptions({
+    required String sessionId,
+    required Map<String, dynamic> rawResponse,
+    List<acp.ConfigOption>? typedConfigOptions,
+  }) {
+    if (rawResponse.containsKey('configOptions')) {
+      return _cacheRawConfigOptions(sessionId, rawResponse['configOptions']);
+    }
+    if (typedConfigOptions != null) {
+      return _cacheConfigOptions(sessionId, typedConfigOptions);
+    }
+    return _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
   }
 
   Map<String, dynamic> _takeRawSessionResult(String sessionId) {
