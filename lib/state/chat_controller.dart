@@ -608,10 +608,11 @@ class ChatController extends ChangeNotifier {
   Future<void> resolvePermissionRequest(AcpPermissionDecision decision) async {
     final request = pendingPermissionRequest;
     if (request == null) return;
-    pendingPermissionRequest = null;
-    _recordPermissionDecision(request.id, decision);
-    _notifyListeners();
-    await _sendPermissionDecision(id: request.id, decision: decision);
+    await _resolvePermissionRequest(
+      request,
+      decision,
+      source: AcpPermissionDecisionSource.manual,
+    );
   }
 
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
@@ -777,14 +778,12 @@ class ChatController extends ChangeNotifier {
     _recordPermissionRequest(request);
     final trustedDecision = _trustedDecisionFor(request);
     if (trustedDecision != null) {
-      pendingPermissionRequest = null;
-      _recordPermissionDecision(
-        request.id,
-        trustedDecision,
-        source: AcpPermissionDecisionSource.trustRule,
-      );
       unawaited(
-        _sendPermissionDecision(id: request.id, decision: trustedDecision),
+        _resolvePermissionRequest(
+          request,
+          trustedDecision,
+          source: AcpPermissionDecisionSource.trustRule,
+        ),
       );
     }
     _notifyListeners();
@@ -817,17 +816,36 @@ class ChatController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> _sendPermissionDecision({
+  Future<void> _resolvePermissionRequest(
+    AcpPermissionRequest request,
+    AcpPermissionDecision decision, {
+    required AcpPermissionDecisionSource source,
+  }) async {
+    final didSend = await _sendPermissionDecision(
+      id: request.id,
+      decision: decision,
+    );
+    if (!didSend) return;
+    if (pendingPermissionRequest?.id == request.id) {
+      pendingPermissionRequest = null;
+    }
+    _recordPermissionDecision(request.id, decision, source: source);
+    _notifyListeners();
+  }
+
+  Future<bool> _sendPermissionDecision({
     required String id,
     required AcpPermissionDecision decision,
     bool reportErrors = true,
   }) async {
     try {
       await client.respondToPermissionRequest(id: id, decision: decision);
+      return true;
     } catch (error) {
       if (reportErrors) {
         _setActionError(error);
       }
+      return false;
     }
   }
 
