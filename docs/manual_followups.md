@@ -141,7 +141,7 @@ Manual validation:
 Status: audit and rule-management refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, permission requests
-surface an in-app per-request approval card beside the prompt composer with
+surface an in-app per-request approval card inside the prompt composer with
 Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels
 when they are more specific. The prompt composer also exposes `默认权限`,
 `自动审查`, and `完全访问权限` execution modes. Handled requests are visible in
@@ -150,7 +150,8 @@ in-process audit entries. Resolved entries record whether the decision came
 from a manual action, trust rule, runtime policy, or system cancellation.
 Explicit permission trust rules can auto-allow or auto-deny matching requests.
 Requests still fall back to `cancelled` when no UI listener is active, and
-pending requests are system-cancelled when the permission stream closes.
+pending requests are system-cancelled when the permission stream closes or
+session teardown completes through close/logout.
 
 Automated acceptance:
 
@@ -158,8 +159,9 @@ Automated acceptance:
   expandable cards and grouped cards.
 - `test/acp/dart_acp_agent_client_test.dart` verifies agent permission requests
   receive a `cancelled` outcome when no interactive UI is listening, receive a
-  selected allow option when approved through the interactive response path, and
-  close the permission request stream on client disposal.
+  selected allow option when approved through the interactive response path,
+  close the permission request stream on client disposal, and are cancelled when
+  session close/logout completes.
 - `test/ui/prompt_input_test.dart` verifies the prompt-side permission approval
   card, execution-policy selector, and model selector.
 - `test/ui/acp_client_app_test.dart` verifies prompt-side policy/model changes,

@@ -71,6 +71,23 @@ void main() {
       );
     }
   });
+
+  test(
+    'permission audit docs match current composer and teardown behavior',
+    () {
+      expect(auditDoc, contains('inside the prompt composer'));
+      expect(manualDoc, contains('inside the prompt composer'));
+      expect(
+        auditDoc,
+        contains('session teardown completes through close/logout'),
+      );
+      expect(
+        manualDoc,
+        contains('session teardown completes through close/logout'),
+      );
+      expect(manualDoc, contains('session close/logout completes'));
+    },
+  );
 }
 
 Map<String, String> _manualFollowUpBlocks(String markdown) {
