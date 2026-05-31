@@ -275,7 +275,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       if (event != null) {
         events.add(event);
       }
-    });
+    }, onError: (_) {});
     try {
       await client.loadSession(sessionId: sessionId, workspaceRoot: cwd);
       await Future<void>.delayed(Duration.zero);

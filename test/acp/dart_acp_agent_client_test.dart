@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 
@@ -2165,6 +2166,96 @@ Future<void> main() async {
       expect(settings.currentModelLabel, 'GPT-5 Pro');
       expect(settings.modes.currentModeId, isNull);
       expect(settings.modes.availableModes, isEmpty);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('ignores prompt stream errors while loading session history', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File(
+      '${tempDir.path}/fake_load_prompt_error_agent.dart',
+    );
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Object? pendingLoadId;
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'loadSession': true,
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-load',
+        },
+      }));
+    } else if (message['method'] == 'session/load') {
+      pendingLoadId = message['id'];
+    } else if (message['method'] == 'session/prompt') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'error': <String, dynamic>{
+          'code': -32000,
+          'message': 'prompt failed',
+        },
+      }));
+      final loadId = pendingLoadId;
+      if (loadId != null) {
+        pendingLoadId = null;
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': loadId,
+          'result': <String, dynamic>{},
+        }));
+      }
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+
+      final resumeFuture = client.resumeSession(
+        sessionId: session.id,
+        cwd: '/workspace',
+      );
+      await Future<void>.delayed(Duration.zero);
+      final promptEvents = await client
+          .sendPrompt(sessionId: session.id, prompt: 'fail now')
+          .toList();
+      final loadEvents = await resumeFuture.timeout(const Duration(seconds: 5));
+
+      expect(loadEvents, isEmpty);
+      expect(promptEvents, hasLength(1));
+      expect(promptEvents.single.type, AgentEventType.error);
+      expect(promptEvents.single.text, contains('prompt failed'));
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
