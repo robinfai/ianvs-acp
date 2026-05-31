@@ -18,6 +18,7 @@ const Color _permissionAccentSoft = Color(0xfffff7ed);
 const Color _permissionAccentMist = Color(0xffffedd5);
 const Color _permissionAccentBorder = Color(0xfffb923c);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
+const Color _permissionComposerSurface = Color(0xfffffbeb);
 
 class PromptInput extends StatefulWidget {
   const PromptInput({
@@ -135,23 +136,36 @@ class _PromptInputState extends State<PromptInput> {
               key: const Key('prompt-input-surface'),
               constraints: const BoxConstraints(minHeight: 78),
               decoration: BoxDecoration(
-                color: AppColors.surface,
+                color: hasPendingPermission
+                    ? _permissionComposerSurface
+                    : AppColors.surface,
                 borderRadius: BorderRadius.circular(AppRadius.md),
                 border: Border.all(
                   color: hasPendingPermission
                       ? _permissionAccent
                       : AppColors.border,
-                  width: hasPendingPermission ? 2 : 1,
+                  width: hasPendingPermission ? 2.4 : 1,
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: hasPendingPermission
-                        ? _permissionAccent.withValues(alpha: 0.24)
-                        : AppColors.textPrimary.withValues(alpha: 0.05),
-                    blurRadius: hasPendingPermission ? 30 : 16,
-                    offset: Offset(0, hasPendingPermission ? 9 : 5),
-                  ),
-                ],
+                boxShadow: hasPendingPermission
+                    ? [
+                        BoxShadow(
+                          color: _permissionAccent.withValues(alpha: 0.28),
+                          blurRadius: 34,
+                          offset: const Offset(0, 10),
+                        ),
+                        BoxShadow(
+                          color: _permissionAccent.withValues(alpha: 0.16),
+                          blurRadius: 0,
+                          spreadRadius: 3,
+                        ),
+                      ]
+                    : [
+                        BoxShadow(
+                          color: AppColors.textPrimary.withValues(alpha: 0.05),
+                          blurRadius: 16,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -300,12 +314,12 @@ class _PromptPermissionCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: _permissionAccentSoft,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: _permissionAccentBorder, width: 1.6),
+        border: Border.all(color: _permissionAccentBorder, width: 2),
         boxShadow: [
           BoxShadow(
-            color: _permissionAccent.withValues(alpha: 0.18),
-            blurRadius: 18,
-            offset: const Offset(0, 6),
+            color: _permissionAccent.withValues(alpha: 0.22),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
@@ -316,11 +330,11 @@ class _PromptPermissionCard extends StatelessWidget {
             left: 0,
             top: 0,
             bottom: 0,
-            width: 6,
+            width: 8,
             child: ColoredBox(color: _permissionAccent),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(17, 11, 11, 11),
+            padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final compact = constraints.maxWidth < 700;
@@ -328,8 +342,8 @@ class _PromptPermissionCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      width: 32,
-                      height: 32,
+                      width: 38,
+                      height: 38,
                       decoration: const BoxDecoration(
                         color: _permissionAccent,
                         shape: BoxShape.circle,
@@ -337,10 +351,10 @@ class _PromptPermissionCard extends StatelessWidget {
                       child: const Icon(
                         Icons.privacy_tip_rounded,
                         color: Colors.white,
-                        size: 18,
+                        size: 21,
                       ),
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -352,13 +366,35 @@ class _PromptPermissionCard extends StatelessWidget {
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
                               const Text(
-                                'Tool call needs approval',
+                                '等待 Tool Call 权限确认',
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   color: _permissionAccentDark,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: 0,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _permissionAccent,
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.pill,
+                                  ),
+                                ),
+                                child: const Text(
+                                  '需要处理',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0,
+                                  ),
                                 ),
                               ),
                               Container(
@@ -838,6 +874,7 @@ class _PromptActionButton extends StatelessWidget {
         message: tooltip,
         child: FilledButton(
           onPressed: onPressed,
+          key: const Key('prompt-action-button'),
           style: FilledButton.styleFrom(
             foregroundColor: Colors.white,
             disabledForegroundColor: AppColors.textTertiary,

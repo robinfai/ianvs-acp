@@ -62,6 +62,7 @@ void main() {
 
   Finder sendIcon() => find.byIcon(Icons.arrow_upward_rounded);
   Finder stopIcon() => find.byIcon(Icons.stop_rounded);
+  Finder primaryAction() => find.byKey(const Key('prompt-action-button'));
   Finder attachFinder() => find.byTooltip('Attach file');
   FilledButton actionButton(WidgetTester tester, Finder iconFinder) {
     return tester.widget<FilledButton>(
@@ -176,6 +177,7 @@ void main() {
     );
 
     expect(sendIcon(), findsNothing);
+    expect(primaryAction(), findsOneWidget);
     final stopButton = actionButton(tester, stopIcon());
     expect(stopButton.onPressed, isNotNull);
 
@@ -190,6 +192,7 @@ void main() {
     await tester.pumpWidget(input(isSending: false, onSend: (_, _) {}));
 
     expect(stopIcon(), findsNothing);
+    expect(primaryAction(), findsOneWidget);
     final sendButton = actionButton(tester, sendIcon());
     expect(sendButton.onPressed, isNull);
   });
@@ -395,7 +398,8 @@ void main() {
       ),
     );
 
-    expect(find.text('Tool call needs approval'), findsOneWidget);
+    expect(find.text('等待 Tool Call 权限确认'), findsOneWidget);
+    expect(find.text('需要处理'), findsOneWidget);
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allow Once'), findsOneWidget);
     expect(
@@ -415,8 +419,9 @@ void main() {
     );
     final decoration = surface.decoration as BoxDecoration;
     final border = decoration.border as Border;
+    expect(decoration.color, const Color(0xfffffbeb));
     expect(border.top.color, const Color(0xffea580c));
-    expect(border.top.width, 2);
+    expect(border.top.width, 2.4);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
     await tester.pump();
