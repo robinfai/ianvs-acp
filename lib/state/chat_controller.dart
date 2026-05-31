@@ -703,7 +703,7 @@ class ChatController extends ChangeNotifier {
   }
 
   void _appendToolCall(AgentEvent event) {
-    final toolCallId = _stringFromMap(event.metadata, 'toolCallId');
+    final toolCallId = _toolCallIdFromMetadata(event.metadata);
     if (toolCallId.isEmpty) {
       messages.add(
         ChatMessage(
@@ -719,7 +719,7 @@ class ChatController extends ChangeNotifier {
       final message = messages[index];
       if (message.role == ChatMessageRole.user) break;
       if (message.role != ChatMessageRole.tool) continue;
-      if (_stringFromMap(message.metadata, 'toolCallId') != toolCallId) {
+      if (_toolCallIdFromMetadata(message.metadata) != toolCallId) {
         continue;
       }
 
@@ -1117,6 +1117,24 @@ class ChatController extends ChangeNotifier {
   String _stringFromMap(Map<String, Object?> map, String key) {
     final value = map[key];
     return value is String ? value.trim() : '';
+  }
+
+  String _toolCallIdFromMetadata(Map<String, Object?> metadata) {
+    for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+      final value = _stringFromMap(metadata, key);
+      if (value.isNotEmpty) return value;
+    }
+    final nested = metadata['toolCall'];
+    if (nested is Map) {
+      final nestedMetadata = nested.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+      for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+        final value = _stringFromMap(nestedMetadata, key);
+        if (value.isNotEmpty) return value;
+      }
+    }
+    return '';
   }
 
   void _applySessionInfoUpdate(Map<String, Object?> metadata) {

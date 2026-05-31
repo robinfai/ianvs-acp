@@ -182,7 +182,7 @@ List<ChatMessage> _coalesceToolCallChunks(List<ChatMessage> tools) {
   final indexByCallId = <String, int>{};
 
   for (final tool in tools) {
-    final callId = _stringMetadata(tool.metadata, 'toolCallId');
+    final callId = _toolCallIdMetadata(tool.metadata);
     if (callId == null) {
       coalesced.add(tool);
       continue;
@@ -1897,7 +1897,7 @@ class _ParsedTool {
     return _ParsedTool(
       title: title.isEmpty ? 'Tool call' : title,
       status: status,
-      id: _stringMetadata(metadata, 'toolCallId') ?? '',
+      id: _toolCallIdMetadata(metadata) ?? '',
       kind: _stringMetadata(metadata, 'kind') == 'tool'
           ? ''
           : _stringMetadata(metadata, 'kind') ?? '',
@@ -1919,6 +1919,24 @@ class _DetailEntry {
 String? _stringMetadata(Map<String, Object?> metadata, String key) {
   final value = metadata[key];
   if (value is String && value.trim().isNotEmpty) return value.trim();
+  return null;
+}
+
+String? _toolCallIdMetadata(Map<String, Object?> metadata) {
+  for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+    final value = _stringMetadata(metadata, key);
+    if (value != null) return value;
+  }
+  final nested = metadata['toolCall'];
+  if (nested is Map) {
+    final nestedMetadata = nested.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    for (final key in const ['toolCallId', 'id', 'callId', 'call_id']) {
+      final value = _stringMetadata(nestedMetadata, key);
+      if (value != null) return value;
+    }
+  }
   return null;
 }
 

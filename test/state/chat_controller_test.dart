@@ -1719,6 +1719,30 @@ void main() {
     expect(toolMessage.metadata['rawOutput'], 'hi');
   });
 
+  test('send prompt coalesces tool call chunks by id aliases', () async {
+    final controller = ChatController(
+      client: _AliasToolCallChunkAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Run command');
+    await pumpEventQueue(times: 8);
+
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+    expect(controller.isStreaming, isFalse);
+    expect(controller.messages, hasLength(2));
+
+    final toolMessage = controller.messages.last;
+    expect(toolMessage.role, ChatMessageRole.tool);
+    expect(toolMessage.text, 'Bash');
+    expect(toolMessage.metadata['id'], 'call-1');
+    expect(toolMessage.metadata['callId'], 'call-1');
+    expect(toolMessage.metadata['status'], 'completed');
+    expect(toolMessage.metadata['rawOutput'], 'hi');
+  });
+
   test(
     'send prompt forwards attachments and renders resource metadata',
     () async {
@@ -1999,6 +2023,42 @@ class _ToolCallChunkAgentClient extends FakeAgentClient {
         'title': 'Bash',
         'status': 'completed',
         'rawInput': {'command': 'echo hi'},
+        'rawOutput': 'hi',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime(2026, 5, 28, 12),
+    );
+  }
+}
+
+class _AliasToolCallChunkAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'id': 'call-1',
+        'title': 'Bash',
+        'status': 'pending',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'callId': 'call-1',
+        'title': 'Bash',
+        'status': 'completed',
         'rawOutput': 'hi',
       },
     );
