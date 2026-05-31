@@ -649,6 +649,23 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handlePermissionRequest(AcpPermissionRequest request) {
+    if (!_isPermissionRequestForActiveSession(request)) {
+      _recordPermissionRequest(request);
+      _recordPermissionDecision(
+        request.id,
+        AcpPermissionDecision.cancel,
+        source: AcpPermissionDecisionSource.system,
+      );
+      unawaited(
+        _sendPermissionDecision(
+          id: request.id,
+          decision: AcpPermissionDecision.cancel,
+        ),
+      );
+      _notifyListeners();
+      return;
+    }
+
     final previous = pendingPermissionRequest;
     if (previous != null && previous.id != request.id) {
       _recordPermissionDecision(
@@ -678,6 +695,14 @@ class ChatController extends ChangeNotifier {
       );
     }
     _notifyListeners();
+  }
+
+  bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {
+    final requestSessionId = request.sessionId.trim();
+    if (requestSessionId.isEmpty) return true;
+    final session = currentSession;
+    if (session == null) return true;
+    return requestSessionId == session.id;
   }
 
   void _handlePermissionRequestsDone() {

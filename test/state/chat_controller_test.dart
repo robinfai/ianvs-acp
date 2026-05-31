@@ -574,6 +574,64 @@ void main() {
   });
 
   test(
+    'permission requests for inactive sessions do not replace current pending',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-active',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'fake-session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest?.id, 'permission-active');
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-stale',
+          title: 'Run command',
+          rationale: 'Requested by previous session',
+          sessionId: 'previous-session',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12, 1),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest?.id, 'permission-active');
+      expect(fake.lastPermissionRequestId, 'permission-stale');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(controller.permissionHistory.map((entry) => entry.request.id), [
+        'permission-stale',
+        'permission-active',
+      ]);
+      expect(
+        controller.permissionHistory[0].status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory[0].decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+      expect(
+        controller.permissionHistory[1].status,
+        AcpPermissionAuditStatus.pending,
+      );
+    },
+  );
+
+  test(
     'stop continues prompt cancellation when permission cancel response fails',
     () async {
       final fake = FakeAgentClient(
@@ -590,7 +648,7 @@ void main() {
           id: 'permission-1',
           title: 'Run command',
           rationale: 'Requested by agent',
-          sessionId: 'session-1',
+          sessionId: 'fake-session-1',
           toolName: 'terminal',
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime(2026, 5, 31, 12),
