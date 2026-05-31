@@ -140,6 +140,47 @@ void main() {
     expect(find.textContaining('Othbetaer'), findsNothing);
     expect(_loadButton(tester).onPressed, isNotNull);
   });
+
+  testWidgets('ResumeSessionDialog disables load after refresh fails', (
+    tester,
+  ) async {
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Alpha chat',
+          updatedAt: DateTime(2026, 5, 28, 12),
+        ),
+      ],
+    );
+    var loadCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            loadSessions: () async {
+              loadCount += 1;
+              if (loadCount == 1) return [project];
+              throw Exception('refresh failed');
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(_loadButton(tester).onPressed, isNotNull);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Could not list ACP sessions'), findsOneWidget);
+    expect(find.textContaining('refresh failed'), findsOneWidget);
+    expect(_loadButton(tester).onPressed, isNull);
+  });
 }
 
 FilledButton _loadButton(WidgetTester tester) {

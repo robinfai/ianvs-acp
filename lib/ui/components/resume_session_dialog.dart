@@ -95,7 +95,10 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   bool _canLoadSelection() {
     final selectedProject = _selectedProject;
     final selectedConversation = _selectedConversation;
-    if (_loading || selectedProject == null || selectedConversation == null) {
+    if (_loading ||
+        _error != null ||
+        selectedProject == null ||
+        selectedConversation == null) {
       return false;
     }
     if (!_filteredProjects().contains(selectedProject)) return false;
