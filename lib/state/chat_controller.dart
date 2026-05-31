@@ -848,6 +848,7 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handlePermissionRequestsDone() {
+    if (_isDisposed) return;
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
@@ -902,6 +903,7 @@ class ChatController extends ChangeNotifier {
     required AcpPermissionDecisionSource source,
     AcpPermissionReviewResult? reviewResult,
   }) async {
+    if (_isDisposed) return;
     if (_hasDeliveredPermissionDecision(request.id)) return;
     if (!_resolvingPermissionRequestIds.add(request.id)) return;
     try {
@@ -909,7 +911,7 @@ class ChatController extends ChangeNotifier {
         id: request.id,
         decision: decision,
       );
-      if (!didSend) return;
+      if (_isDisposed || !didSend) return;
       if (pendingPermissionRequest?.id == request.id) {
         pendingPermissionRequest = null;
       }
@@ -926,6 +928,7 @@ class ChatController extends ChangeNotifier {
   }
 
   void _startPermissionReview(AcpPermissionRequest request) {
+    if (_isDisposed) return;
     final reviewer = permissionReviewer;
     if (reviewer == null) return;
     if (!_reviewingPermissionRequestIds.add(request.id)) return;
@@ -936,6 +939,7 @@ class ChatController extends ChangeNotifier {
           workspaceRoot: cwd,
           model: currentModelValue,
         );
+        if (_isDisposed) return;
         if (result == null) return;
         _recordPermissionReview(request.id, result);
         final decision = result.decision;
@@ -952,7 +956,7 @@ class ChatController extends ChangeNotifier {
           reviewResult: result,
         );
       } catch (error) {
-        if (pendingPermissionRequest?.id == request.id) {
+        if (!_isDisposed && pendingPermissionRequest?.id == request.id) {
           _setActionError(error);
         }
       } finally {

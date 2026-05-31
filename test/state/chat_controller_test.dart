@@ -1209,6 +1209,46 @@ void main() {
     );
   });
 
+  test('disposing controller ignores late permission review results', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _DelayedPermissionReviewer();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(reviewer.requests.single.id, 'permission-1');
+    expect(controller.pendingPermissionRequest?.id, 'permission-1');
+
+    controller.dispose();
+    reviewer.complete(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'low',
+        rationale: 'Read-only command.',
+      ),
+    );
+    await pumpEventQueue(times: 3);
+
+    expect(fake.lastPermissionRequestId, isNull);
+    expect(fake.lastPermissionDecision, isNull);
+  });
+
   test(
     'default permission policy keeps matching trust rule requests manual',
     () async {
@@ -2445,6 +2485,26 @@ class _FakePermissionReviewer extends AcpPermissionReviewer {
     workspaceRoots.add(workspaceRoot);
     models.add(model);
     return result;
+  }
+}
+
+class _DelayedPermissionReviewer extends AcpPermissionReviewer {
+  final Completer<AcpPermissionReviewResult?> _result =
+      Completer<AcpPermissionReviewResult?>();
+  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
+
+  void complete(AcpPermissionReviewResult? result) {
+    _result.complete(result);
+  }
+
+  @override
+  Future<AcpPermissionReviewResult?> review(
+    AcpPermissionRequest request, {
+    required String workspaceRoot,
+    String? model,
+  }) {
+    requests.add(request);
+    return _result.future;
   }
 }
 
