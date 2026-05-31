@@ -259,6 +259,59 @@ void main() {
     expect(find.text('web_search'), findsNWidgets(2));
   });
 
+  testWidgets('ChatTimeline coalesces tool call chunks by call id', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(role: ChatMessageRole.assistant, text: 'Running command.'),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'Bash',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'Bash',
+            'status': 'pending',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'Bash',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'Bash',
+            'status': 'in_progress',
+            'rawInput': '{"command"',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'Bash',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'Bash',
+            'status': 'completed',
+            'rawInput': {'command': 'echo hi'},
+            'rawOutput': 'hi',
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('3 tool calls'), findsNothing);
+    expect(find.text('Bash'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('call-1'), findsNothing);
+
+    await tester.tap(find.byType(ExpansionTile));
+    await tester.pumpAndSettle();
+
+    expect(find.text('call-1'), findsOneWidget);
+    expect(find.textContaining('echo hi'), findsOneWidget);
+    expect(find.text('hi'), findsOneWidget);
+    expect(find.textContaining('{"command"'), findsNothing);
+  });
+
   testWidgets('ChatTimeline renders plan status entries', (tester) async {
     await tester.pumpWidget(
       timeline([

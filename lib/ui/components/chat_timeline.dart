@@ -140,14 +140,57 @@ List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {
       index += 1;
     }
 
-    if (tools.length == 1) {
-      entries.add(_TimelineEntry.message(tools.single));
+    final coalescedTools = _coalesceToolCallChunks(tools);
+    if (coalescedTools.length == 1) {
+      entries.add(_TimelineEntry.message(coalescedTools.single));
     } else {
-      entries.add(_TimelineEntry.toolGroup(tools));
+      entries.add(_TimelineEntry.toolGroup(coalescedTools));
     }
   }
 
   return entries;
+}
+
+List<ChatMessage> _coalesceToolCallChunks(List<ChatMessage> tools) {
+  final coalesced = <ChatMessage>[];
+  final indexByCallId = <String, int>{};
+
+  for (final tool in tools) {
+    final callId = _stringMetadata(tool.metadata, 'toolCallId');
+    if (callId == null) {
+      coalesced.add(tool);
+      continue;
+    }
+
+    final existingIndex = indexByCallId[callId];
+    if (existingIndex == null) {
+      indexByCallId[callId] = coalesced.length;
+      coalesced.add(tool);
+      continue;
+    }
+
+    final existing = coalesced[existingIndex];
+    coalesced[existingIndex] = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: tool.text.trim().isEmpty ? existing.text : tool.text,
+      timestamp: existing.timestamp,
+      metadata: _mergeToolMetadata(existing.metadata, tool.metadata),
+    );
+  }
+
+  return coalesced;
+}
+
+Map<String, Object?> _mergeToolMetadata(
+  Map<String, Object?> existing,
+  Map<String, Object?> update,
+) {
+  final merged = Map<String, Object?>.from(existing);
+  for (final entry in update.entries) {
+    if (entry.value == null) continue;
+    merged[entry.key] = entry.value;
+  }
+  return Map.unmodifiable(merged);
 }
 
 class _TimelineEntry {
