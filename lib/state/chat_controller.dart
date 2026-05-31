@@ -754,6 +754,8 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handlePermissionRequest(AcpPermissionRequest request) {
+    if (_hasDeliveredPermissionDecision(request.id)) return;
+
     if (!_isPermissionRequestForActiveSession(request)) {
       _recordPermissionRequest(request);
       _recordPermissionDecision(
@@ -791,6 +793,22 @@ class ChatController extends ChangeNotifier {
     _recordPermissionRequest(request);
     _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
+  }
+
+  bool _hasDeliveredPermissionDecision(String requestId) {
+    final index = _permissionHistory.indexWhere(
+      (entry) => entry.request.id == requestId,
+    );
+    if (index == -1) return false;
+
+    final entry = _permissionHistory[index];
+    if (entry.status == AcpPermissionAuditStatus.pending) return false;
+    return switch (entry.decisionSource) {
+      AcpPermissionDecisionSource.manual ||
+      AcpPermissionDecisionSource.trustRule ||
+      AcpPermissionDecisionSource.policy => true,
+      AcpPermissionDecisionSource.system || null => false,
+    };
   }
 
   bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {

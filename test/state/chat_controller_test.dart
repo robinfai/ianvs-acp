@@ -636,6 +636,51 @@ void main() {
     },
   );
 
+  test(
+    'resolved duplicate permission requests do not become pending again',
+    () async {
+      final fake = _CountingPermissionResponseAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      final request = AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      );
+
+      fake.emitPermissionRequest(request);
+      await pumpEventQueue();
+      await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+
+      expect(fake.permissionResponseCount, 1);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.allowed,
+      );
+
+      fake.emitPermissionRequest(request);
+      await pumpEventQueue();
+
+      expect(fake.permissionResponseCount, 1);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(controller.permissionHistory, hasLength(1));
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.allowed,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.manual,
+      );
+    },
+  );
+
   test('failed manual permission responses keep the request pending', () async {
     final fake = FakeAgentClient(
       permissionResponseError: StateError('permission response failed'),
@@ -1982,6 +2027,19 @@ class _DelayedPermissionResponseAgentClient extends FakeAgentClient {
       responseStarted.complete();
     }
     await allowResponse.future;
+    await super.respondToPermissionRequest(id: id, decision: decision);
+  }
+}
+
+class _CountingPermissionResponseAgentClient extends FakeAgentClient {
+  int permissionResponseCount = 0;
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+  }) async {
+    permissionResponseCount += 1;
     await super.respondToPermissionRequest(id: id, decision: decision);
   }
 }
