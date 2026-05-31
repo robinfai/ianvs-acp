@@ -55,7 +55,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
 
   Future<void> _sendLine(String line) async {
     if (_stopping) return;
-    onProtocolOut?.call(line);
+    _notifyProtocolOut(line);
     String? pendingMethodIdKey;
     try {
       final message = jsonDecode(line);
@@ -244,8 +244,28 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   void _addInboundLine(String line) {
     if (line.trim().isEmpty) return;
     _captureInboundMetadata(line);
-    onProtocolIn?.call(line);
+    _notifyProtocolIn(line);
     _controller?.local.sink.add(line);
+  }
+
+  void _notifyProtocolOut(String line) {
+    try {
+      onProtocolOut?.call(line);
+    } catch (error, stackTrace) {
+      if (!_stopping) {
+        _controller?.local.sink.addError(error, stackTrace);
+      }
+    }
+  }
+
+  void _notifyProtocolIn(String line) {
+    try {
+      onProtocolIn?.call(line);
+    } catch (error, stackTrace) {
+      if (!_stopping) {
+        _controller?.local.sink.addError(error, stackTrace);
+      }
+    }
   }
 
   void _captureInboundMetadata(String line) {
