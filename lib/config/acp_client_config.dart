@@ -380,7 +380,7 @@ class AgentServerConfig {
     required String name,
     required Map<String, dynamic> json,
   }) {
-    final type = (_stringValue(json['type']) ?? 'custom').toLowerCase();
+    final type = (_stringValue(json['type']) ?? 'custom').trim().toLowerCase();
     if (type == 'websocket' || type == 'ws') {
       final url = _stringValue(json['url']);
       if (url == null || url.isEmpty) {

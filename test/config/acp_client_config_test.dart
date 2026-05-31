@@ -129,6 +129,31 @@ void main() {
     );
   });
 
+  test('normalizes agent server transport type casing', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'HTTP Agent',
+      'agent_servers': {
+        'Local Agent': {'type': ' STDIO ', 'command': '/usr/local/bin/local'},
+        'HTTP Agent': {
+          'type': ' HTTP ',
+          'url': 'https://agent.example.com/acp',
+        },
+        'Web Agent': {
+          'type': ' WebSocket ',
+          'url': 'wss://agent.example.com/acp',
+        },
+      },
+    });
+
+    expect(config.activeAgentServer?.type, 'http');
+    expect(config.activeAgentServer?.isStreamableHttp, isTrue);
+    expect(config.agentServers.map((server) => server.type), [
+      'stdio',
+      'http',
+      'websocket',
+    ]);
+  });
+
   test('loads top-level MCP server config', () {
     final config = AcpClientConfig.fromJson({
       'mcp_servers': [
