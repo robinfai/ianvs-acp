@@ -20,6 +20,7 @@ class PermissionOptions {
     required this.sessionId,
     required this.toolName,
     this.toolKind,
+    this.metadata = const <String, Object?>{},
   });
 
   /// Display title of the permission prompt.
@@ -39,6 +40,9 @@ class PermissionOptions {
 
   /// Tool kind (read/edit/execute/etc), if provided.
   final String? toolKind;
+
+  /// Extra request context for client-side policy and audit.
+  final Map<String, Object?> metadata;
 }
 
 /// Provider interface for answering permission requests.

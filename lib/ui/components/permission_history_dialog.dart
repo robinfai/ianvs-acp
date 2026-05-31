@@ -211,6 +211,20 @@ class _PermissionHistoryRow extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
+          if (entry.reviewResult case final review?) ...[
+            const SizedBox(height: 6),
+            Text(
+              review.displayRationale,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           Wrap(
             spacing: 6,
@@ -238,6 +252,17 @@ class _PermissionHistoryRow extends StatelessWidget {
                   icon: Icons.rule_rounded,
                   label: entry.displayDecisionSource!,
                 ),
+              if (entry.reviewResult case final review?) ...[
+                _MetaChip(
+                  icon: Icons.health_and_safety_outlined,
+                  label: 'Risk ${review.displayRisk}',
+                ),
+                if (review.model?.trim().isNotEmpty == true)
+                  _MetaChip(
+                    icon: Icons.memory_rounded,
+                    label: review.model!.trim(),
+                  ),
+              ],
             ],
           ),
         ],

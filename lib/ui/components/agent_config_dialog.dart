@@ -41,7 +41,8 @@ class AgentConfigDialog extends StatelessWidget {
               if (clientProviders.filesystem.enabled ||
                   clientProviders.filesystem.allowReadOutsideWorkspace ||
                   clientProviders.terminal.enabled ||
-                  clientProviders.permissions.hasTrustRules) ...[
+                  clientProviders.permissions.hasTrustRules ||
+                  clientProviders.permissions.hasReviewAgent) ...[
                 const SizedBox(height: 10),
                 _ClientProvidersPanel(providers: clientProviders),
               ],
@@ -119,6 +120,25 @@ class _ClientProvidersPanel extends StatelessWidget {
                 ? '${permissions.trustRules.length}'
                 : 'None',
           ),
+          const SizedBox(height: 6),
+          _DetailRow(
+            label: 'Review agent',
+            value: permissions.hasReviewAgent
+                ? _reviewAgentTargetLabel(permissions.reviewAgent)
+                : 'Disabled',
+          ),
+          if (permissions.hasReviewAgent) ...[
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Review tool',
+              value: permissions.reviewAgent.toolName,
+            ),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Review model',
+              value: permissions.reviewAgent.model ?? 'Default',
+            ),
+          ],
           for (final rule in permissions.trustRules) ...[
             const SizedBox(height: 6),
             _DetailRow(label: 'Rule', value: _permissionTrustRuleLabel(rule)),
@@ -135,6 +155,10 @@ String _permissionTrustRuleLabel(AcpPermissionTrustRule rule) {
       ? rule.toolName.trim()
       : '${rule.toolName.trim()} / $kind';
   return '$target -> ${rule.displayDecision}';
+}
+
+String _reviewAgentTargetLabel(AcpPermissionReviewAgentConfig reviewAgent) {
+  return reviewAgent.hasMcpTarget ? reviewAgent.displayTarget : 'Same agent';
 }
 
 class _McpServersPanel extends StatelessWidget {
@@ -248,6 +272,7 @@ class _AgentServerPanel extends StatelessWidget {
     final args = server.args.isEmpty ? 'No args' : server.args.join(' ');
     final envKeys = server.env.keys.toList()..sort();
     final headerKeys = server.headers.keys.toList()..sort();
+    final reviewAgent = server.permissionReviewAgent;
 
     return _Panel(
       icon: selected ? Icons.check_circle_rounded : Icons.hub_outlined,
@@ -283,6 +308,18 @@ class _AgentServerPanel extends StatelessWidget {
             _DetailRow(
               label: 'Env',
               value: envKeys.isEmpty ? 'No env keys' : envKeys.join(', '),
+            ),
+          ],
+          if (reviewAgent.isConfigured) ...[
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Review',
+              value: _reviewAgentTargetLabel(reviewAgent),
+            ),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Review model',
+              value: reviewAgent.model ?? 'Current model',
             ),
           ],
         ],

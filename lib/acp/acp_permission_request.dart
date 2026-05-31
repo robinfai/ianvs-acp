@@ -4,7 +4,13 @@ enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
 
-enum AcpPermissionDecisionSource { manual, trustRule, policy, system }
+enum AcpPermissionDecisionSource {
+  manual,
+  trustRule,
+  reviewAgent,
+  policy,
+  system,
+}
 
 enum AcpToolCallExecutionPolicy { defaultPermissions, autoReview, fullAccess }
 
@@ -45,6 +51,7 @@ class AcpPermissionRequest {
     required this.options,
     required this.requestedAt,
     this.toolKind,
+    this.metadata = const <String, Object?>{},
   });
 
   final String id;
@@ -55,6 +62,7 @@ class AcpPermissionRequest {
   final String? toolKind;
   final List<String> options;
   final DateTime requestedAt;
+  final Map<String, Object?> metadata;
 
   String get displayTitle {
     final trimmed = title.trim();
@@ -115,6 +123,46 @@ class AcpPermissionRequest {
       if (toolKind != null) 'toolKind': toolKind,
       'options': options,
       'requestedAt': requestedAt.toUtc().toIso8601String(),
+      if (metadata.isNotEmpty) 'metadata': metadata,
+    };
+  }
+}
+
+class AcpPermissionReviewResult {
+  const AcpPermissionReviewResult({
+    this.decision,
+    this.risk = '',
+    this.rationale = '',
+    this.reviewer = '',
+    this.model,
+    this.details = const <String, Object?>{},
+  });
+
+  final AcpPermissionDecision? decision;
+  final String risk;
+  final String rationale;
+  final String reviewer;
+  final String? model;
+  final Map<String, Object?> details;
+
+  String get displayRisk {
+    final trimmed = risk.trim();
+    return trimmed.isEmpty ? 'unknown' : trimmed;
+  }
+
+  String get displayRationale {
+    final trimmed = rationale.trim();
+    return trimmed.isEmpty ? 'No review rationale provided.' : trimmed;
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      if (decision != null) 'decision': decision!.name,
+      if (risk.trim().isNotEmpty) 'risk': risk.trim(),
+      if (rationale.trim().isNotEmpty) 'rationale': rationale.trim(),
+      if (reviewer.trim().isNotEmpty) 'reviewer': reviewer.trim(),
+      if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
+      if (details.isNotEmpty) 'details': details,
     };
   }
 }
@@ -126,6 +174,7 @@ class AcpPermissionAuditEntry {
     required this.recordedAt,
     this.resolvedAt,
     this.decisionSource,
+    this.reviewResult,
   });
 
   final AcpPermissionRequest request;
@@ -133,6 +182,7 @@ class AcpPermissionAuditEntry {
   final DateTime recordedAt;
   final DateTime? resolvedAt;
   final AcpPermissionDecisionSource? decisionSource;
+  final AcpPermissionReviewResult? reviewResult;
 
   AcpPermissionAuditEntry copyWith({
     AcpPermissionRequest? request,
@@ -140,6 +190,7 @@ class AcpPermissionAuditEntry {
     DateTime? recordedAt,
     DateTime? resolvedAt,
     AcpPermissionDecisionSource? decisionSource,
+    AcpPermissionReviewResult? reviewResult,
   }) {
     return AcpPermissionAuditEntry(
       request: request ?? this.request,
@@ -147,6 +198,7 @@ class AcpPermissionAuditEntry {
       recordedAt: recordedAt ?? this.recordedAt,
       resolvedAt: resolvedAt ?? this.resolvedAt,
       decisionSource: decisionSource ?? this.decisionSource,
+      reviewResult: reviewResult ?? this.reviewResult,
     );
   }
 
@@ -163,6 +215,7 @@ class AcpPermissionAuditEntry {
     return switch (decisionSource) {
       AcpPermissionDecisionSource.manual => 'Manual',
       AcpPermissionDecisionSource.trustRule => 'Trust rule',
+      AcpPermissionDecisionSource.reviewAgent => 'Review agent',
       AcpPermissionDecisionSource.policy => 'Policy',
       AcpPermissionDecisionSource.system => 'System',
       null => null,
@@ -176,6 +229,7 @@ class AcpPermissionAuditEntry {
       if (resolvedAt != null)
         'resolvedAt': resolvedAt!.toUtc().toIso8601String(),
       if (decisionSource != null) 'decisionSource': decisionSource!.name,
+      if (reviewResult != null) 'review': reviewResult!.toJson(),
       'request': request.toJson(),
     };
   }

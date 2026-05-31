@@ -684,6 +684,10 @@ class SessionManager {
           sessionId: sessionId ?? '',
           toolName: 'read_text_file',
           toolKind: 'read',
+          metadata: <String, Object?>{
+            'path': req['path'],
+            'workspaceRoot': workspaceRoot,
+          },
         ),
       );
       if (outcome != PermissionOutcome.allow) {
@@ -741,6 +745,10 @@ class SessionManager {
           sessionId: sessionId ?? '',
           toolName: 'write_text_file',
           toolKind: 'edit',
+          metadata: <String, Object?>{
+            'path': req['path'],
+            'workspaceRoot': workspaceRoot,
+          },
         ),
       );
       if (outcome != PermissionOutcome.allow) {
@@ -775,6 +783,8 @@ class SessionManager {
     final toolCall = req['toolCall'] as Map<String, dynamic>?;
     final toolName = (toolCall?['title'] as String?) ?? 'operation';
     final toolKind = toolCall?['kind'] as String?;
+    final metadata = <String, Object?>{};
+    if (toolCall != null) metadata['toolCall'] = toolCall;
     final outcome = await config.permissionProvider.request(
       PermissionOptions(
         title: toolName,
@@ -783,6 +793,7 @@ class SessionManager {
         sessionId: req['sessionId'] as String? ?? '',
         toolName: toolName,
         toolKind: toolKind,
+        metadata: metadata,
       ),
     );
 
@@ -811,6 +822,24 @@ class SessionManager {
       throw Exception('Terminal not supported');
     }
     final sessionId = req['sessionId'] as String? ?? '';
+    final cmd = req['command'] as String;
+    final args = (req['args'] as List?)?.cast<String>() ?? const [];
+    final requestedCwd = req['cwd'] as String?;
+    final envList = (req['env'] as List?)?.cast<Map<String, dynamic>>();
+    final env = <String, String>{
+      if (envList != null)
+        for (final e in envList) (e['name'] as String): (e['value'] as String),
+    };
+    final workspaceRoot = getWorkspaceRoot(sessionId);
+    final permissionMetadata = <String, Object?>{
+      'command': cmd,
+      'args': args,
+      'workspaceRoot': workspaceRoot,
+    };
+    if (requestedCwd != null) permissionMetadata['cwd'] = requestedCwd;
+    if (env.isNotEmpty) {
+      permissionMetadata['envKeys'] = env.keys.toList()..sort();
+    }
 
     // Enforce permission for execute/terminal usage. If policy denies, reject
     // terminal creation so the agent cannot bypass FS jail via shell.
@@ -822,34 +851,28 @@ class SessionManager {
         sessionId: sessionId,
         toolName: 'terminal',
         toolKind: 'execute',
+        metadata: permissionMetadata,
       ),
     );
     if (execOutcome != PermissionOutcome.allow) {
       throw Exception('Permission denied');
     }
-    final cmd = req['command'] as String;
-    final args = (req['args'] as List?)?.cast<String>() ?? const [];
-    var cwd = req['cwd'] as String?;
-    final envList = (req['env'] as List?)?.cast<Map<String, dynamic>>();
-    final env = <String, String>{
-      if (envList != null)
-        for (final e in envList) (e['name'] as String): (e['value'] as String),
-    };
+    var cwd = requestedCwd;
     // Enforce workspace jail for terminal working directory unless yolo
     if (!config.allowReadOutsideWorkspace) {
-      final jail = WorkspaceJail(workspaceRoot: getWorkspaceRoot(sessionId));
+      final jail = WorkspaceJail(workspaceRoot: workspaceRoot);
       if (cwd != null) {
         try {
           final resolved = await jail.resolveForgiving(cwd);
           final within = await jail.isWithinWorkspace(resolved);
           if (!within) {
-            cwd = getWorkspaceRoot(sessionId);
+            cwd = workspaceRoot;
           }
         } on Exception catch (_) {
-          cwd = getWorkspaceRoot(sessionId);
+          cwd = workspaceRoot;
         }
       } else {
-        cwd = getWorkspaceRoot(sessionId);
+        cwd = workspaceRoot;
       }
     }
 

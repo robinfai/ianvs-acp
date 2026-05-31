@@ -35,6 +35,7 @@ class PromptInput extends StatefulWidget {
     this.onDenyPermission,
     this.onCancelPermission,
     this.toolCallExecutionPolicy = AcpToolCallExecutionPolicy.autoReview,
+    this.hasPermissionReviewer = false,
     this.onToolCallExecutionPolicyChanged,
     this.modelOption,
     this.onModelSelected,
@@ -53,6 +54,7 @@ class PromptInput extends StatefulWidget {
   final VoidCallback? onDenyPermission;
   final VoidCallback? onCancelPermission;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
+  final bool hasPermissionReviewer;
   final ValueChanged<AcpToolCallExecutionPolicy>?
   onToolCallExecutionPolicyChanged;
   final AcpConfigOption? modelOption;
@@ -222,7 +224,9 @@ class _PromptInputState extends State<PromptInput> {
                       isSending: widget.isSending,
                       canSend: _canSend,
                       onPickAttachments: _pickAttachments,
+                      pendingPermissionRequest: pendingPermissionRequest,
                       toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
+                      hasPermissionReviewer: widget.hasPermissionReviewer,
                       onToolCallExecutionPolicyChanged:
                           widget.onToolCallExecutionPolicyChanged,
                       modelOption: widget.modelOption,
@@ -547,7 +551,9 @@ class _ComposerControlBar extends StatelessWidget {
     required this.isSending,
     required this.canSend,
     required this.onPickAttachments,
+    required this.pendingPermissionRequest,
     required this.toolCallExecutionPolicy,
+    required this.hasPermissionReviewer,
     required this.onToolCallExecutionPolicyChanged,
     required this.modelOption,
     required this.onModelSelected,
@@ -559,7 +565,9 @@ class _ComposerControlBar extends StatelessWidget {
   final bool isSending;
   final bool canSend;
   final VoidCallback onPickAttachments;
+  final AcpPermissionRequest? pendingPermissionRequest;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
+  final bool hasPermissionReviewer;
   final ValueChanged<AcpToolCallExecutionPolicy>?
   onToolCallExecutionPolicyChanged;
   final AcpConfigOption? modelOption;
@@ -585,6 +593,7 @@ class _ComposerControlBar extends StatelessWidget {
     );
     final policy = _ToolCallPolicySelector(
       value: toolCallExecutionPolicy,
+      hasPermissionReviewer: hasPermissionReviewer,
       enabled: enabled && onToolCallExecutionPolicyChanged != null,
       onChanged: onToolCallExecutionPolicyChanged,
     );
@@ -601,6 +610,9 @@ class _ComposerControlBar extends StatelessWidget {
       onSend: onSend,
       onStop: onStop,
     );
+    final permissionChip = pendingPermissionRequest == null
+        ? null
+        : _PermissionServiceChip(request: pendingPermissionRequest!);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -608,6 +620,10 @@ class _ComposerControlBar extends StatelessWidget {
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (permissionChip != null) ...[
+                Align(alignment: Alignment.centerLeft, child: permissionChip),
+                const SizedBox(height: 6),
+              ],
               Row(
                 children: [
                   attach,
@@ -634,6 +650,15 @@ class _ComposerControlBar extends StatelessWidget {
           children: [
             attach,
             const _ComposerDivider(),
+            if (permissionChip != null) ...[
+              Flexible(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: permissionChip,
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
             Flexible(
               child: Align(alignment: Alignment.centerLeft, child: policy),
             ),
@@ -652,14 +677,86 @@ class _ComposerControlBar extends StatelessWidget {
   }
 }
 
+class _PermissionServiceChip extends StatelessWidget {
+  const _PermissionServiceChip({required this.request});
+
+  final AcpPermissionRequest request;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: 'Pending tool call permission',
+      child: Container(
+        key: const Key('prompt-permission-service-chip'),
+        height: 30,
+        constraints: const BoxConstraints(maxWidth: 236),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: _permissionAccent,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: _permissionAccentDark, width: 1.2),
+          boxShadow: [
+            BoxShadow(
+              color: _permissionAccent.withValues(alpha: 0.26),
+              blurRadius: 16,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.privacy_tip_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+            const SizedBox(width: 6),
+            const Flexible(
+              child: Text(
+                'Tool Call 待确认',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Container(width: 1, height: 14, color: Colors.white54),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                request.displayKind,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ToolCallPolicySelector extends StatelessWidget {
   const _ToolCallPolicySelector({
     required this.value,
+    required this.hasPermissionReviewer,
     required this.enabled,
     required this.onChanged,
   });
 
   final AcpToolCallExecutionPolicy value;
+  final bool hasPermissionReviewer;
   final bool enabled;
   final ValueChanged<AcpToolCallExecutionPolicy>? onChanged;
 
@@ -677,7 +774,10 @@ class _ToolCallPolicySelector extends StatelessWidget {
               selected: policy == value,
               icon: _policyIcon(policy),
               label: _policyLabel(policy),
-              description: _policyDescription(policy),
+              description: _policyDescription(
+                policy,
+                hasPermissionReviewer: hasPermissionReviewer,
+              ),
             ),
           ),
       ],
@@ -910,10 +1010,14 @@ String _policyLabel(AcpToolCallExecutionPolicy policy) {
   };
 }
 
-String _policyDescription(AcpToolCallExecutionPolicy policy) {
+String _policyDescription(
+  AcpToolCallExecutionPolicy policy, {
+  required bool hasPermissionReviewer,
+}) {
   return switch (policy) {
     AcpToolCallExecutionPolicy.defaultPermissions => '所有请求都由你确认',
-    AcpToolCallExecutionPolicy.autoReview => '使用信任规则，未命中时再确认',
+    AcpToolCallExecutionPolicy.autoReview =>
+      hasPermissionReviewer ? '旁路 agent 审查，未决时再确认' : '使用信任规则，未命中时再确认',
     AcpToolCallExecutionPolicy.fullAccess => '自动允许所有 tool call',
   };
 }

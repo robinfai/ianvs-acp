@@ -217,11 +217,15 @@ class AcpClientProviderConfig {
 class AcpPermissionProviderConfig {
   const AcpPermissionProviderConfig({
     this.trustRules = const <AcpPermissionTrustRule>[],
+    this.reviewAgent = const AcpPermissionReviewAgentConfig(),
   });
 
   final List<AcpPermissionTrustRule> trustRules;
+  final AcpPermissionReviewAgentConfig reviewAgent;
 
   bool get hasTrustRules => trustRules.isNotEmpty;
+
+  bool get hasReviewAgent => reviewAgent.enabled;
 
   factory AcpPermissionProviderConfig.fromJson(Object? raw) {
     if (raw == null) return const AcpPermissionProviderConfig();
@@ -232,7 +236,12 @@ class AcpPermissionProviderConfig {
     }
     final map = _jsonMap(raw, fieldName: 'client_providers.permissions');
     final rulesRaw = map['trust_rules'] ?? map['trustRules'] ?? map['rules'];
-    if (rulesRaw == null) return const AcpPermissionProviderConfig();
+    final reviewAgent = AcpPermissionReviewAgentConfig.fromJson(
+      map['review_agent'] ?? map['reviewAgent'] ?? map['approval_agent'],
+    );
+    if (rulesRaw == null) {
+      return AcpPermissionProviderConfig(reviewAgent: reviewAgent);
+    }
     if (rulesRaw is! List) {
       throw const FormatException(
         'client_providers.permissions.trust_rules must be a JSON array.',
@@ -240,7 +249,110 @@ class AcpPermissionProviderConfig {
     }
     return AcpPermissionProviderConfig(
       trustRules: rulesRaw.map(_permissionTrustRule).toList(growable: false),
+      reviewAgent: reviewAgent,
     );
+  }
+}
+
+class AcpPermissionReviewAgentConfig {
+  const AcpPermissionReviewAgentConfig({
+    this.enabled = false,
+    this.mcpServer,
+    this.mcpServerName,
+    this.toolName = 'review_permission',
+    this.model,
+    this.timeout = const Duration(seconds: 10),
+  });
+
+  final bool enabled;
+  final McpServerConfig? mcpServer;
+  final String? mcpServerName;
+  final String toolName;
+  final String? model;
+  final Duration timeout;
+
+  bool get hasMcpTarget {
+    final name = mcpServerName?.trim();
+    return mcpServer != null || (name != null && name.isNotEmpty);
+  }
+
+  bool get isConfigured {
+    return enabled ||
+        hasMcpTarget ||
+        model?.trim().isNotEmpty == true ||
+        toolName != 'review_permission' ||
+        timeout != const Duration(seconds: 10);
+  }
+
+  String get displayTarget {
+    final server = mcpServer;
+    if (server != null) return server.name;
+    final name = mcpServerName?.trim();
+    return name == null || name.isEmpty ? 'Unconfigured' : name;
+  }
+
+  factory AcpPermissionReviewAgentConfig.fromJson(Object? raw) {
+    if (raw == null) return const AcpPermissionReviewAgentConfig();
+    if (raw is bool) {
+      return AcpPermissionReviewAgentConfig(enabled: raw);
+    }
+    if (raw is! Map) {
+      throw const FormatException(
+        'client_providers.permissions.review_agent must be a JSON object.',
+      );
+    }
+    final map = _jsonMap(
+      raw,
+      fieldName: 'client_providers.permissions.review_agent',
+    );
+    final enabled = map.containsKey('enabled')
+        ? _boolConfigValue(
+            map['enabled'],
+            fieldName: 'client_providers.permissions.review_agent.enabled',
+          )
+        : true;
+    final mcpServerRaw = map['mcp_server'] ?? map['mcpServer'];
+    final mcpServer = mcpServerRaw == null
+        ? null
+        : _permissionReviewMcpServer(mcpServerRaw);
+    final mcpServerName = _stringValue(
+      map['mcp_server_name'] ?? map['mcpServerName'] ?? map['server_name'],
+    );
+    if (mcpServer != null && mcpServerName != null) {
+      throw const FormatException(
+        'client_providers.permissions.review_agent must define either mcp_server or mcp_server_name, not both.',
+      );
+    }
+    final toolName =
+        _stringValue(map['tool_name'] ?? map['toolName']) ??
+        'review_permission';
+    final timeoutMs = _positiveIntValue(
+      map['timeout_ms'] ?? map['timeoutMs'],
+      fieldName: 'client_providers.permissions.review_agent.timeout_ms',
+    );
+    return AcpPermissionReviewAgentConfig(
+      enabled: enabled,
+      mcpServer: mcpServer,
+      mcpServerName: mcpServerName,
+      toolName: toolName,
+      model: _stringValue(map['model']),
+      timeout: timeoutMs == null
+          ? const Duration(seconds: 10)
+          : Duration(milliseconds: timeoutMs),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'enabled': enabled,
+      if (mcpServer != null) 'mcp_server': mcpServer!.toJson(),
+      if (mcpServerName?.trim().isNotEmpty == true)
+        'mcp_server_name': mcpServerName!.trim(),
+      if (toolName != 'review_permission') 'tool_name': toolName,
+      if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
+      if (timeout != const Duration(seconds: 10))
+        'timeout_ms': timeout.inMilliseconds,
+    };
   }
 }
 
@@ -270,6 +382,15 @@ AcpPermissionTrustRule _permissionTrustRule(Object? raw) {
     toolKind: toolKind,
     decision: decision,
   );
+}
+
+McpServerConfig _permissionReviewMcpServer(Object? raw) {
+  if (raw is! Map) {
+    throw const FormatException(
+      'client_providers.permissions.review_agent.mcp_server must be a JSON object.',
+    );
+  }
+  return McpServerConfig.fromJson(index: 0, json: raw);
 }
 
 AcpPermissionDecision _permissionTrustDecision(
@@ -353,6 +474,7 @@ class AgentServerConfig {
     this.args = const <String>[],
     this.env = const <String, String>{},
     this.headers = const <String, String>{},
+    this.permissionReviewAgent = const AcpPermissionReviewAgentConfig(),
   });
 
   final String name;
@@ -362,6 +484,7 @@ class AgentServerConfig {
   final List<String> args;
   final Map<String, String> env;
   final Map<String, String> headers;
+  final AcpPermissionReviewAgentConfig permissionReviewAgent;
 
   bool get isWebSocket => type == 'websocket' || type == 'ws';
 
@@ -405,6 +528,7 @@ class AgentServerConfig {
         type: type,
         url: url,
         headers: headers,
+        permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
 
@@ -436,6 +560,7 @@ class AgentServerConfig {
         type: type,
         url: url,
         headers: headers,
+        permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
 
@@ -466,6 +591,7 @@ class AgentServerConfig {
       command: command,
       args: args,
       env: env,
+      permissionReviewAgent: _agentPermissionReviewAgent(json),
     );
   }
 
@@ -477,6 +603,8 @@ class AgentServerConfig {
       if (args.isNotEmpty) 'args': args,
       if (env.isNotEmpty) 'env': env,
       if (headers.isNotEmpty) 'headers': headers,
+      if (permissionReviewAgent.isConfigured)
+        'review_agent': permissionReviewAgent.toJson(),
     };
   }
 }
@@ -592,6 +720,20 @@ class McpServerConfig {
 
     return McpServerConfig(raw: raw);
   }
+}
+
+AcpPermissionReviewAgentConfig _agentPermissionReviewAgent(
+  Map<String, dynamic> json,
+) {
+  final permissions = json['permissions'];
+  Object? raw = json['review_agent'] ?? json['reviewAgent'];
+  if (raw == null && permissions is Map) {
+    raw =
+        permissions['review_agent'] ??
+        permissions['reviewAgent'] ??
+        permissions['approval_agent'];
+  }
+  return AcpPermissionReviewAgentConfig.fromJson(raw);
 }
 
 const Set<String> _supportedMcpTransportTypes = <String>{
@@ -797,6 +939,12 @@ bool _boolConfigValue(Object? value, {required String fieldName}) {
   if (value == null) return false;
   if (value is bool) return value;
   throw FormatException('$fieldName must be a boolean.');
+}
+
+int? _positiveIntValue(Object? value, {required String fieldName}) {
+  if (value == null) return null;
+  if (value is int && value > 0) return value;
+  throw FormatException('$fieldName must be a positive integer.');
 }
 
 void _ensureStringList(

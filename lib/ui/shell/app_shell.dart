@@ -172,6 +172,7 @@ class AppShell extends StatelessWidget {
                     ),
                   ),
                   toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
+                  hasPermissionReviewer: controller.hasPermissionReviewer,
                   onToolCallExecutionPolicyChanged:
                       controller.setToolCallExecutionPolicy,
                   modelOption: controller.sessionSettings.modelOption,

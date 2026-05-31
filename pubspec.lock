@@ -232,7 +232,7 @@ packages:
     source: hosted
     version: "0.13.0"
   mcp_dart:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: mcp_dart
       sha256: "106118d1e7628becc72c8485dc1a3e2c8ed62a48527efc6d70b8576d3b18083f"

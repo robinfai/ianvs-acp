@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
+import 'acp/acp_permission_reviewer.dart';
 import 'config/acp_client_config.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/new_session_agent_dialog.dart';
@@ -165,7 +166,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
         mcpServers: _config.mcpServers,
-        clientProviders: _config.clientProviders,
+        clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: widget.startupError,
@@ -181,11 +182,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _controllerFor(AcpClientConfig config) {
+    final permissions = _permissionConfig(config);
     return ChatController(
       client: _agentClient(config),
       cwd: _cwd,
       agentName: config.agentName,
-      permissionTrustRules: config.clientProviders.permissions.trustRules,
+      permissionTrustRules: permissions.trustRules,
+      permissionReviewer: _permissionReviewer(config),
     );
   }
 
@@ -369,6 +372,72 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
   }
 
+  AcpPermissionReviewer? _permissionReviewer(AcpClientConfig config) {
+    final activeAgent = config.activeAgentServer;
+    if (activeAgent == null) return null;
+
+    final reviewAgent = _permissionConfig(config).reviewAgent;
+    if (reviewAgent.enabled && reviewAgent.hasMcpTarget) {
+      final server =
+          reviewAgent.mcpServer ??
+          _mcpServerNamed(config.mcpServers, reviewAgent.mcpServerName);
+      if (server != null) {
+        return McpPermissionReviewAgent(config: reviewAgent, mcpServer: server);
+      }
+    }
+
+    return AcpAgentPermissionReviewer(
+      agentName: config.agentName,
+      modelOverride: reviewAgent.model,
+      clientFactory: () => _reviewAgentClient(activeAgent),
+    );
+  }
+
+  AcpClientProviderConfig _clientProviderConfig(AcpClientConfig config) {
+    final permissions = _permissionConfig(config);
+    if (identical(permissions, config.clientProviders.permissions)) {
+      return config.clientProviders;
+    }
+    return AcpClientProviderConfig(
+      filesystem: config.clientProviders.filesystem,
+      terminal: config.clientProviders.terminal,
+      permissions: permissions,
+    );
+  }
+
+  AcpPermissionProviderConfig _permissionConfig(AcpClientConfig config) {
+    final global = config.clientProviders.permissions;
+    final agentReview = config.activeAgentServer?.permissionReviewAgent;
+    if (agentReview == null || !agentReview.isConfigured) return global;
+    return AcpPermissionProviderConfig(
+      trustRules: global.trustRules,
+      reviewAgent: agentReview,
+    );
+  }
+
+  DartAcpAgentClient _reviewAgentClient(AgentServerConfig server) {
+    return DartAcpAgentClient(
+      agentCommand: server.isStdio ? server.command : null,
+      agentArgs: server.isStdio ? server.args : const <String>[],
+      envOverrides: server.isStdio ? server.env : const <String, String>{},
+      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
+      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
+      agentHeaders: server.headers,
+    );
+  }
+
+  McpServerConfig? _mcpServerNamed(
+    List<McpServerConfig> servers,
+    String? name,
+  ) {
+    final trimmed = name?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    for (final server in servers) {
+      if (server.name == trimmed) return server;
+    }
+    return null;
+  }
+
   List<ChatController> get _sessionControllers {
     if (widget.controller != null) return <ChatController>[_controller];
     return _controllersByAgent.values.toList();
@@ -426,7 +495,21 @@ class _AcpClientAppState extends State<AcpClientApp> {
               },
             )
             .toList(growable: false),
+        'reviewAgent': _reviewAgentSignature(providers.permissions.reviewAgent),
       },
+    };
+  }
+
+  Map<String, Object?> _reviewAgentSignature(
+    AcpPermissionReviewAgentConfig config,
+  ) {
+    return <String, Object?>{
+      'enabled': config.enabled,
+      'mcpServer': config.mcpServer?.toJson(),
+      'mcpServerName': config.mcpServerName,
+      'toolName': config.toolName,
+      'model': config.model,
+      'timeoutMs': config.timeout.inMilliseconds,
     };
   }
 }

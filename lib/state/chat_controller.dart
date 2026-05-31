@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
 import '../acp/acp_permission_request.dart';
+import '../acp/acp_permission_reviewer.dart';
 import '../acp/acp_session_catalog.dart';
 import '../acp/acp_session_settings.dart';
 import '../acp/agent_event.dart';
@@ -44,6 +45,7 @@ class ChatController extends ChangeNotifier {
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
+    this.permissionReviewer,
   }) : assert(permissionHistoryLimit > 0),
        permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     _permissionSubscription = client.permissionRequests.listen(
@@ -60,6 +62,7 @@ class ChatController extends ChangeNotifier {
   final String agentName;
   final int permissionHistoryLimit;
   final List<AcpPermissionTrustRule> permissionTrustRules;
+  final AcpPermissionReviewer? permissionReviewer;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? currentSession;
@@ -74,6 +77,7 @@ class ChatController extends ChangeNotifier {
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
   final Set<String> _resolvingPermissionRequestIds = <String>{};
+  final Set<String> _reviewingPermissionRequestIds = <String>{};
   final Set<String> _retiredSessionIds = <String>{};
   String? lastError;
   bool isStreaming = false;
@@ -93,6 +97,10 @@ class ChatController extends ChangeNotifier {
   }
 
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
+
+  bool get hasPermissionReviewer => permissionReviewer != null;
+
+  String? get currentModelValue => sessionSettings.modelOption?.currentValue;
 
   List<Map<String, Object?>> get authMethods {
     return capabilities?.authMethods
@@ -824,6 +832,7 @@ class ChatController extends ChangeNotifier {
     return switch (entry.decisionSource) {
       AcpPermissionDecisionSource.manual ||
       AcpPermissionDecisionSource.trustRule ||
+      AcpPermissionDecisionSource.reviewAgent ||
       AcpPermissionDecisionSource.policy => true,
       AcpPermissionDecisionSource.system || null => false,
     };
@@ -863,14 +872,17 @@ class ChatController extends ChangeNotifier {
         return;
       case AcpToolCallExecutionPolicy.autoReview:
         final trustedDecision = _trustedDecisionFor(request);
-        if (trustedDecision == null) return;
-        unawaited(
-          _resolvePermissionRequest(
-            request,
-            trustedDecision,
-            source: AcpPermissionDecisionSource.trustRule,
-          ),
-        );
+        if (trustedDecision != null) {
+          unawaited(
+            _resolvePermissionRequest(
+              request,
+              trustedDecision,
+              source: AcpPermissionDecisionSource.trustRule,
+            ),
+          );
+          return;
+        }
+        _startPermissionReview(request);
         return;
       case AcpToolCallExecutionPolicy.fullAccess:
         unawaited(
@@ -888,7 +900,9 @@ class ChatController extends ChangeNotifier {
     AcpPermissionRequest request,
     AcpPermissionDecision decision, {
     required AcpPermissionDecisionSource source,
+    AcpPermissionReviewResult? reviewResult,
   }) async {
+    if (_hasDeliveredPermissionDecision(request.id)) return;
     if (!_resolvingPermissionRequestIds.add(request.id)) return;
     try {
       final didSend = await _sendPermissionDecision(
@@ -899,11 +913,52 @@ class ChatController extends ChangeNotifier {
       if (pendingPermissionRequest?.id == request.id) {
         pendingPermissionRequest = null;
       }
-      _recordPermissionDecision(request.id, decision, source: source);
+      _recordPermissionDecision(
+        request.id,
+        decision,
+        source: source,
+        reviewResult: reviewResult,
+      );
       _notifyListeners();
     } finally {
       _resolvingPermissionRequestIds.remove(request.id);
     }
+  }
+
+  void _startPermissionReview(AcpPermissionRequest request) {
+    final reviewer = permissionReviewer;
+    if (reviewer == null) return;
+    if (!_reviewingPermissionRequestIds.add(request.id)) return;
+    unawaited(() async {
+      try {
+        final result = await reviewer.review(
+          request,
+          workspaceRoot: cwd,
+          model: currentModelValue,
+        );
+        if (result == null) return;
+        _recordPermissionReview(request.id, result);
+        final decision = result.decision;
+        if (decision == null) {
+          _notifyListeners();
+          return;
+        }
+        if (pendingPermissionRequest?.id != request.id) return;
+        if (_hasDeliveredPermissionDecision(request.id)) return;
+        await _resolvePermissionRequest(
+          request,
+          decision,
+          source: AcpPermissionDecisionSource.reviewAgent,
+          reviewResult: result,
+        );
+      } catch (error) {
+        if (pendingPermissionRequest?.id == request.id) {
+          _setActionError(error);
+        }
+      } finally {
+        _reviewingPermissionRequestIds.remove(request.id);
+      }
+    }());
   }
 
   Future<bool> _sendPermissionDecision({
@@ -987,6 +1042,7 @@ class ChatController extends ChangeNotifier {
     String requestId,
     AcpPermissionDecision decision, {
     AcpPermissionDecisionSource source = AcpPermissionDecisionSource.manual,
+    AcpPermissionReviewResult? reviewResult,
   }) {
     final index = _permissionHistory.indexWhere(
       (entry) => entry.request.id == requestId,
@@ -996,6 +1052,20 @@ class ChatController extends ChangeNotifier {
       status: _permissionAuditStatus(decision),
       resolvedAt: DateTime.now(),
       decisionSource: source,
+      reviewResult: reviewResult,
+    );
+  }
+
+  void _recordPermissionReview(
+    String requestId,
+    AcpPermissionReviewResult reviewResult,
+  ) {
+    final index = _permissionHistory.indexWhere(
+      (entry) => entry.request.id == requestId,
+    );
+    if (index == -1) return;
+    _permissionHistory[index] = _permissionHistory[index].copyWith(
+      reviewResult: reviewResult,
     );
   }
 
@@ -1370,7 +1440,9 @@ class ChatController extends ChangeNotifier {
     _disposeLater(() => _promptSubscription?.cancel());
     _disposeLater(_permissionSubscription.cancel);
     _disposeLater(client.dispose);
+    _disposeLater(() => permissionReviewer?.dispose());
     _resolvingPermissionRequestIds.clear();
+    _reviewingPermissionRequestIds.clear();
     super.dispose();
   }
 

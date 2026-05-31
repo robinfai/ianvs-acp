@@ -24,6 +24,7 @@ void main() {
     VoidCallback? onCancelPermission,
     AcpToolCallExecutionPolicy toolCallExecutionPolicy =
         AcpToolCallExecutionPolicy.autoReview,
+    bool hasPermissionReviewer = false,
     ValueChanged<AcpToolCallExecutionPolicy>? onToolCallExecutionPolicyChanged,
     AcpConfigOption? modelOption,
     ValueChanged<String>? onModelSelected,
@@ -41,6 +42,7 @@ void main() {
       onDenyPermission: onDenyPermission,
       onCancelPermission: onCancelPermission,
       toolCallExecutionPolicy: toolCallExecutionPolicy,
+      hasPermissionReviewer: hasPermissionReviewer,
       onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
       modelOption: modelOption,
       onModelSelected: onModelSelected,
@@ -400,6 +402,7 @@ void main() {
 
     expect(find.text('等待 Tool Call 权限确认'), findsOneWidget);
     expect(find.text('需要处理'), findsOneWidget);
+    expect(find.text('Tool Call 待确认'), findsOneWidget);
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allow Once'), findsOneWidget);
     expect(
@@ -410,8 +413,21 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.descendant(
+        of: find.byKey(const Key('prompt-input-surface')),
+        matching: find.byKey(const Key('prompt-permission-service-chip')),
+      ),
+      findsOneWidget,
+    );
+    expect(
       tester.getTopLeft(find.byKey(const Key('prompt-permission-card'))).dy,
       lessThan(tester.getTopLeft(find.byType(TextField)).dy),
+    );
+    expect(
+      tester
+          .getTopLeft(find.byKey(const Key('prompt-permission-service-chip')))
+          .dy,
+      greaterThan(tester.getTopLeft(find.byType(TextField)).dy),
     );
 
     final surface = tester.widget<Container>(
@@ -483,6 +499,24 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(selected, AcpToolCallExecutionPolicy.fullAccess);
+  });
+
+  testWidgets('PromptInput describes sidecar reviewer when configured', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        hasPermissionReviewer: true,
+        onToolCallExecutionPolicyChanged: (_) {},
+      ),
+    );
+
+    await tester.tap(find.text('自动审查'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('旁路 agent 审查，未决时再确认'), findsOneWidget);
   });
 
   testWidgets('PromptInput changes exposed model option', (tester) async {

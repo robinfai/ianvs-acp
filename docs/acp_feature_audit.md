@@ -29,7 +29,7 @@ still need a dedicated pass.
 | Session list / metadata | https://agentclientprotocol.com/protocol/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, and supports text search at project and conversation levels. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/prompt-turn | Done for text/resource-link/embedded file prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource.text` when the agent advertises `promptCapabilities.embeddedContext`; image and audio attachments are embedded as `image`/`audio` content when the agent advertises matching prompt capabilities; small generic binary attachments are embedded as `resource.blob` when embedded context is advertised. Prompt-side `@file` and URL mentions are preserved as `resource_link` content even when selected attachments force the raw prompt path, with sentence-ending punctuation kept out of link targets. Unsupported or oversized attachments fall back to `resource_link`. The prompt input marks selected files with capability-aware send modes: Image, Audio, Embed, or Link. |
 | Content blocks | https://agentclientprotocol.com/protocol/content | Mostly done | Text, image output preview, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`, with the same mode classification reused by the prompt UI. File links remain available as fallback, but model/agent-specific support can still vary. |
-| Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval, explicit trust rules, prompt-side execution policy, and exportable bounded in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click, with chunk coalescing across common call id aliases. `session/request_permission` now surfaces an in-app approval card inside the prompt composer with Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels when they are more specific. The prompt composer exposes tool-call execution policy modes: `默认权限` keeps all requests manual, `自动审查` applies configured trust rules and asks for unmatched requests, and `完全访问权限` auto-allows requests. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, keep the newest bounded in-process audit entries, can be exported as JSON, and include whether a resolved decision came from a manual action, trust rule, policy, or system cancellation. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests. When no UI listener is active, requests are conservatively returned as `cancelled` instead of being auto-approved; when the permission stream closes or session teardown completes through close/logout, pending requests are cancelled. Long-term persisted audit retention and trust-rule management remain product/security follow-ups. |
+| Tool calls / permissions | https://agentclientprotocol.com/protocol/tool-calls | Done for per-request approval, explicit trust rules, prompt-side sidecar review, prompt-side execution policy, and exportable bounded in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click, with chunk coalescing across common call id aliases. `session/request_permission` now surfaces an in-app approval card inside the prompt composer with Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels when they are more specific. The prompt composer exposes tool-call execution policy modes: `默认权限` keeps all requests manual, `自动审查` applies configured trust rules first, then calls either a configured sidecar MCP review agent or a default sidecar session with the same active ACP agent/model, and asks for undecided requests; `完全访问权限` auto-allows requests. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, keep the newest bounded in-process audit entries, can be exported as JSON, and include whether a resolved decision came from a manual action, trust rule, review agent, policy, or system cancellation. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests. `client_providers.permissions.review_agent` can point to a sidecar MCP server/tool and optional model; review opinions and decisions are stored with the audit entry. When no UI listener is active, requests are conservatively returned as `cancelled` instead of being auto-approved; when the permission stream closes or session teardown completes through close/logout, pending requests are cancelled. Long-term persisted audit retention and trust-rule management remain product/security follow-ups. |
 | File system provider | https://agentclientprotocol.com/protocol/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed by default and still require permission approval unless matched by an explicit permission trust rule. `allow_read_outside_workspace` only relaxes reads, never writes. |
 | Terminal provider | https://agentclientprotocol.com/protocol/terminals | Done when explicitly configured | The client defaults to no terminal support. User config can opt into `client_providers.terminal.enabled`; terminal creation still requires permission approval unless matched by an explicit permission trust rule, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
 | Agent plan | https://agentclientprotocol.com/protocol/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
@@ -123,6 +123,16 @@ Supported shape:
       "enabled": false
     },
     "permissions": {
+      "review_agent": {
+        "mcp_server": {
+          "name": "permission-reviewer",
+          "command": "/opt/homebrew/bin/npx",
+          "args": ["-y", "@example/permission-reviewer-mcp"],
+          "env": []
+        },
+        "tool_name": "review_permission",
+        "model": "gpt-5-mini"
+      },
       "trust_rules": [
         {
           "tool_name": "read_text_file",
@@ -163,6 +173,15 @@ permission requests with an explicit `allow` or `deny` decision. Rules match by
 default. Agent Configuration shows each configured trust rule target and
 decision so the active static policy is inspectable before connecting, while the
 prompt composer exposes the runtime tool-call execution policy.
+Configured `client_providers.permissions.review_agent` can call a sidecar MCP
+review tool during `自动审查`. When no review agent is configured, `自动审查` uses a
+sidecar session with the same active ACP agent and passes the current model;
+`agent_servers.<name>.review_agent.model` can override the model for that
+agent's sidecar reviewer. The review payload is intentionally limited to the
+permission request, command/cwd/workspace context when available, local risk
+signals, and the selected review model. Returned allow/deny/cancel decisions are
+applied automatically and recorded; undecided or failed reviews leave the prompt
+composer approval card available for manual action.
 When connected, the Agents menu exposes `Extension Request` for advanced
 underscore-prefixed ACP extension methods advertised through `_meta` or otherwise
 coordinated by a specific agent.

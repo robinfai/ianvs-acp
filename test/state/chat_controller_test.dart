@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -1091,6 +1092,121 @@ void main() {
       AcpPermissionDecisionSource.trustRule,
     );
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
+  });
+
+  test('auto review permission reviewer resolves requests', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'low',
+        rationale: 'Command stays in the workspace.',
+        reviewer: 'sidecar-reviewer',
+        model: 'review-model',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+    controller.sessionSettings = const AcpSessionSettings(
+      configOptions: [
+        AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'primary-model',
+          options: [
+            AcpConfigOptionChoice(value: 'primary-model', name: 'Primary'),
+          ],
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+        metadata: const <String, Object?>{
+          'command': 'git status',
+          'cwd': '/workspace',
+          'workspaceRoot': '/workspace',
+        },
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(reviewer.requests.single.id, 'permission-1');
+    expect(reviewer.workspaceRoots.single, '/workspace');
+    expect(reviewer.models.single, 'primary-model');
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.reviewAgent,
+    );
+    expect(controller.permissionHistory.single.reviewResult?.risk, 'low');
+    expect(
+      controller.permissionHistory.single.reviewResult?.model,
+      'review-model',
+    );
+  });
+
+  test('auto review opinion without a decision keeps request manual', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        risk: 'medium',
+        rationale: 'Needs human confirmation.',
+        reviewer: 'sidecar-reviewer',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(controller.pendingPermissionRequest?.id, 'permission-1');
+    expect(fake.lastPermissionRequestId, isNull);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.pending,
+    );
+    expect(controller.permissionHistory.single.decisionSource, isNull);
+    expect(controller.permissionHistory.single.reviewResult?.risk, 'medium');
+    expect(
+      controller.permissionHistory.single.reviewResult?.rationale,
+      'Needs human confirmation.',
+    );
   });
 
   test(
@@ -2308,6 +2424,27 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('prompt setup failed');
+  }
+}
+
+class _FakePermissionReviewer extends AcpPermissionReviewer {
+  _FakePermissionReviewer(this.result);
+
+  final AcpPermissionReviewResult result;
+  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
+  final List<String> workspaceRoots = <String>[];
+  final List<String?> models = <String?>[];
+
+  @override
+  Future<AcpPermissionReviewResult?> review(
+    AcpPermissionRequest request, {
+    required String workspaceRoot,
+    String? model,
+  }) async {
+    requests.add(request);
+    workspaceRoots.add(workspaceRoot);
+    models.add(model);
+    return result;
   }
 }
 

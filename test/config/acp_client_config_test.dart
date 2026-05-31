@@ -326,6 +326,81 @@ void main() {
     expect(selected.clientProviders.permissions.trustRules, hasLength(2));
   });
 
+  test('loads permission review agent config', () {
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'permissions': {
+          'review_agent': {
+            'mcp_server': {
+              'name': 'permission-reviewer',
+              'command': '/usr/local/bin/review-agent',
+              'args': ['mcp'],
+            },
+            'tool_name': 'review_permission',
+            'model': 'review-model',
+            'timeout_ms': 5000,
+          },
+        },
+      },
+    });
+
+    final reviewAgent = config.clientProviders.permissions.reviewAgent;
+    expect(reviewAgent.enabled, isTrue);
+    expect(reviewAgent.mcpServer?.name, 'permission-reviewer');
+    expect(reviewAgent.mcpServer?.command, '/usr/local/bin/review-agent');
+    expect(reviewAgent.toolName, 'review_permission');
+    expect(reviewAgent.model, 'review-model');
+    expect(reviewAgent.timeout, const Duration(milliseconds: 5000));
+    expect(config.clientProviders.permissions.hasReviewAgent, isTrue);
+  });
+
+  test('loads permission review agent by top-level MCP server name', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {
+          'name': 'permission-reviewer',
+          'type': 'http',
+          'url': 'https://reviewer.example.com/mcp',
+        },
+      ],
+      'client_providers': {
+        'permissions': {
+          'review_agent': {
+            'mcp_server_name': 'permission-reviewer',
+            'model': 'review-model',
+          },
+        },
+      },
+    });
+
+    final reviewAgent = config.clientProviders.permissions.reviewAgent;
+    expect(reviewAgent.enabled, isTrue);
+    expect(reviewAgent.mcpServerName, 'permission-reviewer');
+    expect(reviewAgent.mcpServer, isNull);
+    expect(reviewAgent.displayTarget, 'permission-reviewer');
+    expect(reviewAgent.model, 'review-model');
+  });
+
+  test('loads permission review model from agent server config', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Kimi Code Dev',
+      'agent_servers': {
+        'Kimi Code Dev': {
+          'type': 'custom',
+          'command': '/usr/local/bin/kimi',
+          'args': ['acp'],
+          'review_agent': {'model': 'review-model'},
+        },
+      },
+    });
+
+    final reviewAgent = config.activeAgentServer!.permissionReviewAgent;
+    expect(reviewAgent.enabled, isTrue);
+    expect(reviewAgent.hasMcpTarget, isFalse);
+    expect(reviewAgent.model, 'review-model');
+    expect(reviewAgent.isConfigured, isTrue);
+  });
+
   test('rejects invalid client provider config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -406,6 +481,45 @@ void main() {
             'trust_rules': [
               {'tool_name': 'read_text_file', 'decision': 'cancel'},
             ],
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'review_agent': ['permission-reviewer'],
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'review_agent': {
+              'mcp_server': {
+                'name': 'permission-reviewer',
+                'command': '/usr/local/bin/reviewer',
+              },
+              'mcp_server_name': 'permission-reviewer',
+            },
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'review_agent': {'timeout_ms': 0},
           },
         },
       }),

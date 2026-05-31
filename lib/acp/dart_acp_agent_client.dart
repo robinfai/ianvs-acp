@@ -672,12 +672,13 @@ class DartAcpAgentClient implements AcpAgentClient {
       case acp.UnknownUpdate():
         final mapped = _eventFromUnknownUpdate(update);
         if (mapped != null) return mapped;
-        final text = update.text;
-        if (text.isEmpty) return null;
+        final kind = _unknownUpdateKind(update);
+        if (kind == null) return null;
+        final text = '[Unknown update: $kind]';
         return AgentEvent(
           type: AgentEventType.status,
           text: text,
-          metadata: <String, Object?>{'kind': 'unknown'},
+          metadata: <String, Object?>{'kind': 'unknown', 'sessionUpdate': kind},
           timestamp: DateTime.now(),
         );
     }
@@ -686,8 +687,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   AgentEvent? _eventFromUnknownUpdate(acp.UnknownUpdate update) {
     final raw = update.raw;
     final sessionId = raw['sessionId'];
-    final body = raw['update'];
-    if (body is! Map<String, dynamic>) return null;
+    final rawBody = raw['update'];
+    final body = rawBody is Map<String, dynamic> ? rawBody : raw;
 
     final kind = body['sessionUpdate'];
     if (kind == 'config_option_update') {
@@ -730,6 +731,15 @@ class DartAcpAgentClient implements AcpAgentClient {
       );
     }
 
+    return null;
+  }
+
+  String? _unknownUpdateKind(acp.UnknownUpdate update) {
+    final raw = update.raw;
+    final direct = _nonEmptyString(raw['sessionUpdate']);
+    if (direct != null) return direct;
+    final body = raw['update'];
+    if (body is Map) return _nonEmptyString(body['sessionUpdate']);
     return null;
   }
 
@@ -1197,6 +1207,12 @@ class DartAcpAgentClient implements AcpAgentClient {
   Map<String, Object?> _metadataMap(Map? raw) {
     if (raw == null) return const <String, Object?>{};
     return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  String? _nonEmptyString(Object? raw) {
+    if (raw is! String) return null;
+    final trimmed = raw.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   Map<String, dynamic> _dynamicJsonMap(Map<String, Object?> raw) {
@@ -1788,6 +1804,7 @@ class _AcpPermissionBridge {
         toolKind: options.toolKind,
         options: List<String>.unmodifiable(options.options),
         requestedAt: DateTime.now(),
+        metadata: Map<String, Object?>.unmodifiable(options.metadata),
       ),
     );
 

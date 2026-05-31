@@ -41,7 +41,21 @@ Example:
       ],
       "env": []
     }
-  ]
+  ],
+  "client_providers": {
+    "permissions": {
+      "review_agent": {
+        "mcp_server": {
+          "name": "permission-reviewer",
+          "command": "/opt/homebrew/bin/npx",
+          "args": ["-y", "@example/permission-reviewer-mcp"],
+          "env": []
+        },
+        "tool_name": "review_permission",
+        "model": "gpt-5-mini"
+      }
+    }
+  }
 }
 ```
 
@@ -49,6 +63,16 @@ Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; headers may be either an object or a `name`/`value` list. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
+
+`client_providers.permissions.review_agent` can point at a sidecar MCP server
+used by the prompt composer’s `自动审查` policy. If no review agent is configured,
+`自动审查` starts a sidecar session with the same active ACP agent and passes the
+current model. An individual `agent_servers.<name>.review_agent.model` can
+override the sidecar review model for that agent. The app sends command
+execution context, local workspace/risk analysis, and the selected review model
+to the reviewer, records the review opinion, and auto-applies allow/deny
+decisions returned by that sidecar. If the sidecar cannot decide or fails, the
+request remains available for manual approval.
 
 Supported environment overrides:
 

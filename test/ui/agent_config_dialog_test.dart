@@ -22,6 +22,11 @@ void main() {
               ),
               terminal: AcpTerminalProviderConfig(enabled: true),
               permissions: AcpPermissionProviderConfig(
+                reviewAgent: AcpPermissionReviewAgentConfig(
+                  enabled: true,
+                  mcpServerName: 'permission-reviewer',
+                  model: 'review-model',
+                ),
                 trustRules: [
                   AcpPermissionTrustRule(
                     toolName: 'read_text_file',
@@ -62,6 +67,10 @@ void main() {
                 type: 'custom',
                 command: '/usr/local/bin/kimi',
                 args: ['acp'],
+                permissionReviewAgent: AcpPermissionReviewAgentConfig(
+                  enabled: true,
+                  model: 'agent-review-model',
+                ),
               ),
               AgentServerConfig(
                 name: 'Codex',
@@ -104,6 +113,12 @@ void main() {
     expect(find.text('FS read'), findsOneWidget);
     expect(find.text('Terminal'), findsOneWidget);
     expect(find.text('Trust rules'), findsOneWidget);
+    expect(find.text('Review agent'), findsOneWidget);
+    expect(find.text('permission-reviewer'), findsOneWidget);
+    expect(find.text('Review model'), findsWidgets);
+    expect(find.text('review-model'), findsOneWidget);
+    expect(find.text('agent-review-model'), findsOneWidget);
+    expect(find.text('Same agent'), findsOneWidget);
     expect(find.text('Rule'), findsOneWidget);
     expect(find.text('read_text_file / read -> Allow'), findsOneWidget);
     expect(find.text('1'), findsWidgets);
