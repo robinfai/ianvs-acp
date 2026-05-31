@@ -116,9 +116,35 @@ int _messagesSignature(List<ChatMessage> messages) {
       message.role,
       message.text.length,
       message.text,
-      message.metadata.length,
+      _metadataSignature(message.metadata),
     ],
   ]);
+}
+
+int _metadataSignature(Object? value) {
+  if (value is Map) {
+    final entries =
+        value.entries
+            .map((entry) => MapEntry(entry.key.toString(), entry.value))
+            .toList()
+          ..sort((a, b) => a.key.compareTo(b.key));
+    return Object.hashAll([
+      'map',
+      entries.length,
+      for (final entry in entries) ...[
+        entry.key,
+        _metadataSignature(entry.value),
+      ],
+    ]);
+  }
+  if (value is Iterable) {
+    return Object.hashAll([
+      'iterable',
+      for (final item in value) _metadataSignature(item),
+    ]);
+  }
+  if (value is DateTime) return value.microsecondsSinceEpoch;
+  return Object.hash(value.runtimeType, value);
 }
 
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {

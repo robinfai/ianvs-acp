@@ -163,6 +163,87 @@ void main() {
     },
   );
 
+  testWidgets('ChatTimeline keeps scroll pinned when metadata changes', (
+    tester,
+  ) async {
+    final messages = List<ChatMessage>.generate(
+      18,
+      (index) => ChatMessage(
+        role: index.isEven ? ChatMessageRole.user : ChatMessageRole.assistant,
+        text: 'Message $index\n${List.filled(3, 'line').join('\n')}',
+      ),
+    );
+    messages.add(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: 'Implementation plan',
+        metadata: const {
+          'kind': 'plan',
+          'title': 'Implementation plan',
+          'entries': [
+            {
+              'content': 'Initial check',
+              'priority': 'medium',
+              'status': 'in_progress',
+            },
+          ],
+        },
+      ),
+    );
+
+    Widget constrainedTimeline() {
+      return MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 420,
+            height: 240,
+            child: ChatTimeline(messages: messages),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(constrainedTimeline());
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    ScrollPosition timelinePosition() {
+      return tester
+          .widget<ListView>(find.byType(ListView))
+          .controller!
+          .position;
+    }
+
+    var position = timelinePosition();
+    expect(position.maxScrollExtent, greaterThan(0));
+    expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
+
+    messages[messages.length - 1] = ChatMessage(
+      role: ChatMessageRole.status,
+      text: 'Implementation plan',
+      metadata: {
+        'kind': 'plan',
+        'title': 'Implementation plan',
+        'entries': [
+          for (var index = 0; index < 24; index++)
+            {
+              'content': 'Follow-up item $index',
+              'priority': index.isEven ? 'high' : 'medium',
+              'status': index.isEven ? 'completed' : 'in_progress',
+            },
+        ],
+      },
+    );
+    await tester.pumpWidget(constrainedTimeline());
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    position = timelinePosition();
+    expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
+  });
+
   testWidgets('ChatTimeline renders error card', (tester) async {
     await tester.pumpWidget(
       timeline([ChatMessage(role: ChatMessageRole.error, text: 'boom')]),
