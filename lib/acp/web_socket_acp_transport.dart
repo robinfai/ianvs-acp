@@ -45,7 +45,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _socketSubscription = socket.listen(
       (message) {
         if (message is! String || message.trim().isEmpty) return;
-        onProtocolIn?.call(message);
+        _notifyProtocolIn(message);
         controller.local.sink.add(message);
       },
       onError: controller.local.sink.addError,
@@ -55,7 +55,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     );
     _outboundSubscription = controller.local.stream.listen(
       (line) {
-        onProtocolOut?.call(line);
+        _notifyProtocolOut(line);
         socket.add(line);
       },
       onError: controller.local.sink.addError,
@@ -63,6 +63,22 @@ class WebSocketAcpTransport implements acp.AcpTransport {
         unawaited(socket.close(WebSocketStatus.normalClosure));
       },
     );
+  }
+
+  void _notifyProtocolIn(String line) {
+    try {
+      onProtocolIn?.call(line);
+    } catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
+    }
+  }
+
+  void _notifyProtocolOut(String line) {
+    try {
+      onProtocolOut?.call(line);
+    } catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
+    }
   }
 
   @override
