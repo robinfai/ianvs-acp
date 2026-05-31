@@ -825,6 +825,45 @@ void main() {
   );
 
   test(
+    'permission requests for closed sessions are cancelled without active session',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.closeCurrentSession();
+      expect(controller.currentSession, isNull);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-stale',
+          title: 'Run command',
+          rationale: 'Requested by closed session',
+          sessionId: 'fake-session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(fake.lastPermissionRequestId, 'permission-stale');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(controller.permissionHistory, hasLength(1));
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+    },
+  );
+
+  test(
     'stop continues prompt cancellation when permission cancel response fails',
     () async {
       final fake = FakeAgentClient(
@@ -1565,6 +1604,23 @@ void main() {
     expect(controller.sessions, isEmpty);
     expect(controller.messages, isEmpty);
     expect(controller.status, app_state.ConnectionStatus.connected);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-logout-stale',
+        title: 'Run command',
+        rationale: 'Requested by logged-out session',
+        sessionId: 'fake-session-1',
+        toolName: 'terminal',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(fake.lastPermissionRequestId, 'permission-logout-stale');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
   });
 
   test('authenticate invokes advertised auth method', () async {

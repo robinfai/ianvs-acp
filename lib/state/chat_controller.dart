@@ -66,6 +66,7 @@ class ChatController extends ChangeNotifier {
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
   final Set<String> _resolvingPermissionRequestIds = <String>{};
+  final Set<String> _retiredSessionIds = <String>{};
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
@@ -164,6 +165,7 @@ class ChatController extends ChangeNotifier {
         final session = (await client.createSession(
           cwd: cwd,
         )).copyWith(agentName: agentName);
+        _retiredSessionIds.remove(session.id);
         currentSession = session;
         _upsertSession(session);
         messages.clear();
@@ -232,6 +234,7 @@ class ChatController extends ChangeNotifier {
           updatedAt: updatedAt,
           agentName: agentName,
         );
+        _retiredSessionIds.remove(session.id);
         currentSession = session;
         _upsertSession(session);
         _notifyListeners();
@@ -500,6 +503,7 @@ class ChatController extends ChangeNotifier {
           title: forkedTitle,
           agentName: agentName,
         );
+        _retiredSessionIds.remove(updatedSession.id);
         currentSession = updatedSession;
         _upsertSession(updatedSession);
         messages.clear();
@@ -531,6 +535,7 @@ class ChatController extends ChangeNotifier {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
         await client.closeSession(sessionId: session.id);
+        _retiredSessionIds.add(session.id);
         currentSession = null;
         sessions.removeWhere((item) => item.id == session.id);
         messages.clear();
@@ -557,6 +562,10 @@ class ChatController extends ChangeNotifier {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
         await client.logout();
+        if (currentSession case final session?) {
+          _retiredSessionIds.add(session.id);
+        }
+        _retiredSessionIds.addAll(sessions.map((session) => session.id));
         currentSession = null;
         sessions.clear();
         messages.clear();
@@ -814,6 +823,7 @@ class ChatController extends ChangeNotifier {
   bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {
     final requestSessionId = request.sessionId.trim();
     if (requestSessionId.isEmpty) return true;
+    if (_retiredSessionIds.contains(requestSessionId)) return false;
     final session = currentSession;
     if (session == null) return true;
     return requestSessionId == session.id;
