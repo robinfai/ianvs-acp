@@ -198,12 +198,17 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
             uri: endpoint,
           );
         }
-        final subscription = _sseEvents(response).listen(
+        late final StreamSubscription<String> subscription;
+        subscription = _sseEvents(response).listen(
           _handleSseEvent,
           onError: (Object error, StackTrace stackTrace) {
             if (!_stopping) {
               _controller?.local.sink.addError(error, stackTrace);
             }
+          },
+          onDone: () {
+            _streamStartsByKey.remove(key);
+            _streamSubscriptions.remove(subscription);
           },
         );
         _streamSubscriptions.add(subscription);
