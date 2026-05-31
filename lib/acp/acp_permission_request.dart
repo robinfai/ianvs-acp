@@ -77,17 +77,10 @@ class AcpPermissionRequest {
     return _permissionOptionLabel(
       options,
       fallback: 'Allow Once',
-      keywords: const [
-        'allow',
-        'allowed',
-        'approve',
-        'approved',
-        'accept',
-        'accepted',
-        'continue',
-        'proceed',
-      ],
+      keywords: _allowPermissionKeywords,
       genericLabels: const ['allow', 'allow once'],
+      negatedKeywords: _allowPermissionKeywords,
+      skipNegatedKeywords: true,
     );
   }
 
@@ -107,6 +100,8 @@ class AcpPermissionRequest {
         'disallow',
       ],
       genericLabels: const ['deny', 'reject'],
+      negatedKeywords: _allowPermissionKeywords,
+      includeNegatedKeywords: true,
     );
   }
 
@@ -200,12 +195,22 @@ String _permissionOptionLabel(
   required String fallback,
   required List<String> keywords,
   required List<String> genericLabels,
+  List<String> negatedKeywords = const <String>[],
+  bool includeNegatedKeywords = false,
+  bool skipNegatedKeywords = false,
 }) {
   for (final option in options) {
     final label = _normalizedPermissionOption(option);
     if (label.isEmpty) continue;
     final lowerLabel = label.toLowerCase();
-    if (!_containsPermissionKeyword(lowerLabel, keywords)) continue;
+    final matchesKeyword = _containsPermissionKeyword(lowerLabel, keywords);
+    final matchesNegatedKeyword =
+        negatedKeywords.isNotEmpty &&
+        _containsNegatedPermissionKeyword(lowerLabel, negatedKeywords);
+    if (skipNegatedKeywords && matchesNegatedKeyword) continue;
+    if (!matchesKeyword && !(includeNegatedKeywords && matchesNegatedKeyword)) {
+      continue;
+    }
     if (genericLabels.contains(lowerLabel)) return fallback;
     return _truncatePermissionOptionLabel(label);
   }
@@ -213,10 +218,25 @@ String _permissionOptionLabel(
 }
 
 bool _containsPermissionKeyword(String lowerLabel, List<String> keywords) {
-  final words = lowerLabel
+  final words = _permissionWords(lowerLabel);
+  return words.any(keywords.contains);
+}
+
+bool _containsNegatedPermissionKeyword(
+  String lowerLabel,
+  List<String> keywords,
+) {
+  final words = _permissionWords(lowerLabel).toList();
+  final hasKeyword = words.any(keywords.contains);
+  if (!hasKeyword) return false;
+  return words.any(_permissionNegationWords.contains) ||
+      lowerLabel.contains("don't");
+}
+
+Iterable<String> _permissionWords(String lowerLabel) {
+  return lowerLabel
       .split(RegExp(r'[^a-z0-9]+'))
       .where((word) => word.isNotEmpty);
-  return words.any(keywords.contains);
 }
 
 String _normalizedPermissionOption(String value) {
@@ -228,3 +248,16 @@ String _truncatePermissionOptionLabel(String value) {
   if (value.length <= maxLength) return value;
   return '${value.substring(0, maxLength - 3).trimRight()}...';
 }
+
+const List<String> _allowPermissionKeywords = [
+  'allow',
+  'allowed',
+  'approve',
+  'approved',
+  'accept',
+  'accepted',
+  'continue',
+  'proceed',
+];
+
+const Set<String> _permissionNegationWords = {'no', 'not', 'never', 'without'};

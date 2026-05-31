@@ -27,4 +27,11 @@ void main() {
     expect(item.allowActionLabel, 'Approve Plan');
     expect(item.denyActionLabel, 'Reject Plan');
   });
+
+  test('permission labels treat negated allow phrases as deny actions', () {
+    final item = request(const ['Do not allow', 'Allow']);
+
+    expect(item.allowActionLabel, 'Allow Once');
+    expect(item.denyActionLabel, 'Do not allow');
+  });
 }
