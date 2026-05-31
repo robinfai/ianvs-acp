@@ -368,7 +368,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     await _terminateConnection();
     _client?.close(force: true);
     _client = null;
-    for (final subscription in _streamSubscriptions) {
+    final streamSubscriptions = List<StreamSubscription<String>>.of(
+      _streamSubscriptions,
+    );
+    for (final subscription in streamSubscriptions) {
       try {
         await subscription.cancel();
       } catch (error, stackTrace) {

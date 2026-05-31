@@ -602,6 +602,153 @@ void main() {
     }
   });
 
+  test('stop tolerates inbound streams ending during teardown', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final inboundMessages = <Map<String, dynamic>>[];
+    final transportErrors = <Object>[];
+    final openedSessionStreams = <String?>[];
+    var disposed = false;
+
+    Future<void> openSse(HttpRequest request) async {
+      final sessionId = request.headers.value('Acp-Session-Id');
+      request.response.bufferOutput = false;
+      request.response.headers
+        ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+        ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+      request.response.write(': connected\n\n');
+      await request.response.flush();
+      openResponses.add(request.response);
+      openedSessionStreams.add(sessionId);
+    }
+
+    Future<void> closeOpenResponses() async {
+      for (final response in List<HttpResponse>.of(openResponses)) {
+        await response.close();
+      }
+    }
+
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        unawaited(closeOpenResponses());
+        return;
+      }
+      if (request.method == 'GET') {
+        await openSse(request);
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final method = message['method'];
+      final Object? id = message['id'];
+      request.response.headers.contentType = ContentType.json;
+      if (method == 'initialize') {
+        request.response
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': <String, dynamic>{
+                'connectionId': 'connection-1',
+                'protocolVersion': 1,
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+      } else if (method == 'session/new') {
+        request.response.write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'result': <String, dynamic>{'sessionId': 'session-a'},
+          }),
+        );
+      } else if (method == 'session/fork') {
+        request.response.write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'result': <String, dynamic>{'sessionId': 'session-b'},
+          }),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.accepted;
+      }
+      await request.response.close();
+    });
+
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+    await transport.start();
+    final channel = transport.channel;
+    final inboundSubscription = channel.stream.listen((line) {
+      inboundMessages.add(jsonDecode(line) as Map<String, dynamic>);
+    }, onError: transportErrors.add);
+
+    try {
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 1),
+      );
+
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'method': 'session/new',
+          'params': <String, dynamic>{'cwd': '/workspace'},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 2),
+      );
+
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 3,
+          'method': 'session/fork',
+          'params': <String, dynamic>{'sessionId': 'session-a'},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 3),
+      );
+      await _waitFor(
+        () =>
+            openedSessionStreams.contains(null) &&
+            openedSessionStreams.contains('session-a') &&
+            openedSessionStreams.contains('session-b'),
+      );
+
+      await transport.stop().timeout(const Duration(seconds: 5));
+      disposed = true;
+
+      expect(transportErrors, isEmpty);
+    } finally {
+      await inboundSubscription.cancel();
+      if (!disposed) {
+        await transport.stop();
+      }
+      await closeOpenResponses();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('closed session SSE streams reopen for later session traffic', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
