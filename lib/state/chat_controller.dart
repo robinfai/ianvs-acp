@@ -302,6 +302,7 @@ class ChatController extends ChangeNotifier {
 
     if (currentSession == null) {
       await newSession();
+      if (status == ConnectionStatus.error) return;
     }
 
     final session = currentSession;

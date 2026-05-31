@@ -95,6 +95,29 @@ void main() {
     ]);
   });
 
+  test(
+    'send prompt stops when automatic session setup emits an error',
+    () async {
+      final fake = FakeAgentClient(
+        createSessionEvents: const [
+          AgentEvent(type: AgentEventType.error, text: 'session setup failed'),
+        ],
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.sendPrompt('Hi');
+
+      expect(fake.lastPrompt, isNull);
+      expect(controller.currentSession?.id, 'fake-session-1');
+      expect(controller.status, app_state.ConnectionStatus.error);
+      expect(controller.lastError, contains('session setup failed'));
+      expect(controller.messages.map((message) => message.role), [
+        ChatMessageRole.error,
+      ]);
+    },
+  );
+
   test('created sessions keep selected agent name', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
