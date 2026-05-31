@@ -644,6 +644,7 @@ class ChatController extends ChangeNotifier {
     _notifyListeners();
     try {
       await client.connect();
+      _retiredSessionIds.clear();
       capabilities = client.capabilities;
       status = ConnectionStatus.connected;
       _notifyListeners();

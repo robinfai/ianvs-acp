@@ -57,6 +57,26 @@ void main() {
     expect(controller.lastError, contains('connection dropped'));
   });
 
+  test('reconnect accepts reused session setup permissions', () async {
+    final fake = _ReusedSessionSetupPermissionAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    expect(controller.currentSession?.id, 'reused-session');
+
+    await controller.closeCurrentSession();
+    expect(controller.currentSession, isNull);
+
+    await controller.reconnect();
+    await controller.newSession();
+    await pumpEventQueue();
+
+    expect(controller.currentSession?.id, 'reused-session');
+    expect(controller.pendingPermissionRequest?.id, 'permission-reused-2');
+    expect(fake.lastPermissionRequestId, isNull);
+  });
+
   test('create session success sets current session', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -2009,6 +2029,40 @@ class _FailingReconnectAgentClient extends FakeAgentClient {
     }
     connected = false;
     throw Exception('connection dropped');
+  }
+}
+
+class _ReusedSessionSetupPermissionAgentClient extends FakeAgentClient {
+  int _createSessionCount = 0;
+
+  @override
+  Future<AgentSession> createSession({required String cwd}) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+
+    _createSessionCount += 1;
+    const sessionId = 'reused-session';
+    if (_createSessionCount > 1) {
+      emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-reused-$_createSessionCount',
+          title: 'Run command',
+          rationale: 'Requested during session setup',
+          sessionId: sessionId,
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    return AgentSession(
+      id: sessionId,
+      cwd: cwd,
+      createdAt: DateTime(2026, 5, 28, 12),
+    );
   }
 }
 
