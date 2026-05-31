@@ -246,6 +246,37 @@ void main() {
     expect(controller.sessions.single.displayTitle, 'Updated session title');
   });
 
+  test('resume session ignores blank ACP session title updates', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Session info updated.',
+            metadata: {
+              'kind': 'session_info_update',
+              'sessionId': 'resumed-session-title',
+              'title': '   ',
+              'updatedAt': '2026-05-30T04:12:00Z',
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession(
+      'resumed-session-title',
+      title: 'Original session title',
+    );
+
+    expect(controller.messages, isEmpty);
+    expect(controller.currentSession?.displayTitle, 'Original session title');
+    expect(controller.sessions.single.displayTitle, 'Original session title');
+    expect(controller.currentSession?.updatedAt, isNotNull);
+  });
+
   test('plan status updates replace previous plan snapshot', () async {
     final controller = ChatController(
       client: FakeAgentClient(

@@ -907,8 +907,9 @@ class ChatController extends ChangeNotifier {
       return;
     }
 
-    final title = metadata['title'] is String
-        ? metadata['title'] as String
+    final rawTitle = metadata['title'];
+    final title = rawTitle is String && rawTitle.trim().isNotEmpty
+        ? rawTitle.trim()
         : null;
     final updatedAtRaw = metadata['updatedAt'];
     final updatedAt = updatedAtRaw is String
