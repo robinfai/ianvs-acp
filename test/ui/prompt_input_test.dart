@@ -28,27 +28,34 @@ void main() {
     AcpConfigOption? modelOption,
     ValueChanged<String>? onModelSelected,
     PromptAttachmentPicker? pickAttachments,
+    double? width,
   }) {
+    final promptInput = PromptInput(
+      agentName: agentName,
+      enabled: enabled,
+      isSending: isSending,
+      availableCommands: availableCommands,
+      promptCapabilities: promptCapabilities,
+      pendingPermissionRequest: pendingPermissionRequest,
+      onAllowPermission: onAllowPermission,
+      onDenyPermission: onDenyPermission,
+      onCancelPermission: onCancelPermission,
+      toolCallExecutionPolicy: toolCallExecutionPolicy,
+      onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
+      modelOption: modelOption,
+      onModelSelected: onModelSelected,
+      onSend: onSend,
+      onStop: onStop ?? () {},
+      pickAttachments: pickAttachments,
+    );
     return MaterialApp(
       home: Scaffold(
-        body: PromptInput(
-          agentName: agentName,
-          enabled: enabled,
-          isSending: isSending,
-          availableCommands: availableCommands,
-          promptCapabilities: promptCapabilities,
-          pendingPermissionRequest: pendingPermissionRequest,
-          onAllowPermission: onAllowPermission,
-          onDenyPermission: onDenyPermission,
-          onCancelPermission: onCancelPermission,
-          toolCallExecutionPolicy: toolCallExecutionPolicy,
-          onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
-          modelOption: modelOption,
-          onModelSelected: onModelSelected,
-          onSend: onSend,
-          onStop: onStop ?? () {},
-          pickAttachments: pickAttachments,
-        ),
+        body: width == null
+            ? promptInput
+            : Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(width: width, child: promptInput),
+              ),
       ),
     );
   }
@@ -443,5 +450,37 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(selectedModel, 'mini');
+  });
+
+  testWidgets('PromptInput wraps composer controls in narrow widths', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        width: 320,
+        isSending: false,
+        onSend: (_, _) {},
+        toolCallExecutionPolicy: AcpToolCallExecutionPolicy.fullAccess,
+        onToolCallExecutionPolicyChanged: (_) {},
+        modelOption: const AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'long-model',
+          options: [
+            AcpConfigOptionChoice(
+              value: 'long-model',
+              name: 'GPT-5 Super Extended Reasoning',
+            ),
+          ],
+        ),
+        onModelSelected: (_) {},
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('完全访问权限'), findsOneWidget);
+    expect(find.text('GPT-5 Super Extended Reasoning'), findsOneWidget);
+    expect(sendIcon(), findsOneWidget);
   });
 }

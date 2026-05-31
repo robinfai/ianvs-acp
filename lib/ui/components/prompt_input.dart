@@ -185,49 +185,18 @@ class _PromptInputState extends State<PromptInput> {
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-                    child: Row(
-                      children: [
-                        Semantics(
-                          button: true,
-                          label: 'Attach file',
-                          child: IconButton(
-                            tooltip: 'Attach file',
-                            onPressed: !widget.enabled || widget.isSending
-                                ? null
-                                : _pickAttachments,
-                            icon: const Icon(Icons.add_rounded),
-                            color: AppColors.textSecondary,
-                            disabledColor: AppColors.textTertiary,
-                            iconSize: 20,
-                            visualDensity: VisualDensity.compact,
-                            splashRadius: 18,
-                          ),
-                        ),
-                        const _ComposerDivider(),
-                        _ToolCallPolicySelector(
-                          value: widget.toolCallExecutionPolicy,
-                          enabled:
-                              widget.enabled &&
-                              widget.onToolCallExecutionPolicyChanged != null,
-                          onChanged: widget.onToolCallExecutionPolicyChanged,
-                        ),
-                        const Spacer(),
-                        _ModelSelector(
-                          option: widget.modelOption,
-                          enabled:
-                              widget.enabled &&
-                              !widget.isSending &&
-                              widget.onModelSelected != null,
-                          onSelected: widget.onModelSelected,
-                        ),
-                        const SizedBox(width: 8),
-                        _PromptActionButton(
-                          isSending: widget.isSending,
-                          canSend: _canSend,
-                          onSend: _submit,
-                          onStop: widget.onStop,
-                        ),
-                      ],
+                    child: _ComposerControlBar(
+                      enabled: widget.enabled,
+                      isSending: widget.isSending,
+                      canSend: _canSend,
+                      onPickAttachments: _pickAttachments,
+                      toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
+                      onToolCallExecutionPolicyChanged:
+                          widget.onToolCallExecutionPolicyChanged,
+                      modelOption: widget.modelOption,
+                      onModelSelected: widget.onModelSelected,
+                      onSend: _submit,
+                      onStop: widget.onStop,
                     ),
                   ),
                 ],
@@ -457,6 +426,111 @@ class _ComposerDivider extends StatelessWidget {
       height: 24,
       margin: const EdgeInsets.symmetric(horizontal: 6),
       color: AppColors.border,
+    );
+  }
+}
+
+class _ComposerControlBar extends StatelessWidget {
+  const _ComposerControlBar({
+    required this.enabled,
+    required this.isSending,
+    required this.canSend,
+    required this.onPickAttachments,
+    required this.toolCallExecutionPolicy,
+    required this.onToolCallExecutionPolicyChanged,
+    required this.modelOption,
+    required this.onModelSelected,
+    required this.onSend,
+    required this.onStop,
+  });
+
+  final bool enabled;
+  final bool isSending;
+  final bool canSend;
+  final VoidCallback onPickAttachments;
+  final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
+  final ValueChanged<AcpToolCallExecutionPolicy>?
+  onToolCallExecutionPolicyChanged;
+  final AcpConfigOption? modelOption;
+  final ValueChanged<String>? onModelSelected;
+  final VoidCallback onSend;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final attach = Semantics(
+      button: true,
+      label: 'Attach file',
+      child: IconButton(
+        tooltip: 'Attach file',
+        onPressed: !enabled || isSending ? null : onPickAttachments,
+        icon: const Icon(Icons.add_rounded),
+        color: AppColors.textSecondary,
+        disabledColor: AppColors.textTertiary,
+        iconSize: 20,
+        visualDensity: VisualDensity.compact,
+        splashRadius: 18,
+      ),
+    );
+    final policy = _ToolCallPolicySelector(
+      value: toolCallExecutionPolicy,
+      enabled: enabled && onToolCallExecutionPolicyChanged != null,
+      onChanged: onToolCallExecutionPolicyChanged,
+    );
+    final model = _ModelSelector(
+      option: modelOption,
+      enabled: enabled && !isSending && onModelSelected != null,
+      onSelected: onModelSelected,
+    );
+    final action = _PromptActionButton(
+      isSending: isSending,
+      canSend: canSend,
+      onSend: onSend,
+      onStop: onStop,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 560) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  attach,
+                  const _ComposerDivider(),
+                  Flexible(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: policy,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  action,
+                ],
+              ),
+              const SizedBox(height: 6),
+              Align(alignment: Alignment.centerRight, child: model),
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            attach,
+            const _ComposerDivider(),
+            Flexible(
+              child: Align(alignment: Alignment.centerLeft, child: policy),
+            ),
+            const Spacer(),
+            Flexible(
+              child: Align(alignment: Alignment.centerRight, child: model),
+            ),
+            const SizedBox(width: 8),
+            action,
+          ],
+        );
+      },
     );
   }
 }
