@@ -798,6 +798,24 @@ class ChatController extends ChangeNotifier {
     );
   }
 
+  void _cancelPendingPermissionRequestAfterPromptEnd() {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    pendingPermissionRequest = null;
+    _recordPermissionDecision(
+      request.id,
+      AcpPermissionDecision.cancel,
+      source: AcpPermissionDecisionSource.system,
+    );
+    unawaited(
+      _sendPermissionDecision(
+        id: request.id,
+        decision: AcpPermissionDecision.cancel,
+        reportErrors: false,
+      ),
+    );
+  }
+
   void _recordPermissionRequest(AcpPermissionRequest request) {
     final index = _permissionHistory.indexWhere(
       (entry) => entry.request.id == request.id,
@@ -1067,6 +1085,7 @@ class ChatController extends ChangeNotifier {
   void _finishStreaming() {
     if (!isStreaming) return;
     isStreaming = false;
+    _cancelPendingPermissionRequestAfterPromptEnd();
     if (status != ConnectionStatus.error) {
       status = currentSession == null
           ? ConnectionStatus.connected
