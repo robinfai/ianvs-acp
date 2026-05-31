@@ -153,8 +153,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       );
     }
     _connectionId = connectionId.trim();
-    unawaited(_ensureInboundStream(null));
+    _startInboundStream(null);
     _addInboundLine(body);
+  }
+
+  void _startInboundStream(String? sessionId) {
+    unawaited(
+      _ensureInboundStream(sessionId).catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        // _ensureInboundStream has already forwarded this failure to the
+        // transport channel.
+      }),
+    );
   }
 
   Future<void> _ensureInboundStream(String? sessionId) {
@@ -254,7 +266,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
           'sessionId',
         ]);
         if (sessionId != null) {
-          unawaited(_ensureInboundStream(sessionId));
+          _startInboundStream(sessionId);
         }
       }
     }

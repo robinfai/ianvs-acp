@@ -396,6 +396,82 @@ void main() {
     }
   });
 
+  test('connection SSE startup failures are reported once', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final inboundMessages = <Map<String, dynamic>>[];
+    final transportErrors = <Object>[];
+    var disposed = false;
+
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response.statusCode = HttpStatus.internalServerError;
+        await request.response.close();
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-1')
+        ..write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{
+              'connectionId': 'connection-1',
+              'protocolVersion': 1,
+              'agentCapabilities': <String, dynamic>{},
+              'authMethods': <Map<String, dynamic>>[],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+    await transport.start();
+    final channel = transport.channel;
+    final inboundSubscription = channel.stream.listen((line) {
+      inboundMessages.add(jsonDecode(line) as Map<String, dynamic>);
+    }, onError: transportErrors.add);
+
+    try {
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 1),
+      );
+      await _waitFor(() => transportErrors.isNotEmpty);
+
+      expect(transportErrors.single, isA<HttpException>());
+
+      await transport.stop().timeout(const Duration(seconds: 5));
+      disposed = true;
+    } finally {
+      await inboundSubscription.cancel();
+      if (!disposed) {
+        await transport.stop();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('server request session ids are consumed for HTTP responses', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
