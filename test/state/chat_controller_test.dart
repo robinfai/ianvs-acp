@@ -159,6 +159,31 @@ void main() {
     await pendingConnect;
   });
 
+  test('dispose ignores asynchronous cleanup errors', () async {
+    final errors = <Object>[];
+
+    final zoneDone = runZonedGuarded<Future<void>>(
+      () async {
+        final controller = ChatController(
+          client: _FailingDisposeAgentClient(),
+          cwd: '/workspace',
+        );
+
+        await controller.connect();
+        controller.dispose();
+        await pumpEventQueue(times: 4);
+      },
+      (error, stackTrace) {
+        errors.add(error);
+      },
+    );
+    if (zoneDone != null) {
+      await zoneDone;
+    }
+
+    expect(errors, isEmpty);
+  });
+
   test('list sessions keeps session operation lock while loading', () async {
     final fake = FakeAgentClient(
       listSessionsDelay: const Duration(milliseconds: 20),
@@ -1648,6 +1673,14 @@ class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
       text: '',
       timestamp: DateTime(2026, 5, 28, 12),
     );
+  }
+}
+
+class _FailingDisposeAgentClient extends FakeAgentClient {
+  @override
+  Future<void> dispose() async {
+    await super.dispose();
+    throw StateError('dispose failed');
   }
 }
 

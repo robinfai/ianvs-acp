@@ -1257,10 +1257,20 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
-    unawaited(_promptSubscription?.cancel());
-    unawaited(_permissionSubscription.cancel());
-    unawaited(client.dispose());
+    _disposeLater(() => _promptSubscription?.cancel());
+    _disposeLater(_permissionSubscription.cancel);
+    _disposeLater(client.dispose);
     super.dispose();
+  }
+
+  void _disposeLater(Future<void>? Function() action) {
+    try {
+      final cleanup = action();
+      if (cleanup == null) return;
+      unawaited(cleanup.catchError((_) {}));
+    } on Object {
+      // Dispose must stay best-effort; teardown errors have no live UI target.
+    }
   }
 
   void _notifyListeners() {
