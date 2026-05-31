@@ -521,6 +521,122 @@ Future<void> main() async {
     }
   });
 
+  test('preserves snake case tool call ids from raw session updates', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_snake_tool_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) {
+  stdout.writeln(jsonEncode(message));
+}
+
+void sendSessionUpdate(Map<String, dynamic> update) {
+  send(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{
+      'sessionId': 'session-1',
+      'update': update,
+    },
+  });
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/new') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      });
+    } else if (message['method'] == 'session/prompt') {
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call',
+        'tool_call_id': 'call-a',
+        'title': 'Bash A',
+        'status': 'pending',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call',
+        'tool_call_id': 'call-b',
+        'title': 'Bash B',
+        'status': 'pending',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call_update',
+        'tool_call_id': 'call-a',
+        'status': 'completed',
+        'raw_output': 'a done',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call_update',
+        'tool_call_id': 'call-b',
+        'status': 'completed',
+        'raw_output': 'b done',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'run tools')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      final toolEvents = events
+          .where((event) => event.type == AgentEventType.toolCall)
+          .toList();
+
+      expect(toolEvents.map((event) => event.metadata['toolCallId']), [
+        'call-a',
+        'call-b',
+        'call-a',
+        'call-b',
+      ]);
+      expect(toolEvents[2].text, 'Bash A');
+      expect(toolEvents[2].metadata['title'], 'Bash A');
+      expect(toolEvents[2].metadata['status'], 'completed');
+      expect(toolEvents[2].metadata['rawOutput'], 'a done');
+      expect(toolEvents[3].text, 'Bash B');
+      expect(toolEvents[3].metadata['title'], 'Bash B');
+      expect(toolEvents[3].metadata['status'], 'completed');
+      expect(toolEvents[3].metadata['rawOutput'], 'b done');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('connects to streamable HTTP ACP agent servers', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];

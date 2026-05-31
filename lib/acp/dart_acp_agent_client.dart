@@ -67,11 +67,16 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, _RawProtocolRequest>{};
   final Map<String, Map<String, dynamic>> _rawSessionResultsBySession =
       <String, Map<String, dynamic>>{};
+  final Map<String, List<String>> _rawToolCallEventIdsBySession =
+      <String, List<String>>{};
+  final Map<String, Map<String, Map<String, Object?>>>
+  _rawToolCallStatesBySession = <String, Map<String, Map<String, Object?>>>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
   static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
   static const int _maxAudioAttachmentBytes = 8 * 1024 * 1024;
+  static const int _maxRawToolCallEventIds = 200;
   static final RegExp _promptMentionPattern = RegExp(
     r'''@("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)''',
   );
@@ -443,6 +448,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
+    _rawToolCallEventIdsBySession.remove(sessionId);
+    _rawToolCallStatesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);
   }
 
@@ -481,6 +488,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _rawToolCallEventIdsBySession.clear();
+    _rawToolCallStatesBySession.clear();
     _permissionBridge.cancelAll();
   }
 
@@ -576,10 +585,26 @@ class DartAcpAgentClient implements AcpAgentClient {
         );
       case acp.ToolCallUpdate():
         final toolCall = update.toolCall;
+        final metadata = <String, Object?>{
+          'kind': 'tool',
+          ...toolCall.toJson(),
+        };
+        final rawToolCallState = sessionId == null
+            ? null
+            : _takeRawToolCallState(sessionId);
+        if (rawToolCallState != null) {
+          metadata.addAll(_normalizedRawToolCallMetadata(rawToolCallState));
+        }
+        final title = metadata['title'];
+        final toolCallId = metadata['toolCallId'];
         return AgentEvent(
           type: AgentEventType.toolCall,
-          text: toolCall.title ?? toolCall.toolCallId,
-          metadata: <String, Object?>{'kind': 'tool', ...toolCall.toJson()},
+          text: title is String && title.trim().isNotEmpty
+              ? title
+              : toolCallId is String && toolCallId.trim().isNotEmpty
+              ? toolCallId
+              : 'Tool call',
+          metadata: metadata,
           timestamp: DateTime.now(),
         );
       case acp.TurnEnded():
@@ -1427,6 +1452,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     try {
       final message = jsonDecode(line);
       if (message is! Map) return;
+      _captureRawToolCallSessionUpdate(message);
       if (!message.containsKey('result') && !message.containsKey('error')) {
         return;
       }
@@ -1448,6 +1474,91 @@ class DartAcpAgentClient implements AcpAgentClient {
     } on Object {
       return;
     }
+  }
+
+  void _captureRawToolCallSessionUpdate(Map message) {
+    if (message['method'] != 'session/update') return;
+    final params = _dynamicMap(message['params']);
+    if (params == null) return;
+    final sessionId = params['sessionId'];
+    final update = _dynamicMap(params['update']);
+    if (sessionId is! String || sessionId.isEmpty || update == null) {
+      return;
+    }
+    final kind = update['sessionUpdate'];
+    if (kind != 'tool_call' && kind != 'tool_call_update') return;
+    final toolCallId = _toolCallIdFromRawMetadata(update);
+    if (toolCallId == null) return;
+
+    final states = _rawToolCallStatesBySession.putIfAbsent(
+      sessionId,
+      () => <String, Map<String, Object?>>{},
+    );
+    final rawMetadata = _metadataMap(update);
+    final existing = kind == 'tool_call' ? null : states[toolCallId];
+    states[toolCallId] = <String, Object?>{
+      ...?existing,
+      ...rawMetadata,
+      'toolCallId': toolCallId,
+    };
+
+    final eventIds = _rawToolCallEventIdsBySession.putIfAbsent(
+      sessionId,
+      () => <String>[],
+    );
+    eventIds.add(toolCallId);
+    if (eventIds.length > _maxRawToolCallEventIds) {
+      eventIds.removeRange(0, eventIds.length - _maxRawToolCallEventIds);
+    }
+  }
+
+  Map<String, Object?>? _takeRawToolCallState(String sessionId) {
+    final eventIds = _rawToolCallEventIdsBySession[sessionId];
+    if (eventIds == null || eventIds.isEmpty) return null;
+    final toolCallId = eventIds.removeAt(0);
+    if (eventIds.isEmpty) {
+      _rawToolCallEventIdsBySession.remove(sessionId);
+    }
+    return _rawToolCallStatesBySession[sessionId]?[toolCallId];
+  }
+
+  Map<String, Object?> _normalizedRawToolCallMetadata(
+    Map<String, Object?> raw,
+  ) {
+    final metadata = <String, Object?>{};
+    for (final entry in raw.entries) {
+      if (entry.key == 'sessionUpdate') continue;
+      metadata[entry.key] = entry.value;
+    }
+    final toolCallId = _toolCallIdFromRawMetadata(metadata);
+    if (toolCallId != null) {
+      metadata['toolCallId'] = toolCallId;
+    }
+    final rawInput = metadata['raw_input'];
+    if (rawInput != null && metadata['rawInput'] == null) {
+      metadata['rawInput'] = rawInput;
+    }
+    final rawOutput = metadata['raw_output'];
+    if (rawOutput != null && metadata['rawOutput'] == null) {
+      metadata['rawOutput'] = rawOutput;
+    }
+    return metadata;
+  }
+
+  String? _toolCallIdFromRawMetadata(Map raw) {
+    for (final key in const [
+      'toolCallId',
+      'tool_call_id',
+      'id',
+      'callId',
+      'call_id',
+    ]) {
+      final value = raw[key];
+      if (value is String && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+    return null;
   }
 
   String? _jsonRpcIdKey(Object? id) {
@@ -1502,6 +1613,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     _configOptionsBySession.clear();
     _pendingRawProtocolRequests.clear();
     _rawSessionResultsBySession.clear();
+    _rawToolCallEventIdsBySession.clear();
+    _rawToolCallStatesBySession.clear();
     if (closePermissionStream) {
       await _permissionBridge.dispose();
     } else {
