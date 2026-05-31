@@ -63,6 +63,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Map<String, String> _cwdBySession = <String, String>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
+  final Set<String> _modelConfigOptionsFromModelsBySession = <String>{};
   final Map<String, _RawProtocolRequest> _pendingRawProtocolRequests =
       <String, _RawProtocolRequest>{};
   final Map<String, Map<String, dynamic>> _rawSessionResultsBySession =
@@ -224,14 +225,15 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
     final response = _takeRawSessionResult(sessionId);
-    final configOptions = _cacheRawConfigOptions(
-      sessionId,
-      response['configOptions'],
+    final configOptions = _cacheSessionResultConfigOptions(
+      sessionId: sessionId,
+      rawResponse: response,
     );
     if (configOptions.isEmpty) {
       _cacheRawModes(sessionId, response['modes']);
     } else {
       _modesBySession.remove(sessionId);
+      _modeOverridesBySession.remove(sessionId);
     }
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
@@ -383,6 +385,23 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Object value,
   }) async {
     final client = _requireClient();
+    if (configId == 'model' &&
+        _modelConfigOptionsFromModelsBySession.contains(sessionId)) {
+      final response = await client.sendRaw('session/set_model', {
+        'sessionId': sessionId,
+        'modelId': value.toString(),
+      });
+      final rawConfigOptions = response['configOptions'];
+      if ((rawConfigOptions is List && rawConfigOptions.isNotEmpty) ||
+          response.containsKey('models')) {
+        final configOptions = _cacheSessionResultConfigOptions(
+          sessionId: sessionId,
+          rawResponse: response,
+        );
+        if (configOptions.isNotEmpty) return configOptions;
+      }
+      return _applyConfigOptionOverride(sessionId, configId, value);
+    }
     final params = <String, dynamic>{
       'sessionId': sessionId,
       'configId': configId,
@@ -448,6 +467,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
+    _modelConfigOptionsFromModelsBySession.remove(sessionId);
     _rawToolCallEventsBySession.remove(sessionId);
     _rawToolCallStatesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);
@@ -488,6 +508,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _modelConfigOptionsFromModelsBySession.clear();
     _rawToolCallEventsBySession.clear();
     _rawToolCallStatesBySession.clear();
     _permissionBridge.cancelAll();
@@ -1341,6 +1362,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   List<AcpConfigOption> _cacheRawConfigOptions(String sessionId, Object? raw) {
     final mapped = _configOptionsFromRaw(raw);
     _configOptionsBySession[sessionId] = mapped;
+    _modelConfigOptionsFromModelsBySession.remove(sessionId);
     return mapped;
   }
 
@@ -1355,6 +1377,7 @@ class DartAcpAgentClient implements AcpAgentClient {
             .toList() ??
         const <AcpConfigOption>[];
     _configOptionsBySession[sessionId] = mapped;
+    _modelConfigOptionsFromModelsBySession.remove(sessionId);
     return mapped;
   }
 
@@ -1382,12 +1405,88 @@ class DartAcpAgentClient implements AcpAgentClient {
     List<acp.ConfigOption>? typedConfigOptions,
   }) {
     if (rawResponse.containsKey('configOptions')) {
-      return _cacheRawConfigOptions(sessionId, rawResponse['configOptions']);
+      final configOptions = _cacheRawConfigOptions(
+        sessionId,
+        rawResponse['configOptions'],
+      );
+      if (configOptions.isNotEmpty) return configOptions;
     }
     if (typedConfigOptions != null) {
-      return _cacheConfigOptions(sessionId, typedConfigOptions);
+      final configOptions = _cacheConfigOptions(sessionId, typedConfigOptions);
+      if (configOptions.isNotEmpty) return configOptions;
+    }
+    final modelOption = _configOptionFromRawModels(rawResponse['models']);
+    if (modelOption != null) {
+      final configOptions = <AcpConfigOption>[modelOption];
+      _configOptionsBySession[sessionId] = configOptions;
+      _modelConfigOptionsFromModelsBySession.add(sessionId);
+      return configOptions;
     }
     return _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
+  }
+
+  AcpConfigOption? _configOptionFromRawModels(Object? raw) {
+    if (raw is! Map) return null;
+    final map = _metadataMap(raw);
+    final availableModels = map['availableModels'] is List
+        ? (map['availableModels'] as List)
+              .whereType<Map>()
+              .map((item) => _configChoiceFromRawModelMap(_metadataMap(item)))
+              .whereType<AcpConfigOptionChoice>()
+              .toList()
+        : const <AcpConfigOptionChoice>[];
+    final currentModelId =
+        _nonEmptyString(map['currentModelId']) ??
+        _nonEmptyString(map['current_model_id']) ??
+        _nonEmptyString(map['modelId']) ??
+        _nonEmptyString(map['model']);
+    final currentValue =
+        currentModelId ??
+        (availableModels.isEmpty ? null : availableModels.first.value);
+    if (currentValue == null) return null;
+
+    final options = <AcpConfigOptionChoice>[];
+    final seen = <String>{};
+    for (final choice in availableModels) {
+      if (seen.add(choice.value)) options.add(choice);
+    }
+    if (!seen.contains(currentValue)) {
+      options.add(
+        AcpConfigOptionChoice(
+          value: currentValue,
+          name: currentValue,
+          description: 'Current session model',
+        ),
+      );
+    }
+
+    return AcpConfigOption(
+      id: 'model',
+      name: 'Model',
+      type: 'select',
+      currentValue: currentValue,
+      options: options,
+      category: 'model',
+    );
+  }
+
+  AcpConfigOptionChoice? _configChoiceFromRawModelMap(
+    Map<String, Object?> raw,
+  ) {
+    final modelId =
+        _nonEmptyString(raw['modelId']) ??
+        _nonEmptyString(raw['id']) ??
+        _nonEmptyString(raw['value']) ??
+        _nonEmptyString(raw['model']);
+    if (modelId == null) return null;
+    return AcpConfigOptionChoice(
+      value: modelId,
+      name:
+          _nonEmptyString(raw['name']) ??
+          _nonEmptyString(raw['displayName']) ??
+          modelId,
+      description: _nonEmptyString(raw['description']),
+    );
   }
 
   Map<String, dynamic> _takeRawSessionResult(String sessionId) {
@@ -1662,6 +1761,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _cwdBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
+    _modelConfigOptionsFromModelsBySession.clear();
     _pendingRawProtocolRequests.clear();
     _rawSessionResultsBySession.clear();
     _rawToolCallEventsBySession.clear();

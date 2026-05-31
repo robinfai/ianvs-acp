@@ -2381,6 +2381,174 @@ Future<void> main() async {
     }
   });
 
+  test('synthesizes model config option from legacy models state', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_models_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-models',
+          'models': <String, dynamic>{
+            'currentModelId': 'kimi-k2',
+            'availableModels': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'modelId': 'kimi-k2',
+                'name': 'Kimi K2',
+                'description': 'Moonshot K2',
+              },
+              <String, dynamic>{
+                'modelId': 'kimi-pro',
+                'name': 'Kimi Pro',
+              },
+            ],
+          },
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final session = await client.createSession(cwd: '/workspace');
+      final settings = await client.sessionSettings(session.id);
+
+      expect(settings.configOptions, hasLength(1));
+      expect(settings.modelOption?.id, 'model');
+      expect(settings.modelOption?.category, 'model');
+      expect(settings.currentModelLabel, 'Kimi K2');
+      expect(settings.modelOption?.options.map((choice) => choice.value), [
+        'kimi-k2',
+        'kimi-pro',
+      ]);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('setting synthesized model option uses session set model', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final setModelParamsFile = File('${tempDir.path}/set_model_params.json');
+    final setModelParamsPath = jsonEncode(setModelParamsFile.path);
+    final agentScript = File('${tempDir.path}/fake_set_model_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-models',
+          'models': <String, dynamic>{
+            'currentModelId': 'kimi-k2',
+            'availableModels': <Map<String, dynamic>>[
+              <String, dynamic>{'modelId': 'kimi-k2', 'name': 'Kimi K2'},
+              <String, dynamic>{'modelId': 'kimi-pro', 'name': 'Kimi Pro'},
+            ],
+          },
+        },
+      }));
+    } else if (message['method'] == 'session/set_model') {
+      await File($setModelParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    } else if (message['method'] == 'session/set_config_option') {
+      await File($setModelParamsPath).writeAsString(
+        jsonEncode(<String, dynamic>{'wrongMethod': message['method']}),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final session = await client.createSession(cwd: '/workspace');
+      final updatedOptions = await client.setConfigOption(
+        sessionId: session.id,
+        configId: 'model',
+        value: 'kimi-pro',
+      );
+      await _waitForFile(setModelParamsFile);
+      final setModelParams =
+          jsonDecode(await setModelParamsFile.readAsString())
+              as Map<String, dynamic>;
+      final settings = await client.sessionSettings(session.id);
+
+      expect(setModelParams, {
+        'sessionId': 'session-models',
+        'modelId': 'kimi-pro',
+      });
+      expect(updatedOptions.single.currentValue, 'kimi-pro');
+      expect(settings.currentModelLabel, 'Kimi Pro');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test(
     'caches immediate config option updates after session creation',
     () async {
