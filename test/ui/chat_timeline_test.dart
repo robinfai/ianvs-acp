@@ -371,6 +371,37 @@ void main() {
     expect(find.text('1 pending'), findsNothing);
   });
 
+  testWidgets('ChatTimeline tool groups surface in-progress work', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'Bash',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'Bash',
+            'status': 'inProgress',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'web_search',
+          metadata: const {
+            'toolCallId': 'call-2',
+            'title': 'web_search',
+            'status': 'completed',
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('2 tool calls'), findsOneWidget);
+    expect(find.text('1 in progress'), findsOneWidget);
+    expect(find.text('1 pending'), findsNothing);
+  });
+
   testWidgets('ChatTimeline coalesces tool call chunks by call id', (
     tester,
   ) async {

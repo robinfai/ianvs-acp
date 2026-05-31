@@ -823,7 +823,7 @@ class _ToolGroupHeader extends StatelessWidget {
   }
 }
 
-enum _ToolGroupStatusKind { pending, completed, failed, cancelled }
+enum _ToolGroupStatusKind { pending, inProgress, completed, failed, cancelled }
 
 class _ToolGroupStatusSummary {
   const _ToolGroupStatusSummary({required this.label, required this.color});
@@ -833,6 +833,7 @@ class _ToolGroupStatusSummary {
 
   factory _ToolGroupStatusSummary.from(List<_ParsedTool> tools) {
     var pendingCount = 0;
+    var inProgressCount = 0;
     var failedCount = 0;
     var cancelledCount = 0;
 
@@ -840,6 +841,8 @@ class _ToolGroupStatusSummary {
       switch (_toolGroupStatusKind(tool.status)) {
         case _ToolGroupStatusKind.pending:
           pendingCount += 1;
+        case _ToolGroupStatusKind.inProgress:
+          inProgressCount += 1;
         case _ToolGroupStatusKind.failed:
           failedCount += 1;
         case _ToolGroupStatusKind.cancelled:
@@ -853,6 +856,12 @@ class _ToolGroupStatusSummary {
       return _ToolGroupStatusSummary(
         label: '$pendingCount pending',
         color: AppColors.warning,
+      );
+    }
+    if (inProgressCount > 0) {
+      return _ToolGroupStatusSummary(
+        label: '$inProgressCount in progress',
+        color: AppColors.primaryDark,
       );
     }
     if (failedCount > 0) {
@@ -875,11 +884,15 @@ class _ToolGroupStatusSummary {
 }
 
 _ToolGroupStatusKind _toolGroupStatusKind(String status) {
-  final normalized = status.replaceFirst('ToolCallStatus.', '');
+  final normalized = _normalizedStatusToken(status);
   return switch (normalized) {
     'completed' || 'applied' => _ToolGroupStatusKind.completed,
+    'in_progress' ||
+    'progress' ||
+    'running' ||
+    'started' => _ToolGroupStatusKind.inProgress,
     'failed' || 'error' || 'rejected' => _ToolGroupStatusKind.failed,
-    'cancelled' => _ToolGroupStatusKind.cancelled,
+    'cancelled' || 'canceled' => _ToolGroupStatusKind.cancelled,
     _ => _ToolGroupStatusKind.pending,
   };
 }
@@ -2088,22 +2101,44 @@ Map<String, Object?> _objectMap(Object? value) {
 }
 
 Color _statusColor(String status) {
-  final normalized = status.replaceFirst('ToolCallStatus.', '');
+  final normalized = _normalizedStatusToken(status);
   return switch (normalized) {
     'completed' || 'applied' => AppColors.success,
-    'in_progress' || 'started' => AppColors.primaryDark,
+    'in_progress' ||
+    'progress' ||
+    'running' ||
+    'started' => AppColors.primaryDark,
     'failed' || 'error' || 'rejected' => AppColors.danger,
-    'cancelled' => AppColors.textSecondary,
+    'cancelled' || 'canceled' => AppColors.textSecondary,
     _ => AppColors.warning,
   };
 }
 
 String _humanizeStatus(String value) {
-  final cleaned = value
-      .replaceFirst('ToolCallStatus.', '')
-      .replaceAll('_', ' ');
+  final cleaned = value.replaceFirst('ToolCallStatus.', '').trim();
+  final spaced = cleaned
+      .replaceAllMapped(
+        RegExp(r'([a-z0-9])([A-Z])'),
+        (match) => '${match.group(1)} ${match.group(2)}',
+      )
+      .replaceAll(RegExp(r'[_-]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (spaced.isEmpty) return 'unknown';
+  final normalized = spaced.toLowerCase();
+  return normalized[0].toUpperCase() + normalized.substring(1);
+}
+
+String _normalizedStatusToken(String value) {
+  final cleaned = value.replaceFirst('ToolCallStatus.', '').trim();
   if (cleaned.isEmpty) return 'unknown';
-  return cleaned[0].toUpperCase() + cleaned.substring(1);
+  return cleaned
+      .replaceAllMapped(
+        RegExp(r'([a-z0-9])([A-Z])'),
+        (match) => '${match.group(1)}_${match.group(2)}',
+      )
+      .replaceAll(RegExp(r'[\s-]+'), '_')
+      .toLowerCase();
 }
 
 String _wireStopReason(String value) {
