@@ -281,6 +281,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       await Future<void>.delayed(Duration.zero);
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
+      final response = _takeRawSessionResult(sessionId);
+      if (response.isNotEmpty) {
+        _cacheSessionResult(sessionId: sessionId, rawResponse: response);
+      }
       return events;
     } finally {
       await subscription.cancel();
@@ -1433,6 +1437,7 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   bool _isSessionResultMethod(String method) {
     return method == 'session/new' ||
+        method == 'session/load' ||
         method == 'session/resume' ||
         method == 'session/fork';
   }
