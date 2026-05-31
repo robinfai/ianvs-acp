@@ -62,11 +62,12 @@ Status: policy refinement needed.
 
 Non-blocking because: filesystem and terminal providers are now available only
 when explicitly enabled through `client_providers`, remain off by default, use
-per-request permission approval, and record decisions in exportable bounded
-in-process Permission History. Explicit permission trust rules can auto-allow or
-auto-deny matching requests. Terminal support emits lifecycle and output
-snapshots into the timeline, but deliberately does not yet provide a persistent
-live terminal panel or broader policy controls.
+prompt-side permission approval, and record decisions in exportable bounded
+in-process Permission History. Explicit permission trust rules and the runtime
+tool-call execution policy can auto-allow or auto-deny matching requests.
+Terminal support emits lifecycle and output snapshots into the timeline, but
+deliberately does not yet provide a persistent live terminal panel or
+trust-rule management UI.
 
 Automated acceptance:
 
@@ -94,8 +95,7 @@ Automated acceptance:
 Manual decision:
 
 - Decide whether filesystem and terminal providers should remain config-only or
-  gain a first-run UI, long-term audit retention, rule management UI, or broader
-  policy controls.
+  gain a first-run UI, long-term audit retention, or rule management UI.
 - Decide whether terminal support should grow beyond timeline snapshots into a
   live terminal panel with kill/release controls and richer cwd/environment
   visibility.
@@ -138,18 +138,19 @@ Manual validation:
 
 ### tool-permission-ui
 
-Status: policy refinement needed.
+Status: audit and rule-management refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, permission requests
-surface an in-app per-request approval banner with Allow Once, Deny, and Cancel
-actions, using agent-provided allow/deny labels when they are more specific.
-Handled requests are visible in the Agents menu Permission History with JSON
-export of the newest bounded in-process audit entries. Resolved entries record
-whether the decision came from a manual action, trust rule, or system
-cancellation. Explicit permission trust rules can auto-allow or auto-deny
-matching requests. Requests still fall back to `cancelled` when no UI listener
-is active, pending requests are system-cancelled when the permission stream
-closes, and broader trust policy remains deliberately narrow.
+surface an in-app per-request approval card beside the prompt composer with
+Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels
+when they are more specific. The prompt composer also exposes `默认权限`,
+`自动审查`, and `完全访问权限` execution modes. Handled requests are visible in
+the Agents menu Permission History with JSON export of the newest bounded
+in-process audit entries. Resolved entries record whether the decision came
+from a manual action, trust rule, runtime policy, or system cancellation.
+Explicit permission trust rules can auto-allow or auto-deny matching requests.
+Requests still fall back to `cancelled` when no UI listener is active, and
+pending requests are system-cancelled when the permission stream closes.
 
 Automated acceptance:
 
@@ -159,9 +160,11 @@ Automated acceptance:
   receive a `cancelled` outcome when no interactive UI is listening, receive a
   selected allow option when approved through the interactive response path, and
   close the permission request stream on client disposal.
-- `test/ui/acp_client_app_test.dart` verifies the permission banner resolves an
-  approval back to the agent client and displays the completed request in
-  Permission History.
+- `test/ui/prompt_input_test.dart` verifies the prompt-side permission approval
+  card, execution-policy selector, and model selector.
+- `test/ui/acp_client_app_test.dart` verifies prompt-side policy/model changes,
+  approval back to the agent client, and the completed request in Permission
+  History.
 - `test/ui/permission_history_dialog_test.dart` verifies Permission History
   exports a JSON audit file payload with decision source metadata and disables
   export when no entries exist.
@@ -169,7 +172,9 @@ Automated acceptance:
   recorded as pending, resolved to the selected decision, cancelled when a newer
   pending request supersedes them, system-cancelled when the permission stream
   closes, and trimmed to a bounded in-process audit window. It also verifies
-  matching trust rules auto-resolve requests.
+  matching trust rules auto-resolve requests, default-permission policy keeps
+  trusted requests manual, full-access policy auto-allows requests, and policy
+  changes resolve the current pending request.
 - `test/config/acp_client_config_test.dart` verifies permission trust rule
   parsing and invalid config rejection.
 - `test/ui/app_shell_test.dart` verifies the Agents menu exposes Permission
@@ -179,7 +184,8 @@ Manual decision:
 
 - Decide whether to add request grouping, trust rule management UI, long-term
   persisted audit retention, or stronger streaming interruption behavior beyond
-  the current per-request Allow Once/Deny/Cancel model.
+  the current per-request Allow Once/Deny/Cancel model and runtime execution
+  policy selector.
 
 ### vendor-extension-workflows
 
