@@ -272,6 +272,50 @@ void main() {
     expect(find.text('Params JSON'), findsOneWidget);
   });
 
+  testWidgets('AcpClientApp preserves global review target with agent model', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Kimi Code Dev',
+          'mcp_servers': [
+            {
+              'name': 'permission-reviewer',
+              'type': 'http',
+              'url': 'https://reviewer.example.com/mcp',
+            },
+          ],
+          'client_providers': {
+            'permissions': {
+              'review_agent': {
+                'mcp_server_name': 'permission-reviewer',
+                'model': 'global-review-model',
+              },
+            },
+          },
+          'agent_servers': {
+            'Kimi Code Dev': {
+              'type': 'custom',
+              'command': '/usr/local/bin/kimi',
+              'args': ['acp'],
+              'review_agent': {'model': 'agent-review-model'},
+            },
+          },
+        }),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent Configuration'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agent Configuration'), findsOneWidget);
+    expect(find.text('permission-reviewer'), findsNWidgets(2));
+    expect(find.text('agent-review-model'), findsWidgets);
+  });
+
   testWidgets('AcpClientApp changes tool policy from prompt composer', (
     tester,
   ) async {

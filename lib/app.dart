@@ -411,7 +411,28 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (agentReview == null || !agentReview.isConfigured) return global;
     return AcpPermissionProviderConfig(
       trustRules: global.trustRules,
-      reviewAgent: agentReview,
+      reviewAgent: _mergedReviewAgentConfig(global.reviewAgent, agentReview),
+    );
+  }
+
+  AcpPermissionReviewAgentConfig _mergedReviewAgentConfig(
+    AcpPermissionReviewAgentConfig base,
+    AcpPermissionReviewAgentConfig override,
+  ) {
+    final hasOverrideTarget = override.hasMcpTarget;
+    return AcpPermissionReviewAgentConfig(
+      enabled: override.enabled || base.enabled,
+      mcpServer: hasOverrideTarget ? override.mcpServer : base.mcpServer,
+      mcpServerName: hasOverrideTarget
+          ? override.mcpServerName
+          : base.mcpServerName,
+      toolName: override.toolName != 'review_permission'
+          ? override.toolName
+          : base.toolName,
+      model: override.model ?? base.model,
+      timeout: override.timeout != const Duration(seconds: 10)
+          ? override.timeout
+          : base.timeout,
     );
   }
 
