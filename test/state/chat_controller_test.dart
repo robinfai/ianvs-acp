@@ -1370,6 +1370,25 @@ void main() {
     expect(controller.messages.last.role, ChatMessageRole.error);
   });
 
+  test('send prompt setup failures finish streaming with an error', () async {
+    final controller = ChatController(
+      client: _ThrowingPromptAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+
+    expect(controller.isStreaming, isFalse);
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('prompt setup failed'));
+    expect(controller.messages.map((message) => message.role), [
+      ChatMessageRole.user,
+      ChatMessageRole.error,
+    ]);
+  });
+
   test('stop cancels streaming', () async {
     final fake = FakeAgentClient(chunkDelay: const Duration(milliseconds: 50));
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -1498,6 +1517,17 @@ class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
       text: '',
       timestamp: DateTime(2026, 5, 28, 12),
     );
+  }
+}
+
+class _ThrowingPromptAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    throw StateError('prompt setup failed');
   }
 }
 

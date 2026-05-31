@@ -323,26 +323,33 @@ class ChatController extends ChangeNotifier {
     _lastPromptStartedAt = DateTime.now();
     _notifyListeners();
 
-    await _promptSubscription?.cancel();
-    _promptSubscription = client
-        .sendPrompt(
-          sessionId: session.id,
-          prompt: prompt,
-          attachments: attachments,
-        )
-        .listen(
-          _handleAgentEvent,
-          onError: (Object error, StackTrace stackTrace) {
-            _handleAgentEvent(
-              AgentEvent(
-                type: AgentEventType.error,
-                text: _messageForError(error),
-              ),
-            );
-            _finishStreaming();
-          },
-          onDone: _finishStreaming,
-        );
+    try {
+      await _promptSubscription?.cancel();
+      _promptSubscription = client
+          .sendPrompt(
+            sessionId: session.id,
+            prompt: prompt,
+            attachments: attachments,
+          )
+          .listen(
+            _handleAgentEvent,
+            onError: (Object error, StackTrace stackTrace) {
+              _handleAgentEvent(
+                AgentEvent(
+                  type: AgentEventType.error,
+                  text: _messageForError(error),
+                ),
+              );
+              _finishStreaming();
+            },
+            onDone: _finishStreaming,
+          );
+    } catch (error) {
+      _handleAgentEvent(
+        AgentEvent(type: AgentEventType.error, text: _messageForError(error)),
+      );
+      _finishStreaming();
+    }
   }
 
   Future<void> stop() async {
