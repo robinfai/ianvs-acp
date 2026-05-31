@@ -913,6 +913,50 @@ void main() {
     },
   );
 
+  test('stale session mode response is ignored after session close', () async {
+    final fake = _DelayedSettingsMutationAgentClient(
+      sessionSettings: _settingsWithMode('ask'),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    final updateMode = controller.setSessionMode('edit');
+    await fake.modeStarted.future;
+
+    await controller.closeCurrentSession();
+    fake.allowMode.complete();
+    await updateMode;
+
+    expect(fake.lastSetModeId, 'edit');
+    expect(fake.lastClosedSessionId, 'fake-session-1');
+    expect(controller.currentSession, isNull);
+    expect(controller.sessionSettings.modes.currentModeId, isNull);
+    expect(controller.sessionSettings.modes.availableModes, isEmpty);
+    expect(controller.lastError, isNull);
+  });
+
+  test('stale config option response is ignored after session close', () async {
+    final fake = _DelayedSettingsMutationAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    final updateConfig = controller.setConfigOption('approval', 'auto');
+    await fake.configStarted.future;
+
+    await controller.closeCurrentSession();
+    fake.allowConfig.complete();
+    await updateConfig;
+
+    expect(fake.lastConfigId, 'approval');
+    expect(fake.lastConfigValue, 'auto');
+    expect(fake.lastClosedSessionId, 'fake-session-1');
+    expect(controller.currentSession, isNull);
+    expect(controller.sessionSettings.configOptions, isEmpty);
+    expect(controller.lastError, isNull);
+  });
+
   test('fork current session creates independent active session', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -1372,6 +1416,44 @@ class _DelayedForkAgentClient extends FakeAgentClient {
     }
     await allowFork.future;
     return super.forkSession(sessionId: sessionId, cwd: cwd);
+  }
+}
+
+class _DelayedSettingsMutationAgentClient extends FakeAgentClient {
+  _DelayedSettingsMutationAgentClient({super.sessionSettings});
+
+  final Completer<void> modeStarted = Completer<void>();
+  final Completer<void> allowMode = Completer<void>();
+  final Completer<void> configStarted = Completer<void>();
+  final Completer<void> allowConfig = Completer<void>();
+
+  @override
+  Future<bool> setSessionMode({
+    required String sessionId,
+    required String modeId,
+  }) async {
+    if (!modeStarted.isCompleted) {
+      modeStarted.complete();
+    }
+    await allowMode.future;
+    return super.setSessionMode(sessionId: sessionId, modeId: modeId);
+  }
+
+  @override
+  Future<List<AcpConfigOption>> setConfigOption({
+    required String sessionId,
+    required String configId,
+    required Object value,
+  }) async {
+    if (!configStarted.isCompleted) {
+      configStarted.complete();
+    }
+    await allowConfig.future;
+    return super.setConfigOption(
+      sessionId: sessionId,
+      configId: configId,
+      value: value,
+    );
   }
 }
 

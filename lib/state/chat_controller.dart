@@ -369,6 +369,7 @@ class ChatController extends ChangeNotifier {
         sessionId: sessionId,
         modeId: trimmedModeId,
       );
+      if (!_isActiveSession(sessionId)) return;
       if (!didSet) {
         throw StateError('ACP agent rejected session mode "$trimmedModeId".');
       }
@@ -376,7 +377,9 @@ class ChatController extends ChangeNotifier {
       lastError = null;
       _notifyListeners();
     } catch (error) {
-      _setActionError(error);
+      if (_isActiveSession(sessionId)) {
+        _setActionError(error);
+      }
     }
   }
 
@@ -396,6 +399,7 @@ class ChatController extends ChangeNotifier {
         configId: trimmedConfigId,
         value: value,
       );
+      if (!_isActiveSession(sessionId)) return;
       final updatedOptions = options.isEmpty
           ? _configOptionsWithOverride(trimmedConfigId, value)
           : options;
@@ -405,7 +409,9 @@ class ChatController extends ChangeNotifier {
       lastError = null;
       _notifyListeners();
     } catch (error) {
-      _setActionError(error);
+      if (_isActiveSession(sessionId)) {
+        _setActionError(error);
+      }
     }
   }
 
@@ -1099,7 +1105,11 @@ class ChatController extends ChangeNotifier {
   bool _isCurrentSessionSettingsLoad(int loadId, String sessionId) {
     return !_isDisposed &&
         _activeSessionSettingsLoadId == loadId &&
-        currentSession?.id == sessionId;
+        _isActiveSession(sessionId);
+  }
+
+  bool _isActiveSession(String sessionId) {
+    return !_isDisposed && currentSession?.id == sessionId;
   }
 
   @override
