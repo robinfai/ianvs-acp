@@ -1415,6 +1415,26 @@ void main() {
     expect(controller.messages.last.role, ChatMessageRole.error);
   });
 
+  test('send prompt error events finish streaming immediately', () async {
+    final controller = ChatController(
+      client: _OpenErrorEventAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.isStreaming, isFalse);
+    expect(controller.lastError, contains('agent event failed'));
+    expect(controller.messages.map((message) => message.role), [
+      ChatMessageRole.user,
+      ChatMessageRole.error,
+    ]);
+  });
+
   test('send prompt setup failures finish streaming with an error', () async {
     final controller = ChatController(
       client: _ThrowingPromptAgentClient(),
@@ -1573,6 +1593,30 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('prompt setup failed');
+  }
+}
+
+class _OpenErrorEventAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    late final StreamController<AgentEvent> controller;
+    controller = StreamController<AgentEvent>(
+      onListen: () {
+        controller.add(
+          AgentEvent(
+            type: AgentEventType.error,
+            text: 'agent event failed',
+            timestamp: DateTime(2026, 5, 28, 12),
+          ),
+        );
+      },
+      onCancel: () => controller.close(),
+    );
+    return controller.stream;
   }
 }
 

@@ -680,6 +680,7 @@ class ChatController extends ChangeNotifier {
         lastError = message;
         messages.add(ChatMessage(role: ChatMessageRole.error, text: message));
         status = ConnectionStatus.error;
+        _finishStreaming();
       case AgentEventType.status:
         _appendStatus(event);
     }
