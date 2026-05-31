@@ -1092,6 +1092,47 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.connected);
   });
 
+  test(
+    'close current session ignores permission cleanup response errors',
+    () async {
+      final fake = FakeAgentClient(
+        permissionResponseError: StateError('permission response failed'),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'fake-session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest?.id, 'permission-1');
+
+      await controller.closeCurrentSession();
+
+      expect(fake.lastClosedSessionId, 'fake-session-1');
+      expect(fake.lastPermissionRequestId, 'permission-1');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(controller.currentSession, isNull);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(controller.lastError, isNull);
+      expect(controller.status, app_state.ConnectionStatus.connected);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+    },
+  );
+
   test('logout clears local session state', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

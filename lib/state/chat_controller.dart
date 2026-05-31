@@ -336,7 +336,7 @@ class ChatController extends ChangeNotifier {
       await _promptSubscription?.cancel();
       _promptSubscription = null;
       isStreaming = false;
-      await _cancelPendingPermissionRequest();
+      await _cancelPendingPermissionRequest(reportErrors: false);
       currentSession = null;
       sessions.clear();
       availableCommands = const <Map<String, Object?>>[];
@@ -481,7 +481,7 @@ class ChatController extends ChangeNotifier {
         lastError = null;
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
-        await _cancelPendingPermissionRequest();
+        await _cancelPendingPermissionRequest(reportErrors: false);
         status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
@@ -507,7 +507,7 @@ class ChatController extends ChangeNotifier {
         lastError = null;
         sessionSettings = const AcpSessionSettings();
         sessionSettingsLoading = false;
-        await _cancelPendingPermissionRequest();
+        await _cancelPendingPermissionRequest(reportErrors: false);
         status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
@@ -660,6 +660,7 @@ class ChatController extends ChangeNotifier {
         _sendPermissionDecision(
           id: request.id,
           decision: AcpPermissionDecision.cancel,
+          reportErrors: false,
         ),
       );
       _notifyListeners();
@@ -677,6 +678,7 @@ class ChatController extends ChangeNotifier {
         _sendPermissionDecision(
           id: previous.id,
           decision: AcpPermissionDecision.cancel,
+          reportErrors: false,
         ),
       );
     }
@@ -727,15 +729,20 @@ class ChatController extends ChangeNotifier {
   Future<void> _sendPermissionDecision({
     required String id,
     required AcpPermissionDecision decision,
+    bool reportErrors = true,
   }) async {
     try {
       await client.respondToPermissionRequest(id: id, decision: decision);
     } catch (error) {
-      _setActionError(error);
+      if (reportErrors) {
+        _setActionError(error);
+      }
     }
   }
 
-  Future<void> _cancelPendingPermissionRequest() async {
+  Future<void> _cancelPendingPermissionRequest({
+    bool reportErrors = true,
+  }) async {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
@@ -747,6 +754,7 @@ class ChatController extends ChangeNotifier {
     await _sendPermissionDecision(
       id: request.id,
       decision: AcpPermissionDecision.cancel,
+      reportErrors: reportErrors,
     );
   }
 
