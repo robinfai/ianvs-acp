@@ -591,6 +591,51 @@ void main() {
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
 
+  test(
+    'duplicate permission decisions are ignored while one is sending',
+    () async {
+      final fake = _DelayedPermissionResponseAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      final allow = controller.resolvePermissionRequest(
+        AcpPermissionDecision.allow,
+      );
+      await fake.responseStarted.future;
+      final deny = controller.resolvePermissionRequest(
+        AcpPermissionDecision.deny,
+      );
+      await pumpEventQueue();
+
+      expect(fake.permissionResponseCount, 1);
+      expect(controller.pendingPermissionRequest?.id, 'permission-1');
+
+      fake.allowResponse.complete();
+      await Future.wait([allow, deny]);
+
+      expect(fake.permissionResponseCount, 1);
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.allowed,
+      );
+    },
+  );
+
   test('failed manual permission responses keep the request pending', () async {
     final fake = FakeAgentClient(
       permissionResponseError: StateError('permission response failed'),
@@ -1782,6 +1827,25 @@ class _FailingDisposeAgentClient extends FakeAgentClient {
   Future<void> dispose() async {
     await super.dispose();
     throw StateError('dispose failed');
+  }
+}
+
+class _DelayedPermissionResponseAgentClient extends FakeAgentClient {
+  final Completer<void> responseStarted = Completer<void>();
+  final Completer<void> allowResponse = Completer<void>();
+  int permissionResponseCount = 0;
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+  }) async {
+    permissionResponseCount += 1;
+    if (!responseStarted.isCompleted) {
+      responseStarted.complete();
+    }
+    await allowResponse.future;
+    await super.respondToPermissionRequest(id: id, decision: decision);
   }
 }
 

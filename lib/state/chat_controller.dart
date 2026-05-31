@@ -63,6 +63,7 @@ class ChatController extends ChangeNotifier {
   AcpPermissionRequest? pendingPermissionRequest;
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
+  final Set<String> _resolvingPermissionRequestIds = <String>{};
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
@@ -821,16 +822,21 @@ class ChatController extends ChangeNotifier {
     AcpPermissionDecision decision, {
     required AcpPermissionDecisionSource source,
   }) async {
-    final didSend = await _sendPermissionDecision(
-      id: request.id,
-      decision: decision,
-    );
-    if (!didSend) return;
-    if (pendingPermissionRequest?.id == request.id) {
-      pendingPermissionRequest = null;
+    if (!_resolvingPermissionRequestIds.add(request.id)) return;
+    try {
+      final didSend = await _sendPermissionDecision(
+        id: request.id,
+        decision: decision,
+      );
+      if (!didSend) return;
+      if (pendingPermissionRequest?.id == request.id) {
+        pendingPermissionRequest = null;
+      }
+      _recordPermissionDecision(request.id, decision, source: source);
+      _notifyListeners();
+    } finally {
+      _resolvingPermissionRequestIds.remove(request.id);
     }
-    _recordPermissionDecision(request.id, decision, source: source);
-    _notifyListeners();
   }
 
   Future<bool> _sendPermissionDecision({
@@ -1279,6 +1285,7 @@ class ChatController extends ChangeNotifier {
     _disposeLater(() => _promptSubscription?.cancel());
     _disposeLater(_permissionSubscription.cancel);
     _disposeLater(client.dispose);
+    _resolvingPermissionRequestIds.clear();
     super.dispose();
   }
 
