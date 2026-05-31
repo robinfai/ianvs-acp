@@ -51,6 +51,11 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+dependency_overrides:
+  # Local patch for broader ACP permission option parsing.
+  dart_acp:
+    path: third_party/dart_acp
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

@@ -68,10 +68,9 @@ packages:
   dart_acp:
     dependency: "direct main"
     description:
-      name: dart_acp
-      sha256: b69d7920d98f3622ce4c06c8c6dcf1ff60849864c2b2f7b9dc63b15f31287c8a
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/dart_acp"
+      relative: true
+    source: path
     version: "0.1.1"
   dbus:
     dependency: transitive

@@ -1660,6 +1660,115 @@ Future<void> main() async {
     },
   );
 
+  for (final scenario in const [
+    (
+      name: 'selects allow for string permission options',
+      decision: AcpPermissionDecision.allow,
+      expectedOptionId: 'allow',
+    ),
+    (
+      name: 'selects deny for string permission options',
+      decision: AcpPermissionDecision.deny,
+      expectedOptionId: 'deny',
+    ),
+  ]) {
+    test(scenario.name, () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final permissionResponseFile = File(
+        '${tempDir.path}/permission_response.json',
+      );
+      final agentScript = File(
+        '${tempDir.path}/fake_string_permission_agent.dart',
+      );
+      final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'permission-strings',
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'session-1',
+          'toolCall': <String, dynamic>{
+            'title': 'Run command',
+            'kind': 'execute',
+          },
+          'options': <String>['allow', 'deny'],
+        },
+      }));
+    } else if (message['id'] == 'permission-strings') {
+      await File($permissionResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+      late final DartAcpAgentClient client;
+      client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+      final requestCompleter = Completer<AcpPermissionRequest>();
+      final subscription = client.permissionRequests.listen((request) {
+        if (!requestCompleter.isCompleted) {
+          requestCompleter.complete(request);
+        }
+        unawaited(
+          client.respondToPermissionRequest(
+            id: request.id,
+            decision: scenario.decision,
+          ),
+        );
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final request = await requestCompleter.future.timeout(
+          const Duration(seconds: 5),
+        );
+        await _waitForFile(permissionResponseFile);
+
+        expect(request.options, const ['allow', 'deny']);
+        final permissionResponse =
+            jsonDecode(await permissionResponseFile.readAsString())
+                as Map<String, dynamic>;
+        expect(permissionResponse['id'], 'permission-strings');
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('outcome', 'selected')),
+        );
+        expect(
+          permissionResponse['result'],
+          containsPair(
+            'outcome',
+            containsPair('optionId', scenario.expectedOptionId),
+          ),
+        );
+      } finally {
+        await subscription.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    });
+  }
+
   test(
     'closeSession cancels pending permission requests for the session',
     () async {
