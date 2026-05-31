@@ -18,7 +18,6 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final void Function(String line)? onProtocolOut;
   final void Function(String line)? onProtocolIn;
 
-  final HttpClient _client = HttpClient();
   final Map<String, String> _pendingMethodsById = <String, String>{};
   final Map<String, String> _serverRequestSessionsById = <String, String>{};
   final Map<String, Future<void>> _streamStartsByKey = <String, Future<void>>{};
@@ -29,6 +28,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   static const Duration _teardownTimeout = Duration(seconds: 2);
   static const String _protocolVersionHeader = 'Acp-Protocol-Version';
 
+  HttpClient? _client;
   StreamChannelController<String>? _controller;
   StreamSubscription<String>? _outboundSubscription;
   String? _connectionId;
@@ -46,6 +46,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   @override
   Future<void> start() async {
     if (_controller != null) return;
+    _stopping = false;
+    _client ??= HttpClient();
     final controller = StreamChannelController<String>();
     _controller = controller;
     _outboundSubscription = controller.local.stream.listen((line) {
@@ -54,7 +56,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   }
 
   Future<void> _sendLine(String line) async {
-    if (_stopping) return;
+    final client = _client;
+    if (_stopping || client == null) return;
     _notifyProtocolOut(line);
     String? pendingMethodIdKey;
     try {
@@ -80,7 +83,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         await _ensureInboundStream(sessionId);
       }
 
-      final request = await _client.postUrl(endpoint);
+      final request = await client.postUrl(endpoint);
       _applyRequestHeaders(
         request,
         contentType: ContentType.json,
@@ -174,10 +177,14 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     if (connectionId == null || connectionId.isEmpty) {
       throw StateError('ACP HTTP transport is not initialized.');
     }
+    final client = _client;
+    if (_stopping || client == null) {
+      throw StateError('ACP HTTP transport is not started.');
+    }
     final key = sessionId ?? '';
     return _streamStartsByKey.putIfAbsent(key, () async {
       try {
-        final request = await _client.getUrl(endpoint);
+        final request = await client.getUrl(endpoint);
         _applyRequestHeaders(request, accept: 'text/event-stream');
         request.headers.set('Acp-Connection-Id', connectionId);
         if (sessionId != null) {
@@ -354,7 +361,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     await _outboundSubscription?.cancel();
     _outboundSubscription = null;
     await _terminateConnection();
-    _client.close(force: true);
+    _client?.close(force: true);
+    _client = null;
     for (final subscription in _streamSubscriptions) {
       try {
         await subscription.cancel();
@@ -377,8 +385,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   Future<void> _terminateConnection() async {
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) return;
+    final client = _client;
+    if (client == null) return;
     try {
-      final request = await _client
+      final request = await client
           .deleteUrl(endpoint)
           .timeout(_teardownTimeout);
       _applyRequestHeaders(request);
