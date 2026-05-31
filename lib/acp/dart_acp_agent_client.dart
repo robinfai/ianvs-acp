@@ -775,6 +775,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) {
     return _promptMentionPattern
         .allMatches(prompt)
+        .where((match) => _isPromptMentionBoundary(prompt, match.start))
         .map(
           (match) =>
               _mentionTokenToResourceLink(match.group(1)!, workspaceRoot),
@@ -787,7 +788,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     String token,
     String? workspaceRoot,
   ) {
-    final uri = _mentionTokenToUri(_unquoteMentionToken(token), workspaceRoot);
+    final mention = _unquoteMentionToken(token);
+    if (mention.trim().isEmpty) return null;
+    final uri = _mentionTokenToUri(mention, workspaceRoot);
     if (uri == null) return null;
     final uriText = uri.toString();
     final mimeType =
@@ -800,8 +803,23 @@ class DartAcpAgentClient implements AcpAgentClient {
     };
   }
 
+  bool _isPromptMentionBoundary(String prompt, int atIndex) {
+    if (atIndex <= 0) return true;
+    final previous = prompt.codeUnitAt(atIndex - 1);
+    return !_isInlineMentionPrefix(previous);
+  }
+
+  bool _isInlineMentionPrefix(int codeUnit) {
+    return (codeUnit >= 0x30 && codeUnit <= 0x39) || // 0-9
+        (codeUnit >= 0x41 && codeUnit <= 0x5a) || // A-Z
+        codeUnit == 0x2d || // -
+        codeUnit == 0x2e || // .
+        codeUnit == 0x5f || // _
+        (codeUnit >= 0x61 && codeUnit <= 0x7a); // a-z
+  }
+
   String _unquoteMentionToken(String token) {
-    if (token.length < 2) return token;
+    if (token.length < 2) return _trimUnquotedMentionToken(token);
     final quote = token[0];
     if ((quote != '"' && quote != "'") || token[token.length - 1] != quote) {
       return _trimUnquotedMentionToken(token);

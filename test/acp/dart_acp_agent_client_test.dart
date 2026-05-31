@@ -350,6 +350,25 @@ Future<void> main() async {
     expect(urlMention['uri'], 'https://example.com/readme.md');
   });
 
+  test('ignores inline email addresses and empty prompt mentions', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      includeAttachment: false,
+      prompt: 'Email dev@example.com, inspect @notes.md, ignore @.',
+      extraFiles: const {'notes.md': '# Notes'},
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, hasLength(2));
+    expect(prompt.first, {
+      'type': 'text',
+      'text': 'Email dev@example.com, inspect @notes.md, ignore @.',
+    });
+    final mention = prompt[1] as Map<String, dynamic>;
+    expect(mention['type'], 'resource_link');
+    expect(mention['name'], 'notes.md');
+    expect(mention['uri'], endsWith('/notes.md'));
+  });
+
   test('sends clientInfo and preserves agentInfo during initialize', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final initializeParamsFile = File('${tempDir.path}/initialize_params.json');
