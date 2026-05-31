@@ -329,7 +329,7 @@ void main() {
     expect(controller.sessionSettings.currentModelLabel, 'GPT-5 Mini');
   });
 
-  testWidgets('AcpClientApp resolves permission requests from banner', (
+  testWidgets('AcpClientApp resolves permission requests from composer', (
     tester,
   ) async {
     final fake = FakeAgentClient();
