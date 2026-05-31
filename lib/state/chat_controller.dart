@@ -672,13 +672,7 @@ class ChatController extends ChangeNotifier {
         _appendTurnStatus(event);
         _finishStreaming();
       case AgentEventType.toolCall:
-        messages.add(
-          ChatMessage(
-            role: ChatMessageRole.tool,
-            text: event.text,
-            metadata: event.metadata,
-          ),
-        );
+        _appendToolCall(event);
       case AgentEventType.error:
         final message = _messageForAgentError(event);
         lastError = message;
@@ -691,6 +685,57 @@ class ChatController extends ChangeNotifier {
     if (notify) {
       _notifyListeners();
     }
+  }
+
+  void _appendToolCall(AgentEvent event) {
+    final toolCallId = _stringFromMap(event.metadata, 'toolCallId');
+    if (toolCallId.isEmpty) {
+      messages.add(
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: event.text,
+          metadata: event.metadata,
+        ),
+      );
+      return;
+    }
+
+    for (var index = messages.length - 1; index >= 0; index -= 1) {
+      final message = messages[index];
+      if (message.role == ChatMessageRole.user) break;
+      if (message.role != ChatMessageRole.tool) continue;
+      if (_stringFromMap(message.metadata, 'toolCallId') != toolCallId) {
+        continue;
+      }
+
+      messages[index] = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: event.text.trim().isEmpty ? message.text : event.text,
+        timestamp: message.timestamp,
+        metadata: _mergeMetadata(message.metadata, event.metadata),
+      );
+      return;
+    }
+
+    messages.add(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: event.text,
+        metadata: event.metadata,
+      ),
+    );
+  }
+
+  Map<String, Object?> _mergeMetadata(
+    Map<String, Object?> existing,
+    Map<String, Object?> update,
+  ) {
+    final merged = Map<String, Object?>.from(existing);
+    for (final entry in update.entries) {
+      if (entry.value == null) continue;
+      merged[entry.key] = entry.value;
+    }
+    return Map.unmodifiable(merged);
   }
 
   void _handlePermissionRequest(AcpPermissionRequest request) {

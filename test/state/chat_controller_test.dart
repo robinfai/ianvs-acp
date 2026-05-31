@@ -1410,6 +1410,31 @@ void main() {
     expect(controller.messages.last.text, 'Hello, I am Codex.');
   });
 
+  test('send prompt coalesces tool call chunks by call id', () async {
+    final controller = ChatController(
+      client: _ToolCallChunkAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Run command');
+    await pumpEventQueue(times: 8);
+
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+    expect(controller.isStreaming, isFalse);
+    expect(controller.messages, hasLength(2));
+    expect(controller.messages.first.role, ChatMessageRole.user);
+
+    final toolMessage = controller.messages.last;
+    expect(toolMessage.role, ChatMessageRole.tool);
+    expect(toolMessage.text, 'Bash');
+    expect(toolMessage.metadata['toolCallId'], 'call-1');
+    expect(toolMessage.metadata['status'], 'completed');
+    expect(toolMessage.metadata['rawInput'], {'command': 'echo hi'});
+    expect(toolMessage.metadata['rawOutput'], 'hi');
+  });
+
   test(
     'send prompt forwards attachments and renders resource metadata',
     () async {
@@ -1616,6 +1641,54 @@ class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
             options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
           ),
         ],
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime(2026, 5, 28, 12),
+    );
+  }
+}
+
+class _ToolCallChunkAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'toolCallId': 'call-1',
+        'title': 'Bash',
+        'status': 'pending',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'toolCallId': 'call-1',
+        'title': 'Bash',
+        'status': 'in_progress',
+        'rawInput': '{"command"',
+      },
+    );
+    yield AgentEvent(
+      type: AgentEventType.toolCall,
+      text: 'Bash',
+      metadata: const <String, Object?>{
+        'kind': 'tool',
+        'toolCallId': 'call-1',
+        'title': 'Bash',
+        'status': 'completed',
+        'rawInput': {'command': 'echo hi'},
+        'rawOutput': 'hi',
       },
     );
     yield AgentEvent(
