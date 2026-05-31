@@ -340,6 +340,37 @@ void main() {
     expect(find.text('web_search'), findsNWidgets(2));
   });
 
+  testWidgets('ChatTimeline tool groups do not count failures as pending', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'toolCallId': 'call-1',
+            'title': 'exec_command',
+            'status': 'completed',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'web_search',
+          metadata: const {
+            'toolCallId': 'call-2',
+            'title': 'web_search',
+            'status': 'failed',
+          },
+        ),
+      ]),
+    );
+
+    expect(find.text('2 tool calls'), findsOneWidget);
+    expect(find.text('1 failed'), findsOneWidget);
+    expect(find.text('1 pending'), findsNothing);
+  });
+
   testWidgets('ChatTimeline coalesces tool call chunks by call id', (
     tester,
   ) async {

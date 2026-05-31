@@ -617,9 +617,7 @@ class _ToolGroupBubble extends StatelessWidget {
     for (final parsed in parsedTools) {
       counts.update(parsed.title, (value) => value + 1, ifAbsent: () => 1);
     }
-    final completedCount = parsedTools.where((tool) {
-      return _statusColor(tool.status) == AppColors.success;
-    }).length;
+    final statusSummary = _ToolGroupStatusSummary.from(parsedTools);
 
     return _ToolFrame(
       child: Theme(
@@ -638,7 +636,7 @@ class _ToolGroupBubble extends StatelessWidget {
             ),
             title: _ToolGroupHeader(
               totalCount: messages.length,
-              completedCount: completedCount,
+              statusSummary: statusSummary,
               counts: counts,
             ),
             children: [
@@ -774,17 +772,16 @@ class _ToolSequenceCard extends StatelessWidget {
 class _ToolGroupHeader extends StatelessWidget {
   const _ToolGroupHeader({
     required this.totalCount,
-    required this.completedCount,
+    required this.statusSummary,
     required this.counts,
   });
 
   final int totalCount;
-  final int completedCount;
+  final _ToolGroupStatusSummary statusSummary;
   final Map<String, int> counts;
 
   @override
   Widget build(BuildContext context) {
-    final pendingCount = totalCount - completedCount;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -801,10 +798,7 @@ class _ToolGroupHeader extends StatelessWidget {
                 ),
               ),
             ),
-            _StatusPill(
-              label: pendingCount == 0 ? 'completed' : '$pendingCount pending',
-              color: pendingCount == 0 ? AppColors.success : AppColors.warning,
-            ),
+            _StatusPill(label: statusSummary.label, color: statusSummary.color),
           ],
         ),
         const SizedBox(height: 5),
@@ -819,6 +813,67 @@ class _ToolGroupHeader extends StatelessWidget {
       ],
     );
   }
+}
+
+enum _ToolGroupStatusKind { pending, completed, failed, cancelled }
+
+class _ToolGroupStatusSummary {
+  const _ToolGroupStatusSummary({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  factory _ToolGroupStatusSummary.from(List<_ParsedTool> tools) {
+    var pendingCount = 0;
+    var failedCount = 0;
+    var cancelledCount = 0;
+
+    for (final tool in tools) {
+      switch (_toolGroupStatusKind(tool.status)) {
+        case _ToolGroupStatusKind.pending:
+          pendingCount += 1;
+        case _ToolGroupStatusKind.failed:
+          failedCount += 1;
+        case _ToolGroupStatusKind.cancelled:
+          cancelledCount += 1;
+        case _ToolGroupStatusKind.completed:
+          break;
+      }
+    }
+
+    if (pendingCount > 0) {
+      return _ToolGroupStatusSummary(
+        label: '$pendingCount pending',
+        color: AppColors.warning,
+      );
+    }
+    if (failedCount > 0) {
+      return _ToolGroupStatusSummary(
+        label: '$failedCount failed',
+        color: AppColors.danger,
+      );
+    }
+    if (cancelledCount > 0) {
+      return _ToolGroupStatusSummary(
+        label: '$cancelledCount cancelled',
+        color: AppColors.textSecondary,
+      );
+    }
+    return const _ToolGroupStatusSummary(
+      label: 'completed',
+      color: AppColors.success,
+    );
+  }
+}
+
+_ToolGroupStatusKind _toolGroupStatusKind(String status) {
+  final normalized = status.replaceFirst('ToolCallStatus.', '');
+  return switch (normalized) {
+    'completed' || 'applied' => _ToolGroupStatusKind.completed,
+    'failed' || 'error' || 'rejected' => _ToolGroupStatusKind.failed,
+    'cancelled' => _ToolGroupStatusKind.cancelled,
+    _ => _ToolGroupStatusKind.pending,
+  };
 }
 
 class _ToolCountChip extends StatelessWidget {
