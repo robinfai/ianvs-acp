@@ -220,7 +220,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
 
   void _handleSseEvent(String event) {
     if (event.trim().isEmpty) return;
-    _addInboundLine(event);
+    try {
+      _addInboundLine(event);
+    } catch (error, stackTrace) {
+      if (!_stopping) {
+        _controller?.local.sink.addError(error, stackTrace);
+      }
+    }
   }
 
   void _addInboundLine(String line) {
