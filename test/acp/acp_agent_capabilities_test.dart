@@ -6,6 +6,7 @@ void main() {
     final capabilities = AcpAgentCapabilities.fromInitialize(
       protocolVersion: 1,
       agentCapabilities: <String, dynamic>{
+        'loadSession': <String, dynamic>{},
         'auth': <String, dynamic>{'logout': null},
         'sessionCapabilities': <String, dynamic>{
           'list': <String, dynamic>{},
@@ -22,6 +23,7 @@ void main() {
       allowReadOutsideWorkspace: false,
     );
 
+    expect(capabilities.loadSession, isTrue);
     expect(capabilities.auth.logout, isFalse);
     expect(capabilities.session.list, isTrue);
     expect(capabilities.session.resume, isFalse);
@@ -34,6 +36,7 @@ void main() {
     final capabilities = AcpAgentCapabilities.fromInitialize(
       protocolVersion: 1,
       agentCapabilities: <String, dynamic>{
+        'loadSession': true,
         'auth': <String, dynamic>{'logout': true},
         'sessionCapabilities': <String, dynamic>{
           'list': true,
@@ -50,6 +53,7 @@ void main() {
       allowReadOutsideWorkspace: false,
     );
 
+    expect(capabilities.loadSession, isTrue);
     expect(capabilities.auth.logout, isTrue);
     expect(capabilities.session.list, isTrue);
     expect(capabilities.session.resume, isTrue);

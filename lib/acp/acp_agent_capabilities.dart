@@ -27,7 +27,7 @@ class AcpAgentCapabilities {
     final rawAgent = _objectMap(agentCapabilities);
     return AcpAgentCapabilities(
       protocolVersion: protocolVersion,
-      loadSession: rawAgent['loadSession'] == true,
+      loadSession: _capabilityAdvertised(rawAgent['loadSession']),
       prompt: AcpPromptCapabilities.fromRaw(rawAgent['promptCapabilities']),
       mcp: AcpMcpCapabilities.fromRaw(rawAgent['mcpCapabilities']),
       session: AcpSessionCapabilities.fromRaw(rawAgent),
