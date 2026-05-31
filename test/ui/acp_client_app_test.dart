@@ -167,6 +167,35 @@ void main() {
     },
   );
 
+  testWidgets(
+    'AcpClientApp blocks resume after connecting to list-only agents',
+    (tester) async {
+      final fake = FakeAgentClient(supportsLoadSession: false);
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(AcpClientApp(controller: controller));
+
+      expect(controller.canResumeSessions, isTrue);
+
+      await tester.tap(find.byTooltip('Resume'));
+      await tester.pumpAndSettle();
+
+      expect(fake.connected, isTrue);
+      expect(controller.canListSessions, isTrue);
+      expect(controller.canResumeSessions, isFalse);
+      expect(find.text('Could not list ACP sessions'), findsOneWidget);
+      expect(
+        find.textContaining('session/load or session/resume'),
+        findsOneWidget,
+      );
+      final loadButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Load'),
+      );
+      expect(loadButton.onPressed, isNull);
+    },
+  );
+
   testWidgets('AcpClientApp opens extension request dialog', (tester) async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

@@ -277,6 +277,16 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  Future<List<AcpProjectSessions>> listResumableSessions() async {
+    final projects = await listSessions();
+    if (!supportsSessionResume) {
+      throw StateError(
+        'ACP agent does not support session/load or session/resume.',
+      );
+    }
+    return projects;
+  }
+
   Future<void> sendPrompt(
     String text, {
     List<PromptAttachment> attachments = const <PromptAttachment>[],

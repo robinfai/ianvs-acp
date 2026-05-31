@@ -330,7 +330,7 @@ class AppShell extends StatelessWidget {
     final selection = await showDialog<ResumeSessionSelection>(
       context: context,
       builder: (context) => ResumeSessionDialog(
-        loadSessions: controller.listSessions,
+        loadSessions: controller.listResumableSessions,
         initialCwd: controller.currentSession?.cwd ?? controller.cwd,
       ),
     );
