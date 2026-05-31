@@ -88,7 +88,7 @@ class AcpClientConfig {
     final clientProviders = AcpClientProviderConfig.fromJson(
       json['client_providers'] ?? json['clientProviders'],
     );
-    final serversRaw = json['agent_servers'];
+    final serversRaw = json['agent_servers'] ?? json['agentServers'];
     if (serversRaw == null) {
       return AcpClientConfig(
         configPath: configPath,
@@ -120,7 +120,9 @@ class AcpClientConfig {
       );
     }
 
-    final preferredName = _stringValue(json['default_agent_server']);
+    final preferredName = _stringValue(
+      json['default_agent_server'] ?? json['defaultAgentServer'],
+    );
     final active = preferredName == null
         ? servers.values.first
         : servers[preferredName];

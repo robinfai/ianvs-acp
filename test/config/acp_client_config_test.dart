@@ -61,6 +61,25 @@ void main() {
     expect(config.defaultAgentServerName, 'Kimi Code Dev');
   });
 
+  test('loads camelCase agent server config aliases', () {
+    final config = AcpClientConfig.fromJson({
+      'defaultAgentServer': 'Remote Agent',
+      'agentServers': {
+        'Local Agent': {'type': 'custom', 'command': '/usr/local/bin/local'},
+        'Remote Agent': {'type': 'websocket', 'url': 'ws://127.0.0.1:8765/acp'},
+      },
+    });
+
+    expect(config.agentName, 'Remote Agent');
+    expect(config.defaultAgentServerName, 'Remote Agent');
+    expect(config.agentServers.map((server) => server.name), [
+      'Local Agent',
+      'Remote Agent',
+    ]);
+    expect(config.activeAgentServer?.type, 'websocket');
+    expect(config.activeAgentServer?.url, 'ws://127.0.0.1:8765/acp');
+  });
+
   test('loads websocket agent server config', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Remote Agent',
