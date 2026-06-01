@@ -162,4 +162,41 @@ void main() {
       'deletion',
     ]);
   });
+
+  test('session lists accept legacy field names', () {
+    final result = SessionListResult.fromJson(<String, dynamic>{
+      'items': <Object>[
+        <String, dynamic>{
+          'id': 'legacy-1',
+          'workspaceRoot': '/workspace/app',
+          'name': 'Legacy app',
+          'updated_at': '2026-06-01T08:30:00Z',
+          'metadata': <String, dynamic>{'agent': 'kimi'},
+        },
+        <String, dynamic>{
+          'session_id': 'legacy-2',
+          'path': '/workspace/tools',
+          'label': 'Tooling',
+        },
+        'not-a-session',
+        <String, dynamic>{'cwd': '/missing-id'},
+      ],
+      'next_cursor': 'cursor-2',
+    });
+
+    expect(result.nextCursor, 'cursor-2');
+    expect(result.sessions.map((session) => session.sessionId), [
+      'legacy-1',
+      'legacy-2',
+    ]);
+    expect(result.sessions.first.cwd, '/workspace/app');
+    expect(result.sessions.first.title, 'Legacy app');
+    expect(
+      result.sessions.first.updatedAt?.toUtc().toIso8601String(),
+      '2026-06-01T08:30:00.000Z',
+    );
+    expect(result.sessions.first.meta, containsPair('agent', 'kimi'));
+    expect(result.sessions[1].cwd, '/workspace/tools');
+    expect(result.sessions[1].title, 'Tooling');
+  });
 }

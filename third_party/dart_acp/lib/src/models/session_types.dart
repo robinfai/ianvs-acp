@@ -19,13 +19,24 @@ class SessionInfo {
 
   /// Creates from JSON response.
   factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
-    sessionId: json['sessionId'] as String,
-    cwd: json['cwd'] as String,
-    title: json['title'] as String?,
-    updatedAt: json['updatedAt'] != null
-        ? DateTime.parse(json['updatedAt'] as String)
-        : null,
-    meta: json['_meta'] as Map<String, dynamic>?,
+    sessionId:
+        _optionalString(json['sessionId']) ??
+        _optionalString(json['session_id']) ??
+        _optionalString(json['id']) ??
+        '',
+    cwd:
+        _optionalString(json['cwd']) ??
+        _optionalString(json['workspaceRoot']) ??
+        _optionalString(json['workspace_root']) ??
+        _optionalString(json['workspace']) ??
+        _optionalString(json['path']) ??
+        '',
+    title:
+        _optionalString(json['title']) ??
+        _optionalString(json['name']) ??
+        _optionalString(json['label']),
+    updatedAt: _dateTimeFromRaw(json['updatedAt'] ?? json['updated_at']),
+    meta: _optionalMap(json['_meta'] ?? json['metadata'] ?? json['meta']),
   );
 
   /// Unique session identifier.
@@ -63,12 +74,18 @@ class SessionListResult {
 
   /// Creates from JSON response.
   factory SessionListResult.fromJson(Map<String, dynamic> json) {
-    final sessionsList = json['sessions'] as List<dynamic>? ?? [];
+    final sessionsList = _listFromRaw(
+      json['sessions'] ?? json['items'] ?? json['entries'],
+    );
     return SessionListResult(
       sessions: sessionsList
-          .map((s) => SessionInfo.fromJson(s as Map<String, dynamic>))
+          .map(_sessionInfoFromRaw)
+          .whereType<SessionInfo>()
           .toList(),
-      nextCursor: json['nextCursor'] as String?,
+      nextCursor:
+          _optionalString(json['nextCursor']) ??
+          _optionalString(json['next_cursor']) ??
+          _optionalString(json['cursor']),
     );
   }
 
@@ -284,3 +301,25 @@ class SessionCapabilities {
 }
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
+
+String? _optionalString(Object? value) => value is String ? value : null;
+
+Map<String, dynamic>? _optionalMap(Object? value) {
+  if (value is! Map) return null;
+  return value.map((key, value) => MapEntry(key.toString(), value));
+}
+
+List<dynamic> _listFromRaw(Object? raw) => raw is List ? raw : const [];
+
+SessionInfo? _sessionInfoFromRaw(Object? raw) {
+  final map = _optionalMap(raw);
+  if (map == null) return null;
+  final session = SessionInfo.fromJson(map);
+  return session.sessionId.isEmpty ? null : session;
+}
+
+DateTime? _dateTimeFromRaw(Object? raw) {
+  final value = _optionalString(raw);
+  if (value == null) return null;
+  return DateTime.tryParse(value);
+}
