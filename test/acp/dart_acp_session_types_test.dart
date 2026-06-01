@@ -59,4 +59,36 @@ void main() {
     expect(capabilities.fork, isFalse);
     expect(capabilities.configOptions, isTrue);
   });
+
+  test('tool calls accept legacy content and location payloads', () {
+    final toolCall = ToolCall.fromJson(<String, dynamic>{
+      'tool_call_id': 'call-1',
+      'status': 'started',
+      'title': 'Read file',
+      'content': 'reading now',
+      'locations': <Object>[
+        '/workspace/a.dart',
+        <String, dynamic>{'path': '/workspace/b.dart', 'line': 12},
+      ],
+    });
+
+    expect(toolCall.toolCallId, 'call-1');
+    expect(toolCall.status, ToolCallStatus.pending);
+    expect(toolCall.content, [containsPair('text', 'reading now')]);
+    expect(toolCall.locations?.map((location) => location.path), [
+      '/workspace/a.dart',
+      '/workspace/b.dart',
+    ]);
+    expect(toolCall.locations?.last.line, 12);
+
+    final merged = toolCall.merge(<String, dynamic>{
+      'status': 'completed',
+      'content': <String, dynamic>{'type': 'text', 'text': 'done'},
+      'locations': '/workspace/done.dart',
+    });
+
+    expect(merged.status, ToolCallStatus.completed);
+    expect(merged.content, [containsPair('text', 'done')]);
+    expect(merged.locations?.single.path, '/workspace/done.dart');
+  });
 }

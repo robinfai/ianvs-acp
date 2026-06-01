@@ -698,6 +698,11 @@ Future<void> main() async {
         'tool_call_id': 'call-a',
         'title': 'Bash A',
         'status': 'pending',
+        'content': 'running A',
+        'locations': <Object>[
+          '/workspace/a.dart',
+          <String, dynamic>{'path': '/workspace/b.dart', 'line': 7},
+        ],
       });
       sendSessionUpdate(<String, dynamic>{
         'sessionUpdate': 'tool_call',
@@ -758,6 +763,11 @@ Future<void> main() async {
         'completed',
       ]);
       expect(toolEvents[2].text, 'Bash A');
+      expect(toolEvents.first.metadata['content'], 'running A');
+      expect(
+        toolEvents.first.metadata['locations'],
+        contains('/workspace/a.dart'),
+      );
       expect(toolEvents[2].metadata['title'], 'Bash A');
       expect(toolEvents[2].metadata['status'], 'completed');
       expect(toolEvents[2].metadata['rawOutput'], 'a done');

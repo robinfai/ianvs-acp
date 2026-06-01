@@ -122,7 +122,7 @@ class ToolCallLocation {
   /// Create from JSON.
   factory ToolCallLocation.fromJson(Map<String, dynamic> json) =>
       ToolCallLocation(
-        path: json['path'] as String? ?? '',
+        path: _optionalString(json['path']) ?? '',
         line: (json['line'] as num?)?.toInt(),
       );
 
@@ -155,16 +155,14 @@ class ToolCall {
 
   /// Create from JSON.
   factory ToolCall.fromJson(Map<String, dynamic> json) => ToolCall(
-    toolCallId: json['toolCallId'] as String? ?? json['id'] as String? ?? '',
-    status: ToolCallStatus.fromWire(json['status'] as String?),
-    title: json['title'] as String?,
+    toolCallId: _toolCallIdFromJson(json),
+    status: ToolCallStatus.fromWire(_optionalString(json['status'])),
+    title: _optionalString(json['title']),
     kind: json['kind'] != null
-        ? ToolKind.fromWire(json['kind'] as String?)
+        ? ToolKind.fromWire(_optionalString(json['kind']))
         : null,
-    content: json['content'] as List?,
-    locations: (json['locations'] as List?)
-        ?.map((e) => ToolCallLocation.fromJson(e as Map<String, dynamic>))
-        .toList(),
+    content: _toolContentFromRaw(json['content']),
+    locations: _toolLocationsFromRaw(json['locations']),
     rawInput: json['rawInput'] ?? json['raw_input'],
     rawOutput: json['rawOutput'] ?? json['raw_output'],
   );
@@ -211,19 +209,72 @@ class ToolCall {
   ToolCall merge(Map<String, dynamic> update) => ToolCall(
     toolCallId: toolCallId, // ID never changes
     status: update['status'] != null
-        ? ToolCallStatus.fromWire(update['status'] as String?)
+        ? ToolCallStatus.fromWire(_optionalString(update['status']))
         : status,
-    title: update['title'] as String? ?? title,
+    title: _optionalString(update['title']) ?? title,
     kind: update['kind'] != null
-        ? ToolKind.fromWire(update['kind'] as String?)
+        ? ToolKind.fromWire(_optionalString(update['kind']))
         : kind,
-    content: update['content'] as List? ?? content,
+    content: update['content'] != null
+        ? _toolContentFromRaw(update['content']) ?? content
+        : content,
     locations: update['locations'] != null
-        ? (update['locations'] as List?)
-              ?.map((e) => ToolCallLocation.fromJson(e as Map<String, dynamic>))
-              .toList()
+        ? _toolLocationsFromRaw(update['locations']) ?? locations
         : locations,
     rawInput: update['rawInput'] ?? update['raw_input'] ?? rawInput,
     rawOutput: update['rawOutput'] ?? update['raw_output'] ?? rawOutput,
+  );
+}
+
+String? _optionalString(Object? value) => value is String ? value : null;
+
+String _toolCallIdFromJson(Map<String, dynamic> json) {
+  for (final key in const [
+    'toolCallId',
+    'tool_call_id',
+    'id',
+    'callId',
+    'call_id',
+  ]) {
+    final value = _optionalString(json[key]);
+    if (value != null && value.isNotEmpty) return value;
+  }
+  return '';
+}
+
+List? _toolContentFromRaw(Object? raw) {
+  if (raw == null) return null;
+  if (raw is List) return raw;
+  if (raw is String) {
+    return <Map<String, dynamic>>[
+      <String, dynamic>{'type': 'text', 'text': raw},
+    ];
+  }
+  if (raw is Map) {
+    return <Map<String, dynamic>>[
+      raw.map((key, value) => MapEntry(key.toString(), value)),
+    ];
+  }
+  return null;
+}
+
+List<ToolCallLocation>? _toolLocationsFromRaw(Object? raw) {
+  if (raw == null) return null;
+  final rawLocations = raw is List ? raw : <Object?>[raw];
+  final locations = rawLocations
+      .map(_toolLocationFromRaw)
+      .whereType<ToolCallLocation>()
+      .toList(growable: false);
+  return locations.isEmpty ? null : locations;
+}
+
+ToolCallLocation? _toolLocationFromRaw(Object? raw) {
+  if (raw is String) {
+    final path = raw.trim();
+    return path.isEmpty ? null : ToolCallLocation(path: path);
+  }
+  if (raw is! Map) return null;
+  return ToolCallLocation.fromJson(
+    raw.map((key, value) => MapEntry(key.toString(), value)),
   );
 }
