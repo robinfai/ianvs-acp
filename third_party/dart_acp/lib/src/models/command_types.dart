@@ -7,7 +7,12 @@ class AvailableCommandInput {
 
   /// Create from JSON.
   factory AvailableCommandInput.fromJson(Map<String, dynamic> json) =>
-      AvailableCommandInput(hint: json['hint'] as String?);
+      AvailableCommandInput(
+        hint:
+            _optionalString(json['hint']) ??
+            _optionalString(json['placeholder']) ??
+            _optionalString(json['description']),
+      );
 
   /// Hint to display when input hasn't been provided yet.
   final String? hint;
@@ -29,14 +34,29 @@ class AvailableCommand {
   /// Create from JSON.
   factory AvailableCommand.fromJson(Map<String, dynamic> json) =>
       AvailableCommand(
-        name: json['name'] as String? ?? '',
-        description: json['description'] as String?,
-        parameters: json['parameters'] as Map<String, dynamic>?,
-        input: json['input'] != null
-            ? AvailableCommandInput.fromJson(
-                json['input'] as Map<String, dynamic>,
-              )
-            : null,
+        name:
+            _optionalString(json['name']) ??
+            _optionalString(json['id']) ??
+            _optionalString(json['command']) ??
+            _optionalString(json['title']) ??
+            '',
+        description:
+            _optionalString(json['description']) ??
+            _optionalString(json['summary']),
+        parameters: _commandParametersFromRaw(
+          json['parameters'] ??
+              json['params'] ??
+              json['schema'] ??
+              json['inputSchema'] ??
+              json['input_schema'],
+        ),
+        input: _commandInputFromRaw(
+          json['input'] ??
+              json['argument'] ??
+              json['arguments'] ??
+              json['inputHint'] ??
+              json['input_hint'],
+        ),
       );
 
   /// Name/identifier of the command.
@@ -238,6 +258,23 @@ String? _normalizedStatus(String? value) {
 Map<String, dynamic>? _optionalMap(Object? value) {
   if (value is! Map) return null;
   return value.map((key, value) => MapEntry(key.toString(), value));
+}
+
+Map<String, dynamic>? _commandParametersFromRaw(Object? raw) {
+  final map = _optionalMap(raw);
+  if (map == null || map.isEmpty) return null;
+  return map;
+}
+
+AvailableCommandInput? _commandInputFromRaw(Object? raw) {
+  if (raw is String) {
+    final hint = raw.trim();
+    return hint.isEmpty ? null : AvailableCommandInput(hint: hint);
+  }
+  final map = _optionalMap(raw);
+  if (map == null) return null;
+  final input = AvailableCommandInput.fromJson(map);
+  return input.hint == null ? null : input;
 }
 
 List<PlanEntry> _planEntriesFromRaw(Object? raw) {

@@ -3113,8 +3113,17 @@ Future<void> main() async {
             'availableCommands': <Object>[
               'review',
               <String, dynamic>{
+                'id': 'explain',
+                'summary': 'Explain the current change.',
+                'schema': <String, dynamic>{'type': 'object'},
+                'input': 'Optional focus',
+              },
+              <String, dynamic>{
                 'name': 'fix',
                 'description': 'Fix the current change.',
+                'input': <String, dynamic>{
+                  'placeholder': 'Patch instructions',
+                },
               },
               42,
             ],
@@ -3140,13 +3149,23 @@ Future<void> main() async {
       expect(session.initialEvents, hasLength(1));
       final event = session.initialEvents.single;
       expect(event.metadata['kind'], 'commands');
-      expect(event.text, 'review, fix');
+      expect(event.text, 'review, explain, fix');
       final commands = event.metadata['commands'] as List<dynamic>;
-      expect(commands, hasLength(2));
+      expect(commands, hasLength(3));
       expect(commands.first, containsPair('name', 'review'));
+      expect(
+        commands[1],
+        containsPair('description', 'Explain the current change.'),
+      );
+      expect(commands[1], containsPair('parameters', {'type': 'object'}));
+      expect(commands[1], containsPair('input', {'hint': 'Optional focus'}));
       expect(
         commands.last,
         containsPair('description', 'Fix the current change.'),
+      );
+      expect(
+        commands.last,
+        containsPair('input', {'hint': 'Patch instructions'}),
       );
     } finally {
       await client.dispose();

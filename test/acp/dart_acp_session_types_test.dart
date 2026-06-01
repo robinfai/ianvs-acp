@@ -92,6 +92,30 @@ void main() {
     expect(merged.locations?.single.path, '/workspace/done.dart');
   });
 
+  test('available commands accept legacy names, inputs, and schemas', () {
+    final review = AvailableCommand.fromJson(<String, dynamic>{
+      'id': 'review',
+      'summary': 'Review the current diff.',
+      'schema': <String, dynamic>{'type': 'object'},
+      'input': 'Optional focus',
+    });
+
+    expect(review.name, 'review');
+    expect(review.description, 'Review the current diff.');
+    expect(review.parameters, containsPair('type', 'object'));
+    expect(review.input?.hint, 'Optional focus');
+
+    final apply = AvailableCommand.fromJson(<String, dynamic>{
+      'command': 'apply',
+      'input_schema': <String, dynamic>{'type': 'object'},
+      'arguments': <String, dynamic>{'placeholder': 'Patch description'},
+    });
+
+    expect(apply.name, 'apply');
+    expect(apply.parameters, containsPair('type', 'object'));
+    expect(apply.input?.hint, 'Patch description');
+  });
+
   test('plans accept legacy string steps and status aliases', () {
     final plan = Plan.fromJson(<String, dynamic>{
       'title': 'Legacy plan',
