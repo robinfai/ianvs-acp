@@ -2550,6 +2550,146 @@ Future<void> main() async {
   });
 
   test(
+    'runtime config option updates clear synthesized model marker',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final setConfigParamsFile = File(
+        '${tempDir.path}/set_config_params.json',
+      );
+      final setConfigParamsPath = jsonEncode(setConfigParamsFile.path);
+      final agentScript = File(
+        '${tempDir.path}/fake_models_then_config_agent.dart',
+      );
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-models',
+          'models': <String, dynamic>{
+            'currentModelId': 'legacy-model',
+            'availableModels': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'modelId': 'legacy-model',
+                'name': 'Legacy Model',
+              },
+            ],
+          },
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'session-models',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'config_option_update',
+            'configOptions': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'model',
+                'name': 'Model',
+                'type': 'select',
+                'currentValue': 'stable-a',
+                'category': 'model',
+                'options': <Map<String, dynamic>>[
+                  <String, dynamic>{'value': 'stable-a', 'name': 'Stable A'},
+                  <String, dynamic>{'value': 'stable-b', 'name': 'Stable B'},
+                ],
+              },
+            ],
+          },
+        },
+      }));
+    } else if (message['method'] == 'session/set_config_option') {
+      await File($setConfigParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'stable-b',
+              'category': 'model',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'stable-a', 'name': 'Stable A'},
+                <String, dynamic>{'value': 'stable-b', 'name': 'Stable B'},
+              ],
+            },
+          ],
+        },
+      }));
+    } else if (message['method'] == 'session/set_model') {
+      await File($setConfigParamsPath).writeAsString(
+        jsonEncode(<String, dynamic>{'wrongMethod': message['method']}),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+
+        final session = await client.createSession(cwd: '/workspace');
+        final settings = await client.sessionSettings(session.id);
+        await client.setConfigOption(
+          sessionId: session.id,
+          configId: 'model',
+          value: 'stable-b',
+        );
+        await _waitForFile(setConfigParamsFile);
+        final setConfigParams =
+            jsonDecode(await setConfigParamsFile.readAsString())
+                as Map<String, dynamic>;
+
+        expect(settings.currentModelLabel, 'Stable A');
+        expect(setConfigParams, {
+          'sessionId': 'session-models',
+          'configId': 'model',
+          'value': 'stable-b',
+        });
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
     'caches immediate config option updates after session creation',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

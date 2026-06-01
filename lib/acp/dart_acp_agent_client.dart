@@ -716,6 +716,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       final options = _configOptionsFromRaw(body['configOptions']);
       if (sessionId is String && sessionId.isNotEmpty) {
         _configOptionsBySession[sessionId] = options;
+        _modelConfigOptionsFromModelsBySession.remove(sessionId);
         if (options.isNotEmpty) {
           _modesBySession.remove(sessionId);
           _modeOverridesBySession.remove(sessionId);
