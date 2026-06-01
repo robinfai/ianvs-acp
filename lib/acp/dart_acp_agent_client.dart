@@ -1301,28 +1301,38 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   AcpConfigOption? _configOptionFromRawMap(Map<String, Object?> raw) {
-    final id = raw['id'];
-    final name = raw['name'];
+    final id =
+        _nonEmptyString(raw['id']) ??
+        _nonEmptyString(raw['configId']) ??
+        _nonEmptyString(raw['config_id']) ??
+        _nonEmptyString(raw['key']);
     final type = _configOptionType(raw['type']);
-    if (id is! String || name is! String || type == null) {
+    if (id == null || type == null) {
       return null;
     }
-    final currentValue = _configValueFromRaw(raw['currentValue'], type: type);
+    final currentValue = _configValueFromRaw(
+      raw['currentValue'] ??
+          raw['current_value'] ??
+          raw['value'] ??
+          raw['selectedValue'] ??
+          raw['selected'],
+      type: type,
+    );
     if (currentValue == null) {
       return null;
     }
 
-    final choices = raw['options'] is List
-        ? (raw['options'] as List)
-              .whereType<Map>()
-              .map((item) => _configChoiceFromRawMap(_metadataMap(item)))
-              .whereType<AcpConfigOptionChoice>()
-              .toList()
-        : const <AcpConfigOptionChoice>[];
+    final choices = _configChoicesFromRaw(
+      raw['options'] ?? raw['choices'] ?? raw['values'],
+    );
 
     return AcpConfigOption(
       id: id,
-      name: name,
+      name:
+          _nonEmptyString(raw['name']) ??
+          _nonEmptyString(raw['label']) ??
+          _nonEmptyString(raw['title']) ??
+          id,
       type: type,
       currentValue: currentValue,
       options: choices,
@@ -1335,29 +1345,64 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   String? _configOptionType(Object? raw) {
+    if (raw == null) return 'select';
     if (raw is! String) return null;
     final type = raw.trim().toLowerCase();
+    if (type.isEmpty) return 'select';
     if (type != 'select' && type != 'boolean') return null;
     return type;
   }
 
   String? _configValueFromRaw(Object? raw, {required String type}) {
     if (raw is String) return raw;
+    if (raw is num) return raw.toString();
     if (type == 'boolean' && raw is bool) return raw.toString();
     return null;
   }
 
+  List<AcpConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
+    if (raw is! List) return const <AcpConfigOptionChoice>[];
+    return raw
+        .map(_configChoiceFromRaw)
+        .whereType<AcpConfigOptionChoice>()
+        .toList();
+  }
+
+  AcpConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
+    if (raw is String || raw is bool || raw is num) {
+      final value = raw.toString();
+      return value.isEmpty
+          ? null
+          : AcpConfigOptionChoice(value: value, name: value);
+    }
+    if (raw is! Map) return null;
+    return _configChoiceFromRawMap(_metadataMap(raw));
+  }
+
   AcpConfigOptionChoice? _configChoiceFromRawMap(Map<String, Object?> raw) {
-    final value = raw['value'];
-    final name = raw['name'];
-    if (value is! String || name is! String) return null;
+    final value =
+        _configChoiceValue(raw['value']) ??
+        _configChoiceValue(raw['id']) ??
+        _configChoiceValue(raw['key']) ??
+        _configChoiceValue(raw['name']);
+    if (value == null) return null;
     return AcpConfigOptionChoice(
       value: value,
-      name: name,
+      name:
+          _nonEmptyString(raw['name']) ??
+          _nonEmptyString(raw['label']) ??
+          _nonEmptyString(raw['displayName']) ??
+          value,
       description: raw['description'] is String
           ? raw['description'] as String
           : null,
     );
+  }
+
+  String? _configChoiceValue(Object? raw) {
+    if (raw is String && raw.isNotEmpty) return raw;
+    if (raw is num || raw is bool) return raw.toString();
+    return null;
   }
 
   List<AcpConfigOption> _cacheRawConfigOptions(String sessionId, Object? raw) {
@@ -1405,11 +1450,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Map<String, dynamic> rawResponse,
     List<acp.ConfigOption>? typedConfigOptions,
   }) {
-    if (rawResponse.containsKey('configOptions')) {
-      final configOptions = _cacheRawConfigOptions(
-        sessionId,
-        rawResponse['configOptions'],
-      );
+    final rawConfigOptions = rawResponse.containsKey('configOptions')
+        ? rawResponse['configOptions']
+        : rawResponse['config_options'];
+    if (rawConfigOptions != null) {
+      final configOptions = _cacheRawConfigOptions(sessionId, rawConfigOptions);
       if (configOptions.isNotEmpty) return configOptions;
     }
     if (typedConfigOptions != null) {

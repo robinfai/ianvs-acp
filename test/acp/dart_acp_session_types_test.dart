@@ -199,4 +199,61 @@ void main() {
     expect(result.sessions[1].cwd, '/workspace/tools');
     expect(result.sessions[1].title, 'Tooling');
   });
+
+  test('session results accept legacy config option payloads', () {
+    final result = SessionResult.fromJson(<String, dynamic>{
+      'session_id': 'session-1',
+      'metadata': <String, dynamic>{'source': 'resume'},
+      'config_options': <Object>[
+        <String, dynamic>{
+          'key': 'model',
+          'label': 'Model',
+          'current_value': 'kimi-k2',
+          'choices': <Object>[
+            'kimi-k2',
+            <String, dynamic>{'id': 'glm-4.6', 'displayName': 'GLM 4.6'},
+            <String, dynamic>{'value': 4, 'name': 'Four'},
+            <String, dynamic>{},
+          ],
+          'category': 'model',
+        },
+        <String, dynamic>{
+          'configId': 'auto_apply',
+          'name': 'Auto apply',
+          'type': ' BOOLEAN ',
+          'selected': true,
+          'values': <Map<String, Object>>[
+            <String, Object>{'value': true, 'label': 'On'},
+            <String, Object>{'value': false, 'label': 'Off'},
+          ],
+        },
+        'not-a-config-option',
+        <String, dynamic>{'name': 'Missing id', 'currentValue': 'x'},
+      ],
+    });
+
+    expect(result.sessionId, 'session-1');
+    expect(result.meta, containsPair('source', 'resume'));
+    expect(result.configOptions, hasLength(2));
+
+    final model = result.configOptions!.first;
+    expect(model.id, 'model');
+    expect(model.name, 'Model');
+    expect(model.type, 'select');
+    expect(model.currentValue, 'kimi-k2');
+    expect(model.group, 'model');
+    expect(model.options.map((choice) => choice.value), [
+      'kimi-k2',
+      'glm-4.6',
+      '4',
+    ]);
+    expect(model.options[1].name, 'GLM 4.6');
+
+    final autoApply = result.configOptions!.last;
+    expect(autoApply.id, 'auto_apply');
+    expect(autoApply.type, 'boolean');
+    expect(autoApply.currentValue, 'true');
+    expect(autoApply.options.map((choice) => choice.value), ['true', 'false']);
+    expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
+  });
 }

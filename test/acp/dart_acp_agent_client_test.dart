@@ -2417,6 +2417,108 @@ Future<void> main() async {
     }
   });
 
+  test(
+    'caches legacy raw config option payloads from session creation',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/fake_legacy_config_agent.dart');
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-1',
+          'config_options': <Object>[
+            <String, dynamic>{
+              'key': 'model',
+              'label': 'Model',
+              'current_value': 'kimi-k2',
+              'choices': <Object>[
+                'kimi-k2',
+                <String, dynamic>{
+                  'id': 'glm-4.6',
+                  'displayName': 'GLM 4.6',
+                },
+              ],
+              'category': 'model',
+            },
+            <String, dynamic>{
+              'config_id': 'auto_apply',
+              'label': 'Auto apply',
+              'type': 'boolean',
+              'selected': true,
+              'values': <Map<String, Object>>[
+                <String, Object>{'value': true, 'label': 'On'},
+                <String, Object>{'value': false, 'label': 'Off'},
+              ],
+            },
+            'not-a-config-option',
+            <String, dynamic>{'name': 'Missing id', 'currentValue': 'x'},
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+
+        final session = await client.createSession(cwd: '/workspace');
+        final settings = await client.sessionSettings(session.id);
+
+        expect(settings.configOptions.map((option) => option.id), [
+          'model',
+          'auto_apply',
+        ]);
+        expect(settings.currentModelLabel, 'kimi-k2');
+        expect(
+          settings.configOptions.first.options.map((choice) => choice.value),
+          ['kimi-k2', 'glm-4.6'],
+        );
+        expect(settings.configOptions.first.options.last.name, 'GLM 4.6');
+        expect(settings.configOptions.last.type, 'boolean');
+        expect(settings.configOptions.last.currentValue, 'true');
+        expect(
+          settings.configOptions.last.options.map((choice) => choice.name),
+          ['On', 'Off'],
+        );
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
   test('caches legacy modes when config options are omitted', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_legacy_modes_agent.dart');

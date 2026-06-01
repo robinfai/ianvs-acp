@@ -118,17 +118,34 @@ class ConfigOption {
 
   /// Creates from JSON response.
   factory ConfigOption.fromJson(Map<String, dynamic> json) {
-    final optionsList = json['options'] as List<dynamic>? ?? [];
+    final id =
+        _optionalString(json['id']) ??
+        _optionalString(json['configId']) ??
+        _optionalString(json['config_id']) ??
+        _optionalString(json['key']) ??
+        '';
+    final options = _configChoicesFromRaw(
+      json['options'] ?? json['choices'] ?? json['values'],
+    );
     return ConfigOption(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      type: json['type'] as String,
-      currentValue: _configValueFromJson(json['currentValue']),
-      options: optionsList
-          .map((o) => ConfigOptionChoice.fromJson(o as Map<String, dynamic>))
-          .toList(),
-      description: json['description'] as String?,
-      group: json['group'] as String?,
+      id: id,
+      name:
+          _optionalString(json['name']) ??
+          _optionalString(json['label']) ??
+          _optionalString(json['title']) ??
+          id,
+      type: _configTypeFromRaw(json['type']),
+      currentValue: _configValueFromJson(
+        json['currentValue'] ??
+            json['current_value'] ??
+            json['value'] ??
+            json['selectedValue'] ??
+            json['selected'],
+      ),
+      options: options,
+      description: _optionalString(json['description']),
+      group:
+          _optionalString(json['group']) ?? _optionalString(json['category']),
     );
   }
 
@@ -171,9 +188,8 @@ class ConfigOption {
 String _configValueFromJson(Object? value) {
   if (value is String) return value;
   if (value is bool) return value.toString();
-  throw FormatException(
-    'ConfigOption.currentValue must be a string or boolean.',
-  );
+  if (value is num) return value.toString();
+  return '';
 }
 
 /// A choice within a config option.
@@ -186,12 +202,20 @@ class ConfigOptionChoice {
   });
 
   /// Creates from JSON.
-  factory ConfigOptionChoice.fromJson(Map<String, dynamic> json) =>
-      ConfigOptionChoice(
-        value: json['value'] as String,
-        name: json['name'] as String,
-        description: json['description'] as String?,
-      );
+  factory ConfigOptionChoice.fromJson(Map<String, dynamic> json) {
+    final value = _configValueFromJson(
+      json['value'] ?? json['id'] ?? json['key'] ?? json['name'],
+    );
+    return ConfigOptionChoice(
+      value: value,
+      name:
+          _optionalString(json['name']) ??
+          _optionalString(json['label']) ??
+          _optionalString(json['displayName']) ??
+          value,
+      description: _optionalString(json['description']),
+    );
+  }
 
   /// The value to send when selecting this option.
   final String value;
@@ -220,13 +244,17 @@ class SessionResult {
 
   /// Creates from JSON response.
   factory SessionResult.fromJson(Map<String, dynamic> json) {
-    final configList = json['configOptions'] as List<dynamic>?;
+    final configRaw = json['configOptions'] ?? json['config_options'];
     return SessionResult(
-      sessionId: json['sessionId'] as String,
-      configOptions: configList
-          ?.map((c) => ConfigOption.fromJson(c as Map<String, dynamic>))
-          .toList(),
-      meta: json['_meta'] as Map<String, dynamic>?,
+      sessionId:
+          _optionalString(json['sessionId']) ??
+          _optionalString(json['session_id']) ??
+          _optionalString(json['id']) ??
+          '',
+      configOptions: configRaw == null
+          ? null
+          : _configOptionsFromRaw(configRaw),
+      meta: _optionalMap(json['_meta'] ?? json['metadata'] ?? json['meta']),
     );
   }
 
@@ -310,6 +338,45 @@ Map<String, dynamic>? _optionalMap(Object? value) {
 }
 
 List<dynamic> _listFromRaw(Object? raw) => raw is List ? raw : const [];
+
+String _configTypeFromRaw(Object? raw) {
+  final type = _optionalString(raw)?.trim().toLowerCase();
+  return type == null || type.isEmpty ? 'select' : type;
+}
+
+List<ConfigOption> _configOptionsFromRaw(Object? raw) {
+  if (raw is! List) return const <ConfigOption>[];
+  return raw
+      .map(_configOptionFromRaw)
+      .whereType<ConfigOption>()
+      .toList(growable: false);
+}
+
+ConfigOption? _configOptionFromRaw(Object? raw) {
+  final map = _optionalMap(raw);
+  if (map == null) return null;
+  final option = ConfigOption.fromJson(map);
+  return option.id.isEmpty ? null : option;
+}
+
+List<ConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
+  if (raw is! List) return const <ConfigOptionChoice>[];
+  return raw
+      .map(_configChoiceFromRaw)
+      .whereType<ConfigOptionChoice>()
+      .toList(growable: false);
+}
+
+ConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
+  if (raw is String || raw is bool || raw is num) {
+    final value = _configValueFromJson(raw);
+    return value.isEmpty ? null : ConfigOptionChoice(value: value, name: value);
+  }
+  final map = _optionalMap(raw);
+  if (map == null) return null;
+  final choice = ConfigOptionChoice.fromJson(map);
+  return choice.value.isEmpty ? null : choice;
+}
 
 SessionInfo? _sessionInfoFromRaw(Object? raw) {
   final map = _optionalMap(raw);
