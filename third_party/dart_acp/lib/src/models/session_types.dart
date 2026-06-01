@@ -244,10 +244,10 @@ class SessionCapabilities {
     final sessionCaps = agentCaps['sessionCapabilities'];
     if (sessionCaps is Map<String, dynamic>) {
       return SessionCapabilities(
-        list: sessionCaps['list'] != null,
-        resume: sessionCaps['resume'] != null,
-        fork: sessionCaps['fork'] != null,
-        configOptions: sessionCaps['configOptions'] != null,
+        list: _capabilityAdvertised(sessionCaps['list']),
+        resume: _capabilityAdvertised(sessionCaps['resume']),
+        fork: _capabilityAdvertised(sessionCaps['fork']),
+        configOptions: _capabilityAdvertised(sessionCaps['configOptions']),
       );
     }
 
@@ -255,10 +255,10 @@ class SessionCapabilities {
     final session = agentCaps['session'];
     if (session is Map<String, dynamic>) {
       return SessionCapabilities(
-        list: session['list'] != null,
-        resume: session['resume'] != null,
-        fork: session['fork'] != null,
-        configOptions: session['configOptions'] != null,
+        list: _capabilityAdvertised(session['list']),
+        resume: _capabilityAdvertised(session['resume']),
+        fork: _capabilityAdvertised(session['fork']),
+        configOptions: _capabilityAdvertised(session['configOptions']),
       );
     }
 
@@ -282,3 +282,5 @@ class SessionCapabilities {
       'SessionCapabilities(list: $list, resume: $resume, fork: $fork, '
       'configOptions: $configOptions)';
 }
+
+bool _capabilityAdvertised(Object? value) => value == true || value is Map;

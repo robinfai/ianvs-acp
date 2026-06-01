@@ -197,7 +197,8 @@ class InitializeResult {
   }
 
   /// Check if the agent supports session loading.
-  bool get supportsLoadSession => agentCapabilities?['loadSession'] == true;
+  bool get supportsLoadSession =>
+      _capabilityAdvertised(agentCapabilities?['loadSession']);
 
   /// Get prompt capabilities from the agent.
   ({bool image, bool audio, bool embeddedContext}) get promptCapabilities {
@@ -242,6 +243,8 @@ class InitializeResult {
   /// Check if the agent supports session forking.
   bool get supportsForkSession => sessionCapabilities.fork;
 }
+
+bool _capabilityAdvertised(Object? value) => value == true || value is Map;
 
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager {
