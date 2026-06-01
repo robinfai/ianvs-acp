@@ -73,7 +73,7 @@ enum PlanEntryPriority {
 
   /// Parse from wire format.
   static PlanEntryPriority fromWire(String? value) {
-    switch (value) {
+    switch (value?.trim().toLowerCase()) {
       case 'high':
         return PlanEntryPriority.high;
       case 'medium':
@@ -102,12 +102,17 @@ enum PlanEntryStatus {
 
   /// Parse from wire format.
   static PlanEntryStatus fromWire(String? value) {
-    switch (value) {
+    switch (_normalizedStatus(value)) {
       case 'pending':
         return PlanEntryStatus.pending;
       case 'in_progress':
+      case 'running':
+      case 'started':
         return PlanEntryStatus.inProgress;
       case 'completed':
+      case 'complete':
+      case 'done':
+      case 'success':
         return PlanEntryStatus.completed;
       default:
         return PlanEntryStatus.pending;
@@ -138,10 +143,15 @@ class PlanEntry {
 
   /// Create from JSON.
   factory PlanEntry.fromJson(Map<String, dynamic> json) => PlanEntry(
-    content: json['content'] as String? ?? '',
-    priority: PlanEntryPriority.fromWire(json['priority'] as String?),
-    status: PlanEntryStatus.fromWire(json['status'] as String?),
-    metadata: json['metadata'] as Map<String, dynamic>?,
+    content:
+        _optionalString(json['content']) ??
+        _optionalString(json['text']) ??
+        _optionalString(json['title']) ??
+        _optionalString(json['task']) ??
+        '',
+    priority: PlanEntryPriority.fromWire(_optionalString(json['priority'])),
+    status: PlanEntryStatus.fromWire(_optionalString(json['status'])),
+    metadata: _optionalMap(json['metadata']),
   );
 
   /// Content/description of this plan step.
@@ -177,17 +187,15 @@ class Plan {
 
   /// Create from JSON.
   factory Plan.fromJson(Map<String, dynamic> json) {
-    final entriesList =
-        (json['entries'] as List?)
-            ?.map((e) => PlanEntry.fromJson(e as Map<String, dynamic>))
-            .toList() ??
-        const [];
+    final entriesList = _planEntriesFromRaw(
+      json['entries'] ?? json['steps'] ?? json['items'] ?? json['todos'],
+    );
 
     return Plan(
       entries: entriesList,
-      title: json['title'] as String?,
-      description: json['description'] as String?,
-      metadata: json['metadata'] as Map<String, dynamic>?,
+      title: _optionalString(json['title']),
+      description: _optionalString(json['description']),
+      metadata: _optionalMap(json['metadata']),
     );
   }
 
@@ -210,4 +218,48 @@ class Plan {
     if (description != null) 'description': description,
     if (metadata != null) 'metadata': metadata,
   };
+}
+
+String? _optionalString(Object? value) => value is String ? value : null;
+
+String? _normalizedStatus(String? value) {
+  if (value == null) return null;
+  final cleaned = value.trim();
+  if (cleaned.isEmpty) return null;
+  return cleaned
+      .replaceAllMapped(
+        RegExp(r'([a-z0-9])([A-Z])'),
+        (match) => '${match.group(1)}_${match.group(2)}',
+      )
+      .replaceAll(RegExp(r'[\s-]+'), '_')
+      .toLowerCase();
+}
+
+Map<String, dynamic>? _optionalMap(Object? value) {
+  if (value is! Map) return null;
+  return value.map((key, value) => MapEntry(key.toString(), value));
+}
+
+List<PlanEntry> _planEntriesFromRaw(Object? raw) {
+  if (raw is! List) return const <PlanEntry>[];
+  return raw
+      .map(_planEntryFromRaw)
+      .whereType<PlanEntry>()
+      .toList(growable: false);
+}
+
+PlanEntry? _planEntryFromRaw(Object? raw) {
+  if (raw is String) {
+    final content = raw.trim();
+    if (content.isEmpty) return null;
+    return PlanEntry(
+      content: content,
+      priority: PlanEntryPriority.medium,
+      status: PlanEntryStatus.pending,
+    );
+  }
+  if (raw is! Map) return null;
+  return PlanEntry.fromJson(
+    raw.map((key, value) => MapEntry(key.toString(), value)),
+  );
 }

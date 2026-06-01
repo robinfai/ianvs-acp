@@ -91,4 +91,30 @@ void main() {
     expect(merged.content, [containsPair('text', 'done')]);
     expect(merged.locations?.single.path, '/workspace/done.dart');
   });
+
+  test('plans accept legacy string steps and status aliases', () {
+    final plan = Plan.fromJson(<String, dynamic>{
+      'title': 'Legacy plan',
+      'steps': <Object>[
+        'Inspect current state',
+        <String, dynamic>{
+          'text': 'Patch parser',
+          'priority': 'HIGH',
+          'status': 'inProgress',
+        },
+        <String, dynamic>{'task': 'Run tests', 'status': 'done'},
+        7,
+      ],
+    });
+
+    expect(plan.entries.map((entry) => entry.content), [
+      'Inspect current state',
+      'Patch parser',
+      'Run tests',
+    ]);
+    expect(plan.entries[0].priority, PlanEntryPriority.medium);
+    expect(plan.entries[1].priority, PlanEntryPriority.high);
+    expect(plan.entries[1].status, PlanEntryStatus.inProgress);
+    expect(plan.entries[2].status, PlanEntryStatus.completed);
+  });
 }
