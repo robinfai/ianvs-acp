@@ -117,4 +117,49 @@ void main() {
     expect(plan.entries[1].status, PlanEntryStatus.inProgress);
     expect(plan.entries[2].status, PlanEntryStatus.completed);
   });
+
+  test('diffs accept legacy paths, string changes, and status aliases', () {
+    final diff = Diff.fromJson(<String, dynamic>{
+      'filePath': '/workspace/lib/main.dart',
+      'status': 'done',
+      'changes': <Object>[
+        '+final enabled = true;',
+        '-final enabled = false;',
+        <String, dynamic>{
+          'type': 'modified',
+          'lineNumber': '42',
+          'old': 'old call',
+          'new': 'new call',
+        },
+        13,
+      ],
+    });
+
+    expect(diff.id, '/workspace/lib/main.dart');
+    expect(diff.uri, '/workspace/lib/main.dart');
+    expect(diff.status, DiffStatus.applied);
+    expect(diff.changes.map((change) => change.type), [
+      'addition',
+      'deletion',
+      'modification',
+    ]);
+    expect(diff.changes.first.content, 'final enabled = true;');
+    expect(diff.changes[1].content, 'final enabled = false;');
+    expect(diff.changes[2].line, 42);
+    expect(diff.changes[2].oldContent, 'old call');
+    expect(diff.changes[2].newContent, 'new call');
+
+    final rawDiff = Diff.fromJson(<String, dynamic>{
+      'path': '/workspace/README.md',
+      'status': 'failed',
+      'diff': '+hello\n-world',
+    });
+
+    expect(rawDiff.status, DiffStatus.error);
+    expect(rawDiff.uri, '/workspace/README.md');
+    expect(rawDiff.changes.map((change) => change.type), [
+      'addition',
+      'deletion',
+    ]);
+  });
 }
