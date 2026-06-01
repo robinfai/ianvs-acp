@@ -60,6 +60,56 @@ void main() {
     expect(capabilities.configOptions, isTrue);
   });
 
+  test('content blocks accept legacy text, image, and resource payloads', () {
+    final delta = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: <Map<String, dynamic>>[
+        <String, dynamic>{'content': 'hello from content'},
+        <String, dynamic>{
+          'type': 'image',
+          'mime_type': 'image/png',
+          'base64': 'aW1hZ2U=',
+        },
+        <String, dynamic>{
+          'type': 'resource',
+          'resource': <String, dynamic>{
+            'url': 'file:///workspace/README.md',
+            'name': 'README.md',
+            'mime_type': 'text/markdown',
+            'content': '# Project notes',
+          },
+        },
+        <String, dynamic>{
+          'type': 'resourceLink',
+          'path': 'file:///workspace/lib/main.dart',
+          'label': 'main.dart',
+        },
+      ],
+    );
+
+    expect(delta.text, 'hello from content');
+    expect(delta.content[0], isA<TextContent>());
+    expect(delta.content[1].toJson(), {
+      'type': 'image',
+      'mimeType': 'image/png',
+      'data': 'aW1hZ2U=',
+    });
+    expect(delta.content[2].toJson(), {
+      'type': 'resource',
+      'resource': {
+        'uri': 'file:///workspace/README.md',
+        'title': 'README.md',
+        'mimeType': 'text/markdown',
+        'text': '# Project notes',
+      },
+    });
+    expect(delta.content[3].toJson(), {
+      'type': 'resource_link',
+      'uri': 'file:///workspace/lib/main.dart',
+      'title': 'main.dart',
+    });
+  });
+
   test('tool calls accept legacy content and location payloads', () {
     final toolCall = ToolCall.fromJson(<String, dynamic>{
       'tool_call_id': 'call-1',

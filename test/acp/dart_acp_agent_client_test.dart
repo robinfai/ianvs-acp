@@ -101,6 +101,25 @@ Future<void> main() async {
           },
         },
       }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'session-legacy-content',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'agent_message_chunk',
+            'content': <String, dynamic>{
+              'type': 'resource',
+              'resource': <String, dynamic>{
+                'url': 'file:///workspace/README.md',
+                'name': 'README.md',
+                'mime_type': 'text/markdown',
+                'content': '# Project notes',
+              },
+            },
+          },
+        },
+      }));
       await Future<void>.delayed(const Duration(milliseconds: 25));
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
@@ -129,8 +148,26 @@ Future<void> main() async {
         events
             .where((event) => event.type == AgentEventType.agentTextDelta)
             .map((event) => event.text),
-        ['hello legacy', ' list text and untyped text'],
+        [
+          'hello legacy',
+          ' list text and untyped text',
+          'Received resource content.',
+        ],
       );
+      final resourceEvent = events.firstWhere(
+        (event) => event.text == 'Received resource content.',
+      );
+      expect(resourceEvent.metadata['contentBlocks'], [
+        {
+          'type': 'resource',
+          'resource': {
+            'uri': 'file:///workspace/README.md',
+            'title': 'README.md',
+            'mimeType': 'text/markdown',
+            'text': '# Project notes',
+          },
+        },
+      ]);
       expect(events.last.metadata['stopReason'], 'endTurn');
     } finally {
       await client.dispose();
