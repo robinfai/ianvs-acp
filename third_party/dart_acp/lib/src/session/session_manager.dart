@@ -246,6 +246,29 @@ class InitializeResult {
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
 
+List<Json> _contentBlocksFromRaw(Object? content) {
+  if (content is List) {
+    return content
+        .map(_contentBlockFromRaw)
+        .whereType<Json>()
+        .toList(growable: false);
+  }
+  final block = _contentBlockFromRaw(content);
+  return block == null ? const <Json>[] : <Json>[block];
+}
+
+Json? _contentBlockFromRaw(Object? raw) {
+  if (raw is String) {
+    return <String, dynamic>{'type': 'text', 'text': raw};
+  }
+  if (raw is! Map) return null;
+  final block = raw.map((key, value) => MapEntry(key.toString(), value));
+  if (block['type'] == null && block['text'] is String) {
+    block['type'] = 'text';
+  }
+  return block;
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager {
   /// Create a [SessionManager] with [config] and [peer].
@@ -588,10 +611,7 @@ class SessionManager {
     } else if (kind == 'user_message_chunk' ||
         kind == 'agent_message_chunk' ||
         kind == 'agent_thought_chunk') {
-      final content = update['content'];
-      final blocks = content is Map<String, dynamic>
-          ? <Map<String, dynamic>>[content]
-          : (content as List?)?.cast<Map<String, dynamic>>() ?? const [];
+      final blocks = _contentBlocksFromRaw(update['content']);
       final role = kind == 'user_message_chunk' ? 'user' : 'assistant';
       final u = MessageDelta.fromRaw(
         role: role,
