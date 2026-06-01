@@ -2689,6 +2689,100 @@ Future<void> main() async {
     },
   );
 
+  test('synthesizes legacy models returned by resume and fork', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_resume_fork_models.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'resume': <String, dynamic>{},
+              'fork': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/resume') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'models': <String, dynamic>{
+            'currentModelId': 'resume-model',
+            'availableModels': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'modelId': 'resume-model',
+                'name': 'Resume Model',
+              },
+            ],
+          },
+        },
+      }));
+    } else if (message['method'] == 'session/fork') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-forked',
+          'models': <String, dynamic>{
+            'currentModelId': 'fork-model',
+            'availableModels': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'modelId': 'fork-model',
+                'name': 'Fork Model',
+              },
+            ],
+          },
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final resumeEvents = await client.resumeSession(
+        sessionId: 'session-resume',
+        cwd: '/workspace',
+      );
+      final resumeSettings = await client.sessionSettings('session-resume');
+      final forked = await client.forkSession(
+        sessionId: 'session-resume',
+        cwd: '/workspace',
+      );
+      final forkSettings = await client.sessionSettings(forked.id);
+
+      expect(resumeEvents, isEmpty);
+      expect(resumeSettings.currentModelLabel, 'Resume Model');
+      expect(forked.id, 'session-forked');
+      expect(forkSettings.currentModelLabel, 'Fork Model');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test(
     'caches immediate config option updates after session creation',
     () async {
