@@ -3271,6 +3271,80 @@ Future<void> main() async {
     },
   );
 
+  test('session resume accepts boolean config option current values', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File(
+      '${tempDir.path}/fake_resume_boolean_config_agent.dart',
+    );
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'resume': <String, dynamic>{},
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/resume') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'thinking',
+              'name': 'Thinking',
+              'type': 'boolean',
+              'currentValue': true,
+              'options': <Map<String, dynamic>>[],
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+
+      final events = await client.resumeSession(
+        sessionId: 'session-boolean',
+        cwd: '/workspace',
+      );
+      final settings = await client.sessionSettings('session-boolean');
+
+      expect(events, isEmpty);
+      expect(settings.configOptions, hasLength(1));
+      expect(settings.configOptions.single.id, 'thinking');
+      expect(settings.configOptions.single.currentValue, 'true');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test(
     'session load keeps immediate config options when result only has modes',
     () async {

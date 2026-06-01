@@ -106,7 +106,7 @@ class ConfigOption {
       id: json['id'] as String,
       name: json['name'] as String,
       type: json['type'] as String,
-      currentValue: json['currentValue'] as String,
+      currentValue: _configValueFromJson(json['currentValue']),
       options: optionsList
           .map((o) => ConfigOptionChoice.fromJson(o as Map<String, dynamic>))
           .toList(),
@@ -149,6 +149,14 @@ class ConfigOption {
 
   @override
   String toString() => 'ConfigOption($id: $currentValue)';
+}
+
+String _configValueFromJson(Object? value) {
+  if (value is String) return value;
+  if (value is bool) return value.toString();
+  throw FormatException(
+    'ConfigOption.currentValue must be a string or boolean.',
+  );
 }
 
 /// A choice within a config option.
