@@ -2998,11 +2998,13 @@ Future<void> main() async {
           'sessionId': 'session-commands',
           'update': <String, dynamic>{
             'sessionUpdate': 'available_commands_update',
-            'availableCommands': <Map<String, dynamic>>[
+            'availableCommands': <Object>[
+              'review',
               <String, dynamic>{
-                'name': 'review',
-                'description': 'Review the current change.',
+                'name': 'fix',
+                'description': 'Fix the current change.',
               },
+              42,
             ],
           },
         },
@@ -3026,9 +3028,13 @@ Future<void> main() async {
       expect(session.initialEvents, hasLength(1));
       final event = session.initialEvents.single;
       expect(event.metadata['kind'], 'commands');
+      expect(event.text, 'review, fix');
+      final commands = event.metadata['commands'] as List<dynamic>;
+      expect(commands, hasLength(2));
+      expect(commands.first, containsPair('name', 'review'));
       expect(
-        event.metadata['commands'],
-        contains(containsPair('description', 'Review the current change.')),
+        commands.last,
+        containsPair('description', 'Fix the current change.'),
       );
     } finally {
       await client.dispose();

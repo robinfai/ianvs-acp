@@ -269,6 +269,24 @@ Json? _contentBlockFromRaw(Object? raw) {
   return block;
 }
 
+List<Json> _availableCommandsFromRaw(Object? raw) {
+  if (raw is! List) return const <Json>[];
+  return raw
+      .map(_availableCommandFromRaw)
+      .whereType<Json>()
+      .toList(growable: false);
+}
+
+Json? _availableCommandFromRaw(Object? raw) {
+  if (raw is String) {
+    final name = raw.trim();
+    if (name.isEmpty) return null;
+    return <String, dynamic>{'name': name};
+  }
+  if (raw is! Map) return null;
+  return raw.map((key, value) => MapEntry(key.toString(), value));
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager {
   /// Create a [SessionManager] with [config] and [peer].
@@ -567,10 +585,7 @@ class SessionManager {
 
     final kind = update['sessionUpdate'];
     if (kind == 'available_commands_update') {
-      final cmds =
-          (update['availableCommands'] as List?)
-              ?.cast<Map<String, dynamic>>() ??
-          const [];
+      final cmds = _availableCommandsFromRaw(update['availableCommands']);
       final u = AvailableCommandsUpdate.fromRaw(cmds);
       _replayBuffers[sessionId]!.add(u);
       _sessionStreams[sessionId]!.add(u);
