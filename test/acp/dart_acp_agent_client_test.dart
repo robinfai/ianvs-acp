@@ -714,7 +714,7 @@ void sendSessionUpdate(Map<String, dynamic> update) {
     'jsonrpc': '2.0',
     'method': 'session/update',
     'params': <String, dynamic>{
-      'sessionId': 'session-1',
+      'session_id': 'session-1',
       'update': update,
     },
   });
@@ -2748,7 +2748,7 @@ Future<void> main() async {
         'jsonrpc': '2.0',
         'id': message['id'],
         'result': <String, dynamic>{
-          'sessionId': 'session-1',
+          'session_id': 'session-1',
           'config_options': <Object>[
             <String, dynamic>{
               'key': 'model',
@@ -3323,7 +3323,7 @@ Future<void> main() async {
         'jsonrpc': '2.0',
         'method': 'session/update',
         'params': <String, dynamic>{
-          'sessionId': 'session-1',
+          'session_id': 'session-1',
           'update': <String, dynamic>{
             'sessionUpdate': 'config_option_update',
             'configOptions': <Map<String, dynamic>>[

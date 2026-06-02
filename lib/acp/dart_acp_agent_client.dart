@@ -749,14 +749,14 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   AgentEvent? _eventFromUnknownUpdate(acp.UnknownUpdate update) {
     final raw = update.raw;
-    final sessionId = raw['sessionId'];
+    final sessionId = _sessionIdFromMap(raw);
     final rawBody = raw['update'];
     final body = rawBody is Map<String, dynamic> ? rawBody : raw;
 
     final kind = body['sessionUpdate'];
     if (kind == 'config_option_update') {
       final options = _configOptionsFromRaw(body['configOptions']);
-      if (sessionId is String && sessionId.isNotEmpty) {
+      if (sessionId != null) {
         _configOptionsBySession[sessionId] = options;
         _modelConfigOptionsFromModelsBySession.remove(sessionId);
         if (options.isNotEmpty) {
@@ -1298,6 +1298,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     return trimmed.isEmpty ? null : trimmed;
   }
 
+  String? _sessionIdFromMap(Map? raw) {
+    if (raw == null) return null;
+    return _nonEmptyString(raw['sessionId']) ??
+        _nonEmptyString(raw['session_id']);
+  }
+
   Map<String, dynamic> _dynamicJsonMap(Map<String, Object?> raw) {
     return raw.map((key, value) => MapEntry(key, _dynamicJsonValue(value)));
   }
@@ -1701,14 +1707,11 @@ class DartAcpAgentClient implements AcpAgentClient {
       if (request == null || !_isSessionResultMethod(request.method)) return;
       final result = _dynamicMap(message['result']);
       if (result == null) return;
-      final resultSessionId = result['sessionId'];
-      final requestSessionId = request.params['sessionId'];
-      final sessionId = resultSessionId is String
-          ? resultSessionId
-          : requestSessionId is String
-          ? requestSessionId
-          : null;
-      if (sessionId == null || sessionId.isEmpty) return;
+      final sessionId =
+          _sessionIdFromMap(result) ??
+          _sessionIdFromMap(request.params) ??
+          _nonEmptyString(result['id']);
+      if (sessionId == null) return;
       _rawSessionResultsBySession[sessionId] = result;
     } on Object {
       return;
@@ -1719,11 +1722,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (message['method'] != 'session/update') return;
     final params = _dynamicMap(message['params']);
     if (params == null) return;
-    final sessionId = params['sessionId'];
+    final sessionId = _sessionIdFromMap(params);
     final update = _dynamicMap(params['update']);
-    if (sessionId is! String || sessionId.isEmpty || update == null) {
-      return;
-    }
+    if (sessionId == null || update == null) return;
     final kind = update['sessionUpdate'];
     if (kind != 'tool_call' && kind != 'tool_call_update') return;
     final toolCallId = _toolCallIdFromRawMetadata(update);
