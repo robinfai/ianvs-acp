@@ -325,6 +325,99 @@ Future<void> main() async {
     },
   );
 
+  test('session manager accepts snake case session ids', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_snake_session_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) {
+  stdout.writeln(jsonEncode(message));
+}
+
+void sendSessionUpdate(Map<String, dynamic> update) {
+  send(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{
+      'session_id': 'snake-session',
+      'update': update,
+    },
+  });
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'fork': true,
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/new') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'session_id': 'snake-session'},
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'agent_message_chunk',
+        'content': 'hello from snake session',
+      });
+    } else if (message['method'] == 'session/fork') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'session_id': 'forked-snake'},
+      });
+    }
+  }
+}
+''');
+
+    final client = await AcpClient.start(
+      config: AcpConfig(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      ),
+    );
+
+    try {
+      await client.initialize().timeout(const Duration(seconds: 5));
+      final sessionId = await client
+          .newSession('/workspace')
+          .timeout(const Duration(seconds: 5));
+      final update = await client
+          .sessionUpdates(sessionId)
+          .where((update) => update is MessageDelta)
+          .cast<MessageDelta>()
+          .first
+          .timeout(const Duration(seconds: 5));
+      final forked = await client
+          .forkSession(sessionId: sessionId, workspaceRoot: '/workspace')
+          .timeout(const Duration(seconds: 5));
+
+      expect(sessionId, 'snake-session');
+      expect(update.text, 'hello from snake session');
+      expect(forked.sessionId, 'forked-snake');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('available commands accept legacy names, inputs, and schemas', () {
     final review = AvailableCommand.fromJson(<String, dynamic>{
       'id': 'review',

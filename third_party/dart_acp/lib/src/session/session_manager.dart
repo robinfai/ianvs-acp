@@ -176,6 +176,23 @@ String _toolCallIdFromUpdate(Map<String, dynamic> update) {
       '';
 }
 
+String? _sessionIdFromMap(Map<String, dynamic>? map) {
+  return _firstNonEmptyString(map, const ['sessionId', 'session_id']);
+}
+
+String _sessionIdFromResult(
+  Map<String, dynamic> response, {
+  required String method,
+}) {
+  final sessionId =
+      _sessionIdFromMap(response) ??
+      _firstNonEmptyString(response, const ['id']);
+  if (sessionId == null) {
+    throw FormatException('$method response did not include a session id.');
+  }
+  return sessionId;
+}
+
 const Set<String> _allowPermissionWords = <String>{
   'allow',
   'allowed',
@@ -421,7 +438,7 @@ class SessionManager {
         'mcpServers': config.mcpServers,
       }, additionalDirectories),
     );
-    final id = resp['sessionId'] as String;
+    final id = _sessionIdFromResult(resp, method: 'session/new');
     _sessionStreams.putIfAbsent(id, StreamController<AcpUpdate>.broadcast);
     _replayBuffers.putIfAbsent(id, () => <AcpUpdate>[]);
     _setSessionWorkspace(
@@ -542,7 +559,7 @@ class SessionManager {
         'mcpServers': config.mcpServers,
       }, directories),
     );
-    final newId = resp['sessionId'] as String;
+    final newId = _sessionIdFromResult(resp, method: 'session/fork');
     _sessionStreams.putIfAbsent(newId, StreamController<AcpUpdate>.broadcast);
     _replayBuffers.putIfAbsent(newId, () => <AcpUpdate>[]);
     if (root != null) {
@@ -699,7 +716,7 @@ class SessionManager {
   }
 
   void _routeSessionUpdate(Json json) {
-    final sessionId = json['sessionId'] as String?;
+    final sessionId = _sessionIdFromMap(json);
     final update = json['update'] as Map<String, dynamic>?;
     if (sessionId == null || update == null) return;
     // Ensure structures exist so we don't drop early updates (e.g., commands
@@ -821,7 +838,7 @@ class SessionManager {
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
     }
-    final sessionId = req['sessionId'] as String?;
+    final sessionId = _sessionIdFromMap(req);
     final workspaceRoot = sessionId != null
         ? _sessionWorkspaceRoots[sessionId]
         : _sessionWorkspaceRoots.values.firstOrNull;
@@ -892,7 +909,7 @@ class SessionManager {
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
     }
-    final sessionId = req['sessionId'] as String?;
+    final sessionId = _sessionIdFromMap(req);
     final workspaceRoot = sessionId != null
         ? _sessionWorkspaceRoots[sessionId]
         : _sessionWorkspaceRoots.values.firstOrNull;
@@ -953,7 +970,7 @@ class SessionManager {
   }
 
   Future<Json> _onRequestPermission(Json req) async {
-    final reqSessionId = req['sessionId'] as String? ?? '';
+    final reqSessionId = _sessionIdFromMap(req) ?? '';
     if (_cancellingSessions.contains(reqSessionId)) {
       return {
         'outcome': {'outcome': 'cancelled'},
@@ -970,7 +987,7 @@ class SessionManager {
         title: toolName,
         rationale: 'Requested by agent',
         options: options.map((choice) => choice.label).toList(),
-        sessionId: req['sessionId'] as String? ?? '',
+        sessionId: reqSessionId,
         toolName: toolName,
         toolKind: toolKind,
         metadata: metadata,
@@ -1001,7 +1018,7 @@ class SessionManager {
     if (provider == null) {
       throw Exception('Terminal not supported');
     }
-    final sessionId = req['sessionId'] as String? ?? '';
+    final sessionId = _sessionIdFromMap(req) ?? '';
     final cmd = req['command'] as String;
     final args = (req['args'] as List?)?.cast<String>() ?? const [];
     final requestedCwd = req['cwd'] as String?;
