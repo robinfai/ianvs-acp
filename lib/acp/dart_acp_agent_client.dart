@@ -1617,29 +1617,47 @@ class DartAcpAgentClient implements AcpAgentClient {
   AcpSessionModeInfo? _modeInfoFromRaw(Object? raw) {
     if (raw is! Map) return null;
     final map = _metadataMap(raw);
-    final currentModeId = map['currentModeId'] is String
-        ? map['currentModeId'] as String
-        : null;
-    final availableModes = map['availableModes'] is List
-        ? (map['availableModes'] as List)
-              .whereType<Map>()
-              .map((item) {
-                final mode = _metadataMap(item);
-                final id = mode['id'];
-                if (id is! String || id.isEmpty) return null;
-                return AcpSessionMode(
-                  id: id,
-                  name: mode['name'] is String ? mode['name'] as String : id,
-                );
-              })
-              .whereType<AcpSessionMode>()
-              .toList()
-        : const <AcpSessionMode>[];
+    final currentModeId = _modeIdFromMap(map);
+    final availableModes = _availableModesFromRaw(
+      map['availableModes'] ?? map['available_modes'],
+    );
     if (currentModeId == null && availableModes.isEmpty) return null;
     return AcpSessionModeInfo(
       currentModeId: currentModeId,
       availableModes: availableModes,
     );
+  }
+
+  String? _modeIdFromMap(Map? raw) {
+    if (raw == null) return null;
+    return _nonEmptyString(raw['currentModeId']) ??
+        _nonEmptyString(raw['current_mode_id']) ??
+        _nonEmptyString(raw['modeId']) ??
+        _nonEmptyString(raw['mode_id']);
+  }
+
+  List<AcpSessionMode> _availableModesFromRaw(Object? raw) {
+    if (raw is! List) return const <AcpSessionMode>[];
+    return raw
+        .whereType<Map>()
+        .map((item) {
+          final mode = _metadataMap(item);
+          final id =
+              _nonEmptyString(mode['id']) ??
+              _nonEmptyString(mode['modeId']) ??
+              _nonEmptyString(mode['mode_id']) ??
+              _nonEmptyString(mode['value']);
+          if (id == null) return null;
+          final name =
+              _nonEmptyString(mode['name']) ??
+              _nonEmptyString(mode['label']) ??
+              _nonEmptyString(mode['displayName']) ??
+              _nonEmptyString(mode['display_name']) ??
+              id;
+          return AcpSessionMode(id: id, name: name);
+        })
+        .whereType<AcpSessionMode>()
+        .toList();
   }
 
   List<AcpConfigOption> _applyConfigOptionOverride(

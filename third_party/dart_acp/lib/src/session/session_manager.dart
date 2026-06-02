@@ -193,6 +193,53 @@ String _sessionIdFromResult(
   return sessionId;
 }
 
+({String? currentModeId, List<({String id, String name})> availableModes})?
+_sessionModeInfoFromRaw(Object? raw) {
+  final map = _jsonMapFromRaw(raw);
+  if (map == null) return null;
+  final currentModeId = _modeIdFromRaw(map);
+  final availableModes = _availableModesFromRaw(
+    map['availableModes'] ?? map['available_modes'],
+  );
+  if (currentModeId == null && availableModes.isEmpty) return null;
+  return (currentModeId: currentModeId, availableModes: availableModes);
+}
+
+String? _modeIdFromRaw(Map<String, dynamic>? map) {
+  return _firstNonEmptyString(map, const [
+    'currentModeId',
+    'current_mode_id',
+    'modeId',
+    'mode_id',
+  ]);
+}
+
+List<({String id, String name})> _availableModesFromRaw(Object? raw) {
+  if (raw is! List) return const <({String id, String name})>[];
+  final modes = <({String id, String name})>[];
+  for (final item in raw) {
+    final map = _jsonMapFromRaw(item);
+    if (map == null) continue;
+    final id = _firstNonEmptyString(map, const [
+      'id',
+      'modeId',
+      'mode_id',
+      'value',
+    ]);
+    if (id == null) continue;
+    final name =
+        _firstNonEmptyString(map, const [
+          'name',
+          'label',
+          'displayName',
+          'display_name',
+        ]) ??
+        id;
+    modes.add((id: id, name: name));
+  }
+  return modes;
+}
+
 const Set<String> _allowPermissionWords = <String>{
   'allow',
   'allowed',
@@ -446,25 +493,8 @@ class SessionManager {
       workspaceRoot,
       additionalDirectories: additionalDirectories,
     );
-    // Capture any modes info from session/new
-    final modes = resp['modes'];
-    if (modes is Map<String, dynamic>) {
-      final current = modes['currentModeId'] as String?;
-      final avail =
-          (modes['availableModes'] as List?)?.cast<Map<String, dynamic>>() ??
-          const [];
-      _sessionModes[id] = (
-        currentModeId: current,
-        availableModes: avail
-            .map(
-              (m) => (
-                id: (m['id'] as String?) ?? '',
-                name: (m['name'] as String?) ?? '',
-              ),
-            )
-            .toList(),
-      );
-    }
+    final modes = _sessionModeInfoFromRaw(resp['modes']);
+    if (modes != null) _sessionModes[id] = modes;
     return id;
   }
 
@@ -783,7 +813,7 @@ class SessionManager {
       _replayBuffers[sessionId]!.add(u);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'current_mode_update') {
-      final currentModeId = update['currentModeId'] as String?;
+      final currentModeId = _modeIdFromRaw(update);
       if (currentModeId != null) {
         final existing = _sessionModes[sessionId];
         if (existing != null) {

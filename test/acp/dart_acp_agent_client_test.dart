@@ -2846,10 +2846,10 @@ Future<void> main() async {
         'result': <String, dynamic>{
           'sessionId': 'session-legacy',
           'modes': <String, dynamic>{
-            'currentModeId': 'plan',
-            'availableModes': <Map<String, dynamic>>[
+            'current_mode_id': 'plan',
+            'available_modes': <Map<String, dynamic>>[
               <String, dynamic>{'id': 'plan', 'name': 'Plan'},
-              <String, dynamic>{'id': 'act', 'name': 'Act'},
+              <String, dynamic>{'mode_id': 'act', 'display_name': 'Act'},
             ],
           },
         },
@@ -2876,6 +2876,10 @@ Future<void> main() async {
       expect(settings.modes.availableModes.map((mode) => mode.id), [
         'plan',
         'act',
+      ]);
+      expect(settings.modes.availableModes.map((mode) => mode.name), [
+        'Plan',
+        'Act',
       ]);
     } finally {
       await client.dispose();
@@ -3757,7 +3761,7 @@ Future<void> main() async {
           'sessionId': 'session-legacy-mode',
           'update': <String, dynamic>{
             'sessionUpdate': 'current_mode_update',
-            'currentModeId': 'plan',
+            'current_mode_id': 'plan',
           },
         },
       }));
