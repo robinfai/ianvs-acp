@@ -157,9 +157,9 @@ class ToolCall {
   factory ToolCall.fromJson(Map<String, dynamic> json) => ToolCall(
     toolCallId: _toolCallIdFromJson(json),
     status: ToolCallStatus.fromWire(_optionalString(json['status'])),
-    title: _optionalString(json['title']),
-    kind: json['kind'] != null
-        ? ToolKind.fromWire(_optionalString(json['kind']))
+    title: _toolTitleFromJson(json),
+    kind: _toolKindFromJson(json) != null
+        ? ToolKind.fromWire(_toolKindFromJson(json))
         : null,
     content: _toolContentFromRaw(json['content']),
     locations: _toolLocationsFromRaw(json['locations']),
@@ -211,9 +211,9 @@ class ToolCall {
     status: update['status'] != null
         ? ToolCallStatus.fromWire(_optionalString(update['status']))
         : status,
-    title: _optionalString(update['title']) ?? title,
-    kind: update['kind'] != null
-        ? ToolKind.fromWire(_optionalString(update['kind']))
+    title: _toolTitleFromJson(update) ?? title,
+    kind: _toolKindFromJson(update) != null
+        ? ToolKind.fromWire(_toolKindFromJson(update))
         : kind,
     content: update['content'] != null
         ? _toolContentFromRaw(update['content']) ?? content
@@ -227,6 +227,22 @@ class ToolCall {
 }
 
 String? _optionalString(Object? value) => value is String ? value : null;
+
+String? _toolTitleFromJson(Map<String, dynamic> json) {
+  for (final key in const ['title', 'name', 'toolName', 'tool_name']) {
+    final value = _optionalString(json[key]);
+    if (value != null && value.trim().isNotEmpty) return value.trim();
+  }
+  return null;
+}
+
+String? _toolKindFromJson(Map<String, dynamic> json) {
+  for (final key in const ['kind', 'toolKind', 'tool_kind']) {
+    final value = _optionalString(json[key]);
+    if (value != null && value.trim().isNotEmpty) return value.trim();
+  }
+  return null;
+}
 
 String _toolCallIdFromJson(Map<String, dynamic> json) {
   for (final key in const [

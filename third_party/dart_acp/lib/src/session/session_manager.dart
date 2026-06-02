@@ -133,6 +133,38 @@ String? _nonEmptyString(Object? raw) {
   return trimmed.isEmpty ? null : trimmed;
 }
 
+Map<String, dynamic>? _jsonMapFromRaw(Object? raw) {
+  if (raw is! Map) return null;
+  return raw.map((key, value) => MapEntry(key.toString(), value));
+}
+
+String _permissionToolName(Map<String, dynamic>? toolCall) {
+  return _firstNonEmptyString(toolCall, const [
+        'title',
+        'name',
+        'toolName',
+        'tool_name',
+      ]) ??
+      'operation';
+}
+
+String? _permissionToolKind(Map<String, dynamic>? toolCall) {
+  return _firstNonEmptyString(toolCall, const [
+    'kind',
+    'toolKind',
+    'tool_kind',
+  ]);
+}
+
+String? _firstNonEmptyString(Map<String, dynamic>? map, List<String> keys) {
+  if (map == null) return null;
+  for (final key in keys) {
+    final value = _nonEmptyString(map[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
 const Set<String> _allowPermissionWords = <String>{
   'allow',
   'allowed',
@@ -909,9 +941,9 @@ class SessionManager {
       };
     }
     final options = _permissionChoicesFromRaw(req['options']);
-    final toolCall = req['toolCall'] as Map<String, dynamic>?;
-    final toolName = (toolCall?['title'] as String?) ?? 'operation';
-    final toolKind = toolCall?['kind'] as String?;
+    final toolCall = _jsonMapFromRaw(req['toolCall']);
+    final toolName = _permissionToolName(toolCall);
+    final toolKind = _permissionToolKind(toolCall);
     final metadata = <String, Object?>{};
     if (toolCall != null) metadata['toolCall'] = toolCall;
     final outcome = await config.permissionProvider.request(
