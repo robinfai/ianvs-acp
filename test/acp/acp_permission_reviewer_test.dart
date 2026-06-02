@@ -3,6 +3,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 
@@ -68,6 +69,42 @@ void main() {
     expect(analysis['signals'], contains('cwd_outside_workspace'));
     expect(analysis['signals'], contains('high_risk_command_pattern'));
   });
+
+  test(
+    'permission review payload treats additional directories as workspace',
+    () {
+      final payload = acpPermissionReviewPayload(
+        AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Create terminal',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 5, 31, 12),
+          metadata: const <String, Object?>{
+            'command': 'ls',
+            'cwd': '/shared/project',
+            'workspaceRoot': '/workspace',
+          },
+        ),
+        workspaceRoot: '/workspace',
+        additionalDirectories: const ['/shared'],
+      );
+
+      expect(payload['workspace'], {
+        'root': '/workspace',
+        'additionalDirectories': ['/shared'],
+      });
+      final analysis = payload['analysis'] as Map<String, Object?>;
+      expect(analysis['risk'], 'low');
+      expect(analysis['suggestedDecision'], 'allow');
+      expect(analysis['cwdWithinWorkspace'], isTrue);
+      expect(analysis['signals'], isNot(contains('cwd_outside_workspace')));
+      expect(analysis['workspaceRoots'], ['/workspace', '/shared']);
+    },
+  );
 
   test(
     'permission review payload extracts command from nested tool call input',
@@ -198,6 +235,7 @@ void main() {
           requestedAt: DateTime.utc(2026, 5, 31, 12),
         ),
         workspaceRoot: '/workspace',
+        additionalDirectories: const ['/shared'],
         model: 'primary-model',
       );
 
@@ -207,9 +245,11 @@ void main() {
       expect(result?.model, 'review-model');
       expect(fake.connected, isTrue);
       expect(fake.sessionCount, 1);
+      expect(fake.lastCreateAdditionalDirectories, ['/shared']);
       expect(fake.lastConfigId, 'model');
       expect(fake.lastConfigValue, 'review-model');
       expect(fake.lastPrompt, contains('"model": "review-model"'));
+      expect(fake.lastPrompt, contains('"additionalDirectories"'));
       expect(fake.lastPrompt, contains('"line": "ls -la"'));
     },
   );
@@ -219,6 +259,19 @@ class _ReviewFakeAgentClient extends FakeAgentClient {
   _ReviewFakeAgentClient({required this.reviewText, super.sessionSettings});
 
   final String reviewText;
+  List<String> lastCreateAdditionalDirectories = const <String>[];
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    lastCreateAdditionalDirectories = additionalDirectories;
+    return super.createSession(
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
 
   @override
   Stream<AgentEvent> sendPrompt({

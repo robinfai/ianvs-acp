@@ -14,6 +14,7 @@ abstract class AcpPermissionReviewer {
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
     String? model,
   });
 
@@ -38,24 +39,32 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
   AcpAgentClient? _client;
   AgentSession? _session;
   String? _sessionWorkspaceRoot;
+  List<String> _sessionAdditionalDirectories = const <String>[];
 
   @override
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
     String? model,
   }) async {
     final effectiveModel = modelOverride ?? model;
+    final directories = _normalizedDirectories(additionalDirectories);
     final payload = acpPermissionReviewPayload(
       request,
       workspaceRoot: workspaceRoot,
+      additionalDirectories: directories,
       model: effectiveModel,
     );
 
     try {
       return await (() async {
         final client = await _ensureClient();
-        final session = await _ensureSession(client, workspaceRoot);
+        final session = await _ensureSession(
+          client,
+          workspaceRoot,
+          directories,
+        );
         await _syncModel(client, session.id, effectiveModel);
         final response = await _reviewWithAgent(client, session.id, payload);
         final data = _reviewDataFromText(response);
@@ -113,9 +122,12 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
   Future<AgentSession> _ensureSession(
     AcpAgentClient client,
     String workspaceRoot,
+    List<String> additionalDirectories,
   ) async {
     final existing = _session;
-    if (existing != null && _sessionWorkspaceRoot == workspaceRoot) {
+    if (existing != null &&
+        _sessionWorkspaceRoot == workspaceRoot &&
+        _sameStringList(_sessionAdditionalDirectories, additionalDirectories)) {
       return existing;
     }
 
@@ -126,9 +138,13 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
         // The sidecar session is best-effort and can be replaced safely.
       }
     }
-    final session = await client.createSession(cwd: workspaceRoot);
+    final session = await client.createSession(
+      cwd: workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
     _session = session;
     _sessionWorkspaceRoot = workspaceRoot;
+    _sessionAdditionalDirectories = additionalDirectories;
     return session;
   }
 
@@ -194,7 +210,7 @@ Return only a JSON object with:
 - "risk": "low", "medium", or "high"
 - "rationale": one concise sentence
 
-Allow only clearly low-risk read-only commands whose cwd is inside the workspace. Deny destructive, privileged, network-install, or outside-workspace commands. Use manual for ambiguity. Do not run tools.
+Allow only clearly low-risk read-only commands whose cwd is inside one of the workspace roots. Deny destructive, privileged, network-install, or outside-workspace commands. Use manual for ambiguity. Do not run tools.
 
 Payload:
 ```json
@@ -250,6 +266,7 @@ ${encoder.convert(payload)}
     _client = null;
     _session = null;
     _sessionWorkspaceRoot = null;
+    _sessionAdditionalDirectories = const <String>[];
     try {
       if (client != null && session != null) {
         await client.closeSession(sessionId: session.id);
@@ -278,6 +295,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
     String? model,
   }) async {
     if (!config.enabled) return null;
@@ -285,6 +303,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     final payload = acpPermissionReviewPayload(
       request,
       workspaceRoot: workspaceRoot,
+      additionalDirectories: additionalDirectories,
       model: effectiveModel,
     );
 
@@ -547,6 +566,7 @@ String? _reviewStringField(Map<String, Object?> data, List<String> keys) {
 Map<String, dynamic> acpPermissionReviewPayload(
   AcpPermissionRequest request, {
   required String workspaceRoot,
+  List<String> additionalDirectories = const <String>[],
   String? model,
 }) {
   final metadataWorkspace = _metadataString(request.metadata, 'workspaceRoot');
@@ -554,6 +574,13 @@ Map<String, dynamic> acpPermissionReviewPayload(
       metadataWorkspace == null || metadataWorkspace.isEmpty
       ? workspaceRoot
       : metadataWorkspace;
+  final effectiveAdditionalDirectories = _normalizedDirectories([
+    ...additionalDirectories,
+    ..._metadataStringList(request.metadata, const [
+      'additionalDirectories',
+      'additional_directories',
+    ]),
+  ]);
   final commandContext = _commandContextFromPermission(request);
   final command = commandContext.command;
   final args = commandContext.args;
@@ -562,6 +589,7 @@ Map<String, dynamic> acpPermissionReviewPayload(
   final analysis = _localPermissionAnalysis(
     request,
     workspaceRoot: effectiveWorkspace,
+    additionalDirectories: effectiveAdditionalDirectories,
     commandLine: commandLine,
     cwd: cwd,
   );
@@ -569,7 +597,11 @@ Map<String, dynamic> acpPermissionReviewPayload(
     'schema': 'ianvs-acp.permission-review.v1',
     if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
     'request': _jsonMap(request.toJson()),
-    'workspace': <String, Object?>{'root': effectiveWorkspace},
+    'workspace': <String, Object?>{
+      'root': effectiveWorkspace,
+      if (effectiveAdditionalDirectories.isNotEmpty)
+        'additionalDirectories': effectiveAdditionalDirectories,
+    },
     if (commandLine.isNotEmpty)
       'command': <String, Object?>{
         'line': commandLine,
@@ -584,11 +616,13 @@ Map<String, dynamic> acpPermissionReviewPayload(
 Map<String, Object?> _localPermissionAnalysis(
   AcpPermissionRequest request, {
   required String workspaceRoot,
+  required List<String> additionalDirectories,
   required String commandLine,
   required String cwd,
 }) {
   final signals = <String>[];
-  final cwdWithinWorkspace = _isWithinWorkspace(cwd, workspaceRoot);
+  final workspaceRoots = _workspaceRoots(workspaceRoot, additionalDirectories);
+  final cwdWithinWorkspace = _isWithinAnyWorkspace(cwd, workspaceRoots);
   if (!cwdWithinWorkspace) signals.add('cwd_outside_workspace');
 
   final lowerCommand = commandLine.toLowerCase();
@@ -626,6 +660,7 @@ Map<String, Object?> _localPermissionAnalysis(
     'risk': risk,
     'suggestedDecision': suggestedDecision,
     'cwdWithinWorkspace': cwdWithinWorkspace,
+    if (workspaceRoots.length > 1) 'workspaceRoots': workspaceRoots,
     if (signals.isNotEmpty) 'signals': signals,
   };
 }
@@ -789,6 +824,36 @@ List<String> _stringList(Object? value) {
   return value.whereType<String>().toList(growable: false);
 }
 
+List<String> _metadataStringList(
+  Map<String, Object?> metadata,
+  List<String> keys,
+) {
+  for (final key in keys) {
+    final values = _stringList(metadata[key]);
+    if (values.isNotEmpty) return values;
+  }
+  return const <String>[];
+}
+
+List<String> _normalizedDirectories(Iterable<String> directories) {
+  final result = <String>[];
+  final seen = <String>{};
+  for (final directory in directories) {
+    final trimmed = directory.trim();
+    if (trimmed.isEmpty || !seen.add(trimmed)) continue;
+    result.add(trimmed);
+  }
+  return List.unmodifiable(result);
+}
+
+bool _sameStringList(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
 String _commandLine(String? command, List<String> args) {
   final trimmedCommand = command?.trim();
   if (trimmedCommand == null || trimmedCommand.isEmpty) return '';
@@ -805,6 +870,26 @@ bool _isWithinWorkspace(String path, String workspaceRoot) {
   final root = _normalizedAbsolutePath(workspaceRoot, workspaceRoot);
   final target = _normalizedAbsolutePath(path, root);
   return target == root || target.startsWith('$root/');
+}
+
+bool _isWithinAnyWorkspace(String path, List<String> workspaceRoots) {
+  for (final root in workspaceRoots) {
+    if (_isWithinWorkspace(path, root)) return true;
+  }
+  return false;
+}
+
+List<String> _workspaceRoots(
+  String workspaceRoot,
+  List<String> additionalDirectories,
+) {
+  final roots = <String>[];
+  final seen = <String>{};
+  for (final root in [workspaceRoot, ...additionalDirectories]) {
+    final normalized = _normalizedAbsolutePath(root, workspaceRoot);
+    if (seen.add(normalized)) roots.add(normalized);
+  }
+  return List.unmodifiable(roots);
 }
 
 String _normalizedAbsolutePath(String path, String base) {

@@ -1165,6 +1165,53 @@ void main() {
     );
   });
 
+  test('auto review uses active session workspace roots', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'low',
+        rationale: 'Command stays in an additional workspace.',
+        reviewer: 'sidecar-reviewer',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      additionalDirectories: const ['/global-extra'],
+      permissionReviewer: reviewer,
+    );
+    controller.currentSession = AgentSession(
+      id: 'session-extra',
+      cwd: '/other/project',
+      createdAt: DateTime(2026, 5, 31, 12),
+      additionalDirectories: const ['/other/shared'],
+    );
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-extra',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+        metadata: const <String, Object?>{
+          'command': 'ls',
+          'cwd': '/other/shared',
+        },
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(reviewer.workspaceRoots.single, '/other/project');
+    expect(reviewer.additionalDirectories.single, ['/other/shared']);
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+  });
+
   test('auto review opinion without a decision keeps request manual', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
@@ -2478,16 +2525,19 @@ class _FakePermissionReviewer extends AcpPermissionReviewer {
   final AcpPermissionReviewResult result;
   final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
   final List<String> workspaceRoots = <String>[];
+  final List<List<String>> additionalDirectories = <List<String>>[];
   final List<String?> models = <String?>[];
 
   @override
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
     String? model,
   }) async {
     requests.add(request);
     workspaceRoots.add(workspaceRoot);
+    this.additionalDirectories.add(additionalDirectories);
     models.add(model);
     return result;
   }
@@ -2506,6 +2556,7 @@ class _DelayedPermissionReviewer extends AcpPermissionReviewer {
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
     String? model,
   }) {
     requests.add(request);

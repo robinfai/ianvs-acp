@@ -945,9 +945,18 @@ class ChatController extends ChangeNotifier {
     if (!_reviewingPermissionRequestIds.add(request.id)) return;
     unawaited(() async {
       try {
+        final reviewSession = currentSession;
+        final reviewWorkspaceRoot = reviewSession?.cwd.trim().isNotEmpty == true
+            ? reviewSession!.cwd
+            : cwd;
+        final reviewAdditionalDirectories =
+            reviewSession?.additionalDirectories.isNotEmpty == true
+            ? reviewSession!.additionalDirectories
+            : additionalDirectories;
         final result = await reviewer.review(
           request,
-          workspaceRoot: cwd,
+          workspaceRoot: reviewWorkspaceRoot,
+          additionalDirectories: reviewAdditionalDirectories,
           model: currentModelValue,
         );
         if (_isDisposed) return;

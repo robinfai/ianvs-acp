@@ -792,6 +792,9 @@ class SessionManager {
     // policy mode). Agents may or may not request permission explicitly;
     // we gate here to ensure policy is always respected.
     try {
+      final additionalDirectories = _additionalDirectoriesForSession(
+        sessionId ?? '',
+      );
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Read file',
@@ -803,6 +806,8 @@ class SessionManager {
           metadata: <String, Object?>{
             'path': req['path'],
             'workspaceRoot': workspaceRoot,
+            if (additionalDirectories.isNotEmpty)
+              'additionalDirectories': additionalDirectories,
           },
         ),
       );
@@ -856,6 +861,9 @@ class SessionManager {
 
     // Enforce permission policy for writes when provided.
     try {
+      final additionalDirectories = _additionalDirectoriesForSession(
+        sessionId ?? '',
+      );
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Write file',
@@ -867,6 +875,8 @@ class SessionManager {
           metadata: <String, Object?>{
             'path': req['path'],
             'workspaceRoot': workspaceRoot,
+            if (additionalDirectories.isNotEmpty)
+              'additionalDirectories': additionalDirectories,
           },
         ),
       );
@@ -950,10 +960,13 @@ class SessionManager {
         for (final e in envList) (e['name'] as String): (e['value'] as String),
     };
     final workspaceRoot = getWorkspaceRoot(sessionId);
+    final additionalDirectories = _additionalDirectoriesForSession(sessionId);
     final permissionMetadata = <String, Object?>{
       'command': cmd,
       'args': args,
       'workspaceRoot': workspaceRoot,
+      if (additionalDirectories.isNotEmpty)
+        'additionalDirectories': additionalDirectories,
     };
     if (requestedCwd != null) permissionMetadata['cwd'] = requestedCwd;
     if (env.isNotEmpty) {
