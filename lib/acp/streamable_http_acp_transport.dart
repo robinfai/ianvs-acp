@@ -124,10 +124,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     if (method is String) {
       final params = message['params'];
       if (params is Map) {
-        final sessionId = params['sessionId'];
-        if (sessionId is String && sessionId.trim().isNotEmpty) {
-          return sessionId.trim();
-        }
+        final sessionId = _sessionIdFromMap(params);
+        if (sessionId != null) return sessionId;
       }
       return null;
     }
@@ -293,10 +291,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
               method == 'session/load' ||
               method == 'session/resume' ||
               method == 'session/fork')) {
-        final sessionId = _stringFromPath(decoded, const [
-          'result',
-          'sessionId',
-        ]);
+        final sessionId = _sessionIdFromResult(decoded);
         if (sessionId != null) {
           _startInboundStream(sessionId);
         }
@@ -305,9 +300,9 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final method = decoded['method'];
     if (idKey != null && method is String) {
       final params = decoded['params'];
-      final sessionId = params is Map ? params['sessionId'] : null;
-      if (sessionId is String && sessionId.trim().isNotEmpty) {
-        _serverRequestSessionsById[idKey] = sessionId.trim();
+      final sessionId = params is Map ? _sessionIdFromMap(params) : null;
+      if (sessionId != null) {
+        _serverRequestSessionsById[idKey] = sessionId;
       }
     }
   }
@@ -358,6 +353,23 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return current is String && current.trim().isNotEmpty
         ? current.trim()
         : null;
+  }
+
+  String? _sessionIdFromResult(Map<String, dynamic> json) {
+    final result = json['result'];
+    if (result is! Map) return null;
+    return _sessionIdFromMap(result) ?? _nonEmptyString(result['id']);
+  }
+
+  String? _sessionIdFromMap(Map map) {
+    return _nonEmptyString(map['sessionId']) ??
+        _nonEmptyString(map['session_id']);
+  }
+
+  String? _nonEmptyString(Object? value) {
+    if (value is! String) return null;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   @override
