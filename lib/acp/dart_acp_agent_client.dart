@@ -419,7 +419,9 @@ class DartAcpAgentClient implements AcpAgentClient {
         'sessionId': sessionId,
         'modelId': value.toString(),
       });
-      final rawConfigOptions = response['configOptions'];
+      final rawConfigOptions = response.containsKey('configOptions')
+          ? response['configOptions']
+          : response['config_options'];
       if ((rawConfigOptions is List && rawConfigOptions.isNotEmpty) ||
           response.containsKey('models')) {
         final configOptions = _cacheSessionResultConfigOptions(
@@ -1541,8 +1543,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   AcpConfigOption? _configOptionFromRawModels(Object? raw) {
     if (raw is! Map) return null;
     final map = _metadataMap(raw);
-    final availableModels = map['availableModels'] is List
-        ? (map['availableModels'] as List)
+    final rawAvailableModels =
+        map['availableModels'] ?? map['available_models'];
+    final availableModels = rawAvailableModels is List
+        ? rawAvailableModels
               .whereType<Map>()
               .map((item) => _configChoiceFromRawModelMap(_metadataMap(item)))
               .whereType<AcpConfigOptionChoice>()
@@ -1588,6 +1592,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   ) {
     final modelId =
         _nonEmptyString(raw['modelId']) ??
+        _nonEmptyString(raw['model_id']) ??
         _nonEmptyString(raw['id']) ??
         _nonEmptyString(raw['value']) ??
         _nonEmptyString(raw['model']);
@@ -1597,6 +1602,8 @@ class DartAcpAgentClient implements AcpAgentClient {
       name:
           _nonEmptyString(raw['name']) ??
           _nonEmptyString(raw['displayName']) ??
+          _nonEmptyString(raw['display_name']) ??
+          _nonEmptyString(raw['label']) ??
           modelId,
       description: _nonEmptyString(raw['description']),
     );

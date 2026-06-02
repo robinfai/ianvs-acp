@@ -2916,16 +2916,16 @@ Future<void> main() async {
         'result': <String, dynamic>{
           'sessionId': 'session-models',
           'models': <String, dynamic>{
-            'currentModelId': 'kimi-k2',
-            'availableModels': <Map<String, dynamic>>[
+            'current_model_id': 'kimi-k2',
+            'available_models': <Map<String, dynamic>>[
               <String, dynamic>{
-                'modelId': 'kimi-k2',
-                'name': 'Kimi K2',
+                'model_id': 'kimi-k2',
+                'display_name': 'Kimi K2',
                 'description': 'Moonshot K2',
               },
               <String, dynamic>{
-                'modelId': 'kimi-pro',
-                'name': 'Kimi Pro',
+                'model_id': 'kimi-pro',
+                'label': 'Kimi Pro',
               },
             ],
           },
@@ -2954,6 +2954,10 @@ Future<void> main() async {
       expect(settings.modelOption?.options.map((choice) => choice.value), [
         'kimi-k2',
         'kimi-pro',
+      ]);
+      expect(settings.modelOption?.options.map((choice) => choice.name), [
+        'Kimi K2',
+        'Kimi Pro',
       ]);
     } finally {
       await client.dispose();
@@ -3007,7 +3011,24 @@ Future<void> main() async {
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
         'id': message['id'],
-        'result': <String, dynamic>{},
+        'result': <String, dynamic>{
+          'config_options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'current_value': 'kimi-pro',
+              'category': 'model',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'kimi-k2', 'name': 'Kimi K2'},
+                <String, dynamic>{
+                  'value': 'kimi-pro',
+                  'name': 'Kimi Pro Updated',
+                },
+              ],
+            },
+          ],
+        },
       }));
     } else if (message['method'] == 'session/set_config_option') {
       await File($setModelParamsPath).writeAsString(
@@ -3048,7 +3069,8 @@ Future<void> main() async {
         'modelId': 'kimi-pro',
       });
       expect(updatedOptions.single.currentValue, 'kimi-pro');
-      expect(settings.currentModelLabel, 'Kimi Pro');
+      expect(updatedOptions.single.options.last.name, 'Kimi Pro Updated');
+      expect(settings.currentModelLabel, 'Kimi Pro Updated');
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
