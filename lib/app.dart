@@ -166,6 +166,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
         mcpServers: _config.mcpServers,
+        additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
@@ -186,6 +187,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return ChatController(
       client: _agentClient(config),
       cwd: _cwd,
+      additionalDirectories: config.additionalDirectories,
       agentName: config.agentName,
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
@@ -317,6 +319,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     await controller.resumeSession(
       session.id,
       cwd: session.cwd,
+      additionalDirectories: session.additionalDirectories,
       title: session.title,
       updatedAt: session.updatedAt,
     );
@@ -352,6 +355,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         allowFilesystemReadOutsideWorkspace:
             config.clientProviders.filesystem.allowReadOutsideWorkspace,
         enableTerminalProvider: config.clientProviders.terminal.enabled,
+        additionalDirectories: config.additionalDirectories,
       );
     }
     return DartAcpAgentClient(
@@ -369,6 +373,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       allowFilesystemReadOutsideWorkspace:
           config.clientProviders.filesystem.allowReadOutsideWorkspace,
       enableTerminalProvider: config.clientProviders.terminal.enabled,
+      additionalDirectories: config.additionalDirectories,
     );
   }
 
@@ -473,6 +478,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       'mcpServers': config.mcpServers
           .map((server) => server.toJson())
           .toList(growable: false),
+      'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
@@ -486,6 +492,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       'mcpServers': config.mcpServers
           .map((server) => server.toJson())
           .toList(growable: false),
+      'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
     });
   }

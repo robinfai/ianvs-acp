@@ -128,8 +128,10 @@ class FakeAgentClient implements AcpAgentClient {
             resume: supportsResumeSession,
             fork: supportsFork,
             configOptions: true,
+            additionalDirectories: true,
             close: true,
             rawKeys: [
+              'additionalDirectories',
               'close',
               'configOptions',
               if (supportsFork) 'fork',
@@ -193,7 +195,10 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<AgentSession> createSession({required String cwd}) async {
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
     }
@@ -208,6 +213,7 @@ class FakeAgentClient implements AcpAgentClient {
       id: 'fake-session-$sessionCount',
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
+      additionalDirectories: additionalDirectories,
       initialEvents: createSessionEvents,
     );
   }
@@ -216,6 +222,7 @@ class FakeAgentClient implements AcpAgentClient {
   Future<List<AgentEvent>> resumeSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
@@ -301,6 +308,7 @@ class FakeAgentClient implements AcpAgentClient {
   Future<AgentSession> forkSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
@@ -317,6 +325,7 @@ class FakeAgentClient implements AcpAgentClient {
       id: 'fake-fork-$sessionCount',
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
+      additionalDirectories: additionalDirectories,
       initialEvents: forkSessionEvents,
     );
   }

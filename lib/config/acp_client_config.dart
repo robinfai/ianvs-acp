@@ -8,6 +8,7 @@ class AcpClientConfig {
     this.activeAgentServer,
     this.agentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
+    this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentServerName,
@@ -19,6 +20,7 @@ class AcpClientConfig {
   final AgentServerConfig? activeAgentServer;
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final String? configPath;
   final String? defaultAgentServerName;
@@ -51,6 +53,7 @@ class AcpClientConfig {
       activeAgentServer: server,
       agentServers: agentServers,
       mcpServers: mcpServers,
+      additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
@@ -85,6 +88,9 @@ class AcpClientConfig {
     final mcpServers = _mcpServerList(
       json['mcp_servers'] ?? json['mcpServers'],
     );
+    final additionalDirectories = _additionalDirectories(
+      json['additional_directories'] ?? json['additionalDirectories'],
+    );
     final clientProviders = AcpClientProviderConfig.fromJson(
       json['client_providers'] ?? json['clientProviders'],
     );
@@ -93,6 +99,7 @@ class AcpClientConfig {
       return AcpClientConfig(
         configPath: configPath,
         mcpServers: mcpServers,
+        additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
       );
     }
@@ -116,6 +123,7 @@ class AcpClientConfig {
       return AcpClientConfig(
         configPath: configPath,
         mcpServers: mcpServers,
+        additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
       );
     }
@@ -133,6 +141,7 @@ class AcpClientConfig {
       activeAgentServer: active,
       agentServers: servers.values.toList(),
       mcpServers: mcpServers,
+      additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
       configPath: configPath,
       defaultAgentServerName: preferredName,
@@ -907,6 +916,31 @@ List<McpServerConfig> _mcpServerList(Object? value) {
     servers.add(McpServerConfig.fromJson(index: index, json: json));
   }
   return servers;
+}
+
+List<String> _additionalDirectories(Object? value) {
+  if (value == null) return const <String>[];
+  if (value is! List) {
+    throw const FormatException('additional_directories must be a list.');
+  }
+  final directories = <String>[];
+  final seen = <String>{};
+  for (var index = 0; index < value.length; index++) {
+    final raw = value[index];
+    if (raw is! String || raw.trim().isEmpty) {
+      throw FormatException(
+        'additional_directories[$index] must be a non-empty string.',
+      );
+    }
+    final path = raw.trim();
+    if (!File(path).isAbsolute) {
+      throw FormatException(
+        'additional_directories[$index] must be an absolute path.',
+      );
+    }
+    if (seen.add(path)) directories.add(path);
+  }
+  return List.unmodifiable(directories);
 }
 
 Map<String, dynamic> _jsonMap(Map raw, {required String fieldName}) {

@@ -10,6 +10,7 @@ class AgentConfigDialog extends StatelessWidget {
     required this.agentServers,
     required this.activeAgentName,
     this.mcpServers = const <McpServerConfig>[],
+    this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentName,
@@ -17,6 +18,7 @@ class AgentConfigDialog extends StatelessWidget {
 
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final String activeAgentName;
   final String? configPath;
@@ -34,6 +36,10 @@ class AgentConfigDialog extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _ConfigPathPanel(path: configPath),
+              if (additionalDirectories.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _AdditionalDirectoriesPanel(directories: additionalDirectories),
+              ],
               if (mcpServers.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 _McpServersPanel(servers: mcpServers),
@@ -73,6 +79,30 @@ class AgentConfigDialog extends StatelessWidget {
           child: const Text('Close'),
         ),
       ],
+    );
+  }
+}
+
+class _AdditionalDirectoriesPanel extends StatelessWidget {
+  const _AdditionalDirectoriesPanel({required this.directories});
+
+  final List<String> directories;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      icon: Icons.folder_copy_outlined,
+      title: 'Additional Directories',
+      accent: AppColors.primary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final directory in directories) ...[
+            _DetailRow(label: 'Directory', value: directory),
+            if (directory != directories.last) const SizedBox(height: 6),
+          ],
+        ],
+      ),
     );
   }
 }

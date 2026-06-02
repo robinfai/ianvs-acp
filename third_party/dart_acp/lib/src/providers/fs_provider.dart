@@ -16,11 +16,16 @@ class DefaultFsProvider implements FsProvider {
   /// Create a default file system provider with a workspace jail.
   DefaultFsProvider({
     required this.workspaceRoot,
+    this.additionalWorkspaceRoots = const <String>[],
     this.allowReadOutsideWorkspace = false,
-  }) : _jail = WorkspaceJail(workspaceRoot: workspaceRoot);
+  }) : _jail = WorkspaceJail(
+         workspaceRoot: workspaceRoot,
+         additionalWorkspaceRoots: additionalWorkspaceRoots,
+       );
 
   /// Workspace root directory.
   final String workspaceRoot;
+  final List<String> additionalWorkspaceRoots;
   final WorkspaceJail _jail;
 
   /// When true, allow reads outside the workspace root (writes still denied).

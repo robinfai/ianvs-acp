@@ -240,6 +240,57 @@ void main() {
     expect(config.mcpServers.last.toJson()['type'], 'http');
   });
 
+  test('loads additional directories with aliases and de-duplicates paths', () {
+    final config = AcpClientConfig.fromJson({
+      'additional_directories': [
+        '/Users/example/project-a',
+        ' /Users/example/project-b ',
+        '/Users/example/project-a',
+      ],
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+        },
+      },
+    });
+
+    expect(config.additionalDirectories, [
+      '/Users/example/project-a',
+      '/Users/example/project-b',
+    ]);
+    expect(
+      config.withActiveAgentServer('Codex').additionalDirectories,
+      config.additionalDirectories,
+    );
+
+    final camelCaseConfig = AcpClientConfig.fromJson({
+      'additionalDirectories': ['/Users/example/extra'],
+    });
+    expect(camelCaseConfig.additionalDirectories, ['/Users/example/extra']);
+  });
+
+  test('rejects invalid additional directories config', () {
+    expect(
+      () => AcpClientConfig.fromJson({'additional_directories': 'extra'}),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => AcpClientConfig.fromJson({
+        'additional_directories': ['relative/path'],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => AcpClientConfig.fromJson({
+        'additional_directories': [''],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('loads opt-in client filesystem provider config', () {
     final config = AcpClientConfig.fromJson({
       'client_providers': {

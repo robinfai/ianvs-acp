@@ -124,6 +124,7 @@ class AcpSessionCapabilities {
     required this.resume,
     required this.fork,
     required this.configOptions,
+    required this.additionalDirectories,
     required this.close,
     required this.rawKeys,
   });
@@ -139,6 +140,9 @@ class AcpSessionCapabilities {
       resume: _capabilityAdvertised(raw['resume']),
       fork: _capabilityAdvertised(raw['fork']),
       configOptions: _capabilityAdvertised(raw['configOptions']),
+      additionalDirectories:
+          _capabilityAdvertised(raw['additionalDirectories']) ||
+          _capabilityAdvertised(raw['additional_directories']),
       close: _capabilityAdvertised(raw['close']),
       rawKeys: raw.keys.toList()..sort(),
     );
@@ -148,6 +152,7 @@ class AcpSessionCapabilities {
   final bool resume;
   final bool fork;
   final bool configOptions;
+  final bool additionalDirectories;
   final bool close;
   final List<String> rawKeys;
 }

@@ -2218,7 +2218,10 @@ class _ReusedSessionSetupPermissionAgentClient extends FakeAgentClient {
   int _createSessionCount = 0;
 
   @override
-  Future<AgentSession> createSession({required String cwd}) async {
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
     }
@@ -2244,6 +2247,7 @@ class _ReusedSessionSetupPermissionAgentClient extends FakeAgentClient {
       id: sessionId,
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
+      additionalDirectories: additionalDirectories,
     );
   }
 }
@@ -2255,6 +2259,7 @@ class _FailingResumeAgentClient extends FakeAgentClient {
   Future<List<AgentEvent>> resumeSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     lastResumeCwd = cwd;
     throw StateError('resume failed');
@@ -2540,12 +2545,17 @@ class _DelayedForkAgentClient extends FakeAgentClient {
   Future<AgentSession> forkSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     if (!forkStarted.isCompleted) {
       forkStarted.complete();
     }
     await allowFork.future;
-    return super.forkSession(sessionId: sessionId, cwd: cwd);
+    return super.forkSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
   }
 }
 

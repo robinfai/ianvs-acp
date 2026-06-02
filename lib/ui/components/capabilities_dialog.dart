@@ -74,6 +74,10 @@ class CapabilitiesDialog extends StatelessWidget {
                           label: 'Config options',
                           supported: caps.session.configOptions,
                         ),
+                        _BoolRow(
+                          label: 'Additional directories',
+                          supported: caps.session.additionalDirectories,
+                        ),
                         _BoolRow(label: 'Close', supported: caps.session.close),
                         if (caps.session.rawKeys.isNotEmpty)
                           _InfoRow(
@@ -287,13 +291,16 @@ class _Pill extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          Text(
-            value,
-            style: TextStyle(
-              color: color,
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0,
+          Flexible(
+            child: Text(
+              value,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
             ),
           ),
         ],

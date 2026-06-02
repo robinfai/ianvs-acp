@@ -672,6 +672,15 @@ void main() {
             ],
           },
         ),
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Audio content.',
+          metadata: const {
+            'contentBlocks': [
+              {'type': 'audio', 'mimeType': 'audio/wav', 'data': 'YXVkaW8='},
+            ],
+          },
+        ),
       ]),
     );
 
@@ -684,6 +693,9 @@ void main() {
     expect(find.textContaining('text/markdown'), findsOneWidget);
     expect(find.text('file:///workspace/README.md'), findsOneWidget);
     expect(find.text('# Project notes'), findsOneWidget);
+    expect(find.text('Audio content.'), findsOneWidget);
+    expect(find.text('Audio'), findsOneWidget);
+    expect(find.text('audio/wav · 8 chars'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline renders diff change details', (tester) async {

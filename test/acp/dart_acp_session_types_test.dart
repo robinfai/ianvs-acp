@@ -16,6 +16,7 @@ void main() {
           'resume': true,
           'fork': <String, dynamic>{},
           'configOptions': <String, dynamic>{},
+          'additionalDirectories': <String, dynamic>{},
         },
       },
       authMethods: const <Map<String, dynamic>>[],
@@ -26,6 +27,7 @@ void main() {
     expect(result.supportsResumeSession, isTrue);
     expect(result.supportsForkSession, isTrue);
     expect(result.sessionCapabilities.configOptions, isTrue);
+    expect(result.supportsAdditionalDirectories, isTrue);
   });
 
   test('session capabilities do not treat false or null as supported', () {
@@ -35,6 +37,7 @@ void main() {
         'resume': null,
         'fork': true,
         'configOptions': <String, dynamic>{},
+        'additionalDirectories': false,
       },
     });
 
@@ -42,6 +45,7 @@ void main() {
     expect(capabilities.resume, isFalse);
     expect(capabilities.fork, isTrue);
     expect(capabilities.configOptions, isTrue);
+    expect(capabilities.additionalDirectories, isFalse);
   });
 
   test('legacy session capability object uses the same support rules', () {
@@ -51,6 +55,7 @@ void main() {
         'resume': false,
         'fork': null,
         'configOptions': true,
+        'additionalDirectories': true,
       },
     });
 
@@ -58,6 +63,39 @@ void main() {
     expect(capabilities.resume, isFalse);
     expect(capabilities.fork, isFalse);
     expect(capabilities.configOptions, isTrue);
+    expect(capabilities.additionalDirectories, isTrue);
+  });
+
+  test('session capabilities accept snake case additional directories', () {
+    final capabilities = SessionCapabilities.fromJson(<String, dynamic>{
+      'sessionCapabilities': <String, dynamic>{
+        'additional_directories': <String, dynamic>{},
+      },
+    });
+
+    expect(capabilities.additionalDirectories, isTrue);
+  });
+
+  test('session info parses additional directories', () {
+    final session = SessionInfo.fromJson(<String, dynamic>{
+      'sessionId': 'session-1',
+      'cwd': '/workspace',
+      'additionalDirectories': <Object>[
+        '/workspace-extra',
+        ' /workspace-other ',
+        '/workspace-extra',
+      ],
+    });
+
+    expect(session.additionalDirectories, [
+      '/workspace-extra',
+      '/workspace-other',
+    ]);
+    expect(session.toJson(), {
+      'sessionId': 'session-1',
+      'cwd': '/workspace',
+      'additionalDirectories': ['/workspace-extra', '/workspace-other'],
+    });
   });
 
   test('content blocks accept legacy text, image, and resource payloads', () {
@@ -69,6 +107,11 @@ void main() {
           'type': 'image',
           'mime_type': 'image/png',
           'base64': 'aW1hZ2U=',
+        },
+        <String, dynamic>{
+          'type': 'audio',
+          'mime_type': 'audio/wav',
+          'base64': 'YXVkaW8=',
         },
         <String, dynamic>{
           'type': 'resource',
@@ -95,6 +138,11 @@ void main() {
       'data': 'aW1hZ2U=',
     });
     expect(delta.content[2].toJson(), {
+      'type': 'audio',
+      'mimeType': 'audio/wav',
+      'data': 'YXVkaW8=',
+    });
+    expect(delta.content[3].toJson(), {
       'type': 'resource',
       'resource': {
         'uri': 'file:///workspace/README.md',
@@ -103,7 +151,7 @@ void main() {
         'text': '# Project notes',
       },
     });
-    expect(delta.content[3].toJson(), {
+    expect(delta.content[4].toJson(), {
       'type': 'resource_link',
       'uri': 'file:///workspace/lib/main.dart',
       'title': 'main.dart',

@@ -21,8 +21,9 @@ void main() {
         resume: false,
         fork: true,
         configOptions: false,
+        additionalDirectories: true,
         close: true,
-        rawKeys: ['close', 'fork', 'list'],
+        rawKeys: ['additionalDirectories', 'close', 'fork', 'list'],
       ),
       auth: AcpAuthCapabilities(logout: true),
       client: AcpClientCapabilities(
@@ -59,6 +60,7 @@ void main() {
     expect(find.text('Embedded context'), findsOneWidget);
     expect(find.text('List'), findsOneWidget);
     expect(find.text('Fork'), findsOneWidget);
+    expect(find.text('Additional directories'), findsOneWidget);
     expect(find.text('Close'), findsWidgets);
     expect(find.text('Logout'), findsOneWidget);
     expect(find.text('Advertise fs/read_text_file'), findsOneWidget);

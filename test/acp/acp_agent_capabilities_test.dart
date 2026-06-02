@@ -13,6 +13,7 @@ void main() {
           'resume': null,
           'fork': false,
           'configOptions': true,
+          'additionalDirectories': <String, dynamic>{},
           'close': <String, dynamic>{'_meta': <String, dynamic>{}},
         },
       },
@@ -29,6 +30,7 @@ void main() {
     expect(capabilities.session.resume, isFalse);
     expect(capabilities.session.fork, isFalse);
     expect(capabilities.session.configOptions, isTrue);
+    expect(capabilities.session.additionalDirectories, isTrue);
     expect(capabilities.session.close, isTrue);
   });
 
@@ -43,6 +45,7 @@ void main() {
           'resume': true,
           'fork': true,
           'configOptions': true,
+          'additionalDirectories': true,
           'close': true,
         },
       },
@@ -59,7 +62,26 @@ void main() {
     expect(capabilities.session.resume, isTrue);
     expect(capabilities.session.fork, isTrue);
     expect(capabilities.session.configOptions, isTrue);
+    expect(capabilities.session.additionalDirectories, isTrue);
     expect(capabilities.session.close, isTrue);
+  });
+
+  test('session capabilities accept snake case additional directories', () {
+    final capabilities = AcpAgentCapabilities.fromInitialize(
+      protocolVersion: 1,
+      agentCapabilities: <String, dynamic>{
+        'sessionCapabilities': <String, dynamic>{
+          'additional_directories': <String, dynamic>{},
+        },
+      },
+      authMethods: const <Map<String, dynamic>>[],
+      clientCapabilities: const <String, dynamic>{},
+      hasFsProvider: false,
+      hasTerminalProvider: false,
+      allowReadOutsideWorkspace: false,
+    );
+
+    expect(capabilities.session.additionalDirectories, isTrue);
   });
 
   test('initialization metadata is preserved', () {

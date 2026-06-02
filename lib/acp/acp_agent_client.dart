@@ -13,11 +13,15 @@ abstract class AcpAgentClient {
 
   Future<void> connect();
 
-  Future<AgentSession> createSession({required String cwd});
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  });
 
   Future<List<AgentEvent>> resumeSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   });
 
   Future<List<AcpProjectSessions>> listSessions();
@@ -38,6 +42,7 @@ abstract class AcpAgentClient {
   Future<AgentSession> forkSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   });
 
   Future<void> closeSession({required String sessionId});

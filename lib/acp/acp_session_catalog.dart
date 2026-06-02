@@ -19,6 +19,7 @@ class AcpSessionEntry {
     required this.id,
     required this.cwd,
     required this.title,
+    this.additionalDirectories = const <String>[],
     this.updatedAt,
     this.meta = const <String, Object?>{},
   });
@@ -26,6 +27,7 @@ class AcpSessionEntry {
   final String id;
   final String cwd;
   final String title;
+  final List<String> additionalDirectories;
   final DateTime? updatedAt;
   final Map<String, Object?> meta;
 

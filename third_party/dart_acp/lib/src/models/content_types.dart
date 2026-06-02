@@ -15,6 +15,8 @@ sealed class ContentBlock {
         return TextContent.fromJson(json);
       case 'image':
         return ImageContent.fromJson(json);
+      case 'audio':
+        return AudioContent.fromJson(json);
       case 'resource_link':
         // Preferred wire form for files/URIs
         return ResourceContent.fromJson(json);
@@ -29,6 +31,9 @@ sealed class ContentBlock {
         }
         if (_looksLikeImageContent(json)) {
           return ImageContent.fromJson(json);
+        }
+        if (_looksLikeAudioContent(json)) {
+          return AudioContent.fromJson(json);
         }
         if (_looksLikeResourceContent(json)) {
           return ResourceContent.fromJson(json);
@@ -78,6 +83,36 @@ class ImageContent extends ContentBlock {
     'type': 'image',
     'mimeType': mimeType,
     'data': data,
+  };
+}
+
+/// Audio content block.
+class AudioContent extends ContentBlock {
+  /// Creates an audio content block.
+  const AudioContent({required this.mimeType, this.data, this.uri});
+
+  /// Creates from JSON.
+  factory AudioContent.fromJson(Map<String, dynamic> json) => AudioContent(
+    mimeType: _optionalString(json['mimeType'] ?? json['mime_type']) ?? '',
+    data: _optionalString(json['data'] ?? json['base64Data'] ?? json['base64']),
+    uri: _optionalString(json['uri']),
+  );
+
+  /// MIME type of the audio.
+  final String mimeType;
+
+  /// Base64-encoded audio data, if embedded.
+  final String? data;
+
+  /// Optional URI for linked audio.
+  final String? uri;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'audio',
+    'mimeType': mimeType,
+    if (data != null) 'data': data,
+    if (uri != null) 'uri': uri,
   };
 }
 
@@ -208,10 +243,17 @@ String? _normalizedType(String? value) {
 }
 
 bool _looksLikeImageContent(Map<String, dynamic> json) {
+  final mimeType = _optionalString(json['mimeType'] ?? json['mime_type']);
+  if (mimeType?.startsWith('audio/') == true) return false;
   return _optionalString(
         json['data'] ?? json['base64Data'] ?? json['base64'],
       ) !=
       null;
+}
+
+bool _looksLikeAudioContent(Map<String, dynamic> json) {
+  final mimeType = _optionalString(json['mimeType'] ?? json['mime_type']);
+  return mimeType?.startsWith('audio/') == true;
 }
 
 bool _looksLikeResourceContent(Map<String, dynamic> json) {

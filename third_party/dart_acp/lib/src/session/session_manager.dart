@@ -242,6 +242,10 @@ class InitializeResult {
 
   /// Check if the agent supports session forking.
   bool get supportsForkSession => sessionCapabilities.fork;
+
+  /// Check if the agent supports additional workspace roots.
+  bool get supportsAdditionalDirectories =>
+      sessionCapabilities.additionalDirectories;
 }
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
@@ -321,6 +325,7 @@ class SessionManager {
   final Map<String, Map<String, ToolCall>> _toolCalls = {};
   // Track workspace roots per session for filesystem operations
   final Map<String, String> _sessionWorkspaceRoots = {};
+  final Map<String, List<String>> _sessionAdditionalDirectories = {};
 
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
@@ -332,6 +337,7 @@ class SessionManager {
     _replayBuffers.clear();
     _toolCalls.clear();
     _sessionWorkspaceRoots.clear();
+    _sessionAdditionalDirectories.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -362,15 +368,24 @@ class SessionManager {
   }
 
   /// Create a new session and return its id.
-  Future<String> newSession({required String workspaceRoot}) async {
-    final resp = await peer.newSession({
-      'cwd': workspaceRoot,
-      'mcpServers': config.mcpServers,
-    });
+  Future<String> newSession({
+    required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    final resp = await peer.newSession(
+      _sessionSetupParams({
+        'cwd': workspaceRoot,
+        'mcpServers': config.mcpServers,
+      }, additionalDirectories),
+    );
     final id = resp['sessionId'] as String;
     _sessionStreams.putIfAbsent(id, StreamController<AcpUpdate>.broadcast);
     _replayBuffers.putIfAbsent(id, () => <AcpUpdate>[]);
-    _sessionWorkspaceRoots[id] = workspaceRoot;
+    _setSessionWorkspace(
+      id,
+      workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
     // Capture any modes info from session/new
     final modes = resp['modes'];
     if (modes is Map<String, dynamic>) {
@@ -397,18 +412,25 @@ class SessionManager {
   Future<void> loadSession({
     required String sessionId,
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     _sessionStreams.putIfAbsent(
       sessionId,
       StreamController<AcpUpdate>.broadcast,
     );
     _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
-    _sessionWorkspaceRoots[sessionId] = workspaceRoot;
-    await peer.loadSession({
-      'sessionId': sessionId,
-      'cwd': workspaceRoot,
-      'mcpServers': config.mcpServers,
-    });
+    _setSessionWorkspace(
+      sessionId,
+      workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
+    await peer.loadSession(
+      _sessionSetupParams({
+        'sessionId': sessionId,
+        'cwd': workspaceRoot,
+        'mcpServers': config.mcpServers,
+      }, additionalDirectories),
+    );
   }
 
   // ===== Session Extension Methods =====
@@ -432,18 +454,26 @@ class SessionManager {
   Future<SessionResult> resumeSession({
     required String sessionId,
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     _sessionStreams.putIfAbsent(
       sessionId,
       StreamController<AcpUpdate>.broadcast,
     );
     _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
-    _sessionWorkspaceRoots[sessionId] = workspaceRoot;
-    final resp = await peer.sendRaw('session/resume', {
-      'sessionId': sessionId,
-      'cwd': workspaceRoot,
-      'mcpServers': config.mcpServers,
-    });
+    _setSessionWorkspace(
+      sessionId,
+      workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
+    final resp = await peer.sendRaw(
+      'session/resume',
+      _sessionSetupParams({
+        'sessionId': sessionId,
+        'cwd': workspaceRoot,
+        'mcpServers': config.mcpServers,
+      }, additionalDirectories),
+    );
     return SessionResult.fromJson({...resp, 'sessionId': sessionId});
   }
 
@@ -452,15 +482,28 @@ class SessionManager {
   /// Useful for generating summaries or PR descriptions without
   /// polluting the original session history.
   /// Requires agent support for session/fork capability.
-  Future<SessionResult> forkSession({required String sessionId}) async {
-    final resp = await peer.sendRaw('session/fork', {'sessionId': sessionId});
+  Future<SessionResult> forkSession({
+    required String sessionId,
+    String? workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    final root = workspaceRoot ?? _sessionWorkspaceRoots[sessionId];
+    final directories = additionalDirectories.isEmpty
+        ? _sessionAdditionalDirectories[sessionId] ?? const <String>[]
+        : additionalDirectories;
+    final resp = await peer.sendRaw(
+      'session/fork',
+      _sessionSetupParams({
+        'sessionId': sessionId,
+        'cwd': ?root,
+        'mcpServers': config.mcpServers,
+      }, directories),
+    );
     final newId = resp['sessionId'] as String;
     _sessionStreams.putIfAbsent(newId, StreamController<AcpUpdate>.broadcast);
     _replayBuffers.putIfAbsent(newId, () => <AcpUpdate>[]);
-    // Copy workspace root from original session if available
-    final originalRoot = _sessionWorkspaceRoots[sessionId];
-    if (originalRoot != null) {
-      _sessionWorkspaceRoots[newId] = originalRoot;
+    if (root != null) {
+      _setSessionWorkspace(newId, root, additionalDirectories: directories);
     }
     return SessionResult.fromJson(resp);
   }
@@ -553,6 +596,38 @@ class SessionManager {
       );
     }
     return root;
+  }
+
+  void _setSessionWorkspace(
+    String sessionId,
+    String workspaceRoot, {
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    _sessionWorkspaceRoots[sessionId] = workspaceRoot;
+    _sessionAdditionalDirectories[sessionId] = _normalizedDirectories(
+      additionalDirectories,
+    );
+  }
+
+  Json _sessionSetupParams(Json params, List<String> additionalDirectories) {
+    final directories = _normalizedDirectories(additionalDirectories);
+    if (directories.isEmpty) return params;
+    return <String, dynamic>{...params, 'additionalDirectories': directories};
+  }
+
+  List<String> _additionalDirectoriesForSession(String sessionId) {
+    return _sessionAdditionalDirectories[sessionId] ?? const <String>[];
+  }
+
+  List<String> _normalizedDirectories(Iterable<String> directories) {
+    final result = <String>[];
+    final seen = <String>{};
+    for (final directory in directories) {
+      final trimmed = directory.trim();
+      if (trimmed.isEmpty || !seen.add(trimmed)) continue;
+      result.add(trimmed);
+    }
+    return List.unmodifiable(result);
   }
 
   /// Stream of terminal lifecycle events.
@@ -706,6 +781,9 @@ class SessionManager {
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
+      additionalWorkspaceRoots: _additionalDirectoriesForSession(
+        sessionId ?? '',
+      ),
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
@@ -769,6 +847,9 @@ class SessionManager {
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
+      additionalWorkspaceRoots: _additionalDirectoriesForSession(
+        sessionId ?? '',
+      ),
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
@@ -898,7 +979,10 @@ class SessionManager {
     var cwd = requestedCwd;
     // Enforce workspace jail for terminal working directory unless yolo
     if (!config.allowReadOutsideWorkspace) {
-      final jail = WorkspaceJail(workspaceRoot: workspaceRoot);
+      final jail = WorkspaceJail(
+        workspaceRoot: workspaceRoot,
+        additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
+      );
       if (cwd != null) {
         try {
           final resolved = await jail.resolveForgiving(cwd);

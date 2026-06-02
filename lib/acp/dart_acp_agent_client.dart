@@ -25,6 +25,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.agentHttpUrl,
     Map<String, String>? agentHeaders,
     List<Map<String, dynamic>>? mcpServers,
+    List<String>? additionalDirectories,
     this.enableFilesystemReadTextFile = false,
     this.enableFilesystemWriteTextFile = false,
     this.allowFilesystemReadOutsideWorkspace = false,
@@ -35,7 +36,12 @@ class DartAcpAgentClient implements AcpAgentClient {
        agentHeaders = agentHeaders ?? const <String, String>{},
        mcpServers = mcpServers == null
            ? const <Map<String, dynamic>>[]
-           : List.unmodifiable(mcpServers.map(_copyMcpServerConfig));
+           : List.unmodifiable(mcpServers.map(_copyMcpServerConfig)),
+       additionalDirectories = additionalDirectories == null
+           ? const <String>[]
+           : List.unmodifiable(
+               additionalDirectories.map((path) => path.trim()),
+             );
 
   final String agentCommand;
   final List<String> agentArgs;
@@ -44,6 +50,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Uri? agentHttpUrl;
   final Map<String, String> agentHeaders;
   final List<Map<String, dynamic>> mcpServers;
+  final List<String> additionalDirectories;
   final bool enableFilesystemReadTextFile;
   final bool enableFilesystemWriteTextFile;
   final bool allowFilesystemReadOutsideWorkspace;
@@ -61,6 +68,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Map<String, AcpSessionModeInfo> _modesBySession =
       <String, AcpSessionModeInfo>{};
   final Map<String, String> _cwdBySession = <String, String>{};
+  final Map<String, List<String>> _additionalDirectoriesBySession =
+      <String, List<String>>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
   final Set<String> _modelConfigOptionsFromModelsBySession = <String>{};
@@ -219,11 +228,19 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<AgentSession> createSession({required String cwd}) async {
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
     final client = _requireClient();
-    final sessionId = await client.newSession(cwd);
+    final directories = _additionalDirectoriesForRequest(additionalDirectories);
+    final sessionId = await client.newSession(
+      cwd,
+      additionalDirectories: directories,
+    );
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
+    _additionalDirectoriesBySession[sessionId] = directories;
     final response = _takeRawSessionResult(sessionId);
     final configOptions = _cacheSessionResultConfigOptions(
       sessionId: sessionId,
@@ -243,6 +260,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       id: sessionId,
       cwd: cwd,
       createdAt: DateTime.now(),
+      additionalDirectories: directories,
       initialEvents: initialEvents,
     );
   }
@@ -251,6 +269,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<List<AgentEvent>> resumeSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     final client = _requireClient();
     if (!_supportsLoadSession && !_supportsResumeSession) {
@@ -260,13 +279,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
 
     final events = <AgentEvent>[];
+    final directories = _additionalDirectoriesForRequest(additionalDirectories);
     if (!_supportsLoadSession) {
       final result = await client.resumeSession(
         sessionId: sessionId,
         workspaceRoot: cwd,
+        additionalDirectories: directories,
       );
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
+      _additionalDirectoriesBySession[sessionId] = directories;
       final response = _takeRawSessionResult(sessionId);
       _cacheSessionResult(
         sessionId: sessionId,
@@ -284,10 +306,15 @@ class DartAcpAgentClient implements AcpAgentClient {
       }
     }, onError: (_) {});
     try {
-      await client.loadSession(sessionId: sessionId, workspaceRoot: cwd);
+      await client.loadSession(
+        sessionId: sessionId,
+        workspaceRoot: cwd,
+        additionalDirectories: directories,
+      );
       await Future<void>.delayed(Duration.zero);
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
+      _additionalDirectoriesBySession[sessionId] = directories;
       final response = _takeRawSessionResult(sessionId);
       if (response.isNotEmpty) {
         _cacheSessionResult(sessionId: sessionId, rawResponse: response);
@@ -318,6 +345,7 @@ class DartAcpAgentClient implements AcpAgentClient {
             title: session.title?.trim().isNotEmpty == true
                 ? session.title!.trim()
                 : session.sessionId,
+            additionalDirectories: session.additionalDirectories,
             updatedAt: session.updatedAt?.toLocal(),
             meta: _metadataMap(session.meta),
           );
@@ -424,15 +452,26 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<AgentSession> forkSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     final client = _requireClient();
     if (_capabilities?.session.fork != true) {
       throw StateError('ACP agent does not support session/fork.');
     }
-    final result = await client.forkSession(sessionId: sessionId);
+    final directories = _additionalDirectoriesForRequest(
+      additionalDirectories.isEmpty
+          ? _additionalDirectoriesBySession[sessionId] ?? const <String>[]
+          : additionalDirectories,
+    );
+    final result = await client.forkSession(
+      sessionId: sessionId,
+      workspaceRoot: cwd,
+      additionalDirectories: directories,
+    );
     final forkedSessionId = result.sessionId;
     _activeSessionId = forkedSessionId;
     _cwdBySession[forkedSessionId] = cwd;
+    _additionalDirectoriesBySession[forkedSessionId] = directories;
     final response = _takeRawSessionResult(forkedSessionId);
     _cacheSessionResult(
       sessionId: forkedSessionId,
@@ -447,6 +486,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       id: forkedSessionId,
       cwd: cwd,
       createdAt: DateTime.now(),
+      additionalDirectories: directories,
       initialEvents: initialEvents,
     );
   }
@@ -465,6 +505,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     _modesBySession.remove(sessionId);
     _cwdBySession.remove(sessionId);
+    _additionalDirectoriesBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
     _modelConfigOptionsFromModelsBySession.remove(sessionId);
@@ -506,6 +547,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = null;
     _modesBySession.clear();
     _cwdBySession.clear();
+    _additionalDirectoriesBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
     _modelConfigOptionsFromModelsBySession.clear();
@@ -928,6 +970,25 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (embedded != null) return embedded;
     final binary = await _embeddedBinaryResourceBlock(attachment);
     return binary ?? _resourceLinkBlock(attachment);
+  }
+
+  List<String> _additionalDirectoriesForRequest(List<String> override) {
+    final selected = override.isEmpty ? additionalDirectories : override;
+    if (_capabilities?.session.additionalDirectories != true) {
+      return const <String>[];
+    }
+    return _normalizedDirectories(selected);
+  }
+
+  List<String> _normalizedDirectories(Iterable<String> directories) {
+    final result = <String>[];
+    final seen = <String>{};
+    for (final directory in directories) {
+      final trimmed = directory.trim();
+      if (trimmed.isEmpty || !seen.add(trimmed)) continue;
+      result.add(trimmed);
+    }
+    return List.unmodifiable(result);
   }
 
   Future<Map<String, dynamic>?> _imageContentBlock(
@@ -1805,6 +1866,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = null;
     _modesBySession.clear();
     _cwdBySession.clear();
+    _additionalDirectoriesBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
     _modelConfigOptionsFromModelsBySession.clear();

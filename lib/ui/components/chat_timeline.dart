@@ -1127,6 +1127,7 @@ class _ContentBlockCard extends StatelessWidget {
     final type = _stringMetadata(block, 'type') ?? 'unknown';
     return switch (type) {
       'image' => _ImageContentBlock(block: block),
+      'audio' => _AudioContentBlock(block: block),
       'resource_link' || 'resource' => _ResourceContentBlock(block: block),
       _ => _UnknownContentBlock(block: block),
     };
@@ -1205,6 +1206,39 @@ class _ResourceContentBlock extends StatelessWidget {
       child: uri.isEmpty && text == null
           ? null
           : _ResourceContentDetails(uri: uri, text: text),
+    );
+  }
+}
+
+class _AudioContentBlock extends StatelessWidget {
+  const _AudioContentBlock({required this.block});
+
+  final Map<String, Object?> block;
+
+  @override
+  Widget build(BuildContext context) {
+    final mimeType = _stringMetadata(block, 'mimeType') ?? 'audio';
+    final data = _stringMetadata(block, 'data');
+    final uri = _stringMetadata(block, 'uri');
+    final details = [
+      mimeType,
+      if (data != null) '${data.length} chars',
+      if (uri != null) 'linked',
+    ];
+    return _InlineContentFrame(
+      icon: Icons.graphic_eq_rounded,
+      title: 'Audio',
+      subtitle: details.join(' · '),
+      child: uri == null
+          ? null
+          : SelectableText(
+              uri,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
     );
   }
 }

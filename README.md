@@ -5,10 +5,11 @@ A Flutter macOS desktop client for local Agent Client Protocol agents.
 The app can launch stdio ACP agents, create and resume sessions, stream prompt
 turns, display tool calls, render ACP plan and command updates, switch exposed
 session modes/models, close active sessions, and log out when the agent
-advertises those capabilities. It can also fork active sessions when the agent
-supports `session/fork` and suggest advertised slash commands in the prompt
-input. When an agent advertises authentication methods, the Agent menu can start
-the agent-handled ACP `authenticate` flow.
+advertises those capabilities. It can also pass configured additional
+directories to agents that advertise ACP `additionalDirectories`, fork active
+sessions when the agent supports `session/fork`, and suggest advertised slash
+commands in the prompt input. When an agent advertises authentication methods,
+the Agent menu can start the agent-handled ACP `authenticate` flow.
 
 ## Configuration
 
@@ -30,6 +31,9 @@ Example:
       "args": ["@zed-industries/codex-acp"]
     }
   },
+  "additional_directories": [
+    "/Users/example/related-project"
+  ],
   "mcp_servers": [
     {
       "name": "filesystem",
@@ -63,6 +67,11 @@ Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; headers may be either an object or a `name`/`value` list. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
+
+`additional_directories` may list extra absolute workspace roots. They are sent
+only to agents that advertise `sessionCapabilities.additionalDirectories`, and
+filesystem/terminal provider jail checks treat those roots as part of the
+session workspace.
 
 `client_providers.permissions.review_agent` can point at a sidecar MCP server
 used by the prompt composer’s `自动审查` policy. If no review agent is configured,

@@ -243,6 +243,28 @@ Manual decision:
   current file attachment picker, and how to disable or explain unavailable
   types when the agent does not advertise support.
 
+### acp-registry
+
+Status: product integration not started.
+
+Non-blocking because: agent discovery can still be configured explicitly through
+`settings.json`, and this protocol-compatibility pass intentionally avoids ACP
+Registry browsing/import/install flows.
+
+Automated acceptance:
+
+- `test/config/acp_client_config_test.dart` verifies explicit local and remote
+  agent server config parsing, including MCP and additional workspace settings.
+- `test/ui/agent_config_dialog_test.dart` verifies the active explicit config is
+  inspectable in Agent Configuration.
+- `README.md` documents the supported explicit config shape.
+
+Manual decision:
+
+- Decide whether Registry support should import entries into `settings.json`,
+  keep a separate registry cache, or launch agents directly from discovered
+  metadata.
+
 ### desktop-manual-qa
 
 Status: environment validation needed.

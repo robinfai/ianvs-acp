@@ -273,6 +273,35 @@ Future<void> main() async {
     }
   });
 
+  test(
+    'sends additional directories only when the agent advertises support',
+    () async {
+      final advertised = await _captureSessionSetupParams(
+        advertiseAdditionalDirectories: true,
+      );
+      final unsupported = await _captureSessionSetupParams(
+        advertiseAdditionalDirectories: false,
+      );
+
+      expect(advertised.calls.map((call) => call['method']), [
+        'session/new',
+        'session/resume',
+        'session/fork',
+      ]);
+      for (final call in advertised.calls) {
+        final params = call['params'] as Map<String, dynamic>;
+        expect(params['additionalDirectories'], advertised.directories);
+      }
+      expect(advertised.listedAdditionalDirectories, advertised.directories);
+
+      for (final call in unsupported.calls) {
+        final params = call['params'] as Map<String, dynamic>;
+        expect(params, isNot(contains('additionalDirectories')));
+      }
+      expect(unsupported.listedAdditionalDirectories, unsupported.directories);
+    },
+  );
+
   test('embeds text attachments when embedded context is advertised', () async {
     final promptParams = await _capturePromptParamsForAttachment(
       embeddedContext: true,
@@ -1408,6 +1437,140 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test(
+    'filesystem provider allows configured additional directories',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final workspace = Directory('${tempDir.path}/workspace');
+      final extraWorkspace = Directory('${tempDir.path}/extra-workspace');
+      await workspace.create();
+      await extraWorkspace.create();
+      final extraFixture = File('${extraWorkspace.path}/fixture.txt');
+      final extraCreated = File('${extraWorkspace.path}/created.txt');
+      final outsideFile = File('${tempDir.path}/outside.txt');
+      await extraFixture.writeAsString('hello extra');
+      final readResponseFile = File('${tempDir.path}/fs_read_response.json');
+      final writeResponseFile = File('${tempDir.path}/fs_write_response.json');
+      final outsideResponseFile = File(
+        '${tempDir.path}/fs_outside_response.json',
+      );
+      final agentScript = File('${tempDir.path}/fake_fs_extra_agent.dart');
+      final readResponsePath = jsonEncode(readResponseFile.path);
+      final writeResponsePath = jsonEncode(writeResponseFile.path);
+      final outsideResponsePath = jsonEncode(outsideResponseFile.path);
+      final extraFixturePath = jsonEncode(extraFixture.path);
+      final extraCreatedPath = jsonEncode(extraCreated.path);
+      final outsidePath = jsonEncode(outsideFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void request(String id, String method, Map<String, dynamic> params) {
+  stdout.writeln(jsonEncode(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'id': id,
+    'method': method,
+    'params': params,
+  }));
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'additionalDirectories': true,
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-fs'},
+      }));
+      request('fs-read-extra', 'fs/read_text_file', <String, dynamic>{
+        'sessionId': 'session-fs',
+        'path': $extraFixturePath,
+      });
+      request('fs-write-extra', 'fs/write_text_file', <String, dynamic>{
+        'sessionId': 'session-fs',
+        'path': $extraCreatedPath,
+        'content': 'created in extra workspace',
+      });
+      request('fs-write-outside', 'fs/write_text_file', <String, dynamic>{
+        'sessionId': 'session-fs',
+        'path': $outsidePath,
+        'content': 'outside',
+      });
+    } else if (message['id'] == 'fs-read-extra') {
+      await File($readResponsePath).writeAsString(jsonEncode(message));
+    } else if (message['id'] == 'fs-write-extra') {
+      await File($writeResponsePath).writeAsString(jsonEncode(message));
+    } else if (message['id'] == 'fs-write-outside') {
+      await File($outsideResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+      late final DartAcpAgentClient client;
+      client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+        additionalDirectories: [extraWorkspace.path],
+        enableFilesystemReadTextFile: true,
+        enableFilesystemWriteTextFile: true,
+      );
+      final subscription = client.permissionRequests.listen((request) {
+        unawaited(
+          client.respondToPermissionRequest(
+            id: request.id,
+            decision: AcpPermissionDecision.allow,
+          ),
+        );
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        await client.createSession(cwd: workspace.path);
+        await _waitForFile(readResponseFile);
+        await _waitForFile(writeResponseFile);
+        await _waitForFile(outsideResponseFile);
+
+        final readResponse =
+            jsonDecode(await readResponseFile.readAsString())
+                as Map<String, dynamic>;
+        final writeResponse =
+            jsonDecode(await writeResponseFile.readAsString())
+                as Map<String, dynamic>;
+        final outsideResponse =
+            jsonDecode(await outsideResponseFile.readAsString())
+                as Map<String, dynamic>;
+
+        expect(readResponse['result'], containsPair('content', 'hello extra'));
+        expect(writeResponse, containsPair('result', null));
+        expect(await extraCreated.readAsString(), 'created in extra workspace');
+        expect(outsideResponse, contains('error'));
+        expect(await outsideFile.exists(), isFalse);
+      } finally {
+        await subscription.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test('rejects unadvertised filesystem write requests', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
@@ -4072,6 +4235,131 @@ Future<void> main() async {
     expect(events.last.metadata['stopReason'], 'endTurn');
     return jsonDecode(await promptParamsFile.readAsString())
         as Map<String, dynamic>;
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
+
+Future<
+  ({
+    List<Map<String, dynamic>> calls,
+    List<String> directories,
+    List<String> listedAdditionalDirectories,
+  })
+>
+_captureSessionSetupParams({
+  required bool advertiseAdditionalDirectories,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final setupParamsFile = File('${tempDir.path}/session_setup_params.json');
+  final agentScript = File('${tempDir.path}/fake_session_setup_agent.dart');
+  final setupParamsPath = jsonEncode(setupParamsFile.path);
+  final directories = ['${tempDir.path}/extra-a', '${tempDir.path}/extra-b'];
+  final directoriesLiteral = '[${directories.map(jsonEncode).join(', ')}]';
+  final additionalCapability = advertiseAdditionalDirectories
+      ? "'additionalDirectories': <String, dynamic>{},"
+      : '';
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void record(String method, Map<String, dynamic> params) {
+  final file = File($setupParamsPath);
+  final calls = file.existsSync()
+      ? jsonDecode(file.readAsStringSync()) as List<dynamic>
+      : <dynamic>[];
+  calls.add(<String, dynamic>{'method': method, 'params': params});
+  file.writeAsStringSync(jsonEncode(calls));
+}
+
+Future<void> main() async {
+  final directories = <String>$directoriesLiteral;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    final method = message['method'] as String?;
+    if (method == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'list': true,
+              'resume': true,
+              'fork': true,
+              $additionalCapability
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (method == 'session/list') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'sessionId': 'session-1',
+              'cwd': '/workspace',
+              'title': 'Listed session',
+              'additionalDirectories': directories,
+            },
+          ],
+        },
+      }));
+    } else if (method == 'session/new') {
+      record(method!, message['params'] as Map<String, dynamic>);
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (method == 'session/resume') {
+      record(method!, message['params'] as Map<String, dynamic>);
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    } else if (method == 'session/fork') {
+      record(method!, message['params'] as Map<String, dynamic>);
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-forked'},
+      }));
+    }
+  }
+}
+''');
+
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: [agentScript.path],
+    additionalDirectories: directories,
+  );
+
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    final listed = await client.listSessions();
+    await client.createSession(cwd: '/workspace');
+    await client.resumeSession(sessionId: 'session-1', cwd: '/workspace');
+    await client.forkSession(sessionId: 'session-1', cwd: '/workspace');
+
+    final calls =
+        (jsonDecode(await setupParamsFile.readAsString()) as List<dynamic>)
+            .cast<Map<String, dynamic>>();
+    return (
+      calls: calls,
+      directories: directories,
+      listedAdditionalDirectories:
+          listed.single.sessions.single.additionalDirectories,
+    );
   } finally {
     await client.dispose();
     await tempDir.delete(recursive: true);

@@ -12,6 +12,7 @@ class SessionInfo {
   const SessionInfo({
     required this.sessionId,
     required this.cwd,
+    this.additionalDirectories = const <String>[],
     this.title,
     this.updatedAt,
     this.meta,
@@ -31,6 +32,9 @@ class SessionInfo {
         _optionalString(json['workspace']) ??
         _optionalString(json['path']) ??
         '',
+    additionalDirectories: _additionalDirectoriesFromRaw(
+      json['additionalDirectories'] ?? json['additional_directories'],
+    ),
     title:
         _optionalString(json['title']) ??
         _optionalString(json['name']) ??
@@ -45,6 +49,9 @@ class SessionInfo {
   /// Working directory for this session.
   final String cwd;
 
+  /// Additional workspace roots for this session.
+  final List<String> additionalDirectories;
+
   /// Human-readable title (optional).
   final String? title;
 
@@ -58,6 +65,8 @@ class SessionInfo {
   Map<String, dynamic> toJson() => {
     'sessionId': sessionId,
     'cwd': cwd,
+    if (additionalDirectories.isNotEmpty)
+      'additionalDirectories': additionalDirectories,
     if (title != null) 'title': title,
     if (updatedAt != null) 'updatedAt': updatedAt!.toIso8601String(),
     if (meta != null) '_meta': meta,
@@ -279,6 +288,7 @@ class SessionCapabilities {
     this.resume = false,
     this.fork = false,
     this.configOptions = false,
+    this.additionalDirectories = false,
   });
 
   /// Creates from the agentCapabilities map.
@@ -293,6 +303,9 @@ class SessionCapabilities {
         resume: _capabilityAdvertised(sessionCaps['resume']),
         fork: _capabilityAdvertised(sessionCaps['fork']),
         configOptions: _capabilityAdvertised(sessionCaps['configOptions']),
+        additionalDirectories:
+            _capabilityAdvertised(sessionCaps['additionalDirectories']) ||
+            _capabilityAdvertised(sessionCaps['additional_directories']),
       );
     }
 
@@ -304,6 +317,9 @@ class SessionCapabilities {
         resume: _capabilityAdvertised(session['resume']),
         fork: _capabilityAdvertised(session['fork']),
         configOptions: _capabilityAdvertised(session['configOptions']),
+        additionalDirectories:
+            _capabilityAdvertised(session['additionalDirectories']) ||
+            _capabilityAdvertised(session['additional_directories']),
       );
     }
 
@@ -322,10 +338,14 @@ class SessionCapabilities {
   /// Agent supports configOptions in session responses.
   final bool configOptions;
 
+  /// Agent supports additionalDirectories in session setup requests.
+  final bool additionalDirectories;
+
   @override
   String toString() =>
       'SessionCapabilities(list: $list, resume: $resume, fork: $fork, '
-      'configOptions: $configOptions)';
+      'configOptions: $configOptions, '
+      'additionalDirectories: $additionalDirectories)';
 }
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
@@ -338,6 +358,19 @@ Map<String, dynamic>? _optionalMap(Object? value) {
 }
 
 List<dynamic> _listFromRaw(Object? raw) => raw is List ? raw : const [];
+
+List<String> _additionalDirectoriesFromRaw(Object? raw) {
+  if (raw is! List) return const <String>[];
+  final directories = <String>[];
+  final seen = <String>{};
+  for (final item in raw) {
+    if (item is! String) continue;
+    final trimmed = item.trim();
+    if (trimmed.isEmpty || !seen.add(trimmed)) continue;
+    directories.add(trimmed);
+  }
+  return List.unmodifiable(directories);
+}
 
 String _configTypeFromRaw(Object? raw) {
   final type = _optionalString(raw)?.trim().toLowerCase();

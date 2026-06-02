@@ -41,6 +41,7 @@ class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
     required this.cwd,
+    this.additionalDirectories = const <String>[],
     this.agentName = 'Codex',
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
     List<AcpPermissionTrustRule> permissionTrustRules =
@@ -59,6 +60,7 @@ class ChatController extends ChangeNotifier {
 
   final AcpAgentClient client;
   final String cwd;
+  final List<String> additionalDirectories;
   final String agentName;
   final int permissionHistoryLimit;
   final List<AcpPermissionTrustRule> permissionTrustRules;
@@ -180,6 +182,7 @@ class ChatController extends ChangeNotifier {
         }
         final session = (await client.createSession(
           cwd: cwd,
+          additionalDirectories: additionalDirectories,
         )).copyWith(agentName: agentName);
         _retiredSessionIds.remove(session.id);
         currentSession = session;
@@ -206,6 +209,7 @@ class ChatController extends ChangeNotifier {
   Future<void> resumeSession(
     String sessionId, {
     String? cwd,
+    List<String>? additionalDirectories,
     String? title,
     DateTime? updatedAt,
   }) async {
@@ -216,6 +220,10 @@ class ChatController extends ChangeNotifier {
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
         ? this.cwd
         : cwd.trim();
+    final workspaceAdditionalDirectories =
+        additionalDirectories == null || additionalDirectories.isEmpty
+        ? this.additionalDirectories
+        : additionalDirectories;
 
     await _runSessionOperation(() async {
       final previousSession = currentSession;
@@ -246,6 +254,7 @@ class ChatController extends ChangeNotifier {
           id: trimmedSessionId,
           cwd: workspaceCwd,
           createdAt: DateTime.now(),
+          additionalDirectories: workspaceAdditionalDirectories,
           title: title,
           updatedAt: updatedAt,
           agentName: agentName,
@@ -258,6 +267,7 @@ class ChatController extends ChangeNotifier {
         final replay = await client.resumeSession(
           sessionId: trimmedSessionId,
           cwd: workspaceCwd,
+          additionalDirectories: workspaceAdditionalDirectories,
         );
         for (final event in replay) {
           _handleAgentEvent(event, notify: false);
@@ -511,6 +521,7 @@ class ChatController extends ChangeNotifier {
         final forked = await client.forkSession(
           sessionId: session.id,
           cwd: session.cwd,
+          additionalDirectories: session.additionalDirectories,
         );
         final forkedTitle = forked.title?.trim().isNotEmpty == true
             ? forked.title

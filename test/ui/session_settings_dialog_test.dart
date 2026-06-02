@@ -325,11 +325,16 @@ class _DelayedForkAgentClient extends FakeAgentClient {
   Future<AgentSession> forkSession({
     required String sessionId,
     required String cwd,
+    List<String> additionalDirectories = const <String>[],
   }) async {
     if (!forkStarted.isCompleted) {
       forkStarted.complete();
     }
     await allowFork.future;
-    return super.forkSession(sessionId: sessionId, cwd: cwd);
+    return super.forkSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
   }
 }

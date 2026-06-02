@@ -27,6 +27,7 @@ class AppShell extends StatelessWidget {
     this.agentName = 'Codex',
     this.agentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
+    this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentName,
@@ -42,6 +43,7 @@ class AppShell extends StatelessWidget {
   final String agentName;
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
+  final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final String? configPath;
   final String? defaultAgentName;
@@ -313,6 +315,7 @@ class AppShell extends StatelessWidget {
         return AgentConfigDialog(
           agentServers: agentServers,
           mcpServers: mcpServers,
+          additionalDirectories: additionalDirectories,
           clientProviders: clientProviders,
           activeAgentName: agentName,
           configPath: configPath,
@@ -346,6 +349,7 @@ class AppShell extends StatelessWidget {
       controller.resumeSession(
         selection.conversation.id,
         cwd: selection.project.cwd,
+        additionalDirectories: selection.conversation.additionalDirectories,
         title: selection.conversation.title,
         updatedAt: selection.conversation.updatedAt,
       ),

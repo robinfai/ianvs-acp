@@ -4,22 +4,36 @@ import 'package:path/path.dart' as p;
 /// Resolver that enforces that paths remain within a workspace root.
 class WorkspaceJail {
   /// Create a jail rooted at [workspaceRoot].
-  WorkspaceJail({required this.workspaceRoot}) {
+  WorkspaceJail({
+    required this.workspaceRoot,
+    List<String> additionalWorkspaceRoots = const <String>[],
+  }) : additionalWorkspaceRoots = List.unmodifiable(
+         additionalWorkspaceRoots.where((root) => root.trim().isNotEmpty),
+       ) {
     if (!p.isAbsolute(workspaceRoot)) {
       throw ArgumentError('workspaceRoot must be absolute: $workspaceRoot');
+    }
+    for (final root in this.additionalWorkspaceRoots) {
+      if (!p.isAbsolute(root)) {
+        throw ArgumentError(
+          'additional workspace root must be absolute: $root',
+        );
+      }
     }
   }
 
   /// Canonical workspace root.
   final String workspaceRoot;
 
+  /// Additional workspace roots allowed by the session.
+  final List<String> additionalWorkspaceRoots;
+
   /// Resolve a path relative to [workspaceRoot] if needed and ensure it
   /// remains within the workspace. Throws [FileSystemException] if outside.
   Future<String> resolveAndEnsureWithin(String path) async {
     final joined = p.isAbsolute(path) ? path : p.join(workspaceRoot, path);
     final canonical = await _canonicalize(joined);
-    final rootCanonical = await _canonicalize(workspaceRoot);
-    if (!_isWithin(canonical, rootCanonical)) {
+    if (!await _isWithinAnyWorkspaceRoot(canonical)) {
       throw FileSystemException(
         'Access outside workspace is denied',
         canonical,
@@ -38,8 +52,15 @@ class WorkspaceJail {
   /// Return true if [path] is within the workspace root.
   Future<bool> isWithinWorkspace(String path) async {
     final canonical = await _canonicalize(path);
-    final rootCanonical = await _canonicalize(workspaceRoot);
-    return _isWithin(canonical, rootCanonical);
+    return _isWithinAnyWorkspaceRoot(canonical);
+  }
+
+  Future<bool> _isWithinAnyWorkspaceRoot(String canonicalPath) async {
+    for (final root in [workspaceRoot, ...additionalWorkspaceRoots]) {
+      final rootCanonical = await _canonicalize(root);
+      if (_isWithin(canonicalPath, rootCanonical)) return true;
+    }
+    return false;
   }
 
   bool _isWithin(String path, String root) {

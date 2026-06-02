@@ -15,6 +15,10 @@ void main() {
             configPath: '/Users/example/.config/ianvs-acp/settings.json',
             activeAgentName: 'Codex',
             defaultAgentName: 'Kimi Code Dev',
+            additionalDirectories: [
+              '/Users/example/workspace-a',
+              '/Users/example/workspace-b',
+            ],
             clientProviders: AcpClientProviderConfig(
               filesystem: AcpFilesystemProviderConfig(
                 readTextFile: true,
@@ -98,6 +102,9 @@ void main() {
     expect(find.text('Kimi Code Dev'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
     expect(find.text('Remote HTTP Agent'), findsOneWidget);
+    expect(find.text('Additional Directories'), findsOneWidget);
+    expect(find.text('/Users/example/workspace-a'), findsOneWidget);
+    expect(find.text('/Users/example/workspace-b'), findsOneWidget);
     expect(find.text('https://agent.example.com/acp'), findsOneWidget);
     expect(find.text('Authorization'), findsOneWidget);
     expect(find.text('MCP Servers'), findsOneWidget);

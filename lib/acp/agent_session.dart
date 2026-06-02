@@ -5,6 +5,7 @@ class AgentSession {
     required this.id,
     required this.cwd,
     required this.createdAt,
+    this.additionalDirectories = const <String>[],
     this.title,
     this.updatedAt,
     this.agentName,
@@ -14,6 +15,7 @@ class AgentSession {
   final String id;
   final String cwd;
   final DateTime createdAt;
+  final List<String> additionalDirectories;
   final String? title;
   final DateTime? updatedAt;
   final String? agentName;
@@ -32,12 +34,15 @@ class AgentSession {
     String? title,
     DateTime? updatedAt,
     String? agentName,
+    List<String>? additionalDirectories,
     List<AgentEvent>? initialEvents,
   }) {
     return AgentSession(
       id: id,
       cwd: cwd,
       createdAt: createdAt,
+      additionalDirectories:
+          additionalDirectories ?? this.additionalDirectories,
       title: title ?? this.title,
       updatedAt: updatedAt ?? this.updatedAt,
       agentName: agentName ?? this.agentName,

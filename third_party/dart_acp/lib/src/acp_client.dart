@@ -72,16 +72,23 @@ class AcpClient {
       _sessionManager.initialize(capabilitiesOverride: capabilitiesOverride);
 
   /// Create a new ACP session; returns the session id.
-  Future<String> newSession(String workspaceRoot) async =>
-      _sessionManager.newSession(workspaceRoot: workspaceRoot);
+  Future<String> newSession(
+    String workspaceRoot, {
+    List<String> additionalDirectories = const <String>[],
+  }) async => _sessionManager.newSession(
+    workspaceRoot: workspaceRoot,
+    additionalDirectories: additionalDirectories,
+  );
 
   /// Load an existing session (if the agent supports it).
   Future<void> loadSession({
     required String sessionId,
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
   }) async => _sessionManager.loadSession(
     sessionId: sessionId,
     workspaceRoot: workspaceRoot,
+    additionalDirectories: additionalDirectories,
   );
 
   /// Send a prompt to the agent and stream `AcpUpdate`s.
@@ -163,9 +170,11 @@ class AcpClient {
   Future<SessionResult> resumeSession({
     required String sessionId,
     required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
   }) async => _sessionManager.resumeSession(
     sessionId: sessionId,
     workspaceRoot: workspaceRoot,
+    additionalDirectories: additionalDirectories,
   );
 
   /// Fork an existing session to create a new independent session.
@@ -173,8 +182,15 @@ class AcpClient {
   /// Useful for generating summaries or PR descriptions without
   /// polluting the original session history.
   /// Check [InitializeResult.supportsForkSession] before calling.
-  Future<SessionResult> forkSession({required String sessionId}) async =>
-      _sessionManager.forkSession(sessionId: sessionId);
+  Future<SessionResult> forkSession({
+    required String sessionId,
+    String? workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
+  }) async => _sessionManager.forkSession(
+    sessionId: sessionId,
+    workspaceRoot: workspaceRoot,
+    additionalDirectories: additionalDirectories,
+  );
 
   /// Set a configuration option for a session.
   ///
