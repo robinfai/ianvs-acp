@@ -1,5 +1,8 @@
 // ignore_for_file: implementation_imports
 
+import 'dart:async';
+import 'dart:io';
+
 import 'package:dart_acp/dart_acp.dart';
 import 'package:dart_acp/src/session/session_manager.dart'
     show InitializeResult;
@@ -197,6 +200,131 @@ void main() {
     expect(merged.locations?.single.path, '/workspace/done.dart');
   });
 
+  test(
+    'session manager merges snake case tool call ids independently',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/fake_snake_tool_agent.dart');
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) {
+  stdout.writeln(jsonEncode(message));
+}
+
+void sendSessionUpdate(Map<String, dynamic> update) {
+  send(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{
+      'sessionId': 'session-1',
+      'update': update,
+    },
+  });
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/new') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      });
+    } else if (message['method'] == 'session/prompt') {
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call',
+        'tool_call_id': 'call-a',
+        'title': 'Bash A',
+        'status': 'pending',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call',
+        'tool_call_id': 'call-b',
+        'title': 'Bash B',
+        'status': 'pending',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call_update',
+        'tool_call_id': 'call-a',
+        'status': 'completed',
+        'raw_output': 'a done',
+      });
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'tool_call_update',
+        'tool_call_id': 'call-b',
+        'status': 'completed',
+        'raw_output': 'b done',
+      });
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+      final client = await AcpClient.start(
+        config: AcpConfig(
+          agentCommand: _dartExecutable(),
+          agentArgs: [agentScript.path],
+        ),
+      );
+      final updates = <AcpUpdate>[];
+      StreamSubscription<AcpUpdate>? subscription;
+
+      try {
+        await client.initialize().timeout(const Duration(seconds: 5));
+        final sessionId = await client
+            .newSession('/workspace')
+            .timeout(const Duration(seconds: 5));
+        subscription = client.sessionUpdates(sessionId).listen(updates.add);
+
+        await client
+            .prompt(sessionId: sessionId, content: 'run tools')
+            .drain<void>()
+            .timeout(const Duration(seconds: 5));
+        await pumpEventQueue();
+
+        final toolUpdates = updates.whereType<ToolCallUpdate>().toList();
+        expect(toolUpdates.map((update) => update.toolCall.toolCallId), [
+          'call-a',
+          'call-b',
+          'call-a',
+          'call-b',
+        ]);
+        expect(toolUpdates.map((update) => update.toolCall.title), [
+          'Bash A',
+          'Bash B',
+          'Bash A',
+          'Bash B',
+        ]);
+        expect(toolUpdates[2].toolCall.rawOutput, 'a done');
+        expect(toolUpdates[3].toolCall.rawOutput, 'b done');
+      } finally {
+        await subscription?.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
   test('available commands accept legacy names, inputs, and schemas', () {
     final review = AvailableCommand.fromJson(<String, dynamic>{
       'id': 'review',
@@ -385,4 +513,23 @@ void main() {
     expect(autoApply.options.map((choice) => choice.value), ['true', 'false']);
     expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
   });
+}
+
+String _dartExecutable() {
+  final executable = Platform.resolvedExecutable;
+  final cacheMarker =
+      '${Platform.pathSeparator}bin${Platform.pathSeparator}'
+      'cache${Platform.pathSeparator}';
+  final cacheIndex = executable.indexOf(cacheMarker);
+  if (cacheIndex != -1) {
+    return '${executable.substring(0, cacheIndex)}'
+        '${Platform.pathSeparator}bin'
+        '${Platform.pathSeparator}cache'
+        '${Platform.pathSeparator}dart-sdk'
+        '${Platform.pathSeparator}bin'
+        '${Platform.pathSeparator}dart';
+  }
+  return executable.endsWith('${Platform.pathSeparator}dart')
+      ? executable
+      : 'dart';
 }

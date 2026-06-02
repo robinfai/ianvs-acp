@@ -165,6 +165,17 @@ String? _firstNonEmptyString(Map<String, dynamic>? map, List<String> keys) {
   return null;
 }
 
+String _toolCallIdFromUpdate(Map<String, dynamic> update) {
+  return _firstNonEmptyString(update, const [
+        'toolCallId',
+        'tool_call_id',
+        'id',
+        'callId',
+        'call_id',
+      ]) ??
+      '';
+}
+
 const Set<String> _allowPermissionWords = <String>{
   'allow',
   'allowed',
@@ -570,47 +581,56 @@ class SessionManager {
       throw ArgumentError('Invalid session ID: $sessionId');
     }
 
-    unawaited(() async {
-      try {
-        final resp = await peer.prompt({
-          'sessionId': sessionId,
-          'prompt': content,
-        });
-        final stop = stopReasonFromWire(
-          (resp['stopReason'] as String?) ?? 'other',
-        );
-        final turnEnded = TurnEnded(stop);
-        _replayBuffers[sessionId]?.add(turnEnded);
-        _sessionStreams[sessionId]!.add(turnEnded);
-        if (stop == StopReason.cancelled) {
-          _cancellingSessions.remove(sessionId);
-        }
-      } on Object catch (e, st) {
-        _log.warning('prompt error: $e');
-        // Surface error to listeners so UIs can react
-        _sessionStreams[sessionId]!.addError(e, st);
-        // Send TurnEnded with 'other' stop reason to properly close the stream
-        const turnEnded = TurnEnded(StopReason.other);
-        _replayBuffers[sessionId]?.add(turnEnded);
-        _sessionStreams[sessionId]!.add(turnEnded);
-      } finally {}
-    }());
-
     final base = _sessionStreams[sessionId]!.stream;
-    return Stream<AcpUpdate>.multi((emitter) {
-      late final StreamSubscription sub;
-      sub = base.listen(
-        (u) {
-          emitter.add(u);
-          if (u is TurnEnded) {
-            unawaited(sub.cancel());
-            scheduleMicrotask(emitter.close);
+    late final StreamController<AcpUpdate> controller;
+    StreamSubscription<AcpUpdate>? subscription;
+    controller = StreamController<AcpUpdate>(
+      onListen: () {
+        subscription = base.listen(
+          (u) {
+            if (!controller.isClosed) controller.add(u);
+            if (u is TurnEnded) {
+              unawaited(subscription?.cancel());
+              unawaited(controller.close());
+            }
+          },
+          onError: (e, st) {
+            if (!controller.isClosed) controller.addError(e, st);
+          },
+          onDone: () {
+            if (!controller.isClosed) unawaited(controller.close());
+          },
+        );
+
+        unawaited(() async {
+          try {
+            final resp = await peer.prompt({
+              'sessionId': sessionId,
+              'prompt': content,
+            });
+            final stop = stopReasonFromWire(
+              (resp['stopReason'] as String?) ?? 'other',
+            );
+            final turnEnded = TurnEnded(stop);
+            _replayBuffers[sessionId]?.add(turnEnded);
+            _sessionStreams[sessionId]!.add(turnEnded);
+            if (stop == StopReason.cancelled) {
+              _cancellingSessions.remove(sessionId);
+            }
+          } on Object catch (e, st) {
+            _log.warning('prompt error: $e');
+            // Surface error to listeners so UIs can react
+            _sessionStreams[sessionId]!.addError(e, st);
+            // Send TurnEnded with 'other' stop reason to properly close the stream
+            const turnEnded = TurnEnded(StopReason.other);
+            _replayBuffers[sessionId]?.add(turnEnded);
+            _sessionStreams[sessionId]!.add(turnEnded);
           }
-        },
-        onError: (e, st) => emitter.addError(e, st),
-        onDone: () => scheduleMicrotask(emitter.close),
-      );
-    });
+        }());
+      },
+      onCancel: () => subscription?.cancel(),
+    );
+    return controller.stream;
   }
 
   /// Cancel the current turn for a session.
@@ -702,8 +722,7 @@ class SessionManager {
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'tool_call' || kind == 'tool_call_update') {
       // Get tool call ID from the update
-      final toolCallId =
-          update['toolCallId'] as String? ?? update['id'] as String? ?? '';
+      final toolCallId = _toolCallIdFromUpdate(update);
 
       // Initialize tool calls map for session if needed
       _toolCalls.putIfAbsent(sessionId, () => {});
