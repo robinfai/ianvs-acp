@@ -14,6 +14,7 @@ import '../components/error_banner.dart';
 import '../components/extension_request_dialog.dart';
 import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
+import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
 import '../components/session_settings_dialog.dart';
@@ -79,6 +80,8 @@ class AppShell extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
+                  onShowProtocolCoverage: () =>
+                      _showProtocolFeatureReviewDialog(context),
                   onAuthenticate: controller.canAuthenticate
                       ? () => unawaited(_showAuthenticateDialog(context))
                       : null,
@@ -328,6 +331,22 @@ class AppShell extends StatelessWidget {
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
+        );
+      },
+    );
+  }
+
+  Future<void> _showProtocolFeatureReviewDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return ProtocolFeatureReviewDialog(
+          controller: controller,
+          agentServers: agentServers,
+          mcpServers: mcpServers,
+          additionalDirectories: additionalDirectories,
+          clientProviders: clientProviders,
+          configPath: configPath,
         );
       },
     );

@@ -11,6 +11,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
@@ -24,6 +25,7 @@ void main() {
           status: status,
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
+          onShowProtocolCoverage: onShowProtocolCoverage,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
           onExtensionRequest: onExtensionRequest,
@@ -44,6 +46,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
@@ -60,6 +63,7 @@ void main() {
         agentServers: agentServers,
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
+        onShowProtocolCoverage: onShowProtocolCoverage,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
         onExtensionRequest: onExtensionRequest,
@@ -241,6 +245,26 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(openedPermissionHistory, isTrue);
+  });
+
+  testWidgets('AgentToolbar exposes protocol coverage review', (tester) async {
+    var openedProtocolCoverage = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onShowProtocolCoverage: () {
+        openedProtocolCoverage = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Protocol Coverage'), findsOneWidget);
+
+    await tester.tap(find.text('Protocol Coverage'));
+    await tester.pumpAndSettle();
+
+    expect(openedProtocolCoverage, isTrue);
   });
 
   testWidgets('AgentToolbar exposes extension requests when available', (

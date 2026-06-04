@@ -294,6 +294,24 @@ void main() {
     expect(find.text('Params JSON'), findsOneWidget);
   });
 
+  testWidgets('AcpClientApp opens protocol coverage dialog', (tester) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Protocol Coverage'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Protocol Coverage'), findsOneWidget);
+    expect(find.text('ACP Registry'), findsOneWidget);
+  });
+
   testWidgets('AcpClientApp preserves global review target with agent model', (
     tester,
   ) async {

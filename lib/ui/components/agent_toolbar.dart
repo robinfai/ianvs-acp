@@ -16,6 +16,7 @@ class AgentToolbar extends StatelessWidget {
     this.canSwitchAgent = true,
     this.onSelectAgent,
     this.onShowAgentConfig,
+    this.onShowProtocolCoverage,
     this.onAuthenticate,
     this.onShowPermissionHistory,
     this.onExtensionRequest,
@@ -31,6 +32,7 @@ class AgentToolbar extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onExtensionRequest;
@@ -80,6 +82,7 @@ class AgentToolbar extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
+                  onShowProtocolCoverage: onShowProtocolCoverage,
                   onAuthenticate: onAuthenticate,
                   onShowPermissionHistory: onShowPermissionHistory,
                   onExtensionRequest: onExtensionRequest,
@@ -121,6 +124,7 @@ class _AgentMenuButton extends StatelessWidget {
     required this.canSwitchAgent,
     required this.onSelectAgent,
     required this.onShowAgentConfig,
+    required this.onShowProtocolCoverage,
     required this.onAuthenticate,
     required this.onShowPermissionHistory,
     required this.onExtensionRequest,
@@ -133,6 +137,7 @@ class _AgentMenuButton extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onExtensionRequest;
@@ -143,6 +148,7 @@ class _AgentMenuButton extends StatelessWidget {
     final hasMenu =
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
+        onShowProtocolCoverage != null ||
         onAuthenticate != null ||
         onShowPermissionHistory != null ||
         onExtensionRequest != null ||
@@ -157,6 +163,8 @@ class _AgentMenuButton extends StatelessWidget {
             if (agentName != null) onSelectAgent?.call(agentName);
           case _AgentMenuSelectionType.configure:
             onShowAgentConfig?.call();
+          case _AgentMenuSelectionType.protocolCoverage:
+            onShowProtocolCoverage?.call();
           case _AgentMenuSelectionType.authenticate:
             onAuthenticate?.call();
           case _AgentMenuSelectionType.permissionHistory:
@@ -221,8 +229,35 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
+          if (onShowProtocolCoverage != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.protocolCoverage(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.fact_check_outlined,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Protocol Coverage',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (onShowPermissionHistory != null &&
-              (agentServers.isNotEmpty || onShowAgentConfig != null))
+              (agentServers.isNotEmpty ||
+                  onShowAgentConfig != null ||
+                  onShowProtocolCoverage != null))
             const PopupMenuDivider(),
           if (onShowPermissionHistory != null)
             const PopupMenuItem<_AgentMenuSelection>(
@@ -252,6 +287,7 @@ class _AgentMenuButton extends StatelessWidget {
           if (onAuthenticate != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
+                  onShowProtocolCoverage != null ||
                   onShowPermissionHistory != null))
             const PopupMenuDivider(),
           if (onAuthenticate != null)
@@ -282,6 +318,7 @@ class _AgentMenuButton extends StatelessWidget {
           if (onExtensionRequest != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
+                  onShowProtocolCoverage != null ||
                   onShowPermissionHistory != null ||
                   onAuthenticate != null))
             const PopupMenuDivider(),
@@ -313,6 +350,7 @@ class _AgentMenuButton extends StatelessWidget {
           if (onLogout != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
+                  onShowProtocolCoverage != null ||
                   onShowPermissionHistory != null ||
                   onAuthenticate != null ||
                   onExtensionRequest != null))
@@ -352,6 +390,7 @@ class _AgentMenuButton extends StatelessWidget {
 enum _AgentMenuSelectionType {
   agent,
   configure,
+  protocolCoverage,
   authenticate,
   permissionHistory,
   extensionRequest,
@@ -364,6 +403,10 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.configure()
     : type = _AgentMenuSelectionType.configure,
+      agentName = null;
+
+  const _AgentMenuSelection.protocolCoverage()
+    : type = _AgentMenuSelectionType.protocolCoverage,
       agentName = null;
 
   const _AgentMenuSelection.authenticate()

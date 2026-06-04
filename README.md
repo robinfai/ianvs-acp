@@ -9,7 +9,10 @@ advertises those capabilities. It can also pass configured additional
 directories to agents that advertise ACP `additionalDirectories`, fork active
 sessions when the agent supports `session/fork`, and suggest advertised slash
 commands in the prompt input. When an agent advertises authentication methods,
-the Agent menu can start the agent-handled ACP `authenticate` flow.
+the Agent menu can start the agent-handled ACP `authenticate` flow. The same
+menu includes Protocol Coverage, which reviews implemented ACP areas against the
+official docs and points each area to its visible configuration and interaction
+surface.
 
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.

@@ -245,11 +245,12 @@ Manual decision:
 
 ### acp-registry
 
-Status: product integration not started.
+Status: stable official feature, product integration not started.
 
 Non-blocking because: agent discovery can still be configured explicitly through
-`settings.json`, and this protocol-compatibility pass intentionally avoids ACP
-Registry browsing/import/install flows.
+`settings.json`, the active config is inspectable in the app, and this
+protocol-compatibility pass intentionally avoids ACP Registry browsing,
+importing, or installing flows until product decisions are made.
 
 Automated acceptance:
 
@@ -257,6 +258,11 @@ Automated acceptance:
   agent server config parsing, including MCP and additional workspace settings.
 - `test/ui/agent_config_dialog_test.dart` verifies the active explicit config is
   inspectable in Agent Configuration.
+- `test/ui/protocol_feature_review_dialog_test.dart` verifies the Protocol
+  Coverage GUI identifies ACP Registry as a follow-up while still mapping the
+  explicit config flow to Agent Configuration.
+- `test/ui/acp_client_app_test.dart` verifies the Protocol Coverage dialog is
+  reachable from the Agents menu.
 - `README.md` documents the supported explicit config shape.
 
 Manual decision:
