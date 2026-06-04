@@ -325,6 +325,100 @@ Future<void> main() async {
     },
   );
 
+  test('session manager routes usage updates', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_usage_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) {
+  stdout.writeln(jsonEncode(message));
+}
+
+void sendSessionUpdate(Map<String, dynamic> update) {
+  send(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{
+      'sessionId': 'session-usage',
+      'update': update,
+    },
+  });
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/new') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-usage'},
+      });
+    } else if (message['method'] == 'session/prompt') {
+      sendSessionUpdate(<String, dynamic>{
+        'sessionUpdate': 'usage_update',
+        'used': 53000,
+        'size': 200000,
+        'cost': <String, dynamic>{'amount': 0.045, 'currency': 'USD'},
+      });
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+    final client = await AcpClient.start(
+      config: AcpConfig(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      ),
+    );
+    final updates = <AcpUpdate>[];
+    StreamSubscription<AcpUpdate>? subscription;
+
+    try {
+      await client.initialize().timeout(const Duration(seconds: 5));
+      final sessionId = await client
+          .newSession('/workspace')
+          .timeout(const Duration(seconds: 5));
+      subscription = client.sessionUpdates(sessionId).listen(updates.add);
+
+      await client
+          .prompt(sessionId: sessionId, content: 'report usage')
+          .drain<void>()
+          .timeout(const Duration(seconds: 5));
+      await pumpEventQueue();
+
+      final usage = updates.whereType<UsageUpdate>().single;
+      expect(usage.used, 53000);
+      expect(usage.size, 200000);
+      expect(usage.cost?.amount, 0.045);
+      expect(usage.cost?.currency, 'USD');
+    } finally {
+      await subscription?.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('session manager accepts snake case session ids', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_snake_session_agent.dart');

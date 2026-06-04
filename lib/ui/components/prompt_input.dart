@@ -38,7 +38,9 @@ class PromptInput extends StatefulWidget {
     this.hasPermissionReviewer = false,
     this.onToolCallExecutionPolicyChanged,
     this.modelOption,
+    this.reasoningEffortOption,
     this.onModelSelected,
+    this.onReasoningEffortSelected,
     this.pickAttachments,
   });
 
@@ -58,7 +60,9 @@ class PromptInput extends StatefulWidget {
   final ValueChanged<AcpToolCallExecutionPolicy>?
   onToolCallExecutionPolicyChanged;
   final AcpConfigOption? modelOption;
+  final AcpConfigOption? reasoningEffortOption;
   final ValueChanged<String>? onModelSelected;
+  final ValueChanged<String>? onReasoningEffortSelected;
   final PromptAttachmentPicker? pickAttachments;
 
   @override
@@ -230,7 +234,10 @@ class _PromptInputState extends State<PromptInput> {
                       onToolCallExecutionPolicyChanged:
                           widget.onToolCallExecutionPolicyChanged,
                       modelOption: widget.modelOption,
+                      reasoningEffortOption: widget.reasoningEffortOption,
                       onModelSelected: widget.onModelSelected,
+                      onReasoningEffortSelected:
+                          widget.onReasoningEffortSelected,
                       onSend: _submit,
                       onStop: widget.onStop,
                     ),
@@ -556,7 +563,9 @@ class _ComposerControlBar extends StatelessWidget {
     required this.hasPermissionReviewer,
     required this.onToolCallExecutionPolicyChanged,
     required this.modelOption,
+    required this.reasoningEffortOption,
     required this.onModelSelected,
+    required this.onReasoningEffortSelected,
     required this.onSend,
     required this.onStop,
   });
@@ -571,7 +580,9 @@ class _ComposerControlBar extends StatelessWidget {
   final ValueChanged<AcpToolCallExecutionPolicy>?
   onToolCallExecutionPolicyChanged;
   final AcpConfigOption? modelOption;
+  final AcpConfigOption? reasoningEffortOption;
   final ValueChanged<String>? onModelSelected;
+  final ValueChanged<String>? onReasoningEffortSelected;
   final VoidCallback onSend;
   final VoidCallback onStop;
 
@@ -597,11 +608,16 @@ class _ComposerControlBar extends StatelessWidget {
       enabled: enabled && onToolCallExecutionPolicyChanged != null,
       onChanged: onToolCallExecutionPolicyChanged,
     );
-    final model = modelOption != null && modelOption!.options.isNotEmpty
-        ? _ModelSelector(
-            option: modelOption,
-            enabled: enabled && !isSending && onModelSelected != null,
-            onSelected: onModelSelected,
+    final sessionConfig =
+        (modelOption != null && modelOption!.options.isNotEmpty) ||
+            (reasoningEffortOption != null &&
+                reasoningEffortOption!.options.isNotEmpty)
+        ? _SessionConfigSelector(
+            modelOption: modelOption,
+            reasoningEffortOption: reasoningEffortOption,
+            enabled: enabled && !isSending,
+            onModelSelected: onModelSelected,
+            onReasoningEffortSelected: onReasoningEffortSelected,
           )
         : null;
     final action = _PromptActionButton(
@@ -638,9 +654,9 @@ class _ComposerControlBar extends StatelessWidget {
                   action,
                 ],
               ),
-              if (model != null) ...[
+              if (sessionConfig != null) ...[
                 const SizedBox(height: 6),
-                Align(alignment: Alignment.centerRight, child: model),
+                Align(alignment: Alignment.centerRight, child: sessionConfig),
               ],
             ],
           );
@@ -663,9 +679,12 @@ class _ComposerControlBar extends StatelessWidget {
               child: Align(alignment: Alignment.centerLeft, child: policy),
             ),
             const Spacer(),
-            if (model != null) ...[
+            if (sessionConfig != null) ...[
               Flexible(
-                child: Align(alignment: Alignment.centerRight, child: model),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: sessionConfig,
+                ),
               ),
               const SizedBox(width: 8),
             ],
@@ -791,44 +810,226 @@ class _ToolCallPolicySelector extends StatelessWidget {
   }
 }
 
-class _ModelSelector extends StatelessWidget {
-  const _ModelSelector({
-    required this.option,
+class _SessionConfigSelector extends StatelessWidget {
+  const _SessionConfigSelector({
+    required this.modelOption,
+    required this.reasoningEffortOption,
     required this.enabled,
-    required this.onSelected,
+    required this.onModelSelected,
+    required this.onReasoningEffortSelected,
   });
 
-  final AcpConfigOption? option;
+  final AcpConfigOption? modelOption;
+  final AcpConfigOption? reasoningEffortOption;
   final bool enabled;
-  final ValueChanged<String>? onSelected;
+  final ValueChanged<String>? onModelSelected;
+  final ValueChanged<String>? onReasoningEffortSelected;
 
   @override
   Widget build(BuildContext context) {
-    final modelOption = option;
-    final label = modelOption?.currentChoiceLabel ?? 'Model';
-    final hasChoices = modelOption != null && modelOption.options.isNotEmpty;
-    return PopupMenuButton<String>(
-      tooltip: 'Model',
-      enabled: enabled && hasChoices,
-      onSelected: onSelected,
-      itemBuilder: (context) => [
-        for (final choice
-            in modelOption?.options ?? const <AcpConfigOptionChoice>[])
-          PopupMenuItem<String>(
-            value: choice.value,
-            child: _PopupChoiceRow(
-              selected: choice.value == modelOption?.currentValue,
+    final effortLabel = reasoningEffortOption?.currentChoiceLabel;
+    final hasModelChoices =
+        modelOption != null && modelOption!.options.isNotEmpty;
+    final hasEffortChoices =
+        reasoningEffortOption != null &&
+        reasoningEffortOption!.options.isNotEmpty;
+    final label = hasModelChoices ? modelOption!.currentChoiceLabel : 'Session';
+    final modelEnabled = enabled && hasModelChoices && onModelSelected != null;
+    final effortEnabled =
+        enabled && hasEffortChoices && onReasoningEffortSelected != null;
+    return PopupMenuButton<_SessionConfigSelection>(
+      tooltip: 'Model and reasoning effort',
+      enabled: modelEnabled || effortEnabled,
+      onSelected: (selection) {
+        switch (selection.kind) {
+          case _SessionConfigSelectionKind.model:
+            onModelSelected?.call(selection.value);
+          case _SessionConfigSelectionKind.reasoningEffort:
+            onReasoningEffortSelected?.call(selection.value);
+        }
+      },
+      itemBuilder: (context) {
+        return <PopupMenuEntry<_SessionConfigSelection>>[
+          if (hasModelChoices) ...[
+            const PopupMenuItem<_SessionConfigSelection>(
+              enabled: false,
+              child: _PopupSectionHeader(
+                icon: Icons.memory_rounded,
+                label: 'Model',
+              ),
+            ),
+            for (final choice in modelOption!.options)
+              PopupMenuItem<_SessionConfigSelection>(
+                enabled: modelEnabled,
+                value: _SessionConfigSelection.model(choice.value),
+                child: _PopupChoiceRow(
+                  selected: choice.value == modelOption!.currentValue,
+                  icon: Icons.memory_rounded,
+                  label: choice.label,
+                  description: choice.description ?? '',
+                ),
+              ),
+          ],
+          if (hasModelChoices && hasEffortChoices)
+            const PopupMenuDivider(height: 8),
+          if (hasEffortChoices) ...[
+            const PopupMenuItem<_SessionConfigSelection>(
+              enabled: false,
+              child: _PopupSectionHeader(
+                icon: Icons.psychology_alt_rounded,
+                label: 'Reasoning',
+              ),
+            ),
+            for (final choice in reasoningEffortOption!.options)
+              PopupMenuItem<_SessionConfigSelection>(
+                enabled: effortEnabled,
+                value: _SessionConfigSelection.reasoningEffort(choice.value),
+                child: _PopupChoiceRow(
+                  selected: choice.value == reasoningEffortOption!.currentValue,
+                  icon: Icons.psychology_alt_rounded,
+                  label: choice.label,
+                  description: choice.description ?? '',
+                ),
+              ),
+          ],
+        ];
+      },
+      child: _ComposerSplitControlButton(
+        modelLabel: label,
+        effortLabel: effortLabel,
+        enabled: modelEnabled || effortEnabled,
+      ),
+    );
+  }
+}
+
+enum _SessionConfigSelectionKind { model, reasoningEffort }
+
+class _SessionConfigSelection {
+  const _SessionConfigSelection.model(this.value)
+    : kind = _SessionConfigSelectionKind.model;
+
+  const _SessionConfigSelection.reasoningEffort(this.value)
+    : kind = _SessionConfigSelectionKind.reasoningEffort;
+
+  final _SessionConfigSelectionKind kind;
+  final String value;
+}
+
+class _ComposerSplitControlButton extends StatelessWidget {
+  const _ComposerSplitControlButton({
+    required this.modelLabel,
+    required this.effortLabel,
+    required this.enabled,
+  });
+
+  final String modelLabel;
+  final String? effortLabel;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? AppColors.primaryDark : AppColors.textTertiary;
+    final borderColor = enabled
+        ? AppColors.primary.withValues(alpha: 0.14)
+        : AppColors.border;
+    return Container(
+      height: 30,
+      constraints: const BoxConstraints(maxWidth: 268),
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: _SplitControlSegment(
               icon: Icons.memory_rounded,
-              label: choice.label,
-              description: choice.description ?? '',
+              label: modelLabel,
+              color: color,
             ),
           ),
-      ],
-      child: _ComposerControlButton(
-        icon: Icons.memory_rounded,
-        label: label,
-        enabled: enabled && hasChoices,
+          if (effortLabel != null && effortLabel!.isNotEmpty) ...[
+            Container(width: 1, height: 18, color: borderColor),
+            Flexible(
+              child: _SplitControlSegment(
+                icon: Icons.psychology_alt_rounded,
+                label: effortLabel!,
+                color: color,
+              ),
+            ),
+          ],
+          const SizedBox(width: 2),
+          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 17),
+          const SizedBox(width: 7),
+        ],
       ),
+    );
+  }
+}
+
+class _SplitControlSegment extends StatelessWidget {
+  const _SplitControlSegment({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 9),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PopupSectionHeader extends StatelessWidget {
+  const _PopupSectionHeader({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 15, color: AppColors.textSecondary),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 11,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0,
+          ),
+        ),
+      ],
     );
   }
 }

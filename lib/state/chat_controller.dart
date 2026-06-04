@@ -8,6 +8,7 @@ import '../acp/acp_permission_request.dart';
 import '../acp/acp_permission_reviewer.dart';
 import '../acp/acp_session_catalog.dart';
 import '../acp/acp_session_settings.dart';
+import '../acp/acp_session_usage.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
@@ -73,6 +74,7 @@ class ChatController extends ChangeNotifier {
   List<Map<String, Object?>> availableCommands = const <Map<String, Object?>>[];
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings sessionSettings = const AcpSessionSettings();
+  AcpSessionUsage? sessionUsage;
   AcpPermissionRequest? pendingPermissionRequest;
   AcpToolCallExecutionPolicy toolCallExecutionPolicy =
       AcpToolCallExecutionPolicy.autoReview;
@@ -103,6 +105,10 @@ class ChatController extends ChangeNotifier {
   bool get hasPermissionReviewer => permissionReviewer != null;
 
   String? get currentModelValue => sessionSettings.modelOption?.currentValue;
+
+  String? get currentReasoningEffortValue {
+    return sessionSettings.reasoningEffortOption?.currentValue;
+  }
 
   List<Map<String, Object?>> get authMethods {
     return capabilities?.authMethods
@@ -171,8 +177,11 @@ class ChatController extends ChangeNotifier {
     });
   }
 
-  Future<void> newSession() async {
+  Future<void> newSession({String? cwd}) async {
     if (isStreaming || isSessionOperationRunning) return;
+    final workspaceCwd = cwd == null || cwd.trim().isEmpty
+        ? this.cwd
+        : cwd.trim();
     await _runSessionOperation(() async {
       try {
         if (status == ConnectionStatus.disconnected ||
@@ -181,7 +190,7 @@ class ChatController extends ChangeNotifier {
           if (status == ConnectionStatus.error) return;
         }
         final session = (await client.createSession(
-          cwd: cwd,
+          cwd: workspaceCwd,
           additionalDirectories: additionalDirectories,
         )).copyWith(agentName: agentName);
         _retiredSessionIds.remove(session.id);
@@ -192,6 +201,7 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
         for (final event in session.initialEvents) {
           _handleAgentEvent(event, notify: false);
         }
@@ -232,6 +242,7 @@ class ChatController extends ChangeNotifier {
       final previousAvailableCommands = availableCommands;
       final previousLastLatency = lastLatency;
       final previousSessionSettings = sessionSettings;
+      final previousSessionUsage = sessionUsage;
       final previousSessionSettingsLoading = sessionSettingsLoading;
       final previousSettingsLoadId = _activeSessionSettingsLoadId;
       try {
@@ -250,6 +261,7 @@ class ChatController extends ChangeNotifier {
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
         final session = AgentSession(
           id: trimmedSessionId,
           cwd: workspaceCwd,
@@ -288,6 +300,7 @@ class ChatController extends ChangeNotifier {
         availableCommands = previousAvailableCommands;
         lastLatency = previousLastLatency;
         sessionSettings = previousSessionSettings;
+        sessionUsage = previousSessionUsage;
         sessionSettingsLoading = previousSessionSettingsLoading;
         _activeSessionSettingsLoadId = previousSettingsLoadId;
         _setError(error);
@@ -499,6 +512,17 @@ class ChatController extends ChangeNotifier {
     await setConfigOption(option.id, modelValue);
   }
 
+  Future<void> setSessionReasoningEffort(String effortValue) async {
+    final option = sessionSettings.reasoningEffortOption;
+    if (option == null) {
+      _setActionError(
+        StateError('No reasoning effort option exposed by this session.'),
+      );
+      return;
+    }
+    await setConfigOption(option.id, effortValue);
+  }
+
   void setToolCallExecutionPolicy(AcpToolCallExecutionPolicy policy) {
     if (toolCallExecutionPolicy == policy) return;
     toolCallExecutionPolicy = policy;
@@ -538,6 +562,7 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
         for (final event in updatedSession.initialEvents) {
           _handleAgentEvent(event, notify: false);
         }
@@ -570,6 +595,7 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
         sessionSettingsLoading = false;
         await _cancelPendingPermissionRequest(reportErrors: false);
         status = ConnectionStatus.connected;
@@ -600,6 +626,7 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
         sessionSettingsLoading = false;
         await _cancelPendingPermissionRequest(reportErrors: false);
         status = ConnectionStatus.connected;
@@ -1135,6 +1162,10 @@ class ChatController extends ChangeNotifier {
       _applySessionInfoUpdate(event.metadata);
       return;
     }
+    if (kind == 'usage_update') {
+      _applyUsageUpdate(event.metadata);
+      return;
+    }
     if (kind == 'terminal') {
       _upsertTerminalStatusMessage(event);
       return;
@@ -1266,6 +1297,38 @@ class ChatController extends ChangeNotifier {
       }
     }
     return '';
+  }
+
+  void _applyUsageUpdate(Map<String, Object?> metadata) {
+    final used = _intFromObject(metadata['used']);
+    final size = _intFromObject(metadata['size']);
+    if (used == null || size == null || used < 0 || size <= 0) return;
+    sessionUsage = AcpSessionUsage(
+      used: used,
+      size: size,
+      cost: _usageCostFromObject(metadata['cost']),
+    );
+  }
+
+  AcpSessionUsageCost? _usageCostFromObject(Object? raw) {
+    if (raw is! Map) return null;
+    final mapped = raw.map((key, value) => MapEntry(key.toString(), value));
+    final amount = _numFromObject(mapped['amount']);
+    final currency = mapped['currency']?.toString().trim() ?? '';
+    if (amount == null || currency.isEmpty) return null;
+    return AcpSessionUsageCost(amount: amount, currency: currency);
+  }
+
+  int? _intFromObject(Object? raw) {
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw.trim());
+    return null;
+  }
+
+  num? _numFromObject(Object? raw) {
+    if (raw is num) return raw;
+    if (raw is String) return num.tryParse(raw.trim());
+    return null;
   }
 
   void _applySessionInfoUpdate(Map<String, Object?> metadata) {

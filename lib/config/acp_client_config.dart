@@ -479,6 +479,7 @@ class AgentServerConfig {
     required this.name,
     required this.type,
     this.command = '',
+    this.cwd,
     this.url = '',
     this.args = const <String>[],
     this.env = const <String, String>{},
@@ -489,6 +490,7 @@ class AgentServerConfig {
   final String name;
   final String type;
   final String command;
+  final String? cwd;
   final String url;
   final List<String> args;
   final Map<String, String> env;
@@ -584,6 +586,11 @@ class AgentServerConfig {
     if (command == null || command.isEmpty) {
       throw FormatException('Agent server "$name" requires command.');
     }
+    final cwd = _absolutePathValue(
+      json['cwd'] ?? json['working_directory'] ?? json['workingDirectory'],
+      fieldName: 'cwd',
+      serverName: name,
+    );
 
     final argsRaw = json['args'];
     final args = argsRaw == null
@@ -598,6 +605,7 @@ class AgentServerConfig {
       name: name,
       type: type,
       command: command,
+      cwd: cwd,
       args: args,
       env: env,
       permissionReviewAgent: _agentPermissionReviewAgent(json),
@@ -608,6 +616,7 @@ class AgentServerConfig {
     return <String, Object?>{
       'type': type,
       if (command.isNotEmpty) 'command': command,
+      if (cwd != null) 'cwd': cwd,
       if (url.isNotEmpty) 'url': url,
       if (args.isNotEmpty) 'args': args,
       if (env.isNotEmpty) 'env': env,
@@ -756,6 +765,26 @@ String? _stringValue(Object? value) {
   if (value is! String) return null;
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String? _absolutePathValue(
+  Object? value, {
+  required String fieldName,
+  required String serverName,
+}) {
+  if (value == null) return null;
+  if (value is! String || value.trim().isEmpty) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName must be a non-empty string.',
+    );
+  }
+  final path = value.trim();
+  if (!File(path).isAbsolute) {
+    throw FormatException(
+      'Agent server "$serverName" $fieldName must be an absolute path.',
+    );
+  }
+  return path;
 }
 
 List<String> _stringList(

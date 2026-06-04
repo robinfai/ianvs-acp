@@ -70,6 +70,7 @@ void main() {
                 name: 'Kimi Code Dev',
                 type: 'custom',
                 command: '/usr/local/bin/kimi',
+                cwd: '/Users/example/kimi-code',
                 args: ['acp'],
                 permissionReviewAgent: AcpPermissionReviewAgentConfig(
                   enabled: true,
@@ -131,6 +132,8 @@ void main() {
     expect(find.text('1'), findsWidgets);
     expect(find.text('Enabled'), findsWidgets);
     expect(find.text('@zed-industries/codex-acp'), findsOneWidget);
+    expect(find.text('CWD'), findsOneWidget);
+    expect(find.text('/Users/example/kimi-code'), findsOneWidget);
     expect(find.text('Current'), findsOneWidget);
     expect(find.text('Default'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);

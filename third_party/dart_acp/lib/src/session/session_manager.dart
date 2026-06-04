@@ -831,6 +831,10 @@ class SessionManager {
       final u = ModeUpdate(currentModeId ?? '');
       _replayBuffers[sessionId]!.add(u);
       _sessionStreams[sessionId]!.add(u);
+    } else if (kind == 'usage_update') {
+      final u = UsageUpdate.fromJson(update);
+      _replayBuffers[sessionId]!.add(u);
+      _sessionStreams[sessionId]!.add(u);
     } else {
       final u = UnknownUpdate(json);
       _replayBuffers[sessionId]!.add(u);

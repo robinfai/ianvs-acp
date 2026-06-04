@@ -332,6 +332,10 @@ class _AgentServerPanel extends StatelessWidget {
             ),
           ] else ...[
             _DetailRow(label: 'Command', value: server.command),
+            if (server.cwd != null) ...[
+              const SizedBox(height: 6),
+              _DetailRow(label: 'CWD', value: server.cwd!),
+            ],
             const SizedBox(height: 6),
             _DetailRow(label: 'Args', value: args),
             const SizedBox(height: 6),

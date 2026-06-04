@@ -257,28 +257,31 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (_controller.isStreaming || _controller.isSessionOperationRunning) {
       return;
     }
+
+    final agentServers = _config.selectableAgentServers;
+    final selection = await showDialog<NewSessionSelection>(
+      context: dialogContext,
+      builder: (context) => NewSessionAgentDialog(
+        agentServers: widget.controller == null
+            ? agentServers
+            : const <AgentServerConfig>[],
+        currentAgentName: _config.agentName,
+        initialCwd: _controller.currentSession?.cwd ?? _controller.cwd,
+      ),
+    );
+    if (selection == null) return;
+
     if (widget.controller != null) {
-      await _controller.newSession();
+      await _controller.newSession(cwd: selection.cwd);
       return;
     }
 
-    final agentServers = _config.selectableAgentServers;
-    if (agentServers.isEmpty) {
-      await _controller.newSession();
+    final selected = selection.agentServer;
+    if (selected == null) {
+      await _controller.newSession(cwd: selection.cwd);
       if (mounted) setState(() {});
       return;
     }
-
-    final selected = agentServers.length == 1
-        ? agentServers.single
-        : await showDialog<AgentServerConfig>(
-            context: dialogContext,
-            builder: (context) => NewSessionAgentDialog(
-              agentServers: agentServers,
-              currentAgentName: _config.agentName,
-            ),
-          );
-    if (selected == null) return;
 
     late final AcpClientConfig nextConfig;
     try {
@@ -289,7 +292,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
 
     final controller = _activateAgent(nextConfig);
-    await controller.newSession();
+    await controller.newSession(cwd: selection.cwd);
     if (mounted) setState(() {});
   }
 
@@ -361,6 +364,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return DartAcpAgentClient(
       agentCommand: server.isStdio ? server.command : null,
       agentArgs: server.isStdio ? server.args : const <String>[],
+      agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
       agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
       agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
@@ -445,6 +449,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return DartAcpAgentClient(
       agentCommand: server.isStdio ? server.command : null,
       agentArgs: server.isStdio ? server.args : const <String>[],
+      agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
       agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
       agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,

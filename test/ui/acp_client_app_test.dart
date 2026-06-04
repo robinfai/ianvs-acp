@@ -148,6 +148,28 @@ void main() {
     expect(fake.connected, isTrue);
   });
 
+  testWidgets('AcpClientApp starts new sessions with entered cwd', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.pumpAndSettle();
+
+    final field = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(field, '/other/project');
+    await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.cwd, '/other/project');
+  });
+
   testWidgets('AcpClientApp disables prompt input during session operations', (
     tester,
   ) async {
@@ -371,6 +393,49 @@ void main() {
     expect(fake.lastConfigId, 'model');
     expect(fake.lastConfigValue, 'mini');
     expect(controller.sessionSettings.currentModelLabel, 'GPT-5 Mini');
+  });
+
+  testWidgets('AcpClientApp changes reasoning effort from prompt composer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+          ),
+          AcpConfigOption(
+            id: 'reasoning_effort',
+            name: 'Reasoning Effort',
+            type: 'select',
+            currentValue: 'medium',
+            options: [
+              AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+              AcpConfigOptionChoice(value: 'high', name: 'High'),
+            ],
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(AcpClientApp(controller: controller));
+    expect(find.text('Medium'), findsOneWidget);
+
+    await tester.tap(find.text('Medium'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('High'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastConfigId, 'reasoning_effort');
+    expect(fake.lastConfigValue, 'high');
+    expect(controller.sessionSettings.currentReasoningEffortLabel, 'High');
   });
 
   testWidgets('AcpClientApp resolves permission requests from composer', (

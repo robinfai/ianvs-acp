@@ -78,7 +78,8 @@ void main() {
       ),
     );
 
-    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Session Configuration'), findsOneWidget);
+    expect(find.text('Active model'), findsOneWidget);
     expect(find.text('GPT-5'), findsOneWidget);
     expect(find.text('Approval mode'), findsOneWidget);
 
@@ -90,6 +91,41 @@ void main() {
     expect(fake.lastConfigId, 'model');
     expect(fake.lastConfigValue, 'claude-sonnet-4');
     expect(controller.sessionSettings.currentModelLabel, 'Claude Sonnet 4');
+  });
+
+  testWidgets('SessionSettingsDialog promotes reasoning effort config option', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(sessionSettings: _settingsWithReasoning);
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    expect(find.text('Session Configuration'), findsOneWidget);
+    expect(find.text('Reasoning effort'), findsOneWidget);
+    expect(find.text('High'), findsOneWidget);
+    expect(find.text('ACP config option: reasoning_effort'), findsOneWidget);
+    expect(find.text('Approval mode'), findsOneWidget);
+
+    await tester.tap(find.text('Medium'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastConfigId, 'reasoning_effort');
+    expect(fake.lastConfigValue, 'medium');
+    expect(controller.sessionSettings.currentReasoningEffortLabel, 'Medium');
+    expect(
+      controller.sessionSettings.nonModelConfigOptions.map(
+        (option) => option.id,
+      ),
+      ['approval'],
+    );
   });
 
   testWidgets(
@@ -300,6 +336,39 @@ const _settingsWithModesOnly = AcpSessionSettings(
       AcpSessionMode(id: 'edit', name: 'Edit'),
     ],
   ),
+);
+
+const _settingsWithReasoning = AcpSessionSettings(
+  configOptions: [
+    AcpConfigOption(
+      id: 'model',
+      name: 'Model',
+      type: 'select',
+      currentValue: 'gpt-5',
+      options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+    ),
+    AcpConfigOption(
+      id: 'reasoning_effort',
+      name: 'Reasoning Effort',
+      type: 'select',
+      currentValue: 'high',
+      options: [
+        AcpConfigOptionChoice(value: 'low', name: 'Low'),
+        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+        AcpConfigOptionChoice(value: 'high', name: 'High'),
+      ],
+    ),
+    AcpConfigOption(
+      id: 'approval',
+      name: 'Approval mode',
+      type: 'select',
+      currentValue: 'suggest',
+      options: [
+        AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+        AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+      ],
+    ),
+  ],
 );
 
 const _settingsWithBoolean = AcpSessionSettings(

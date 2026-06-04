@@ -20,12 +20,27 @@ class AcpSessionSettings {
     return null;
   }
 
+  AcpConfigOption? get reasoningEffortOption {
+    for (final option in configOptions) {
+      if (option.isReasoningEffortOption) return option;
+    }
+    return null;
+  }
+
   List<AcpConfigOption> get nonModelConfigOptions {
-    return configOptions.where((option) => !option.isModelOption).toList();
+    return configOptions.where((option) {
+      return !option.isModelOption && !option.isReasoningEffortOption;
+    }).toList();
   }
 
   String? get currentModelLabel {
     final option = modelOption;
+    if (option == null) return null;
+    return option.currentChoiceLabel;
+  }
+
+  String? get currentReasoningEffortLabel {
+    final option = reasoningEffortOption;
     if (option == null) return null;
     return option.currentChoiceLabel;
   }
@@ -140,6 +155,39 @@ class AcpConfigOption {
           token.contains('model-id') ||
           token.contains('model name') ||
           token.contains('模型')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool get isReasoningEffortOption {
+    if (options.isEmpty) return false;
+    final tokens = <String>[id, name, category ?? '', group ?? '']
+        .map((value) => value.trim().toLowerCase())
+        .where((value) {
+          return value.isNotEmpty;
+        });
+
+    for (final token in tokens) {
+      if (token == 'reasoning_effort' ||
+          token == 'model_reasoning_effort' ||
+          token == 'reasoning effort' ||
+          token == 'reasoning-effort' ||
+          token == 'thought_level' ||
+          token == 'thought level' ||
+          token == 'thought-level' ||
+          token == 'thinking' ||
+          token == 'thinking level' ||
+          token == 'thinking-level' ||
+          token == '思考等级' ||
+          token.contains('reasoning effort') ||
+          token.contains('reasoning_effort') ||
+          token.contains('reasoning-effort') ||
+          token.contains('thought level') ||
+          token.contains('thought_level') ||
+          token.contains('thought-level') ||
+          token.contains('思考等级')) {
         return true;
       }
     }

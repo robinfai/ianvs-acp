@@ -20,6 +20,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
     String? agentCommand,
     List<String>? agentArgs,
+    String? agentCwd,
     Map<String, String>? envOverrides,
     this.agentWebSocketUrl,
     this.agentHttpUrl,
@@ -32,6 +33,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.enableTerminalProvider = false,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
+       agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
        agentHeaders = agentHeaders ?? const <String, String>{},
        mcpServers = mcpServers == null
@@ -45,6 +47,7 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   final String agentCommand;
   final List<String> agentArgs;
+  final String? agentCwd;
   final Map<String, String> envOverrides;
   final Uri? agentWebSocketUrl;
   final Uri? agentHttpUrl;
@@ -220,6 +223,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     return acp.StdioTransport(
       command: agentCommand,
       args: agentArgs,
+      cwd: agentCwd,
       envOverrides: envOverrides,
       logger: config.logger,
       onProtocolOut: _captureProtocolOut,
@@ -716,6 +720,17 @@ class DartAcpAgentClient implements AcpAgentClient {
           },
           timestamp: DateTime.now(),
         );
+      case acp.UsageUpdate():
+        return _usageEventFromValues(
+          used: update.used,
+          size: update.size,
+          cost: update.cost == null
+              ? null
+              : <String, Object?>{
+                  'amount': update.cost!.amount,
+                  'currency': update.cost!.currency,
+                },
+        );
       case acp.ModeUpdate():
         final updateSessionId = sessionId ?? _activeSessionId;
         if (updateSessionId != null &&
@@ -735,9 +750,10 @@ class DartAcpAgentClient implements AcpAgentClient {
           timestamp: DateTime.now(),
         );
       case acp.UnknownUpdate():
+        final kind = _unknownUpdateKind(update);
+        if (kind == 'usage_update') return _usageEventFromUnknownUpdate(update);
         final mapped = _eventFromUnknownUpdate(update);
         if (mapped != null) return mapped;
-        final kind = _unknownUpdateKind(update);
         if (kind == null) return null;
         final text = '[Unknown update: $kind]';
         return AgentEvent(
@@ -798,6 +814,53 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
 
     return null;
+  }
+
+  AgentEvent? _usageEventFromUnknownUpdate(acp.UnknownUpdate update) {
+    final raw = update.raw;
+    final rawBody = raw['update'];
+    final body = rawBody is Map ? rawBody : raw;
+    return _usageEventFromRaw(body);
+  }
+
+  AgentEvent? _usageEventFromRaw(Map raw) {
+    final used = _intFromRaw(raw['used']);
+    final size = _intFromRaw(raw['size']);
+    if (used == null || size == null) return null;
+    return _usageEventFromValues(
+      used: used,
+      size: size,
+      cost: _usageCostFromRaw(raw['cost']),
+    );
+  }
+
+  AgentEvent? _usageEventFromValues({
+    required int used,
+    required int size,
+    Map<String, Object?>? cost,
+  }) {
+    if (used < 0 || size <= 0) return null;
+    final percent = used / size * 100;
+    return AgentEvent(
+      type: AgentEventType.status,
+      text: 'Context ${percent.toStringAsFixed(0)}%',
+      metadata: <String, Object?>{
+        'kind': 'usage_update',
+        'used': used,
+        'size': size,
+        'cost': ?cost,
+      },
+      timestamp: DateTime.now(),
+    );
+  }
+
+  Map<String, Object?>? _usageCostFromRaw(Object? raw) {
+    if (raw is! Map) return null;
+    final cost = _metadataMap(raw);
+    final amount = _numFromRaw(cost['amount']);
+    final currency = cost['currency']?.toString().trim() ?? '';
+    if (amount == null || currency.isEmpty) return null;
+    return <String, Object?>{'amount': amount, 'currency': currency};
   }
 
   String? _unknownUpdateKind(acp.UnknownUpdate update) {
@@ -1292,6 +1355,18 @@ class DartAcpAgentClient implements AcpAgentClient {
   Map<String, Object?> _metadataMap(Map? raw) {
     if (raw == null) return const <String, Object?>{};
     return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  int? _intFromRaw(Object? raw) {
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw.trim());
+    return null;
+  }
+
+  num? _numFromRaw(Object? raw) {
+    if (raw is num) return raw;
+    if (raw is String) return num.tryParse(raw.trim());
+    return null;
   }
 
   String? _nonEmptyString(Object? raw) {

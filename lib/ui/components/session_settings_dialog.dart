@@ -90,13 +90,17 @@ class SessionSettingsDialog extends StatelessWidget {
             cwd: session.cwd,
             loading: controller.sessionSettingsLoading,
           ),
-          if (settings.modelOption case final modelOption?) ...[
+          if (settings.modelOption != null ||
+              settings.reasoningEffortOption != null) ...[
             const SizedBox(height: 8),
-            _ModelSection(
-              option: modelOption,
+            _SessionConfigurationSection(
+              settings: settings,
               enabled: settingsEnabled,
-              onChanged: (modelValue) {
+              onModelChanged: (modelValue) {
                 unawaited(controller.setSessionModel(modelValue));
+              },
+              onReasoningEffortChanged: (effortValue) {
+                unawaited(controller.setSessionReasoningEffort(effortValue));
               },
             ),
           ],
@@ -240,8 +244,61 @@ class _SessionHeader extends StatelessWidget {
   }
 }
 
-class _ModelSection extends StatelessWidget {
-  const _ModelSection({
+class _SessionConfigurationSection extends StatelessWidget {
+  const _SessionConfigurationSection({
+    required this.settings,
+    required this.enabled,
+    required this.onModelChanged,
+    required this.onReasoningEffortChanged,
+  });
+
+  final AcpSessionSettings settings;
+  final bool enabled;
+  final ValueChanged<String> onModelChanged;
+  final ValueChanged<String> onReasoningEffortChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final modelOption = settings.modelOption;
+    final reasoningEffortOption = settings.reasoningEffortOption;
+
+    return _Panel(
+      icon: Icons.tune_rounded,
+      title: 'Session Configuration',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (modelOption != null) ...[
+            _ModelDropdown(
+              option: modelOption,
+              enabled: enabled,
+              onChanged: onModelChanged,
+            ),
+          ],
+          if (modelOption != null && reasoningEffortOption != null)
+            const SizedBox(height: 10),
+          if (reasoningEffortOption != null) ...[
+            _ReasoningEffortControl(
+              option: reasoningEffortOption,
+              enabled: enabled,
+              onChanged: onReasoningEffortChanged,
+            ),
+          ],
+          const SizedBox(height: 10),
+          _CapabilitySummary(
+            hasModel: modelOption != null,
+            hasReasoningEffort: reasoningEffortOption != null,
+            configOptionsActive: settings.hasConfigOptions,
+            reasoningEffortConfigId: reasoningEffortOption?.id,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModelDropdown extends StatelessWidget {
+  const _ModelDropdown({
     required this.option,
     required this.enabled,
     required this.onChanged,
@@ -258,29 +315,126 @@ class _ModelSection extends StatelessWidget {
         ? option.currentValue
         : null;
 
-    return _Panel(
-      icon: Icons.memory_rounded,
-      title: 'Model',
-      child: DropdownButtonFormField<String>(
-        isExpanded: true,
-        initialValue: selectedValue,
-        decoration: _inputDecoration('Current model'),
-        items: option.options
-            .map(
-              (choice) => DropdownMenuItem<String>(
-                value: choice.value,
-                child: Text(choice.label, overflow: TextOverflow.ellipsis),
+    return DropdownButtonFormField<String>(
+      isExpanded: true,
+      initialValue: selectedValue,
+      decoration: _inputDecoration('Active model'),
+      items: option.options
+          .map(
+            (choice) => DropdownMenuItem<String>(
+              value: choice.value,
+              child: Text(choice.label, overflow: TextOverflow.ellipsis),
+            ),
+          )
+          .toList(),
+      hint: option.currentValue.isEmpty
+          ? null
+          : Text(option.currentValue, overflow: TextOverflow.ellipsis),
+      onChanged: enabled
+          ? (value) {
+              if (value != null) onChanged(value);
+            }
+          : null,
+    );
+  }
+}
+
+class _ReasoningEffortControl extends StatelessWidget {
+  const _ReasoningEffortControl({
+    required this.option,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final AcpConfigOption option;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Reasoning effort',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final choice in option.options)
+              ChoiceChip(
+                label: Text(choice.label, overflow: TextOverflow.ellipsis),
+                selected: choice.value == option.currentValue,
+                onSelected: enabled
+                    ? (_) {
+                        onChanged(choice.value);
+                      }
+                    : null,
+                selectedColor: AppColors.primarySoft,
+                backgroundColor: AppColors.surface,
+                side: BorderSide(
+                  color: choice.value == option.currentValue
+                      ? AppColors.primary
+                      : AppColors.border,
+                ),
+                labelStyle: TextStyle(
+                  color: choice.value == option.currentValue
+                      ? AppColors.primaryDark
+                      : AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
               ),
-            )
-            .toList(),
-        hint: option.currentValue.isEmpty
-            ? null
-            : Text(option.currentValue, overflow: TextOverflow.ellipsis),
-        onChanged: enabled
-            ? (value) {
-                if (value != null) onChanged(value);
-              }
-            : null,
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _CapabilitySummary extends StatelessWidget {
+  const _CapabilitySummary({
+    required this.hasModel,
+    required this.hasReasoningEffort,
+    required this.configOptionsActive,
+    required this.reasoningEffortConfigId,
+  });
+
+  final bool hasModel;
+  final bool hasReasoningEffort;
+  final bool configOptionsActive;
+  final String? reasoningEffortConfigId;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: [
+          if (hasModel) const _TinyPill('Model switching supported'),
+          if (hasReasoningEffort) const _TinyPill('Reasoning effort supported'),
+          if (reasoningEffortConfigId != null &&
+              reasoningEffortConfigId!.isNotEmpty)
+            _TinyPill('ACP config option: $reasoningEffortConfigId'),
+          if (configOptionsActive) const _TinyPill('Config options active'),
+        ],
       ),
     );
   }

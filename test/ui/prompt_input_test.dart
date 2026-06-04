@@ -27,7 +27,9 @@ void main() {
     bool hasPermissionReviewer = false,
     ValueChanged<AcpToolCallExecutionPolicy>? onToolCallExecutionPolicyChanged,
     AcpConfigOption? modelOption,
+    AcpConfigOption? reasoningEffortOption,
     ValueChanged<String>? onModelSelected,
+    ValueChanged<String>? onReasoningEffortSelected,
     PromptAttachmentPicker? pickAttachments,
     double? width,
   }) {
@@ -45,7 +47,9 @@ void main() {
       hasPermissionReviewer: hasPermissionReviewer,
       onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
       modelOption: modelOption,
+      reasoningEffortOption: reasoningEffortOption,
       onModelSelected: onModelSelected,
+      onReasoningEffortSelected: onReasoningEffortSelected,
       onSend: onSend,
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
@@ -546,6 +550,46 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(selectedModel, 'mini');
+  });
+
+  testWidgets('PromptInput changes exposed reasoning effort option', (
+    tester,
+  ) async {
+    String? selectedEffort;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        modelOption: const AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'gpt-5',
+          options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+        ),
+        onModelSelected: (_) {},
+        reasoningEffortOption: const AcpConfigOption(
+          id: 'reasoning_effort',
+          name: 'Reasoning Effort',
+          type: 'select',
+          currentValue: 'high',
+          options: [
+            AcpConfigOptionChoice(value: 'low', name: 'Low'),
+            AcpConfigOptionChoice(value: 'high', name: 'High'),
+          ],
+        ),
+        onReasoningEffortSelected: (value) => selectedEffort = value,
+      ),
+    );
+
+    expect(find.text('High'), findsOneWidget);
+    await tester.tap(find.text('High'));
+    await tester.pumpAndSettle();
+    expect(find.text('Reasoning'), findsOneWidget);
+    await tester.tap(find.text('Low'));
+    await tester.pumpAndSettle();
+
+    expect(selectedEffort, 'low');
   });
 
   testWidgets('PromptInput hides model selector without choices', (

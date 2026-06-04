@@ -15,6 +15,7 @@ void main() {
     "Kimi Code Dev": {
       "type": "custom",
       "command": "/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs",
+      "cwd": "/Users/luobinghui/projects/kimi/kimi-code",
       "args": ["acp"],
       "env": {
         "KIMI_API_KEY": "test-key"
@@ -36,6 +37,10 @@ void main() {
     expect(
       config.activeAgentServer?.displayTarget,
       '/Users/luobinghui/projects/kimi/kimi-code/apps/kimi-code/dist/main.mjs',
+    );
+    expect(
+      config.activeAgentServer?.cwd,
+      '/Users/luobinghui/projects/kimi/kimi-code',
     );
     expect(config.activeAgentServer?.args, ['acp']);
     expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
@@ -65,7 +70,11 @@ void main() {
     final config = AcpClientConfig.fromJson({
       'defaultAgentServer': 'Remote Agent',
       'agentServers': {
-        'Local Agent': {'type': 'custom', 'command': '/usr/local/bin/local'},
+        'Local Agent': {
+          'type': 'custom',
+          'command': '/usr/local/bin/local',
+          'workingDirectory': '/Users/example/local-agent',
+        },
         'Remote Agent': {'type': 'websocket', 'url': 'ws://127.0.0.1:8765/acp'},
       },
     });
@@ -76,6 +85,7 @@ void main() {
       'Local Agent',
       'Remote Agent',
     ]);
+    expect(config.agentServers.first.cwd, '/Users/example/local-agent');
     expect(config.activeAgentServer?.type, 'websocket');
     expect(config.activeAgentServer?.url, 'ws://127.0.0.1:8765/acp');
   });
@@ -851,6 +861,34 @@ void main() {
             'type': 'websocket',
             'url': 'ws://127.0.0.1/acp',
             'headers': {'Authorization': ''},
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects invalid stdio agent cwd config', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Local Agent': {
+            'type': 'custom',
+            'command': '/usr/local/bin/local',
+            'cwd': 'relative/path',
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Local Agent': {
+            'type': 'custom',
+            'command': '/usr/local/bin/local',
+            'working_directory': '',
           },
         },
       }),

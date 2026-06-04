@@ -46,6 +46,58 @@ void main() {
     await subscription.cancel();
   });
 
+  test('starts stdio agent in configured working directory', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final launchDir = Directory('${tempDir.path}/launch-root');
+    await launchDir.create();
+    final cwdFile = File('${tempDir.path}/agent_cwd.txt');
+    final cwdFilePath = jsonEncode(cwdFile.path);
+    final agentScript = File('${tempDir.path}/fake_cwd_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      await File($cwdFilePath).writeAsString(Directory.current.path);
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      agentCwd: launchDir.path,
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      await _waitForFile(cwdFile);
+
+      expect(
+        await Directory(await cwdFile.readAsString()).resolveSymbolicLinks(),
+        await launchDir.resolveSymbolicLinks(),
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('accepts legacy string message chunk content', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_string_content_agent.dart');
@@ -3554,6 +3606,106 @@ Future<void> main() async {
 
       expect(session.id, 'session-empty-update');
       expect(session.initialEvents, isEmpty);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('maps usage updates during prompt streams', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_usage_update_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-usage-update'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'session-usage-update',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'usage_update',
+            'used': 53000,
+            'size': 200000,
+            'cost': <String, dynamic>{'amount': 0.045, 'currency': 'USD'},
+          },
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'session-usage-update',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'agent_message_chunk',
+            'content': <String, dynamic>{'type': 'text', 'text': 'hello'},
+          },
+        },
+      }));
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'say hi')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      expect(events.map((event) => event.text), contains('hello'));
+      expect(
+        events.map((event) => event.text),
+        isNot(contains('[Unknown update: usage_update]')),
+      );
+      final usageEvent = events.singleWhere(
+        (event) => event.metadata['kind'] == 'usage_update',
+      );
+      expect(usageEvent.text, 'Context 27%');
+      expect(usageEvent.metadata['used'], 53000);
+      expect(usageEvent.metadata['size'], 200000);
+      expect(usageEvent.metadata['cost'], <String, Object?>{
+        'amount': 0.045,
+        'currency': 'USD',
+      });
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);

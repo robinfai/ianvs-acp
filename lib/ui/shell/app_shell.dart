@@ -178,9 +178,17 @@ class AppShell extends StatelessWidget {
                   onToolCallExecutionPolicyChanged:
                       controller.setToolCallExecutionPolicy,
                   modelOption: controller.sessionSettings.modelOption,
+                  reasoningEffortOption:
+                      controller.sessionSettings.reasoningEffortOption,
                   onModelSelected:
                       controller.currentSession != null && sessionActionsEnabled
                       ? (value) => unawaited(controller.setSessionModel(value))
+                      : null,
+                  onReasoningEffortSelected:
+                      controller.currentSession != null && sessionActionsEnabled
+                      ? (value) => unawaited(
+                          controller.setSessionReasoningEffort(value),
+                        )
                       : null,
                   onSend: (text, attachments) =>
                       controller.sendPrompt(text, attachments: attachments),

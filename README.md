@@ -11,6 +11,9 @@ sessions when the agent supports `session/fork`, and suggest advertised slash
 commands in the prompt input. When an agent advertises authentication methods,
 the Agent menu can start the agent-handled ACP `authenticate` flow.
 
+Starting a new session prompts for the session working directory and offers
+local directory path completions while typing.
+
 ## Configuration
 
 By default the app reads:
@@ -28,6 +31,7 @@ Example:
     "Codex": {
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
+      "cwd": "/Users/example/project",
       "args": ["@zed-industries/codex-acp"]
     }
   },
@@ -67,6 +71,10 @@ Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; headers may be either an object or a `name`/`value` list. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
+
+Stdio `agent_servers` can set `cwd` to choose the working directory used when
+launching the agent process. The aliases `working_directory` and
+`workingDirectory` are also accepted.
 
 `additional_directories` may list extra absolute workspace roots. They are sent
 only to agents that advertise `sessionCapabilities.additionalDirectories`, and

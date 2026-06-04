@@ -124,6 +124,64 @@ class AvailableCommandsUpdate extends AcpUpdate {
   }
 }
 
+/// Cumulative session cost reported with a usage update.
+class UsageCost {
+  /// Construct a usage cost.
+  const UsageCost({required this.amount, required this.currency});
+
+  /// Create from raw JSON.
+  factory UsageCost.fromJson(Map<String, dynamic> json) {
+    final amount = _numFromRaw(json['amount']);
+    final currency = json['currency']?.toString().trim() ?? '';
+    return UsageCost(amount: amount ?? 0, currency: currency);
+  }
+
+  /// Total cumulative cost for the session.
+  final num amount;
+
+  /// Billing currency or unit.
+  final String currency;
+
+  /// Convert to JSON.
+  Map<String, dynamic> toJson() => {'amount': amount, 'currency': currency};
+}
+
+/// Session-level context window and optional cumulative cost update.
+class UsageUpdate extends AcpUpdate {
+  /// Construct a usage update.
+  const UsageUpdate({required this.used, required this.size, this.cost});
+
+  /// Create from raw JSON.
+  factory UsageUpdate.fromJson(Map<String, dynamic> json) {
+    final cost = _usageCostFromRaw(json['cost']);
+    return UsageUpdate(
+      used: _intFromRaw(json['used']) ?? 0,
+      size: _intFromRaw(json['size']) ?? 0,
+      cost: cost,
+    );
+  }
+
+  /// Tokens currently in context.
+  final int used;
+
+  /// Total context window size in tokens.
+  final int size;
+
+  /// Optional cumulative session cost.
+  final UsageCost? cost;
+
+  /// Convert to JSON.
+  Map<String, dynamic> toJson() => {
+    'sessionUpdate': 'usage_update',
+    'used': used,
+    'size': size,
+    if (cost != null) 'cost': cost!.toJson(),
+  };
+
+  @override
+  String get text => '[Usage: $used/$size]';
+}
+
 /// Terminal update indicating a prompt turn is complete.
 class TurnEnded extends AcpUpdate {
   /// Construct with the terminal [stopReason].
@@ -159,4 +217,25 @@ class ModeUpdate extends AcpUpdate {
 
   @override
   String get text => '[Mode: $currentModeId]';
+}
+
+int? _intFromRaw(Object? raw) {
+  if (raw is num) return raw.toInt();
+  if (raw is String) return int.tryParse(raw.trim());
+  return null;
+}
+
+num? _numFromRaw(Object? raw) {
+  if (raw is num) return raw;
+  if (raw is String) return num.tryParse(raw.trim());
+  return null;
+}
+
+UsageCost? _usageCostFromRaw(Object? raw) {
+  if (raw is! Map) return null;
+  final mapped = raw.map((key, value) => MapEntry(key.toString(), value));
+  final amount = _numFromRaw(mapped['amount']);
+  final currency = mapped['currency']?.toString().trim() ?? '';
+  if (amount == null || currency.isEmpty) return null;
+  return UsageCost(amount: amount, currency: currency);
 }

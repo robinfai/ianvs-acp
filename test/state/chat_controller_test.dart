@@ -95,6 +95,49 @@ void main() {
     expect(controller.sessionSettings.modes.currentModeId, isNull);
   });
 
+  test('create session accepts cwd override', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession(cwd: '/other/project');
+
+    expect(controller.currentSession?.cwd, '/other/project');
+    expect(controller.sessions.single.cwd, '/other/project');
+  });
+
+  test('usage updates set session usage without timeline messages', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionEvents: const [
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'Context 26%',
+            metadata: <String, Object?>{
+              'kind': 'usage_update',
+              'used': 53000,
+              'size': 200000,
+              'cost': <String, Object?>{'amount': 0.045, 'currency': 'USD'},
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.messages, isEmpty);
+    expect(controller.sessionUsage?.used, 53000);
+    expect(controller.sessionUsage?.size, 200000);
+    expect(controller.sessionUsage?.percentage, closeTo(0.265, 0.0001));
+    expect(controller.sessionUsage?.cost?.amount, 0.045);
+    expect(controller.sessionUsage?.cost?.currency, 'USD');
+  });
+
   test('new session preserves initial error events', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -1570,6 +1613,38 @@ void main() {
     expect(controller.sessionSettings.currentModelLabel, 'Claude Sonnet 4');
     expect(controller.lastError, isNull);
   });
+
+  test(
+    'set session reasoning effort updates reasoning config option',
+    () async {
+      final fake = FakeAgentClient(
+        sessionSettings: const AcpSessionSettings(
+          configOptions: [
+            AcpConfigOption(
+              id: 'reasoning_effort',
+              name: 'Reasoning Effort',
+              type: 'select',
+              currentValue: 'medium',
+              options: [
+                AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+                AcpConfigOptionChoice(value: 'high', name: 'High'),
+              ],
+            ),
+          ],
+        ),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.setSessionReasoningEffort('high');
+
+      expect(fake.lastConfigId, 'reasoning_effort');
+      expect(fake.lastConfigValue, 'high');
+      expect(controller.sessionSettings.currentReasoningEffortLabel, 'High');
+      expect(controller.lastError, isNull);
+    },
+  );
 
   test(
     'session settings changes are ignored while a session operation runs',

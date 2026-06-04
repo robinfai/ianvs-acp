@@ -37,7 +37,7 @@ class StatusBar extends StatelessWidget {
                 children: [
                   _StatusItem(
                     icon: Icons.folder_open_outlined,
-                    label: controller.cwd,
+                    label: controller.currentSession?.cwd ?? controller.cwd,
                     maxWidth: constraints.maxWidth < 960 ? 220 : 320,
                   ),
                   const SizedBox(width: 14),
@@ -59,6 +59,15 @@ class StatusBar extends StatelessWidget {
                       icon: Icons.swap_horiz_rounded,
                       label: _currentModeLabel(controller)!,
                       color: AppColors.primaryDark,
+                    ),
+                  ],
+                  if (_usageLabel(controller) != null) ...[
+                    const SizedBox(width: 14),
+                    _StatusItem(
+                      icon: Icons.data_usage_rounded,
+                      label: _usageLabel(controller)!,
+                      tooltip: _usageTooltip(controller),
+                      color: _usageColor(controller),
                     ),
                   ],
                   const SizedBox(width: 14),
@@ -131,7 +140,11 @@ class StatusBar extends StatelessWidget {
   String? _currentModelLabel(ChatController controller) {
     final modelLabel = controller.sessionSettings.currentModelLabel;
     if (modelLabel == null || modelLabel.isEmpty) return null;
-    return 'model $modelLabel';
+    final effortLabel = controller.sessionSettings.currentReasoningEffortLabel;
+    if (effortLabel == null || effortLabel.isEmpty) {
+      return 'model $modelLabel';
+    }
+    return 'model $modelLabel / $effortLabel';
   }
 
   String? _currentModeLabel(ChatController controller) {
@@ -145,24 +158,82 @@ class StatusBar extends StatelessWidget {
     }
     return 'mode $modeId';
   }
+
+  String? _usageLabel(ChatController controller) {
+    final usage = controller.sessionUsage;
+    final percent = usage?.percentage;
+    if (usage == null || percent == null) return null;
+    final percentLabel = (percent * 100).toStringAsFixed(0);
+    return 'ctx ${_compactTokens(usage.used)} / '
+        '${_compactTokens(usage.size)} ($percentLabel%)';
+  }
+
+  String? _usageTooltip(ChatController controller) {
+    final usage = controller.sessionUsage;
+    final percent = usage?.percentage;
+    if (usage == null || percent == null) return null;
+    final percentLabel = (percent * 100).toStringAsFixed(1);
+    final parts = <String>[
+      'Context ${_wholeTokens(usage.used)} / '
+          '${_wholeTokens(usage.size)} tokens ($percentLabel%)',
+    ];
+    final cost = usage.cost;
+    if (cost != null) {
+      parts.add('Cost ${cost.amount} ${cost.currency}');
+    }
+    return parts.join(' - ');
+  }
+
+  Color _usageColor(ChatController controller) {
+    final percent = controller.sessionUsage?.percentage ?? 0;
+    if (percent >= 0.95) return AppColors.danger;
+    if (percent >= 0.9) return const Color(0xffc2410c);
+    if (percent >= 0.75) return const Color(0xffa16207);
+    return AppColors.textSecondary;
+  }
+
+  String _compactTokens(int value) {
+    final abs = value.abs();
+    if (abs >= 1000000) return '${_trimDecimal(value / 1000000)}M';
+    if (abs >= 1000) return '${_trimDecimal(value / 1000)}K';
+    return value.toString();
+  }
+
+  String _trimDecimal(double value) {
+    final fixed = value.toStringAsFixed(value.abs() >= 10 ? 0 : 1);
+    return fixed.endsWith('.0') ? fixed.substring(0, fixed.length - 2) : fixed;
+  }
+
+  String _wholeTokens(int value) {
+    final text = value.toString();
+    final buffer = StringBuffer();
+    for (var i = 0; i < text.length; i += 1) {
+      final remaining = text.length - i;
+      if (i > 0 && remaining % 3 == 0) buffer.write(',');
+      buffer.write(text[i]);
+    }
+    return buffer.toString();
+  }
 }
 
 class _StatusItem extends StatelessWidget {
   const _StatusItem({
     required this.icon,
     required this.label,
+    this.tooltip,
     this.color = AppColors.textSecondary,
     this.maxWidth,
   });
 
   final IconData icon;
   final String label;
+  final String? tooltip;
   final Color color;
   final double? maxWidth;
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
+    final content = ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxWidth ?? double.infinity),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -184,6 +255,9 @@ class _StatusItem extends StatelessWidget {
         ],
       ),
     );
+    return tooltip == null
+        ? content
+        : Tooltip(message: tooltip!, child: content);
   }
 }
 
