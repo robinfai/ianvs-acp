@@ -138,4 +138,392 @@ void main() {
     expect(find.text('Default'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
   });
+
+  testWidgets('AgentConfigDialog exposes editable configuration controls', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Kimi Code Dev',
+            defaultAgentName: 'Kimi Code Dev',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Kimi Code Dev',
+                type: 'custom',
+                command: '/usr/local/bin/kimi',
+                args: ['acp'],
+              ),
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+                args: ['@zed-industries/codex-acp'],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.widgetWithText(TextButton, 'Add Agent'), findsOneWidget);
+    expect(find.byTooltip('Edit Kimi Code Dev'), findsOneWidget);
+    expect(find.byTooltip('Delete Codex'), findsOneWidget);
+    expect(find.byTooltip('Set Codex as default'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const Key('Set Codex as default')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('Set Codex as default')));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.defaultAgentServerName, 'Codex');
+  });
+
+  testWidgets('AgentConfigDialog disables save when config path is missing', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async => config,
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final saveButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Save'),
+    );
+    expect(saveButton.onPressed, isNull);
+  });
+
+  testWidgets('AgentConfigDialog rejects invalid review timeout', (
+    tester,
+  ) async {
+    var saved = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              saved = true;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.byKey(const Key('review-timeout-field')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('review-timeout-field')),
+      'soon',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(saved, isFalse);
+    expect(find.textContaining('positive integer'), findsOneWidget);
+  });
+
+  testWidgets('AgentConfigDialog adds and deletes agent servers', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Kimi Code Dev',
+            defaultAgentName: 'Kimi Code Dev',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Kimi Code Dev',
+                type: 'custom',
+                command: '/usr/local/bin/kimi',
+                args: ['acp'],
+              ),
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+                args: ['@zed-industries/codex-acp'],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pumpAndSettle();
+    expect(find.text('Agent Server'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('agent-name-field')),
+      'Local Tools',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-command-field')),
+      '/usr/local/bin/local-agent',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agent-name-field')),
+      'Remote HTTP Agent',
+    );
+    await tester.tap(find.byKey(const Key('agent-type-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('http').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agent-url-field')),
+      'https://agent.example.com/acp',
+    );
+    await tester.tap(find.widgetWithText(TextButton, 'Add Header'));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('agent-header-name-0-field')),
+      'Authorization',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-header-value-0-field')),
+      'Bearer token',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('Delete Codex')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('Delete Codex')));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.agentServers.map((server) => server.name), [
+      'Kimi Code Dev',
+      'Local Tools',
+      'Remote HTTP Agent',
+    ]);
+    expect(
+      savedConfig?.agentServerNamed('Local Tools')?.command,
+      '/usr/local/bin/local-agent',
+    );
+    expect(savedConfig?.agentServerNamed('Remote HTTP Agent')?.headers, {
+      'Authorization': 'Bearer token',
+    });
+  });
+
+  testWidgets('AgentConfigDialog adds MCP servers', (tester) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Add MCP Server'));
+    await tester.pumpAndSettle();
+    expect(find.text('MCP Server'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('mcp-name-field')),
+      'filesystem',
+    );
+    await tester.enterText(
+      find.byKey(const Key('mcp-command-field')),
+      '/usr/local/bin/mcp-filesystem',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save MCP Server'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Add MCP Server'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('mcp-name-field')),
+      'nested-agent-tools',
+    );
+    await tester.tap(find.byKey(const Key('mcp-type-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('acp').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('mcp-id-field')),
+      'nested-agent',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save MCP Server'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.mcpServers.map((server) => server.name), [
+      'filesystem',
+      'nested-agent-tools',
+    ]);
+    expect(
+      savedConfig?.mcpServers.first.command,
+      '/usr/local/bin/mcp-filesystem',
+    );
+    expect(savedConfig?.mcpServers.last.type, 'acp');
+    expect(savedConfig?.mcpServers.last.id, 'nested-agent');
+  });
+
+  testWidgets('AgentConfigDialog edits directories and client providers', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Add Directory'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('directory-path-field')),
+      '/Users/example/extra',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Directory'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('filesystem-read-switch')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('filesystem-read-switch')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('filesystem-write-switch')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('terminal-enabled-switch')));
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Add Trust Rule'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('trust-tool-name-field')),
+      'read_text_file',
+    );
+    await tester.enterText(
+      find.byKey(const Key('trust-tool-kind-field')),
+      'read',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Rule'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const Key('review-mcp-server-name-field')),
+      'permission-reviewer',
+    );
+    await tester.enterText(
+      find.byKey(const Key('review-model-field')),
+      'review-model',
+    );
+    await tester.enterText(
+      find.byKey(const Key('review-timeout-field')),
+      '5000',
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.additionalDirectories, ['/Users/example/extra']);
+    expect(savedConfig?.clientProviders.filesystem.readTextFile, isTrue);
+    expect(savedConfig?.clientProviders.filesystem.writeTextFile, isTrue);
+    expect(savedConfig?.clientProviders.terminal.enabled, isTrue);
+    expect(
+      savedConfig?.clientProviders.permissions.trustRules.single.toolName,
+      'read_text_file',
+    );
+    expect(
+      savedConfig?.clientProviders.permissions.trustRules.single.toolKind,
+      'read',
+    );
+    expect(
+      savedConfig?.clientProviders.permissions.trustRules.single.decision,
+      AcpPermissionDecision.allow,
+    );
+    expect(
+      savedConfig?.clientProviders.permissions.reviewAgent.mcpServerName,
+      'permission-reviewer',
+    );
+    expect(
+      savedConfig?.clientProviders.permissions.reviewAgent.model,
+      'review-model',
+    );
+    expect(
+      savedConfig?.clientProviders.permissions.reviewAgent.timeout,
+      const Duration(milliseconds: 5000),
+    );
+  });
 }

@@ -22,6 +22,10 @@ The GUI now includes a protocol review surface under `Agents` ->
 implementation, visible configuration, runtime capability state, user
 interaction entry points, and remaining gaps. This keeps the feature audit
 available in-product instead of only in Markdown.
+`Agents` -> `Agent Configuration` is also the GUI editor for every
+user-level field persisted to `settings.json`: `default_agent_server`,
+`agent_servers`, `mcp_servers`, `additional_directories`, and
+`client_providers`.
 
 ## Official Feature Index
 
@@ -36,16 +40,16 @@ available in-product instead of only in Markdown.
 | Session list / metadata | https://agentclientprotocol.com/protocol/v1/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, supports text search at project and conversation levels, and preserves `additionalDirectories` from listed sessions. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/v1/prompt-turn | Done for text/resource-link/embedded file prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource.text` when the agent advertises `promptCapabilities.embeddedContext`; image and audio attachments are embedded as `image`/`audio` content when the agent advertises matching prompt capabilities; small generic binary attachments are embedded as `resource.blob` when embedded context is advertised. Prompt-side `@file` and URL mentions are preserved as `resource_link` content even when selected attachments force the raw prompt path, with sentence-ending punctuation kept out of link targets. Unsupported or oversized attachments fall back to `resource_link`. The prompt input marks selected files with capability-aware send modes: Image, Audio, Embed, or Link. |
 | Content blocks | https://agentclientprotocol.com/protocol/v1/content | Mostly done | Text, image output preview, audio content metadata, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`, with the same mode classification reused by the prompt UI. File links remain available as fallback, but model/agent-specific support can still vary. |
-| Tool calls / permissions | https://agentclientprotocol.com/protocol/v1/tool-calls | Done for per-request approval, explicit trust rules, prompt-side sidecar review, prompt-side execution policy, and exportable bounded in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click, with chunk coalescing across common call id aliases. `session/request_permission` now surfaces an in-app approval card inside the prompt composer with Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels when they are more specific. The prompt composer exposes tool-call execution policy modes: `默认权限` keeps all requests manual, `自动审查` applies configured trust rules first, then calls either a configured sidecar MCP review agent or a default sidecar session with the same active ACP agent/model, and asks for undecided requests; `完全访问权限` auto-allows requests. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, keep the newest bounded in-process audit entries, can be exported as JSON, and include whether a resolved decision came from a manual action, trust rule, review agent, policy, or system cancellation. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests. `client_providers.permissions.review_agent` can point to a sidecar MCP server/tool and optional model; review opinions and decisions are stored with the audit entry. When no UI listener is active, requests are conservatively returned as `cancelled` instead of being auto-approved; when the permission stream closes or session teardown completes through close/logout, pending requests are cancelled. Long-term persisted audit retention and trust-rule management remain product/security follow-ups. |
-| File system provider | https://agentclientprotocol.com/protocol/v1/file-system | Done when explicitly configured | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. User config can opt into `client_providers.filesystem.read_text_file` and/or `write_text_file`; requests are workspace-jailed to `cwd` plus advertised additional directories by default and still require permission approval unless matched by an explicit permission trust rule. `allow_read_outside_workspace` only relaxes reads, never writes. |
-| Terminal provider | https://agentclientprotocol.com/protocol/v1/terminals | Done when explicitly configured, partial as GUI surface | The client defaults to no terminal support. User config can opt into `client_providers.terminal.enabled`; terminal creation still requires permission approval unless matched by an explicit permission trust rule, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
+| Tool calls / permissions | https://agentclientprotocol.com/protocol/v1/tool-calls | Done for per-request approval, explicit trust rules, prompt-side sidecar review, prompt-side execution policy, and exportable bounded in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click, with chunk coalescing across common call id aliases. `session/request_permission` now surfaces an in-app approval card inside the prompt composer with Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels when they are more specific. The prompt composer exposes tool-call execution policy modes: `默认权限` keeps all requests manual, `自动审查` applies configured trust rules first, then calls either a configured sidecar MCP review agent or a default sidecar session with the same active ACP agent/model, and asks for undecided requests; `完全访问权限` auto-allows requests. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, keep the newest bounded in-process audit entries, can be exported as JSON, and include whether a resolved decision came from a manual action, trust rule, review agent, policy, or system cancellation. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests and are editable in Agent Configuration. `client_providers.permissions.review_agent` can point to a sidecar MCP server/tool and optional model; review opinions and decisions are stored with the audit entry. When no UI listener is active, requests are conservatively returned as `cancelled` instead of being auto-approved; when the permission stream closes or session teardown completes through close/logout, pending requests are cancelled. Long-term persisted audit retention remains a product/security follow-up. |
+| File system provider | https://agentclientprotocol.com/protocol/v1/file-system | Done with GUI config when explicitly enabled | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. Agent Configuration can enable `client_providers.filesystem.read_text_file`, `write_text_file`, and `allow_read_outside_workspace`; requests are workspace-jailed to `cwd` plus advertised additional directories by default and still require permission approval unless matched by an explicit permission trust rule. `allow_read_outside_workspace` only relaxes reads, never writes. |
+| Terminal provider | https://agentclientprotocol.com/protocol/v1/terminals | Done with GUI config when explicitly enabled | The client defaults to no terminal support. Agent Configuration can enable `client_providers.terminal.enabled`; terminal creation still requires permission approval unless matched by an explicit permission trust rule, cwd is workspace-jailed by default, and lifecycle/output snapshots render in the timeline. A persistent live terminal panel remains a product follow-up. |
 | Agent plan | https://agentclientprotocol.com/protocol/v1/agent-plan | Done | Plan updates render as structured status cards. Updates now replace the previous plan snapshot, matching ACP's complete-plan replacement semantics. |
 | Session modes | https://agentclientprotocol.com/protocol/v1/session-modes | Done, legacy-compatible | Current mode and available modes render in session settings and can be changed through `session/set_mode` only when the agent does not provide `configOptions`. ACP says config options supersede this API, so this remains fallback-compatible. |
 | Session config options | https://agentclientprotocol.com/protocol/v1/session-config-options | Done | `session/set_config_option` is supported and config options render in the session settings dialog. `select` options render as dropdowns and `boolean` options render as switches using the ACP boolean wire format; unsupported raw option types are ignored. `config_option_update` is consumed as complete state, including updates emitted immediately after `session/new`. The local model understands official `category` as well as older `group`. Initial `configOptions` returned directly by `session/new` and fallback `session/resume` are captured from the raw session response. Legacy/unstable `models` state is promoted into a local model config option when stable `configOptions` are missing; changing that synthesized option calls `session/set_model`. When `configOptions` are available, the client ignores legacy `modes` for settings display, status bar state, runtime updates, and local mode changes, matching ACP's config-options-preferred guidance. |
 | Slash commands | https://agentclientprotocol.com/protocol/v1/slash-commands | Done for advertised commands | `available_commands_update` renders available commands and details. The prompt input now suggests matching advertised commands while typing `/`, and selecting a command inserts the slash invocation. Command-list updates replace the previous command snapshot, including updates emitted immediately after `session/new` or `session/resume`. |
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/v1/extensibility | Mostly done for manual extension requests | Raw capability `_meta` and session list `_meta` are displayed. The Agents menu exposes an advanced Extension Request dialog that validates underscore-prefixed custom methods, accepts JSON object params, sends JSON-RPC requests, and renders raw results/errors. Vendor-specific workflows remain intentionally unopinionated. |
-| MCP servers | https://agentclientprotocol.com/protocol/v1/session-setup | Done for top-level config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, known transport types, transport-specific `command`/`url` requirements, and remote headers as either an object or name/value list, shows configured MCP servers in Agent Configuration, and forwards compatible entries through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. Unknown transport types are rejected from config and skipped if injected programmatically. |
-| ACP Registry | https://agentclientprotocol.com/get-started/registry | Follow-up: official feature is stable, explicit config only | The official Registry is now stabilized and provides a standard way to discover, install, and configure compatible agents. This client does not yet browse/import/install registry entries; it continues to use explicit `settings.json` agent server configuration. The new Protocol Coverage GUI makes this gap visible in-product while Registry strategy remains a product follow-up. |
+| MCP servers | https://agentclientprotocol.com/protocol/v1/session-setup | Done with GUI config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, known transport types, transport-specific `command`/`url` requirements, and remote headers as either an object or name/value list. Agent Configuration can create, edit, and delete MCP servers, and compatible entries are forwarded through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. Unknown transport types are rejected from config and skipped if injected programmatically. |
+| ACP Registry | https://agentclientprotocol.com/get-started/registry | Follow-up: official feature is stable; local Codex discovery exists | The official Registry is now stabilized and provides a standard way to discover, install, and configure compatible agents. This client does not yet browse/import/install registry entries, but startup discovery can add a missing local Codex ACP adapter entry to the saved user config, and Agent Configuration can edit that entry afterwards. The new Protocol Coverage GUI makes the remaining Registry gap visible in-product while Registry strategy remains a product follow-up. |
 
 ## UX Review With Computer Use
 
@@ -71,7 +75,7 @@ Fixes applied:
 
 ## User Configuration
 
-User-level config follows the requested Zed-inspired shape but does not reuse Zed's file directly.
+User-level config follows the requested Zed-inspired shape but does not reuse Zed's file directly. Users should change it through `Agents` -> `Agent Configuration`; `settings.json` is the persistence format.
 
 Default path:
 
@@ -79,7 +83,7 @@ Default path:
 ~/.config/ianvs-acp/settings.json
 ```
 
-Supported shape:
+Saved shape:
 
 ```json
 {
@@ -156,47 +160,51 @@ Supported shape:
 }
 ```
 
-The toolbar `Agents` menu lists configured servers. Stdio/custom agent servers
-use `command`, `args`, and `env`; remote WebSocket and Streamable HTTP/SSE agent
-servers use `url` plus optional `headers`. `default_agent_server` is only the
-startup default; after launch, the selected agent belongs to the current/new
-session and is shown on session rows rather than being written back as global
-config. Creating a new session asks which configured agent to use when more than
-one server is available.
+The toolbar `Agents` menu opens Agent Configuration for creating, editing,
+deleting, and selecting the default configured server. Stdio/custom agent
+servers use `command`, `args`, and `env`; remote WebSocket and Streamable
+HTTP/SSE agent servers use `url` plus optional `headers`.
+`default_agent_server` is only the startup default; after launch, the selected
+agent belongs to the current/new session and is shown on session rows rather
+than being written back as global config. Creating a new session asks which
+configured agent to use when more than one server is available.
 Compatible top-level `mcp_servers` entries are forwarded to every ACP
 `session/new` and `session/load` request for the selected agent. Supported MCP
 transport types are `stdio`, `http`, `sse`, and `acp`; ACP transport entries
-use a component-provided `id` instead of `command` or `url`. Stdio entries are
-always forwarded; HTTP, SSE, and ACP transport entries require matching agent
+use a component-provided `id` instead of `command` or `url`. Agent Configuration
+can create, edit, and delete these MCP server entries. Stdio entries are always
+forwarded; HTTP, SSE, and ACP transport entries require matching agent
 `mcpCapabilities`.
-Configured `additional_directories` / `additionalDirectories` must be absolute
-local paths. They are preserved in Agent Configuration, forwarded only when the
-agent advertises `sessionCapabilities.additionalDirectories`, and used by
-filesystem/terminal jail checks as additional workspace roots for that session.
-Configured `client_providers.filesystem` controls whether the client advertises
-ACP file-system callbacks. Filesystem providers are off by default; when enabled,
-read/write requests still go through permission approval unless matched by an
-explicit trust rule, and writes remain confined to the session workspace.
-Configured `client_providers.terminal.enabled` controls whether the client
-advertises ACP terminal callbacks. Terminal support is off by default; when
-enabled, terminal creation still goes through permission approval unless matched
-by an explicit trust rule, uses the session workspace as the default cwd, and
-renders command lifecycle status/output in the timeline.
-Configured `client_providers.permissions.trust_rules` can auto-resolve matching
+Agent Configuration lets users add or remove configured
+`additional_directories` / `additionalDirectories`; paths must be absolute
+local paths. They are forwarded only when the agent advertises
+`sessionCapabilities.additionalDirectories`, and used by filesystem/terminal
+jail checks as additional workspace roots for that session.
+Agent Configuration controls `client_providers.filesystem`, which determines
+whether the client advertises ACP file-system callbacks. Filesystem providers
+are off by default; when enabled, read/write requests still go through
+permission approval unless matched by an explicit trust rule, and writes remain
+confined to the session workspace.
+Agent Configuration controls `client_providers.terminal.enabled`, which
+determines whether the client advertises ACP terminal callbacks. Terminal
+support is off by default; when enabled, terminal creation still goes through
+permission approval unless matched by an explicit trust rule, uses the session
+workspace as the default cwd, and renders command lifecycle status/output in
+the timeline.
+Agent Configuration lets users add, edit, or remove
+`client_providers.permissions.trust_rules`, which can auto-resolve matching
 permission requests with an explicit `allow` or `deny` decision. Rules match by
 `tool_name` and can optionally narrow by `tool_kind`; no rules are configured by
-default. Agent Configuration shows each configured trust rule target and
-decision so the active static policy is inspectable before connecting, while the
-prompt composer exposes the runtime tool-call execution policy.
-Configured `client_providers.permissions.review_agent` can call a sidecar MCP
-review tool during `自动审查`. When no review agent is configured, `自动审查` uses a
-sidecar session with the same active ACP agent and passes the current model;
-`agent_servers.<name>.review_agent.model` can override the model for that
-agent's sidecar reviewer. The review payload is intentionally limited to the
-permission request, command/cwd/workspace context when available, local risk
-signals, and the selected review model. Returned allow/deny/cancel decisions are
-applied automatically and recorded; undecided or failed reviews leave the prompt
-composer approval card available for manual action.
+default. The prompt composer exposes the runtime tool-call execution policy.
+Agent Configuration controls `client_providers.permissions.review_agent`, which
+can call a sidecar MCP review tool during `自动审查`. When no review agent is
+configured, `自动审查` uses a sidecar session with the same active ACP agent and
+passes the current model; `agent_servers.<name>.review_agent.model` can override
+the model for that agent's sidecar reviewer. The review payload is intentionally
+limited to the permission request, command/cwd/workspace context when available,
+local risk signals, and the selected review model. Returned allow/deny/cancel
+decisions are applied automatically and recorded; undecided or failed reviews
+leave the prompt composer approval card available for manual action.
 When connected, the Agents menu exposes `Extension Request` for advanced
 underscore-prefixed ACP extension methods advertised through `_meta` or otherwise
 coordinated by a specific agent.
@@ -229,7 +237,7 @@ These are not blockers for the current UI pass, but need product/security decisi
 Detailed tracking and automated acceptance evidence lives in
 `docs/manual_followups.md`.
 
-- Review filesystem and terminal providers policy: both are available behind explicit user config, prompt-side permission approval, prompt-side execution policy, explicit trust rules, and exportable bounded in-process permission history, but first-run UI, long-term persisted audit retention, and trust-rule management remain undecided.
+- Review filesystem and terminal providers policy: both are available behind Agent Configuration, prompt-side permission approval, prompt-side execution policy, explicit trust rules, and exportable bounded in-process permission history, but long-term persisted audit retention and richer terminal controls remain undecided.
 - Finish remote transport hardening: WebSocket and draft Streamable HTTP/SSE work in automated local tests, while HTTP/2 enforcement and real remote-agent validation are still pending.
 - Design vendor-specific extension workflows only when a real agent's `_meta` contract requires more than the generic Extension Request dialog.
 - Confirm expected behavior for Spark attachments. ACP can represent file resource links, but a specific agent/model may still decline or ignore them.

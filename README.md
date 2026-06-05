@@ -19,13 +19,20 @@ local directory path completions while typing.
 
 ## Configuration
 
-By default the app reads:
+Use `Agents` -> `Agent Configuration` to manage the saved configuration:
+agent servers, the default agent, MCP servers, additional directories,
+filesystem/terminal provider switches, permission trust rules, and the review
+agent. The app persists those GUI choices to:
 
 ```text
 ~/.config/ianvs-acp/settings.json
 ```
 
-Example:
+On startup, the app can detect missing local ACP agents and ask whether to add
+them to `agent_servers`. The first built-in detector covers Codex through a
+local `npx` command running `@zed-industries/codex-acp`.
+
+Saved shape example for automation and debugging:
 
 ```json
 {

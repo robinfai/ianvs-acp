@@ -61,13 +61,14 @@ Manual decision:
 Status: policy refinement needed.
 
 Non-blocking because: filesystem and terminal providers are now available only
-when explicitly enabled through `client_providers`, remain off by default, use
+when explicitly enabled through Agent Configuration, remain off by default, use
 prompt-side permission approval, and record decisions in exportable bounded
-in-process Permission History. Explicit permission trust rules and the runtime
-tool-call execution policy can auto-allow or auto-deny matching requests.
-Terminal support emits lifecycle and output snapshots into the timeline, but
-deliberately does not yet provide a persistent live terminal panel or
-trust-rule management UI.
+in-process Permission History. Agent Configuration also covers additional
+directories, explicit permission trust rules, and review-agent settings.
+Trust rules and the runtime tool-call execution policy can auto-allow or
+auto-deny matching requests. Terminal support emits lifecycle and output
+snapshots into the timeline, but deliberately does not yet provide a persistent
+live terminal panel.
 
 Automated acceptance:
 
@@ -87,15 +88,16 @@ Automated acceptance:
   in-process audit window.
 - `test/ui/chat_timeline_test.dart` verifies terminal status output renders in
   the timeline.
-- `test/ui/agent_config_dialog_test.dart` verifies filesystem, terminal, and
-  permission trust rule config is visible in Agent Configuration.
+- `test/ui/agent_config_dialog_test.dart` verifies Agent Configuration can show
+  and edit filesystem, terminal, additional directory, permission trust rule,
+  review agent, agent server, and MCP server config.
 - `lib/acp/dart_acp_agent_client.dart` still defaults ACP filesystem and
   terminal capabilities to disabled unless the user opts in.
 
 Manual decision:
 
-- Decide whether filesystem and terminal providers should remain config-only or
-  gain a first-run UI, long-term audit retention, or rule management UI.
+- Decide whether filesystem and terminal provider defaults or warning copy need
+  further hardening, and whether long-term audit retention is needed.
 - Decide whether terminal support should grow beyond timeline snapshots into a
   live terminal panel with kill/release controls and richer cwd/environment
   visibility.
@@ -138,7 +140,7 @@ Manual validation:
 
 ### tool-permission-ui
 
-Status: audit and rule-management refinement needed.
+Status: audit refinement needed.
 
 Non-blocking because: tool calls are visible and grouped, permission requests
 surface an in-app per-request approval card inside the prompt composer with
@@ -148,7 +150,8 @@ when they are more specific. The prompt composer also exposes `默认权限`,
 the Agents menu Permission History with JSON export of the newest bounded
 in-process audit entries. Resolved entries record whether the decision came
 from a manual action, trust rule, runtime policy, or system cancellation.
-Explicit permission trust rules can auto-allow or auto-deny matching requests.
+Explicit permission trust rules can auto-allow or auto-deny matching requests
+and are editable through Agent Configuration.
 Requests still fall back to `cancelled` when no UI listener is active, and
 pending requests are system-cancelled when the permission stream closes or
 session teardown completes through close/logout.
@@ -184,10 +187,9 @@ Automated acceptance:
 
 Manual decision:
 
-- Decide whether to add request grouping, trust rule management UI, long-term
-  persisted audit retention, or stronger streaming interruption behavior beyond
-  the current per-request Allow Once/Deny/Cancel model and runtime execution
-  policy selector.
+- Decide whether to add request grouping, long-term persisted audit retention,
+  or stronger streaming interruption behavior beyond the current per-request
+  Allow Once/Deny/Cancel model and runtime execution policy selector.
 
 ### vendor-extension-workflows
 
@@ -247,17 +249,23 @@ Manual decision:
 
 Status: stable official feature, product integration not started.
 
-Non-blocking because: agent discovery can still be configured explicitly through
-`settings.json`, the active config is inspectable in the app, and this
-protocol-compatibility pass intentionally avoids ACP Registry browsing,
-importing, or installing flows until product decisions are made.
+Non-blocking because: local Codex ACP discovery can add a missing
+`@zed-industries/codex-acp` entry to the saved user config, agent discovery can
+still be configured explicitly through Agent Configuration, the active config is
+editable and inspectable in the app, and this protocol-compatibility pass
+intentionally avoids ACP Registry browsing, importing, or installing flows until
+product decisions are made.
 
 Automated acceptance:
 
 - `test/config/acp_client_config_test.dart` verifies explicit local and remote
   agent server config parsing, including MCP and additional workspace settings.
+- `test/config/acp_agent_discovery_test.dart` verifies local Codex ACP discovery
+  and saved config writes for selected discovered agents.
 - `test/ui/agent_config_dialog_test.dart` verifies the active explicit config is
-  inspectable in Agent Configuration.
+  editable and inspectable in Agent Configuration.
+- `test/ui/acp_client_app_test.dart` verifies startup discovery prompts and
+  adding selected agents into the active app config.
 - `test/ui/protocol_feature_review_dialog_test.dart` verifies the Protocol
   Coverage GUI identifies ACP Registry as a follow-up while still mapping the
   explicit config flow to Agent Configuration.

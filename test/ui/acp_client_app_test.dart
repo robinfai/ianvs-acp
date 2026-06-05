@@ -22,6 +22,49 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('AcpClientApp prompts to add discovered agents on startup', (
+    tester,
+  ) async {
+    final writtenServers = <AgentServerConfig>[];
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: const AcpClientConfig(configPath: '/tmp/ianvs-acp.json'),
+        discoverAgentServers: (_) async => const [
+          AgentServerConfig(
+            name: 'Codex',
+            type: 'custom',
+            command: '/usr/local/bin/npx',
+            args: ['@zed-industries/codex-acp'],
+          ),
+        ],
+        writeDiscoveredAgentServers: (config, servers) async {
+          writtenServers.addAll(servers);
+          return AcpClientConfig.fromJson({
+            'default_agent_server': 'Codex',
+            'agent_servers': {
+              for (final server in servers) server.name: server.toJson(),
+            },
+          }, configPath: config.configPath);
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Discovered ACP Agents'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Add Agents'));
+    await tester.pumpAndSettle();
+
+    expect(writtenServers.map((server) => server.name), ['Codex']);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
+  });
+
   testWidgets('AcpClientApp opens new session agent picker', (tester) async {
     await tester.pumpWidget(
       AcpClientApp(
@@ -49,6 +92,66 @@ void main() {
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Kimi Code Dev'), findsWidgets);
     expect(find.text('Codex'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp saves edited agent config', (tester) async {
+    AcpClientConfig? savedConfig;
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Kimi Code Dev',
+          'agent_servers': {
+            'Kimi Code Dev': {
+              'type': 'custom',
+              'command': '/usr/local/bin/kimi',
+              'args': ['acp'],
+            },
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@zed-industries/codex-acp'],
+            },
+          },
+        }, configPath: '/tmp/ianvs-acp-test-settings.json'),
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        writeConfig: (config) async {
+          savedConfig = config;
+          return config;
+        },
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent Configuration'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.text('Agent Configuration'), findsOneWidget);
+
+    expect(find.byTooltip('Set Codex as default'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('Set Codex as default')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('Set Codex as default')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byTooltip('Set Kimi Code Dev as default'), findsOneWidget);
+    final saveButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Save'),
+    );
+    expect(saveButton.onPressed, isNotNull);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(savedConfig?.defaultAgentServerName, 'Codex');
+    expect(find.textContaining('Saved agent configuration'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Close'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
   });
 
   testWidgets('AcpClientApp toolbar new session opens agent picker', (

@@ -70,7 +70,7 @@ Expected: pass.
 - Modify: `lib/ui/shell/app_shell.dart`
 - Test: `test/ui/acp_client_app_test.dart`
 
-- [ ] **Step 1: Write the failing app save test**
+- [x] **Step 1: Write the failing app save test**
 
 Add a widget test that opens `Agent Configuration`, edits the default agent, saves, then opens `New Session` and sees the updated default/current agent ordering:
 
@@ -82,17 +82,17 @@ await tester.tap(find.widgetWithText(FilledButton, 'Save'));
 expect(savedConfig.defaultAgentServerName, 'Codex');
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `flutter test test/ui/acp_client_app_test.dart --plain-name "AcpClientApp saves edited agent config"`
 
 Expected: fail because the dialog has no save path.
 
-- [ ] **Step 3: Add save callback wiring**
+- [x] **Step 3: Add save callback wiring**
 
 Add an `AcpConfigSaver` typedef, pass `onSaveConfig` through `AppShell`, and in `AcpClientApp` call `AcpConfigStore.writeConfig`, reconcile controller cache, activate the returned config, and show a short saved message.
 
-- [ ] **Step 4: Run the focused app test**
+- [x] **Step 4: Run the focused app test**
 
 Run: `flutter test test/ui/acp_client_app_test.dart --plain-name "AcpClientApp saves edited agent config"`
 
@@ -104,21 +104,21 @@ Expected: pass.
 - Modify: `lib/ui/components/agent_config_dialog.dart`
 - Test: `test/ui/agent_config_dialog_test.dart`
 
-- [ ] **Step 1: Write failing dialog tests for basic editing**
+- [x] **Step 1: Write failing dialog tests for basic editing**
 
 Assert the dialog renders Add Agent, Save, Set Default, Edit, and Delete controls, can set default agent, and blocks save when `configPath` is missing.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
 Expected: fail because the controls are absent.
 
-- [ ] **Step 3: Convert dialog to stateful editor**
+- [x] **Step 3: Convert dialog to stateful editor**
 
 Keep existing visual panels, add local editable lists, dirty state, Save button, error banner, and section action buttons. Keep read-only detail rows visible so existing tests still pass.
 
-- [ ] **Step 4: Run dialog tests**
+- [x] **Step 4: Run dialog tests**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
@@ -130,21 +130,21 @@ Expected: pass for existing rendering plus new basic editing tests.
 - Modify: `lib/ui/components/agent_config_dialog.dart`
 - Test: `test/ui/agent_config_dialog_test.dart`
 
-- [ ] **Step 1: Write failing tests for agent and MCP CRUD**
+- [x] **Step 1: Write failing tests for agent and MCP CRUD**
 
 Cover adding a stdio agent with command/args/env, adding an HTTP agent with headers, deleting an agent, adding a stdio MCP server, adding an ACP MCP server, and deleting an MCP server.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
 Expected: fail because edit subdialogs are not implemented.
 
-- [ ] **Step 3: Implement subdialogs**
+- [x] **Step 3: Implement subdialogs**
 
 Add compact `AlertDialog` forms with type dropdowns, text fields, add/remove row controls for args/env/headers, and validation before returning an `AgentServerConfig` or `McpServerConfig`.
 
-- [ ] **Step 4: Run dialog tests**
+- [x] **Step 4: Run dialog tests**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
@@ -156,21 +156,21 @@ Expected: pass.
 - Modify: `lib/ui/components/agent_config_dialog.dart`
 - Test: `test/ui/agent_config_dialog_test.dart`
 
-- [ ] **Step 1: Write failing tests for remaining config fields**
+- [x] **Step 1: Write failing tests for remaining config fields**
 
 Cover adding/removing additional directories, toggling filesystem/terminal providers, adding/removing trust rules, and configuring global review agent fields.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
 Expected: fail because these controls are absent or incomplete.
 
-- [ ] **Step 3: Implement remaining editors**
+- [x] **Step 3: Implement remaining editors**
 
 Use switches for provider booleans, path text fields for directories, row forms for trust rules, and a small review-agent form with enabled, target, tool, model, and timeout fields.
 
-- [ ] **Step 4: Run dialog tests**
+- [x] **Step 4: Run dialog tests**
 
 Run: `flutter test test/ui/agent_config_dialog_test.dart`
 
@@ -183,7 +183,7 @@ Expected: pass.
 - Modify: `docs/acp_feature_audit.md`
 - Modify: `docs/manual_followups.md`
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -193,17 +193,17 @@ flutter test test/config/acp_config_store_test.dart test/ui/agent_config_dialog_
 
 Expected: pass.
 
-- [ ] **Step 2: Run static analysis**
+- [x] **Step 2: Run static analysis**
 
 Run: `flutter analyze`
 
 Expected: no analyzer errors.
 
-- [ ] **Step 3: Update docs**
+- [x] **Step 3: Update docs**
 
 Change docs that say these fields are config-only or follow-ups so they now point to Agent Configuration as the GUI editing surface.
 
-- [ ] **Step 4: Run doc tests if needed**
+- [x] **Step 4: Run doc tests if needed**
 
 Run: `flutter test test/docs/manual_followups_test.dart`
 

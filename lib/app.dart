@@ -7,11 +7,24 @@ import 'package:flutter/material.dart';
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
+import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
+import 'config/acp_config_store.dart';
 import 'state/chat_controller.dart';
+import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
+
+typedef AgentServerDiscoverer =
+    FutureOr<List<AgentServerConfig>> Function(AcpClientConfig config);
+typedef DiscoveredAgentServerWriter =
+    Future<AcpClientConfig> Function(
+      AcpClientConfig config,
+      List<AgentServerConfig> servers,
+    );
+typedef AcpConfigWriter =
+    Future<AcpClientConfig> Function(AcpClientConfig config);
 
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
@@ -19,11 +32,17 @@ class AcpClientApp extends StatefulWidget {
     this.controller,
     this.config = const AcpClientConfig(),
     this.startupError,
+    this.discoverAgentServers,
+    this.writeDiscoveredAgentServers,
+    this.writeConfig,
   });
 
   final ChatController? controller;
   final AcpClientConfig config;
   final String? startupError;
+  final AgentServerDiscoverer? discoverAgentServers;
+  final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
+  final AcpConfigWriter? writeConfig;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -41,8 +60,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
+  bool _agentDiscoveryStarted = false;
 
   @override
   void initState() {
@@ -62,6 +83,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
         unawaited(_controller.resumeSession(_initialResumeSessionId));
       });
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_maybeDiscoverAgents());
+    });
   }
 
   @override
@@ -109,6 +133,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return MaterialApp(
       title: 'ACP Client',
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -178,8 +203,46 @@ class _AcpClientAppState extends State<AcpClientApp> {
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
+        onSaveConfig: widget.controller == null
+            ? (config) => _saveConfig(config)
+            : null,
       ),
     );
+  }
+
+  Future<void> _maybeDiscoverAgents() async {
+    if (_agentDiscoveryStarted || widget.controller != null) return;
+    if (_config.configPath == null || _config.configPath!.trim().isEmpty) {
+      return;
+    }
+    _agentDiscoveryStarted = true;
+
+    final discover =
+        widget.discoverAgentServers ?? AcpAgentDiscovery.discoverMissing;
+    final discovered = await discover(_config);
+    if (discovered.isEmpty || !mounted) return;
+
+    final dialogContext = _navigatorKey.currentContext;
+    if (dialogContext == null) return;
+    if (!dialogContext.mounted) return;
+    final selected = await showDialog<List<AgentServerConfig>>(
+      context: dialogContext,
+      builder: (context) => AgentDiscoveryDialog(agentServers: discovered),
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+
+    try {
+      final write =
+          widget.writeDiscoveredAgentServers ??
+          AcpAgentDiscovery.writeSelectedAgentServers;
+      final nextConfig = await write(_config, selected);
+      if (!mounted) return;
+      _reconcileControllerCache(nextConfig);
+      _activateAgent(nextConfig);
+      _showSnackBar('Added ${selected.length} discovered ACP agent(s).');
+    } catch (error) {
+      _showSnackBar('Could not add discovered agents: $error');
+    }
   }
 
   ChatController _controllerFor(AcpClientConfig config) {
@@ -251,6 +314,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
 
     _activateAgent(nextConfig);
+  }
+
+  Future<AcpClientConfig> _saveConfig(AcpClientConfig config) async {
+    final write = widget.writeConfig;
+    final nextConfig = write == null
+        ? await AcpConfigStore.writeConfig(config: config)
+        : await write(config);
+    if (!mounted) return nextConfig;
+    _reconcileControllerCache(nextConfig);
+    _activateAgent(nextConfig);
+    _showSnackBar('Saved agent configuration.');
+    return nextConfig;
   }
 
   Future<void> _startNewSession(BuildContext dialogContext) async {

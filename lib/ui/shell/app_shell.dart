@@ -38,6 +38,7 @@ class AppShell extends StatelessWidget {
     this.onSelectAgent,
     this.onSelectSession,
     this.onNewSession,
+    this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
   });
 
@@ -54,6 +55,7 @@ class AppShell extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final ValueChanged<AgentSession>? onSelectSession;
   final void Function(BuildContext context)? onNewSession;
+  final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
 
   @override
@@ -340,6 +342,7 @@ class AppShell extends StatelessWidget {
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
+          onSaveConfig: onSaveConfig,
         );
       },
     );
