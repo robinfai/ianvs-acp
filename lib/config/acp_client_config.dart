@@ -221,6 +221,17 @@ class AcpClientProviderConfig {
       permissions: AcpPermissionProviderConfig.fromJson(map['permissions']),
     );
   }
+
+  Map<String, Object?> toJson() {
+    final filesystemJson = filesystem.toJson();
+    final terminalJson = terminal.toJson();
+    final permissionsJson = permissions.toJson();
+    return <String, Object?>{
+      if (filesystemJson.isNotEmpty) 'filesystem': filesystemJson,
+      if (terminalJson.isNotEmpty) 'terminal': terminalJson,
+      if (permissionsJson.isNotEmpty) 'permissions': permissionsJson,
+    };
+  }
 }
 
 class AcpPermissionProviderConfig {
@@ -260,6 +271,16 @@ class AcpPermissionProviderConfig {
       trustRules: rulesRaw.map(_permissionTrustRule).toList(growable: false),
       reviewAgent: reviewAgent,
     );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      if (trustRules.isNotEmpty)
+        'trust_rules': trustRules
+            .map(_permissionTrustRuleJson)
+            .toList(growable: false),
+      if (reviewAgent.isConfigured) 'review_agent': reviewAgent.toJson(),
+    };
   }
 }
 
@@ -393,6 +414,19 @@ AcpPermissionTrustRule _permissionTrustRule(Object? raw) {
   );
 }
 
+Map<String, Object?> _permissionTrustRuleJson(AcpPermissionTrustRule rule) {
+  return <String, Object?>{
+    'tool_name': rule.toolName.trim(),
+    if (rule.toolKind?.trim().isNotEmpty == true)
+      'tool_kind': rule.toolKind!.trim(),
+    'decision': switch (rule.decision) {
+      AcpPermissionDecision.allow => 'allow',
+      AcpPermissionDecision.deny => 'deny',
+      AcpPermissionDecision.cancel => 'cancel',
+    },
+  };
+}
+
 McpServerConfig _permissionReviewMcpServer(Object? raw) {
   if (raw is! Map) {
     throw const FormatException(
@@ -434,6 +468,10 @@ class AcpTerminalProviderConfig {
       ),
     );
   }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{if (enabled) 'enabled': true};
+  }
 }
 
 class AcpFilesystemProviderConfig {
@@ -471,6 +509,14 @@ class AcpFilesystemProviderConfig {
         fieldName: 'client_providers.filesystem.allow_read_outside_workspace',
       ),
     );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      if (readTextFile) 'read_text_file': true,
+      if (writeTextFile) 'write_text_file': true,
+      if (allowReadOutsideWorkspace) 'allow_read_outside_workspace': true,
+    };
   }
 }
 
