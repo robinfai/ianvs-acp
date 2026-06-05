@@ -18,7 +18,6 @@ const Color _permissionAccentSoft = Color(0xfffff7ed);
 const Color _permissionAccentMist = Color(0xffffedd5);
 const Color _permissionAccentBorder = Color(0xfffb923c);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
-const Color _permissionComposerSurface = Color(0xfffffbeb);
 
 class PromptInput extends StatefulWidget {
   const PromptInput({
@@ -119,7 +118,6 @@ class _PromptInputState extends State<PromptInput> {
   Widget build(BuildContext context) {
     final commandSuggestions = _commandSuggestions;
     final pendingPermissionRequest = widget.pendingPermissionRequest;
-    final hasPendingPermission = pendingPermissionRequest != null;
     return Container(
       color: AppColors.bg,
       padding: const EdgeInsets.fromLTRB(12, 3, 12, 8),
@@ -142,36 +140,16 @@ class _PromptInputState extends State<PromptInput> {
               key: const Key('prompt-input-surface'),
               constraints: const BoxConstraints(minHeight: 78),
               decoration: BoxDecoration(
-                color: hasPendingPermission
-                    ? _permissionComposerSurface
-                    : AppColors.surface,
+                color: AppColors.surface,
                 borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(
-                  color: hasPendingPermission
-                      ? _permissionAccent
-                      : AppColors.border,
-                  width: hasPendingPermission ? 2.4 : 1,
-                ),
-                boxShadow: hasPendingPermission
-                    ? [
-                        BoxShadow(
-                          color: _permissionAccent.withValues(alpha: 0.28),
-                          blurRadius: 34,
-                          offset: const Offset(0, 10),
-                        ),
-                        BoxShadow(
-                          color: _permissionAccent.withValues(alpha: 0.16),
-                          blurRadius: 0,
-                          spreadRadius: 3,
-                        ),
-                      ]
-                    : [
-                        BoxShadow(
-                          color: AppColors.textPrimary.withValues(alpha: 0.05),
-                          blurRadius: 16,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
+                border: Border.all(color: AppColors.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.textPrimary.withValues(alpha: 0.05),
+                    blurRadius: 16,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,

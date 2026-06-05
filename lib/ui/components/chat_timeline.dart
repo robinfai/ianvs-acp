@@ -508,15 +508,16 @@ class _MessageBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Icon(
                     _iconForRole(message.role),
                     size: 14,
                     color: user ? Colors.white : _labelColor(message.role),
                   ),
-                  const SizedBox(width: 6),
                   Text(
                     _labelForRole(message.role),
                     style: TextStyle(
@@ -1416,26 +1417,68 @@ class _PlanEntryRow extends StatelessWidget {
       _ => Icons.radio_button_unchecked_rounded,
     };
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 7),
-          Expanded(
-            child: Text(
-              content,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                height: 1.35,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 220;
+        final contentRow = Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 16),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                content,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  height: 1.35,
+                ),
               ),
             ),
+          ],
+        );
+
+        if (narrow) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                contentRow,
+                const SizedBox(height: 5),
+                Padding(
+                  padding: const EdgeInsets.only(left: 23),
+                  child: _StatusPill(
+                    label: priority,
+                    color: AppColors.primaryDark,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: color, size: 16),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  content,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 7),
+              _StatusPill(label: priority, color: AppColors.primaryDark),
+            ],
           ),
-          const SizedBox(width: 7),
-          _StatusPill(label: priority, color: AppColors.primaryDark),
-        ],
-      ),
+        );
+      },
     );
   }
 }

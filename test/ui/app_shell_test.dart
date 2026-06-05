@@ -4,6 +4,8 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 
+void _noop() {}
+
 void main() {
   Widget toolbar(
     app_state.ConnectionStatus status, {
@@ -16,6 +18,7 @@ void main() {
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
+    VoidCallback? onReconnect,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -32,7 +35,7 @@ void main() {
           onLogout: onLogout,
           onNewSession: () {},
           onResumeSession: () {},
-          onReconnect: () {},
+          onReconnect: onReconnect,
         ),
       ),
     );
@@ -51,6 +54,7 @@ void main() {
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
+    VoidCallback? onReconnect = _noop,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -68,6 +72,7 @@ void main() {
         onShowPermissionHistory: onShowPermissionHistory,
         onExtensionRequest: onExtensionRequest,
         onLogout: onLogout,
+        onReconnect: onReconnect,
       ),
     );
   }
@@ -171,6 +176,19 @@ void main() {
 
     await pumpToolbar(tester, app_state.ConnectionStatus.error);
     expect(find.text('error'), findsOneWidget);
+  });
+
+  testWidgets('AgentToolbar hides reconnect when it is unavailable', (
+    tester,
+  ) async {
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onReconnect: null,
+    );
+
+    expect(find.text('Reconnect'), findsNothing);
+    expect(find.byTooltip('Reconnect'), findsNothing);
   });
 
   testWidgets('AgentToolbar renders custom agent name', (tester) async {

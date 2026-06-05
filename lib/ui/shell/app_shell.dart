@@ -6,6 +6,7 @@ import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
+import '../../state/connection_state.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
@@ -67,6 +68,10 @@ class AppShell extends StatelessWidget {
                   ? controller.newSession
                   : () => onNewSession!(context)
             : null;
+        final canReconnect =
+            sessionActionsEnabled &&
+            (controller.status == ConnectionStatus.disconnected ||
+                controller.status == ConnectionStatus.error);
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -99,9 +104,7 @@ class AppShell extends StatelessWidget {
                   onResumeSession: controller.canResumeSessions
                       ? () => _showResumeDialog(context)
                       : null,
-                  onReconnect: sessionActionsEnabled
-                      ? controller.reconnect
-                      : null,
+                  onReconnect: canReconnect ? controller.reconnect : null,
                 ),
                 if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
@@ -117,39 +120,45 @@ class AppShell extends StatelessWidget {
                         boxShadow: AppShadows.soft,
                       ),
                       clipBehavior: Clip.antiAlias,
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 244,
-                            child: SessionSidebar(
-                              agentName: agentName,
-                              sessions: _sessions(),
-                              currentSession: controller.currentSession,
-                              onNewSession: startNewSession,
-                              onResumeSession: controller.canResumeSessions
-                                  ? () => _showResumeDialog(context)
-                                  : null,
-                              onSelectSession: sessionActionsEnabled
-                                  ? onSelectSession
-                                  : null,
-                            ),
-                          ),
-                          const VerticalDivider(
-                            width: 1,
-                            color: AppColors.border,
-                          ),
-                          Expanded(
-                            child: ChatTimeline(
-                              messages: controller.messages,
-                              agentName: agentName,
-                              hasActiveSession:
-                                  controller.currentSession != null,
-                              activeSessionLabel:
-                                  controller.currentSession?.displayTitle,
-                              onNewSession: startNewSession,
-                            ),
-                          ),
-                        ],
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final hideSidebar = constraints.maxWidth < 700;
+                          final timeline = ChatTimeline(
+                            messages: controller.messages,
+                            agentName: agentName,
+                            hasActiveSession: controller.currentSession != null,
+                            activeSessionLabel:
+                                controller.currentSession?.displayTitle,
+                            onNewSession: startNewSession,
+                          );
+
+                          if (hideSidebar) return timeline;
+
+                          return Row(
+                            children: [
+                              SizedBox(
+                                width: 244,
+                                child: SessionSidebar(
+                                  agentName: agentName,
+                                  sessions: _sessions(),
+                                  currentSession: controller.currentSession,
+                                  onNewSession: startNewSession,
+                                  onResumeSession: controller.canResumeSessions
+                                      ? () => _showResumeDialog(context)
+                                      : null,
+                                  onSelectSession: sessionActionsEnabled
+                                      ? onSelectSession
+                                      : null,
+                                ),
+                              ),
+                              const VerticalDivider(
+                                width: 1,
+                                color: AppColors.border,
+                              ),
+                              Expanded(child: timeline),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ),

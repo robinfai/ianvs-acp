@@ -27,6 +27,7 @@ class StatusBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: LayoutBuilder(
         builder: (context, constraints) {
+          final showSecondaryActions = constraints.maxWidth >= 700;
           return Align(
             alignment: Alignment.centerRight,
             child: SingleChildScrollView(
@@ -95,24 +96,26 @@ class StatusBar extends StatelessWidget {
                       maxWidth: 320,
                     ),
                   ],
-                  const SizedBox(width: 14),
-                  _StatusIcon(
-                    icon: Icons.tune_rounded,
-                    tooltip: 'Session settings',
-                    onPressed: onShowSessionSettings,
-                  ),
-                  const SizedBox(width: 8),
-                  _StatusIcon(
-                    icon: Icons.fact_check_outlined,
-                    tooltip: 'ACP compatibility',
-                    onPressed: onShowCapabilities,
-                  ),
-                  const SizedBox(width: 8),
-                  const _StatusIcon(
-                    icon: Icons.wb_sunny_outlined,
-                    tooltip: 'Theme',
-                    onPressed: null,
-                  ),
+                  if (showSecondaryActions) ...[
+                    const SizedBox(width: 14),
+                    _StatusIcon(
+                      icon: Icons.tune_rounded,
+                      tooltip: 'Session settings',
+                      onPressed: onShowSessionSettings,
+                    ),
+                    const SizedBox(width: 8),
+                    _StatusIcon(
+                      icon: Icons.fact_check_outlined,
+                      tooltip: 'ACP compatibility',
+                      onPressed: onShowCapabilities,
+                    ),
+                    const SizedBox(width: 8),
+                    const _StatusIcon(
+                      icon: Icons.wb_sunny_outlined,
+                      tooltip: 'Theme',
+                      onPressed: null,
+                    ),
+                  ],
                 ],
               ),
             ),

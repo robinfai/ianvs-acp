@@ -7,6 +7,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/ui/components/prompt_input.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 void main() {
   Widget input({
@@ -439,9 +440,9 @@ void main() {
     );
     final decoration = surface.decoration as BoxDecoration;
     final border = decoration.border as Border;
-    expect(decoration.color, const Color(0xfffffbeb));
-    expect(border.top.color, const Color(0xffea580c));
-    expect(border.top.width, 2.4);
+    expect(decoration.color, AppColors.surface);
+    expect(border.top.color, AppColors.border);
+    expect(border.top.width, 1);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
     await tester.pump();

@@ -574,6 +574,47 @@ void main() {
     expect(find.text('Medium'), findsOneWidget);
   });
 
+  testWidgets('ChatTimeline keeps plan entries readable in narrow widths', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 140,
+            height: 360,
+            child: ChatTimeline(
+              messages: [
+                ChatMessage(
+                  role: ChatMessageRole.status,
+                  text: 'Implementation plan',
+                  metadata: const {
+                    'kind': 'plan',
+                    'title': 'Implementation plan',
+                    'entries': [
+                      {
+                        'content': 'Check prompt composer states and review',
+                        'priority': 'high',
+                        'status': 'in_progress',
+                      },
+                    ],
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.text('Check prompt composer states and review'),
+      findsOneWidget,
+    );
+    expect(find.text('High'), findsOneWidget);
+  });
+
   testWidgets('ChatTimeline normalizes plan entry status icons', (
     tester,
   ) async {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -8,6 +9,19 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 
 void main() {
+  Future<void> pumpWithWindowSize(
+    WidgetTester tester,
+    Widget widget,
+    Size size,
+  ) async {
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(widget);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('AcpClientApp opens new session agent picker', (tester) async {
     await tester.pumpWidget(
       AcpClientApp(
@@ -205,6 +219,57 @@ void main() {
 
     expect(controller.isSessionOperationRunning, isFalse);
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+  });
+
+  testWidgets('AcpClientApp keeps active sessions usable in narrow windows', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(
+      createSessionEvents: const [
+        AgentEvent(
+          type: AgentEventType.userMessage,
+          text: 'Review the ACP client implementation and identify UI gaps.',
+        ),
+        AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text:
+              'I inspected the app shell, session controls, timeline grouping, permission banner, and configuration dialogs.',
+        ),
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'Implementation plan',
+          metadata: {
+            'kind': 'plan',
+            'title': 'Implementation plan',
+            'entries': [
+              {
+                'content': 'Check prompt composer states and permission review',
+                'priority': 'high',
+                'status': 'in_progress',
+              },
+            ],
+          },
+        ),
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.connect();
+    await controller.newSession();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(390, 844),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Sessions'), findsNothing);
+    expect(find.text('Implementation plan'), findsOneWidget);
+    expect(
+      find.text('Check prompt composer states and permission review'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('AcpClientApp disables resume when agent cannot list sessions', (

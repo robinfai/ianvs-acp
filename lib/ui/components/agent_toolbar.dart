@@ -95,13 +95,15 @@ class AgentToolbar extends StatelessWidget {
                   tooltip: 'Resume',
                   onPressed: onResumeSession,
                 ),
-                SizedBox(width: compact ? 5 : 8),
-                _ToolbarAction(
-                  icon: Icons.refresh_rounded,
-                  label: compact ? null : 'Reconnect',
-                  tooltip: 'Reconnect',
-                  onPressed: onReconnect,
-                ),
+                if (onReconnect != null) ...[
+                  SizedBox(width: compact ? 5 : 8),
+                  _ToolbarAction(
+                    icon: Icons.refresh_rounded,
+                    label: compact ? null : 'Reconnect',
+                    tooltip: 'Reconnect',
+                    onPressed: onReconnect,
+                  ),
+                ],
                 SizedBox(width: compact ? 6 : 10),
                 _PrimaryToolbarAction(
                   compact: compact,

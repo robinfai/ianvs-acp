@@ -24,6 +24,7 @@ class CapabilitiesDialog extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _CapabilitySummary(capabilities: caps),
                     _Section(
                       icon: Icons.handshake_outlined,
                       title: 'Protocol',
@@ -153,6 +154,215 @@ class CapabilitiesDialog extends StatelessWidget {
       ],
     );
   }
+}
+
+class _CapabilitySummary extends StatelessWidget {
+  const _CapabilitySummary({required this.capabilities});
+
+  final AcpAgentCapabilities capabilities;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _summaryItems(capabilities);
+    final readyItems = items.where((item) => item.supported).toList();
+    final attentionItems = items.where((item) => !item.supported).toList();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.primaryMist,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.dashboard_customize_outlined,
+                size: 15,
+                color: AppColors.primaryDark,
+              ),
+              SizedBox(width: 6),
+              Text(
+                'Capability summary',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth < 520
+                  ? constraints.maxWidth
+                  : (constraints.maxWidth - 8) / 2;
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  SizedBox(
+                    width: width,
+                    child: _SummaryPanel(
+                      title: 'Ready now',
+                      icon: Icons.check_circle_outline_rounded,
+                      color: AppColors.success,
+                      items: readyItems,
+                      emptyLabel: 'No advertised capability yet',
+                    ),
+                  ),
+                  SizedBox(
+                    width: width,
+                    child: _SummaryPanel(
+                      title: 'Needs attention',
+                      icon: Icons.info_outline_rounded,
+                      color: AppColors.warning,
+                      items: attentionItems,
+                      emptyLabel: 'No obvious gaps',
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<_SummaryItem> _summaryItems(AcpAgentCapabilities caps) {
+    return [
+      _SummaryItem('Load session', caps.loadSession),
+      _SummaryItem('Image input', caps.prompt.image),
+      _SummaryItem('Audio input', caps.prompt.audio),
+      _SummaryItem('Embedded prompt context', caps.prompt.embeddedContext),
+      _SummaryItem('Session list', caps.session.list),
+      _SummaryItem('Resume session', caps.session.resume),
+      _SummaryItem('Session fork', caps.session.fork),
+      _SummaryItem('Session config options', caps.session.configOptions),
+      _SummaryItem('Extra directories', caps.session.additionalDirectories),
+      _SummaryItem('Session close', caps.session.close),
+      _SummaryItem('HTTP MCP', caps.mcp.http),
+      _SummaryItem('SSE MCP', caps.mcp.sse),
+      _SummaryItem('ACP MCP', caps.mcp.acp),
+      _SummaryItem('Auth logout', caps.auth.logout),
+      _SummaryItem(
+        'Client fs read',
+        caps.client.fsReadTextFile && caps.client.hasFsProvider,
+      ),
+      _SummaryItem(
+        'Client fs write',
+        caps.client.fsWriteTextFile && caps.client.hasFsProvider,
+      ),
+      _SummaryItem(
+        'Terminal',
+        caps.client.terminal && caps.client.hasTerminalProvider,
+      ),
+    ];
+  }
+}
+
+class _SummaryPanel extends StatelessWidget {
+  const _SummaryPanel({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.items,
+    required this.emptyLabel,
+  });
+
+  final String title;
+  final IconData icon;
+  final Color color;
+  final List<_SummaryItem> items;
+  final String emptyLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final labels = items.isEmpty
+        ? [emptyLabel]
+        : items.map((item) => item.label).toList(growable: false);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 78),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 5),
+              Text(
+                title,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final label in labels)
+                _SummaryChip(label: label, color: color),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryChip extends StatelessWidget {
+  const _SummaryChip({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 220),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: color.withValues(alpha: 0.16)),
+      ),
+      child: Text(
+        label,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryItem {
+  const _SummaryItem(this.label, this.supported);
+
+  final String label;
+  final bool supported;
 }
 
 class _EmptyState extends StatelessWidget {
