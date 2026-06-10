@@ -86,11 +86,7 @@ class _MemoryCandidateCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              [
-                candidate.kind,
-                candidate.scope,
-                if (confidence != null) confidence,
-              ].join(' · '),
+              [candidate.kind, candidate.scope, ?confidence].join(' · '),
               style: const TextStyle(
                 color: AppColors.textTertiary,
                 fontSize: 11,

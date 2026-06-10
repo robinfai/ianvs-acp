@@ -17,12 +17,25 @@ surface.
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
 
+## Memory
+
+The client can run a local Rust `memory-core` daemon for four reviewed memory
+kinds: user preferences, project rules, architecture decisions, and session
+summaries. Memory is local-first, and long-term writes require user approval in
+the Memory Review UI before they are saved.
+
+Flutter owns the user-facing controls, ACP prompt injection, and sidecar
+extraction prompt. The daemon owns storage, search, audit history, local
+embedding support, OpenAI-compatible embedding calls, and its stdio MCP bridge.
+Memory is added as background context before the normal ACP `session/prompt`;
+the daemon does not proxy ACP traffic.
+
 ## Configuration
 
 Use `Agents` -> `Agent Configuration` to manage the saved configuration:
 agent servers, the default agent, MCP servers, additional directories,
-filesystem/terminal provider switches, permission trust rules, and the review
-agent. The app persists those GUI choices to:
+filesystem/terminal provider switches, permission trust rules, the review
+agent, and memory settings. The app persists those GUI choices to:
 
 ```text
 ~/.config/ianvs-acp/settings.json
