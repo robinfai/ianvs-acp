@@ -67,3 +67,43 @@ async fn health_requires_no_auth_and_v1_requires_auth() {
         .expect("unauth response");
     assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn schema_creates_memory_tables() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let tables: Vec<String> =
+        sqlx::query_scalar("select name from sqlite_master where type = 'table' order by name")
+            .fetch_all(&pool)
+            .await
+            .expect("tables");
+    assert!(tables.contains(&"memory_items".to_string()));
+    assert!(tables.contains(&"memory_candidates".to_string()));
+    assert!(tables.contains(&"memory_change_requests".to_string()));
+    assert!(tables.contains(&"memory_audit_log".to_string()));
+    assert!(tables.contains(&"prompt_injections".to_string()));
+}
+
+#[test]
+fn memory_kind_uses_snake_case_wire_names() {
+    use memory_core::memory::types::MemoryKind;
+
+    assert_eq!(
+        serde_json::to_string(&MemoryKind::UserPreference).unwrap(),
+        "\"user_preference\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MemoryKind::ProjectRule).unwrap(),
+        "\"project_rule\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MemoryKind::ArchitectureDecision).unwrap(),
+        "\"architecture_decision\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MemoryKind::SessionSummary).unwrap(),
+        "\"session_summary\""
+    );
+}
