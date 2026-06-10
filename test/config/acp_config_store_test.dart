@@ -5,8 +5,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
 
 void main() {
+  test('serializes memory config', () {
+    final settings = AcpConfigStore.toSettingsJson(
+      const AcpClientConfig(
+        memory: MemoryConfig(
+          extractor: MemoryExtractorConfig(agent: 'Codex', model: 'gpt-5-mini'),
+          llm: MemoryLlmConfig(apiKeyEnv: 'OLLAMA_API_KEY'),
+        ),
+      ),
+    );
+
+    final memory = settings['memory'] as Map<String, Object?>;
+    expect(memory['enabled'], isTrue);
+    expect((memory['extractor'] as Map<String, Object?>)['agent'], 'Codex');
+    expect(
+      (memory['extractor'] as Map<String, Object?>)['model'],
+      'gpt-5-mini',
+    );
+    expect(
+      (memory['llm'] as Map<String, Object?>)['api_key_env'],
+      'OLLAMA_API_KEY',
+    );
+  });
+
   test('writes config while preserving unknown top-level fields', () async {
     final temp = await Directory.systemTemp.createTemp(
       'ianvs_acp_config_store',

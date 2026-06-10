@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../acp/acp_permission_request.dart';
+import '../memory/memory_config.dart';
 
 class AcpClientConfig {
   const AcpClientConfig({
@@ -10,6 +11,7 @@ class AcpClientConfig {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
+    this.memory = const MemoryConfig(),
     this.configPath,
     this.defaultAgentServerName,
   });
@@ -22,6 +24,7 @@ class AcpClientConfig {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final MemoryConfig memory;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -55,6 +58,7 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
+      memory: memory,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
     );
@@ -94,6 +98,9 @@ class AcpClientConfig {
     final clientProviders = AcpClientProviderConfig.fromJson(
       json['client_providers'] ?? json['clientProviders'],
     );
+    final memory = MemoryConfig.fromJson(
+      json['memory'] ?? json['memoryConfig'],
+    );
     final serversRaw = json['agent_servers'] ?? json['agentServers'];
     if (serversRaw == null) {
       return AcpClientConfig(
@@ -101,6 +108,7 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
+        memory: memory,
       );
     }
     if (serversRaw is! Map<String, dynamic>) {
@@ -125,6 +133,7 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
+        memory: memory,
       );
     }
 
@@ -143,6 +152,7 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
+      memory: memory,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );

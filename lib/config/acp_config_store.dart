@@ -45,6 +45,7 @@ class AcpConfigStore {
       if (config.additionalDirectories.isNotEmpty)
         'additional_directories': config.additionalDirectories,
       if (clientProviders.isNotEmpty) 'client_providers': clientProviders,
+      'memory': config.memory.toJson(),
     };
   }
 
@@ -83,4 +84,6 @@ const Set<String> _managedConfigKeys = <String>{
   'additionalDirectories',
   'client_providers',
   'clientProviders',
+  'memory',
+  'memoryConfig',
 };
