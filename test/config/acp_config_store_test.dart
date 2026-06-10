@@ -12,6 +12,7 @@ void main() {
     final settings = AcpConfigStore.toSettingsJson(
       const AcpClientConfig(
         memory: MemoryConfig(
+          enabled: true,
           extractor: MemoryExtractorConfig(agent: 'Codex', model: 'gpt-5-mini'),
           llm: MemoryLlmConfig(apiKeyEnv: 'OLLAMA_API_KEY'),
         ),

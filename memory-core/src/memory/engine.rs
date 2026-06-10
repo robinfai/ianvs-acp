@@ -1,4 +1,5 @@
 use crate::memory::types::{MemoryKind, MemoryScope};
+use crate::memory::{ranker, redactor};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -117,6 +118,7 @@ pub async fn create_manual_memory(
     let now = Utc::now().timestamp_millis();
     let id = format!("mem_{}", Uuid::new_v4());
     let kind = kind_to_wire(request.kind);
+    let text = redactor::redact(request.text.trim());
     sqlx::query(
         "insert into memory_items
         (id, user_id, workspace_id, repo_id, agent_id, session_id, kind, scope, text, source, status, created_at, updated_at)
@@ -130,7 +132,7 @@ pub async fn create_manual_memory(
     .bind(&request.scope_data.session_id)
     .bind(&kind)
     .bind(&request.scope)
-    .bind(&request.text)
+    .bind(&text)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -184,7 +186,10 @@ pub async fn patch_memory(
     let current = get_memory(pool, id).await?;
     let kind = kind_to_wire(request.kind.unwrap_or(current.kind));
     let scope = request.scope.unwrap_or(current.scope);
-    let text = request.text.unwrap_or(current.text);
+    let text = request
+        .text
+        .map(|text| redactor::redact(text.trim()))
+        .unwrap_or(current.text);
     let status = request.status.unwrap_or(current.status);
     let now = Utc::now().timestamp_millis();
     let result = sqlx::query(
@@ -348,35 +353,71 @@ pub async fn search_memory(
     request: SearchRequest,
 ) -> sqlx::Result<SearchResponse> {
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
+    let tokens = query_tokens(&request.query);
     let rows = sqlx::query(
-        "select id, kind, scope, text, source_session_id, source_turn_id
+        "select id, kind, scope, text, source_session_id, source_turn_id, repo_id, workspace_id, updated_at
          from memory_items
          where status = 'active'
            and user_id = ?
            and (repo_id = ? or workspace_id = ? or scope = 'global')
          order by updated_at desc
-         limit ?",
+         limit 200",
     )
     .bind(&request.scope.user_id)
     .bind(&request.scope.repo_id)
     .bind(&request.scope.workspace_id)
-    .bind(limit)
     .fetch_all(pool)
     .await?;
-    Ok(SearchResponse {
-        items: rows
-            .into_iter()
-            .map(|row| SearchItem {
+    let mut scored = Vec::new();
+    for row in rows {
+        let text: String = row.get("text");
+        let lexical_score = lexical_score(&text, &tokens);
+        if lexical_score <= 0.0 {
+            continue;
+        }
+        let kind: String = row.get("kind");
+        let scope: String = row.get("scope");
+        let score = ranker::final_score(
+            lexical_score,
+            scope_score(
+                &scope,
+                row.get::<Option<String>, _>("repo_id").as_deref(),
+                row.get::<Option<String>, _>("workspace_id").as_deref(),
+                request.scope.repo_id.as_deref(),
+                request.scope.workspace_id.as_deref(),
+            ),
+            1.0,
+        );
+        scored.push((
+            score,
+            ranker::kind_priority(&kind),
+            row.get::<i64, _>("updated_at"),
+            SearchItem {
                 id: row.get("id"),
-                kind: row.get("kind"),
-                scope: row.get("scope"),
-                text: row.get("text"),
-                score: 1.0,
+                kind,
+                scope,
+                text,
+                score,
                 metadata: serde_json::json!({
                     "sourceSessionId": row.get::<Option<String>, _>("source_session_id"),
                     "sourceTurnId": row.get::<Option<String>, _>("source_turn_id")
                 }),
-            })
+            },
+        ));
+    }
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| right.2.cmp(&left.2))
+    });
+    Ok(SearchResponse {
+        items: scored
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, _, item)| item)
             .collect(),
     })
 }
@@ -445,4 +486,47 @@ fn kind_to_wire(kind: MemoryKind) -> &'static str {
         MemoryKind::ArchitectureDecision => "architecture_decision",
         MemoryKind::SessionSummary => "session_summary",
     }
+}
+
+fn query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| !character.is_alphanumeric())
+        .map(str::trim)
+        .filter(|token| token.chars().count() >= 2)
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn lexical_score(text: &str, tokens: &[String]) -> f32 {
+    if tokens.is_empty() {
+        return 1.0;
+    }
+    let lower = text.to_ascii_lowercase();
+    let matches = tokens
+        .iter()
+        .filter(|token| lower.contains(token.as_str()))
+        .count();
+    if matches == 0 {
+        return 0.0;
+    }
+    matches as f32 / tokens.len() as f32
+}
+
+fn scope_score(
+    scope: &str,
+    item_repo_id: Option<&str>,
+    item_workspace_id: Option<&str>,
+    query_repo_id: Option<&str>,
+    query_workspace_id: Option<&str>,
+) -> f32 {
+    if item_repo_id.is_some() && item_repo_id == query_repo_id {
+        return 1.0;
+    }
+    if item_workspace_id.is_some() && item_workspace_id == query_workspace_id {
+        return 0.85;
+    }
+    if scope == "global" {
+        return 0.65;
+    }
+    0.5
 }

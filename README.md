@@ -19,16 +19,23 @@ local directory path completions while typing.
 
 ## Memory
 
-The client can run a local Rust `memory-core` daemon for four reviewed memory
+The repo includes a local Rust `memory-core` daemon for four reviewed memory
 kinds: user preferences, project rules, architecture decisions, and session
-summaries. Memory is local-first, and long-term writes require user approval in
-the Memory Review UI before they are saved.
+summaries. Memory is local-first and defaults off in the Flutter app until a
+daemon endpoint is configured.
 
-Flutter owns the user-facing controls, ACP prompt injection, and sidecar
-extraction prompt. The daemon owns storage, search, audit history, local
-embedding support, OpenAI-compatible embedding calls, and its stdio MCP bridge.
-Memory is added as background context before the normal ACP `session/prompt`;
-the daemon does not proxy ACP traffic.
+To enable prompt injection, set `memory.enabled=true`, provide
+`memory.daemon_base_url`, and expose the bearer token through
+`memory.daemon_token_env` (default: `MEMORY_DAEMON_TOKEN`). When those are
+present, Flutter queries the daemon search API and adds returned memories as
+background context before the normal ACP `session/prompt`; the daemon does not
+proxy ACP traffic.
+
+The daemon owns storage, search, audit history, local embedding support,
+OpenAI-compatible embedding calls, and its stdio MCP bridge. The current MCP
+bridge exposes callable `memory.search`, `memory.list`, and `memory.remember`
+tools. Review and explorer UI surfaces are present, with destructive or
+approval actions disabled until a backend callback is connected.
 
 ## Configuration
 

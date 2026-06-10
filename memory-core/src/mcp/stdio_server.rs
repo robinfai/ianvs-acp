@@ -18,6 +18,21 @@ pub async fn run(client: DaemonClient) -> anyhow::Result<()> {
             .unwrap_or("");
         let result = match method {
             "tools/list" => crate::mcp::tools::tools_list(),
+            "tools/call" => {
+                let params = request
+                    .get("params")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let name = params
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                crate::mcp::tools::call_tool(&client, name, arguments).await
+            }
             _ => serde_json::json!({"error": "unsupported method"}),
         };
         let response = serde_json::json!({

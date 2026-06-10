@@ -539,6 +539,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     return MemoryConfig(
       enabled: _memoryEnabled,
       autoStartDaemon: widget.memory.autoStartDaemon,
+      daemonBaseUrl: widget.memory.daemonBaseUrl,
+      daemonTokenEnv: widget.memory.daemonTokenEnv,
       dataDir: widget.memory.dataDir,
       embedding: MemoryEmbeddingConfig(
         provider: widget.memory.embedding.provider,

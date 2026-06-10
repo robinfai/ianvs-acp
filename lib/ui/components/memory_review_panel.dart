@@ -21,9 +21,18 @@ class MemoryReviewCandidate {
 }
 
 class MemoryReviewPanel extends StatelessWidget {
-  const MemoryReviewPanel({super.key, this.candidates = const []});
+  const MemoryReviewPanel({
+    super.key,
+    this.candidates = const [],
+    this.onApprove,
+    this.onEdit,
+    this.onReject,
+  });
 
   final List<MemoryReviewCandidate> candidates;
+  final ValueChanged<MemoryReviewCandidate>? onApprove;
+  final ValueChanged<MemoryReviewCandidate>? onEdit;
+  final ValueChanged<MemoryReviewCandidate>? onReject;
 
   @override
   Widget build(BuildContext context) {
@@ -55,7 +64,12 @@ class MemoryReviewPanel extends StatelessWidget {
             )
           else
             for (final candidate in candidates) ...[
-              _MemoryCandidateCard(candidate: candidate),
+              _MemoryCandidateCard(
+                candidate: candidate,
+                onApprove: onApprove,
+                onEdit: onEdit,
+                onReject: onReject,
+              ),
               const SizedBox(height: 10),
             ],
         ],
@@ -65,9 +79,17 @@ class MemoryReviewPanel extends StatelessWidget {
 }
 
 class _MemoryCandidateCard extends StatelessWidget {
-  const _MemoryCandidateCard({required this.candidate});
+  const _MemoryCandidateCard({
+    required this.candidate,
+    this.onApprove,
+    this.onEdit,
+    this.onReject,
+  });
 
   final MemoryReviewCandidate candidate;
+  final ValueChanged<MemoryReviewCandidate>? onApprove;
+  final ValueChanged<MemoryReviewCandidate>? onEdit;
+  final ValueChanged<MemoryReviewCandidate>? onReject;
 
   @override
   Widget build(BuildContext context) {
@@ -123,17 +145,21 @@ class _MemoryCandidateCard extends StatelessWidget {
               runSpacing: 6,
               children: [
                 TextButton.icon(
-                  onPressed: () {},
+                  onPressed: onApprove == null
+                      ? null
+                      : () => onApprove!(candidate),
                   icon: const Icon(Icons.check_rounded, size: 16),
                   label: const Text('Approve'),
                 ),
                 TextButton.icon(
-                  onPressed: () {},
+                  onPressed: onEdit == null ? null : () => onEdit!(candidate),
                   icon: const Icon(Icons.edit_rounded, size: 15),
                   label: const Text('Edit'),
                 ),
                 TextButton.icon(
-                  onPressed: () {},
+                  onPressed: onReject == null
+                      ? null
+                      : () => onReject!(candidate),
                   icon: const Icon(Icons.close_rounded, size: 15),
                   label: const Text('Reject'),
                 ),

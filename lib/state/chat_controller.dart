@@ -1536,6 +1536,7 @@ class ChatController extends ChangeNotifier {
     _disposeLater(_permissionSubscription.cancel);
     _disposeLater(client.dispose);
     _disposeLater(() => permissionReviewer?.dispose());
+    memoryMiddleware?.dispose();
     _resolvingPermissionRequestIds.clear();
     _reviewingPermissionRequestIds.clear();
     super.dispose();

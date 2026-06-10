@@ -11,6 +11,7 @@ import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
 import 'memory/acp_memory_middleware.dart';
+import 'memory/memory_api_client.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
@@ -256,10 +257,48 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentName: config.agentName,
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
-      memoryMiddleware: config.memory.enabled
-          ? AcpMemoryMiddleware(search: _emptyMemorySearch)
-          : null,
+      memoryMiddleware: _memoryMiddleware(config),
     );
+  }
+
+  AcpMemoryMiddleware? _memoryMiddleware(AcpClientConfig config) {
+    final memory = config.memory;
+    if (!memory.enabled) return null;
+
+    final daemonBaseUrl = memory.daemonBaseUrl?.trim();
+    if (daemonBaseUrl == null || daemonBaseUrl.isEmpty) return null;
+
+    final baseUrl = Uri.tryParse(daemonBaseUrl);
+    if (baseUrl == null || !baseUrl.hasScheme) return null;
+
+    final tokenEnv = memory.daemonTokenEnv.trim().isEmpty
+        ? 'MEMORY_DAEMON_TOKEN'
+        : memory.daemonTokenEnv.trim();
+    final token = Platform.environment[tokenEnv]?.trim();
+    if (token == null || token.isEmpty) return null;
+
+    final client = MemoryApiClient(baseUrl: baseUrl, token: token);
+    return AcpMemoryMiddleware(
+      search: (prompt) {
+        return client.searchContext(
+          MemorySearchRequest(
+            query: prompt,
+            scope: MemoryScopeData(
+              userId: _memoryUserId(),
+              workspaceId: _cwd,
+              repoId: _cwd,
+              agentId: config.agentName,
+            ),
+          ),
+        );
+      },
+      onDispose: () => client.close(),
+    );
+  }
+
+  String _memoryUserId() {
+    final user = Platform.environment['USER']?.trim();
+    return user == null || user.isEmpty ? 'local-user' : user;
   }
 
   ChatController _cachedControllerFor(AcpClientConfig config) {
@@ -628,5 +667,3 @@ class _AcpClientAppState extends State<AcpClientApp> {
     };
   }
 }
-
-Future<String?> _emptyMemorySearch(String prompt) async => null;

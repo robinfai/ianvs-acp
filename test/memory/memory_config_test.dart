@@ -3,11 +3,11 @@ import 'package:ianvs_acp/memory/memory_config.dart';
 
 void main() {
   test(
-    'MemoryConfig defaults to enabled local memory with ACP sidecar extractor',
+    'MemoryConfig defaults to disabled local memory with ACP sidecar extractor',
     () {
       const config = MemoryConfig();
-      expect(config.enabled, true);
-      expect(config.autoStartDaemon, true);
+      expect(config.enabled, false);
+      expect(config.autoStartDaemon, false);
       expect(config.embedding.provider, 'fastembed-local');
       expect(config.embedding.model, 'intfloat/multilingual-e5-small');
       expect(config.embedding.dimension, 384);
@@ -29,10 +29,14 @@ void main() {
         'model': 'qwen2.5:7b',
         'api_key_env': 'OLLAMA_API_KEY',
       },
+      'daemon_base_url': 'http://127.0.0.1:43129',
+      'daemon_token_env': 'IANVS_MEMORY_TOKEN',
     });
     expect(config.extractor.agent, 'Codex');
     expect(config.extractor.model, 'gpt-5-mini');
     expect(config.llm.baseUrl, 'http://127.0.0.1:11434/v1');
     expect(config.llm.apiKeyEnv, 'OLLAMA_API_KEY');
+    expect(config.daemonBaseUrl, 'http://127.0.0.1:43129');
+    expect(config.daemonTokenEnv, 'IANVS_MEMORY_TOKEN');
   });
 }

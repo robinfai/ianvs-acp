@@ -222,6 +222,58 @@ fn redactor_masks_known_secret_patterns() {
 }
 
 #[tokio::test]
+async fn manual_memory_redacts_secret_text_before_storage() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let created = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "architecture_decision",
+            "scope": "repo",
+            "text": "Store this api_key=sk-test password=hunter2 nowhere.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create")
+        .json::<serde_json::Value>()
+        .await
+        .expect("create json");
+
+    let stored = created["text"].as_str().expect("text");
+    assert!(!stored.contains("sk-test"));
+    assert!(!stored.contains("hunter2"));
+    assert!(stored.contains("[REDACTED]"));
+
+    let id = created["id"].as_str().expect("id");
+    let patched = client
+        .patch(format!("{}/v1/memory/{id}", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "text": "Patch should hide ghp_abcdef and secret=token."
+        }))
+        .send()
+        .await
+        .expect("patch")
+        .json::<serde_json::Value>()
+        .await
+        .expect("patch json");
+    let patched_text = patched["text"].as_str().expect("patched text");
+    assert!(!patched_text.contains("ghp_abcdef"));
+    assert!(!patched_text.contains("token"));
+    assert!(patched_text.contains("[REDACTED]"));
+}
+
+#[tokio::test]
 async fn candidate_approve_writes_memory_and_reject_does_not() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
@@ -322,6 +374,24 @@ async fn search_returns_active_memory_and_skips_deleted() {
         .await
         .unwrap()
         .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "user_preference",
+            "scope": "global",
+            "text": "Prefer compact spacing in dense desktop UI.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
         .await
         .unwrap();
     let deleted = client

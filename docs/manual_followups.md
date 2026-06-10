@@ -22,27 +22,30 @@ today, plus the manual decision or validation still needed before implementation
 
 Status: real local daemon validation and UX policy refinement needed.
 
-Non-blocking because: the Rust daemon, storage/search/review APIs, Flutter
-config, prompt middleware, Memory Review/Explorer UI, and sidecar extraction
-prompt are implemented behind local-first settings. Long-term writes still go
-through user review. The current app-level runtime intentionally starts with a
-no-op memory search hook until daemon startup, search, review, and extraction
-are connected end to end with a real local agent.
+Non-blocking because: the Rust daemon, storage/search/review APIs, callable MCP
+search/list/remember bridge, Flutter config, prompt middleware, Memory
+Review/Explorer UI, and sidecar extraction prompt are implemented behind
+local-first settings. Memory now defaults off in the app and prompt injection is
+only installed when `memory.daemon_base_url` plus a token env are configured.
+Long-term write and destructive UI actions still need the real review/clear
+backend callbacks before they become clickable.
 
 Automated acceptance:
 
 - `cargo test --manifest-path memory-core/Cargo.toml` verifies the daemon
-  schema, manual CRUD, candidate review, search formatting, embedding provider
-  paths, daemon API routes, and MCP stdio tool listing.
+  schema, manual CRUD, manual secret redaction, candidate review, query-aware
+  search behavior, search formatting, embedding provider paths, daemon API
+  routes, and MCP stdio tool listing/calls.
 - `test/memory` verifies Flutter memory config, daemon client behavior, prompt
-  context formatting, prompt middleware, and ACP sidecar extraction.
+  context formatting, daemon HTTP search context building, prompt middleware,
+  and ACP sidecar extraction.
 - `test/config/acp_client_config_test.dart` verifies persisted memory config
   parsing with the rest of the user settings.
 - `test/state/chat_controller_test.dart` verifies prompt sending keeps working
   when memory middleware is present or fails.
 - `test/ui/memory_review_panel_test.dart` and
   `test/ui/memory_explorer_page_test.dart` verify the review and explorer UI
-  surfaces.
+  surfaces and keep actions disabled until callbacks are provided.
 - `test/ui/agent_config_dialog_test.dart` and
   `test/ui/acp_client_app_test.dart` verify memory settings are visible,
   editable, saved, and passed from app config into the shell.
@@ -52,9 +55,9 @@ Manual decision:
 - Validate a real macOS app session with the local `memory-core` daemon and a
   real ACP sidecar agent, including extraction quality, approval flow, prompt
   injection, and search relevance.
-- Decide final product policy for data directory visibility, clear-data UX,
-  retention/audit wording, and whether memory starts enabled by default for all
-  agents or only trusted local agents.
+- Decide final product policy for daemon auto-start/bundling, data directory
+  visibility, clear-data UX, retention/audit wording, and whether memory should
+  stay opt-in for all agents or auto-enable only for trusted local agents.
 
 ### remote-transports
 

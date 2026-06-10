@@ -1,4 +1,5 @@
 typedef MemorySearchCallback = Future<String?> Function(String prompt);
+typedef MemoryDisposeCallback = void Function();
 
 class PreparedPrompt {
   const PreparedPrompt({required this.prompt, this.memoryContext, this.error});
@@ -9,9 +10,10 @@ class PreparedPrompt {
 }
 
 class AcpMemoryMiddleware {
-  const AcpMemoryMiddleware({required this.search});
+  const AcpMemoryMiddleware({required this.search, this.onDispose});
 
   final MemorySearchCallback search;
+  final MemoryDisposeCallback? onDispose;
 
   Future<PreparedPrompt> preparePrompt(String prompt) async {
     try {
@@ -21,4 +23,6 @@ class AcpMemoryMiddleware {
       return PreparedPrompt(prompt: prompt, error: error.toString());
     }
   }
+
+  void dispose() => onDispose?.call();
 }

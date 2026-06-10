@@ -583,6 +583,8 @@ void main() {
 
     await tester.ensureVisible(find.text('Memory'));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('memory-enabled-switch')));
+    await tester.pump();
     await tester.enterText(
       find.byKey(const Key('memory-embedding-model-field')),
       'intfloat/multilingual-e5-small',

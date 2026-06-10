@@ -1,7 +1,9 @@
 class MemoryConfig {
   const MemoryConfig({
-    this.enabled = true,
-    this.autoStartDaemon = true,
+    this.enabled = false,
+    this.autoStartDaemon = false,
+    this.daemonBaseUrl,
+    this.daemonTokenEnv = 'MEMORY_DAEMON_TOKEN',
     this.dataDir,
     this.embedding = const MemoryEmbeddingConfig(),
     this.extractor = const MemoryExtractorConfig(),
@@ -11,6 +13,8 @@ class MemoryConfig {
 
   final bool enabled;
   final bool autoStartDaemon;
+  final String? daemonBaseUrl;
+  final String daemonTokenEnv;
   final String? dataDir;
   final MemoryEmbeddingConfig embedding;
   final MemoryExtractorConfig extractor;
@@ -20,11 +24,17 @@ class MemoryConfig {
   factory MemoryConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryConfig();
     return MemoryConfig(
-      enabled: raw['enabled'] as bool? ?? true,
+      enabled: raw['enabled'] as bool? ?? false,
       autoStartDaemon:
           raw['auto_start_daemon'] as bool? ??
           raw['autoStartDaemon'] as bool? ??
-          true,
+          false,
+      daemonBaseUrl:
+          raw['daemon_base_url'] as String? ?? raw['daemonBaseUrl'] as String?,
+      daemonTokenEnv:
+          raw['daemon_token_env'] as String? ??
+          raw['daemonTokenEnv'] as String? ??
+          'MEMORY_DAEMON_TOKEN',
       dataDir: raw['data_dir'] as String? ?? raw['dataDir'] as String?,
       embedding: MemoryEmbeddingConfig.fromJson(raw['embedding']),
       extractor: MemoryExtractorConfig.fromJson(raw['extractor']),
@@ -36,6 +46,8 @@ class MemoryConfig {
   Map<String, Object?> toJson() => <String, Object?>{
     'enabled': enabled,
     'auto_start_daemon': autoStartDaemon,
+    if (daemonBaseUrl != null) 'daemon_base_url': daemonBaseUrl,
+    'daemon_token_env': daemonTokenEnv,
     if (dataDir != null) 'data_dir': dataDir,
     'embedding': embedding.toJson(),
     'extractor': extractor.toJson(),

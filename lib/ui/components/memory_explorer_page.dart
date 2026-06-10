@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../theme/app_design_tokens.dart';
 
 class MemoryExplorerPage extends StatelessWidget {
-  const MemoryExplorerPage({super.key});
+  const MemoryExplorerPage({super.key, this.onClearData});
+
+  final VoidCallback? onClearData;
 
   @override
   Widget build(BuildContext context) {
@@ -23,7 +25,7 @@ class MemoryExplorerPage extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(right: 12),
               child: OutlinedButton.icon(
-                onPressed: () {},
+                onPressed: onClearData,
                 icon: const Icon(Icons.delete_outline_rounded, size: 18),
                 label: const Text('Clear data'),
               ),
