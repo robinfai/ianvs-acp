@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -78,11 +79,13 @@ class MemoryApiClient {
   MemoryApiClient({
     required this.baseUrl,
     required this.token,
+    this.timeout = const Duration(seconds: 2),
     HttpClient? httpClient,
   }) : _httpClient = httpClient ?? HttpClient();
 
   final Uri baseUrl;
   final String token;
+  final Duration timeout;
   final HttpClient _httpClient;
 
   Future<List<MemorySearchItem>> search(MemorySearchRequest request) async {
@@ -108,23 +111,27 @@ class MemoryApiClient {
     String path,
     Map<String, Object?> body,
   ) async {
-    final uri = baseUrl.resolve(path);
-    final request = await _httpClient.postUrl(uri);
-    request.headers.contentType = ContentType.json;
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-    request.write(jsonEncode(body));
-    final response = await request.close();
-    final responseBody = await utf8.decodeStream(response);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(
-        'Memory daemon returned HTTP ${response.statusCode}: $responseBody',
-        uri: uri,
-      );
-    }
-    final decoded = jsonDecode(responseBody);
-    if (decoded is! Map<String, Object?>) {
-      throw const FormatException('Memory daemon response must be an object.');
-    }
-    return decoded;
+    return (() async {
+      final uri = baseUrl.resolve(path);
+      final request = await _httpClient.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      request.write(jsonEncode(body));
+      final response = await request.close();
+      final responseBody = await utf8.decodeStream(response);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException(
+          'Memory daemon returned HTTP ${response.statusCode}: $responseBody',
+          uri: uri,
+        );
+      }
+      final decoded = jsonDecode(responseBody);
+      if (decoded is! Map<String, Object?>) {
+        throw const FormatException(
+          'Memory daemon response must be an object.',
+        );
+      }
+      return decoded;
+    })().timeout(timeout);
   }
 }

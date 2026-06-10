@@ -200,6 +200,30 @@ void main() {
     expect(fake.lastMemoryContext, contains('[project_rule]'));
   });
 
+  test('send prompt passes active session id to memory middleware', () async {
+    final fake = FakeAgentClient();
+    MemoryPromptContext? receivedContext;
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      memoryMiddleware: AcpMemoryMiddleware(
+        search: (context) async {
+          receivedContext = context;
+          return null;
+        },
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue();
+
+    expect(fake.lastPrompt, 'Hi');
+    expect(receivedContext?.prompt, 'Hi');
+    expect(receivedContext?.sessionId, 'fake-session-1');
+    expect(receivedContext?.cwd, '/workspace');
+  });
+
   test(
     'ChatController keeps prompt working when memory middleware fails',
     () async {
@@ -2328,7 +2352,7 @@ void main() {
   });
 }
 
-Future<String?> _staticMemoryContext(String prompt) async {
+Future<String?> _staticMemoryContext(MemoryPromptContext context) async {
   return '<agent_memory_context>\n1. [project_rule] Do not use nc/netcat.\n</agent_memory_context>';
 }
 

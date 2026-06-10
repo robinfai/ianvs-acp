@@ -555,6 +555,8 @@ void main() {
     expect(find.text('Extractor agent'), findsOneWidget);
     expect(find.text('Extractor model'), findsOneWidget);
     expect(find.text('Embedding model'), findsOneWidget);
+    expect(find.text('Memory daemon URL'), findsOneWidget);
+    expect(find.text('Daemon token env'), findsOneWidget);
   });
 
   testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
@@ -605,6 +607,14 @@ void main() {
       find.byKey(const Key('memory-api-key-env-field')),
       'OLLAMA_API_KEY',
     );
+    await tester.enterText(
+      find.byKey(const Key('memory-daemon-url-field')),
+      'http://127.0.0.1:43129',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-daemon-token-env-field')),
+      'IANVS_MEMORY_TOKEN',
+    );
 
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pump();
@@ -618,5 +628,7 @@ void main() {
     expect(savedConfig?.memory.extractor.model, 'gpt-5-mini');
     expect(savedConfig?.memory.llm.baseUrl, 'http://127.0.0.1:11434/v1');
     expect(savedConfig?.memory.llm.apiKeyEnv, 'OLLAMA_API_KEY');
+    expect(savedConfig?.memory.daemonBaseUrl, 'http://127.0.0.1:43129');
+    expect(savedConfig?.memory.daemonTokenEnv, 'IANVS_MEMORY_TOKEN');
   });
 }

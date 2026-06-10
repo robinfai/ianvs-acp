@@ -279,15 +279,19 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     final client = MemoryApiClient(baseUrl: baseUrl, token: token);
     return AcpMemoryMiddleware(
-      search: (prompt) {
+      search: (context) {
+        final cwd = context.cwd?.trim().isNotEmpty == true
+            ? context.cwd!.trim()
+            : _cwd;
         return client.searchContext(
           MemorySearchRequest(
-            query: prompt,
+            query: context.prompt,
             scope: MemoryScopeData(
               userId: _memoryUserId(),
-              workspaceId: _cwd,
-              repoId: _cwd,
+              workspaceId: cwd,
+              repoId: cwd,
               agentId: config.agentName,
+              sessionId: context.sessionId,
             ),
           ),
         );

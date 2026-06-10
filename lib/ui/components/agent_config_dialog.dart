@@ -89,6 +89,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       TextEditingController(text: widget.memory.extractor.agent);
   late final TextEditingController _memoryExtractorModelController =
       TextEditingController(text: widget.memory.extractor.model);
+  late final TextEditingController _memoryDaemonBaseUrlController =
+      TextEditingController(text: widget.memory.daemonBaseUrl ?? '');
+  late final TextEditingController _memoryDaemonTokenEnvController =
+      TextEditingController(text: widget.memory.daemonTokenEnv);
   late final TextEditingController _memoryLlmBaseUrlController =
       TextEditingController(text: widget.memory.llm.baseUrl);
   late final TextEditingController _memoryApiKeyEnvController =
@@ -112,6 +116,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _memoryEmbeddingModelController.dispose();
     _memoryExtractorAgentController.dispose();
     _memoryExtractorModelController.dispose();
+    _memoryDaemonBaseUrlController.dispose();
+    _memoryDaemonTokenEnvController.dispose();
     _memoryLlmBaseUrlController.dispose();
     _memoryApiKeyEnvController.dispose();
     super.dispose();
@@ -503,6 +509,20 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           ),
           const SizedBox(height: 8),
           _DialogTextField(
+            key: const Key('memory-daemon-url-field'),
+            controller: _memoryDaemonBaseUrlController,
+            label: 'Memory daemon URL',
+            icon: Icons.dns_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-daemon-token-env-field'),
+            controller: _memoryDaemonTokenEnvController,
+            label: 'Daemon token env',
+            icon: Icons.key_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
             key: const Key('memory-llm-base-url-field'),
             controller: _memoryLlmBaseUrlController,
             label: 'OpenAI-compatible base URL',
@@ -539,8 +559,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     return MemoryConfig(
       enabled: _memoryEnabled,
       autoStartDaemon: widget.memory.autoStartDaemon,
-      daemonBaseUrl: widget.memory.daemonBaseUrl,
-      daemonTokenEnv: widget.memory.daemonTokenEnv,
+      daemonBaseUrl: _trimmedOrNull(_memoryDaemonBaseUrlController.text),
+      daemonTokenEnv:
+          _trimmedOrNull(_memoryDaemonTokenEnvController.text) ??
+          const MemoryConfig().daemonTokenEnv,
       dataDir: widget.memory.dataDir,
       embedding: MemoryEmbeddingConfig(
         provider: widget.memory.embedding.provider,

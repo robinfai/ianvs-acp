@@ -356,7 +356,11 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return;
 
-    final prepared = await memoryMiddleware?.preparePrompt(prompt);
+    final prepared = await memoryMiddleware?.preparePrompt(
+      prompt,
+      sessionId: session.id,
+      cwd: session.cwd,
+    );
     final agentPrompt = prepared?.prompt ?? prompt;
     final memoryContext = prepared?.memoryContext;
 

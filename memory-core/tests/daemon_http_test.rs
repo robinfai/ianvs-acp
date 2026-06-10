@@ -450,6 +450,147 @@ async fn search_returns_active_memory_and_skips_deleted() {
     assert_eq!(search["items"][0]["id"], active["id"]);
 }
 
+#[tokio::test]
+async fn search_does_not_return_other_session_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "session_summary",
+            "scope": "session",
+            "text": "Investigated the release blocker in session alpha.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-alpha"
+            }
+        }))
+        .send()
+        .await
+        .expect("create session memory");
+
+    let search = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": "release blocker",
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-beta"
+            },
+            "limit": 10
+        }))
+        .send()
+        .await
+        .expect("search")
+        .json::<serde_json::Value>()
+        .await
+        .expect("search json");
+
+    assert!(search["items"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn search_finds_old_relevant_memory_beyond_recent_window() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let relevant = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Use the basalt release checklist for cutover.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create relevant")
+        .json::<serde_json::Value>()
+        .await
+        .expect("relevant json");
+
+    for index in 0..201 {
+        client
+            .post(format!("{}/v1/memory", state.base_url))
+            .bearer_auth("test-token")
+            .json(&serde_json::json!({
+                "kind": "user_preference",
+                "scope": "repo",
+                "text": format!("Irrelevant dense UI preference {index}."),
+                "scopeData": {
+                    "userId": "local-user",
+                    "workspaceId": "workspace-1",
+                    "repoId": "repo-1",
+                    "agentId": "agent-1",
+                    "sessionId": "session-1"
+                }
+            }))
+            .send()
+            .await
+            .expect("create irrelevant");
+    }
+
+    let audit_pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("audit db");
+    sqlx::query("update memory_items set updated_at = 1 where id = ?")
+        .bind(relevant["id"].as_str().unwrap())
+        .execute(&audit_pool)
+        .await
+        .expect("age relevant");
+    sqlx::query("update memory_items set updated_at = 2 where id != ?")
+        .bind(relevant["id"].as_str().unwrap())
+        .execute(&audit_pool)
+        .await
+        .expect("freshen irrelevant");
+
+    let search = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": "basalt checklist",
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "limit": 10
+        }))
+        .send()
+        .await
+        .expect("search")
+        .json::<serde_json::Value>()
+        .await
+        .expect("search json");
+
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    assert_eq!(search["items"][0]["id"], relevant["id"]);
+}
+
 #[test]
 fn formatter_uses_background_context_wording() {
     let formatted = memory_core::memory::formatter::format_context(&[

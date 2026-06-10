@@ -27,18 +27,20 @@ search/list/remember bridge, Flutter config, prompt middleware, Memory
 Review/Explorer UI, and sidecar extraction prompt are implemented behind
 local-first settings. Memory now defaults off in the app and prompt injection is
 only installed when `memory.daemon_base_url` plus a token env are configured.
-Long-term write and destructive UI actions still need the real review/clear
-backend callbacks before they become clickable.
+Agent Configuration can edit those daemon fields, and daemon search timeouts are
+non-fatal. Long-term write and destructive UI actions still need the real
+review/clear backend callbacks before they become clickable.
 
 Automated acceptance:
 
 - `cargo test --manifest-path memory-core/Cargo.toml` verifies the daemon
   schema, manual CRUD, manual secret redaction, candidate review, query-aware
-  search behavior, search formatting, embedding provider paths, daemon API
-  routes, and MCP stdio tool listing/calls.
+  scope-filtered search behavior including session isolation and older relevant
+  matches, search formatting, embedding provider paths, daemon API routes, and
+  MCP stdio tool listing/calls.
 - `test/memory` verifies Flutter memory config, daemon client behavior, prompt
-  context formatting, daemon HTTP search context building, prompt middleware,
-  and ACP sidecar extraction.
+  context formatting, daemon HTTP search context building and timeout handling,
+  prompt middleware, and ACP sidecar extraction.
 - `test/config/acp_client_config_test.dart` verifies persisted memory config
   parsing with the rest of the user settings.
 - `test/state/chat_controller_test.dart` verifies prompt sending keeps working
@@ -48,7 +50,8 @@ Automated acceptance:
   surfaces and keep actions disabled until callbacks are provided.
 - `test/ui/agent_config_dialog_test.dart` and
   `test/ui/acp_client_app_test.dart` verify memory settings are visible,
-  editable, saved, and passed from app config into the shell.
+  editable, saved, and passed from app config into the shell, including daemon
+  endpoint/token env fields.
 
 Manual decision:
 

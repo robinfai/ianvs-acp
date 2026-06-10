@@ -24,12 +24,13 @@ kinds: user preferences, project rules, architecture decisions, and session
 summaries. Memory is local-first and defaults off in the Flutter app until a
 daemon endpoint is configured.
 
-To enable prompt injection, set `memory.enabled=true`, provide
+To enable prompt injection, turn on Memory in Agent Configuration, provide
 `memory.daemon_base_url`, and expose the bearer token through
 `memory.daemon_token_env` (default: `MEMORY_DAEMON_TOKEN`). When those are
-present, Flutter queries the daemon search API and adds returned memories as
-background context before the normal ACP `session/prompt`; the daemon does not
-proxy ACP traffic.
+present, Flutter queries the daemon search API with the active workspace, agent,
+and session scope, then adds returned memories as background context before the
+normal ACP `session/prompt`; the daemon does not proxy ACP traffic. Daemon
+search failures or timeouts are non-fatal and leave the original prompt intact.
 
 The daemon owns storage, search, audit history, local embedding support,
 OpenAI-compatible embedding calls, and its stdio MCP bridge. The current MCP
@@ -92,6 +93,20 @@ Saved shape example for automation and debugging:
         "tool_name": "review_permission",
         "model": "gpt-5-mini"
       }
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "daemon_base_url": "http://127.0.0.1:43129",
+    "daemon_token_env": "MEMORY_DAEMON_TOKEN",
+    "embedding": {
+      "provider": "fastembed-local",
+      "model": "intfloat/multilingual-e5-small"
+    },
+    "extractor": {
+      "provider": "acp-sidecar",
+      "agent": "Codex",
+      "model": "gpt-5-mini"
     }
   }
 }

@@ -1,5 +1,14 @@
-typedef MemorySearchCallback = Future<String?> Function(String prompt);
+typedef MemorySearchCallback =
+    Future<String?> Function(MemoryPromptContext context);
 typedef MemoryDisposeCallback = void Function();
+
+class MemoryPromptContext {
+  const MemoryPromptContext({required this.prompt, this.sessionId, this.cwd});
+
+  final String prompt;
+  final String? sessionId;
+  final String? cwd;
+}
 
 class PreparedPrompt {
   const PreparedPrompt({required this.prompt, this.memoryContext, this.error});
@@ -15,9 +24,15 @@ class AcpMemoryMiddleware {
   final MemorySearchCallback search;
   final MemoryDisposeCallback? onDispose;
 
-  Future<PreparedPrompt> preparePrompt(String prompt) async {
+  Future<PreparedPrompt> preparePrompt(
+    String prompt, {
+    String? sessionId,
+    String? cwd,
+  }) async {
     try {
-      final memoryContext = await search(prompt);
+      final memoryContext = await search(
+        MemoryPromptContext(prompt: prompt, sessionId: sessionId, cwd: cwd),
+      );
       return PreparedPrompt(prompt: prompt, memoryContext: memoryContext);
     } catch (error) {
       return PreparedPrompt(prompt: prompt, error: error.toString());
