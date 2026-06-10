@@ -12,6 +12,7 @@ import '../acp/acp_session_usage.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
+import '../memory/acp_memory_middleware.dart';
 import 'connection_state.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
@@ -47,6 +48,7 @@ class ChatController extends ChangeNotifier {
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
+    this.memoryMiddleware,
     this.permissionReviewer,
   }) : assert(permissionHistoryLimit > 0),
        permissionTrustRules = List.unmodifiable(permissionTrustRules) {
@@ -65,6 +67,7 @@ class ChatController extends ChangeNotifier {
   final String agentName;
   final int permissionHistoryLimit;
   final List<AcpPermissionTrustRule> permissionTrustRules;
+  final AcpMemoryMiddleware? memoryMiddleware;
   final AcpPermissionReviewer? permissionReviewer;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
@@ -353,6 +356,10 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return;
 
+    final prepared = await memoryMiddleware?.preparePrompt(prompt);
+    final agentPrompt = prepared?.prompt ?? prompt;
+    final memoryContext = prepared?.memoryContext;
+
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
         .toList();
@@ -376,7 +383,8 @@ class ChatController extends ChangeNotifier {
       _promptSubscription = client
           .sendPrompt(
             sessionId: session.id,
-            prompt: prompt,
+            prompt: agentPrompt,
+            memoryContext: memoryContext,
             attachments: attachments,
           )
           .listen(

@@ -585,6 +585,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     final client = _requireClient();
@@ -593,6 +594,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       final content = await _promptContentBlocks(
         prompt,
         attachments,
+        memoryContext: memoryContext,
         workspaceRoot: _cwdBySession[sessionId],
       );
       await for (final event in _sendRawPrompt(
@@ -893,9 +895,17 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<List<Map<String, dynamic>>> _promptContentBlocks(
     String prompt,
     List<PromptAttachment> attachments, {
+    String? memoryContext,
     String? workspaceRoot,
   }) async {
     final blocks = <Map<String, dynamic>>[];
+    final trimmedMemoryContext = memoryContext?.trim();
+    if (trimmedMemoryContext != null && trimmedMemoryContext.isNotEmpty) {
+      blocks.add(<String, dynamic>{
+        'type': 'text',
+        'text': trimmedMemoryContext,
+      });
+    }
     if (prompt.trim().isNotEmpty) {
       blocks.add(<String, dynamic>{'type': 'text', 'text': prompt});
     }

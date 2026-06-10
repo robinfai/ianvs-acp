@@ -8,6 +8,7 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/memory/acp_memory_middleware.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 
@@ -181,6 +182,23 @@ void main() {
       ]);
     },
   );
+
+  test('send prompt passes memory context to agent client', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      memoryMiddleware: const AcpMemoryMiddleware(search: _staticMemoryContext),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.sendPrompt('Hi');
+    await pumpEventQueue();
+
+    expect(fake.lastPrompt, 'Hi');
+    expect(fake.lastMemoryContext, contains('<agent_memory_context>'));
+    expect(fake.lastMemoryContext, contains('[project_rule]'));
+  });
 
   test('created sessions keep selected agent name', () async {
     final controller = ChatController(
@@ -2289,6 +2307,10 @@ void main() {
   });
 }
 
+Future<String?> _staticMemoryContext(String prompt) async {
+  return '<agent_memory_context>\n1. [project_rule] Do not use nc/netcat.\n</agent_memory_context>';
+}
+
 class _AuthRequiredError {
   const _AuthRequiredError();
 
@@ -2396,6 +2418,7 @@ class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     yield AgentEvent(
@@ -2468,6 +2491,7 @@ class _ToolCallChunkAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     yield AgentEvent(
@@ -2516,6 +2540,7 @@ class _AliasToolCallChunkAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     yield AgentEvent(
@@ -2552,6 +2577,7 @@ class _SnakeCaseToolCallChunkAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     yield AgentEvent(
@@ -2588,6 +2614,7 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('prompt setup failed');
@@ -2644,6 +2671,7 @@ class _OpenErrorEventAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     late final StreamController<AgentEvent> controller;

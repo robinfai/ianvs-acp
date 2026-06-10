@@ -277,6 +277,7 @@ class _ReviewFakeAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     lastPrompt = prompt;

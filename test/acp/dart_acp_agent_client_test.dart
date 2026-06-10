@@ -372,6 +372,25 @@ Future<void> main() async {
     expect(resourceBlock['resource'], containsPair('mimeType', 'text/plain'));
   });
 
+  test('prepends memory context before prompt content', () async {
+    final promptParams = await _capturePromptParamsForAttachment(
+      includeAttachment: false,
+      prompt: 'Please answer.',
+      memoryContext:
+          ' <agent_memory_context>\n1. [project_rule] Use curl.\n</agent_memory_context> ',
+    );
+    final prompt = promptParams['prompt'] as List<dynamic>;
+
+    expect(prompt, [
+      {
+        'type': 'text',
+        'text':
+            '<agent_memory_context>\n1. [project_rule] Use curl.\n</agent_memory_context>',
+      },
+      {'type': 'text', 'text': 'Please answer.'},
+    ]);
+  });
+
   test(
     'falls back to resource links without embedded context support',
     () async {
@@ -4422,6 +4441,7 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
   bool audio = false,
   bool includeAttachment = true,
   String prompt = 'Please inspect this.',
+  String? memoryContext,
   String attachmentName = 'attachment.txt',
   List<int>? attachmentBytes,
   String? mimeType,
@@ -4496,6 +4516,7 @@ Future<void> main() async {
         .sendPrompt(
           sessionId: session.id,
           prompt: prompt,
+          memoryContext: memoryContext,
           attachments: includeAttachment
               ? [
                   PromptAttachment.fromPath(
