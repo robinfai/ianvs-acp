@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../../config/acp_client_config.dart';
+import '../../memory/memory_config.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef AcpConfigSaveCallback =
@@ -15,6 +16,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
+    this.memory = const MemoryConfig(),
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
@@ -24,6 +26,7 @@ class AgentConfigDialog extends StatefulWidget {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final MemoryConfig memory;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -79,6 +82,17 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   .inMilliseconds
                   .toString(),
       );
+  late bool _memoryEnabled = widget.memory.enabled;
+  late final TextEditingController _memoryEmbeddingModelController =
+      TextEditingController(text: widget.memory.embedding.model);
+  late final TextEditingController _memoryExtractorAgentController =
+      TextEditingController(text: widget.memory.extractor.agent);
+  late final TextEditingController _memoryExtractorModelController =
+      TextEditingController(text: widget.memory.extractor.model);
+  late final TextEditingController _memoryLlmBaseUrlController =
+      TextEditingController(text: widget.memory.llm.baseUrl);
+  late final TextEditingController _memoryApiKeyEnvController =
+      TextEditingController(text: widget.memory.llm.apiKeyEnv);
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -95,6 +109,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _reviewToolNameController.dispose();
     _reviewModelController.dispose();
     _reviewTimeoutController.dispose();
+    _memoryEmbeddingModelController.dispose();
+    _memoryExtractorAgentController.dispose();
+    _memoryExtractorModelController.dispose();
+    _memoryLlmBaseUrlController.dispose();
+    _memoryApiKeyEnvController.dispose();
     super.dispose();
   }
 
@@ -149,6 +168,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   ),
                 const SizedBox(height: 10),
                 _buildClientProvidersSection(),
+                const SizedBox(height: 10),
+                _buildMemorySection(),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -239,6 +260,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           mcpServers: _mcpServers,
           additionalDirectories: List.unmodifiable(_additionalDirectories),
           clientProviders: _clientProvidersConfig(),
+          memory: _memoryConfig(),
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
         ),
@@ -444,6 +466,60 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
   }
 
+  Widget _buildMemorySection() {
+    return _Panel(
+      icon: Icons.memory_rounded,
+      title: 'Memory',
+      accent: AppColors.primaryDark,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ConfigSwitch(
+            key: const Key('memory-enabled-switch'),
+            title: 'Enable memory',
+            value: _memoryEnabled,
+            onChanged: (value) => setState(() => _memoryEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-embedding-model-field'),
+            controller: _memoryEmbeddingModelController,
+            label: 'Embedding model',
+            icon: Icons.hub_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-agent-field'),
+            controller: _memoryExtractorAgentController,
+            label: 'Extractor agent',
+            icon: Icons.account_tree_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-model-field'),
+            controller: _memoryExtractorModelController,
+            label: 'Extractor model',
+            icon: Icons.psychology_alt_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-llm-base-url-field'),
+            controller: _memoryLlmBaseUrlController,
+            label: 'OpenAI-compatible base URL',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-api-key-env-field'),
+            controller: _memoryApiKeyEnvController,
+            label: 'API key env',
+            icon: Icons.key_rounded,
+          ),
+        ],
+      ),
+    );
+  }
+
   AcpClientProviderConfig _clientProvidersConfig() {
     return AcpClientProviderConfig(
       filesystem: AcpFilesystemProviderConfig(
@@ -456,6 +532,44 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         trustRules: List.unmodifiable(_trustRules),
         reviewAgent: _reviewAgentConfig(),
       ),
+    );
+  }
+
+  MemoryConfig _memoryConfig() {
+    return MemoryConfig(
+      enabled: _memoryEnabled,
+      autoStartDaemon: widget.memory.autoStartDaemon,
+      dataDir: widget.memory.dataDir,
+      embedding: MemoryEmbeddingConfig(
+        provider: widget.memory.embedding.provider,
+        model:
+            _trimmedOrNull(_memoryEmbeddingModelController.text) ??
+            const MemoryEmbeddingConfig().model,
+        variant: widget.memory.embedding.variant,
+        dimension: widget.memory.embedding.dimension,
+        downloadPolicy: widget.memory.embedding.downloadPolicy,
+      ),
+      extractor: MemoryExtractorConfig(
+        provider: widget.memory.extractor.provider,
+        agent:
+            _trimmedOrNull(_memoryExtractorAgentController.text) ??
+            const MemoryExtractorConfig().agent,
+        model:
+            _trimmedOrNull(_memoryExtractorModelController.text) ??
+            const MemoryExtractorConfig().model,
+        fallbackProvider: widget.memory.extractor.fallbackProvider,
+      ),
+      llm: MemoryLlmConfig(
+        provider: widget.memory.llm.provider,
+        baseUrl:
+            _trimmedOrNull(_memoryLlmBaseUrlController.text) ??
+            const MemoryLlmConfig().baseUrl,
+        model: widget.memory.llm.model,
+        apiKeyEnv:
+            _trimmedOrNull(_memoryApiKeyEnvController.text) ??
+            const MemoryLlmConfig().apiKeyEnv,
+      ),
+      review: widget.memory.review,
     );
   }
 

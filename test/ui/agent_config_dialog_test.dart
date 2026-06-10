@@ -101,7 +101,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Kimi Code Dev'), findsOneWidget);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
     expect(find.text('Remote HTTP Agent'), findsOneWidget);
     expect(find.text('Additional Directories'), findsOneWidget);
     expect(find.text('/Users/example/workspace-a'), findsOneWidget);
@@ -525,5 +525,96 @@ void main() {
       savedConfig?.clientProviders.permissions.reviewAgent.timeout,
       const Duration(milliseconds: 5000),
     );
+  });
+
+  testWidgets('AgentConfigDialog shows memory configuration controls', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (_) => const AgentConfigDialog(
+                agentServers: [],
+                activeAgentName: 'Codex',
+                configPath: '/tmp/settings.json',
+              ),
+            ),
+            child: const Text('Open'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Memory'), findsOneWidget);
+    expect(find.text('Enable memory'), findsOneWidget);
+    expect(find.text('Extractor agent'), findsOneWidget);
+    expect(find.text('Extractor model'), findsOneWidget);
+    expect(find.text('Embedding model'), findsOneWidget);
+  });
+
+  testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.text('Memory'));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('memory-embedding-model-field')),
+      'intfloat/multilingual-e5-small',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-extractor-agent-field')),
+      'Codex',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-extractor-model-field')),
+      'gpt-5-mini',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-llm-base-url-field')),
+      'http://127.0.0.1:11434/v1',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-api-key-env-field')),
+      'OLLAMA_API_KEY',
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.memory.enabled, isTrue);
+    expect(
+      savedConfig?.memory.embedding.model,
+      'intfloat/multilingual-e5-small',
+    );
+    expect(savedConfig?.memory.extractor.agent, 'Codex');
+    expect(savedConfig?.memory.extractor.model, 'gpt-5-mini');
+    expect(savedConfig?.memory.llm.baseUrl, 'http://127.0.0.1:11434/v1');
+    expect(savedConfig?.memory.llm.apiKeyEnv, 'OLLAMA_API_KEY');
   });
 }
