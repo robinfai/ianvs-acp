@@ -1,6 +1,6 @@
 use clap::Parser;
 use memory_core::app_state::AppState;
-use memory_core::config::{Cli, DaemonConfig, Mode};
+use memory_core::config::{Cli, DaemonConfig, EmbeddingConfig, Mode};
 use memory_core::db::sqlite;
 use memory_core::http;
 use std::io::Write;
@@ -31,8 +31,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let pool = sqlite::open(&config.data_dir).await?;
+    let embedding = EmbeddingConfig::from_env();
     let state = AppState {
         db: pool,
+        embedder: memory_core::embedding::from_config(&embedding)?,
+        embedding_dimension: embedding.dimension,
         token: config.token,
         version: "0.1.0",
     };

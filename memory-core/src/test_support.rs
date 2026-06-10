@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::db::sqlite;
+use crate::embedding::mock_embedder::MockEmbedder;
 use crate::http;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 pub struct TestDaemon {
@@ -12,6 +14,8 @@ pub async fn spawn_test_daemon(data_dir: &Path, token: &str) -> anyhow::Result<T
     let pool = sqlite::open(data_dir).await?;
     let state = AppState {
         db: pool,
+        embedder: Arc::new(MockEmbedder),
+        embedding_dimension: 8,
         token: token.to_string(),
         version: "0.1.0",
     };

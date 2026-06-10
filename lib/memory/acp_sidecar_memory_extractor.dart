@@ -1,4 +1,8 @@
 import '../acp/acp_agent_client.dart';
+import '../acp/agent_event.dart';
+import 'memory_extraction.dart';
+
+export 'memory_extraction.dart' show ExtractedMemoryCandidate;
 
 typedef AcpSidecarClientFactory = AcpAgentClient Function();
 
@@ -11,24 +15,53 @@ class AcpSidecarMemoryExtractor {
     required String userPrompt,
     required String assistantAnswer,
   }) {
-    return '''
-You are a memory extraction engine for a local AI agent client.
-Extract only durable, useful memories from the current turn.
-Allowed memory kinds:
-1. user_preference
-2. project_rule
-3. architecture_decision
-4. session_summary
-Do not extract secrets, temporary one-off instructions, unverified assumptions, long code snippets, or error logs.
-Return JSON only.
-Schema:
-{"candidates":[{"kind":"user_preference | project_rule | architecture_decision | session_summary","scope":"global | workspace | repo | session","text":"Clear, concise memory text.","confidence":0.0,"reason":"Short reason why this is durable and useful."}]}
+    return buildMemoryExtractionPrompt(
+      userPrompt: userPrompt,
+      assistantAnswer: assistantAnswer,
+    );
+  }
 
-User prompt:
-$userPrompt
-
-Assistant answer:
-$assistantAnswer
-''';
+  Future<List<ExtractedMemoryCandidate>> extract({
+    required String userPrompt,
+    required String assistantAnswer,
+    required String cwd,
+    String? model,
+  }) async {
+    final client = clientFactory();
+    try {
+      await client.connect();
+      final session = await client.createSession(cwd: cwd);
+      final trimmedModel = model?.trim();
+      if (trimmedModel != null && trimmedModel.isNotEmpty) {
+        try {
+          await client.setConfigOption(
+            sessionId: session.id,
+            configId: 'model',
+            value: trimmedModel,
+          );
+        } catch (_) {
+          // Some ACP agents do not expose model as a config option.
+        }
+      }
+      final buffer = StringBuffer();
+      await for (final event in client.sendPrompt(
+        sessionId: session.id,
+        prompt: buildExtractionPrompt(
+          userPrompt: userPrompt,
+          assistantAnswer: assistantAnswer,
+        ),
+      )) {
+        if (event.type == AgentEventType.error) {
+          throw StateError(event.text);
+        }
+        if (event.type == AgentEventType.agentTextDelta ||
+            event.type == AgentEventType.agentTextDone) {
+          buffer.write(event.text);
+        }
+      }
+      return parseExtractedMemoryCandidates(buffer.toString());
+    } finally {
+      await client.dispose();
+    }
   }
 }

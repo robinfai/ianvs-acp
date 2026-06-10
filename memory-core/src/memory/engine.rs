@@ -1,9 +1,13 @@
+use crate::embedding::embedder::Embedder;
 use crate::memory::types::{MemoryKind, MemoryScope};
 use crate::memory::{ranker, redactor};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 use uuid::Uuid;
+
+const MIN_VECTOR_ONLY_SCORE: f32 = 0.5;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -351,9 +355,14 @@ pub async fn approve_candidate(
 pub async fn search_memory(
     pool: &SqlitePool,
     request: SearchRequest,
+    embedder: &dyn Embedder,
+    embedding_dimension: usize,
 ) -> sqlx::Result<SearchResponse> {
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
     let tokens = query_tokens(&request.query);
+    let vector_scores = vector_scores_for_query(pool, embedder, embedding_dimension, &request)
+        .await
+        .unwrap_or_default();
     let rows = sqlx::query(
         "select id, kind, scope, text, source_session_id, source_turn_id, repo_id, workspace_id, agent_id, session_id, updated_at
          from memory_items
@@ -384,15 +393,22 @@ pub async fn search_memory(
     .await?;
     let mut scored = Vec::new();
     for row in rows {
+        let id: String = row.get("id");
         let text: String = row.get("text");
         let lexical_score = lexical_score(&text, &tokens);
-        if lexical_score <= 0.0 {
+        let vector_score = vector_scores.get(&id).copied();
+        if lexical_score <= 0.0
+            && vector_score
+                .map(|score| score < MIN_VECTOR_ONLY_SCORE)
+                .unwrap_or(true)
+        {
             continue;
         }
         let kind: String = row.get("kind");
         let scope: String = row.get("scope");
+        let relevance_score = vector_score.unwrap_or(0.0).max(lexical_score);
         let score = ranker::final_score(
-            lexical_score,
+            relevance_score,
             scope_score(
                 &scope,
                 row.get::<Option<String>, _>("repo_id").as_deref(),
@@ -411,7 +427,7 @@ pub async fn search_memory(
             ranker::kind_priority(&kind),
             row.get::<i64, _>("updated_at"),
             SearchItem {
-                id: row.get("id"),
+                id,
                 kind,
                 scope,
                 text,
@@ -438,6 +454,37 @@ pub async fn search_memory(
             .map(|(_, _, _, item)| item)
             .collect(),
     })
+}
+
+async fn vector_scores_for_query(
+    pool: &SqlitePool,
+    embedder: &dyn Embedder,
+    embedding_dimension: usize,
+    request: &SearchRequest,
+) -> anyhow::Result<HashMap<String, f32>> {
+    let query_embedding = embedder.embed(&request.query).await?;
+    if query_embedding.len() != embedding_dimension {
+        return Err(anyhow::anyhow!(
+            "query embedding dimension mismatch: got {}, expected {embedding_dimension}",
+            query_embedding.len()
+        ));
+    }
+    let hits = crate::vector::sqlite_vec_store::search(
+        pool,
+        &query_embedding,
+        request.limit.unwrap_or(12).clamp(1, 50) * 5,
+    )
+    .await?;
+    let mut scores = HashMap::new();
+    for hit in hits {
+        let distance = hit.distance.max(0.0);
+        let score = 1.0 / (1.0 + distance);
+        scores
+            .entry(hit.memory_id)
+            .and_modify(|existing: &mut f32| *existing = existing.max(score))
+            .or_insert(score);
+    }
+    Ok(scores)
 }
 
 async fn get_memory(pool: &SqlitePool, id: &str) -> sqlx::Result<MemoryResponse> {

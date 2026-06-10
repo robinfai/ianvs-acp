@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/memory/memory_api_client.dart';
+import 'package:ianvs_acp/memory/memory_extraction.dart';
 
 void main() {
   test('MemorySearchRequest serializes scope with camelCase keys', () {
@@ -88,6 +89,55 @@ void main() {
       );
     },
   );
+
+  test('MemoryApiClient posts extracted candidates with scope', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+
+    final received = <String, Object?>{};
+    unawaited(
+      server.first.then((request) async {
+        received['path'] = request.uri.path;
+        received['authorization'] = request.headers.value(
+          HttpHeaders.authorizationHeader,
+        );
+        received['body'] = jsonDecode(await utf8.decodeStream(request));
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'candidates': []}));
+        await request.response.close();
+      }),
+    );
+
+    final client = MemoryApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:${server.port}'),
+      token: 'secret-token',
+    );
+    addTearDown(client.close);
+
+    await client.createCandidates(
+      scope: const MemoryScopeData(
+        userId: 'local-user',
+        workspaceId: 'workspace-1',
+        repoId: 'repo-1',
+        agentId: 'agent-1',
+        sessionId: 'session-1',
+      ),
+      candidates: const [
+        ExtractedMemoryCandidate(
+          kind: 'project_rule',
+          scope: 'repo',
+          text: 'Never use nc/netcat.',
+          confidence: 0.9,
+        ),
+      ],
+    );
+
+    expect(received['path'], '/v1/memory/extract-candidates');
+    expect(received['authorization'], 'Bearer secret-token');
+    final body = received['body'] as Map;
+    expect(body['scope'], containsPair('sessionId', 'session-1'));
+    expect(body['preExtractedCandidates'], isA<List>());
+  });
 
   test('MemoryApiClient times out stalled daemon search', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

@@ -225,6 +225,33 @@ void main() {
   });
 
   test(
+    'send prompt extracts memory candidates after assistant answer',
+    () async {
+      final fake = FakeAgentClient();
+      MemoryTurnContext? extractedContext;
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        memoryMiddleware: AcpMemoryMiddleware(
+          search: (_) async => null,
+          extract: (context) async {
+            extractedContext = context;
+          },
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.sendPrompt('Remember the release rule');
+      await pumpEventQueue(times: 4);
+
+      expect(extractedContext?.userPrompt, 'Remember the release rule');
+      expect(extractedContext?.assistantAnswer, contains('Hello, I am Codex.'));
+      expect(extractedContext?.sessionId, 'fake-session-1');
+      expect(extractedContext?.cwd, '/workspace');
+    },
+  );
+
+  test(
     'ChatController keeps prompt working when memory middleware fails',
     () async {
       final fake = FakeAgentClient();

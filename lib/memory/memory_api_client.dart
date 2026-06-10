@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'memory_context_builder.dart';
+import 'memory_extraction.dart';
 
 class MemoryScopeData {
   const MemoryScopeData({
@@ -103,6 +104,19 @@ class MemoryApiClient {
           .map((item) => MemoryContextItem(kind: item.kind, text: item.text))
           .toList(growable: false),
     );
+  }
+
+  Future<void> createCandidates({
+    required MemoryScopeData scope,
+    required List<ExtractedMemoryCandidate> candidates,
+  }) async {
+    if (candidates.isEmpty) return;
+    await _postJson('/v1/memory/extract-candidates', <String, Object?>{
+      'scope': scope.toJson(),
+      'preExtractedCandidates': candidates
+          .map((candidate) => candidate.toJson())
+          .toList(growable: false),
+    });
   }
 
   void close({bool force = false}) => _httpClient.close(force: force);

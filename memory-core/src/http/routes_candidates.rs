@@ -20,5 +20,7 @@ pub async fn approve(
     Path(id): Path<String>,
     Json(request): Json<ApproveCandidateRequest>,
 ) -> Result<Json<MemoryResponse>, ApiError> {
-    Ok(Json(approve_candidate(&state.db, &id, request).await?))
+    let item = approve_candidate(&state.db, &id, request).await?;
+    crate::http::routes_memory::best_effort_index(&state, &item).await;
+    Ok(Json(item))
 }

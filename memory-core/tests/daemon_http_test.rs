@@ -2,6 +2,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use std::{env, io::Read};
 
+use memory_core::embedding::embedder::Embedder;
+
 #[test]
 fn daemon_prints_ready_json_to_stdout() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -18,6 +20,8 @@ fn daemon_prints_ready_json_to_stdout() {
             temp.path().to_str().expect("utf8 path"),
         ])
         .env("MEMORY_DAEMON_TOKEN", "test-token")
+        .env("MEMORY_EMBEDDING_PROVIDER", "mock")
+        .env("MEMORY_EMBEDDING_DIMENSION", "8")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -669,6 +673,29 @@ async fn sqlite_vec_is_registered_and_rebuild_vector_index_endpoint_exists() {
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
         .await
         .expect("daemon");
+    let client = reqwest::Client::new();
+    let memory = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Use semantic vector search for durable memory recall.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create memory")
+        .json::<serde_json::Value>()
+        .await
+        .expect("memory json");
+
     let pool = memory_core::db::sqlite::open(temp.path())
         .await
         .expect("db");
@@ -678,11 +705,103 @@ async fn sqlite_vec_is_registered_and_rebuild_vector_index_endpoint_exists() {
         .expect("sqlite vec version");
     assert!(vec_version.starts_with('v'));
 
-    let response = reqwest::Client::new()
+    let response = client
         .post(format!("{}/v1/memory/rebuild-vector-index", state.base_url))
         .bearer_auth("test-token")
         .send()
         .await
         .expect("rebuild");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let indexed_memory_id: String =
+        sqlx::query_scalar("select memory_id from vec_memory_items limit 1")
+            .fetch_one(&pool)
+            .await
+            .expect("indexed memory id");
+    assert_eq!(indexed_memory_id, memory["id"].as_str().unwrap());
+}
+
+#[tokio::test]
+async fn search_uses_vector_index_when_lexical_query_does_not_match() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+    let memory = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "architecture_decision",
+            "scope": "repo",
+            "text": "Basalt release gates live in the platform handbook.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create memory")
+        .json::<serde_json::Value>()
+        .await
+        .expect("memory json");
+
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    memory_core::vector::sqlite_vec_store::ensure_vec_table(&pool, 8)
+        .await
+        .expect("vec table");
+    let query = "needleabsent";
+    let vector = memory_core::embedding::mock_embedder::MockEmbedder
+        .embed(query)
+        .await
+        .expect("query embedding");
+    sqlx::query(
+        "insert into vec_memory_items
+         (embedding, memory_id, user_id, workspace_id, repo_id, agent_id, session_id, kind, scope, status, text)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(serde_json::to_string(&vector).expect("vector json"))
+    .bind(memory["id"].as_str().unwrap())
+    .bind("local-user")
+    .bind("workspace-1")
+    .bind("repo-1")
+    .bind("agent-1")
+    .bind("session-1")
+    .bind("architecture_decision")
+    .bind("repo")
+    .bind("active")
+    .bind(memory["text"].as_str().unwrap())
+    .execute(&pool)
+    .await
+    .expect("insert vector");
+
+    let search = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": query,
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "limit": 10
+        }))
+        .send()
+        .await
+        .expect("search")
+        .json::<serde_json::Value>()
+        .await
+        .expect("search json");
+
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    assert_eq!(search["items"][0]["id"], memory["id"]);
 }

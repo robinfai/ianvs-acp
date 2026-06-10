@@ -67,3 +67,20 @@ impl Default for EmbeddingConfig {
         }
     }
 }
+
+impl EmbeddingConfig {
+    pub fn from_env() -> Self {
+        let default = Self::default();
+        Self {
+            provider: std::env::var("MEMORY_EMBEDDING_PROVIDER").unwrap_or(default.provider),
+            model: std::env::var("MEMORY_EMBEDDING_MODEL").unwrap_or(default.model),
+            variant: std::env::var("MEMORY_EMBEDDING_VARIANT").unwrap_or(default.variant),
+            dimension: std::env::var("MEMORY_EMBEDDING_DIMENSION")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(default.dimension),
+            download_policy: std::env::var("MEMORY_EMBEDDING_DOWNLOAD_POLICY")
+                .unwrap_or(default.download_policy),
+        }
+    }
+}

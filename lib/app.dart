@@ -11,7 +11,9 @@ import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
 import 'memory/acp_memory_middleware.dart';
+import 'memory/acp_sidecar_memory_extractor.dart';
 import 'memory/memory_api_client.dart';
+import 'memory/openai_compatible_memory_extractor.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
@@ -296,7 +298,65 @@ class _AcpClientAppState extends State<AcpClientApp> {
           ),
         );
       },
+      extract: (context) async {
+        final cwd = context.cwd?.trim().isNotEmpty == true
+            ? context.cwd!.trim()
+            : _cwd;
+        final candidates = await _extractMemoryCandidates(config, context, cwd);
+        await client.createCandidates(
+          scope: MemoryScopeData(
+            userId: _memoryUserId(),
+            workspaceId: cwd,
+            repoId: cwd,
+            agentId: config.agentName,
+            sessionId: context.sessionId,
+          ),
+          candidates: candidates,
+        );
+      },
       onDispose: () => client.close(),
+    );
+  }
+
+  Future<List<ExtractedMemoryCandidate>> _extractMemoryCandidates(
+    AcpClientConfig config,
+    MemoryTurnContext context,
+    String cwd,
+  ) async {
+    final memory = config.memory;
+    final provider = memory.extractor.provider.trim();
+    if (provider == 'openai-compatible' || provider == 'llm') {
+      final apiKeyEnv = memory.llm.apiKeyEnv.trim();
+      final apiKey = apiKeyEnv.isEmpty
+          ? null
+          : Platform.environment[apiKeyEnv]?.trim();
+      final extractor = OpenAiCompatibleMemoryExtractor(
+        baseUrl: memory.llm.baseUrl,
+        model: memory.llm.model,
+        apiKey: apiKey,
+      );
+      try {
+        return await extractor.extract(
+          userPrompt: context.userPrompt,
+          assistantAnswer: context.assistantAnswer,
+        );
+      } finally {
+        extractor.close();
+      }
+    }
+
+    final agentName = memory.extractor.agent.trim().isEmpty
+        ? config.agentName
+        : memory.extractor.agent.trim();
+    final sidecarConfig = _configForAgent(config, agentName) ?? config;
+    final extractor = AcpSidecarMemoryExtractor(
+      clientFactory: () => _agentClient(sidecarConfig),
+    );
+    return extractor.extract(
+      userPrompt: context.userPrompt,
+      assistantAnswer: context.assistantAnswer,
+      cwd: cwd,
+      model: memory.extractor.model,
     );
   }
 

@@ -22,7 +22,9 @@ pub async fn create(
     State(state): State<AppState>,
     Json(request): Json<CreateMemoryRequest>,
 ) -> Result<Json<MemoryResponse>, ApiError> {
-    Ok(Json(create_manual_memory(&state.db, request).await?))
+    let item = create_manual_memory(&state.db, request).await?;
+    best_effort_index(&state, &item).await;
+    Ok(Json(item))
 }
 
 pub async fn list(
@@ -45,7 +47,9 @@ pub async fn patch(
     Path(id): Path<String>,
     Json(request): Json<PatchMemoryRequest>,
 ) -> Result<Json<MemoryResponse>, ApiError> {
-    Ok(Json(patch_memory(&state.db, &id, request).await?))
+    let item = patch_memory(&state.db, &id, request).await?;
+    best_effort_index(&state, &item).await;
+    Ok(Json(item))
 }
 
 pub async fn delete(
@@ -53,6 +57,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     soft_delete_memory(&state.db, &id).await?;
+    if let Err(error) = crate::vector::sqlite_vec_store::delete(&state.db, &id).await {
+        tracing::warn!(%error, memory_id = %id, "failed to delete memory vector");
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -60,7 +67,15 @@ pub async fn search(
     State(state): State<AppState>,
     Json(request): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
-    Ok(Json(search_memory(&state.db, request).await?))
+    Ok(Json(
+        search_memory(
+            &state.db,
+            request,
+            state.embedder.as_ref(),
+            state.embedding_dimension,
+        )
+        .await?,
+    ))
 }
 
 pub async fn format_context(Json(items): Json<Vec<(String, String)>>) -> Json<serde_json::Value> {
@@ -76,6 +91,43 @@ pub async fn format_context(Json(items): Json<Vec<(String, String)>>) -> Json<se
 pub async fn rebuild_vector_index(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::vector::sqlite_vec_store::rebuild(&state.db, 384).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    let indexed = crate::vector::sqlite_vec_store::rebuild(
+        &state.db,
+        state.embedder.as_ref(),
+        state.embedding_dimension,
+    )
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "indexed": indexed })))
+}
+
+pub async fn best_effort_index(state: &AppState, item: &MemoryResponse) {
+    let memory = crate::vector::sqlite_vec_store::IndexedMemory {
+        id: item.id.clone(),
+        user_id: item.user_id.clone(),
+        workspace_id: item.workspace_id.clone(),
+        repo_id: item.repo_id.clone(),
+        agent_id: item.agent_id.clone(),
+        session_id: item.session_id.clone(),
+        kind: serde_json::to_value(item.kind)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| "unknown".to_string()),
+        scope: item.scope.clone(),
+        status: item.status.clone(),
+        text: item.text.clone(),
+    };
+    if let Err(error) = crate::vector::sqlite_vec_store::upsert(
+        &state.db,
+        state.embedder.as_ref(),
+        state.embedding_dimension,
+        &memory,
+    )
+    .await
+    {
+        tracing::warn!(
+            %error,
+            memory_id = %item.id,
+            "failed to update memory vector index"
+        );
+    }
 }

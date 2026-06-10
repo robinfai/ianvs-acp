@@ -1,5 +1,7 @@
 typedef MemorySearchCallback =
     Future<String?> Function(MemoryPromptContext context);
+typedef MemoryExtractCallback =
+    Future<void> Function(MemoryTurnContext context);
 typedef MemoryDisposeCallback = void Function();
 
 class MemoryPromptContext {
@@ -18,10 +20,29 @@ class PreparedPrompt {
   final String? error;
 }
 
+class MemoryTurnContext {
+  const MemoryTurnContext({
+    required this.userPrompt,
+    required this.assistantAnswer,
+    this.sessionId,
+    this.cwd,
+  });
+
+  final String userPrompt;
+  final String assistantAnswer;
+  final String? sessionId;
+  final String? cwd;
+}
+
 class AcpMemoryMiddleware {
-  const AcpMemoryMiddleware({required this.search, this.onDispose});
+  const AcpMemoryMiddleware({
+    required this.search,
+    this.extract,
+    this.onDispose,
+  });
 
   final MemorySearchCallback search;
+  final MemoryExtractCallback? extract;
   final MemoryDisposeCallback? onDispose;
 
   Future<PreparedPrompt> preparePrompt(
@@ -36,6 +57,14 @@ class AcpMemoryMiddleware {
       return PreparedPrompt(prompt: prompt, memoryContext: memoryContext);
     } catch (error) {
       return PreparedPrompt(prompt: prompt, error: error.toString());
+    }
+  }
+
+  Future<void> extractTurn(MemoryTurnContext context) async {
+    try {
+      await extract?.call(context);
+    } catch (_) {
+      // Memory extraction is best-effort and must not affect the main turn.
     }
   }
 

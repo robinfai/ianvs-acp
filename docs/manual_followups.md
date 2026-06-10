@@ -20,28 +20,31 @@ today, plus the manual decision or validation still needed before implementation
 
 ### local-memory-engine
 
-Status: real local daemon validation and UX policy refinement needed.
+Status: real local daemon validation, extraction-quality validation, and UX
+policy refinement needed.
 
 Non-blocking because: the Rust daemon, storage/search/review APIs, callable MCP
 search/list/remember bridge, Flutter config, prompt middleware, Memory
-Review/Explorer UI, and sidecar extraction prompt are implemented behind
-local-first settings. Memory now defaults off in the app and prompt injection is
-only installed when `memory.daemon_base_url` plus a token env are configured.
-Agent Configuration can edit those daemon fields, and daemon search timeouts are
-non-fatal. Long-term write and destructive UI actions still need the real
-review/clear backend callbacks before they become clickable.
+Review/Explorer UI, ACP sidecar extraction, OpenAI-compatible LLM extraction,
+and pending-candidate posting are implemented behind local-first settings.
+Memory now defaults off in the app and prompt injection/extraction are only
+installed when `memory.daemon_base_url` plus a token env are configured. Agent
+Configuration can edit those daemon fields, and daemon search/extraction
+timeouts are non-fatal. Long-term write and destructive UI actions still need
+the real review/clear backend callbacks before they become clickable.
 
 Automated acceptance:
 
 - `cargo test --manifest-path memory-core/Cargo.toml` verifies the daemon
-  schema, manual CRUD, manual secret redaction, candidate review, query-aware
-  scope-filtered search behavior including session isolation, same-session-id
-  isolation across agents, and older relevant matches, search formatting,
-  embedding provider paths, daemon API routes, and MCP stdio tool
-  listing/calls.
-- `test/memory` verifies Flutter memory config, daemon client behavior, prompt
-  context formatting, daemon HTTP search context building and timeout handling,
-  prompt middleware, and ACP sidecar extraction.
+  schema, manual CRUD, manual secret redaction, candidate review, hybrid
+  vector/keyword scope-filtered search behavior including session isolation,
+  same-session-id isolation across agents, and older relevant matches, search
+  formatting, embedding provider paths, vector rebuild/index rows, daemon API
+  routes, and MCP stdio tool listing/calls.
+- `test/memory` verifies Flutter memory config, daemon client search and
+  candidate-post behavior, prompt context formatting, daemon HTTP search
+  context building and timeout handling, prompt middleware, ACP sidecar
+  extraction, and OpenAI-compatible LLM extraction.
 - `test/config/acp_client_config_test.dart` verifies persisted memory config
   parsing with the rest of the user settings.
 - `test/state/chat_controller_test.dart` verifies prompt sending keeps working
@@ -57,8 +60,8 @@ Automated acceptance:
 Manual decision:
 
 - Validate a real macOS app session with the local `memory-core` daemon and a
-  real ACP sidecar agent, including extraction quality, approval flow, prompt
-  injection, and search relevance.
+  real ACP sidecar or OpenAI-compatible LLM extractor, including extraction
+  quality, approval flow, prompt injection, and search relevance.
 - Decide final product policy for daemon auto-start/bundling, data directory
   visibility, clear-data UX, retention/audit wording, and whether memory should
   stay opt-in for all agents or auto-enable only for trusted local agents.

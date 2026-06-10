@@ -169,6 +169,11 @@ class ChatController extends ChangeNotifier {
   StreamSubscription<AgentEvent>? _promptSubscription;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   DateTime? _lastPromptStartedAt;
+  String? _pendingMemoryUserPrompt;
+  StringBuffer? _pendingMemoryAssistantAnswer;
+  String? _pendingMemorySessionId;
+  String? _pendingMemoryCwd;
+  bool _pendingMemoryHadError = false;
   Duration? lastLatency;
   int _sessionSettingsLoadSerial = 0;
   int? _activeSessionSettingsLoadId;
@@ -380,6 +385,11 @@ class ChatController extends ChangeNotifier {
     status = ConnectionStatus.streaming;
     lastError = null;
     _lastPromptStartedAt = DateTime.now();
+    _pendingMemoryUserPrompt = prompt;
+    _pendingMemoryAssistantAnswer = StringBuffer();
+    _pendingMemorySessionId = session.id;
+    _pendingMemoryCwd = session.cwd;
+    _pendingMemoryHadError = false;
     _notifyListeners();
 
     try {
@@ -392,8 +402,12 @@ class ChatController extends ChangeNotifier {
             attachments: attachments,
           )
           .listen(
-            _handleAgentEvent,
+            (event) {
+              _recordMemoryExtractionEvent(event);
+              _handleAgentEvent(event);
+            },
             onError: (Object error, StackTrace stackTrace) {
+              _pendingMemoryHadError = true;
               _handleAgentEvent(
                 AgentEvent(
                   type: AgentEventType.error,
@@ -408,6 +422,7 @@ class ChatController extends ChangeNotifier {
       _handleAgentEvent(
         AgentEvent(type: AgentEventType.error, text: _messageForError(error)),
       );
+      _pendingMemoryHadError = true;
       _finishStreaming();
     }
   }
@@ -423,6 +438,7 @@ class ChatController extends ChangeNotifier {
     } finally {
       await _promptSubscription?.cancel();
       _promptSubscription = null;
+      _clearPendingMemoryExtraction();
       _finishStreaming();
     }
     if (cancelError != null) {
@@ -765,6 +781,7 @@ class ChatController extends ChangeNotifier {
       case AgentEventType.toolCall:
         _appendToolCall(event);
       case AgentEventType.error:
+        _pendingMemoryHadError = true;
         final message = _messageForAgentError(event);
         lastError = message;
         messages.add(ChatMessage(role: ChatMessageRole.error, text: message));
@@ -775,6 +792,13 @@ class ChatController extends ChangeNotifier {
     }
     if (notify) {
       _notifyListeners();
+    }
+  }
+
+  void _recordMemoryExtractionEvent(AgentEvent event) {
+    if (event.type == AgentEventType.agentTextDelta ||
+        event.type == AgentEventType.agentTextDone) {
+      _pendingMemoryAssistantAnswer?.write(event.text);
     }
   }
 
@@ -1424,7 +1448,40 @@ class ChatController extends ChangeNotifier {
     if (startedAt != null) {
       lastLatency = DateTime.now().difference(startedAt);
     }
+    final extractionContext = _takePendingMemoryExtraction();
+    if (extractionContext != null) {
+      unawaited(memoryMiddleware?.extractTurn(extractionContext));
+    }
     _notifyListeners();
+  }
+
+  MemoryTurnContext? _takePendingMemoryExtraction() {
+    final userPrompt = _pendingMemoryUserPrompt;
+    final assistantAnswer = _pendingMemoryAssistantAnswer?.toString();
+    final sessionId = _pendingMemorySessionId;
+    final cwd = _pendingMemoryCwd;
+    final hadError = _pendingMemoryHadError;
+    _clearPendingMemoryExtraction();
+    if (hadError ||
+        userPrompt == null ||
+        assistantAnswer == null ||
+        assistantAnswer.trim().isEmpty) {
+      return null;
+    }
+    return MemoryTurnContext(
+      userPrompt: userPrompt,
+      assistantAnswer: assistantAnswer,
+      sessionId: sessionId,
+      cwd: cwd,
+    );
+  }
+
+  void _clearPendingMemoryExtraction() {
+    _pendingMemoryUserPrompt = null;
+    _pendingMemoryAssistantAnswer = null;
+    _pendingMemorySessionId = null;
+    _pendingMemoryCwd = null;
+    _pendingMemoryHadError = false;
   }
 
   void _setError(Object error) {

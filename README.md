@@ -34,11 +34,16 @@ as background context before the normal ACP `session/prompt`; the daemon does
 not proxy ACP traffic. Daemon search failures or timeouts are non-fatal and
 leave the original prompt intact.
 
-The daemon owns storage, search, audit history, local embedding support,
-OpenAI-compatible embedding calls, and its stdio MCP bridge. The current MCP
-bridge exposes callable `memory.search`, `memory.list`, and `memory.remember`
-tools. Review and explorer UI surfaces are present, with destructive or
-approval actions disabled until a backend callback is connected.
+The daemon owns storage, hybrid vector/keyword search, audit history, local
+embedding support, OpenAI-compatible embedding calls, and its stdio MCP bridge.
+Memory writes and explicit rebuilds update the sqlite-vec index; search uses
+vector hits when available and falls back to keyword matching if indexing is
+unavailable. After prompt turns, Flutter can extract pending memory candidates
+through either an ACP sidecar agent or an OpenAI-compatible LLM endpoint and
+post those candidates to the daemon for review. The current MCP bridge exposes
+callable `memory.search`, `memory.list`, and `memory.remember` tools. Review
+and explorer UI surfaces are present, with destructive or approval actions
+disabled until a backend callback is connected.
 
 ## Configuration
 
@@ -109,6 +114,12 @@ Saved shape example for automation and debugging:
       "provider": "acp-sidecar",
       "agent": "Codex",
       "model": "gpt-5-mini"
+    },
+    "llm": {
+      "provider": "openai-compatible",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen2.5:7b",
+      "api_key_env": "OLLAMA_API_KEY"
     }
   }
 }
@@ -145,6 +156,13 @@ Supported environment overrides:
 - `ACP_WORKSPACE_CWD`
 - `IANVS_ACP_WORKSPACE_CWD`
 - `XDG_CONFIG_HOME`
+- `MEMORY_EMBEDDING_PROVIDER`
+- `MEMORY_EMBEDDING_MODEL`
+- `MEMORY_EMBEDDING_VARIANT`
+- `MEMORY_EMBEDDING_DIMENSION`
+- `MEMORY_EMBEDDING_DOWNLOAD_POLICY`
+- `MEMORY_EMBEDDING_BASE_URL`
+- `MEMORY_EMBEDDING_API_KEY_ENV`
 
 ## Development
 
