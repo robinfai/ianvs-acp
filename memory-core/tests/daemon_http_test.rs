@@ -107,3 +107,106 @@ fn memory_kind_uses_snake_case_wire_names() {
         "\"session_summary\""
     );
 }
+
+#[tokio::test]
+async fn manual_memory_crud_writes_audit_and_soft_deletes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let created = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Do not use nc/netcat in this repo.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create")
+        .json::<serde_json::Value>()
+        .await
+        .expect("create json");
+
+    let id = created["id"].as_str().expect("id");
+    assert_eq!(created["kind"], "project_rule");
+    assert_eq!(created["status"], "active");
+
+    let listed = client
+        .get(format!(
+            "{}/v1/memory?userId=local-user&repoId=repo-1",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("list")
+        .json::<serde_json::Value>()
+        .await
+        .expect("list json");
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+
+    let patched = client
+        .patch(format!("{}/v1/memory/{id}", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({ "text": "Never use nc/netcat in this repo." }))
+        .send()
+        .await
+        .expect("patch")
+        .json::<serde_json::Value>()
+        .await
+        .expect("patch json");
+    assert_eq!(patched["text"], "Never use nc/netcat in this repo.");
+
+    let deleted = client
+        .delete(format!("{}/v1/memory/{id}", state.base_url))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(deleted.status(), reqwest::StatusCode::OK);
+
+    let listed_after_delete = client
+        .get(format!(
+            "{}/v1/memory?userId=local-user&repoId=repo-1&status=active",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("list after delete")
+        .json::<serde_json::Value>()
+        .await
+        .expect("list json");
+    assert_eq!(listed_after_delete["items"].as_array().unwrap().len(), 0);
+
+    let audit_pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("audit db");
+    let audit_count: i64 = sqlx::query_scalar(
+        "select count(*) from memory_audit_log
+         where memory_id = ? and action in ('memory.create', 'memory.update', 'memory.delete')",
+    )
+    .bind(id)
+    .fetch_one(&audit_pool)
+    .await
+    .expect("audit count");
+    assert_eq!(audit_count, 3);
+
+    let stored_status: String = sqlx::query_scalar("select status from memory_items where id = ?")
+        .bind(id)
+        .fetch_one(&audit_pool)
+        .await
+        .expect("stored status");
+    assert_eq!(stored_status, "deleted");
+}

@@ -2,17 +2,25 @@ use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, patch};
 use axum::Router;
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
 
 pub mod routes_health;
+pub mod routes_memory;
 
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/memory", get(|| async { "[]" }))
+        .route(
+            "/v1/memory",
+            get(routes_memory::list).post(routes_memory::create),
+        )
+        .route(
+            "/v1/memory/{id}",
+            patch(routes_memory::patch).delete(routes_memory::delete),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
 
     Router::new()
