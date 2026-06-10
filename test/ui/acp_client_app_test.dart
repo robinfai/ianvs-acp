@@ -6,6 +6,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 
 void main() {
@@ -152,6 +153,44 @@ void main() {
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Codex'), findsWidgets);
+  });
+
+  testWidgets('AcpClientApp passes memory config into agent configuration', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: const AcpClientConfig(
+          configPath: '/tmp/ianvs-acp-test-settings.json',
+          memory: MemoryConfig(
+            enabled: false,
+            embedding: MemoryEmbeddingConfig(model: 'custom-embedding'),
+            extractor: MemoryExtractorConfig(
+              agent: 'Memory Agent',
+              model: 'memory-model',
+            ),
+          ),
+        ),
+        discoverAgentServers: (_) async => const <AgentServerConfig>[],
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent Configuration'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    final memorySwitch = tester.widget<SwitchListTile>(
+      find.descendant(
+        of: find.byKey(const Key('memory-enabled-switch')),
+        matching: find.byType(SwitchListTile),
+      ),
+    );
+    expect(memorySwitch.value, isFalse);
+    expect(find.text('custom-embedding'), findsOneWidget);
+    expect(find.text('Memory Agent'), findsOneWidget);
+    expect(find.text('memory-model'), findsOneWidget);
   });
 
   testWidgets('AcpClientApp toolbar new session opens agent picker', (

@@ -10,6 +10,7 @@ import 'acp/acp_permission_reviewer.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'memory/acp_memory_middleware.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
@@ -193,6 +194,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         mcpServers: _config.mcpServers,
         additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
+        memory: _config.memory,
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: widget.startupError,
@@ -254,6 +256,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentName: config.agentName,
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
+      memoryMiddleware: config.memory.enabled
+          ? AcpMemoryMiddleware(search: _emptyMemorySearch)
+          : null,
     );
   }
 
@@ -560,6 +565,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'memory': config.memory.toJson(),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
     });
@@ -574,6 +580,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'memory': config.memory.toJson(),
     });
   }
 
@@ -621,3 +628,5 @@ class _AcpClientAppState extends State<AcpClientApp> {
     };
   }
 }
+
+Future<String?> _emptyMemorySearch(String prompt) async => null;

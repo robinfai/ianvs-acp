@@ -200,6 +200,27 @@ void main() {
     expect(fake.lastMemoryContext, contains('[project_rule]'));
   });
 
+  test(
+    'ChatController keeps prompt working when memory middleware fails',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/tmp',
+        memoryMiddleware: AcpMemoryMiddleware(
+          search: (_) async => throw StateError('down'),
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('hello');
+      await pumpEventQueue();
+
+      expect(fake.lastPrompt, 'hello');
+    },
+  );
+
   test('created sessions keep selected agent name', () async {
     final controller = ChatController(
       client: FakeAgentClient(),

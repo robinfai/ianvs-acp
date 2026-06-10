@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
+import '../../memory/memory_config.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../components/agent_config_dialog.dart';
@@ -32,6 +33,7 @@ class AppShell extends StatelessWidget {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
+    this.memory = const MemoryConfig(),
     this.configPath,
     this.defaultAgentName,
     this.startupError,
@@ -49,6 +51,7 @@ class AppShell extends StatelessWidget {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final MemoryConfig memory;
   final String? configPath;
   final String? defaultAgentName;
   final String? startupError;
@@ -347,6 +350,7 @@ class AppShell extends StatelessWidget {
           mcpServers: mcpServers,
           additionalDirectories: additionalDirectories,
           clientProviders: clientProviders,
+          memory: memory,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
