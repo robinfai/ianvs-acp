@@ -13,6 +13,7 @@ import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/extension_request_dialog.dart';
+import '../components/memory_explorer_page.dart';
 import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
@@ -89,6 +90,7 @@ class AppShell extends StatelessWidget {
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
                   onShowProtocolCoverage: () =>
                       _showProtocolFeatureReviewDialog(context),
+                  onShowMemoryExplorer: () => _showMemoryExplorerPage(context),
                   onAuthenticate: controller.canAuthenticate
                       ? () => unawaited(_showAuthenticateDialog(context))
                       : null,
@@ -246,6 +248,12 @@ class AppShell extends StatelessWidget {
       builder: (context) {
         return PermissionHistoryDialog(entries: controller.permissionHistory);
       },
+    );
+  }
+
+  Future<void> _showMemoryExplorerPage(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (context) => const MemoryExplorerPage()),
     );
   }
 

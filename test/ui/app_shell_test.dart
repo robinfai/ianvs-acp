@@ -14,6 +14,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
+    VoidCallback? onShowMemoryExplorer,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
@@ -29,6 +30,7 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onShowProtocolCoverage: onShowProtocolCoverage,
+          onShowMemoryExplorer: onShowMemoryExplorer,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
           onExtensionRequest: onExtensionRequest,
@@ -50,6 +52,7 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
+    VoidCallback? onShowMemoryExplorer,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onExtensionRequest,
@@ -68,6 +71,7 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onShowProtocolCoverage: onShowProtocolCoverage,
+        onShowMemoryExplorer: onShowMemoryExplorer,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
         onExtensionRequest: onExtensionRequest,
@@ -283,6 +287,26 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(openedProtocolCoverage, isTrue);
+  });
+
+  testWidgets('AgentToolbar exposes memory explorer', (tester) async {
+    var openedMemoryExplorer = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.connected,
+      onShowMemoryExplorer: () {
+        openedMemoryExplorer = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Memory'), findsOneWidget);
+
+    await tester.tap(find.text('Memory'));
+    await tester.pumpAndSettle();
+
+    expect(openedMemoryExplorer, isTrue);
   });
 
   testWidgets('AgentToolbar exposes extension requests when available', (
