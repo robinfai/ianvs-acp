@@ -210,3 +210,87 @@ async fn manual_memory_crud_writes_audit_and_soft_deletes() {
         .expect("stored status");
     assert_eq!(stored_status, "deleted");
 }
+
+#[test]
+fn redactor_masks_known_secret_patterns() {
+    let text = "api_key=sk-test password=hunter2 ghp_abcdef";
+    let redacted = memory_core::memory::redactor::redact(text);
+    assert!(!redacted.contains("sk-test"));
+    assert!(!redacted.contains("hunter2"));
+    assert!(!redacted.contains("ghp_abcdef"));
+    assert!(redacted.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn candidate_approve_writes_memory_and_reject_does_not() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let candidates = client
+        .post(format!("{}/v1/memory/extract-candidates", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "preExtractedCandidates": [
+                {
+                    "kind": "project_rule",
+                    "scope": "repo",
+                    "text": "Do not use nc/netcat in this repo.",
+                    "confidence": 0.95,
+                    "reason": "User explicitly gave a repo rule."
+                },
+                {
+                    "kind": "session_summary",
+                    "scope": "session",
+                    "text": "x",
+                    "confidence": 0.20,
+                    "reason": "Too weak."
+                }
+            ]
+        }))
+        .send()
+        .await
+        .expect("extract")
+        .json::<serde_json::Value>()
+        .await
+        .expect("extract json");
+    assert_eq!(candidates["candidates"].as_array().unwrap().len(), 1);
+    let candidate_id = candidates["candidates"][0]["id"].as_str().unwrap();
+
+    let approved = client
+        .post(format!(
+            "{}/v1/memory/candidates/{candidate_id}/approve",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Never use nc/netcat in this repo."
+        }))
+        .send()
+        .await
+        .expect("approve")
+        .json::<serde_json::Value>()
+        .await
+        .expect("approve json");
+    assert_eq!(approved["text"], "Never use nc/netcat in this repo.");
+
+    let audit_pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("audit db");
+    let rejected_count: i64 = sqlx::query_scalar("select count(*) from memory_items")
+        .fetch_one(&audit_pool)
+        .await
+        .expect("memory count");
+    assert_eq!(rejected_count, 1);
+}

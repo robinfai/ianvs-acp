@@ -2,12 +2,14 @@ use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, patch};
+use axum::routing::{get, patch, post};
 use axum::Router;
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
 
+pub mod routes_candidates;
+pub mod routes_change_requests;
 pub mod routes_health;
 pub mod routes_memory;
 
@@ -16,6 +18,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/memory",
             get(routes_memory::list).post(routes_memory::create),
+        )
+        .route(
+            "/v1/memory/extract-candidates",
+            post(routes_candidates::extract),
+        )
+        .route(
+            "/v1/memory/candidates/{id}/approve",
+            post(routes_candidates::approve),
+        )
+        .route(
+            "/v1/memory/change-requests",
+            get(routes_change_requests::list),
         )
         .route(
             "/v1/memory/{id}",

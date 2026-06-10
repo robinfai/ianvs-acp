@@ -45,6 +45,48 @@ pub struct ListMemoryResponse {
     pub items: Vec<MemoryResponse>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreExtractedCandidate {
+    pub kind: MemoryKind,
+    pub scope: String,
+    pub text: String,
+    pub confidence: Option<f32>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractCandidatesRequest {
+    pub scope: MemoryScope,
+    #[serde(default)]
+    pub pre_extracted_candidates: Vec<PreExtractedCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtractCandidatesResponse {
+    pub candidates: Vec<MemoryCandidateResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryCandidateResponse {
+    pub id: String,
+    pub kind: MemoryKind,
+    pub scope: String,
+    pub text: String,
+    pub confidence: Option<f32>,
+    pub reason: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApproveCandidateRequest {
+    pub kind: MemoryKind,
+    pub scope: String,
+    pub text: String,
+}
+
 pub async fn create_manual_memory(
     pool: &SqlitePool,
     request: CreateMemoryRequest,
@@ -172,6 +214,110 @@ pub async fn soft_delete_memory(pool: &SqlitePool, id: &str) -> sqlx::Result<()>
         serde_json::json!({"soft": true}),
     )
     .await
+}
+
+pub async fn create_candidates(
+    pool: &SqlitePool,
+    request: ExtractCandidatesRequest,
+) -> sqlx::Result<ExtractCandidatesResponse> {
+    let mut accepted = Vec::new();
+    let now = Utc::now().timestamp_millis();
+    for candidate in request.pre_extracted_candidates {
+        if !crate::memory::policy::accepts_candidate(&candidate.text, candidate.confidence) {
+            continue;
+        }
+
+        let id = format!("cand_{}", Uuid::new_v4());
+        let kind = kind_to_wire(candidate.kind);
+        sqlx::query(
+            "insert into memory_candidates
+            (id, user_id, workspace_id, repo_id, agent_id, session_id, kind, scope, text, reason, confidence, status, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        )
+        .bind(&id)
+        .bind(&request.scope.user_id)
+        .bind(&request.scope.workspace_id)
+        .bind(&request.scope.repo_id)
+        .bind(&request.scope.agent_id)
+        .bind(&request.scope.session_id)
+        .bind(kind)
+        .bind(&candidate.scope)
+        .bind(&candidate.text)
+        .bind(&candidate.reason)
+        .bind(candidate.confidence)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        write_audit(
+            pool,
+            "extractor",
+            "candidate.create",
+            None,
+            Some(&id),
+            None,
+            serde_json::json!({}),
+        )
+        .await?;
+        accepted.push(MemoryCandidateResponse {
+            id,
+            kind: candidate.kind,
+            scope: candidate.scope,
+            text: candidate.text,
+            confidence: candidate.confidence,
+            reason: candidate.reason,
+            status: "pending".to_string(),
+        });
+    }
+    Ok(ExtractCandidatesResponse {
+        candidates: accepted,
+    })
+}
+
+pub async fn approve_candidate(
+    pool: &SqlitePool,
+    candidate_id: &str,
+    request: ApproveCandidateRequest,
+) -> sqlx::Result<MemoryResponse> {
+    let row = sqlx::query(
+        "select user_id, workspace_id, repo_id, agent_id, session_id
+         from memory_candidates where id = ? and status = 'pending'",
+    )
+    .bind(candidate_id)
+    .fetch_one(pool)
+    .await?;
+    let scope_data = MemoryScope {
+        user_id: row.get("user_id"),
+        workspace_id: row.get("workspace_id"),
+        repo_id: row.get("repo_id"),
+        agent_id: row.get("agent_id"),
+        session_id: row.get("session_id"),
+    };
+    let item = create_manual_memory(
+        pool,
+        CreateMemoryRequest {
+            kind: request.kind,
+            scope: request.scope,
+            text: request.text,
+            scope_data,
+        },
+    )
+    .await?;
+    sqlx::query("update memory_candidates set status = 'approved', reviewed_at = ? where id = ?")
+        .bind(Utc::now().timestamp_millis())
+        .bind(candidate_id)
+        .execute(pool)
+        .await?;
+    write_audit(
+        pool,
+        "user",
+        "candidate.approve",
+        Some(&item.id),
+        Some(candidate_id),
+        None,
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(item)
 }
 
 async fn get_memory(pool: &SqlitePool, id: &str) -> sqlx::Result<MemoryResponse> {
