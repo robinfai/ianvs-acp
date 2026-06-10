@@ -15,7 +15,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.mode {
         Mode::Daemon => run_daemon(DaemonConfig::from_cli(&cli)?).await,
-        Mode::McpStdio => anyhow::bail!("mcp-stdio mode requires Task 7"),
+        Mode::McpStdio => {
+            let token = std::env::var("MEMORY_DAEMON_TOKEN")?;
+            let daemon_url = cli
+                .daemon_url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--daemon-url is required"))?;
+            memory_core::mcp::stdio_server::run(memory_core::mcp::daemon_client::DaemonClient::new(
+                daemon_url, token,
+            ))
+            .await
+        }
     }
 }
 
