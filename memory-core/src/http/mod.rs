@@ -29,6 +29,10 @@ pub fn router(state: AppState) -> Router {
             post(routes_memory::format_context),
         )
         .route(
+            "/v1/memory/rebuild-vector-index",
+            post(routes_memory::rebuild_vector_index),
+        )
+        .route(
             "/v1/memory/candidates/{id}/approve",
             post(routes_candidates::approve),
         )

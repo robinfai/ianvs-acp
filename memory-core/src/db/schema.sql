@@ -82,3 +82,8 @@ on memory_candidates(user_id, workspace_id, repo_id, status, created_at);
 
 create index if not exists idx_memory_change_requests_status
 on memory_change_requests(user_id, workspace_id, repo_id, status, created_at);
+
+create table if not exists vector_index_metadata (
+  key text primary key,
+  value text not null
+);

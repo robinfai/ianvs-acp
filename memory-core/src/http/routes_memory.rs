@@ -72,3 +72,10 @@ pub async fn format_context(Json(items): Json<Vec<(String, String)>>) -> Json<se
         "text": crate::memory::formatter::format_context(&borrowed)
     }))
 }
+
+pub async fn rebuild_vector_index(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::vector::sqlite_vec_store::rebuild(&state.db, 384).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}

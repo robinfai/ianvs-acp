@@ -390,3 +390,37 @@ fn formatter_uses_background_context_wording() {
     assert!(formatted.contains("current instruction wins"));
     assert!(formatted.contains("[project_rule] Do not use nc/netcat."));
 }
+
+#[test]
+fn embedding_config_defaults_to_multilingual_e5_small() {
+    let config = memory_core::config::EmbeddingConfig::default();
+    assert_eq!(config.provider, "fastembed-local");
+    assert_eq!(config.model, "intfloat/multilingual-e5-small");
+    assert_eq!(config.variant, "onnx-qint8");
+    assert_eq!(config.dimension, 384);
+    assert_eq!(config.download_policy, "lazy");
+}
+
+#[tokio::test]
+async fn sqlite_vec_is_registered_and_rebuild_vector_index_endpoint_exists() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let vec_version: String = sqlx::query_scalar("select vec_version()")
+        .fetch_one(&pool)
+        .await
+        .expect("sqlite vec version");
+    assert!(vec_version.starts_with('v'));
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/memory/rebuild-vector-index", state.base_url))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("rebuild");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+}

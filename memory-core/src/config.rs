@@ -46,3 +46,24 @@ impl DaemonConfig {
         })
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub model: String,
+    pub variant: String,
+    pub dimension: usize,
+    pub download_policy: String,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: "fastembed-local".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            variant: "onnx-qint8".to_string(),
+            dimension: 384,
+            download_policy: "lazy".to_string(),
+        }
+    }
+}
