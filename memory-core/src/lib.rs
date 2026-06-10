@@ -1,7 +1,9 @@
 pub mod app_state;
 pub mod config;
 pub mod db;
+pub mod embedding;
 pub mod error;
 pub mod http;
 pub mod memory;
 pub mod test_support;
+pub mod vector;

@@ -23,6 +23,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/memory/extract-candidates",
             post(routes_candidates::extract),
         )
+        .route("/v1/memory/search", post(routes_memory::search))
+        .route(
+            "/v1/memory/format-context",
+            post(routes_memory::format_context),
+        )
         .route(
             "/v1/memory/candidates/{id}/approve",
             post(routes_candidates::approve),

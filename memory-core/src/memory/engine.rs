@@ -87,6 +87,29 @@ pub struct ApproveCandidateRequest {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRequest {
+    pub query: String,
+    pub scope: MemoryScope,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchResponse {
+    pub items: Vec<SearchItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchItem {
+    pub id: String,
+    pub kind: String,
+    pub scope: String,
+    pub text: String,
+    pub score: f32,
+    pub metadata: serde_json::Value,
+}
+
 pub async fn create_manual_memory(
     pool: &SqlitePool,
     request: CreateMemoryRequest,
@@ -318,6 +341,44 @@ pub async fn approve_candidate(
     )
     .await?;
     Ok(item)
+}
+
+pub async fn search_memory(
+    pool: &SqlitePool,
+    request: SearchRequest,
+) -> sqlx::Result<SearchResponse> {
+    let limit = request.limit.unwrap_or(12).clamp(1, 50);
+    let rows = sqlx::query(
+        "select id, kind, scope, text, source_session_id, source_turn_id
+         from memory_items
+         where status = 'active'
+           and user_id = ?
+           and (repo_id = ? or workspace_id = ? or scope = 'global')
+         order by updated_at desc
+         limit ?",
+    )
+    .bind(&request.scope.user_id)
+    .bind(&request.scope.repo_id)
+    .bind(&request.scope.workspace_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(SearchResponse {
+        items: rows
+            .into_iter()
+            .map(|row| SearchItem {
+                id: row.get("id"),
+                kind: row.get("kind"),
+                scope: row.get("scope"),
+                text: row.get("text"),
+                score: 1.0,
+                metadata: serde_json::json!({
+                    "sourceSessionId": row.get::<Option<String>, _>("source_session_id"),
+                    "sourceTurnId": row.get::<Option<String>, _>("source_turn_id")
+                }),
+            })
+            .collect(),
+    })
 }
 
 async fn get_memory(pool: &SqlitePool, id: &str) -> sqlx::Result<MemoryResponse> {

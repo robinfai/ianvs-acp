@@ -5,8 +5,9 @@ use serde::Deserialize;
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::memory::engine::{
-    create_manual_memory, list_memory, patch_memory, soft_delete_memory, CreateMemoryRequest,
-    ListMemoryResponse, MemoryResponse, PatchMemoryRequest,
+    create_manual_memory, list_memory, patch_memory, search_memory, soft_delete_memory,
+    CreateMemoryRequest, ListMemoryResponse, MemoryResponse, PatchMemoryRequest, SearchRequest,
+    SearchResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -53,4 +54,21 @@ pub async fn delete(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     soft_delete_memory(&state.db, &id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn search(
+    State(state): State<AppState>,
+    Json(request): Json<SearchRequest>,
+) -> Result<Json<SearchResponse>, ApiError> {
+    Ok(Json(search_memory(&state.db, request).await?))
+}
+
+pub async fn format_context(Json(items): Json<Vec<(String, String)>>) -> Json<serde_json::Value> {
+    let borrowed = items
+        .iter()
+        .map(|(kind, text)| (kind.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({
+        "text": crate::memory::formatter::format_context(&borrowed)
+    }))
 }

@@ -294,3 +294,99 @@ async fn candidate_approve_writes_memory_and_reject_does_not() {
         .expect("memory count");
     assert_eq!(rejected_count, 1);
 }
+
+#[tokio::test]
+async fn search_returns_active_memory_and_skips_deleted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let active = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "architecture_decision",
+            "scope": "repo",
+            "text": "Flutter owns ACP runtime; Rust only owns memory.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let deleted = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Deleted rule should not appear.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    client
+        .delete(format!(
+            "{}/v1/memory/{}",
+            state.base_url,
+            deleted["id"].as_str().unwrap()
+        ))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap();
+
+    let search = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": "Who owns ACP runtime?",
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "limit": 10
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    assert_eq!(search["items"][0]["id"], active["id"]);
+}
+
+#[test]
+fn formatter_uses_background_context_wording() {
+    let formatted = memory_core::memory::formatter::format_context(&[
+        ("project_rule", "Do not use nc/netcat."),
+        ("architecture_decision", "Rust only owns memory."),
+    ]);
+    assert!(formatted.contains("<agent_memory_context>"));
+    assert!(formatted.contains("current instruction wins"));
+    assert!(formatted.contains("[project_rule] Do not use nc/netcat."));
+}
