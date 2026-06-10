@@ -34,6 +34,10 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local agent workspaces
+.worktrees/
+.superpowers/
+
 # Symbolication related
 app.*.symbols
 
