@@ -35,9 +35,10 @@ Automated acceptance:
 
 - `cargo test --manifest-path memory-core/Cargo.toml` verifies the daemon
   schema, manual CRUD, manual secret redaction, candidate review, query-aware
-  scope-filtered search behavior including session isolation and older relevant
-  matches, search formatting, embedding provider paths, daemon API routes, and
-  MCP stdio tool listing/calls.
+  scope-filtered search behavior including session isolation, same-session-id
+  isolation across agents, and older relevant matches, search formatting,
+  embedding provider paths, daemon API routes, and MCP stdio tool
+  listing/calls.
 - `test/memory` verifies Flutter memory config, daemon client behavior, prompt
   context formatting, daemon HTTP search context building and timeout handling,
   prompt middleware, and ACP sidecar extraction.

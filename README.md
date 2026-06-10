@@ -27,10 +27,12 @@ daemon endpoint is configured.
 To enable prompt injection, turn on Memory in Agent Configuration, provide
 `memory.daemon_base_url`, and expose the bearer token through
 `memory.daemon_token_env` (default: `MEMORY_DAEMON_TOKEN`). When those are
-present, Flutter queries the daemon search API with the active workspace, agent,
-and session scope, then adds returned memories as background context before the
-normal ACP `session/prompt`; the daemon does not proxy ACP traffic. Daemon
-search failures or timeouts are non-fatal and leave the original prompt intact.
+present, Flutter queries the daemon search API with the active workspace, repo,
+and session scope. Session-scoped lookup is also tied to the active agent, so
+same session ids from different agents do not mix. Returned memories are added
+as background context before the normal ACP `session/prompt`; the daemon does
+not proxy ACP traffic. Daemon search failures or timeouts are non-fatal and
+leave the original prompt intact.
 
 The daemon owns storage, search, audit history, local embedding support,
 OpenAI-compatible embedding calls, and its stdio MCP bridge. The current MCP

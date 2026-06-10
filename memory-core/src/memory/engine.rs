@@ -355,7 +355,7 @@ pub async fn search_memory(
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
     let tokens = query_tokens(&request.query);
     let rows = sqlx::query(
-        "select id, kind, scope, text, source_session_id, source_turn_id, repo_id, workspace_id, session_id, updated_at
+        "select id, kind, scope, text, source_session_id, source_turn_id, repo_id, workspace_id, agent_id, session_id, updated_at
          from memory_items
          where status = 'active'
            and user_id = ?
@@ -363,13 +363,22 @@ pub async fn search_memory(
              scope = 'global'
              or (scope = 'workspace' and workspace_id = ?)
              or (scope = 'repo' and repo_id = ?)
-             or (scope = 'session' and session_id = ?)
+             or (
+               scope = 'session'
+               and workspace_id is ?
+               and repo_id is ?
+               and agent_id is ?
+               and session_id is ?
+             )
            )
          order by updated_at desc",
     )
     .bind(&request.scope.user_id)
     .bind(&request.scope.workspace_id)
     .bind(&request.scope.repo_id)
+    .bind(&request.scope.workspace_id)
+    .bind(&request.scope.repo_id)
+    .bind(&request.scope.agent_id)
     .bind(&request.scope.session_id)
     .fetch_all(pool)
     .await?;
@@ -388,9 +397,11 @@ pub async fn search_memory(
                 &scope,
                 row.get::<Option<String>, _>("repo_id").as_deref(),
                 row.get::<Option<String>, _>("workspace_id").as_deref(),
+                row.get::<Option<String>, _>("agent_id").as_deref(),
                 row.get::<Option<String>, _>("session_id").as_deref(),
                 request.scope.repo_id.as_deref(),
                 request.scope.workspace_id.as_deref(),
+                request.scope.agent_id.as_deref(),
                 request.scope.session_id.as_deref(),
             ),
             1.0,
@@ -523,12 +534,20 @@ fn scope_score(
     scope: &str,
     item_repo_id: Option<&str>,
     item_workspace_id: Option<&str>,
+    item_agent_id: Option<&str>,
     item_session_id: Option<&str>,
     query_repo_id: Option<&str>,
     query_workspace_id: Option<&str>,
+    query_agent_id: Option<&str>,
     query_session_id: Option<&str>,
 ) -> f32 {
-    if scope == "session" && item_session_id.is_some() && item_session_id == query_session_id {
+    if scope == "session"
+        && item_session_id.is_some()
+        && item_workspace_id == query_workspace_id
+        && item_repo_id == query_repo_id
+        && item_agent_id == query_agent_id
+        && item_session_id == query_session_id
+    {
         return 1.0;
     }
     if item_repo_id.is_some() && item_repo_id == query_repo_id {

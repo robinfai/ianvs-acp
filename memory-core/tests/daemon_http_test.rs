@@ -502,6 +502,57 @@ async fn search_does_not_return_other_session_memory() {
 }
 
 #[tokio::test]
+async fn search_does_not_return_same_session_id_from_other_agent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "session_summary",
+            "scope": "session",
+            "text": "Debugged the vector replay timeout in shared session id.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-alpha",
+                "sessionId": "session-shared"
+            }
+        }))
+        .send()
+        .await
+        .expect("create session memory");
+
+    let search = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": "vector replay timeout",
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-beta",
+                "sessionId": "session-shared"
+            },
+            "limit": 10
+        }))
+        .send()
+        .await
+        .expect("search")
+        .json::<serde_json::Value>()
+        .await
+        .expect("search json");
+
+    assert!(search["items"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn search_finds_old_relevant_memory_beyond_recent_window() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
