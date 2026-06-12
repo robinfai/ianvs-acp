@@ -13,9 +13,9 @@ void main() {
                 id: 'cand-1',
                 kind: 'project_rule',
                 scope: 'repo',
-                text: 'Do not use nc/netcat.',
+                text: 'Use Riverpod providers for shared Flutter state.',
                 confidence: 0.95,
-                reason: 'User explicitly gave a rule.',
+                reason: 'User explicitly gave a project convention.',
               ),
             ],
           ),
@@ -24,7 +24,10 @@ void main() {
     );
 
     expect(find.text('Memory Review'), findsOneWidget);
-    expect(find.text('Do not use nc/netcat.'), findsOneWidget);
+    expect(
+      find.text('Use Riverpod providers for shared Flutter state.'),
+      findsOneWidget,
+    );
     expect(find.text('Approve'), findsOneWidget);
     expect(find.text('Edit'), findsOneWidget);
     expect(find.text('Reject'), findsOneWidget);
@@ -49,7 +52,7 @@ void main() {
                 id: 'cand-1',
                 kind: 'project_rule',
                 scope: 'repo',
-                text: 'Do not use nc/netcat.',
+                text: 'Use Riverpod providers for shared Flutter state.',
               ),
             ],
             onApprove: (candidate) => approved = candidate,

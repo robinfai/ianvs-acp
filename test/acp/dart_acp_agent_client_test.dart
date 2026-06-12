@@ -29,6 +29,74 @@ void main() {
     );
   });
 
+  test('loads dynamic MCP servers before session setup', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final sessionParamsFile = File('${tempDir.path}/session_params.json');
+    final sessionParamsPath = jsonEncode(sessionParamsFile.path);
+    final agentScript = File('${tempDir.path}/fake_mcp_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      await File($sessionParamsPath).writeAsString(jsonEncode(message['params']));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      mcpServers: const [
+        {'name': 'static-tools', 'command': '/usr/local/bin/static-tools'},
+      ],
+      dynamicMcpServers: () async => const [
+        {'name': 'memory-tools', 'command': '/usr/local/bin/memory-core'},
+      ],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      await client.createSession(cwd: '/workspace');
+
+      final sessionParams =
+          jsonDecode(await sessionParamsFile.readAsString())
+              as Map<String, dynamic>;
+      final forwardedServers = sessionParams['mcpServers'] as List<dynamic>;
+
+      expect(
+        forwardedServers.cast<Map<String, dynamic>>().map(
+          (server) => server['name'],
+        ),
+        ['static-tools', 'memory-tools'],
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('dispose closes permission request stream', () async {
     final client = DartAcpAgentClient(agentCommand: 'unused');
     var streamClosed = false;

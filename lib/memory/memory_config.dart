@@ -1,58 +1,43 @@
 class MemoryConfig {
   const MemoryConfig({
     this.enabled = false,
-    this.autoStartDaemon = false,
-    this.daemonBaseUrl,
-    this.daemonTokenEnv = 'MEMORY_DAEMON_TOKEN',
     this.dataDir,
     this.embedding = const MemoryEmbeddingConfig(),
     this.extractor = const MemoryExtractorConfig(),
     this.llm = const MemoryLlmConfig(),
     this.review = const MemoryReviewConfig(),
+    this.maintenance = const MemoryMaintenanceConfig(),
   });
 
   final bool enabled;
-  final bool autoStartDaemon;
-  final String? daemonBaseUrl;
-  final String daemonTokenEnv;
   final String? dataDir;
   final MemoryEmbeddingConfig embedding;
   final MemoryExtractorConfig extractor;
   final MemoryLlmConfig llm;
   final MemoryReviewConfig review;
+  final MemoryMaintenanceConfig maintenance;
 
   factory MemoryConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryConfig();
     return MemoryConfig(
       enabled: raw['enabled'] as bool? ?? false,
-      autoStartDaemon:
-          raw['auto_start_daemon'] as bool? ??
-          raw['autoStartDaemon'] as bool? ??
-          false,
-      daemonBaseUrl:
-          raw['daemon_base_url'] as String? ?? raw['daemonBaseUrl'] as String?,
-      daemonTokenEnv:
-          raw['daemon_token_env'] as String? ??
-          raw['daemonTokenEnv'] as String? ??
-          'MEMORY_DAEMON_TOKEN',
       dataDir: raw['data_dir'] as String? ?? raw['dataDir'] as String?,
       embedding: MemoryEmbeddingConfig.fromJson(raw['embedding']),
       extractor: MemoryExtractorConfig.fromJson(raw['extractor']),
       llm: MemoryLlmConfig.fromJson(raw['llm']),
       review: MemoryReviewConfig.fromJson(raw['review']),
+      maintenance: MemoryMaintenanceConfig.fromJson(raw['maintenance']),
     );
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
     'enabled': enabled,
-    'auto_start_daemon': autoStartDaemon,
-    if (daemonBaseUrl != null) 'daemon_base_url': daemonBaseUrl,
-    'daemon_token_env': daemonTokenEnv,
     if (dataDir != null) 'data_dir': dataDir,
     'embedding': embedding.toJson(),
     'extractor': extractor.toJson(),
     'llm': llm.toJson(),
     'review': review.toJson(),
+    'maintenance': maintenance.toJson(),
   };
 }
 
@@ -167,20 +152,24 @@ class MemoryLlmConfig {
 
 class MemoryReviewConfig {
   const MemoryReviewConfig({
-    this.autoOpen = 'high_confidence',
+    String? mode,
+    String? autoOpen,
     this.highConfidenceThreshold = 0.85,
-  });
+  }) : mode = mode ?? autoOpen ?? 'high_confidence_auto';
 
-  final String autoOpen;
+  final String mode;
   final double highConfidenceThreshold;
+
+  String get autoOpen => mode;
 
   factory MemoryReviewConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryReviewConfig();
     return MemoryReviewConfig(
-      autoOpen:
+      mode:
+          raw['mode'] as String? ??
           raw['auto_open'] as String? ??
           raw['autoOpen'] as String? ??
-          'high_confidence',
+          'high_confidence_auto',
       highConfidenceThreshold:
           (raw['high_confidence_threshold'] as num? ??
                   raw['highConfidenceThreshold'] as num? ??
@@ -190,7 +179,79 @@ class MemoryReviewConfig {
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'auto_open': autoOpen,
+    'mode': mode,
     'high_confidence_threshold': highConfidenceThreshold,
   };
+}
+
+class MemoryMaintenanceConfig {
+  const MemoryMaintenanceConfig({
+    this.enabled = true,
+    this.mode = 'high_confidence_auto',
+    this.costMode = 'low_cost',
+    this.highConfidenceThreshold = 0.90,
+    this.reviewThreshold = 0.75,
+    this.maxItemsPerBatch = 50,
+    this.manualOnlyActions = const ['delete', 'disable', 'expire'],
+  });
+
+  final bool enabled;
+  final String mode;
+  final String costMode;
+  final double highConfidenceThreshold;
+  final double reviewThreshold;
+  final int maxItemsPerBatch;
+  final List<String> manualOnlyActions;
+
+  factory MemoryMaintenanceConfig.fromJson(Object? raw) {
+    if (raw is! Map) return const MemoryMaintenanceConfig();
+    final manualOnlyActions =
+        raw['manual_only_actions'] ?? raw['manualOnlyActions'];
+    return MemoryMaintenanceConfig(
+      enabled: raw['enabled'] as bool? ?? true,
+      mode: raw['mode'] as String? ?? 'high_confidence_auto',
+      costMode:
+          raw['cost_mode'] as String? ??
+          raw['costMode'] as String? ??
+          'low_cost',
+      highConfidenceThreshold:
+          (raw['high_confidence_threshold'] as num? ??
+                  raw['highConfidenceThreshold'] as num? ??
+                  0.90)
+              .toDouble(),
+      reviewThreshold:
+          (raw['review_threshold'] as num? ??
+                  raw['reviewThreshold'] as num? ??
+                  0.75)
+              .toDouble(),
+      maxItemsPerBatch:
+          raw['max_items_per_batch'] as int? ??
+          raw['maxItemsPerBatch'] as int? ??
+          50,
+      manualOnlyActions: _maintenanceManualActions(manualOnlyActions),
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'enabled': enabled,
+    'mode': mode,
+    'cost_mode': costMode,
+    'high_confidence_threshold': highConfidenceThreshold,
+    'review_threshold': reviewThreshold,
+    'max_items_per_batch': maxItemsPerBatch,
+    'manual_only_actions': manualOnlyActions,
+  };
+}
+
+List<String> _maintenanceManualActions(Object? raw) {
+  final actions = <String>['delete', 'disable', 'expire'];
+  if (raw is List) {
+    for (final value in raw.whereType<String>()) {
+      final action = value.trim();
+      if (action.isNotEmpty && !actions.contains(action)) {
+        actions.add(action);
+      }
+    }
+  }
+  return List.unmodifiable(actions);
 }

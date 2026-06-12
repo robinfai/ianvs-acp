@@ -2380,7 +2380,7 @@ void main() {
 }
 
 Future<String?> _staticMemoryContext(MemoryPromptContext context) async {
-  return '<agent_memory_context>\n1. [project_rule] Do not use nc/netcat.\n</agent_memory_context>';
+  return '<agent_memory_context>\n1. [project_rule] Use Riverpod providers for shared Flutter state.\n</agent_memory_context>';
 }
 
 class _AuthRequiredError {

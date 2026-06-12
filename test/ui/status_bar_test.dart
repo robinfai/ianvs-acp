@@ -8,6 +8,9 @@ void main() {
   Widget statusBar({
     required ChatController controller,
     required double width,
+    bool memoryEnabled = false,
+    int? memoryPendingReviewCount,
+    VoidCallback? onShowMemoryExplorer,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -17,6 +20,9 @@ void main() {
             width: width,
             child: StatusBar(
               controller: controller,
+              memoryEnabled: memoryEnabled,
+              memoryPendingReviewCount: memoryPendingReviewCount,
+              onShowMemoryExplorer: onShowMemoryExplorer,
               onShowCapabilities: () {},
               onShowSessionSettings: () {},
             ),
@@ -56,5 +62,44 @@ void main() {
     expect(find.byTooltip('Theme'), findsNothing);
     expect(find.text('disconnected'), findsOneWidget);
     expect(find.text('idle'), findsOneWidget);
+  });
+
+  testWidgets('StatusBar shows memory review pending count', (tester) async {
+    final chatController = controller();
+    addTearDown(chatController.dispose);
+
+    await tester.pumpWidget(
+      statusBar(
+        controller: chatController,
+        width: 900,
+        memoryEnabled: true,
+        memoryPendingReviewCount: 3,
+      ),
+    );
+
+    expect(find.text('memory on · 3 pending'), findsOneWidget);
+  });
+
+  testWidgets('StatusBar opens memory review from pending count', (
+    tester,
+  ) async {
+    final chatController = controller();
+    addTearDown(chatController.dispose);
+    var opened = false;
+
+    await tester.pumpWidget(
+      statusBar(
+        controller: chatController,
+        width: 900,
+        memoryEnabled: true,
+        memoryPendingReviewCount: 3,
+        onShowMemoryExplorer: () => opened = true,
+      ),
+    );
+
+    await tester.tap(find.text('memory on · 3 pending'));
+    await tester.pump();
+
+    expect(opened, isTrue);
   });
 }

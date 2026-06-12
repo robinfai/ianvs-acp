@@ -22,28 +22,112 @@ local directory path completions while typing.
 The repo includes a local Rust `memory-core` daemon for four reviewed memory
 kinds: user preferences, project rules, architecture decisions, and session
 summaries. Memory is local-first and defaults off in the Flutter app until a
-daemon endpoint is configured.
+user enables it.
 
-To enable prompt injection, turn on Memory in Agent Configuration, provide
-`memory.daemon_base_url`, and expose the bearer token through
-`memory.daemon_token_env` (default: `MEMORY_DAEMON_TOKEN`). When those are
-present, Flutter queries the daemon search API with the active workspace, repo,
-and session scope. Session-scoped lookup is also tied to the active agent, so
-same session ids from different agents do not mix. Returned memories are added
-as background context before the normal ACP `session/prompt`; the daemon does
-not proxy ACP traffic. Daemon search failures or timeouts are non-fatal and
-leave the original prompt intact.
+To enable prompt injection, turn on Memory in Agent Configuration. The app
+starts an app-owned `memory-core` daemon on a dynamic local port, generates an
+internal bearer token, and shuts that child process down when Memory is disabled
+or the app exits. Flutter queries the daemon search API with the active
+workspace, repo, and session scope. Session-scoped lookup is also tied to the
+active agent, so same session ids from different agents do not mix. Returned
+memories are added as background context before the normal ACP
+`session/prompt`; the daemon does not proxy ACP traffic. Daemon search failures
+or timeouts are non-fatal and leave the original prompt intact.
 
 The daemon owns storage, hybrid vector/keyword search, audit history, local
 embedding support, OpenAI-compatible embedding calls, and its stdio MCP bridge.
 Memory writes and explicit rebuilds update the sqlite-vec index; search uses
 vector hits when available and falls back to keyword matching if indexing is
-unavailable. After prompt turns, Flutter can extract pending memory candidates
-through either an ACP sidecar agent or an OpenAI-compatible LLM endpoint and
-post those candidates to the daemon for review. The current MCP bridge exposes
-callable `memory.search`, `memory.list`, and `memory.remember` tools. Review
-and explorer UI surfaces are present, with destructive or approval actions
-disabled until a backend callback is connected.
+unavailable. After prompt turns, Flutter can extract memory candidates through
+either an ACP sidecar agent or an OpenAI-compatible LLM endpoint. The configured
+rules fallback also captures conservative explicit remember requests such as
+preferred names and project rules, and skips likely secrets. Exact duplicate
+candidates are suppressed before review when the same normalized fact already
+exists as active memory or as a pending candidate, and the daemon writes a
+`candidate.skip_duplicate` audit event. Depending on the configured review
+mode, new candidates can stay manual, auto-approve only when high confidence,
+or auto-approve every candidate that passes the daemon's filtering policy. In
+threshold-based automatic modes, candidates below the auto-approve threshold are
+skipped with an audit event instead of becoming pending review noise; candidates
+without confidence are treated as below threshold.
+Auto-approved candidates and candidates approved through the daemon approval
+endpoint trigger automatic maintenance: the daemon runs a high-confidence
+low-cost pass, then Flutter calls the configured LLM/ACP maintenance extractor
+with a broader current-scope memory batch, prioritizing likely related records
+but no longer dropping unrelated records before the LLM review.
+The current MCP bridge exposes callable `memory.search`, `memory.list`,
+`memory.remember`, `memory.update`, and `memory.forget` tools. `memory.remember`
+uses the same candidate-review API as the extractor and can auto-approve via
+either an explicit `autoApproveThreshold` argument or a
+`MEMORY_AUTO_APPROVE_THRESHOLD` process default. When Memory is enabled,
+Flutter appends an app-owned `ianvs-memory` stdio MCP server to agent sessions
+after the daemon exposes its dynamic local endpoint; user-defined MCP servers
+with the same name are left untouched. Candidate creation and change requests
+use separate MCP defaults: `MEMORY_AUTO_APPROVE_THRESHOLD` controls
+`memory.remember`, while `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD`
+controls `memory.update` and `memory.forget`. Without an automatic change
+request threshold, `memory.update` and `memory.forget` keep the conservative
+pending Change request path. When a tool call includes confidence and an
+`autoApproveThreshold`, or the MCP process provides a change-request threshold,
+`memory.update` runs through the same high-confidence maintenance policy:
+high-confidence non-cleanup updates are applied automatically, while
+lower-confidence or missing-confidence updates are skipped instead of becoming
+review noise. `memory.forget` maps to delete, so high-confidence forget requests
+stay pending for manual cleanup review and lower-confidence or missing-confidence
+forget requests are skipped.
+Review and explorer UI surfaces are present.
+Extraction and maintenance prompts plus daemon candidate/maintenance policy reject AGENTS.md,
+system/developer/agent operating constraints, and tool-use rules so local
+instruction files do not become long-term memory.
+`Change requests` lists real pending update/delete/merge proposals, supports
+batch approval for non-cleanup maintenance suggestions, supports batch rejection
+for pending suggestions, and keeps cleanup requests on per-item approval.
+Pending candidate memories can be edited individually, approved in a batch, or
+rejected in a batch.
+`All memory` shows active and disabled records, excluding soft-deleted records,
+and includes a manual `Organize` action. Organize sends a broader current-scope
+active/disabled memory batch to the configured ACP sidecar or OpenAI-compatible
+extractor, prioritizing nearby records without hiding the rest of the batch,
+to propose maintenance change requests, including each record's active/disabled
+status. After applying or skipping those suggestions, the daemon still runs its
+built-in low-cost sweep so LLM output cannot hide disabled cleanup or directional
+merge opportunities.
+Auto-approved candidates and manually approved candidates trigger the same
+automatic maintenance path with a broader current-scope batch, so users mostly
+review the resulting audit and cleanup requests.
+In `high_confidence_auto` maintenance mode, mid-confidence
+suggestions are skipped instead of becoming review noise; high-confidence
+non-cleanup suggestions can be approved automatically, while cleanup actions
+such as delete, disable, and expire stay pending for review. Built-in maintenance merges
+active memories, and active/disabled overlap that still carries useful
+differences, toward broader scopes in the `session -> repo -> global` direction.
+Same narrow-scope duplicates promote one step at a time, while merges involving
+an already broader scope never downgrade it, so session plus global stays global.
+It treats workspace scope as a legacy compatibility layer rather than a promotion
+stop, and creates
+cleanup requests for high-confidence disabled duplicates.
+When a merge is approved or auto-applied, the merged active memory is created and
+the old target memories are soft-deleted, so All memory does not keep showing
+disabled duplicates after organization.
+The `manual_only_actions` setting is additive for maintenance review policy:
+`delete`, `disable`, and `expire` are always treated as cleanup review actions
+even if an older settings file only listed `delete`.
+`Audit log` shows real daemon events, including memory retrievals, approvals,
+maintenance runs, and automatic approvals. Clear-data controls are still
+guarded until their backend callback is connected.
+
+MCP callers can use single-item memory inputs. For example, `memory.remember`
+accepts `scope`, `kind`, `memoryScope`, `text`, optional `reason`, and optional
+`confidence`; the bridge converts that into the daemon candidate-review format
+and applies `autoApproveThreshold` when supplied. If the MCP process has
+`MEMORY_AUTO_APPROVE_THRESHOLD` set to a value from `0` to `1`, that threshold is
+used when the tool call omits one. `memory.update` accepts `scope`,
+`targetMemoryId`, `proposedText`, optional `proposedKind` / `proposedScope`,
+optional `confidence`, and optional `autoApproveThreshold`; `memory.forget`
+accepts `scope`, `targetMemoryId`, optional `confidence`, and optional
+`autoApproveThreshold`. For update/forget calls, the MCP process can also set
+`MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD`; this keeps maintenance
+automation independent from candidate-review policy.
 
 ## Configuration
 
@@ -104,8 +188,6 @@ Saved shape example for automation and debugging:
   },
   "memory": {
     "enabled": true,
-    "daemon_base_url": "http://127.0.0.1:43129",
-    "daemon_token_env": "MEMORY_DAEMON_TOKEN",
     "embedding": {
       "provider": "fastembed-local",
       "model": "intfloat/multilingual-e5-small"
@@ -120,6 +202,19 @@ Saved shape example for automation and debugging:
       "base_url": "http://127.0.0.1:11434/v1",
       "model": "qwen2.5:7b",
       "api_key_env": "OLLAMA_API_KEY"
+    },
+    "review": {
+      "mode": "high_confidence_auto",
+      "high_confidence_threshold": 0.85
+    },
+    "maintenance": {
+      "enabled": true,
+      "mode": "high_confidence_auto",
+      "cost_mode": "low_cost",
+      "high_confidence_threshold": 0.9,
+      "review_threshold": 0.75,
+      "max_items_per_batch": 50,
+      "manual_only_actions": ["delete", "disable", "expire"]
     }
   }
 }
@@ -156,6 +251,7 @@ Supported environment overrides:
 - `ACP_WORKSPACE_CWD`
 - `IANVS_ACP_WORKSPACE_CWD`
 - `XDG_CONFIG_HOME`
+- `IANVS_MEMORY_CORE_EXE`
 - `MEMORY_EMBEDDING_PROVIDER`
 - `MEMORY_EMBEDDING_MODEL`
 - `MEMORY_EMBEDDING_VARIANT`

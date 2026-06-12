@@ -5,6 +5,17 @@ import '../../config/acp_client_config.dart';
 import '../../memory/memory_config.dart';
 import '../theme/app_design_tokens.dart';
 
+const Map<String, String> _memoryReviewModeLabels = <String, String>{
+  'high_confidence_auto': 'Auto approve high-confidence; skip the rest',
+  'auto': 'Auto approve candidates with confidence',
+  'manual_review': 'Manual review for every candidate',
+};
+
+const Map<String, String> _memoryMaintenanceModeLabels = <String, String>{
+  'high_confidence_auto': 'Auto organize high-confidence; skip the rest',
+  'manual_review': 'Manual maintenance review',
+};
+
 typedef AcpConfigSaveCallback =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 
@@ -83,16 +94,23 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   .toString(),
       );
   late bool _memoryEnabled = widget.memory.enabled;
+  late String _memoryReviewMode = _knownOptionOrDefault(
+    widget.memory.review.mode,
+    _memoryReviewModeLabels,
+    const MemoryReviewConfig().mode,
+  );
+  late bool _memoryMaintenanceEnabled = widget.memory.maintenance.enabled;
+  late String _memoryMaintenanceMode = _knownOptionOrDefault(
+    widget.memory.maintenance.mode,
+    _memoryMaintenanceModeLabels,
+    const MemoryMaintenanceConfig().mode,
+  );
   late final TextEditingController _memoryEmbeddingModelController =
       TextEditingController(text: widget.memory.embedding.model);
   late final TextEditingController _memoryExtractorAgentController =
       TextEditingController(text: widget.memory.extractor.agent);
   late final TextEditingController _memoryExtractorModelController =
       TextEditingController(text: widget.memory.extractor.model);
-  late final TextEditingController _memoryDaemonBaseUrlController =
-      TextEditingController(text: widget.memory.daemonBaseUrl ?? '');
-  late final TextEditingController _memoryDaemonTokenEnvController =
-      TextEditingController(text: widget.memory.daemonTokenEnv);
   late final TextEditingController _memoryLlmBaseUrlController =
       TextEditingController(text: widget.memory.llm.baseUrl);
   late final TextEditingController _memoryApiKeyEnvController =
@@ -116,8 +134,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _memoryEmbeddingModelController.dispose();
     _memoryExtractorAgentController.dispose();
     _memoryExtractorModelController.dispose();
-    _memoryDaemonBaseUrlController.dispose();
-    _memoryDaemonTokenEnvController.dispose();
     _memoryLlmBaseUrlController.dispose();
     _memoryApiKeyEnvController.dispose();
     super.dispose();
@@ -487,6 +503,33 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             onChanged: (value) => setState(() => _memoryEnabled = value),
           ),
           const SizedBox(height: 8),
+          _DialogDropdownField(
+            fieldKey: const Key('memory-review-mode-field'),
+            value: _memoryReviewMode,
+            label: 'New memory handling',
+            icon: Icons.fact_check_outlined,
+            options: _memoryReviewModeLabels,
+            onChanged: (value) => setState(() => _memoryReviewMode = value),
+          ),
+          const SizedBox(height: 8),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-enabled-switch'),
+            title: 'Memory organization',
+            value: _memoryMaintenanceEnabled,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          _DialogDropdownField(
+            fieldKey: const Key('memory-maintenance-mode-field'),
+            value: _memoryMaintenanceMode,
+            label: 'Organize handling',
+            icon: Icons.auto_fix_high_outlined,
+            options: _memoryMaintenanceModeLabels,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceMode = value),
+          ),
+          const SizedBox(height: 8),
           _DialogTextField(
             key: const Key('memory-embedding-model-field'),
             controller: _memoryEmbeddingModelController,
@@ -506,20 +549,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             controller: _memoryExtractorModelController,
             label: 'Extractor model',
             icon: Icons.psychology_alt_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('memory-daemon-url-field'),
-            controller: _memoryDaemonBaseUrlController,
-            label: 'Memory daemon URL',
-            icon: Icons.dns_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('memory-daemon-token-env-field'),
-            controller: _memoryDaemonTokenEnvController,
-            label: 'Daemon token env',
-            icon: Icons.key_outlined,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
@@ -558,11 +587,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   MemoryConfig _memoryConfig() {
     return MemoryConfig(
       enabled: _memoryEnabled,
-      autoStartDaemon: widget.memory.autoStartDaemon,
-      daemonBaseUrl: _trimmedOrNull(_memoryDaemonBaseUrlController.text),
-      daemonTokenEnv:
-          _trimmedOrNull(_memoryDaemonTokenEnvController.text) ??
-          const MemoryConfig().daemonTokenEnv,
       dataDir: widget.memory.dataDir,
       embedding: MemoryEmbeddingConfig(
         provider: widget.memory.embedding.provider,
@@ -593,7 +617,20 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             _trimmedOrNull(_memoryApiKeyEnvController.text) ??
             const MemoryLlmConfig().apiKeyEnv,
       ),
-      review: widget.memory.review,
+      review: MemoryReviewConfig(
+        mode: _memoryReviewMode,
+        highConfidenceThreshold: widget.memory.review.highConfidenceThreshold,
+      ),
+      maintenance: MemoryMaintenanceConfig(
+        enabled: _memoryMaintenanceEnabled,
+        mode: _memoryMaintenanceMode,
+        costMode: widget.memory.maintenance.costMode,
+        highConfidenceThreshold:
+            widget.memory.maintenance.highConfidenceThreshold,
+        reviewThreshold: widget.memory.maintenance.reviewThreshold,
+        maxItemsPerBatch: widget.memory.maintenance.maxItemsPerBatch,
+        manualOnlyActions: widget.memory.maintenance.manualOnlyActions,
+      ),
     );
   }
 
@@ -1503,6 +1540,41 @@ class _DialogTextField extends StatelessWidget {
   }
 }
 
+class _DialogDropdownField extends StatelessWidget {
+  const _DialogDropdownField({
+    required this.fieldKey,
+    required this.value,
+    required this.label,
+    required this.icon,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final Key fieldKey;
+  final String value;
+  final String label;
+  final IconData icon;
+  final Map<String, String> options;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DropdownButtonFormField<String>(
+      key: fieldKey,
+      value: value,
+      isExpanded: true,
+      decoration: _fieldDecoration(label: label, icon: icon),
+      items: [
+        for (final entry in options.entries)
+          DropdownMenuItem<String>(value: entry.key, child: Text(entry.value)),
+      ],
+      onChanged: (value) {
+        if (value != null) onChanged(value);
+      },
+    );
+  }
+}
+
 class _StringListEditor extends StatelessWidget {
   const _StringListEditor({
     required this.title,
@@ -1710,6 +1782,16 @@ List<String> _stringValues(List<TextEditingController> controllers) {
 String? _trimmedOrNull(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String _knownOptionOrDefault(
+  String value,
+  Map<String, String> labels,
+  String fallback,
+) {
+  final trimmed = value.trim();
+  if (labels.containsKey(trimmed)) return trimmed;
+  return fallback;
 }
 
 Map<String, String> _nameValueMap(List<_NameValueControllers> controllers) {

@@ -17,12 +17,16 @@
 
 - 设计范围覆盖完整 P0-P6；实施计划再分阶段拆。
 - 采用 Rust memory-core 作为 memory 事实来源，Flutter 负责 ACP 编排和审批 UI。
-- 默认开启完整闭环，但任何长期写入都必须经过用户 Review approve。
+- 默认开启完整闭环；高置信、非破坏性长期写入和整理可自动处理，用户主要做事后核查、编辑，以及 delete/forget 等清理类变更确认。
 - embedding 默认本地优先，推荐 `intfloat/multilingual-e5-small`，模型懒下载到 app data；测试使用 mock embedder。
 - extractor 支持 `acp-sidecar` 和 OpenAI-compatible API。ACP 模式使用单独 sidecar ACP session，不复用当前用户 session。
 - `extractor.agent` 指定 ACP agent，`extractor.model` 指定该 extractor sidecar 的模型或 config option 值。
 - Memory Review UI 同时提供右侧 panel 和独立 Memory Explorer。
-- MCP `memory.update` / `memory.forget` 使用完整 pending change request，不直接修改 memory。
+- MCP `memory.update` / `memory.forget` 无阈值时使用 pending change request；
+  带 `autoApproveThreshold` 或 MCP 进程
+  `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD` 时接入 maintenance 策略，
+  高置信 update 自动应用，低置信或缺置信 update/forget 跳过，高置信
+  forget/delete 保留人工确认。
 - 清理支持当前 session / repo / workspace / 全部，默认软删除；高级入口支持彻底清空数据库。
 
 ## 总体架构
@@ -45,7 +49,7 @@
 3. Rust MCP stdio bridge
    - `--mode=mcp-stdio` 读取 env token，通过 HTTP 调用 daemon。
    - stdout 只写 MCP JSON-RPC，日志只写 stderr。
-   - MCP 工具读 memory 可以直接返回；写、改、删都只创建 pending review。
+   - MCP 工具读 memory 可以直接返回；写入/修改/遗忘按策略进入自动审批、跳过或 pending cleanup review。
 
 主流程：
 
@@ -293,7 +297,34 @@ policy 在 daemon 内执行：
 - 超过 1000 字符的文本拒绝或摘要。
 - 包含 secret pattern 的候选拒绝。
 - `confidence < 0.65` 拒绝。
-- 与已有 active memory 高度重复时拒绝或合并。
+- 与已有 active memory 或 pending candidate 完全规范化重复时跳过写入，
+  并记录 `candidate.skip_duplicate` 审计事件。
+- 带 `autoApproveThreshold` 的候选提取只写入达阈值候选；低于阈值或缺少
+  confidence 的候选自动跳过并记录 `candidate.skip_below_auto_threshold`，
+  不进入 pending review。
+- AGENTS.md、系统/开发者/agent 运行约束、工具使用规则不进入长期记忆；
+  Flutter extraction/maintenance prompt 会明确禁止提取或提议，daemon
+  candidate/maintenance policy 也会兜底拒收。
+- 维护整理同时检查 active memory 和可清理/可整理的 disabled memory；disabled
+  与 active 高置信重复时生成清理建议，delete/disable/expire 仍保留人工确认；disabled
+  与 active 有相似但不完全重复的内容时，可以进入有方向的 merge 建议。
+- Flutter maintenance extractor 输入包含 active/disabled 状态；即使收到
+  LLM/ACP sidecar 的预提取建议，daemon 仍会继续运行内置低成本扫描，避免
+  extractor 遮住 disabled cleanup 或方向合并机会。
+- 与已有 active memory 高度重叠但不完全相同的内容进入维护整理；
+  auto-approved candidate 和 daemon approve endpoint 批准的 candidate
+  都触发自动维护：daemon 先做高置信低成本扫描，Flutter 再把当前可见
+  active/disabled memory 按疑似相关度排序并截取较大批次，调用配置的 LLM/ACP
+  maintenance extractor；明显重复或 active/disabled 可合并重叠会按
+  `session -> repo -> global` 方向合并。同一窄层级重复才逐级上推：
+  session 重复提升到 repo，repo 重复提升到 global；如果已有 global 参与，
+  不会降级回 repo。workspace scope 只作为兼容旧数据的同层 scope，不作为
+  提升链路中的停靠层。
+- `high_confidence_auto` maintenance 只处理高置信建议；中置信建议自动跳过，
+  不再堆到人工 review 队列。
+- MCP `memory.update` / `memory.forget` 带自动阈值或
+  `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD` 时复用同一套 maintenance
+  策略；缺置信度按低置信跳过，没有阈值时保留 pending change request 兼容路径。
 - 与已有 memory 冲突时不自动覆盖，标记 conflict 后交给 Review UI。
 - 当前用户 prompt 优先于 memory。
 
@@ -379,7 +410,7 @@ candidates：
 `POST /v1/memory/extract-candidates` 支持两种输入：
 
 - `transcript`：daemon 使用 OpenAI-compatible 或 rules extractor 生成候选。
-- `pre_extracted_candidates`：Flutter 已通过 ACP sidecar extractor 生成候选，daemon 只做 redaction、policy、dedupe、conflict 和 pending 持久化。
+- `pre_extracted_candidates`：Flutter 已通过 ACP sidecar extractor 生成候选，daemon 只做 redaction、policy、dedupe、conflict，并根据阈值自动 approve、跳过或 pending 持久化。
 
 change requests：
 
@@ -387,6 +418,7 @@ change requests：
 - `POST /v1/memory/change-requests`
 - `POST /v1/memory/change-requests/:id/approve`
 - `POST /v1/memory/change-requests/:id/reject`
+- `POST /v1/memory/maintenance/run`
 
 清理：
 
@@ -408,10 +440,16 @@ change requests：
 工具：
 
 - `memory.search`：直接调用 daemon search。
-- `memory.remember`：创建 pending candidate。
+- `memory.remember`：创建 candidate；带 `autoApproveThreshold` 或 MCP 进程
+  `MEMORY_AUTO_APPROVE_THRESHOLD` 默认阈值时，达阈值自动 approve，低于阈值自动跳过；没有阈值时创建 pending candidate。
 - `memory.list`：列 active memory，不返回 deleted/disabled。
-- `memory.update`：创建 pending update change request。
-- `memory.forget`：创建 pending delete change request。
+- `memory.update`：无自动阈值时创建 pending update change request；带
+  `autoApproveThreshold` 或 MCP 进程
+  `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD` 默认阈值时，高置信自动应用，
+  低置信或缺置信跳过。该阈值独立于 `memory.remember` 使用的
+  `MEMORY_AUTO_APPROVE_THRESHOLD`。
+- `memory.forget`：无自动阈值时创建 pending delete change request；带
+  自动阈值时，高置信 delete 保留 pending cleanup review，低置信或缺置信跳过。
 
 ## Flutter 集成
 
@@ -462,21 +500,23 @@ change requests：
 - Audit log
 - Clear data
 
-支持搜索、过滤、编辑、disable、restore、soft delete、清理当前 session/repo/workspace/all。
+All memory 展示 active 和 disabled 记录，不展示 soft-deleted 记录；顶部提供 `Organize` 手动整理入口。Flutter 将当前可见 active/disabled memory 按疑似相关度排序并截取较大批次后调用配置的 ACP sidecar 或 OpenAI-compatible LLM extractor 生成 merge/update/delete 等 change requests，输入包含 memory status，不发送完整 prompt 历史。daemon 先处理 extractor 建议，再继续运行内置 active/disabled 扫描，统一套用高置信非清理自动执行、中低置信跳过、delete/disable/expire 永远人工的策略。支持搜索、过滤、编辑、disable、restore、soft delete、清理当前 session/repo/workspace/all。
+`manual_only_actions` 只能增加需要人工核查的维护 action，不能把 delete/disable/expire
+从 cleanup 人工基线中移除；旧配置只有 `["delete"]` 时会自动补齐 disable/expire。
 
 ### Agent Configuration
 
 增加 Memory 区域：
 
 - enabled
-- auto start daemon
+- app-owned daemon lifecycle
 - data dir
 - embedding provider/model/variant/dimension/download policy
 - extractor provider/agent/model/fallback
 - OpenAI-compatible LLM base URL/model/api key env
 - Review 展开策略
 
-默认 `enabled=true`，并明确说明所有长期写入都需要审批。
+默认 `enabled=false`；启用后由 Flutter 应用启动当前应用专用的本地 daemon，使用动态本地端口和内部 token，并在关闭记忆或应用退出时停止。默认策略是高置信、非清理类写入自动处理，低置信或缺置信跳过，delete/forget 等清理类变更保留人工确认。
 
 ## 配置格式
 
@@ -486,7 +526,6 @@ change requests：
 {
   "memory": {
     "enabled": true,
-    "auto_start_daemon": true,
     "data_dir": null,
     "embedding": {
       "provider": "fastembed-local",
@@ -508,8 +547,17 @@ change requests：
       "api_key_env": "OLLAMA_API_KEY"
     },
     "review": {
-      "auto_open": "high_confidence",
+      "mode": "high_confidence_auto",
       "high_confidence_threshold": 0.85
+    },
+    "maintenance": {
+      "enabled": true,
+      "mode": "high_confidence_auto",
+      "cost_mode": "low_cost",
+      "high_confidence_threshold": 0.90,
+      "review_threshold": 0.75,
+      "max_items_per_batch": 50,
+      "manual_only_actions": ["delete", "disable", "expire"]
     }
   }
 }
@@ -523,13 +571,29 @@ Rust 覆盖：
 - search 按 scope 返回正确 memory。
 - search 不返回 deleted/disabled memory。
 - approve candidate 写 `memory_items` 和 `vec_memory_items`。
+- daemon approve candidate 后触发高置信低成本维护；Flutter 会把当前可见
+  active/disabled memory 按疑似相关度排序并截取较大批次，继续调用 LLM/ACP
+  maintenance extractor 做自动整理建议。
 - reject candidate 不写 `memory_items`。
 - approve/reject change request。
 - secret redaction 生效。
-- duplicate memory 拒绝或合并。
+- duplicate candidate 在进入人工 review 前自动跳过并写审计。
+- high-confidence automatic candidate extraction 跳过中置信或缺置信候选，不生成 pending review 噪声。
+- disabled duplicate memory 进入清理建议。
+- overlapping duplicate memory 按 session -> repo -> global 方向进入维护合并；
+  同一窄层级重复逐级上推，已有 global 参与时不会降级回 repo；workspace
+  兼容数据不会作为中间提升层，auto-approved/manual-approved candidate 都会
+  触发高置信维护。
+  merge 会新建合并后的 active memory，并把旧 target 软删除，避免 All memory
+  继续显示 disabled 重复项。
+- pre-extracted LLM/ACP sidecar maintenance 建议不会阻止 daemon 的内置
+  active/disabled cleanup 和方向合并扫描。
+- high-confidence automatic maintenance 跳过中置信建议，不生成 pending review 噪声。
 - conflict 标记但不自动覆盖。
-- MCP `memory.remember` 只创建 pending candidate。
-- MCP `memory.update` / `memory.forget` 只创建 pending change request。
+- MCP `memory.remember` 可按阈值自动 approve 或跳过；未设置阈值时创建 pending candidate。
+- MCP `memory.update` / `memory.forget` 无阈值时创建 pending change request；
+  带 `autoApproveThreshold` 或 `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD`
+  时按 high-confidence maintenance 策略自动应用、跳过或保留 cleanup review；缺置信度按跳过处理。
 - MCP `memory.search` 返回搜索结果。
 - daemon ready JSON 正确输出。
 - MCP stdio stdout 不输出普通日志。
@@ -554,8 +618,11 @@ Flutter 覆盖：
 - Flutter 可以 review candidates。
 - approve 后 memory 可被后续 prompt 检索到。
 - MCP agent 可以调用 `memory.search`。
-- MCP agent 调用 `memory.remember` 时只创建 pending candidate。
-- MCP agent 调用 `memory.update` / `memory.forget` 时只创建 pending change request。
+- MCP agent 调用 `memory.remember` 时可按阈值自动 approve 或跳过；未设置阈值时创建 pending candidate。
+- MCP agent 调用 `memory.update` / `memory.forget` 时，无阈值保留 pending
+  change request；带 `autoApproveThreshold` 或
+  `MEMORY_CHANGE_REQUEST_AUTO_APPROVE_THRESHOLD` 时按 high-confidence
+  maintenance 策略自动应用、跳过或保留 cleanup review；缺置信度按跳过处理。
 - 所有 memory 变更都有 audit log。
 - 数据全部保存在本地 app data dir。
 

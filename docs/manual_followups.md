@@ -20,18 +20,45 @@ today, plus the manual decision or validation still needed before implementation
 
 ### local-memory-engine
 
-Status: real local daemon validation, extraction-quality validation, and UX
-policy refinement needed.
+Status: real local daemon validation and extraction-quality validation needed;
+advanced UX policy refinement remains a follow-up.
 
 Non-blocking because: the Rust daemon, storage/search/review APIs, callable MCP
-search/list/remember bridge, Flutter config, prompt middleware, Memory
+search/list/remember/update/forget bridge, Flutter config, prompt middleware, Memory
 Review/Explorer UI, ACP sidecar extraction, OpenAI-compatible LLM extraction,
 and pending-candidate posting are implemented behind local-first settings.
-Memory now defaults off in the app and prompt injection/extraction are only
-installed when `memory.daemon_base_url` plus a token env are configured. Agent
-Configuration can edit those daemon fields, and daemon search/extraction
-timeouts are non-fatal. Long-term write and destructive UI actions still need
-the real review/clear backend callbacks before they become clickable.
+Memory now defaults off in the app. When enabled, Flutter starts an app-owned
+`memory-core` daemon on a dynamic local port, uses an internal token, and stops
+that child process when Memory is disabled or the app exits. Flutter also adds
+an app-owned `ianvs-memory` stdio MCP server to agent sessions so agents can use
+the local memory tools without manual MCP setup. Daemon search/extraction
+timeouts are non-fatal. Long-term write and destructive UI changes now route
+through real Change requests callbacks. Extraction and maintenance prompts plus
+daemon candidate/maintenance policy reject AGENTS.md, system/developer/agent
+operating constraints, and tool-use rules so local instruction files do not
+become long-term memory.
+Auto-approved candidates and candidates
+approved through the daemon approval endpoint trigger automatic maintenance:
+the daemon runs a high-confidence low-cost pass, then Flutter sends a broader
+current-scope active/disabled memory batch to the configured LLM/ACP maintenance
+extractor. `All memory` can run manual maintenance through
+`POST /v1/memory/maintenance/run`; daemon
+maintenance considers active memories plus disabled memories that may be
+cleaned or merged with active memories, promotes duplicate or overlapping
+memories in the session -> repo -> global direction. Same narrow-scope
+duplicates move one step at a time, but records already at a broader scope are
+not downgraded, so session plus global remains global. Workspace scope stays a
+legacy compatibility layer rather than a promotion stop. It skips mid-confidence
+suggestions in high-confidence automatic mode, and can pass LLM/ACP sidecar
+suggestions into that endpoint without sending prompt history. Flutter includes
+active/disabled status in the maintenance extractor input, and the daemon still
+runs its built-in sweep after LLM suggestions so disabled cleanup and
+directional merge opportunities are not hidden by extractor output.
+Threshold-based candidate extraction also skips below-threshold candidates
+instead of adding pending review noise. Agent Configuration exposes new-memory
+and organization policy controls for manual-review versus high-confidence
+automatic handling. Clear-data still needs the real backend callback before it
+becomes active.
 
 Automated acceptance:
 
@@ -39,32 +66,40 @@ Automated acceptance:
   schema, manual CRUD, manual secret redaction, candidate review, hybrid
   vector/keyword scope-filtered search behavior including session isolation,
   same-session-id isolation across agents, and older relevant matches, search
-  formatting, embedding provider paths, vector rebuild/index rows, daemon API
-  routes, and MCP stdio tool listing/calls.
-- `test/memory` verifies Flutter memory config, daemon client search and
-  candidate-post behavior, prompt context formatting, daemon HTTP search
-  context building and timeout handling, prompt middleware, ACP sidecar
-  extraction, and OpenAI-compatible LLM extraction.
+  formatting, duplicate candidate suppression before review, below-threshold
+  candidate skipping in automatic mode, disabled duplicate cleanup suggestions,
+  directional session -> repo -> global maintenance merge, embedding
+  provider paths, vector rebuild/index rows, daemon API routes, and MCP stdio tool
+  listing/calls including the pending update/forget compatibility path,
+  high-confidence update auto-apply, below-threshold or missing-confidence
+  update/forget skipping under automatic policy, and high-confidence
+  forget/delete remaining pending for cleanup review.
+- `test/memory` verifies Flutter memory config, daemon client search,
+  change-request review, maintenance run client calls, candidate-post behavior,
+  prompt context formatting, daemon HTTP search context building and timeout
+  handling, prompt middleware, ACP sidecar extraction, and OpenAI-compatible
+  LLM extraction.
 - `test/config/acp_client_config_test.dart` verifies persisted memory config
   parsing with the rest of the user settings.
 - `test/state/chat_controller_test.dart` verifies prompt sending keeps working
   when memory middleware is present or fails.
 - `test/ui/memory_review_panel_test.dart` and
   `test/ui/memory_explorer_page_test.dart` verify the review and explorer UI
-  surfaces and keep actions disabled until callbacks are provided.
+  surfaces, real Change requests approval/rejection callbacks, and the manual
+  Organize entry point.
 - `test/ui/agent_config_dialog_test.dart` and
   `test/ui/acp_client_app_test.dart` verify memory settings are visible,
-  editable, saved, and passed from app config into the shell, including daemon
-  endpoint/token env fields.
+  editable, saved, and passed from app config into the shell without exposing
+  daemon endpoint/token fields.
 
 Manual decision:
 
 - Validate a real macOS app session with the local `memory-core` daemon and a
   real ACP sidecar or OpenAI-compatible LLM extractor, including extraction
   quality, approval flow, prompt injection, and search relevance.
-- Decide final product policy for daemon auto-start/bundling, data directory
-  visibility, clear-data UX, retention/audit wording, and whether memory should
-  stay opt-in for all agents or auto-enable only for trusted local agents.
+- Decide final product policy for daemon bundling, data directory visibility,
+  clear-data UX, retention/audit wording, and whether memory should stay opt-in
+  for all agents or auto-enable only for trusted local agents.
 
 ### remote-transports
 

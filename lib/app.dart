@@ -12,10 +12,19 @@ import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
 import 'memory/acp_memory_middleware.dart';
 import 'memory/acp_sidecar_memory_extractor.dart';
+import 'memory/automatic_memory_maintenance.dart';
 import 'memory/memory_api_client.dart';
+import 'memory/memory_config.dart';
+import 'memory/memory_daemon_manager.dart';
+import 'memory/memory_extraction.dart';
+import 'memory/memory_maintenance_extraction.dart';
+import 'memory/memory_mcp_server.dart';
+import 'memory/memory_pending_review_summary.dart';
+import 'memory/memory_scope_visibility.dart';
 import 'memory/openai_compatible_memory_extractor.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
+import 'ui/components/memory_explorer_page.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
@@ -64,6 +73,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
+  MemoryDaemonManager? _memoryDaemonManager;
+  String? _memoryDaemonSignature;
+  MemoryPendingReviewSummary? _memoryPendingReview;
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
@@ -82,6 +94,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     } else {
       _controller = widget.controller!;
     }
+    _ensureMemoryDaemonIfEnabled(_config.memory);
     if (_initialResumeSessionId.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_controller.resumeSession(_initialResumeSessionId));
@@ -105,6 +118,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _config = widget.config;
       _widgetConfigSignature = nextConfigSignature;
       _controller = widget.controller ?? _cachedControllerFor(_config);
+      _reconcileMemoryDaemon(_config.memory);
+      _ensureMemoryDaemonIfEnabled(_config.memory);
       return;
     }
 
@@ -115,6 +130,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     _config = widget.config;
     _widgetConfigSignature = nextConfigSignature;
+    _reconcileMemoryDaemon(_config.memory);
+    _ensureMemoryDaemonIfEnabled(_config.memory);
     if (widget.controller != null) {
       _controller = widget.controller!;
       return;
@@ -129,6 +146,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (widget.controller == null) {
       _disposeCachedControllers();
     }
+    _disposeMemoryDaemon();
     super.dispose();
   }
 
@@ -203,6 +221,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
         startupError: widget.startupError,
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
+        memoryExplorerActions: _memoryExplorerActions(),
+        memoryPendingReview: _memoryPendingReview,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
         onSelectAgent: widget.controller == null
@@ -267,21 +287,27 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final memory = config.memory;
     if (!memory.enabled) return null;
 
-    final daemonBaseUrl = memory.daemonBaseUrl?.trim();
-    if (daemonBaseUrl == null || daemonBaseUrl.isEmpty) return null;
+    final daemonManager = _memoryDaemonManagerFor(memory);
+    MemoryApiClient? client;
+    MemoryDaemonEndpoint? endpoint;
+    Future<MemoryApiClient> memoryClient() async {
+      final nextEndpoint = await daemonManager.ensureStarted();
+      if (client == null ||
+          endpoint?.baseUrl != nextEndpoint.baseUrl ||
+          endpoint?.token != nextEndpoint.token) {
+        client?.close(force: true);
+        endpoint = nextEndpoint;
+        client = MemoryApiClient(
+          baseUrl: nextEndpoint.baseUrl,
+          token: nextEndpoint.token,
+        );
+      }
+      return client!;
+    }
 
-    final baseUrl = Uri.tryParse(daemonBaseUrl);
-    if (baseUrl == null || !baseUrl.hasScheme) return null;
-
-    final tokenEnv = memory.daemonTokenEnv.trim().isEmpty
-        ? 'MEMORY_DAEMON_TOKEN'
-        : memory.daemonTokenEnv.trim();
-    final token = Platform.environment[tokenEnv]?.trim();
-    if (token == null || token.isEmpty) return null;
-
-    final client = MemoryApiClient(baseUrl: baseUrl, token: token);
     return AcpMemoryMiddleware(
-      search: (context) {
+      search: (context) async {
+        final client = await memoryClient();
         final cwd = context.cwd?.trim().isNotEmpty == true
             ? context.cwd!.trim()
             : _cwd;
@@ -299,11 +325,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
         );
       },
       extract: (context) async {
+        final client = await memoryClient();
         final cwd = context.cwd?.trim().isNotEmpty == true
             ? context.cwd!.trim()
             : _cwd;
         final candidates = await _extractMemoryCandidates(config, context, cwd);
-        await client.createCandidates(
+        final result = await client.createCandidates(
           scope: MemoryScopeData(
             userId: _memoryUserId(),
             workspaceId: cwd,
@@ -312,10 +339,360 @@ class _AcpClientAppState extends State<AcpClientApp> {
             sessionId: context.sessionId,
           ),
           candidates: candidates,
+          autoApproveThreshold: candidateAutoApproveThreshold(
+            config.memory.review,
+          ),
         );
+        if (shouldRunMaintenanceAfterCandidateExtraction(
+          maintenance: config.memory.maintenance,
+          result: result,
+        )) {
+          await _runAutomaticMemoryMaintenance(
+            config,
+            client,
+            cwd,
+            MemoryScopeData(
+              userId: _memoryUserId(),
+              workspaceId: cwd,
+              repoId: cwd,
+              agentId: config.agentName,
+              sessionId: context.sessionId,
+            ),
+          );
+        }
+        await _refreshMemoryPendingReviewCount(client: client, cwd: cwd);
       },
-      onDispose: () => client.close(),
+      onDispose: () => client?.close(force: true),
     );
+  }
+
+  MemoryExplorerActions? _memoryExplorerActions() {
+    if (widget.controller != null || !_config.memory.enabled) return null;
+    return MemoryExplorerActions(
+      loadMemory: () => _withMemoryClient((client) {
+        return client.listVisibleMemory(scope: _currentVisibleMemoryScope());
+      }),
+      updateMemory: (record) => _withMemoryClient((client) async {
+        await client.updateMemory(record);
+      }),
+      deleteMemory: (record) => _withMemoryClient((client) async {
+        await client.deleteMemory(record.id);
+      }),
+      loadCandidates: () => _withMemoryClient(
+        (client) => client.listCandidates(
+          visibleScope: _currentVisibleMemoryScope(),
+          status: 'pending',
+        ),
+      ),
+      approveCandidate: (candidate) => _withMemoryClient((client) async {
+        await client.approveCandidate(candidate);
+        if (shouldRunMaintenanceAfterCandidateApproval(
+          maintenance: _config.memory.maintenance,
+        )) {
+          await _runAutomaticMemoryMaintenance(
+            _config,
+            client,
+            _currentVisibleMemoryCwd(),
+            _currentVisibleMemoryScope(),
+          );
+        }
+        await _refreshMemoryPendingReviewCount(client: client);
+      }),
+      rejectCandidate: (candidate) => _withMemoryClient((client) async {
+        await client.rejectCandidate(candidate.id);
+        await _refreshMemoryPendingReviewCount(client: client);
+      }),
+      loadChangeRequests: () => _withMemoryClient(
+        (client) => client.listChangeRequests(
+          visibleScope: _currentVisibleMemoryScope(),
+          status: null,
+        ),
+      ),
+      approveChangeRequest: (request) => _withMemoryClient((client) async {
+        await client.approveChangeRequest(request);
+        await _refreshMemoryPendingReviewCount(client: client);
+      }),
+      rejectChangeRequest: (request) => _withMemoryClient((client) async {
+        await client.rejectChangeRequest(request.id);
+        await _refreshMemoryPendingReviewCount(client: client);
+      }),
+      runMaintenance: () => _withMemoryClient((client) async {
+        final maintenance = _config.memory.maintenance;
+        final scope = _currentVisibleMemoryScope();
+        final cwd = _currentVisibleMemoryCwd();
+        final suggestions = await _extractMaintenanceChangeRequests(
+          _config,
+          client,
+          cwd,
+          scope,
+        );
+        final result = await client.runMaintenance(
+          scope: scope,
+          enabled: maintenance.enabled,
+          mode: maintenance.mode,
+          costMode: maintenance.costMode,
+          highConfidenceThreshold: maintenance.highConfidenceThreshold,
+          reviewThreshold: maintenance.reviewThreshold,
+          maxItemsPerBatch: maintenance.maxItemsPerBatch,
+          manualOnlyActions: maintenance.manualOnlyActions,
+          preExtractedChangeRequests: suggestions,
+        );
+        await _refreshMemoryPendingReviewCount(client: client);
+        return result;
+      }),
+      loadAuditLog: () => _withMemoryClient(
+        (client) =>
+            client.listAudit(visibleScope: _currentVisibleMemoryScope()),
+      ),
+    );
+  }
+
+  Future<List<MaintenanceChangeRequestSuggestion>>
+  _extractMaintenanceChangeRequests(
+    AcpClientConfig config,
+    MemoryApiClient client,
+    String cwd,
+    MemoryScopeData scope,
+  ) async {
+    final memory = config.memory;
+    final maintenance = memory.maintenance;
+    if (!maintenance.enabled) {
+      return const <MaintenanceChangeRequestSuggestion>[];
+    }
+    final records = await client.listVisibleMemory(scope: scope);
+    final memories = prefilterMaintenanceMemories(
+      memories: records
+          .map((record) => record.toMaintenanceItem())
+          .toList(growable: false),
+      maxItems: maintenance.maxItemsPerBatch,
+    );
+    if (memories.length < 2) {
+      return const <MaintenanceChangeRequestSuggestion>[];
+    }
+
+    try {
+      final provider = memory.extractor.provider.trim();
+      if (provider == 'openai-compatible' || provider == 'llm') {
+        final apiKeyEnv = memory.llm.apiKeyEnv.trim();
+        final apiKey = apiKeyEnv.isEmpty
+            ? null
+            : Platform.environment[apiKeyEnv]?.trim();
+        final extractor = OpenAiCompatibleMemoryExtractor(
+          baseUrl: memory.llm.baseUrl,
+          model: memory.llm.model,
+          apiKey: apiKey,
+        );
+        try {
+          return await extractor.extractMaintenance(memories: memories);
+        } finally {
+          extractor.close();
+        }
+      }
+
+      final agentName = memory.extractor.agent.trim().isEmpty
+          ? config.agentName
+          : memory.extractor.agent.trim();
+      final sidecarConfig = _configForAgent(config, agentName) ?? config;
+      final extractor = AcpSidecarMemoryMaintenanceExtractor(
+        clientFactory: () => _agentClient(sidecarConfig),
+      );
+      return await extractor.extract(
+        memories: memories,
+        cwd: cwd,
+        model: memory.extractor.model,
+      );
+    } catch (error) {
+      debugPrint('Memory maintenance extractor failed: $error');
+      return const <MaintenanceChangeRequestSuggestion>[];
+    }
+  }
+
+  Future<void> _runAutomaticMemoryMaintenance(
+    AcpClientConfig config,
+    MemoryApiClient client,
+    String cwd,
+    MemoryScopeData scope,
+  ) async {
+    final maintenance = config.memory.maintenance;
+    final suggestions = await _extractMaintenanceChangeRequests(
+      config,
+      client,
+      cwd,
+      scope,
+    );
+    if (suggestions.isEmpty) return;
+    await client.runMaintenance(
+      scope: scope,
+      enabled: maintenance.enabled,
+      mode: maintenance.mode,
+      costMode: maintenance.costMode,
+      highConfidenceThreshold: maintenance.highConfidenceThreshold,
+      reviewThreshold: maintenance.reviewThreshold,
+      maxItemsPerBatch: maintenance.maxItemsPerBatch,
+      manualOnlyActions: maintenance.manualOnlyActions,
+      preExtractedChangeRequests: suggestions,
+    );
+  }
+
+  MemoryScopeData _currentVisibleMemoryScope() {
+    final session = _controller.currentSession;
+    return visibleMemoryScope(
+      userId: _memoryUserId(),
+      fallbackCwd: _cwd,
+      agentName: _config.agentName,
+      sessionCwd: session?.cwd,
+      sessionId: session?.id,
+    );
+  }
+
+  String _currentVisibleMemoryCwd() {
+    return visibleMemoryCwd(
+      fallbackCwd: _cwd,
+      sessionCwd: _controller.currentSession?.cwd,
+    );
+  }
+
+  Future<T> _withMemoryClient<T>(
+    Future<T> Function(MemoryApiClient client) action,
+  ) async {
+    if (!_config.memory.enabled) {
+      throw StateError('Memory is disabled.');
+    }
+    final manager = _memoryDaemonManagerFor(_config.memory);
+    final endpoint = await manager.ensureStarted();
+    final client = MemoryApiClient(
+      baseUrl: endpoint.baseUrl,
+      token: endpoint.token,
+    );
+    try {
+      return await action(client);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  MemoryDaemonManager _memoryDaemonManagerFor(MemoryConfig memory) {
+    final signature = _memoryDaemonSignatureFor(memory);
+    final existing = _memoryDaemonManager;
+    if (existing != null && _memoryDaemonSignature == signature) {
+      return existing;
+    }
+    _disposeMemoryDaemon();
+    final manager = MemoryDaemonManager(launch: _memoryDaemonLaunch(memory));
+    _memoryDaemonManager = manager;
+    _memoryDaemonSignature = signature;
+    return manager;
+  }
+
+  void _reconcileMemoryDaemon(MemoryConfig memory) {
+    if (!memory.enabled ||
+        _memoryDaemonSignature != _memoryDaemonSignatureFor(memory)) {
+      _disposeMemoryDaemon();
+    }
+    if (!memory.enabled && _memoryPendingReview != null) {
+      setState(() => _memoryPendingReview = null);
+    }
+  }
+
+  void _ensureMemoryDaemonIfEnabled(MemoryConfig memory) {
+    if (widget.controller != null || !memory.enabled) return;
+    final manager = _memoryDaemonManagerFor(memory);
+    unawaited(
+      manager.ensureStarted().then<void>(
+        (_) => _refreshMemoryPendingReviewCount(),
+        onError: (_) {},
+      ),
+    );
+  }
+
+  void _disposeMemoryDaemon() {
+    final manager = _memoryDaemonManager;
+    _memoryDaemonManager = null;
+    _memoryDaemonSignature = null;
+    if (manager != null) unawaited(manager.dispose());
+  }
+
+  MemoryDaemonLaunch _memoryDaemonLaunch(MemoryConfig memory) {
+    final dataDir = memory.dataDir?.trim();
+    return MemoryDaemonLaunch(
+      executable: MemoryDaemonLaunch.resolveExecutable(currentDirectory: _cwd),
+      dataDir: dataDir == null || dataDir.isEmpty
+          ? MemoryDaemonLaunch.defaultDataDir()
+          : dataDir,
+      token: MemoryDaemonLaunch.generateToken(),
+      extraEnv: _memoryDaemonEnvironment(memory),
+    );
+  }
+
+  String _memoryDaemonSignatureFor(MemoryConfig memory) {
+    return jsonEncode(<String, Object?>{
+      'dataDir': memory.dataDir?.trim(),
+      'embedding': memory.embedding.toJson(),
+      'executable': MemoryDaemonLaunch.resolveExecutable(
+        currentDirectory: _cwd,
+      ),
+    });
+  }
+
+  Map<String, String> _memoryDaemonEnvironment(MemoryConfig memory) {
+    final embedding = memory.embedding;
+    return <String, String>{
+      'MEMORY_EMBEDDING_PROVIDER': embedding.provider,
+      'MEMORY_EMBEDDING_MODEL': embedding.model,
+      'MEMORY_EMBEDDING_VARIANT': embedding.variant,
+      'MEMORY_EMBEDDING_DIMENSION': embedding.dimension.toString(),
+      'MEMORY_EMBEDDING_DOWNLOAD_POLICY': embedding.downloadPolicy,
+    };
+  }
+
+  Future<void> _refreshMemoryPendingReviewCount({
+    MemoryApiClient? client,
+    String? cwd,
+  }) async {
+    if (widget.controller != null || !_config.memory.enabled) {
+      if (mounted && _memoryPendingReview != null) {
+        setState(() => _memoryPendingReview = null);
+      }
+      return;
+    }
+    final repoId = cwd?.trim().isNotEmpty == true ? cwd!.trim() : _cwd;
+    final scope = visibleMemoryScope(
+      userId: _memoryUserId(),
+      fallbackCwd: repoId,
+      agentName: _config.agentName,
+      sessionCwd: repoId,
+      sessionId: _controller.currentSession?.id,
+    );
+    try {
+      Future<MemoryPendingReviewSummary> loadSummary(
+        MemoryApiClient client,
+      ) async {
+        final candidates = await client.listCandidates(
+          visibleScope: scope,
+          status: 'pending',
+        );
+        final changeRequests = await client.listChangeRequests(
+          visibleScope: scope,
+          status: 'pending',
+        );
+        return MemoryPendingReviewSummary(
+          candidateCount: candidates.length,
+          changeRequestCount: changeRequests.length,
+        );
+      }
+
+      final summary = client == null
+          ? await _withMemoryClient(loadSummary)
+          : await loadSummary(client);
+      if (!mounted) return;
+      final current = _memoryPendingReview;
+      if (current?.candidateCount != summary.candidateCount ||
+          current?.changeRequestCount != summary.changeRequestCount) {
+        setState(() => _memoryPendingReview = summary);
+      }
+    } catch (_) {
+      // Review counts are best-effort; memory search/extraction remains usable.
+    }
   }
 
   Future<List<ExtractedMemoryCandidate>> _extractMemoryCandidates(
@@ -325,39 +702,83 @@ class _AcpClientAppState extends State<AcpClientApp> {
   ) async {
     final memory = config.memory;
     final provider = memory.extractor.provider.trim();
-    if (provider == 'openai-compatible' || provider == 'llm') {
-      final apiKeyEnv = memory.llm.apiKeyEnv.trim();
-      final apiKey = apiKeyEnv.isEmpty
-          ? null
-          : Platform.environment[apiKeyEnv]?.trim();
-      final extractor = OpenAiCompatibleMemoryExtractor(
-        baseUrl: memory.llm.baseUrl,
-        model: memory.llm.model,
-        apiKey: apiKey,
-      );
-      try {
-        return await extractor.extract(
+    try {
+      final primary = await () async {
+        if (provider == 'openai-compatible' || provider == 'llm') {
+          final apiKeyEnv = memory.llm.apiKeyEnv.trim();
+          final apiKey = apiKeyEnv.isEmpty
+              ? null
+              : Platform.environment[apiKeyEnv]?.trim();
+          final extractor = OpenAiCompatibleMemoryExtractor(
+            baseUrl: memory.llm.baseUrl,
+            model: memory.llm.model,
+            apiKey: apiKey,
+          );
+          try {
+            return await extractor.extract(
+              userPrompt: context.userPrompt,
+              assistantAnswer: context.assistantAnswer,
+            );
+          } finally {
+            extractor.close();
+          }
+        }
+
+        final agentName = memory.extractor.agent.trim().isEmpty
+            ? config.agentName
+            : memory.extractor.agent.trim();
+        final sidecarConfig = _configForAgent(config, agentName) ?? config;
+        final extractor = AcpSidecarMemoryExtractor(
+          clientFactory: () => _agentClient(sidecarConfig),
+        );
+        return extractor.extract(
           userPrompt: context.userPrompt,
           assistantAnswer: context.assistantAnswer,
+          cwd: cwd,
+          model: memory.extractor.model,
         );
-      } finally {
-        extractor.close();
+      }();
+      return _mergeRuleBasedMemoryCandidates(memory, context, primary);
+    } catch (error) {
+      final fallback = _ruleBasedMemoryCandidates(memory, context);
+      if (_usesRuleBasedMemoryFallback(memory)) {
+        debugPrint('Memory extractor failed; using rules fallback: $error');
+        return fallback;
       }
+      rethrow;
     }
+  }
 
-    final agentName = memory.extractor.agent.trim().isEmpty
-        ? config.agentName
-        : memory.extractor.agent.trim();
-    final sidecarConfig = _configForAgent(config, agentName) ?? config;
-    final extractor = AcpSidecarMemoryExtractor(
-      clientFactory: () => _agentClient(sidecarConfig),
+  List<ExtractedMemoryCandidate> _mergeRuleBasedMemoryCandidates(
+    MemoryConfig memory,
+    MemoryTurnContext context,
+    List<ExtractedMemoryCandidate> primary,
+  ) {
+    if (!_usesRuleBasedMemoryFallback(memory)) return primary;
+    return mergeExtractedMemoryCandidates(
+      primary,
+      _ruleBasedMemoryCandidates(memory, context),
     );
-    return extractor.extract(
+  }
+
+  List<ExtractedMemoryCandidate> _ruleBasedMemoryCandidates(
+    MemoryConfig memory,
+    MemoryTurnContext context,
+  ) {
+    if (!_usesRuleBasedMemoryFallback(memory)) {
+      return const <ExtractedMemoryCandidate>[];
+    }
+    return extractRuleBasedMemoryCandidates(
       userPrompt: context.userPrompt,
       assistantAnswer: context.assistantAnswer,
-      cwd: cwd,
-      model: memory.extractor.model,
     );
+  }
+
+  bool _usesRuleBasedMemoryFallback(MemoryConfig memory) {
+    final provider = memory.extractor.fallbackProvider.trim().toLowerCase();
+    return provider == 'rules' ||
+        provider == 'rule' ||
+        provider == 'rule-based';
   }
 
   String _memoryUserId() {
@@ -513,11 +934,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
+    _reconcileMemoryDaemon(nextConfig.memory);
     final controller = _cachedControllerFor(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
     });
+    _ensureMemoryDaemonIfEnabled(nextConfig.memory);
     return controller;
   }
 
@@ -534,6 +957,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (server == null) {
       return DartAcpAgentClient(
         mcpServers: mcpServers,
+        dynamicMcpServers: _memoryMcpServersProvider(config),
         enableFilesystemReadTextFile:
             config.clientProviders.filesystem.readTextFile,
         enableFilesystemWriteTextFile:
@@ -553,6 +977,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
       agentHeaders: server.headers,
       mcpServers: mcpServers,
+      dynamicMcpServers: _memoryMcpServersProvider(config),
       enableFilesystemReadTextFile:
           config.clientProviders.filesystem.readTextFile,
       enableFilesystemWriteTextFile:
@@ -562,6 +987,32 @@ class _AcpClientAppState extends State<AcpClientApp> {
       enableTerminalProvider: config.clientProviders.terminal.enabled,
       additionalDirectories: config.additionalDirectories,
     );
+  }
+
+  DynamicMcpServersProvider? _memoryMcpServersProvider(AcpClientConfig config) {
+    final memory = config.memory;
+    if (!memory.enabled) return null;
+    if (config.mcpServers.any((server) => server.name == memoryMcpServerName)) {
+      return null;
+    }
+    return () async {
+      try {
+        final manager = _memoryDaemonManagerFor(memory);
+        final endpoint = await manager.ensureStarted();
+        return <Map<String, dynamic>>[
+          buildMemoryMcpServerConfig(
+            executable: MemoryDaemonLaunch.resolveExecutable(
+              currentDirectory: _cwd,
+            ),
+            endpoint: endpoint,
+            memory: memory,
+          ),
+        ];
+      } catch (error) {
+        debugPrint('Memory MCP server unavailable: $error');
+        return const <Map<String, dynamic>>[];
+      }
+    };
   }
 
   AcpPermissionReviewer? _permissionReviewer(AcpClientConfig config) {

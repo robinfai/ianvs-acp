@@ -5,17 +5,34 @@ use serde::Deserialize;
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::memory::engine::{
-    create_manual_memory, list_memory, patch_memory, search_memory, soft_delete_memory,
-    CreateMemoryRequest, ListMemoryResponse, MemoryResponse, PatchMemoryRequest, SearchRequest,
-    SearchResponse,
+    create_manual_memory, list_audit, list_memory, list_visible_audit, list_visible_memory,
+    patch_memory, search_memory, soft_delete_memory, CreateMemoryRequest, ListAuditResponse,
+    ListMemoryResponse, MemoryResponse, PatchMemoryRequest, SearchRequest, SearchResponse,
 };
+use crate::memory::types::MemoryScope;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListQuery {
     pub user_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub repo_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
     pub status: Option<String>,
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditQuery {
+    pub limit: Option<i64>,
+    pub user_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub visible: Option<bool>,
 }
 
 pub async fn create(
@@ -31,6 +48,21 @@ pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ListMemoryResponse>, ApiError> {
+    if query.visible.unwrap_or(false) {
+        let scope = MemoryScope {
+            user_id: query
+                .user_id
+                .clone()
+                .unwrap_or_else(|| "local-user".to_string()),
+            workspace_id: query.workspace_id.clone(),
+            repo_id: query.repo_id.clone(),
+            agent_id: query.agent_id.clone(),
+            session_id: query.session_id.clone(),
+        };
+        return Ok(Json(
+            list_visible_memory(&state.db, &scope, query.status.as_deref()).await?,
+        ));
+    }
     Ok(Json(
         list_memory(
             &state.db,
@@ -40,6 +72,28 @@ pub async fn list(
         )
         .await?,
     ))
+}
+
+pub async fn audit(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Result<Json<ListAuditResponse>, ApiError> {
+    if query.visible.unwrap_or(false) {
+        let scope = MemoryScope {
+            user_id: query
+                .user_id
+                .clone()
+                .unwrap_or_else(|| "local-user".to_string()),
+            workspace_id: query.workspace_id.clone(),
+            repo_id: query.repo_id.clone(),
+            agent_id: query.agent_id.clone(),
+            session_id: query.session_id.clone(),
+        };
+        return Ok(Json(
+            list_visible_audit(&state.db, &scope, query.limit).await?,
+        ));
+    }
+    Ok(Json(list_audit(&state.db, query.limit).await?))
 }
 
 pub async fn patch(

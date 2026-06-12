@@ -6,7 +6,7 @@ void main() {
     final text = MemoryContextBuilder.build([
       const MemoryContextItem(
         kind: 'project_rule',
-        text: 'Do not use nc/netcat.',
+        text: 'Use Riverpod for state management.',
       ),
       const MemoryContextItem(
         kind: 'architecture_decision',
@@ -15,6 +15,6 @@ void main() {
     ]);
     expect(text, contains('<agent_memory_context>'));
     expect(text, contains('current instruction wins'));
-    expect(text, contains('[project_rule] Do not use nc/netcat.'));
+    expect(text, contains('[project_rule] Use Riverpod for state management.'));
   });
 }

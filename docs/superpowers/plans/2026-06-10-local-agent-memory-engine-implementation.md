@@ -847,7 +847,7 @@ async fn manual_memory_crud_writes_audit_and_soft_deletes() {
         .json(&serde_json::json!({
             "kind": "project_rule",
             "scope": "repo",
-            "text": "Do not use nc/netcat in this repo.",
+            "text": "Use Riverpod providers for shared Flutter state in this repo.",
             "scopeData": {
                 "userId": "local-user",
                 "workspaceId": "workspace-1",
@@ -881,14 +881,19 @@ async fn manual_memory_crud_writes_audit_and_soft_deletes() {
     let patched = client
         .patch(format!("{}/v1/memory/{id}", state.base_url))
         .bearer_auth("test-token")
-        .json(&serde_json::json!({ "text": "Never use nc/netcat in this repo." }))
+        .json(&serde_json::json!({
+            "text": "Prefer Riverpod providers for shared Flutter state in this repo."
+        }))
         .send()
         .await
         .expect("patch")
         .json::<serde_json::Value>()
         .await
         .expect("patch json");
-    assert_eq!(patched["text"], "Never use nc/netcat in this repo.");
+    assert_eq!(
+        patched["text"],
+        "Prefer Riverpod providers for shared Flutter state in this repo."
+    );
 
     let deleted = client
         .delete(format!("{}/v1/memory/{id}", state.base_url))
@@ -1262,7 +1267,7 @@ async fn candidate_approve_writes_memory_and_reject_does_not() {
                 {
                     "kind": "project_rule",
                     "scope": "repo",
-                    "text": "Do not use nc/netcat in this repo.",
+                    "text": "Use Riverpod providers for shared Flutter state in this repo.",
                     "confidence": 0.95,
                     "reason": "User explicitly gave a repo rule."
                 },
@@ -1290,7 +1295,7 @@ async fn candidate_approve_writes_memory_and_reject_does_not() {
         .json(&serde_json::json!({
             "kind": "project_rule",
             "scope": "repo",
-            "text": "Never use nc/netcat in this repo."
+            "text": "Prefer Riverpod providers for shared Flutter state in this repo."
         }))
         .send()
         .await
@@ -1298,7 +1303,10 @@ async fn candidate_approve_writes_memory_and_reject_does_not() {
         .json::<serde_json::Value>()
         .await
         .expect("approve json");
-    assert_eq!(approved["text"], "Never use nc/netcat in this repo.");
+    assert_eq!(
+        approved["text"],
+        "Prefer Riverpod providers for shared Flutter state in this repo."
+    );
 }
 ```
 
@@ -1627,12 +1635,14 @@ async fn search_returns_active_memory_and_skips_deleted() {
 #[test]
 fn formatter_uses_background_context_wording() {
     let formatted = memory_core::memory::formatter::format_context(&[
-        ("project_rule", "Do not use nc/netcat."),
+        ("project_rule", "Use Riverpod providers for shared Flutter state."),
         ("architecture_decision", "Rust only owns memory."),
     ]);
     assert!(formatted.contains("<agent_memory_context>"));
     assert!(formatted.contains("current instruction wins"));
-    assert!(formatted.contains("[project_rule] Do not use nc/netcat."));
+    assert!(formatted.contains(
+        "[project_rule] Use Riverpod providers for shared Flutter state."
+    ));
 }
 ```
 
@@ -2257,7 +2267,7 @@ pub fn tools_list() -> serde_json::Value {
     serde_json::json!({
         "tools": [
             {"name":"memory.search","description":"Search approved long-term memory.","inputSchema":{"type":"object"}},
-            {"name":"memory.remember","description":"Create a pending memory candidate.","inputSchema":{"type":"object"}},
+            {"name":"memory.remember","description":"Propose memory; auto-approve when confidence meets policy, otherwise skip below-threshold proposals.","inputSchema":{"type":"object"}},
             {"name":"memory.list","description":"List approved memory.","inputSchema":{"type":"object"}},
             {"name":"memory.update","description":"Create a pending memory update request.","inputSchema":{"type":"object"}},
             {"name":"memory.forget","description":"Create a pending memory delete request.","inputSchema":{"type":"object"}}
@@ -2347,10 +2357,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/memory/memory_config.dart';
 
 void main() {
-  test('MemoryConfig defaults to enabled local memory with ACP sidecar extractor', () {
+  test('MemoryConfig defaults to disabled local memory with ACP sidecar extractor', () {
     const config = MemoryConfig();
-    expect(config.enabled, true);
-    expect(config.autoStartDaemon, true);
+    expect(config.enabled, false);
     expect(config.embedding.provider, 'fastembed-local');
     expect(config.embedding.model, 'intfloat/multilingual-e5-small');
     expect(config.embedding.dimension, 384);
@@ -2389,8 +2398,7 @@ Create `lib/memory/memory_config.dart`:
 ```dart
 class MemoryConfig {
   const MemoryConfig({
-    this.enabled = true,
-    this.autoStartDaemon = true,
+    this.enabled = false,
     this.dataDir,
     this.embedding = const MemoryEmbeddingConfig(),
     this.extractor = const MemoryExtractorConfig(),
@@ -2399,7 +2407,6 @@ class MemoryConfig {
   });
 
   final bool enabled;
-  final bool autoStartDaemon;
   final String? dataDir;
   final MemoryEmbeddingConfig embedding;
   final MemoryExtractorConfig extractor;
@@ -2409,8 +2416,7 @@ class MemoryConfig {
   factory MemoryConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryConfig();
     return MemoryConfig(
-      enabled: raw['enabled'] as bool? ?? true,
-      autoStartDaemon: raw['auto_start_daemon'] as bool? ?? raw['autoStartDaemon'] as bool? ?? true,
+      enabled: raw['enabled'] as bool? ?? false,
       dataDir: raw['data_dir'] as String? ?? raw['dataDir'] as String?,
       embedding: MemoryEmbeddingConfig.fromJson(raw['embedding']),
       extractor: MemoryExtractorConfig.fromJson(raw['extractor']),
@@ -2421,7 +2427,6 @@ class MemoryConfig {
 
   Map<String, Object?> toJson() => {
     'enabled': enabled,
-    'auto_start_daemon': autoStartDaemon,
     if (dataDir != null) 'data_dir': dataDir,
     'embedding': embedding.toJson(),
     'extractor': extractor.toJson(),
@@ -2533,19 +2538,19 @@ class MemoryReviewConfig {
     this.highConfidenceThreshold = 0.85,
   });
 
-  final String autoOpen;
+  final String mode;
   final double highConfidenceThreshold;
 
   factory MemoryReviewConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryReviewConfig();
     return MemoryReviewConfig(
-      autoOpen: raw['auto_open'] as String? ?? raw['autoOpen'] as String? ?? 'high_confidence',
+      mode: raw['mode'] as String? ?? raw['auto_open'] as String? ?? raw['autoOpen'] as String? ?? 'high_confidence_auto',
       highConfidenceThreshold: (raw['high_confidence_threshold'] as num? ?? raw['highConfidenceThreshold'] as num? ?? 0.85).toDouble(),
     );
   }
 
   Map<String, Object?> toJson() => {
-    'auto_open': autoOpen,
+    'mode': mode,
     'high_confidence_threshold': highConfidenceThreshold,
   };
 }
@@ -2811,12 +2816,18 @@ import 'package:ianvs_acp/memory/memory_context_builder.dart';
 void main() {
   test('builds memory context as background block', () {
     final text = MemoryContextBuilder.build([
-      const MemoryContextItem(kind: 'project_rule', text: 'Do not use nc/netcat.'),
+      const MemoryContextItem(
+        kind: 'project_rule',
+        text: 'Use Riverpod providers for shared Flutter state.',
+      ),
       const MemoryContextItem(kind: 'architecture_decision', text: 'Rust only owns memory.'),
     ]);
     expect(text, contains('<agent_memory_context>'));
     expect(text, contains('current instruction wins'));
-    expect(text, contains('[project_rule] Do not use nc/netcat.'));
+    expect(
+      text,
+      contains('[project_rule] Use Riverpod providers for shared Flutter state.'),
+    );
   });
 }
 ```
@@ -2978,12 +2989,12 @@ void main() {
     final fake = FakeAgentClient(promptEvents: const []);
     final extractor = AcpSidecarMemoryExtractor(clientFactory: () => fake);
     final prompt = extractor.buildExtractionPrompt(
-      userPrompt: '本项目严禁使用 nc。',
+      userPrompt: '本项目共享状态使用 Riverpod。',
       assistantAnswer: '记住了。',
     );
     expect(prompt, contains('Return JSON only'));
     expect(prompt, contains('project_rule'));
-    expect(prompt, contains('本项目严禁使用 nc。'));
+    expect(prompt, contains('本项目共享状态使用 Riverpod。'));
   });
 }
 ```
@@ -3087,7 +3098,7 @@ void main() {
               id: 'cand-1',
               kind: 'project_rule',
               scope: 'repo',
-              text: 'Do not use nc/netcat.',
+              text: 'Use Riverpod providers for shared Flutter state.',
               confidence: 0.95,
               reason: 'User explicitly gave a rule.',
             ),
@@ -3096,7 +3107,10 @@ void main() {
       ),
     ));
     expect(find.text('Memory Review'), findsOneWidget);
-    expect(find.text('Do not use nc/netcat.'), findsOneWidget);
+    expect(
+      find.text('Use Riverpod providers for shared Flutter state.'),
+      findsOneWidget,
+    );
     expect(find.text('Approve'), findsOneWidget);
     expect(find.text('Edit'), findsOneWidget);
     expect(find.text('Reject'), findsOneWidget);
@@ -3445,9 +3459,15 @@ Add a concise Memory section to `README.md`:
 
 The client can run a local Rust `memory-core` daemon for four reviewed memory kinds:
 user preferences, project rules, architecture decisions, and session summaries.
-Memory is local-first and enabled by default, but long-term writes require user
-approval in the Memory Review UI. The daemon exposes local HTTP APIs and a
-stdio MCP bridge; Flutter owns ACP prompt injection and sidecar extraction.
+Memory is local-first and opt-in. High-confidence safe writes and maintenance
+can move automatically, while destructive cleanup remains reviewable. The
+daemon exposes local HTTP APIs and a stdio MCP bridge; Flutter owns ACP prompt
+injection and sidecar extraction. Maintenance considers active plus disabled
+memories, skips mid-confidence review noise in high-confidence automatic mode,
+skips below-threshold candidates in threshold-based automatic extraction, and
+merges active duplicates or active/disabled overlap upward from session to repo
+to global scope, with workspace kept only as a legacy-compatible scope rather
+than a promotion stop.
 ```
 
 - [ ] **Step 3: Update feature audit**

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 
 void main() {
@@ -213,6 +214,90 @@ void main() {
       find.widgetWithText(FilledButton, 'Save'),
     );
     expect(saveButton.onPressed, isNull);
+  });
+
+  testWidgets('AgentConfigDialog saves automatic memory review mode', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            memory: const MemoryConfig(enabled: true),
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-review-mode-field')),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('memory-review-mode-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto approve candidates with confidence').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.memory.review.mode, 'auto');
+  });
+
+  testWidgets('AgentConfigDialog presents low-noise memory automation labels', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            memory: const MemoryConfig(enabled: true),
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-review-mode-field')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Auto approve high-confidence; skip the rest'),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('memory-review-mode-field')));
+    await tester.pumpAndSettle();
+    expect(find.text('Auto approve candidates with confidence'), findsWidgets);
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-maintenance-mode-field')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Auto organize high-confidence; skip the rest'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('AgentConfigDialog rejects invalid review timeout', (
@@ -555,8 +640,10 @@ void main() {
     expect(find.text('Extractor agent'), findsOneWidget);
     expect(find.text('Extractor model'), findsOneWidget);
     expect(find.text('Embedding model'), findsOneWidget);
-    expect(find.text('Memory daemon URL'), findsOneWidget);
-    expect(find.text('Daemon token env'), findsOneWidget);
+    expect(find.text('New memory handling'), findsOneWidget);
+    expect(find.text('Memory organization'), findsOneWidget);
+    expect(find.text('Memory daemon URL'), findsNothing);
+    expect(find.text('Daemon token env'), findsNothing);
   });
 
   testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
@@ -607,13 +694,36 @@ void main() {
       find.byKey(const Key('memory-api-key-env-field')),
       'OLLAMA_API_KEY',
     );
-    await tester.enterText(
-      find.byKey(const Key('memory-daemon-url-field')),
-      'http://127.0.0.1:43129',
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-review-mode-field')),
     );
-    await tester.enterText(
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-review-mode-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Manual review for every candidate').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-maintenance-enabled-switch')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('memory-maintenance-enabled-switch')),
+    );
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-maintenance-mode-field')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-maintenance-mode-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.text('Auto organize high-confidence; skip the rest').last,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('memory-daemon-url-field')), findsNothing);
+    expect(
       find.byKey(const Key('memory-daemon-token-env-field')),
-      'IANVS_MEMORY_TOKEN',
+      findsNothing,
     );
 
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
@@ -628,7 +738,8 @@ void main() {
     expect(savedConfig?.memory.extractor.model, 'gpt-5-mini');
     expect(savedConfig?.memory.llm.baseUrl, 'http://127.0.0.1:11434/v1');
     expect(savedConfig?.memory.llm.apiKeyEnv, 'OLLAMA_API_KEY');
-    expect(savedConfig?.memory.daemonBaseUrl, 'http://127.0.0.1:43129');
-    expect(savedConfig?.memory.daemonTokenEnv, 'IANVS_MEMORY_TOKEN');
+    expect(savedConfig?.memory.review.autoOpen, 'manual_review');
+    expect(savedConfig?.memory.maintenance.enabled, isFalse);
+    expect(savedConfig?.memory.maintenance.mode, 'high_confidence_auto');
   });
 }

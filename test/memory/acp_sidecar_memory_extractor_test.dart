@@ -9,13 +9,13 @@ void main() {
     final fake = FakeAgentClient();
     final extractor = AcpSidecarMemoryExtractor(clientFactory: () => fake);
     final prompt = extractor.buildExtractionPrompt(
-      userPrompt: '本项目严禁使用 nc。',
+      userPrompt: '本项目使用 Riverpod 管理状态。',
       assistantAnswer: '记住了。',
     );
 
     expect(prompt, contains('Return JSON only'));
     expect(prompt, contains('project_rule'));
-    expect(prompt, contains('本项目严禁使用 nc。'));
+    expect(prompt, contains('本项目使用 Riverpod 管理状态。'));
   });
 
   test('sidecar extractor runs agent and parses JSON candidates', () async {
@@ -23,7 +23,7 @@ void main() {
     final extractor = AcpSidecarMemoryExtractor(clientFactory: () => fake);
 
     final candidates = await extractor.extract(
-      userPrompt: '本项目严禁使用 nc。',
+      userPrompt: '本项目使用 Riverpod 管理状态。',
       assistantAnswer: '记住了。',
       cwd: '/workspace',
       model: 'gpt-5-mini',
@@ -34,11 +34,11 @@ void main() {
     expect(fake.sessionCount, 1);
     expect(fake.lastConfigId, 'model');
     expect(fake.lastConfigValue, 'gpt-5-mini');
-    expect(fake.lastPrompt, contains('本项目严禁使用 nc。'));
+    expect(fake.lastPrompt, contains('本项目使用 Riverpod 管理状态。'));
     expect(candidates, hasLength(1));
     expect(candidates.single.kind, 'project_rule');
     expect(candidates.single.scope, 'repo');
-    expect(candidates.single.text, 'Never use nc/netcat in this repo.');
+    expect(candidates.single.text, 'The project uses Riverpod.');
     expect(candidates.single.confidence, 0.91);
   });
 }
@@ -63,7 +63,7 @@ class _JsonExtractionAgentClient extends FakeAgentClient {
     yield const AgentEvent(
       type: AgentEventType.agentTextDelta,
       text:
-          '{"candidates":[{"kind":"project_rule","scope":"repo","text":"Never use nc/netcat in this repo.","confidence":0.91,"reason":"Durable repo rule."}]}',
+          '{"candidates":[{"kind":"project_rule","scope":"repo","text":"The project uses Riverpod.","confidence":0.91,"reason":"Durable repo convention."}]}',
     );
     yield const AgentEvent(type: AgentEventType.agentTextDone, text: '');
   }

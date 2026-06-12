@@ -6,6 +6,7 @@ import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../memory/memory_config.dart';
+import '../../memory/memory_pending_review_summary.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../components/agent_config_dialog.dart';
@@ -43,6 +44,9 @@ class AppShell extends StatelessWidget {
     this.onNewSession,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
+    this.memoryExplorerActions,
+    this.memoryPendingReviewCount,
+    this.memoryPendingReview,
   });
 
   final ChatController controller;
@@ -61,6 +65,9 @@ class AppShell extends StatelessWidget {
   final void Function(BuildContext context)? onNewSession;
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
+  final MemoryExplorerActions? memoryExplorerActions;
+  final int? memoryPendingReviewCount;
+  final MemoryPendingReviewSummary? memoryPendingReview;
 
   @override
   Widget build(BuildContext context) {
@@ -78,6 +85,7 @@ class AppShell extends StatelessWidget {
             sessionActionsEnabled &&
             (controller.status == ConnectionStatus.disconnected ||
                 controller.status == ConnectionStatus.error);
+        final pendingReview = _effectiveMemoryPendingReview();
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -215,6 +223,12 @@ class AppShell extends StatelessWidget {
                 ),
                 StatusBar(
                   controller: controller,
+                  memoryEnabled: memory.enabled,
+                  memoryPendingReviewCount: pendingReview?.totalCount,
+                  onShowMemoryExplorer: () => _showMemoryExplorerPage(
+                    context,
+                    initialTab: _memoryReviewInitialTab(pendingReview),
+                  ),
                   onShowSessionSettings: () =>
                       _showSessionSettingsDialog(context),
                   onShowCapabilities: () => _showCapabilitiesDialog(context),
@@ -254,10 +268,41 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  Future<void> _showMemoryExplorerPage(BuildContext context) async {
+  Future<void> _showMemoryExplorerPage(
+    BuildContext context, {
+    MemoryExplorerInitialTab initialTab = MemoryExplorerInitialTab.allMemory,
+  }) async {
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (context) => const MemoryExplorerPage()),
+      MaterialPageRoute<void>(
+        builder: (context) => MemoryExplorerPage(
+          actions: memoryExplorerActions,
+          initialTab: initialTab,
+        ),
+      ),
     );
+  }
+
+  MemoryPendingReviewSummary? _effectiveMemoryPendingReview() {
+    final summary = memoryPendingReview;
+    if (summary != null) return summary;
+    final count = memoryPendingReviewCount;
+    if (count == null) return null;
+    return MemoryPendingReviewSummary(
+      candidateCount: 0,
+      changeRequestCount: count,
+    );
+  }
+
+  MemoryExplorerInitialTab _memoryReviewInitialTab(
+    MemoryPendingReviewSummary? pendingReview,
+  ) {
+    if ((pendingReview?.changeRequestCount ?? 0) > 0) {
+      return MemoryExplorerInitialTab.changeRequests;
+    }
+    if ((pendingReview?.candidateCount ?? 0) > 0) {
+      return MemoryExplorerInitialTab.candidates;
+    }
+    return MemoryExplorerInitialTab.allMemory;
   }
 
   Future<void> _confirmLogout(BuildContext context) async {

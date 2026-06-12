@@ -1,6 +1,7 @@
 import '../acp/acp_agent_client.dart';
 import '../acp/agent_event.dart';
 import 'memory_extraction.dart';
+import 'memory_maintenance_extraction.dart';
 
 export 'memory_extraction.dart' show ExtractedMemoryCandidate;
 
@@ -60,6 +61,58 @@ class AcpSidecarMemoryExtractor {
         }
       }
       return parseExtractedMemoryCandidates(buffer.toString());
+    } finally {
+      await client.dispose();
+    }
+  }
+}
+
+class AcpSidecarMemoryMaintenanceExtractor {
+  const AcpSidecarMemoryMaintenanceExtractor({required this.clientFactory});
+
+  final AcpSidecarClientFactory clientFactory;
+
+  String buildMaintenancePrompt({
+    required List<MemoryMaintenanceItem> memories,
+  }) {
+    return buildMemoryMaintenancePrompt(memories: memories);
+  }
+
+  Future<List<MaintenanceChangeRequestSuggestion>> extract({
+    required List<MemoryMaintenanceItem> memories,
+    required String cwd,
+    String? model,
+  }) async {
+    final client = clientFactory();
+    try {
+      await client.connect();
+      final session = await client.createSession(cwd: cwd);
+      final trimmedModel = model?.trim();
+      if (trimmedModel != null && trimmedModel.isNotEmpty) {
+        try {
+          await client.setConfigOption(
+            sessionId: session.id,
+            configId: 'model',
+            value: trimmedModel,
+          );
+        } catch (_) {
+          // Some ACP agents do not expose model as a config option.
+        }
+      }
+      final buffer = StringBuffer();
+      await for (final event in client.sendPrompt(
+        sessionId: session.id,
+        prompt: buildMaintenancePrompt(memories: memories),
+      )) {
+        if (event.type == AgentEventType.error) {
+          throw StateError(event.text);
+        }
+        if (event.type == AgentEventType.agentTextDelta ||
+            event.type == AgentEventType.agentTextDone) {
+          buffer.write(event.text);
+        }
+      }
+      return parseMaintenanceChangeRequests(buffer.toString());
     } finally {
       await client.dispose();
     }

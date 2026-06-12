@@ -10,11 +10,17 @@ class StatusBar extends StatelessWidget {
     required this.controller,
     required this.onShowCapabilities,
     required this.onShowSessionSettings,
+    this.memoryEnabled = false,
+    this.memoryPendingReviewCount,
+    this.onShowMemoryExplorer,
   });
 
   final ChatController controller;
   final VoidCallback onShowCapabilities;
   final VoidCallback onShowSessionSettings;
+  final bool memoryEnabled;
+  final int? memoryPendingReviewCount;
+  final VoidCallback? onShowMemoryExplorer;
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +75,16 @@ class StatusBar extends StatelessWidget {
                       label: _usageLabel(controller)!,
                       tooltip: _usageTooltip(controller),
                       color: _usageColor(controller),
+                    ),
+                  ],
+                  if (memoryEnabled) ...[
+                    const SizedBox(width: 14),
+                    _StatusItem(
+                      icon: Icons.memory_rounded,
+                      label: _memoryLabel(),
+                      tooltip: 'Open memory review',
+                      color: AppColors.success,
+                      onTap: onShowMemoryExplorer,
                     ),
                   ],
                   const SizedBox(width: 14),
@@ -134,6 +150,12 @@ class StatusBar extends StatelessWidget {
     app_state.ConnectionStatus.error => AppColors.danger,
     app_state.ConnectionStatus.disconnected => AppColors.textSecondary,
   };
+
+  String _memoryLabel() {
+    final pending = memoryPendingReviewCount;
+    if (pending == null || pending <= 0) return 'memory on';
+    return 'memory on · $pending pending';
+  }
 
   String _latencyLabel(Duration? latency) {
     if (latency == null) return 'latency --';
@@ -226,6 +248,7 @@ class _StatusItem extends StatelessWidget {
     this.tooltip,
     this.color = AppColors.textSecondary,
     this.maxWidth,
+    this.onTap,
   });
 
   final IconData icon;
@@ -233,6 +256,7 @@ class _StatusItem extends StatelessWidget {
   final String? tooltip;
   final Color color;
   final double? maxWidth;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -258,9 +282,23 @@ class _StatusItem extends StatelessWidget {
         ],
       ),
     );
-    return tooltip == null
+    final visible = tooltip == null
         ? content
         : Tooltip(message: tooltip!, child: content);
+    if (onTap == null) return visible;
+    return Semantics(
+      button: true,
+      enabled: true,
+      label: tooltip ?? label,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+          child: visible,
+        ),
+      ),
+    );
   }
 }
 

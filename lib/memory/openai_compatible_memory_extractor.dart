@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'memory_extraction.dart';
+import 'memory_maintenance_extraction.dart';
 
 class OpenAiCompatibleMemoryExtractor {
   OpenAiCompatibleMemoryExtractor({
@@ -65,6 +66,51 @@ class OpenAiCompatibleMemoryExtractor {
       }
       final content = _contentFromResponse(decoded);
       return parseExtractedMemoryCandidates(content);
+    })().timeout(timeout);
+  }
+
+  Future<List<MaintenanceChangeRequestSuggestion>> extractMaintenance({
+    required List<MemoryMaintenanceItem> memories,
+  }) async {
+    return (() async {
+      final uri = Uri.parse(
+        '${baseUrl.replaceFirst(RegExp(r'/*$'), '')}/chat/completions',
+      );
+      final request = await _httpClient.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      final trimmedApiKey = apiKey?.trim();
+      if (trimmedApiKey != null && trimmedApiKey.isNotEmpty) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer $trimmedApiKey',
+        );
+      }
+      request.write(
+        jsonEncode(<String, Object?>{
+          'model': model,
+          'temperature': 0,
+          'messages': [
+            {
+              'role': 'user',
+              'content': buildMemoryMaintenancePrompt(memories: memories),
+            },
+          ],
+        }),
+      );
+      final response = await request.close();
+      final responseBody = await utf8.decodeStream(response);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException(
+          'Memory maintenance extractor returned HTTP ${response.statusCode}: $responseBody',
+          uri: uri,
+        );
+      }
+      final decoded = jsonDecode(responseBody);
+      if (decoded is! Map) {
+        throw const FormatException('Extractor response must be an object.');
+      }
+      final content = _contentFromResponse(decoded);
+      return parseMaintenanceChangeRequests(content);
     })().timeout(timeout);
   }
 

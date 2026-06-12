@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/memory/memory_api_client.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
+import 'package:ianvs_acp/memory/memory_pending_review_summary.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/components/memory_explorer_page.dart';
+import 'package:ianvs_acp/ui/shell/app_shell.dart';
 
 void _noop() {}
 
@@ -308,6 +315,163 @@ void main() {
 
     expect(openedMemoryExplorer, isTrue);
   });
+
+  testWidgets('AppShell opens memory explorer with provided actions', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memoryExplorerActions: MemoryExplorerActions(
+            loadChangeRequests: () async => const [
+              MemoryChangeRequest(
+                id: 'cr_1',
+                action: 'update',
+                source: 'maintenance',
+                targetMemoryIds: ['mem_1'],
+                targetMemoryText: 'The user goes by Rod.',
+                proposedText: 'The user goes by Rodriguez.',
+                confidence: 0.82,
+                status: 'pending',
+                createdAt: 1,
+              ),
+            ],
+            approveChangeRequest: (_) async {},
+            rejectChangeRequest: (_) async {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Memory'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Change requests'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('The user goes by Rodriguez.'), findsOneWidget);
+  });
+
+  testWidgets('AppShell shows memory pending review count in status bar', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryPendingReviewCount: 4,
+        ),
+      ),
+    );
+
+    expect(find.text('memory on · 4 pending'), findsOneWidget);
+  });
+
+  testWidgets('AppShell opens memory explorer from status bar memory count', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryPendingReviewCount: 2,
+          memoryExplorerActions: MemoryExplorerActions(
+            loadChangeRequests: () async => const [
+              MemoryChangeRequest(
+                id: 'cr_review',
+                action: 'merge',
+                source: 'maintenance',
+                targetMemoryIds: ['mem_1', 'mem_2'],
+                proposedText: 'The user goes by Rodriguez.',
+                confidence: 0.82,
+                status: 'pending',
+                createdAt: 1,
+              ),
+            ],
+            approveChangeRequest: (_) async {},
+            rejectChangeRequest: (_) async {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('memory on · 2 pending'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Memory'), findsOneWidget);
+    expect(find.text('Change requests'), findsOneWidget);
+    expect(find.text('The user goes by Rodriguez.'), findsOneWidget);
+  });
+
+  testWidgets(
+    'AppShell opens candidates from status bar when only candidates are pending',
+    (tester) async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(
+            controller: controller,
+            memory: const MemoryConfig(enabled: true),
+            memoryPendingReview: const MemoryPendingReviewSummary(
+              candidateCount: 2,
+              changeRequestCount: 0,
+            ),
+            memoryExplorerActions: MemoryExplorerActions(
+              loadCandidates: () async => const [
+                MemoryCandidate(
+                  id: 'cand_review',
+                  kind: 'project_rule',
+                  scope: 'repo',
+                  text: 'Use curl for local service checks.',
+                  confidence: 0.82,
+                  status: 'pending',
+                  createdAt: 1,
+                ),
+              ],
+              approveCandidate: (_) async {},
+              rejectCandidate: (_) async {},
+              loadChangeRequests: () async => const <MemoryChangeRequest>[],
+              approveChangeRequest: (_) async {},
+              rejectChangeRequest: (_) async {},
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('memory on · 2 pending'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Candidates'), findsOneWidget);
+      expect(find.text('Use curl for local service checks.'), findsOneWidget);
+    },
+  );
 
   testWidgets('AgentToolbar exposes extension requests when available', (
     tester,
