@@ -4003,6 +4003,95 @@ async fn list_memory_visible_uses_search_scope_rules() {
 }
 
 #[tokio::test]
+async fn change_request_approve_is_idempotent_for_already_approved_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    let memory = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "user_preference",
+            "scope": "global",
+            "text": "The user goes by Rod.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            }
+        }))
+        .send()
+        .await
+        .expect("create memory")
+        .json::<serde_json::Value>()
+        .await
+        .expect("memory json");
+
+    let change_request = client
+        .post(format!("{}/v1/memory/change-requests", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "action": "update",
+            "targetMemoryIds": [memory["id"].as_str().unwrap()],
+            "proposedKind": "user_preference",
+            "proposedScope": "global",
+            "proposedText": "The user goes by Rodriguez.",
+            "confidence": 0.91
+        }))
+        .send()
+        .await
+        .expect("create change request")
+        .json::<serde_json::Value>()
+        .await
+        .expect("change request json");
+    let id = change_request["id"].as_str().expect("change request id");
+
+    let first = client
+        .post(format!(
+            "{}/v1/memory/change-requests/{id}/approve",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("first approve")
+        .json::<serde_json::Value>()
+        .await
+        .expect("first approve json");
+    assert_eq!(first["status"], "approved");
+
+    let second = client
+        .post(format!(
+            "{}/v1/memory/change-requests/{id}/approve",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("second approve");
+    assert_eq!(second.status(), reqwest::StatusCode::OK);
+    let second = second
+        .json::<serde_json::Value>()
+        .await
+        .expect("second approve json");
+    assert_eq!(second["status"], "approved");
+}
+
+#[tokio::test]
 async fn list_candidates_visible_uses_search_scope_rules() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")

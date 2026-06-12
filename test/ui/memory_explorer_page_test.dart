@@ -234,6 +234,66 @@ void main() {
     expect(find.text('Approve safe changes (2)'), findsNothing);
   });
 
+  testWidgets('Change request batch approve keeps going after stale request', (
+    tester,
+  ) async {
+    final approved = <String>[];
+    var requests = const [
+      MemoryChangeRequest(
+        id: 'cr_stale',
+        action: 'update',
+        source: 'maintenance',
+        targetMemoryIds: ['mem_1'],
+        proposedText: 'The user goes by Rodriguez.',
+        confidence: 0.91,
+        status: 'pending',
+        createdAt: 1,
+      ),
+      MemoryChangeRequest(
+        id: 'cr_merge',
+        action: 'merge',
+        source: 'maintenance',
+        targetMemoryIds: ['mem_2', 'mem_3'],
+        proposedText: 'Use curl for service checks.',
+        confidence: 0.92,
+        status: 'pending',
+        createdAt: 2,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MemoryExplorerPage(
+          actions: MemoryExplorerActions(
+            loadChangeRequests: () async => requests,
+            approveChangeRequest: (request) async {
+              if (request.id == 'cr_stale') {
+                throw Exception('stale change request');
+              }
+              approved.add(request.id);
+              requests = requests
+                  .where((item) => item.id != request.id)
+                  .toList(growable: false);
+            },
+            rejectChangeRequest: (_) async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Change requests'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.widgetWithText(FilledButton, 'Approve safe changes (2)'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(approved, ['cr_merge']);
+  });
+
   testWidgets('Change requests tab can reject all pending requests', (
     tester,
   ) async {

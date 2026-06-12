@@ -17,9 +17,10 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Sqlx(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             ApiError::Sqlx(_) | ApiError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()

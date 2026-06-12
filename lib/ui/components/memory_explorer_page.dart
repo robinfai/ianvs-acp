@@ -213,6 +213,13 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage> {
         _reloadChangeRequests();
         _reloadAuditLog();
       });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _reloadMemory();
+        _reloadChangeRequests();
+        _reloadAuditLog();
+      });
     } finally {
       if (mounted) setState(() => _busyChangeRequestId = null);
     }

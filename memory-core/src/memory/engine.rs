@@ -1076,7 +1076,17 @@ pub async fn approve_change_request(
     id: &str,
     request: ApproveChangeRequestRequest,
 ) -> sqlx::Result<MemoryChangeRequestResponse> {
-    let (approved, followup_scope) = approve_change_request_inner(pool, id, request).await?;
+    let (approved, followup_scope) = match approve_change_request_inner(pool, id, request).await {
+        Ok(result) => result,
+        Err(sqlx::Error::RowNotFound) => {
+            let existing = get_change_request(pool, id).await?;
+            if existing.status == "approved" {
+                return Ok(existing);
+            }
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Err(error) => return Err(error),
+    };
     if let Some(scope) = followup_scope {
         run_post_approval_maintenance(pool, &scope).await?;
     }
