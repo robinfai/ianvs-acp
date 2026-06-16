@@ -215,6 +215,50 @@ void main() {
     expect(saveButton.onPressed, isNull);
   });
 
+  testWidgets('AgentConfigDialog saves agent system prompt', (tester) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            defaultAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Edit Codex'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Edit Codex'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agent-system-prompt-field')),
+      'Keep task status current before replying.',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(
+      savedConfig?.agentServers.single.systemPrompt,
+      'Keep task status current before replying.',
+    );
+  });
+
   testWidgets('AgentConfigDialog rejects invalid review timeout', (
     tester,
   ) async {

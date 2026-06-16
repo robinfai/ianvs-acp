@@ -31,11 +31,13 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.enableFilesystemWriteTextFile = false,
     this.allowFilesystemReadOutsideWorkspace = false,
     this.enableTerminalProvider = false,
+    String systemPrompt = '',
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
        agentHeaders = agentHeaders ?? const <String, String>{},
+       systemPrompt = systemPrompt.trim(),
        mcpServers = mcpServers == null
            ? const <Map<String, dynamic>>[]
            : List.unmodifiable(mcpServers.map(_copyMcpServerConfig)),
@@ -58,6 +60,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final bool enableFilesystemWriteTextFile;
   final bool allowFilesystemReadOutsideWorkspace;
   final bool enableTerminalProvider;
+  final String systemPrompt;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -84,6 +87,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, List<Map<String, Object?>>>{};
   final Map<String, Map<String, Map<String, Object?>>>
   _rawToolCallStatesBySession = <String, Map<String, Map<String, Object?>>>{};
+  final Set<String> _systemPromptInjectedSessions = <String>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
@@ -515,6 +519,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
     _modelConfigOptionsFromModelsBySession.remove(sessionId);
+    _systemPromptInjectedSessions.remove(sessionId);
     _rawToolCallEventsBySession.remove(sessionId);
     _rawToolCallStatesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);
@@ -557,6 +562,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
     _modelConfigOptionsFromModelsBySession.clear();
+    _systemPromptInjectedSessions.clear();
     _rawToolCallEventsBySession.clear();
     _rawToolCallStatesBySession.clear();
     _permissionBridge.cancelAll();
@@ -591,7 +597,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = sessionId;
     try {
       final content = await _promptContentBlocks(
-        prompt,
+        _promptWithSystemPrompt(sessionId, prompt),
         attachments,
         workspaceRoot: _cwdBySession[sessionId],
       );
@@ -906,6 +912,16 @@ class DartAcpAgentClient implements AcpAgentClient {
       blocks.add(await _contentBlockForAttachment(attachment));
     }
     return blocks;
+  }
+
+  String _promptWithSystemPrompt(String sessionId, String prompt) {
+    if (systemPrompt.isEmpty) return prompt;
+    if (!_systemPromptInjectedSessions.add(sessionId)) return prompt;
+    final trimmedPrompt = prompt.trim();
+    if (trimmedPrompt.isEmpty) {
+      return '<system_prompt>\n$systemPrompt\n</system_prompt>';
+    }
+    return '<system_prompt>\n$systemPrompt\n</system_prompt>\n\n$prompt';
   }
 
   List<Map<String, dynamic>> _mentionResourceLinkBlocks(
@@ -1971,6 +1987,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
     _modelConfigOptionsFromModelsBySession.clear();
+    _systemPromptInjectedSessions.clear();
     _pendingRawProtocolRequests.clear();
     _rawSessionResultsBySession.clear();
     _rawToolCallEventsBySession.clear();

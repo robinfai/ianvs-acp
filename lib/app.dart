@@ -11,6 +11,9 @@ import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
 import 'state/chat_controller.dart';
+import 'task_center/task_center_controller.dart';
+import 'task_center/task_center_mcp_host.dart';
+import 'task_center/task_center_store.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/shell/app_shell.dart';
@@ -35,6 +38,8 @@ class AcpClientApp extends StatefulWidget {
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
+    this.taskCenterController,
+    this.taskCenterMcpHost,
   });
 
   final ChatController? controller;
@@ -43,6 +48,8 @@ class AcpClientApp extends StatefulWidget {
   final AgentServerDiscoverer? discoverAgentServers;
   final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
   final AcpConfigWriter? writeConfig;
+  final TaskCenterController? taskCenterController;
+  final TaskCenterMcpHost? taskCenterMcpHost;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -63,6 +70,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
+  late final TaskCenterStore _taskCenterStore;
+  late final TaskCenterController _taskCenterController;
+  late final TaskCenterMcpHost _taskCenterMcpHost;
+  late final bool _ownsTaskCenterController;
+  late final bool _ownsTaskCenterMcpHost;
+  McpServerConfig? _taskCenterMcpServerConfig;
   bool _agentDiscoveryStarted = false;
 
   @override
@@ -73,6 +86,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
       currentDirectory: Directory.current.path,
     );
+    _taskCenterStore = widget.taskCenterController?.store ?? TaskCenterStore();
+    _ownsTaskCenterController = widget.taskCenterController == null;
+    _taskCenterController =
+        widget.taskCenterController ??
+        TaskCenterController(store: _taskCenterStore);
+    _ownsTaskCenterMcpHost = widget.taskCenterMcpHost == null;
+    _taskCenterMcpHost =
+        widget.taskCenterMcpHost ??
+        TaskCenterMcpHost(store: _taskCenterController.store);
     if (widget.controller == null) {
       _controller = _cachedControllerFor(_config);
     } else {
@@ -85,6 +107,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_maybeDiscoverAgents());
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_startTaskCenterMcp());
     });
   }
 
@@ -124,6 +149,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   void dispose() {
     if (widget.controller == null) {
       _disposeCachedControllers();
+    }
+    if (_ownsTaskCenterMcpHost) {
+      unawaited(_taskCenterMcpHost.stop());
+    }
+    if (_ownsTaskCenterController) {
+      _taskCenterController.dispose();
     }
     super.dispose();
   }
@@ -190,7 +221,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         controller: _controller,
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
-        mcpServers: _config.mcpServers,
+        mcpServers: _effectiveMcpServers(_config),
         additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
@@ -198,6 +229,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         startupError: widget.startupError,
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
+        taskCenterController: _taskCenterController,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
         onSelectAgent: widget.controller == null
@@ -208,6 +240,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
             : null,
       ),
     );
+  }
+
+  Future<void> _startTaskCenterMcp() async {
+    try {
+      await _taskCenterMcpHost.start();
+      if (!mounted) return;
+      setState(() {
+        _taskCenterMcpServerConfig = _taskCenterMcpHost.mcpServerConfig;
+      });
+      _reconcileControllerCache(_config);
+      _controller = _cachedControllerFor(_config);
+    } catch (error) {
+      _showSnackBar('Could not start task center MCP server: $error');
+    }
   }
 
   Future<void> _maybeDiscoverAgents() async {
@@ -420,9 +466,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   DartAcpAgentClient _agentClient(AcpClientConfig config) {
     final server = config.activeAgentServer;
-    final mcpServers = config.mcpServers
-        .map((server) => server.toJson())
-        .toList();
+    final mcpServers = _effectiveMcpServers(
+      config,
+    ).map((server) => server.toJson()).toList();
     if (server == null) {
       return DartAcpAgentClient(
         mcpServers: mcpServers,
@@ -444,6 +490,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
       agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
       agentHeaders: server.headers,
+      systemPrompt: server.systemPrompt,
       mcpServers: mcpServers,
       enableFilesystemReadTextFile:
           config.clientProviders.filesystem.readTextFile,
@@ -454,6 +501,19 @@ class _AcpClientAppState extends State<AcpClientApp> {
       enableTerminalProvider: config.clientProviders.terminal.enabled,
       additionalDirectories: config.additionalDirectories,
     );
+  }
+
+  List<McpServerConfig> _effectiveMcpServers(AcpClientConfig config) {
+    final builtIn = _taskCenterMcpServerConfig;
+    if (builtIn == null) return config.mcpServers;
+    final result = <McpServerConfig>[];
+    var hasBuiltIn = false;
+    for (final server in config.mcpServers) {
+      if (server.name == builtIn.name) hasBuiltIn = true;
+      result.add(server);
+    }
+    if (!hasBuiltIn) result.add(builtIn);
+    return List.unmodifiable(result);
   }
 
   AcpPermissionReviewer? _permissionReviewer(AcpClientConfig config) {
@@ -555,9 +615,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       'agentServers': config.agentServers
           .map(_agentServerSignature)
           .toList(growable: false),
-      'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
-          .toList(growable: false),
+      'mcpServers': _effectiveMcpServers(
+        config,
+      ).map((server) => server.toJson()).toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'configPath': config.configPath,
@@ -569,9 +629,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return jsonEncode(<String, Object?>{
       'agentName': config.agentName,
       'activeAgentServer': _agentServerSignature(config.activeAgentServer),
-      'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
-          .toList(growable: false),
+      'mcpServers': _effectiveMcpServers(
+        config,
+      ).map((server) => server.toJson()).toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
     });

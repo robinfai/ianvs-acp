@@ -7,6 +7,7 @@ import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
+import '../../task_center/task_center_controller.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
@@ -20,6 +21,7 @@ import '../components/resume_session_dialog.dart';
 import '../components/session_sidebar.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/status_bar.dart';
+import '../components/task_center_board.dart';
 import '../theme/app_design_tokens.dart';
 
 class AppShell extends StatelessWidget {
@@ -40,6 +42,7 @@ class AppShell extends StatelessWidget {
     this.onNewSession,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
+    this.taskCenterController,
   });
 
   final ChatController controller;
@@ -57,6 +60,7 @@ class AppShell extends StatelessWidget {
   final void Function(BuildContext context)? onNewSession;
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
+  final TaskCenterController? taskCenterController;
 
   @override
   Widget build(BuildContext context) {
@@ -87,6 +91,9 @@ class AppShell extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
+                  onShowTaskCenter: taskCenterController == null
+                      ? null
+                      : () => _showTaskCenterDialog(context),
                   onShowProtocolCoverage: () =>
                       _showProtocolFeatureReviewDialog(context),
                   onAuthenticate: controller.canAuthenticate
@@ -345,6 +352,15 @@ class AppShell extends StatelessWidget {
           onSaveConfig: onSaveConfig,
         );
       },
+    );
+  }
+
+  Future<void> _showTaskCenterDialog(BuildContext context) async {
+    final controller = taskCenterController;
+    if (controller == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => TaskCenterDialog(controller: controller),
     );
   }
 

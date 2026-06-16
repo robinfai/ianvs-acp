@@ -16,6 +16,7 @@ class AgentToolbar extends StatelessWidget {
     this.canSwitchAgent = true,
     this.onSelectAgent,
     this.onShowAgentConfig,
+    this.onShowTaskCenter,
     this.onShowProtocolCoverage,
     this.onAuthenticate,
     this.onShowPermissionHistory,
@@ -32,6 +33,7 @@ class AgentToolbar extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onShowTaskCenter;
   final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
@@ -88,6 +90,15 @@ class AgentToolbar extends StatelessWidget {
                   onExtensionRequest: onExtensionRequest,
                   onLogout: onLogout,
                 ),
+                if (onShowTaskCenter != null) ...[
+                  SizedBox(width: compact ? 5 : 8),
+                  _ToolbarAction(
+                    icon: Icons.view_kanban_outlined,
+                    label: compact ? null : 'Tasks',
+                    tooltip: 'Task Center',
+                    onPressed: onShowTaskCenter,
+                  ),
+                ],
                 SizedBox(width: compact ? 5 : 8),
                 _ToolbarAction(
                   icon: Icons.play_circle_outline,

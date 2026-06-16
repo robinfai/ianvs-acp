@@ -900,6 +900,8 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   late final TextEditingController _urlController = TextEditingController(
     text: widget.initialServer?.url ?? '',
   );
+  late final TextEditingController _systemPromptController =
+      TextEditingController(text: widget.initialServer?.systemPrompt ?? '');
   final List<TextEditingController> _argControllers = [];
   final List<_NameValueControllers> _envControllers = [];
   final List<_NameValueControllers> _headerControllers = [];
@@ -934,6 +936,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
     _commandController.dispose();
     _cwdController.dispose();
     _urlController.dispose();
+    _systemPromptController.dispose();
     for (final controller in _argControllers) {
       controller.dispose();
     }
@@ -1051,6 +1054,14 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   }),
                 ),
               ],
+              const SizedBox(height: 10),
+              _DialogTextField(
+                key: const Key('agent-system-prompt-field'),
+                controller: _systemPromptController,
+                label: 'System Prompt',
+                icon: Icons.psychology_alt_outlined,
+                maxLines: 4,
+              ),
               if (_error != null) ...[
                 const SizedBox(height: 10),
                 _InlineError(message: _error!),
@@ -1085,6 +1096,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
         if (args.isNotEmpty) json['args'] = args;
         final env = _nameValueMap(_envControllers);
         if (env.isNotEmpty) json['env'] = env;
+      }
+      if (_systemPromptController.text.trim().isNotEmpty) {
+        json['system_prompt'] = _systemPromptController.text;
       }
       final server = AgentServerConfig.fromJson(
         name: _nameController.text.trim(),
@@ -1348,18 +1362,21 @@ class _DialogTextField extends StatelessWidget {
     required this.label,
     required this.icon,
     this.obscureText = false,
+    this.maxLines = 1,
   });
 
   final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
       obscureText: obscureText,
+      maxLines: maxLines,
       decoration: _fieldDecoration(label: label, icon: icon),
     );
   }
@@ -1837,6 +1854,10 @@ class _AgentServerPanel extends StatelessWidget {
               label: 'Review model',
               value: reviewAgent.model ?? 'Current model',
             ),
+          ],
+          if (server.systemPrompt.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            const _DetailRow(label: 'System', value: 'System prompt set'),
           ],
         ],
       ),

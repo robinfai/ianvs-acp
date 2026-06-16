@@ -13,6 +13,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onShowTaskCenter,
     VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
@@ -28,6 +29,7 @@ void main() {
           status: status,
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
+          onShowTaskCenter: onShowTaskCenter,
           onShowProtocolCoverage: onShowProtocolCoverage,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
@@ -49,6 +51,7 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
+    VoidCallback? onShowTaskCenter,
     VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
@@ -67,6 +70,7 @@ void main() {
         agentServers: agentServers,
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
+        onShowTaskCenter: onShowTaskCenter,
         onShowProtocolCoverage: onShowProtocolCoverage,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
@@ -189,6 +193,22 @@ void main() {
 
     expect(find.text('Reconnect'), findsNothing);
     expect(find.byTooltip('Reconnect'), findsNothing);
+  });
+
+  testWidgets('AgentToolbar opens task center when available', (tester) async {
+    var openedTaskCenter = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.disconnected,
+      onShowTaskCenter: () {
+        openedTaskCenter = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Task Center'));
+    await tester.pump();
+
+    expect(openedTaskCenter, isTrue);
   });
 
   testWidgets('AgentToolbar renders custom agent name', (tester) async {

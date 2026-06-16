@@ -40,6 +40,7 @@ void main() {
           type: 'custom',
           command: '/usr/local/bin/npx',
           args: ['@zed-industries/codex-acp'],
+          systemPrompt: 'Maintain task state before responding.',
           permissionReviewAgent: AcpPermissionReviewAgentConfig(
             enabled: true,
             model: 'agent-review-model',
@@ -104,6 +105,10 @@ void main() {
     expect(decoded['default_agent_server'], 'Codex');
     expect(decoded['agent_servers'], isNot(contains('Old Agent')));
     expect(decoded['agent_servers']['Codex']['command'], '/usr/local/bin/npx');
+    expect(
+      decoded['agent_servers']['Codex']['system_prompt'],
+      'Maintain task state before responding.',
+    );
     expect(
       decoded['agent_servers']['Codex']['review_agent']['model'],
       'agent-review-model',

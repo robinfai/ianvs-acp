@@ -227,6 +227,96 @@ Future<void> main() async {
     }
   });
 
+  test('injects configured system prompt once per session', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final promptParamsFile = File('${tempDir.path}/prompt_params.jsonl');
+    final promptParamsPath = jsonEncode(promptParamsFile.path);
+    final agentScript = File('${tempDir.path}/fake_system_prompt_agent.dart');
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-system-prompt'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptParamsPath).writeAsString(
+        jsonEncode(message['params']) + '\\n',
+        mode: FileMode.append,
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      systemPrompt: 'Keep the task center current.',
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: tempDir.path);
+      await client
+          .sendPrompt(sessionId: session.id, prompt: 'first task')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+      await client
+          .sendPrompt(sessionId: session.id, prompt: 'second task')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      final lines = await promptParamsFile.readAsLines();
+      expect(lines, hasLength(2));
+
+      final firstParams = jsonDecode(lines[0]) as Map<String, dynamic>;
+      final firstPrompt = firstParams['prompt'] as List<dynamic>;
+      expect(firstPrompt, [
+        {
+          'type': 'text',
+          'text':
+              '<system_prompt>\n'
+              'Keep the task center current.\n'
+              '</system_prompt>\n\n'
+              'first task',
+        },
+      ]);
+
+      final secondParams = jsonDecode(lines[1]) as Map<String, dynamic>;
+      final secondPrompt = secondParams['prompt'] as List<dynamic>;
+      expect(secondPrompt, [
+        {'type': 'text', 'text': 'second task'},
+      ]);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('filters MCP server transports by agent capabilities', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final sessionParamsFile = File('${tempDir.path}/session_params.json');

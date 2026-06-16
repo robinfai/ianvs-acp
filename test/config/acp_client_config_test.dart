@@ -46,6 +46,38 @@ void main() {
     expect(config.activeAgentServer?.env, {'KIMI_API_KEY': 'test-key'});
   });
 
+  test('loads and writes agent system prompt config', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+          'system_prompt': 'You maintain the local task center.',
+        },
+        'Kimi': {
+          'type': 'custom',
+          'command': '/usr/local/bin/kimi',
+          'systemPrompt': 'Use short implementation notes.',
+        },
+      },
+    });
+
+    expect(
+      config.activeAgentServer?.systemPrompt,
+      'You maintain the local task center.',
+    );
+    expect(
+      config.agentServers.last.systemPrompt,
+      'Use short implementation notes.',
+    );
+    expect(
+      config.activeAgentServer?.toJson()['system_prompt'],
+      ['You maintain the local task center.'].single,
+    );
+  });
+
   test('uses requested default agent server when multiple are configured', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Kimi Code Dev',

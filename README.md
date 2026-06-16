@@ -12,7 +12,11 @@ commands in the prompt input. When an agent advertises authentication methods,
 the Agent menu can start the agent-handled ACP `authenticate` flow. The same
 menu includes Protocol Coverage, which reviews implemented ACP areas against the
 official docs and points each area to its visible configuration and interaction
-surface.
+surface. A local Task Center is available from the toolbar. It persists
+workspace tasks locally, renders a draggable `boardview` kanban board, and
+starts an in-process Streamable HTTP MCP server named `ianvs-task-center` so
+ACP agents with `mcp.http` support can create workspaces, add tasks, move tasks
+between status columns, and list/delete task state.
 
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
@@ -42,7 +46,8 @@ Saved shape example for automation and debugging:
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["@zed-industries/codex-acp"]
+      "args": ["@zed-industries/codex-acp"],
+      "system_prompt": "Keep the local Task Center current before replying."
     }
   },
   "additional_directories": [
@@ -85,6 +90,23 @@ that owns the MCP server.
 Stdio `agent_servers` can set `cwd` to choose the working directory used when
 launching the agent process. The aliases `working_directory` and
 `workingDirectory` are also accepted.
+
+Each `agent_servers.<name>` entry can set `system_prompt` (or `systemPrompt`).
+The prompt is saved by the Agent Configuration dialog and injected once before
+the first user prompt in each ACP session for that agent.
+
+The Task Center persists to:
+
+```text
+~/.local/share/ianvs-acp/task_center.json
+```
+
+Use `IANVS_ACP_TASK_CENTER_PATH` or `ACP_TASK_CENTER_PATH` to override that
+file. When the app is running, the built-in MCP server exposes these tools to
+compatible agents: `task_center_create_workspace`,
+`task_center_list_workspaces`, `task_center_create_task`,
+`task_center_update_task`, `task_center_move_task`,
+`task_center_list_tasks`, and `task_center_delete_task`.
 
 `additional_directories` may list extra absolute workspace roots. They are sent
 only to agents that advertise `sessionCapabilities.additionalDirectories`, and
