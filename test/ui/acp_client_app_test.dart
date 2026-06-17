@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
@@ -21,6 +23,21 @@ void main() {
     await tester.pumpWidget(widget);
     await tester.pumpAndSettle();
   }
+
+  test(
+    'AcpClientApp fast agent prompt names task center workflow tools',
+    () async {
+      final source = await File('lib/app.dart').readAsString();
+
+      expect(source, contains('task_center_record_admission_decision'));
+      expect(source, contains('task_center_request_thinking_alignment'));
+      expect(source, contains('task_center_deliver_work_result'));
+      expect(source, contains('task_center_answer_human_question'));
+      expect(source, contains('先和 thinking agent 对齐'));
+      expect(source, contains('不要停在 task_center_request_thinking_alignment'));
+      expect(source, contains('禁止只用自然语言说需要问 human'));
+    },
+  );
 
   testWidgets('AcpClientApp prompts to add discovered agents on startup', (
     tester,

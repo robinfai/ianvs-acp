@@ -900,6 +900,12 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   late final TextEditingController _urlController = TextEditingController(
     text: widget.initialServer?.url ?? '',
   );
+  late final TextEditingController _defaultModelController =
+      TextEditingController(text: widget.initialServer?.defaultModel ?? '');
+  late final TextEditingController _defaultReasoningEffortController =
+      TextEditingController(
+        text: widget.initialServer?.defaultReasoningEffort ?? '',
+      );
   late final TextEditingController _systemPromptController =
       TextEditingController(text: widget.initialServer?.systemPrompt ?? '');
   final List<TextEditingController> _argControllers = [];
@@ -936,6 +942,8 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
     _commandController.dispose();
     _cwdController.dispose();
     _urlController.dispose();
+    _defaultModelController.dispose();
+    _defaultReasoningEffortController.dispose();
     _systemPromptController.dispose();
     for (final controller in _argControllers) {
       controller.dispose();
@@ -1056,6 +1064,20 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
               ],
               const SizedBox(height: 10),
               _DialogTextField(
+                key: const Key('agent-default-model-field'),
+                controller: _defaultModelController,
+                label: 'Default Model',
+                icon: Icons.memory_outlined,
+              ),
+              const SizedBox(height: 10),
+              _DialogTextField(
+                key: const Key('agent-default-reasoning-effort-field'),
+                controller: _defaultReasoningEffortController,
+                label: 'Default Reasoning Effort',
+                icon: Icons.tune_outlined,
+              ),
+              const SizedBox(height: 10),
+              _DialogTextField(
                 key: const Key('agent-system-prompt-field'),
                 controller: _systemPromptController,
                 label: 'System Prompt',
@@ -1099,6 +1121,13 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
       }
       if (_systemPromptController.text.trim().isNotEmpty) {
         json['system_prompt'] = _systemPromptController.text;
+      }
+      if (_defaultModelController.text.trim().isNotEmpty) {
+        json['default_model'] = _defaultModelController.text;
+      }
+      if (_defaultReasoningEffortController.text.trim().isNotEmpty) {
+        json['default_reasoning_effort'] =
+            _defaultReasoningEffortController.text;
       }
       final server = AgentServerConfig.fromJson(
         name: _nameController.text.trim(),
@@ -1853,6 +1882,17 @@ class _AgentServerPanel extends StatelessWidget {
             _DetailRow(
               label: 'Review model',
               value: reviewAgent.model ?? 'Current model',
+            ),
+          ],
+          if (server.defaultModel.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _DetailRow(label: 'Default model', value: server.defaultModel),
+          ],
+          if (server.defaultReasoningEffort.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Default effort',
+              value: server.defaultReasoningEffort,
             ),
           ],
           if (server.systemPrompt.trim().isNotEmpty) ...[

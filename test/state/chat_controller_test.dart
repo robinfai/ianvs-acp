@@ -1614,6 +1614,74 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
+  test('new session applies default model when exposed', () async {
+    final fake = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            options: [
+              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+            ],
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      defaultModel: 'mini',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(fake.lastConfigId, 'model');
+    expect(fake.lastConfigValue, 'mini');
+    expect(controller.sessionSettings.currentModelLabel, 'GPT-5 Mini');
+    expect(controller.lastError, isNull);
+  });
+
+  test('new session applies default reasoning effort when exposed', () async {
+    final fake = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'reasoning_effort',
+            name: 'Reasoning Effort',
+            type: 'select',
+            currentValue: 'medium',
+            options: [
+              AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+              AcpConfigOptionChoice(value: 'high', name: 'High'),
+              AcpConfigOptionChoice(value: 'xhigh', name: 'Extra High'),
+            ],
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      defaultReasoningEffort: 'xhigh',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(fake.lastConfigId, 'reasoning_effort');
+    expect(fake.lastConfigValue, 'xhigh');
+    expect(
+      controller.sessionSettings.currentReasoningEffortLabel,
+      'Extra High',
+    );
+    expect(controller.lastError, isNull);
+  });
+
   test(
     'set session reasoning effort updates reasoning config option',
     () async {

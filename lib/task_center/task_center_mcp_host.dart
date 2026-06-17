@@ -9,6 +9,7 @@ import 'task_center_store.dart';
 class TaskCenterMcpHost {
   TaskCenterMcpHost({
     required this.store,
+    this.onChanged,
     this.host = '127.0.0.1',
     this.startPort = 38971,
     this.maxPortAttempts = 20,
@@ -17,6 +18,7 @@ class TaskCenterMcpHost {
   static const String serverName = 'ianvs-task-center';
 
   final TaskCenterStore store;
+  final TaskCenterChanged? onChanged;
   final String host;
   final int startPort;
   final int maxPortAttempts;
@@ -73,7 +75,7 @@ class TaskCenterMcpHost {
   }
 
   mcp.McpServer _createServer() {
-    final api = TaskCenterAgentApi(store: store);
+    final api = TaskCenterAgentApi(store: store, onChanged: onChanged);
     final server = mcp.McpServer(
       const mcp.Implementation(
         name: serverName,
@@ -108,12 +110,39 @@ String _toolDescription(String name) {
   return switch (name) {
     'task_center_create_workspace' => 'Create a local task workspace.',
     'task_center_list_workspaces' => 'List local task workspaces.',
+    'task_center_configure_workspace_agents' =>
+      'Configure role agents for a task workspace.',
     'task_center_create_task' => 'Create a task in a workspace.',
     'task_center_update_task' =>
-      'Update task title, description, status, or metadata.',
+      'Update task title, protocol fields, status, or metadata.',
+    'task_center_update_task_details' =>
+      'Update human-readable task details and objective.',
+    'task_center_set_acceptance' => 'Set task acceptance criteria.',
+    'task_center_transfer_owner' =>
+      'Transfer a task to the next owner role or agent.',
+    'task_center_request_human_confirmation' =>
+      'Request human confirmation with explicit questions.',
+    'task_center_answer_human_question' =>
+      'Record an answer to a human confirmation question.',
+    'task_center_list_role_tasks' =>
+      'List tasks currently assigned to an owner role.',
+    'task_center_claim_work_task' => 'Claim a task for a concrete work agent.',
+    'task_center_record_execution_result' =>
+      'Record execution and verification notes for a task.',
+    'task_center_list_task_events' => 'List task event history.',
     'task_center_move_task' => 'Move a task to a status column and position.',
     'task_center_list_tasks' => 'List tasks in a workspace.',
     'task_center_delete_task' => 'Delete a task from a workspace.',
+    'task_center_post_workspace_message' =>
+      'Post a workspace chat message for human-agent coordination.',
+    'task_center_list_workspace_messages' =>
+      'List workspace chat messages for fast-agent admission context.',
+    'task_center_record_admission_decision' =>
+      'Record the fast agent inbox admission decision in workspace chat.',
+    'task_center_request_thinking_alignment' =>
+      'Transfer a task to the thinking agent and record the alignment request.',
+    'task_center_deliver_work_result' =>
+      'Record worker execution result and deliver it to workspace chat.',
     _ => 'Task center tool.',
   };
 }
@@ -124,15 +153,52 @@ mcp.JsonObject _toolInputSchema(String name) {
       properties: <String, mcp.JsonSchema>{
         'title': _stringSchema('Workspace title.'),
         'description': _stringSchema('Optional workspace description.'),
+        'fast_agent_name': _stringSchema('Main fast agent name.'),
+        'thinking_agent_name': _stringSchema('Main thinking agent name.'),
+        'work_agent_names': _stringArraySchema('Main work agent names.'),
+        'fast_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for the fast agent role.',
+        ),
+        'thinking_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for the thinking agent role.',
+        ),
+        'work_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for work agents.',
+        ),
       },
       required: const <String>['title'],
     ),
     'task_center_list_workspaces' => _schema(),
+    'task_center_configure_workspace_agents' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'fast_agent_name': _stringSchema('Main fast agent name.'),
+        'thinking_agent_name': _stringSchema('Main thinking agent name.'),
+        'work_agent_names': _stringArraySchema('Main work agent names.'),
+        'fast_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for the fast agent role.',
+        ),
+        'thinking_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for the thinking agent role.',
+        ),
+        'work_agent_prompt': _stringSchema(
+          'Workspace-level prompt supplement for work agents.',
+        ),
+      },
+      required: const <String>['workspace_id'],
+    ),
     'task_center_create_task' => _schema(
       properties: <String, mcp.JsonSchema>{
         'workspace_id': _stringSchema('Target workspace id.'),
         'title': _stringSchema('Task title.'),
         'description': _stringSchema('Optional task description.'),
+        'details': _stringSchema('Human-editable task details.'),
+        'objective': _stringSchema('Clear task objective.'),
+        'acceptance_criteria': _stringArraySchema('Acceptance criteria.'),
+        'current_owner': _ownerSchema(),
+        'suggested_owner': _ownerSchema(),
+        'readiness': _readinessSchema(),
+        'route_reason': _stringSchema('Reason for current routing.'),
         'status': _statusSchema(),
         'metadata': _objectSchema('Optional task metadata.'),
       },
@@ -144,8 +210,110 @@ mcp.JsonObject _toolInputSchema(String name) {
         'task_id': _stringSchema('Task id.'),
         'title': _stringSchema('New title.'),
         'description': _stringSchema('New description.'),
+        'details': _stringSchema('New task details.'),
+        'objective': _stringSchema('New task objective.'),
+        'acceptance_criteria': _stringArraySchema('Acceptance criteria.'),
+        'current_owner': _ownerSchema(),
+        'suggested_owner': _ownerSchema(),
+        'readiness': _readinessSchema(),
+        'route_reason': _stringSchema('Reason for current routing.'),
+        'execution_result': _stringSchema('Execution result.'),
+        'verification_notes': _stringSchema('Verification notes.'),
         'status': _statusSchema(),
         'metadata': _objectSchema('Replacement task metadata.'),
+      },
+      required: const <String>['workspace_id', 'task_id'],
+    ),
+    'task_center_update_task_details' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'description': _stringSchema('New description.'),
+        'details': _stringSchema('New task details.'),
+        'objective': _stringSchema('New task objective.'),
+      },
+      required: const <String>['workspace_id', 'task_id'],
+    ),
+    'task_center_set_acceptance' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'acceptance_criteria': _stringArraySchema('Acceptance criteria.'),
+        'actor': _stringSchema('Actor recording the acceptance criteria.'),
+      },
+      required: const <String>[
+        'workspace_id',
+        'task_id',
+        'acceptance_criteria',
+      ],
+    ),
+    'task_center_transfer_owner' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'owner': _ownerSchema(),
+        'readiness': _readinessSchema(),
+        'route_reason': _stringSchema('Reason for transferring this task.'),
+        'actor': _stringSchema('Actor transferring the task.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'owner'],
+    ),
+    'task_center_request_human_confirmation' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'questions': _stringArraySchema('Questions for the human operator.'),
+        'route_reason': _stringSchema('Reason human input is required.'),
+        'actor': _stringSchema('Actor requesting confirmation.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'questions'],
+    ),
+    'task_center_answer_human_question' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'question_id': _stringSchema('Human question id.'),
+        'answer': _stringSchema('Human answer.'),
+        'actor': _stringSchema('Actor answering the question.'),
+      },
+      required: const <String>[
+        'workspace_id',
+        'task_id',
+        'question_id',
+        'answer',
+      ],
+    ),
+    'task_center_list_role_tasks' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'owner_kind': _ownerKindSchema(),
+        'agent_name': _stringSchema('Optional concrete agent name.'),
+      },
+      required: const <String>['workspace_id', 'owner_kind'],
+    ),
+    'task_center_claim_work_task' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'agent_name': _stringSchema('Concrete work agent name.'),
+        'actor': _stringSchema('Actor claiming the task.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'agent_name'],
+    ),
+    'task_center_record_execution_result' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'execution_result': _stringSchema('Execution result.'),
+        'verification_notes': _stringSchema('Verification notes.'),
+        'actor': _stringSchema('Actor recording the result.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'execution_result'],
+    ),
+    'task_center_list_task_events' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
       },
       required: const <String>['workspace_id', 'task_id'],
     ),
@@ -174,6 +342,70 @@ mcp.JsonObject _toolInputSchema(String name) {
       },
       required: const <String>['workspace_id', 'task_id'],
     ),
+    'task_center_post_workspace_message' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'role': _chatRoleSchema(),
+        'actor': _stringSchema('Human or agent name writing the message.'),
+        'agent_name': _stringSchema('Optional concrete agent name.'),
+        'content': _stringSchema('Message content.'),
+        'task_id': _stringSchema('Optional linked task id.'),
+        'metadata': _objectSchema('Optional message metadata.'),
+      },
+      required: const <String>['workspace_id', 'role', 'actor', 'content'],
+    ),
+    'task_center_list_workspace_messages' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+      },
+      required: const <String>['workspace_id'],
+    ),
+    'task_center_record_admission_decision' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Optional linked task id.'),
+        'agent_name': _stringSchema('Fast agent name.'),
+        'decision': _admissionDecisionSchema(),
+        'reason': _stringSchema('Reason for this admission decision.'),
+        'content': _stringSchema('Optional chat message content override.'),
+      },
+      required: const <String>['workspace_id', 'agent_name', 'decision'],
+    ),
+    'task_center_request_thinking_alignment' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'fast_agent_name': _stringSchema('Fast agent name.'),
+        'thinking_agent_name': _stringSchema('Thinking agent name.'),
+        'question': _stringSchema('Question or alignment request.'),
+        'route_reason': _stringSchema('Reason the task needs thinking.'),
+      },
+      required: const <String>[
+        'workspace_id',
+        'task_id',
+        'fast_agent_name',
+        'thinking_agent_name',
+        'question',
+      ],
+    ),
+    'task_center_deliver_work_result' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'agent_name': _stringSchema('Work agent name.'),
+        'execution_result': _stringSchema('Execution result.'),
+        'verification_notes': _stringSchema('Verification notes.'),
+        'status': _statusSchema(
+          'Optional final delivery column. Defaults to done; todo and in_progress are treated as done.',
+        ),
+      },
+      required: const <String>[
+        'workspace_id',
+        'task_id',
+        'agent_name',
+        'execution_result',
+      ],
+    ),
     _ => _schema(),
   };
 }
@@ -197,9 +429,83 @@ mcp.JsonObject _objectSchema(String description) {
   return mcp.JsonSchema.object(description: description);
 }
 
-mcp.JsonString _statusSchema() {
+mcp.JsonArray _stringArraySchema(String description) {
+  return mcp.JsonSchema.array(
+    description: description,
+    items: mcp.JsonSchema.string(),
+  );
+}
+
+mcp.JsonString _statusSchema([String description = 'Task status column.']) {
   return mcp.JsonSchema.string(
     enumValues: const <String>['todo', 'in_progress', 'review', 'done'],
-    description: 'Task status column.',
+    description: description,
+  );
+}
+
+mcp.JsonString _chatRoleSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'human',
+      'fast_agent',
+      'thinking_agent',
+      'work_agent',
+      'system',
+    ],
+    description: 'Workspace chat message role.',
+  );
+}
+
+mcp.JsonString _admissionDecisionSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'accepted',
+      'needs_thinking',
+      'needs_human',
+      'rejected',
+    ],
+    description: 'Fast agent inbox admission decision.',
+  );
+}
+
+mcp.JsonString _readinessSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'needs_info',
+      'needs_thinking',
+      'waiting_human',
+      'ready',
+      'blocked',
+    ],
+    description: 'Task execution readiness.',
+  );
+}
+
+mcp.JsonString _ownerKindSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'unassigned',
+      'fast_agent',
+      'thinking_agent',
+      'human',
+      'work_agent_pool',
+      'work_agent',
+    ],
+    description: 'Task owner role kind.',
+  );
+}
+
+mcp.JsonObject _ownerSchema() {
+  return mcp.JsonSchema.object(
+    description: 'Task owner role.',
+    properties: <String, mcp.JsonSchema>{
+      'kind': _ownerKindSchema(),
+      'agent_name': _stringSchema('Optional concrete agent name.'),
+      'work_agent_index': mcp.JsonSchema.integer(
+        description: 'Optional work agent index.',
+      ),
+    },
+    required: const <String>['kind'],
+    additionalProperties: false,
   );
 }

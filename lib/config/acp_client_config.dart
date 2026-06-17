@@ -531,6 +531,8 @@ class AgentServerConfig {
     this.env = const <String, String>{},
     this.headers = const <String, String>{},
     this.systemPrompt = '',
+    this.defaultModel = '',
+    this.defaultReasoningEffort = '',
     this.permissionReviewAgent = const AcpPermissionReviewAgentConfig(),
   });
 
@@ -543,6 +545,8 @@ class AgentServerConfig {
   final Map<String, String> env;
   final Map<String, String> headers;
   final String systemPrompt;
+  final String defaultModel;
+  final String defaultReasoningEffort;
   final AcpPermissionReviewAgentConfig permissionReviewAgent;
 
   bool get isWebSocket => type == 'websocket' || type == 'ws';
@@ -588,6 +592,8 @@ class AgentServerConfig {
         url: url,
         headers: headers,
         systemPrompt: _agentSystemPrompt(json),
+        defaultModel: _agentDefaultModel(json),
+        defaultReasoningEffort: _agentDefaultReasoningEffort(json),
         permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
@@ -621,6 +627,8 @@ class AgentServerConfig {
         url: url,
         headers: headers,
         systemPrompt: _agentSystemPrompt(json),
+        defaultModel: _agentDefaultModel(json),
+        defaultReasoningEffort: _agentDefaultReasoningEffort(json),
         permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
@@ -659,6 +667,8 @@ class AgentServerConfig {
       args: args,
       env: env,
       systemPrompt: _agentSystemPrompt(json),
+      defaultModel: _agentDefaultModel(json),
+      defaultReasoningEffort: _agentDefaultReasoningEffort(json),
       permissionReviewAgent: _agentPermissionReviewAgent(json),
     );
   }
@@ -673,6 +683,9 @@ class AgentServerConfig {
       if (env.isNotEmpty) 'env': env,
       if (headers.isNotEmpty) 'headers': headers,
       if (systemPrompt.trim().isNotEmpty) 'system_prompt': systemPrompt.trim(),
+      if (defaultModel.trim().isNotEmpty) 'default_model': defaultModel.trim(),
+      if (defaultReasoningEffort.trim().isNotEmpty)
+        'default_reasoning_effort': defaultReasoningEffort.trim(),
       if (permissionReviewAgent.isConfigured)
         'review_agent': permissionReviewAgent.toJson(),
     };
@@ -808,6 +821,17 @@ AcpPermissionReviewAgentConfig _agentPermissionReviewAgent(
 
 String _agentSystemPrompt(Map<String, dynamic> json) {
   return _stringValue(json['system_prompt'] ?? json['systemPrompt']) ?? '';
+}
+
+String _agentDefaultModel(Map<String, dynamic> json) {
+  return _stringValue(json['default_model'] ?? json['defaultModel']) ?? '';
+}
+
+String _agentDefaultReasoningEffort(Map<String, dynamic> json) {
+  return _stringValue(
+        json['default_reasoning_effort'] ?? json['defaultReasoningEffort'],
+      ) ??
+      '';
 }
 
 const Set<String> _supportedMcpTransportTypes = <String>{

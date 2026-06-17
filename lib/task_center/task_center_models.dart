@@ -18,6 +18,437 @@ enum TaskCenterStatus {
   }
 }
 
+enum TaskCenterOwnerKind {
+  unassigned('unassigned', 'Unassigned'),
+  fastAgent('fast_agent', 'Main Fast Agent'),
+  thinkingAgent('thinking_agent', 'Main Thinking Agent'),
+  human('human', 'Human Confirm'),
+  workAgentPool('work_agent_pool', 'Work Agent Pool'),
+  workAgent('work_agent', 'Work Agent');
+
+  const TaskCenterOwnerKind(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static TaskCenterOwnerKind fromId(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final kind in values) {
+      if (kind.id == normalized) return kind;
+    }
+    throw FormatException('Unknown task owner kind "$id".');
+  }
+}
+
+enum TaskCenterReadiness {
+  needsInfo('needs_info', 'Needs Info'),
+  needsThinking('needs_thinking', 'Needs Thinking'),
+  waitingHuman('waiting_human', 'Waiting Human'),
+  ready('ready', 'Ready'),
+  blocked('blocked', 'Blocked');
+
+  const TaskCenterReadiness(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static TaskCenterReadiness fromId(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final readiness in values) {
+      if (readiness.id == normalized) return readiness;
+    }
+    throw FormatException('Unknown task readiness "$id".');
+  }
+}
+
+class TaskCenterTaskOwner {
+  const TaskCenterTaskOwner({
+    required this.kind,
+    this.agentName = '',
+    this.workAgentIndex,
+  });
+
+  const TaskCenterTaskOwner.unassigned()
+    : this(kind: TaskCenterOwnerKind.unassigned);
+
+  const TaskCenterTaskOwner.fastAgent(String agentName)
+    : this(kind: TaskCenterOwnerKind.fastAgent, agentName: agentName);
+
+  const TaskCenterTaskOwner.thinkingAgent(String agentName)
+    : this(kind: TaskCenterOwnerKind.thinkingAgent, agentName: agentName);
+
+  const TaskCenterTaskOwner.human() : this(kind: TaskCenterOwnerKind.human);
+
+  const TaskCenterTaskOwner.workAgentPool()
+    : this(kind: TaskCenterOwnerKind.workAgentPool);
+
+  const TaskCenterTaskOwner.workAgent(String agentName, {int? index})
+    : this(
+        kind: TaskCenterOwnerKind.workAgent,
+        agentName: agentName,
+        workAgentIndex: index,
+      );
+
+  final TaskCenterOwnerKind kind;
+  final String agentName;
+  final int? workAgentIndex;
+
+  String get label {
+    final cleanAgentName = agentName.trim();
+    if (cleanAgentName.isEmpty) return kind.label;
+    return '${kind.label}: $cleanAgentName';
+  }
+
+  bool matches({required TaskCenterOwnerKind kind, String? agentName}) {
+    if (this.kind != kind) return false;
+    final cleanAgent = agentName?.trim();
+    if (cleanAgent == null || cleanAgent.isEmpty) return true;
+    return this.agentName == cleanAgent;
+  }
+
+  factory TaskCenterTaskOwner.fromJson(Object? raw) {
+    if (raw == null) return const TaskCenterTaskOwner.unassigned();
+    if (raw is String) {
+      return TaskCenterTaskOwner(kind: TaskCenterOwnerKind.fromId(raw));
+    }
+    if (raw is! Map) {
+      throw const FormatException('current_owner must be an object.');
+    }
+    final json = _jsonMap(raw);
+    return TaskCenterTaskOwner(
+      kind: TaskCenterOwnerKind.fromId(
+        _requiredString(json['kind'], 'owner.kind'),
+      ),
+      agentName: _stringValue(json['agent_name'] ?? json['agentName']) ?? '',
+      workAgentIndex: _intValue(
+        json['work_agent_index'] ?? json['workAgentIndex'],
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'kind': kind.id,
+      if (agentName.isNotEmpty) 'agent_name': agentName,
+      if (workAgentIndex != null) 'work_agent_index': workAgentIndex,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{...toJson(), 'label': label};
+  }
+}
+
+class TaskWorkspaceAgentConfig {
+  const TaskWorkspaceAgentConfig({
+    this.fastAgentName = '',
+    this.thinkingAgentName = '',
+    this.workAgentNames = const <String>[],
+    this.fastAgentPrompt = '',
+    this.thinkingAgentPrompt = '',
+    this.workAgentPrompt = '',
+  });
+
+  final String fastAgentName;
+  final String thinkingAgentName;
+  final List<String> workAgentNames;
+  final String fastAgentPrompt;
+  final String thinkingAgentPrompt;
+  final String workAgentPrompt;
+
+  bool get isEmpty =>
+      fastAgentName.isEmpty &&
+      thinkingAgentName.isEmpty &&
+      workAgentNames.isEmpty &&
+      fastAgentPrompt.isEmpty &&
+      thinkingAgentPrompt.isEmpty &&
+      workAgentPrompt.isEmpty;
+
+  TaskWorkspaceAgentConfig copyWith({
+    String? fastAgentName,
+    String? thinkingAgentName,
+    List<String>? workAgentNames,
+    String? fastAgentPrompt,
+    String? thinkingAgentPrompt,
+    String? workAgentPrompt,
+  }) {
+    return TaskWorkspaceAgentConfig(
+      fastAgentName: fastAgentName ?? this.fastAgentName,
+      thinkingAgentName: thinkingAgentName ?? this.thinkingAgentName,
+      workAgentNames: workAgentNames ?? this.workAgentNames,
+      fastAgentPrompt: fastAgentPrompt ?? this.fastAgentPrompt,
+      thinkingAgentPrompt: thinkingAgentPrompt ?? this.thinkingAgentPrompt,
+      workAgentPrompt: workAgentPrompt ?? this.workAgentPrompt,
+    );
+  }
+
+  factory TaskWorkspaceAgentConfig.fromJson(Object? raw) {
+    if (raw == null) return const TaskWorkspaceAgentConfig();
+    if (raw is! Map) {
+      throw const FormatException('workspace agent_config must be an object.');
+    }
+    final json = _jsonMap(raw);
+    return TaskWorkspaceAgentConfig(
+      fastAgentName:
+          _stringValue(json['fast_agent_name'] ?? json['fastAgentName']) ?? '',
+      thinkingAgentName:
+          _stringValue(
+            json['thinking_agent_name'] ?? json['thinkingAgentName'],
+          ) ??
+          '',
+      workAgentNames: _stringListValue(
+        json['work_agent_names'] ?? json['workAgentNames'],
+      ),
+      fastAgentPrompt:
+          _stringValue(json['fast_agent_prompt'] ?? json['fastAgentPrompt']) ??
+          '',
+      thinkingAgentPrompt:
+          _stringValue(
+            json['thinking_agent_prompt'] ?? json['thinkingAgentPrompt'],
+          ) ??
+          '',
+      workAgentPrompt:
+          _stringValue(json['work_agent_prompt'] ?? json['workAgentPrompt']) ??
+          '',
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      if (fastAgentName.isNotEmpty) 'fast_agent_name': fastAgentName,
+      if (thinkingAgentName.isNotEmpty)
+        'thinking_agent_name': thinkingAgentName,
+      if (workAgentNames.isNotEmpty) 'work_agent_names': workAgentNames,
+      if (fastAgentPrompt.isNotEmpty) 'fast_agent_prompt': fastAgentPrompt,
+      if (thinkingAgentPrompt.isNotEmpty)
+        'thinking_agent_prompt': thinkingAgentPrompt,
+      if (workAgentPrompt.isNotEmpty) 'work_agent_prompt': workAgentPrompt,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{
+      'fast_agent_name': fastAgentName,
+      'thinking_agent_name': thinkingAgentName,
+      'work_agent_names': workAgentNames,
+      'fast_agent_prompt': fastAgentPrompt,
+      'thinking_agent_prompt': thinkingAgentPrompt,
+      'work_agent_prompt': workAgentPrompt,
+    };
+  }
+}
+
+class TaskCenterHumanQuestion {
+  const TaskCenterHumanQuestion({
+    required this.id,
+    required this.question,
+    this.answer = '',
+    this.resolved = false,
+  });
+
+  final String id;
+  final String question;
+  final String answer;
+  final bool resolved;
+
+  TaskCenterHumanQuestion copyWith({String? answer, bool? resolved}) {
+    return TaskCenterHumanQuestion(
+      id: id,
+      question: question,
+      answer: answer ?? this.answer,
+      resolved: resolved ?? this.resolved,
+    );
+  }
+
+  factory TaskCenterHumanQuestion.fromJson(Object? raw) {
+    if (raw is String) {
+      return TaskCenterHumanQuestion(id: raw, question: raw);
+    }
+    if (raw is! Map) {
+      throw const FormatException('human question entries must be objects.');
+    }
+    final json = _jsonMap(raw);
+    return TaskCenterHumanQuestion(
+      id: _requiredString(json['id'], 'human_question.id'),
+      question: _requiredString(json['question'], 'human_question.question'),
+      answer: _stringValue(json['answer']) ?? '',
+      resolved: _boolValue(json['resolved']) ?? false,
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'id': id,
+      'question': question,
+      if (answer.isNotEmpty) 'answer': answer,
+      if (resolved) 'resolved': true,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{
+      'id': id,
+      'question': question,
+      'answer': answer,
+      'resolved': resolved,
+    };
+  }
+}
+
+enum TaskWorkspaceChatRole {
+  human('human', 'Human'),
+  fastAgent('fast_agent', 'Fast Agent'),
+  thinkingAgent('thinking_agent', 'Thinking Agent'),
+  workAgent('work_agent', 'Work Agent'),
+  system('system', 'System');
+
+  const TaskWorkspaceChatRole(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static TaskWorkspaceChatRole fromId(String id) {
+    for (final role in values) {
+      if (role.id == id) return role;
+    }
+    throw FormatException('Unknown workspace chat role "$id".');
+  }
+}
+
+class TaskWorkspaceChatMessage {
+  const TaskWorkspaceChatMessage({
+    required this.id,
+    required this.workspaceId,
+    required this.role,
+    required this.actor,
+    required this.content,
+    required this.createdAt,
+    this.agentName = '',
+    this.taskId,
+    this.metadata = const <String, Object?>{},
+  });
+
+  final String id;
+  final String workspaceId;
+  final TaskWorkspaceChatRole role;
+  final String actor;
+  final String agentName;
+  final String content;
+  final String? taskId;
+  final DateTime createdAt;
+  final Map<String, Object?> metadata;
+
+  factory TaskWorkspaceChatMessage.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('workspace chat entries must be objects.');
+    }
+    final json = _jsonMap(raw);
+    return TaskWorkspaceChatMessage(
+      id: _requiredString(json['id'], 'workspace_chat.id'),
+      workspaceId: _requiredString(
+        json['workspace_id'] ?? json['workspaceId'],
+        'workspace_chat.workspace_id',
+      ),
+      role: TaskWorkspaceChatRole.fromId(
+        _requiredString(json['role'], 'workspace_chat.role'),
+      ),
+      actor: _stringValue(json['actor']) ?? 'unknown',
+      agentName: _stringValue(json['agent_name'] ?? json['agentName']) ?? '',
+      content: _stringValue(json['content']) ?? '',
+      taskId: _stringValue(json['task_id'] ?? json['taskId']),
+      createdAt: _dateTimeValue(
+        json['created_at'] ?? json['createdAt'],
+        'workspace_chat.created_at',
+      ),
+      metadata: _objectMap(json['metadata']),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'id': id,
+      'workspace_id': workspaceId,
+      'role': role.id,
+      'actor': actor,
+      if (agentName.isNotEmpty) 'agent_name': agentName,
+      'content': content,
+      if (taskId != null) 'task_id': taskId,
+      'created_at': createdAt.toIso8601String(),
+      if (metadata.isNotEmpty) 'metadata': metadata,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{
+      'id': id,
+      'workspace_id': workspaceId,
+      'role': role.id,
+      'role_label': role.label,
+      'actor': actor,
+      'agent_name': agentName,
+      'content': content,
+      'task_id': taskId,
+      'created_at': createdAt.toIso8601String(),
+      'metadata': metadata,
+    };
+  }
+}
+
+class TaskCenterEvent {
+  const TaskCenterEvent({
+    required this.id,
+    required this.type,
+    required this.actor,
+    required this.message,
+    required this.createdAt,
+    this.metadata = const <String, Object?>{},
+  });
+
+  final String id;
+  final String type;
+  final String actor;
+  final String message;
+  final DateTime createdAt;
+  final Map<String, Object?> metadata;
+
+  factory TaskCenterEvent.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('task event entries must be objects.');
+    }
+    final json = _jsonMap(raw);
+    return TaskCenterEvent(
+      id: _requiredString(json['id'], 'event.id'),
+      type: _requiredString(json['type'], 'event.type'),
+      actor: _stringValue(json['actor']) ?? 'unknown',
+      message: _stringValue(json['message']) ?? '',
+      createdAt: _dateTimeValue(json['created_at'], 'event.created_at'),
+      metadata: _objectMap(json['metadata']),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'id': id,
+      'type': type,
+      'actor': actor,
+      'message': message,
+      'created_at': createdAt.toIso8601String(),
+      if (metadata.isNotEmpty) 'metadata': metadata,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{
+      'id': id,
+      'type': type,
+      'actor': actor,
+      'message': message,
+      'created_at': createdAt.toIso8601String(),
+      'metadata': metadata,
+    };
+  }
+}
+
 class TaskCenterSnapshot {
   const TaskCenterSnapshot({
     this.version = 1,
@@ -68,6 +499,8 @@ class TaskWorkspace {
     required this.createdAt,
     required this.updatedAt,
     this.description = '',
+    this.agentConfig = const TaskWorkspaceAgentConfig(),
+    this.chatMessages = const <TaskWorkspaceChatMessage>[],
     this.tasks = const <TaskCenterTask>[],
   });
 
@@ -76,12 +509,16 @@ class TaskWorkspace {
   final String description;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final TaskWorkspaceAgentConfig agentConfig;
+  final List<TaskWorkspaceChatMessage> chatMessages;
   final List<TaskCenterTask> tasks;
 
   TaskWorkspace copyWith({
     String? title,
     String? description,
     DateTime? updatedAt,
+    TaskWorkspaceAgentConfig? agentConfig,
+    List<TaskWorkspaceChatMessage>? chatMessages,
     List<TaskCenterTask>? tasks,
   }) {
     return TaskWorkspace(
@@ -90,6 +527,8 @@ class TaskWorkspace {
       description: description ?? this.description,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      agentConfig: agentConfig ?? this.agentConfig,
+      chatMessages: chatMessages ?? this.chatMessages,
       tasks: tasks ?? this.tasks,
     );
   }
@@ -99,12 +538,22 @@ class TaskWorkspace {
     if (tasksRaw != null && tasksRaw is! List) {
       throw const FormatException('workspace tasks must be a list.');
     }
+    final chatRaw = json['chat_messages'] ?? json['chatMessages'];
+    if (chatRaw != null && chatRaw is! List) {
+      throw const FormatException('workspace chat_messages must be a list.');
+    }
     return TaskWorkspace(
       id: _requiredString(json['id'], 'workspace.id'),
       title: _requiredString(json['title'], 'workspace.title'),
       description: _stringValue(json['description']) ?? '',
       createdAt: _dateTimeValue(json['created_at'], 'workspace.created_at'),
       updatedAt: _dateTimeValue(json['updated_at'], 'workspace.updated_at'),
+      agentConfig: TaskWorkspaceAgentConfig.fromJson(
+        json['agent_config'] ?? json['agentConfig'],
+      ),
+      chatMessages: (chatRaw ?? const <Object?>[])
+          .map<TaskWorkspaceChatMessage>(TaskWorkspaceChatMessage.fromJson)
+          .toList(growable: false),
       tasks: (tasksRaw ?? const <Object?>[])
           .map<TaskCenterTask>((item) {
             if (item is! Map) {
@@ -123,6 +572,11 @@ class TaskWorkspace {
       if (description.isNotEmpty) 'description': description,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
+      if (!agentConfig.isEmpty) 'agent_config': agentConfig.toJson(),
+      if (chatMessages.isNotEmpty)
+        'chat_messages': chatMessages
+            .map((message) => message.toJson())
+            .toList(growable: false),
       'tasks': tasks.map((task) => task.toJson()).toList(),
     };
   }
@@ -135,6 +589,8 @@ class TaskWorkspace {
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
       'task_count': tasks.length,
+      'chat_message_count': chatMessages.length,
+      'agent_config': agentConfig.toAgentJson(),
     };
   }
 }
@@ -149,6 +605,17 @@ class TaskCenterTask {
     required this.createdAt,
     required this.updatedAt,
     this.description = '',
+    this.details = '',
+    this.objective = '',
+    this.acceptanceCriteria = const <String>[],
+    this.humanQuestions = const <TaskCenterHumanQuestion>[],
+    this.currentOwner = const TaskCenterTaskOwner.unassigned(),
+    this.suggestedOwner,
+    this.readiness = TaskCenterReadiness.needsInfo,
+    this.routeReason = '',
+    this.executionResult = '',
+    this.verificationNotes = '',
+    this.events = const <TaskCenterEvent>[],
     this.metadata = const <String, Object?>{},
   });
 
@@ -156,6 +623,17 @@ class TaskCenterTask {
   final String workspaceId;
   final String title;
   final String description;
+  final String details;
+  final String objective;
+  final List<String> acceptanceCriteria;
+  final List<TaskCenterHumanQuestion> humanQuestions;
+  final TaskCenterTaskOwner currentOwner;
+  final TaskCenterTaskOwner? suggestedOwner;
+  final TaskCenterReadiness readiness;
+  final String routeReason;
+  final String executionResult;
+  final String verificationNotes;
+  final List<TaskCenterEvent> events;
   final TaskCenterStatus status;
   final int sortOrder;
   final DateTime createdAt;
@@ -165,6 +643,17 @@ class TaskCenterTask {
   TaskCenterTask copyWith({
     String? title,
     String? description,
+    String? details,
+    String? objective,
+    List<String>? acceptanceCriteria,
+    List<TaskCenterHumanQuestion>? humanQuestions,
+    TaskCenterTaskOwner? currentOwner,
+    TaskCenterTaskOwner? suggestedOwner,
+    TaskCenterReadiness? readiness,
+    String? routeReason,
+    String? executionResult,
+    String? verificationNotes,
+    List<TaskCenterEvent>? events,
     TaskCenterStatus? status,
     int? sortOrder,
     DateTime? updatedAt,
@@ -175,6 +664,17 @@ class TaskCenterTask {
       workspaceId: workspaceId,
       title: title ?? this.title,
       description: description ?? this.description,
+      details: details ?? this.details,
+      objective: objective ?? this.objective,
+      acceptanceCriteria: acceptanceCriteria ?? this.acceptanceCriteria,
+      humanQuestions: humanQuestions ?? this.humanQuestions,
+      currentOwner: currentOwner ?? this.currentOwner,
+      suggestedOwner: suggestedOwner ?? this.suggestedOwner,
+      readiness: readiness ?? this.readiness,
+      routeReason: routeReason ?? this.routeReason,
+      executionResult: executionResult ?? this.executionResult,
+      verificationNotes: verificationNotes ?? this.verificationNotes,
+      events: events ?? this.events,
       status: status ?? this.status,
       sortOrder: sortOrder ?? this.sortOrder,
       createdAt: createdAt,
@@ -189,6 +689,34 @@ class TaskCenterTask {
       workspaceId: _requiredString(json['workspace_id'], 'task.workspace_id'),
       title: _requiredString(json['title'], 'task.title'),
       description: _stringValue(json['description']) ?? '',
+      details: _stringValue(json['details']) ?? '',
+      objective: _stringValue(json['objective']) ?? '',
+      acceptanceCriteria: _stringListValue(
+        json['acceptance_criteria'] ?? json['acceptanceCriteria'],
+      ),
+      humanQuestions: _humanQuestions(
+        json['human_questions'] ?? json['humanQuestions'],
+      ),
+      currentOwner: TaskCenterTaskOwner.fromJson(
+        json['current_owner'] ?? json['currentOwner'],
+      ),
+      suggestedOwner: _optionalOwner(
+        json['suggested_owner'] ?? json['suggestedOwner'],
+      ),
+      readiness: TaskCenterReadiness.fromId(
+        _stringValue(json['readiness']) ?? TaskCenterReadiness.needsInfo.id,
+      ),
+      routeReason:
+          _stringValue(json['route_reason'] ?? json['routeReason']) ?? '',
+      executionResult:
+          _stringValue(json['execution_result'] ?? json['executionResult']) ??
+          '',
+      verificationNotes:
+          _stringValue(
+            json['verification_notes'] ?? json['verificationNotes'],
+          ) ??
+          '',
+      events: _events(json['events']),
       status: TaskCenterStatus.fromId(
         _requiredString(json['status'], 'task.status'),
       ),
@@ -205,6 +733,22 @@ class TaskCenterTask {
       'workspace_id': workspaceId,
       'title': title,
       if (description.isNotEmpty) 'description': description,
+      if (details.isNotEmpty) 'details': details,
+      if (objective.isNotEmpty) 'objective': objective,
+      if (acceptanceCriteria.isNotEmpty)
+        'acceptance_criteria': acceptanceCriteria,
+      if (humanQuestions.isNotEmpty)
+        'human_questions': humanQuestions
+            .map((question) => question.toJson())
+            .toList(),
+      'current_owner': currentOwner.toJson(),
+      if (suggestedOwner != null) 'suggested_owner': suggestedOwner!.toJson(),
+      'readiness': readiness.id,
+      if (routeReason.isNotEmpty) 'route_reason': routeReason,
+      if (executionResult.isNotEmpty) 'execution_result': executionResult,
+      if (verificationNotes.isNotEmpty) 'verification_notes': verificationNotes,
+      if (events.isNotEmpty)
+        'events': events.map((event) => event.toJson()).toList(),
       'status': status.id,
       'sort_order': sortOrder,
       'created_at': createdAt.toIso8601String(),
@@ -219,6 +763,19 @@ class TaskCenterTask {
       'workspace_id': workspaceId,
       'title': title,
       'description': description,
+      'details': details,
+      'objective': objective,
+      'acceptance_criteria': acceptanceCriteria,
+      'human_questions': humanQuestions
+          .map((question) => question.toAgentJson())
+          .toList(),
+      'current_owner': currentOwner.toAgentJson(),
+      'suggested_owner': suggestedOwner?.toAgentJson(),
+      'readiness': readiness.id,
+      'readiness_label': readiness.label,
+      'route_reason': routeReason,
+      'execution_result': executionResult,
+      'verification_notes': verificationNotes,
       'status': status.id,
       'status_label': status.label,
       'sort_order': sortOrder,
@@ -239,6 +796,11 @@ String? _stringValue(Object? value) {
   if (value is! String) return null;
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+bool? _boolValue(Object? value) {
+  if (value is bool) return value;
+  return null;
 }
 
 int? _intValue(Object? value) {
@@ -278,4 +840,41 @@ Map<String, Object?> _objectMap(Object? raw) {
     result[key] = entry.value;
   }
   return result;
+}
+
+List<String> _stringListValue(Object? raw) {
+  if (raw == null) return const <String>[];
+  if (raw is! List) throw const FormatException('value must be a list.');
+  return raw
+      .map((item) {
+        final value = _stringValue(item);
+        if (value == null) {
+          throw const FormatException('list entries must be strings.');
+        }
+        return value;
+      })
+      .toList(growable: false);
+}
+
+TaskCenterTaskOwner? _optionalOwner(Object? raw) {
+  if (raw == null) return null;
+  return TaskCenterTaskOwner.fromJson(raw);
+}
+
+List<TaskCenterHumanQuestion> _humanQuestions(Object? raw) {
+  if (raw == null) return const <TaskCenterHumanQuestion>[];
+  if (raw is! List) {
+    throw const FormatException('human_questions must be a list.');
+  }
+  return raw
+      .map((item) => TaskCenterHumanQuestion.fromJson(item))
+      .toList(growable: false);
+}
+
+List<TaskCenterEvent> _events(Object? raw) {
+  if (raw == null) return const <TaskCenterEvent>[];
+  if (raw is! List) throw const FormatException('events must be a list.');
+  return raw
+      .map((item) => TaskCenterEvent.fromJson(item))
+      .toList(growable: false);
 }

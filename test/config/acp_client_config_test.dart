@@ -78,6 +78,77 @@ void main() {
     );
   });
 
+  test('loads and writes agent default model config', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+          'default_model': 'gpt-5-fast',
+          'default_reasoning_effort': 'spark',
+        },
+        'Remote': {
+          'type': 'websocket',
+          'url': 'ws://127.0.0.1:8765/acp',
+          'defaultModel': 'claude-sonnet-4',
+          'defaultReasoningEffort': 'xhigh',
+        },
+      },
+    });
+
+    expect(config.activeAgentServer?.defaultModel, 'gpt-5-fast');
+    expect(config.activeAgentServer?.defaultReasoningEffort, 'spark');
+    expect(config.agentServers.last.defaultModel, 'claude-sonnet-4');
+    expect(config.agentServers.last.defaultReasoningEffort, 'xhigh');
+    expect(config.activeAgentServer?.toJson()['default_model'], 'gpt-5-fast');
+    expect(
+      config.activeAgentServer?.toJson()['default_reasoning_effort'],
+      'spark',
+    );
+  });
+
+  test('loads Codex role defaults for task center agents', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'codex-fast',
+      'agent_servers': {
+        'codex-fast': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+          'default_model': '5.3',
+          'default_reasoning_effort': 'spark',
+        },
+        'codex-thinking': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+          'default_model': '5.5',
+          'default_reasoning_effort': 'xhigh',
+        },
+        'codex-worker': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['@zed-industries/codex-acp'],
+          'default_model': '5.5',
+          'default_reasoning_effort': 'high',
+        },
+      },
+    });
+
+    final fast = config.agentServerNamed('codex-fast')!;
+    final thinking = config.agentServerNamed('codex-thinking')!;
+    final worker = config.agentServerNamed('codex-worker')!;
+
+    expect(fast.defaultModel, '5.3');
+    expect(fast.defaultReasoningEffort, 'spark');
+    expect(thinking.defaultModel, '5.5');
+    expect(thinking.defaultReasoningEffort, 'xhigh');
+    expect(worker.defaultModel, '5.5');
+    expect(worker.defaultReasoningEffort, 'high');
+  });
+
   test('uses requested default agent server when multiple are configured', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Kimi Code Dev',

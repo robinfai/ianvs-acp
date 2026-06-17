@@ -45,10 +45,14 @@ class ChatController extends ChangeNotifier {
     this.additionalDirectories = const <String>[],
     this.agentName = 'Codex',
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
+    String defaultModel = '',
+    String defaultReasoningEffort = '',
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
     this.permissionReviewer,
   }) : assert(permissionHistoryLimit > 0),
+       defaultModel = defaultModel.trim(),
+       defaultReasoningEffort = defaultReasoningEffort.trim(),
        permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
@@ -64,6 +68,8 @@ class ChatController extends ChangeNotifier {
   final List<String> additionalDirectories;
   final String agentName;
   final int permissionHistoryLimit;
+  final String defaultModel;
+  final String defaultReasoningEffort;
   final List<AcpPermissionTrustRule> permissionTrustRules;
   final AcpPermissionReviewer? permissionReviewer;
 
@@ -206,6 +212,8 @@ class ChatController extends ChangeNotifier {
           _handleAgentEvent(event, notify: false);
         }
         await _loadSessionSettings(session.id, notify: false);
+        await _applyDefaultModel(session.id, notify: false);
+        await _applyDefaultReasoningEffort(session.id, notify: false);
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
@@ -510,6 +518,78 @@ class ChatController extends ChangeNotifier {
       return;
     }
     await setConfigOption(option.id, modelValue);
+  }
+
+  Future<void> _applyDefaultModel(
+    String sessionId, {
+    bool notify = true,
+  }) async {
+    if (defaultModel.isEmpty) return;
+    final option = sessionSettings.modelOption;
+    if (option == null || option.currentValue == defaultModel) return;
+    if (option.options.isNotEmpty &&
+        !option.options.any((choice) => choice.value == defaultModel)) {
+      return;
+    }
+
+    try {
+      final options = await client.setConfigOption(
+        sessionId: sessionId,
+        configId: option.id,
+        value: defaultModel,
+      );
+      if (!_isActiveSession(sessionId)) return;
+      final updatedOptions = options.isEmpty
+          ? _configOptionsWithOverride(option.id, defaultModel)
+          : options;
+      sessionSettings = sessionSettings.withPreferredConfigOptions(
+        updatedOptions,
+      );
+      lastError = null;
+      if (notify) _notifyListeners();
+    } catch (error) {
+      if (_isActiveSession(sessionId)) {
+        _setActionError(error);
+      }
+    }
+  }
+
+  Future<void> _applyDefaultReasoningEffort(
+    String sessionId, {
+    bool notify = true,
+  }) async {
+    if (defaultReasoningEffort.isEmpty) return;
+    final option = sessionSettings.reasoningEffortOption;
+    if (option == null || option.currentValue == defaultReasoningEffort) {
+      return;
+    }
+    if (option.options.isNotEmpty &&
+        !option.options.any(
+          (choice) => choice.value == defaultReasoningEffort,
+        )) {
+      return;
+    }
+
+    try {
+      final options = await client.setConfigOption(
+        sessionId: sessionId,
+        configId: option.id,
+        value: defaultReasoningEffort,
+      );
+      if (!_isActiveSession(sessionId)) return;
+      final updatedOptions = options.isEmpty
+          ? _configOptionsWithOverride(option.id, defaultReasoningEffort)
+          : options;
+      sessionSettings = sessionSettings.withPreferredConfigOptions(
+        updatedOptions,
+      );
+      lastError = null;
+      if (notify) _notifyListeners();
+    } catch (error) {
+      if (_isActiveSession(sessionId)) {
+        _setActionError(error);
+      }
+    }
   }
 
   Future<void> setSessionReasoningEffort(String effortValue) async {

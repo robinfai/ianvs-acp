@@ -12,6 +12,8 @@
 .swiftpm/
 migrate_working_dir/
 .tmp-*
+.serena/
+.superpowers/
 
 # IntelliJ related
 *.iml

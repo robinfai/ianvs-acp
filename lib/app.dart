@@ -13,6 +13,7 @@ import 'config/acp_config_store.dart';
 import 'state/chat_controller.dart';
 import 'task_center/task_center_controller.dart';
 import 'task_center/task_center_mcp_host.dart';
+import 'task_center/task_center_models.dart';
 import 'task_center/task_center_store.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
@@ -94,7 +95,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _ownsTaskCenterMcpHost = widget.taskCenterMcpHost == null;
     _taskCenterMcpHost =
         widget.taskCenterMcpHost ??
-        TaskCenterMcpHost(store: _taskCenterController.store);
+        TaskCenterMcpHost(
+          store: _taskCenterController.store,
+          onChanged: _taskCenterController.load,
+        );
     if (widget.controller == null) {
       _controller = _cachedControllerFor(_config);
     } else {
@@ -230,6 +234,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
         taskCenterController: _taskCenterController,
+        onSendWorkspaceMessage: _sendWorkspaceMessageToFastAgent,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
         onSelectAgent: widget.controller == null
@@ -298,6 +303,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       cwd: _cwd,
       additionalDirectories: config.additionalDirectories,
       agentName: config.agentName,
+      defaultModel: config.activeAgentServer?.defaultModel ?? '',
+      defaultReasoningEffort:
+          config.activeAgentServer?.defaultReasoningEffort ?? '',
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
     );
@@ -360,6 +368,78 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
 
     _activateAgent(nextConfig);
+  }
+
+  Future<String> _sendWorkspaceMessageToFastAgent(
+    TaskWorkspace workspace,
+    String message,
+  ) async {
+    final fastAgentName = workspace.agentConfig.fastAgentName.trim();
+    if (fastAgentName.isEmpty) {
+      throw StateError('Fast agent is not configured for this workspace.');
+    }
+    final nextConfig = _configForAgent(_config, fastAgentName);
+    if (nextConfig == null) {
+      throw StateError('Fast agent "$fastAgentName" is not configured.');
+    }
+
+    final controller = _cachedControllerFor(nextConfig);
+    final beforeCount = controller.messages.length;
+    await controller.sendPrompt(_fastAgentWorkspacePrompt(workspace, message));
+    await _waitForFastAgent(controller);
+
+    final error = controller.lastError;
+    if (error != null && error.trim().isNotEmpty) {
+      throw StateError(error);
+    }
+    return controller.messages
+        .skip(beforeCount)
+        .where((message) => message.role == ChatMessageRole.assistant)
+        .map((message) => message.text.trim())
+        .where((text) => text.isNotEmpty)
+        .join('\n')
+        .trim();
+  }
+
+  Future<void> _waitForFastAgent(ChatController controller) async {
+    const timeout = Duration(minutes: 2);
+    const interval = Duration(milliseconds: 100);
+    final startedAt = DateTime.now();
+    while (controller.isStreaming || controller.isSessionOperationRunning) {
+      if (DateTime.now().difference(startedAt) > timeout) {
+        throw TimeoutException('Fast agent did not finish within 2 minutes.');
+      }
+      await Future<void>.delayed(interval);
+    }
+  }
+
+  String _fastAgentWorkspacePrompt(TaskWorkspace workspace, String message) {
+    final config = workspace.agentConfig;
+    final prompt = config.fastAgentPrompt.trim();
+    final thinkingAgentName = config.thinkingAgentName.trim();
+    final workAgents = config.workAgentNames.join(', ');
+    return [
+      '你是工作区的主快速agent，负责收件箱准入和快速响应。',
+      'workspace_id: ${workspace.id}',
+      'workspace_title: ${workspace.title}',
+      if (thinkingAgentName.isNotEmpty) 'thinking_agent: $thinkingAgentName',
+      if (workAgents.isNotEmpty) 'work_agents: $workAgents',
+      if (prompt.isNotEmpty) 'role_prompt: $prompt',
+      '',
+      'human_message:',
+      message,
+      '',
+      '处理要求:',
+      '0. 你管理收件箱准入：先判断 human_message 是新需求，还是对已有 Human Confirm / Waiting Human 任务的回答。',
+      '1. 如果是对待确认问题的回答，先调用 task_center_answer_human_question 更新任务，不要重新创建任务。',
+      '2. 判断新需求是否需要进入任务中心；新需求先调用 task_center_record_admission_decision 记录准入结论。',
+      '3. 需要进入时，使用 task center 工具创建或更新任务，并保持任务状态最新。',
+      '4. 有疑问时，先和 thinking agent 对齐：调用 task_center_request_thinking_alignment；不要停在 task_center_request_thinking_alignment，如果已经知道要向 human 确认的问题，继续调用 task_center_request_human_confirmation ask human。',
+      '5. 禁止只用自然语言说需要问 human；缺口明确时，必须在同一轮调用 task_center_request_human_confirmation 生成 Human Check。',
+      '6. 人工回答后，如果目标和验收条件已经清晰，继续把任务转交给 worker；worker 完成后用 task_center_deliver_work_result 把结果交付到群聊。',
+      '7. 聊天面板只回复认领和结果交付；过程、验收条件、执行记录写入任务详情或任务事件。',
+      '8. 最后直接回复一条简短结论，说明已准入、已打回补充信息，或暂不准入。',
+    ].join('\n');
   }
 
   Future<AcpClientConfig> _saveConfig(AcpClientConfig config) async {

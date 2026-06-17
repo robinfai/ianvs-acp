@@ -43,6 +43,7 @@ class AppShell extends StatelessWidget {
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
     this.taskCenterController,
+    this.onSendWorkspaceMessage,
   });
 
   final ChatController controller;
@@ -61,6 +62,7 @@ class AppShell extends StatelessWidget {
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
   final TaskCenterController? taskCenterController;
+  final TaskCenterWorkspaceMessageSender? onSendWorkspaceMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -360,7 +362,11 @@ class AppShell extends StatelessWidget {
     if (controller == null) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => TaskCenterDialog(controller: controller),
+      builder: (context) => TaskCenterDialog(
+        controller: controller,
+        agentServers: agentServers,
+        onSendWorkspaceMessage: onSendWorkspaceMessage,
+      ),
     );
   }
 
