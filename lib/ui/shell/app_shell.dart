@@ -24,7 +24,9 @@ import '../components/status_bar.dart';
 import '../components/task_center_board.dart';
 import '../theme/app_design_tokens.dart';
 
-class AppShell extends StatelessWidget {
+enum _AppPrimaryView { chat, taskCenter }
+
+class AppShell extends StatefulWidget {
   const AppShell({
     super.key,
     required this.controller,
@@ -65,6 +67,69 @@ class AppShell extends StatelessWidget {
   final TaskCenterWorkspaceMessageSender? onSendWorkspaceMessage;
 
   @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  late _AppPrimaryView _primaryView;
+
+  ChatController get controller => widget.controller;
+  String get agentName => widget.agentName;
+  List<AgentServerConfig> get agentServers => widget.agentServers;
+  List<McpServerConfig> get mcpServers => widget.mcpServers;
+  List<String> get additionalDirectories => widget.additionalDirectories;
+  AcpClientProviderConfig get clientProviders => widget.clientProviders;
+  String? get configPath => widget.configPath;
+  String? get defaultAgentName => widget.defaultAgentName;
+  String? get startupError => widget.startupError;
+  bool get canSwitchAgent => widget.canSwitchAgent;
+  ValueChanged<String>? get onSelectAgent => widget.onSelectAgent;
+  ValueChanged<AgentSession>? get onSelectSession => widget.onSelectSession;
+  void Function(BuildContext context)? get onNewSession => widget.onNewSession;
+  AcpConfigSaveCallback? get onSaveConfig => widget.onSaveConfig;
+  List<ChatController> get sessionControllers => widget.sessionControllers;
+  TaskCenterController? get taskCenterController => widget.taskCenterController;
+  TaskCenterWorkspaceMessageSender? get onSendWorkspaceMessage =>
+      widget.onSendWorkspaceMessage;
+
+  bool get _isTaskCenterPrimary =>
+      _primaryView == _AppPrimaryView.taskCenter &&
+      taskCenterController != null;
+  bool get _hasActiveChat =>
+      controller.currentSession != null || controller.messages.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    _primaryView = taskCenterController == null || _hasActiveChat
+        ? _AppPrimaryView.chat
+        : _AppPrimaryView.taskCenter;
+  }
+
+  @override
+  void didUpdateWidget(covariant AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (taskCenterController == null) {
+      _primaryView = _AppPrimaryView.chat;
+    } else if (oldWidget.taskCenterController == null && !_hasActiveChat) {
+      _primaryView = _AppPrimaryView.taskCenter;
+    }
+  }
+
+  void _showChatView() {
+    if (_primaryView == _AppPrimaryView.chat) return;
+    setState(() => _primaryView = _AppPrimaryView.chat);
+  }
+
+  void _showTaskCenterView() {
+    if (taskCenterController == null ||
+        _primaryView == _AppPrimaryView.taskCenter) {
+      return;
+    }
+    setState(() => _primaryView = _AppPrimaryView.taskCenter);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: controller,
@@ -72,9 +137,14 @@ class AppShell extends StatelessWidget {
         final sessionActionsEnabled =
             !controller.isStreaming && !controller.isSessionOperationRunning;
         final VoidCallback? startNewSession = sessionActionsEnabled
-            ? onNewSession == null
-                  ? controller.newSession
-                  : () => onNewSession!(context)
+            ? () {
+                _showChatView();
+                if (onNewSession == null) {
+                  unawaited(controller.newSession());
+                } else {
+                  onNewSession!(context);
+                }
+              }
             : null;
         final canReconnect =
             sessionActionsEnabled &&
@@ -95,7 +165,7 @@ class AppShell extends StatelessWidget {
                   onShowAgentConfig: () => _showAgentConfigDialog(context),
                   onShowTaskCenter: taskCenterController == null
                       ? null
-                      : () => _showTaskCenterDialog(context),
+                      : _showTaskCenterView,
                   onShowProtocolCoverage: () =>
                       _showProtocolFeatureReviewDialog(context),
                   onAuthenticate: controller.canAuthenticate
@@ -120,114 +190,157 @@ class AppShell extends StatelessWidget {
                 if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
                   ErrorBanner(message: controller.lastError!),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.md),
-                        border: Border.all(color: AppColors.border),
-                        boxShadow: AppShadows.soft,
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          final hideSidebar = constraints.maxWidth < 700;
-                          final timeline = ChatTimeline(
-                            messages: controller.messages,
-                            agentName: agentName,
-                            hasActiveSession: controller.currentSession != null,
-                            activeSessionLabel:
-                                controller.currentSession?.displayTitle,
-                            onNewSession: startNewSession,
-                          );
-
-                          if (hideSidebar) return timeline;
-
-                          return Row(
-                            children: [
-                              SizedBox(
-                                width: 244,
-                                child: SessionSidebar(
-                                  agentName: agentName,
-                                  sessions: _sessions(),
-                                  currentSession: controller.currentSession,
-                                  onNewSession: startNewSession,
-                                  onResumeSession: controller.canResumeSessions
-                                      ? () => _showResumeDialog(context)
-                                      : null,
-                                  onSelectSession: sessionActionsEnabled
-                                      ? onSelectSession
-                                      : null,
-                                ),
-                              ),
-                              const VerticalDivider(
-                                width: 1,
-                                color: AppColors.border,
-                              ),
-                              Expanded(child: timeline),
-                            ],
-                          );
-                        },
+                if (_isTaskCenterPrimary)
+                  _buildTaskCenterView()
+                else ...[
+                  _buildChatView(
+                    context,
+                    sessionActionsEnabled: sessionActionsEnabled,
+                    startNewSession: startNewSession,
+                  ),
+                  PromptInput(
+                    agentName: agentName,
+                    enabled: !controller.isSessionOperationRunning,
+                    isSending: controller.isStreaming,
+                    availableCommands: controller.availableCommands,
+                    promptCapabilities: controller.capabilities?.prompt,
+                    pendingPermissionRequest:
+                        controller.pendingPermissionRequest,
+                    onAllowPermission: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.allow,
                       ),
                     ),
-                  ),
-                ),
-                PromptInput(
-                  agentName: agentName,
-                  enabled: !controller.isSessionOperationRunning,
-                  isSending: controller.isStreaming,
-                  availableCommands: controller.availableCommands,
-                  promptCapabilities: controller.capabilities?.prompt,
-                  pendingPermissionRequest: controller.pendingPermissionRequest,
-                  onAllowPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.allow,
+                    onDenyPermission: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.deny,
+                      ),
                     ),
-                  ),
-                  onDenyPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.deny,
+                    onCancelPermission: () => unawaited(
+                      controller.resolvePermissionRequest(
+                        AcpPermissionDecision.cancel,
+                      ),
                     ),
+                    toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
+                    hasPermissionReviewer: controller.hasPermissionReviewer,
+                    onToolCallExecutionPolicyChanged:
+                        controller.setToolCallExecutionPolicy,
+                    modelOption: controller.sessionSettings.modelOption,
+                    reasoningEffortOption:
+                        controller.sessionSettings.reasoningEffortOption,
+                    onModelSelected:
+                        controller.currentSession != null &&
+                            sessionActionsEnabled
+                        ? (value) =>
+                              unawaited(controller.setSessionModel(value))
+                        : null,
+                    onReasoningEffortSelected:
+                        controller.currentSession != null &&
+                            sessionActionsEnabled
+                        ? (value) => unawaited(
+                            controller.setSessionReasoningEffort(value),
+                          )
+                        : null,
+                    onSend: (text, attachments) =>
+                        controller.sendPrompt(text, attachments: attachments),
+                    onStop: controller.stop,
                   ),
-                  onCancelPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.cancel,
-                    ),
+                  StatusBar(
+                    controller: controller,
+                    onShowSessionSettings: () =>
+                        _showSessionSettingsDialog(context),
+                    onShowCapabilities: () => _showCapabilitiesDialog(context),
                   ),
-                  toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
-                  hasPermissionReviewer: controller.hasPermissionReviewer,
-                  onToolCallExecutionPolicyChanged:
-                      controller.setToolCallExecutionPolicy,
-                  modelOption: controller.sessionSettings.modelOption,
-                  reasoningEffortOption:
-                      controller.sessionSettings.reasoningEffortOption,
-                  onModelSelected:
-                      controller.currentSession != null && sessionActionsEnabled
-                      ? (value) => unawaited(controller.setSessionModel(value))
-                      : null,
-                  onReasoningEffortSelected:
-                      controller.currentSession != null && sessionActionsEnabled
-                      ? (value) => unawaited(
-                          controller.setSessionReasoningEffort(value),
-                        )
-                      : null,
-                  onSend: (text, attachments) =>
-                      controller.sendPrompt(text, attachments: attachments),
-                  onStop: controller.stop,
-                ),
-                StatusBar(
-                  controller: controller,
-                  onShowSessionSettings: () =>
-                      _showSessionSettingsDialog(context),
-                  onShowCapabilities: () => _showCapabilitiesDialog(context),
-                ),
+                ],
               ],
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildChatView(
+    BuildContext context, {
+    required bool sessionActionsEnabled,
+    required VoidCallback? startNewSession,
+  }) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: AppColors.border),
+            boxShadow: AppShadows.soft,
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final hideSidebar = constraints.maxWidth < 700;
+              final timeline = ChatTimeline(
+                messages: controller.messages,
+                agentName: agentName,
+                hasActiveSession: controller.currentSession != null,
+                activeSessionLabel: controller.currentSession?.displayTitle,
+                onNewSession: startNewSession,
+              );
+
+              if (hideSidebar) return timeline;
+
+              return Row(
+                children: [
+                  SizedBox(
+                    width: 244,
+                    child: SessionSidebar(
+                      agentName: agentName,
+                      sessions: _sessions(),
+                      currentSession: controller.currentSession,
+                      onNewSession: startNewSession,
+                      onResumeSession: controller.canResumeSessions
+                          ? () => _showResumeDialog(context)
+                          : null,
+                      onSelectSession: sessionActionsEnabled
+                          ? onSelectSession
+                          : null,
+                    ),
+                  ),
+                  const VerticalDivider(width: 1, color: AppColors.border),
+                  Expanded(child: timeline),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTaskCenterView() {
+    final controller = taskCenterController;
+    if (controller == null) return const SizedBox.shrink();
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: AppColors.border),
+            boxShadow: AppShadows.soft,
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: TaskCenterBoard(
+            controller: controller,
+            agentServers: agentServers,
+            sessionControllers: sessionControllers,
+            defaultWorkspaceCwd: this.controller.cwd,
+            onSelectSession: onSelectSession,
+            onSendWorkspaceMessage: onSendWorkspaceMessage,
+          ),
+        ),
+      ),
     );
   }
 
@@ -357,19 +470,6 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  Future<void> _showTaskCenterDialog(BuildContext context) async {
-    final controller = taskCenterController;
-    if (controller == null) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => TaskCenterDialog(
-        controller: controller,
-        agentServers: agentServers,
-        onSendWorkspaceMessage: onSendWorkspaceMessage,
-      ),
-    );
-  }
-
   Future<void> _showProtocolFeatureReviewDialog(BuildContext context) async {
     await showDialog<void>(
       context: context,
@@ -406,6 +506,7 @@ class AppShell extends StatelessWidget {
 
     if (selection == null) return;
     if (!context.mounted) return;
+    _showChatView();
     unawaited(
       controller.resumeSession(
         selection.conversation.id,

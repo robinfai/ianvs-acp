@@ -171,6 +171,7 @@ class AcpClientConfig {
   static String resolveWorkspaceCwd({
     Map<String, String>? environment,
     String? currentDirectory,
+    String? executablePath,
   }) {
     const dartDefineCwd = String.fromEnvironment('ACP_WORKSPACE_CWD');
     if (dartDefineCwd.trim().isNotEmpty) return dartDefineCwd.trim();
@@ -182,17 +183,47 @@ class AcpClientConfig {
     }
 
     final current = (currentDirectory ?? Directory.current.path).trim();
-    if (current.isNotEmpty && current != '/') return current;
+    final home = env['HOME'];
+    final homePath = home?.trim();
+    final currentRoot = _nearestWorkspaceRoot(current);
+    final currentIsHome = current.isNotEmpty && current == homePath;
+    if (currentRoot != null && !currentIsHome) return currentRoot;
 
     final pwd = env['PWD'];
-    if (pwd != null && pwd.trim().isNotEmpty && pwd.trim() != '/') {
-      return pwd.trim();
+    final cleanPwd = pwd?.trim();
+    final pwdRoot = _nearestWorkspaceRoot(cleanPwd);
+    if (pwdRoot != null) return pwdRoot;
+
+    final executable = (executablePath ?? Platform.resolvedExecutable).trim();
+    final executableRoot = _nearestWorkspaceRoot(executable);
+    if (executableRoot != null) return executableRoot;
+
+    if (currentRoot != null) return currentRoot;
+    if (current.isNotEmpty && current != '/') return current;
+    if (cleanPwd != null && cleanPwd.isNotEmpty && cleanPwd != '/') {
+      return cleanPwd;
     }
 
-    final home = env['HOME'];
-    if (home != null && home.trim().isNotEmpty) return home.trim();
+    if (homePath != null && homePath.isNotEmpty) return homePath;
 
     return current.isEmpty ? Directory.current.path : current;
+  }
+
+  static String? _nearestWorkspaceRoot(String? path) {
+    final cleanPath = path?.trim();
+    if (cleanPath == null || cleanPath.isEmpty) return null;
+    var directory = FileSystemEntity.isDirectorySync(cleanPath)
+        ? Directory(cleanPath)
+        : File(cleanPath).parent;
+    while (true) {
+      if (File('${directory.path}/pubspec.yaml').existsSync() ||
+          Directory('${directory.path}/.git').existsSync()) {
+        return directory.path;
+      }
+      final parent = directory.parent;
+      if (parent.path == directory.path) return null;
+      directory = parent;
+    }
   }
 }
 

@@ -149,6 +149,29 @@ void main() {
     expect(worker.defaultReasoningEffort, 'high');
   });
 
+  test('resolves workspace cwd from macOS app bundle path before home cwd', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs_acp_workspace_cwd',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final project = Directory('${temp.path}/bk-sec-ai');
+    await project.create();
+    await File('${project.path}/pubspec.yaml').writeAsString('name: app\n');
+    final executable = File(
+      '${project.path}/build/macos/Build/Products/Debug/ACP Client.app/Contents/MacOS/ACP Client',
+    );
+    await executable.parent.create(recursive: true);
+    await executable.writeAsString('');
+
+    final cwd = AcpClientConfig.resolveWorkspaceCwd(
+      environment: {'HOME': '${temp.path}/home'},
+      currentDirectory: '${temp.path}/home',
+      executablePath: executable.path,
+    );
+
+    expect(cwd, project.path);
+  });
+
   test('uses requested default agent server when multiple are configured', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Kimi Code Dev',

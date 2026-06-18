@@ -22,6 +22,12 @@ class TaskCenterAgentApi {
     'task_center_answer_human_question',
     'task_center_list_role_tasks',
     'task_center_claim_work_task',
+    'task_center_start_work_run',
+    'task_center_heartbeat_work_run',
+    'task_center_report_work_blocker',
+    'task_center_release_work_task',
+    'task_center_recover_stalled_task',
+    'task_center_list_stalled_work',
     'task_center_record_execution_result',
     'task_center_list_task_events',
     'task_center_move_task',
@@ -57,6 +63,12 @@ class TaskCenterAgentApi {
       'task_center_answer_human_question' => _answerHumanQuestion(arguments),
       'task_center_list_role_tasks' => _listRoleTasks(arguments),
       'task_center_claim_work_task' => _claimWorkTask(arguments),
+      'task_center_start_work_run' => _startWorkRun(arguments),
+      'task_center_heartbeat_work_run' => _heartbeatWorkRun(arguments),
+      'task_center_report_work_blocker' => _reportWorkBlocker(arguments),
+      'task_center_release_work_task' => _releaseWorkTask(arguments),
+      'task_center_recover_stalled_task' => _recoverStalledTask(arguments),
+      'task_center_list_stalled_work' => _listStalledWork(arguments),
       'task_center_record_execution_result' => _recordExecutionResult(
         arguments,
       ),
@@ -85,6 +97,7 @@ class TaskCenterAgentApi {
     final workspace = await store.createWorkspace(
       title: _requiredString(arguments, 'title'),
       description: _optionalString(arguments, 'description') ?? '',
+      workspaceCwd: _optionalString(arguments, 'workspace_cwd') ?? '',
       agentConfig: _agentConfig(arguments),
     );
     await _notifyChanged();
@@ -106,6 +119,7 @@ class TaskCenterAgentApi {
     final workspace = await store.updateWorkspaceAgentConfig(
       workspaceId: _requiredString(arguments, 'workspace_id'),
       agentConfig: _agentConfig(arguments),
+      workspaceCwd: _optionalString(arguments, 'workspace_cwd'),
     );
     await _notifyChanged();
     return <String, Object?>{'workspace': workspace.toAgentJson()};
@@ -261,18 +275,151 @@ class TaskCenterAgentApi {
     return <String, Object?>{'task': task.toAgentJson()};
   }
 
-  Future<Map<String, Object?>> _recordExecutionResult(
+  Future<Map<String, Object?>> _startWorkRun(
     Map<String, Object?> arguments,
   ) async {
-    final task = await store.recordExecutionResult(
+    final task = await store.startWorkRun(
       workspaceId: _requiredString(arguments, 'workspace_id'),
       taskId: _requiredString(arguments, 'task_id'),
-      executionResult: _requiredString(arguments, 'execution_result'),
-      verificationNotes: _optionalString(arguments, 'verification_notes') ?? '',
+      agentName: _requiredString(arguments, 'agent_name'),
+      sessionId: _optionalString(arguments, 'session_id') ?? '',
+      progressSummary: _optionalString(arguments, 'progress_summary') ?? '',
       actor: _optionalString(arguments, 'actor') ?? 'agent',
     );
     await _notifyChanged();
     return <String, Object?>{'task': task.toAgentJson()};
+  }
+
+  Future<Map<String, Object?>> _heartbeatWorkRun(
+    Map<String, Object?> arguments,
+  ) async {
+    final task = await store.heartbeatWorkRun(
+      workspaceId: _requiredString(arguments, 'workspace_id'),
+      taskId: _requiredString(arguments, 'task_id'),
+      runId: _requiredString(arguments, 'run_id'),
+      state: _requiredWorkRunState(arguments, 'state'),
+      progressSummary: _optionalString(arguments, 'progress_summary') ?? '',
+      nextCheckMinutes: _optionalInt(arguments, 'next_check_minutes'),
+      actor: _optionalString(arguments, 'actor') ?? 'agent',
+    );
+    await _notifyChanged();
+    return <String, Object?>{'task': task.toAgentJson()};
+  }
+
+  Future<Map<String, Object?>> _reportWorkBlocker(
+    Map<String, Object?> arguments,
+  ) async {
+    final task = await store.reportWorkBlocker(
+      workspaceId: _requiredString(arguments, 'workspace_id'),
+      taskId: _requiredString(arguments, 'task_id'),
+      runId: _requiredString(arguments, 'run_id'),
+      blockerType: _requiredBlockerType(arguments, 'blocker_type'),
+      blockerReason: _requiredString(arguments, 'blocker_reason'),
+      questions: _stringList(arguments['questions']),
+      actor: _optionalString(arguments, 'actor') ?? 'agent',
+    );
+    await _notifyChanged();
+    return <String, Object?>{'task': task.toAgentJson()};
+  }
+
+  Future<Map<String, Object?>> _releaseWorkTask(
+    Map<String, Object?> arguments,
+  ) async {
+    final task = await store.releaseWorkTask(
+      workspaceId: _requiredString(arguments, 'workspace_id'),
+      taskId: _requiredString(arguments, 'task_id'),
+      runId: _requiredString(arguments, 'run_id'),
+      reason: _requiredString(arguments, 'reason'),
+      actor: _optionalString(arguments, 'actor') ?? 'agent',
+    );
+    await _notifyChanged();
+    return <String, Object?>{'task': task.toAgentJson()};
+  }
+
+  Future<Map<String, Object?>> _recoverStalledTask(
+    Map<String, Object?> arguments,
+  ) async {
+    final task = await store.recoverStalledTask(
+      workspaceId: _requiredString(arguments, 'workspace_id'),
+      taskId: _requiredString(arguments, 'task_id'),
+      action: _requiredRecoverAction(arguments, 'action'),
+      agentName: _optionalString(arguments, 'agent_name') ?? '',
+      reason: _optionalString(arguments, 'reason') ?? '',
+      actor: _optionalString(arguments, 'actor') ?? 'human',
+    );
+    await _notifyChanged();
+    return <String, Object?>{'task': task.toAgentJson()};
+  }
+
+  Future<Map<String, Object?>> _listStalledWork(
+    Map<String, Object?> arguments,
+  ) async {
+    final tasks = await store.listStalledWork(
+      workspaceId: _requiredString(arguments, 'workspace_id'),
+    );
+    return <String, Object?>{
+      'tasks': tasks.map((task) => task.toAgentJson()).toList(growable: false),
+    };
+  }
+
+  Future<Map<String, Object?>> _recordExecutionResult(
+    Map<String, Object?> arguments,
+  ) async {
+    final workspaceId = _requiredString(arguments, 'workspace_id');
+    final taskId = _requiredString(arguments, 'task_id');
+    final executionResult = _requiredString(arguments, 'execution_result');
+    final verificationNotes =
+        _optionalString(arguments, 'verification_notes') ?? '';
+    final actor = _optionalString(arguments, 'actor') ?? 'agent';
+    final snapshot = await store.load();
+    final workspace = snapshot.workspaces.firstWhere(
+      (candidate) => candidate.id == workspaceId,
+      orElse: () => throw FormatException('Unknown workspace "$workspaceId".'),
+    );
+    final beforeTask = workspace.tasks.firstWhere(
+      (candidate) => candidate.id == taskId,
+      orElse: () => throw FormatException('Unknown task "$taskId".'),
+    );
+    final cleanActor = actor.trim();
+    final activeWorkerRun =
+        cleanActor.isNotEmpty &&
+        beforeTask.workRuns.any(
+          (run) => run.isActive && run.agentName == cleanActor,
+        );
+
+    var task = await store.recordExecutionResult(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      executionResult: executionResult,
+      verificationNotes: verificationNotes,
+      actor: actor,
+    );
+    TaskWorkspaceChatMessage? message;
+    if (activeWorkerRun) {
+      task = await store.updateTask(
+        workspaceId: workspaceId,
+        taskId: taskId,
+        status: TaskCenterStatus.done,
+      );
+      message = await store.postWorkspaceChatMessage(
+        workspaceId: workspaceId,
+        role: TaskWorkspaceChatRole.workAgent,
+        actor: cleanActor,
+        agentName: cleanActor,
+        content: executionResult,
+        taskId: taskId,
+        metadata: <String, Object?>{
+          'delivery': 'record_execution_result_fallback',
+          if (verificationNotes.isNotEmpty)
+            'verification_notes': verificationNotes,
+        },
+      );
+    }
+    await _notifyChanged();
+    return <String, Object?>{
+      'task': task.toAgentJson(),
+      if (message != null) 'message': message.toAgentJson(),
+    };
   }
 
   Future<Map<String, Object?>> _listTaskEvents(
@@ -429,6 +576,26 @@ class TaskCenterAgentApi {
     final executionResult = _requiredString(arguments, 'execution_result');
     final verificationNotes =
         _optionalString(arguments, 'verification_notes') ?? '';
+    final snapshot = await store.load();
+    final workspace = snapshot.workspaces.firstWhere(
+      (candidate) => candidate.id == workspaceId,
+      orElse: () => throw FormatException('Unknown workspace "$workspaceId".'),
+    );
+    final beforeTask = workspace.tasks.firstWhere(
+      (candidate) => candidate.id == taskId,
+      orElse: () => throw FormatException('Unknown task "$taskId".'),
+    );
+    final workRunForAgent = beforeTask.workRuns.any(
+      (run) =>
+          run.agentName == agentName &&
+          (run.isActive || run.state == TaskCenterWorkRunState.delivered),
+    );
+    final legacyOwnerForAgent =
+        beforeTask.workRuns.isEmpty &&
+        beforeTask.currentOwner.matches(
+          kind: TaskCenterOwnerKind.workAgent,
+          agentName: agentName,
+        );
     await store.recordExecutionResult(
       workspaceId: workspaceId,
       taskId: taskId,
@@ -437,7 +604,8 @@ class TaskCenterAgentApi {
       actor: agentName,
     );
     final requestedStatus = _optionalStatus(arguments, 'status');
-    final status = requestedStatus == TaskCenterStatus.review
+    final isActiveWorker = workRunForAgent || legacyOwnerForAgent;
+    final status = !isActiveWorker || requestedStatus == TaskCenterStatus.review
         ? TaskCenterStatus.review
         : TaskCenterStatus.done;
     final task = await store.updateTask(
@@ -514,6 +682,27 @@ TaskCenterReadiness? _optionalReadiness(
   if (value == null) return null;
   if (value is! String) throw FormatException('$key must be a string.');
   return TaskCenterReadiness.fromId(value);
+}
+
+TaskCenterWorkRunState _requiredWorkRunState(
+  Map<String, Object?> arguments,
+  String key,
+) {
+  return TaskCenterWorkRunState.fromId(_requiredString(arguments, key));
+}
+
+TaskCenterWorkBlockerType _requiredBlockerType(
+  Map<String, Object?> arguments,
+  String key,
+) {
+  return TaskCenterWorkBlockerType.fromId(_requiredString(arguments, key));
+}
+
+TaskCenterRecoverAction _requiredRecoverAction(
+  Map<String, Object?> arguments,
+  String key,
+) {
+  return TaskCenterRecoverAction.fromId(_requiredString(arguments, key));
 }
 
 TaskWorkspaceChatRole _requiredChatRole(

@@ -16,6 +16,9 @@ import 'connection_state.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
 
+typedef AcpPermissionDecisionOverride =
+    AcpPermissionDecision? Function(AcpPermissionRequest request);
+
 const List<String> _toolCallIdMetadataKeys = [
   'toolCallId',
   'tool_call_id',
@@ -50,6 +53,7 @@ class ChatController extends ChangeNotifier {
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
     this.permissionReviewer,
+    this.permissionDecisionOverride,
   }) : assert(permissionHistoryLimit > 0),
        defaultModel = defaultModel.trim(),
        defaultReasoningEffort = defaultReasoningEffort.trim(),
@@ -72,6 +76,7 @@ class ChatController extends ChangeNotifier {
   final String defaultReasoningEffort;
   final List<AcpPermissionTrustRule> permissionTrustRules;
   final AcpPermissionReviewer? permissionReviewer;
+  final AcpPermissionDecisionOverride? permissionDecisionOverride;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? currentSession;
@@ -935,6 +940,18 @@ class ChatController extends ChangeNotifier {
     }
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
+    final overriddenDecision = permissionDecisionOverride?.call(request);
+    if (overriddenDecision != null) {
+      unawaited(
+        _resolvePermissionRequest(
+          request,
+          overriddenDecision,
+          source: AcpPermissionDecisionSource.policy,
+        ),
+      );
+      _notifyListeners();
+      return;
+    }
     _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
   }

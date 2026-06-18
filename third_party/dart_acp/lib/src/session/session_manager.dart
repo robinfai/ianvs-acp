@@ -709,9 +709,12 @@ class SessionManager {
   }
 
   Json _sessionSetupParams(Json params, List<String> additionalDirectories) {
+    final result = <String, dynamic>{...params};
     final directories = _normalizedDirectories(additionalDirectories);
-    if (directories.isEmpty) return params;
-    return <String, dynamic>{...params, 'additionalDirectories': directories};
+    if (directories.isNotEmpty) {
+      result['additionalDirectories'] = directories;
+    }
+    return result;
   }
 
   List<String> _additionalDirectoriesForSession(String sessionId) {
@@ -880,12 +883,22 @@ class SessionManager {
       throw Exception('No workspace root available for filesystem operation');
     }
 
+    final additionalDirectories = _additionalDirectoriesForSession(
+      sessionId ?? '',
+    );
+    final path = req['path'] as String;
+    final jail = WorkspaceJail(
+      workspaceRoot: workspaceRoot,
+      additionalWorkspaceRoots: additionalDirectories,
+    );
+    if (!config.allowReadOutsideWorkspace) {
+      await jail.resolveAndEnsureWithin(path);
+    }
+
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(
-        sessionId ?? '',
-      ),
+      additionalWorkspaceRoots: additionalDirectories,
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
@@ -894,9 +907,6 @@ class SessionManager {
     // policy mode). Agents may or may not request permission explicitly;
     // we gate here to ensure policy is always respected.
     try {
-      final additionalDirectories = _additionalDirectoriesForSession(
-        sessionId ?? '',
-      );
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Read file',
@@ -921,7 +931,6 @@ class SessionManager {
       rethrow;
     }
 
-    final path = req['path'] as String;
     final line = (req['line'] as num?)?.toInt();
     final limit = (req['limit'] as num?)?.toInt();
     _log.fine('fs/read_text_file <- path=$path line=$line limit=$limit');
@@ -951,21 +960,26 @@ class SessionManager {
       throw Exception('No workspace root available for filesystem operation');
     }
 
+    final additionalDirectories = _additionalDirectoriesForSession(
+      sessionId ?? '',
+    );
+    final path = req['path'] as String;
+    final jail = WorkspaceJail(
+      workspaceRoot: workspaceRoot,
+      additionalWorkspaceRoots: additionalDirectories,
+    );
+    await jail.resolveAndEnsureWithin(path);
+
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(
-        sessionId ?? '',
-      ),
+      additionalWorkspaceRoots: additionalDirectories,
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
 
     // Enforce permission policy for writes when provided.
     try {
-      final additionalDirectories = _additionalDirectoriesForSession(
-        sessionId ?? '',
-      );
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Write file',
@@ -990,7 +1004,6 @@ class SessionManager {
       rethrow;
     }
 
-    final path = req['path'] as String;
     final content = req['content'] as String? ?? '';
     _log.fine('fs/write_text_file <- path=$path bytes=${content.length}');
     try {
@@ -1063,6 +1076,25 @@ class SessionManager {
     };
     final workspaceRoot = getWorkspaceRoot(sessionId);
     final additionalDirectories = _additionalDirectoriesForSession(sessionId);
+    var cwd = requestedCwd;
+    // Enforce workspace jail for terminal working directory unless yolo.
+    if (!config.allowReadOutsideWorkspace) {
+      final jail = WorkspaceJail(
+        workspaceRoot: workspaceRoot,
+        additionalWorkspaceRoots: additionalDirectories,
+      );
+      if (cwd != null) {
+        try {
+          final resolved = await jail.resolveForgiving(cwd);
+          final within = await jail.isWithinWorkspace(resolved);
+          cwd = within ? resolved : workspaceRoot;
+        } on Exception catch (_) {
+          cwd = workspaceRoot;
+        }
+      } else {
+        cwd = workspaceRoot;
+      }
+    }
     final permissionMetadata = <String, Object?>{
       'command': cmd,
       'args': args,
@@ -1070,7 +1102,7 @@ class SessionManager {
       if (additionalDirectories.isNotEmpty)
         'additionalDirectories': additionalDirectories,
     };
-    if (requestedCwd != null) permissionMetadata['cwd'] = requestedCwd;
+    if (cwd != null) permissionMetadata['cwd'] = cwd;
     if (env.isNotEmpty) {
       permissionMetadata['envKeys'] = env.keys.toList()..sort();
     }
@@ -1090,27 +1122,6 @@ class SessionManager {
     );
     if (execOutcome != PermissionOutcome.allow) {
       throw Exception('Permission denied');
-    }
-    var cwd = requestedCwd;
-    // Enforce workspace jail for terminal working directory unless yolo
-    if (!config.allowReadOutsideWorkspace) {
-      final jail = WorkspaceJail(
-        workspaceRoot: workspaceRoot,
-        additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
-      );
-      if (cwd != null) {
-        try {
-          final resolved = await jail.resolveForgiving(cwd);
-          final within = await jail.isWithinWorkspace(resolved);
-          if (!within) {
-            cwd = workspaceRoot;
-          }
-        } on Exception catch (_) {
-          cwd = workspaceRoot;
-        }
-      } else {
-        cwd = workspaceRoot;
-      }
     }
 
     final handle = await provider.create(

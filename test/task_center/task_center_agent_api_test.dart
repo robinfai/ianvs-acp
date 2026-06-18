@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/task_center/task_center_agent_api.dart';
+import 'package:ianvs_acp/task_center/task_center_models.dart';
 import 'package:ianvs_acp/task_center/task_center_store.dart';
 
 void main() {
@@ -151,6 +152,99 @@ void main() {
     expect(api.toolNames, contains('task_center_deliver_work_result'));
   });
 
+  test('agent API starts heartbeats and recovers stalled work', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_task_center_api');
+    addTearDown(() => temp.delete(recursive: true));
+    final ids = _IdSequence();
+    final api = TaskCenterAgentApi(
+      store: TaskCenterStore(
+        path: '${temp.path}/task_center.json',
+        now: () => DateTime.utc(2026, 6, 17, 18),
+        idGenerator: ids.next,
+      ),
+    );
+
+    final workspaceResult = await api.call('task_center_create_workspace', {
+      'title': 'Recovery API',
+      'fast_agent_name': 'codex-fast',
+      'thinking_agent_name': 'codex-thinking',
+      'work_agent_names': ['codex-worker', 'codex-worker-2'],
+    });
+    final workspaceId =
+        (workspaceResult['workspace'] as Map<String, Object?>)['id'] as String;
+
+    final taskResult = await api.call('task_center_create_task', {
+      'workspace_id': workspaceId,
+      'title': 'Recover me',
+    });
+    final taskId = (taskResult['task'] as Map<String, Object?>)['id'] as String;
+
+    final started = await api.call('task_center_start_work_run', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'agent_name': 'codex-worker',
+      'session_id': 'session-1',
+      'progress_summary': 'Starting.',
+    });
+    final run =
+        (((started['task'] as Map<String, Object?>)['work_runs']
+                    as List<Object?>)
+                .single
+            as Map<String, Object?>);
+    expect(run['state'], 'running');
+
+    final heartbeat = await api.call('task_center_heartbeat_work_run', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'run_id': run['id'],
+      'state': 'running',
+      'progress_summary': 'Still working.',
+    });
+    expect(
+      ((((heartbeat['task'] as Map<String, Object?>)['work_runs']
+                  as List<Object?>)
+              .single
+          as Map<String, Object?>)['progress_summary']),
+      'Still working.',
+    );
+
+    final blocker = await api.call('task_center_report_work_blocker', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'run_id': run['id'],
+      'blocker_type': 'missing_acceptance',
+      'blocker_reason': 'Acceptance is not clear.',
+    });
+    expect(
+      (blocker['task'] as Map<String, Object?>)['readiness'],
+      'needs_info',
+    );
+
+    final recovered = await api.call('task_center_recover_stalled_task', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'action': 'reassign_worker',
+      'agent_name': 'codex-worker-2',
+      'reason': 'Original worker blocked.',
+    });
+    expect(
+      ((recovered['task'] as Map<String, Object?>)['current_owner']
+          as Map<String, Object?>)['agent_name'],
+      'codex-worker-2',
+    );
+  });
+
+  test('agent API exposes worker recovery tools in catalog', () {
+    final api = TaskCenterAgentApi(store: TaskCenterStore(path: 'unused.json'));
+
+    expect(api.toolNames, contains('task_center_start_work_run'));
+    expect(api.toolNames, contains('task_center_heartbeat_work_run'));
+    expect(api.toolNames, contains('task_center_report_work_blocker'));
+    expect(api.toolNames, contains('task_center_release_work_task'));
+    expect(api.toolNames, contains('task_center_recover_stalled_task'));
+    expect(api.toolNames, contains('task_center_list_stalled_work'));
+  });
+
   test('agent API exposes intent actions for the task protocol', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_task_center_api');
     addTearDown(() => temp.delete(recursive: true));
@@ -274,6 +368,42 @@ void main() {
     });
     expect(events['events'], isA<List<Object?>>());
     expect(events['events'] as List<Object?>, isNotEmpty);
+  });
+
+  test('agent API treats recorded active worker results as delivery', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_agent_api');
+    addTearDown(() => temp.delete(recursive: true));
+    final store = TaskCenterStore(path: '${temp.path}/task_center.json');
+    final api = TaskCenterAgentApi(store: store);
+    final workspace = await store.createWorkspace(title: 'Worker delivery');
+    final task = await store.createTask(
+      workspaceId: workspace.id,
+      title: 'Finish active worker task',
+    );
+    await store.startWorkRun(
+      workspaceId: workspace.id,
+      taskId: task.id,
+      agentName: 'work-agent-1',
+    );
+
+    final recorded = await api.call('task_center_record_execution_result', {
+      'workspace_id': workspace.id,
+      'task_id': task.id,
+      'execution_result': 'DONE from record fallback.',
+      'verification_notes': 'No extra checks needed.',
+      'actor': 'work-agent-1',
+    });
+
+    expect((recorded['task'] as Map<String, Object?>)['status'], 'done');
+
+    final snapshot = await store.load();
+    final updated = snapshot.workspaces.single.tasks.single;
+    expect(updated.status, TaskCenterStatus.done);
+    expect(updated.workRuns.single.state, TaskCenterWorkRunState.delivered);
+    expect(
+      snapshot.workspaces.single.chatMessages.single.content,
+      contains('DONE'),
+    );
   });
 
   test('agent API notifies after mutating task center state', () async {

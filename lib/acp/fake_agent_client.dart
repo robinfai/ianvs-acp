@@ -94,6 +94,7 @@ class FakeAgentClient implements AcpAgentClient {
   bool cancelled = false;
   bool loggedOut = false;
   int sessionCount = 0;
+  String? lastCreateCwd;
   String? lastResumeCwd;
   String? lastSetModeId;
   String? lastConfigId;
@@ -209,6 +210,7 @@ class FakeAgentClient implements AcpAgentClient {
       throw createSessionError!;
     }
     sessionCount += 1;
+    lastCreateCwd = cwd;
     return AgentSession(
       id: 'fake-session-$sessionCount',
       cwd: cwd,

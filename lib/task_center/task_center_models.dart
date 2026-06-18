@@ -61,6 +61,202 @@ enum TaskCenterReadiness {
   }
 }
 
+enum TaskCenterWorkRunState {
+  claimed('claimed', 'Claimed'),
+  running('running', 'Running'),
+  waitingPermission('waiting_permission', 'Waiting Permission'),
+  waitingHuman('waiting_human', 'Waiting Human'),
+  blocked('blocked', 'Blocked'),
+  stale('stale', 'Stale'),
+  failed('failed', 'Failed'),
+  released('released', 'Released'),
+  delivered('delivered', 'Delivered');
+
+  const TaskCenterWorkRunState(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static TaskCenterWorkRunState fromId(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final state in values) {
+      if (state.id == normalized) return state;
+    }
+    throw FormatException('Unknown work run state "$id".');
+  }
+}
+
+enum TaskCenterWorkBlockerType {
+  unclearGoal('unclear_goal'),
+  missingAcceptance('missing_acceptance'),
+  needsHuman('needs_human'),
+  permission('permission'),
+  toolError('tool_error'),
+  externalDependency('external_dependency'),
+  other('other');
+
+  const TaskCenterWorkBlockerType(this.id);
+
+  final String id;
+
+  static TaskCenterWorkBlockerType fromId(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final type in values) {
+      if (type.id == normalized) return type;
+    }
+    throw FormatException('Unknown work blocker type "$id".');
+  }
+}
+
+enum TaskCenterRecoverAction {
+  nudgeWorker('nudge_worker'),
+  reassignWorker('reassign_worker'),
+  returnToFast('return_to_fast'),
+  sendToThinking('send_to_thinking'),
+  askHuman('ask_human'),
+  markFailed('mark_failed');
+
+  const TaskCenterRecoverAction(this.id);
+
+  final String id;
+
+  static TaskCenterRecoverAction fromId(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final action in values) {
+      if (action.id == normalized) return action;
+    }
+    throw FormatException('Unknown recovery action "$id".');
+  }
+}
+
+class TaskCenterWorkRun {
+  const TaskCenterWorkRun({
+    required this.id,
+    required this.taskId,
+    required this.agentName,
+    required this.state,
+    required this.startedAt,
+    required this.lastHeartbeatAt,
+    this.sessionId = '',
+    this.completedAt,
+    this.progressSummary = '',
+    this.blockerReason = '',
+    this.nextCheckAt,
+    this.metadata = const <String, Object?>{},
+  });
+
+  final String id;
+  final String taskId;
+  final String agentName;
+  final String sessionId;
+  final TaskCenterWorkRunState state;
+  final DateTime startedAt;
+  final DateTime lastHeartbeatAt;
+  final DateTime? completedAt;
+  final String progressSummary;
+  final String blockerReason;
+  final DateTime? nextCheckAt;
+  final Map<String, Object?> metadata;
+
+  bool get isActive {
+    return switch (state) {
+      TaskCenterWorkRunState.claimed ||
+      TaskCenterWorkRunState.running ||
+      TaskCenterWorkRunState.waitingPermission ||
+      TaskCenterWorkRunState.waitingHuman => true,
+      _ => false,
+    };
+  }
+
+  TaskCenterWorkRun copyWith({
+    String? sessionId,
+    TaskCenterWorkRunState? state,
+    DateTime? lastHeartbeatAt,
+    DateTime? completedAt,
+    String? progressSummary,
+    String? blockerReason,
+    DateTime? nextCheckAt,
+    Map<String, Object?>? metadata,
+  }) {
+    return TaskCenterWorkRun(
+      id: id,
+      taskId: taskId,
+      agentName: agentName,
+      sessionId: sessionId ?? this.sessionId,
+      state: state ?? this.state,
+      startedAt: startedAt,
+      lastHeartbeatAt: lastHeartbeatAt ?? this.lastHeartbeatAt,
+      completedAt: completedAt ?? this.completedAt,
+      progressSummary: progressSummary ?? this.progressSummary,
+      blockerReason: blockerReason ?? this.blockerReason,
+      nextCheckAt: nextCheckAt ?? this.nextCheckAt,
+      metadata: metadata ?? this.metadata,
+    );
+  }
+
+  factory TaskCenterWorkRun.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('work run entries must be objects.');
+    }
+    final json = _jsonMap(raw);
+    return TaskCenterWorkRun(
+      id: _requiredString(json['id'], 'work_run.id'),
+      taskId: _requiredString(
+        json['task_id'] ?? json['taskId'],
+        'work_run.task_id',
+      ),
+      agentName: _requiredString(
+        json['agent_name'] ?? json['agentName'],
+        'work_run.agent_name',
+      ),
+      sessionId: _stringValue(json['session_id'] ?? json['sessionId']) ?? '',
+      state: TaskCenterWorkRunState.fromId(
+        _requiredString(json['state'], 'work_run.state'),
+      ),
+      startedAt: _dateTimeValue(json['started_at'], 'work_run.started_at'),
+      lastHeartbeatAt: _dateTimeValue(
+        json['last_heartbeat_at'] ?? json['lastHeartbeatAt'],
+        'work_run.last_heartbeat_at',
+      ),
+      completedAt: _optionalDateTimeValue(
+        json['completed_at'] ?? json['completedAt'],
+        'work_run.completed_at',
+      ),
+      progressSummary:
+          _stringValue(json['progress_summary'] ?? json['progressSummary']) ??
+          '',
+      blockerReason:
+          _stringValue(json['blocker_reason'] ?? json['blockerReason']) ?? '',
+      nextCheckAt: _optionalDateTimeValue(
+        json['next_check_at'] ?? json['nextCheckAt'],
+        'work_run.next_check_at',
+      ),
+      metadata: _objectMap(json['metadata']),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'id': id,
+      'task_id': taskId,
+      'agent_name': agentName,
+      if (sessionId.isNotEmpty) 'session_id': sessionId,
+      'state': state.id,
+      'started_at': startedAt.toIso8601String(),
+      'last_heartbeat_at': lastHeartbeatAt.toIso8601String(),
+      if (completedAt != null) 'completed_at': completedAt!.toIso8601String(),
+      if (progressSummary.isNotEmpty) 'progress_summary': progressSummary,
+      if (blockerReason.isNotEmpty) 'blocker_reason': blockerReason,
+      if (nextCheckAt != null) 'next_check_at': nextCheckAt!.toIso8601String(),
+      if (metadata.isNotEmpty) 'metadata': metadata,
+    };
+  }
+
+  Map<String, Object?> toAgentJson() {
+    return <String, Object?>{...toJson(), 'state_label': state.label};
+  }
+}
+
 class TaskCenterTaskOwner {
   const TaskCenterTaskOwner({
     required this.kind,
@@ -499,6 +695,7 @@ class TaskWorkspace {
     required this.createdAt,
     required this.updatedAt,
     this.description = '',
+    this.workspaceCwd = '',
     this.agentConfig = const TaskWorkspaceAgentConfig(),
     this.chatMessages = const <TaskWorkspaceChatMessage>[],
     this.tasks = const <TaskCenterTask>[],
@@ -507,6 +704,7 @@ class TaskWorkspace {
   final String id;
   final String title;
   final String description;
+  final String workspaceCwd;
   final DateTime createdAt;
   final DateTime updatedAt;
   final TaskWorkspaceAgentConfig agentConfig;
@@ -516,6 +714,7 @@ class TaskWorkspace {
   TaskWorkspace copyWith({
     String? title,
     String? description,
+    String? workspaceCwd,
     DateTime? updatedAt,
     TaskWorkspaceAgentConfig? agentConfig,
     List<TaskWorkspaceChatMessage>? chatMessages,
@@ -525,6 +724,7 @@ class TaskWorkspace {
       id: id,
       title: title ?? this.title,
       description: description ?? this.description,
+      workspaceCwd: workspaceCwd ?? this.workspaceCwd,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       agentConfig: agentConfig ?? this.agentConfig,
@@ -546,6 +746,8 @@ class TaskWorkspace {
       id: _requiredString(json['id'], 'workspace.id'),
       title: _requiredString(json['title'], 'workspace.title'),
       description: _stringValue(json['description']) ?? '',
+      workspaceCwd:
+          _stringValue(json['workspace_cwd'] ?? json['workspaceCwd']) ?? '',
       createdAt: _dateTimeValue(json['created_at'], 'workspace.created_at'),
       updatedAt: _dateTimeValue(json['updated_at'], 'workspace.updated_at'),
       agentConfig: TaskWorkspaceAgentConfig.fromJson(
@@ -570,6 +772,7 @@ class TaskWorkspace {
       'id': id,
       'title': title,
       if (description.isNotEmpty) 'description': description,
+      if (workspaceCwd.isNotEmpty) 'workspace_cwd': workspaceCwd,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
       if (!agentConfig.isEmpty) 'agent_config': agentConfig.toJson(),
@@ -586,6 +789,7 @@ class TaskWorkspace {
       'id': id,
       'title': title,
       'description': description,
+      'workspace_cwd': workspaceCwd,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
       'task_count': tasks.length,
@@ -615,6 +819,7 @@ class TaskCenterTask {
     this.routeReason = '',
     this.executionResult = '',
     this.verificationNotes = '',
+    this.workRuns = const <TaskCenterWorkRun>[],
     this.events = const <TaskCenterEvent>[],
     this.metadata = const <String, Object?>{},
   });
@@ -633,6 +838,7 @@ class TaskCenterTask {
   final String routeReason;
   final String executionResult;
   final String verificationNotes;
+  final List<TaskCenterWorkRun> workRuns;
   final List<TaskCenterEvent> events;
   final TaskCenterStatus status;
   final int sortOrder;
@@ -653,6 +859,7 @@ class TaskCenterTask {
     String? routeReason,
     String? executionResult,
     String? verificationNotes,
+    List<TaskCenterWorkRun>? workRuns,
     List<TaskCenterEvent>? events,
     TaskCenterStatus? status,
     int? sortOrder,
@@ -674,6 +881,7 @@ class TaskCenterTask {
       routeReason: routeReason ?? this.routeReason,
       executionResult: executionResult ?? this.executionResult,
       verificationNotes: verificationNotes ?? this.verificationNotes,
+      workRuns: workRuns ?? this.workRuns,
       events: events ?? this.events,
       status: status ?? this.status,
       sortOrder: sortOrder ?? this.sortOrder,
@@ -716,6 +924,7 @@ class TaskCenterTask {
             json['verification_notes'] ?? json['verificationNotes'],
           ) ??
           '',
+      workRuns: _workRuns(json['work_runs'] ?? json['workRuns']),
       events: _events(json['events']),
       status: TaskCenterStatus.fromId(
         _requiredString(json['status'], 'task.status'),
@@ -747,6 +956,8 @@ class TaskCenterTask {
       if (routeReason.isNotEmpty) 'route_reason': routeReason,
       if (executionResult.isNotEmpty) 'execution_result': executionResult,
       if (verificationNotes.isNotEmpty) 'verification_notes': verificationNotes,
+      if (workRuns.isNotEmpty)
+        'work_runs': workRuns.map((run) => run.toJson()).toList(),
       if (events.isNotEmpty)
         'events': events.map((event) => event.toJson()).toList(),
       'status': status.id,
@@ -776,6 +987,7 @@ class TaskCenterTask {
       'route_reason': routeReason,
       'execution_result': executionResult,
       'verification_notes': verificationNotes,
+      'work_runs': workRuns.map((run) => run.toAgentJson()).toList(),
       'status': status.id,
       'status_label': status.label,
       'sort_order': sortOrder,
@@ -814,6 +1026,11 @@ DateTime _dateTimeValue(Object? value, String fieldName) {
   final parsed = DateTime.tryParse(raw);
   if (parsed == null) throw FormatException('$fieldName must be a date.');
   return parsed;
+}
+
+DateTime? _optionalDateTimeValue(Object? value, String fieldName) {
+  if (value == null) return null;
+  return _dateTimeValue(value, fieldName);
 }
 
 Map<String, dynamic> _jsonMap(Map raw) {
@@ -869,6 +1086,14 @@ List<TaskCenterHumanQuestion> _humanQuestions(Object? raw) {
   return raw
       .map((item) => TaskCenterHumanQuestion.fromJson(item))
       .toList(growable: false);
+}
+
+List<TaskCenterWorkRun> _workRuns(Object? raw) {
+  if (raw == null) return const <TaskCenterWorkRun>[];
+  if (raw is! List) {
+    throw const FormatException('work_runs must be a list.');
+  }
+  return raw.map(TaskCenterWorkRun.fromJson).toList(growable: false);
 }
 
 List<TaskCenterEvent> _events(Object? raw) {

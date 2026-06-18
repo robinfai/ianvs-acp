@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
@@ -210,6 +212,18 @@ void main() {
 
     expect(openedTaskCenter, isTrue);
   });
+
+  test(
+    'AppShell renders task center as a primary view instead of a dialog',
+    () async {
+      final source = await File('lib/ui/shell/app_shell.dart').readAsString();
+
+      expect(source, contains('_AppPrimaryView.taskCenter'));
+      expect(source, contains('_buildTaskCenterView('));
+      expect(source, isNot(contains('TaskCenterDialog(')));
+      expect(source, isNot(contains('_showTaskCenterDialog')));
+    },
+  );
 
   testWidgets('AgentToolbar renders custom agent name', (tester) async {
     await pumpToolbar(

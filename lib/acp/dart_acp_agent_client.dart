@@ -2035,7 +2035,55 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (type is String && type.trim().isNotEmpty) {
       copy['type'] = type.trim().toLowerCase();
     }
+    switch (_mcpServerTransportType(copy)) {
+      case 'http':
+      case 'sse':
+        copy['headers'] = _nameValueList(copy['headers']);
+      case 'stdio':
+        copy['args'] = _stringList(copy['args']);
+        copy['env'] = _nameValueList(copy['env']);
+    }
     return copy;
+  }
+
+  static List<String> _stringList(Object? raw) {
+    if (raw is! List) return const <String>[];
+    return raw
+        .whereType<String>()
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  static List<Map<String, String>> _nameValueList(Object? raw) {
+    if (raw == null) return const <Map<String, String>>[];
+    if (raw is Map) {
+      return raw.entries
+          .where((entry) => entry.key is String && entry.value is String)
+          .map(
+            (entry) => <String, String>{
+              'name': (entry.key as String).trim(),
+              'value': (entry.value as String).trim(),
+            },
+          )
+          .where(
+            (entry) => entry['name']!.isNotEmpty && entry['value']!.isNotEmpty,
+          )
+          .toList(growable: false);
+    }
+    if (raw is! List) return const <Map<String, String>>[];
+    final values = <Map<String, String>>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final name = item['name'];
+      final value = item['value'];
+      if (name is! String || value is! String) continue;
+      final cleanName = name.trim();
+      final cleanValue = value.trim();
+      if (cleanName.isEmpty || cleanValue.isEmpty) continue;
+      values.add(<String, String>{'name': cleanName, 'value': cleanValue});
+    }
+    return values;
   }
 
   static bool _mcpServerSupportedByAgent(

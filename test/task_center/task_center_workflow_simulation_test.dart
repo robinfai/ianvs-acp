@@ -172,6 +172,51 @@ void main() {
       expect(task['execution_result'], '已覆盖三类任务链路并完成验证。');
     },
   );
+
+  test('worker run can stall and be reassigned through recovery', () async {
+    final harness = await _WorkflowHarness.create();
+    addTearDown(harness.dispose);
+
+    final workspaceId = await harness.createWorkspace();
+    final taskId = await harness.createTask(
+      workspaceId,
+      'Recover stalled worker',
+    );
+
+    final started = await harness.api.call('task_center_start_work_run', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'agent_name': 'codex-worker',
+      'progress_summary': 'Starting.',
+    });
+    final run =
+        (((started['task'] as Map<String, Object?>)['work_runs']
+                    as List<Object?>)
+                .single
+            as Map<String, Object?>);
+
+    await harness.api.call('task_center_report_work_blocker', {
+      'workspace_id': workspaceId,
+      'task_id': taskId,
+      'run_id': run['id'],
+      'blocker_type': 'tool_error',
+      'blocker_reason': 'Tool failed repeatedly.',
+    });
+
+    final recovered = await harness.api
+        .call('task_center_recover_stalled_task', {
+          'workspace_id': workspaceId,
+          'task_id': taskId,
+          'action': 'reassign_worker',
+          'agent_name': 'codex-worker-2',
+          'reason': 'Retry with another worker.',
+        });
+
+    final owner =
+        (recovered['task'] as Map<String, Object?>)['current_owner']
+            as Map<String, Object?>;
+    expect(owner['agent_name'], 'codex-worker-2');
+  });
 }
 
 class _WorkflowHarness {
@@ -204,7 +249,7 @@ class _WorkflowHarness {
       'title': '测试workspace',
       'fast_agent_name': 'codex-fast',
       'thinking_agent_name': 'codex-thinking',
-      'work_agent_names': ['codex-worker'],
+      'work_agent_names': ['codex-worker', 'codex-worker-2'],
     });
     return (result['workspace'] as Map<String, Object?>)['id'] as String;
   }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
@@ -16,6 +17,7 @@ class TaskCenterMcpHost {
   });
 
   static const String serverName = 'ianvs-task-center';
+  static const String snapshotResourceUri = 'task-center://snapshot';
 
   final TaskCenterStore store;
   final TaskCenterChanged? onChanged;
@@ -102,6 +104,28 @@ class TaskCenterMcpHost {
       );
     }
 
+    server.registerResource(
+      'task-center-snapshot',
+      snapshotResourceUri,
+      (
+        description:
+            'Current local task center workspace, task, and chat data.',
+        mimeType: 'application/json',
+      ),
+      (uri, _) async {
+        final snapshot = await store.load();
+        return mcp.ReadResourceResult(
+          contents: <mcp.ResourceContents>[
+            mcp.TextResourceContents(
+              uri: uri.toString(),
+              mimeType: 'application/json',
+              text: jsonEncode(snapshot.toJson()),
+            ),
+          ],
+        );
+      },
+    );
+
     return server;
   }
 }
@@ -127,6 +151,18 @@ String _toolDescription(String name) {
     'task_center_list_role_tasks' =>
       'List tasks currently assigned to an owner role.',
     'task_center_claim_work_task' => 'Claim a task for a concrete work agent.',
+    'task_center_start_work_run' =>
+      'Start a tracked work run for a concrete work agent.',
+    'task_center_heartbeat_work_run' =>
+      'Update heartbeat and progress for a tracked work run.',
+    'task_center_report_work_blocker' =>
+      'Report why a worker cannot continue and route the task.',
+    'task_center_release_work_task' =>
+      'Release a claimed work task back to the workspace.',
+    'task_center_recover_stalled_task' =>
+      'Apply a human or agent recovery action to stalled work.',
+    'task_center_list_stalled_work' =>
+      'List tasks with stale, blocked, failed, released, or missing worker runs.',
     'task_center_record_execution_result' =>
       'Record execution and verification notes for a task.',
     'task_center_list_task_events' => 'List task event history.',
@@ -153,6 +189,9 @@ mcp.JsonObject _toolInputSchema(String name) {
       properties: <String, mcp.JsonSchema>{
         'title': _stringSchema('Workspace title.'),
         'description': _stringSchema('Optional workspace description.'),
+        'workspace_cwd': _stringSchema(
+          'Absolute working directory agents should use for this workspace.',
+        ),
         'fast_agent_name': _stringSchema('Main fast agent name.'),
         'thinking_agent_name': _stringSchema('Main thinking agent name.'),
         'work_agent_names': _stringArraySchema('Main work agent names.'),
@@ -172,6 +211,9 @@ mcp.JsonObject _toolInputSchema(String name) {
     'task_center_configure_workspace_agents' => _schema(
       properties: <String, mcp.JsonSchema>{
         'workspace_id': _stringSchema('Target workspace id.'),
+        'workspace_cwd': _stringSchema(
+          'Absolute working directory agents should use for this workspace.',
+        ),
         'fast_agent_name': _stringSchema('Main fast agent name.'),
         'thinking_agent_name': _stringSchema('Main thinking agent name.'),
         'work_agent_names': _stringArraySchema('Main work agent names.'),
@@ -299,6 +341,78 @@ mcp.JsonObject _toolInputSchema(String name) {
         'actor': _stringSchema('Actor claiming the task.'),
       },
       required: const <String>['workspace_id', 'task_id', 'agent_name'],
+    ),
+    'task_center_start_work_run' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'agent_name': _stringSchema('Concrete work agent name.'),
+        'session_id': _stringSchema('Optional ACP session id.'),
+        'progress_summary': _stringSchema('Initial worker progress summary.'),
+        'actor': _stringSchema('Actor starting this run.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'agent_name'],
+    ),
+    'task_center_heartbeat_work_run' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'run_id': _stringSchema('Work run id.'),
+        'state': _workRunStateSchema(),
+        'progress_summary': _stringSchema('Latest worker progress summary.'),
+        'next_check_minutes': mcp.JsonSchema.integer(
+          description: 'Optional minutes until the next planned check.',
+        ),
+        'actor': _stringSchema('Actor updating this run.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'run_id', 'state'],
+    ),
+    'task_center_report_work_blocker' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'run_id': _stringSchema('Work run id.'),
+        'blocker_type': _workBlockerTypeSchema(),
+        'blocker_reason': _stringSchema('Reason the worker cannot continue.'),
+        'questions': _stringArraySchema('Questions for a human operator.'),
+        'actor': _stringSchema('Actor reporting the blocker.'),
+      },
+      required: const <String>[
+        'workspace_id',
+        'task_id',
+        'run_id',
+        'blocker_type',
+        'blocker_reason',
+      ],
+    ),
+    'task_center_release_work_task' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'run_id': _stringSchema('Work run id.'),
+        'reason': _stringSchema('Reason the worker is releasing the task.'),
+        'actor': _stringSchema('Actor releasing this run.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'run_id', 'reason'],
+    ),
+    'task_center_recover_stalled_task' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+        'task_id': _stringSchema('Task id.'),
+        'action': _recoverActionSchema(),
+        'agent_name': _stringSchema(
+          'Worker name required when action is reassign_worker.',
+        ),
+        'reason': _stringSchema('Reason for this recovery action.'),
+        'actor': _stringSchema('Human or agent applying recovery.'),
+      },
+      required: const <String>['workspace_id', 'task_id', 'action'],
+    ),
+    'task_center_list_stalled_work' => _schema(
+      properties: <String, mcp.JsonSchema>{
+        'workspace_id': _stringSchema('Target workspace id.'),
+      },
+      required: const <String>['workspace_id'],
     ),
     'task_center_record_execution_result' => _schema(
       properties: <String, mcp.JsonSchema>{
@@ -478,6 +592,52 @@ mcp.JsonString _readinessSchema() {
       'blocked',
     ],
     description: 'Task execution readiness.',
+  );
+}
+
+mcp.JsonString _workRunStateSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'claimed',
+      'running',
+      'waiting_permission',
+      'waiting_human',
+      'blocked',
+      'stale',
+      'failed',
+      'released',
+      'delivered',
+    ],
+    description: 'Worker run state.',
+  );
+}
+
+mcp.JsonString _workBlockerTypeSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'unclear_goal',
+      'missing_acceptance',
+      'needs_human',
+      'permission',
+      'tool_error',
+      'external_dependency',
+      'other',
+    ],
+    description: 'Reason category for a blocked worker run.',
+  );
+}
+
+mcp.JsonString _recoverActionSchema() {
+  return mcp.JsonSchema.string(
+    enumValues: const <String>[
+      'nudge_worker',
+      'reassign_worker',
+      'return_to_fast',
+      'send_to_thinking',
+      'ask_human',
+      'mark_failed',
+    ],
+    description: 'Recovery action for stalled worker tasks.',
   );
 }
 

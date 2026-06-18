@@ -24,6 +24,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> openNewSessionDialog(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> showChatView(WidgetTester tester) async {
+    await openNewSessionDialog(tester);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+  }
+
   test(
     'AcpClientApp fast agent prompt names task center workflow tools',
     () async {
@@ -33,9 +44,84 @@ void main() {
       expect(source, contains('task_center_request_thinking_alignment'));
       expect(source, contains('task_center_deliver_work_result'));
       expect(source, contains('task_center_answer_human_question'));
+      expect(source, contains('task_center_list_stalled_work'));
+      expect(source, contains('task_center_start_work_run'));
+      expect(source, contains('task_center_heartbeat_work_run'));
+      expect(source, contains('task_center_report_work_blocker'));
       expect(source, contains('先和 thinking agent 对齐'));
       expect(source, contains('不要停在 task_center_request_thinking_alignment'));
       expect(source, contains('禁止只用自然语言说需要问 human'));
+      expect(source, contains('不能沉默卡在任务里'));
+    },
+  );
+
+  test('AcpClientApp restricts task center fast agent local tools', () async {
+    final source = await File('lib/app.dart').readAsString();
+
+    expect(source, contains('TaskCenterAgentLocalToolAccess.disabled'));
+    expect(source, contains('_controllerCacheKey'));
+    expect(source, contains('includeAdditionalDirectories: false'));
+    expect(source, contains('workspaceCwd: _workspaceCwdFor(workspace)'));
+    expect(source, contains('if (!allowLocalTools)'));
+    expect(source, contains('TaskCenterFastAgentClient'));
+    expect(source, contains('effectiveAdditionalDirectories'));
+    expect(
+      source,
+      contains('includeAdditionalDirectories: includeAdditionalDirectories'),
+    );
+    expect(source, contains('_workspaceScopedCodexHomePath'));
+    expect(source, contains('sandbox_mode = "workspace-write"'));
+    expect(
+      source,
+      contains(
+        'allowLocalTools && config.clientProviders.filesystem.readTextFile',
+      ),
+    );
+    expect(
+      source,
+      contains(
+        'allowLocalTools && config.clientProviders.filesystem.writeTextFile',
+      ),
+    );
+    expect(
+      source,
+      contains('allowLocalTools && config.clientProviders.terminal.enabled'),
+    );
+    expect(source, contains('additionalDirectories: allowLocalTools'));
+    expect(source, contains('_taskCenterOnlyMcpServers'));
+    expect(source, contains('_restrictedCodexHomePath'));
+    expect(source, contains("env['CODEX_HOME'] = _restrictedCodexHomePath("));
+    expect(source, contains('default_tools_enabled = false'));
+    expect(source, contains('approval_policy = "never"'));
+    expect(source, contains('sandbox_mode = "read-only"'));
+    expect(source, contains('writable_roots = []'));
+    expect(source, contains('_isTaskCenterMcpPermission'));
+    expect(source, contains('TaskCenterMcpHost.serverName'));
+    expect(source, contains("'server_name'"));
+    expect(source, contains("'serverName'"));
+    expect(source, contains('禁止使用本地文件、终端或其他本地执行工具'));
+    expect(source, contains('_permissionDecisionOverrideFor'));
+    expect(source, contains('_fastAgentPermissionDecisionOverride'));
+    expect(source, contains('_taskCenterAgentPermissionDecisionOverride'));
+    expect(source, contains('return AcpPermissionDecision.deny;'));
+    expect(source, contains('return null;'));
+  });
+
+  test(
+    'AcpClientApp wires task center active runs to agent sessions',
+    () async {
+      final source = await File('lib/app.dart').readAsString();
+
+      expect(source, contains('TaskCenterAgentSessionOrchestrator'));
+      expect(source, contains('_loadTaskCenterForAgentSessions'));
+      expect(source, contains('_scheduleTaskCenterAgentSessionSync'));
+      expect(source, contains('_controllerForTaskCenterAgent'));
+      expect(source, contains('taskCenterController.addListener'));
+      expect(source, contains('syncActiveWorkRuns()'));
+      expect(source, contains('_watchTaskCenterAgentController'));
+      expect(source, contains('_scheduleTaskCenterAgentRefresh'));
+      expect(source, contains('_refreshTaskCenterFromAgentEvent'));
+      expect(source, contains('Could not refresh task center from agent event'));
     },
   );
 
@@ -75,8 +161,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(writtenServers.map((server) => server.name), ['Codex']);
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
-    await tester.pumpAndSettle();
+    await openNewSessionDialog(tester);
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Codex'), findsWidgets);
@@ -103,8 +188,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
-    await tester.pumpAndSettle();
+    await openNewSessionDialog(tester);
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Kimi Code Dev'), findsWidgets);
@@ -164,8 +248,7 @@ void main() {
 
     await tester.tap(find.widgetWithText(TextButton, 'Close'));
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await openNewSessionDialog(tester);
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Codex'), findsWidgets);
@@ -245,8 +328,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
-    await tester.pumpAndSettle();
+    await openNewSessionDialog(tester);
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Kimi Code Dev'), findsNothing);
@@ -290,8 +372,7 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
-    await tester.pumpAndSettle();
+    await openNewSessionDialog(tester);
 
     final field = find.descendant(
       of: find.byType(AlertDialog),
@@ -315,6 +396,7 @@ void main() {
     await controller.connect();
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
+    await showChatView(tester);
     await tester.enterText(find.byType(TextField), 'Keep this draft');
     await tester.pump();
 
@@ -550,6 +632,7 @@ void main() {
     await controller.connect();
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
+    await showChatView(tester);
 
     await tester.tap(find.text('自动审查'));
     await tester.pumpAndSettle();
@@ -647,6 +730,8 @@ void main() {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
+    await controller.connect();
+    await controller.newSession();
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
     fake.emitPermissionRequest(
@@ -654,7 +739,7 @@ void main() {
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
-        sessionId: 'session-1',
+        sessionId: controller.currentSession!.id,
         toolName: 'read_text_file',
         toolKind: 'read',
         options: const ['Allow', 'Deny'],

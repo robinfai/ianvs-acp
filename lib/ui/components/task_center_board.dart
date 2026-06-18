@@ -1,28 +1,74 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:boardview/board_item.dart';
 import 'package:boardview/board_list.dart';
 import 'package:boardview/boardview.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter/services.dart';
 
+import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
+import '../../state/chat_controller.dart';
 import '../../task_center/task_center_controller.dart';
 import '../../task_center/task_center_models.dart';
 import '../theme/app_design_tokens.dart';
+import 'chat_timeline.dart';
 
 typedef TaskCenterWorkspaceMessageSender =
-    Future<String> Function(TaskWorkspace workspace, String message);
+    Future<TaskCenterWorkspaceMessageReply> Function(
+      TaskWorkspace workspace,
+      String message,
+    );
+
+class TaskCenterWorkspaceMessageReply {
+  const TaskCenterWorkspaceMessageReply({
+    required this.controller,
+    required this.messageStartIndex,
+    required this.completedText,
+    required this.createdAt,
+  });
+
+  factory TaskCenterWorkspaceMessageReply.started({
+    required ChatController controller,
+    required int messageStartIndex,
+    required Future<String> completedText,
+  }) {
+    return TaskCenterWorkspaceMessageReply(
+      controller: controller,
+      messageStartIndex: messageStartIndex,
+      completedText: completedText,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  final ChatController controller;
+  final int messageStartIndex;
+  final Future<String> completedText;
+  final DateTime createdAt;
+
+  String get currentText {
+    return _workspaceAgentReplyText(controller, messageStartIndex);
+  }
+}
 
 class TaskCenterDialog extends StatelessWidget {
   const TaskCenterDialog({
     super.key,
     required this.controller,
     this.agentServers = const <AgentServerConfig>[],
+    this.sessionControllers = const <ChatController>[],
+    this.defaultWorkspaceCwd = '',
+    this.onSelectSession,
     this.onSendWorkspaceMessage,
   });
 
   final TaskCenterController controller;
   final List<AgentServerConfig> agentServers;
+  final List<ChatController> sessionControllers;
+  final String defaultWorkspaceCwd;
+  final ValueChanged<AgentSession>? onSelectSession;
   final TaskCenterWorkspaceMessageSender? onSendWorkspaceMessage;
 
   @override
@@ -35,6 +81,9 @@ class TaskCenterDialog extends StatelessWidget {
         child: TaskCenterBoard(
           controller: controller,
           agentServers: agentServers,
+          sessionControllers: sessionControllers,
+          defaultWorkspaceCwd: defaultWorkspaceCwd,
+          onSelectSession: onSelectSession,
           onSendWorkspaceMessage: onSendWorkspaceMessage,
         ),
       ),
@@ -47,13 +96,19 @@ class TaskCenterBoard extends StatefulWidget {
     super.key,
     required this.controller,
     this.agentServers = const <AgentServerConfig>[],
+    this.sessionControllers = const <ChatController>[],
+    this.defaultWorkspaceCwd = '',
     this.renderBoardView = true,
+    this.onSelectSession,
     this.onSendWorkspaceMessage,
   });
 
   final TaskCenterController controller;
   final List<AgentServerConfig> agentServers;
+  final List<ChatController> sessionControllers;
+  final String defaultWorkspaceCwd;
   final bool renderBoardView;
+  final ValueChanged<AgentSession>? onSelectSession;
   final TaskCenterWorkspaceMessageSender? onSendWorkspaceMessage;
 
   @override
@@ -122,53 +177,26 @@ class _TaskCenterBoardState extends State<TaskCenterBoard> {
         Expanded(
           child: workspace == null
               ? _EmptyTaskCenter(onCreateWorkspace: _createWorkspace)
-              : Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: _BoardSurface(
-                              workspace: workspace,
-                              renderBoardView: widget.renderBoardView,
-                              selectedTaskId: selectedTask?.id,
-                              onSelectTask: (task) {
-                                setState(() => _selectedTaskId = task.id);
-                              },
-                              onMoveTask: (task, status, index) => unawaited(
-                                widget.controller.moveTask(
-                                  workspaceId: workspace.id,
-                                  taskId: task.id,
-                                  status: status,
-                                  index: index,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const Divider(height: 1, color: AppColors.border),
-                          SizedBox(
-                            height: 210,
-                            child: _WorkspaceChatPanel(
-                              controller: widget.controller,
-                              workspace: workspace,
-                              onSendWorkspaceMessage:
-                                  widget.onSendWorkspaceMessage,
-                            ),
-                          ),
-                        ],
-                      ),
+              : _TaskCenterWorkspaceTabs(
+                  controller: widget.controller,
+                  workspace: workspace,
+                  renderBoardView: widget.renderBoardView,
+                  selectedTask: selectedTask,
+                  agentServers: widget.agentServers,
+                  sessionControllers: widget.sessionControllers,
+                  onSelectSession: widget.onSelectSession,
+                  onSendWorkspaceMessage: widget.onSendWorkspaceMessage,
+                  onSelectTask: (task) {
+                    setState(() => _selectedTaskId = task.id);
+                  },
+                  onMoveTask: (task, status, index) => unawaited(
+                    widget.controller.moveTask(
+                      workspaceId: workspace.id,
+                      taskId: task.id,
+                      status: status,
+                      index: index,
                     ),
-                    const VerticalDivider(width: 1, color: AppColors.border),
-                    SizedBox(
-                      width: 360,
-                      child: _TaskProtocolPanel(
-                        controller: widget.controller,
-                        workspace: workspace,
-                        task: selectedTask,
-                        agentServers: widget.agentServers,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
         ),
       ],
@@ -195,7 +223,10 @@ class _TaskCenterBoardState extends State<TaskCenterBoard> {
       label: 'Name',
     );
     if (title == null) return;
-    final workspace = await widget.controller.createWorkspace(title: title);
+    final workspace = await widget.controller.createWorkspace(
+      title: title,
+      workspaceCwd: widget.defaultWorkspaceCwd,
+    );
     setState(() => _selectedTaskId = null);
     if (!mounted) return;
     await _configureWorkspace(workspace);
@@ -223,6 +254,7 @@ class _TaskCenterBoardState extends State<TaskCenterBoard> {
       builder: (context) => _WorkspaceAgentSettingsDialog(
         controller: widget.controller,
         workspace: workspace,
+        defaultWorkspaceCwd: widget.defaultWorkspaceCwd,
         agentServers: widget.agentServers,
       ),
     );
@@ -306,6 +338,11 @@ class _TaskCenterHeader extends StatelessWidget {
               value: '${config.workAgentNames.length}',
               fallback: '0',
             ),
+            _RoleSummaryPill(
+              label: 'Cwd',
+              value: _workspaceCwdLabel(selectedWorkspace?.workspaceCwd ?? ''),
+              fallback: 'app cwd',
+            ),
           ],
           const Spacer(),
           IconButton(
@@ -327,6 +364,715 @@ class _TaskCenterHeader extends StatelessWidget {
       ),
     );
   }
+}
+
+String _workspaceCwdLabel(String cwd) {
+  final clean = cwd.trim();
+  if (clean.isEmpty) return '';
+  final parts = clean.split(Platform.pathSeparator)
+    ..removeWhere((part) => part.isEmpty);
+  return parts.isEmpty ? clean : parts.last;
+}
+
+class _TaskCenterWorkspaceTabs extends StatelessWidget {
+  const _TaskCenterWorkspaceTabs({
+    required this.controller,
+    required this.workspace,
+    required this.renderBoardView,
+    required this.selectedTask,
+    required this.agentServers,
+    required this.sessionControllers,
+    required this.onSelectSession,
+    required this.onSendWorkspaceMessage,
+    required this.onSelectTask,
+    required this.onMoveTask,
+  });
+
+  final TaskCenterController controller;
+  final TaskWorkspace workspace;
+  final bool renderBoardView;
+  final TaskCenterTask? selectedTask;
+  final List<AgentServerConfig> agentServers;
+  final List<ChatController> sessionControllers;
+  final ValueChanged<AgentSession>? onSelectSession;
+  final TaskCenterWorkspaceMessageSender? onSendWorkspaceMessage;
+  final ValueChanged<TaskCenterTask> onSelectTask;
+  final void Function(TaskCenterTask task, TaskCenterStatus status, int index)
+  onMoveTask;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      initialIndex: 0,
+      child: Column(
+        children: [
+          Material(
+            color: AppColors.surface,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TabBar(
+                isScrollable: true,
+                labelColor: AppColors.primaryDark,
+                unselectedLabelColor: AppColors.textSecondary,
+                indicatorColor: AppColors.primary,
+                tabs: const [
+                  Tab(text: 'Workspace Chat'),
+                  Tab(text: 'Agents'),
+                  Tab(text: 'Kanban'),
+                ],
+              ),
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.border),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _WorkspaceChatPanel(
+                  controller: controller,
+                  workspace: workspace,
+                  onSendWorkspaceMessage: onSendWorkspaceMessage,
+                ),
+                _TaskCenterAgentsPanel(
+                  workspace: workspace,
+                  sessionControllers: sessionControllers,
+                  onSelectSession: onSelectSession,
+                ),
+                _KanbanTaskWorkspace(
+                  controller: controller,
+                  workspace: workspace,
+                  renderBoardView: renderBoardView,
+                  selectedTask: selectedTask,
+                  agentServers: agentServers,
+                  onSelectTask: onSelectTask,
+                  onMoveTask: onMoveTask,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _KanbanTaskWorkspace extends StatelessWidget {
+  const _KanbanTaskWorkspace({
+    required this.controller,
+    required this.workspace,
+    required this.renderBoardView,
+    required this.selectedTask,
+    required this.agentServers,
+    required this.onSelectTask,
+    required this.onMoveTask,
+  });
+
+  final TaskCenterController controller;
+  final TaskWorkspace workspace;
+  final bool renderBoardView;
+  final TaskCenterTask? selectedTask;
+  final List<AgentServerConfig> agentServers;
+  final ValueChanged<TaskCenterTask> onSelectTask;
+  final void Function(TaskCenterTask task, TaskCenterStatus status, int index)
+  onMoveTask;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: _BoardSurface(
+            workspace: workspace,
+            renderBoardView: renderBoardView,
+            selectedTaskId: selectedTask?.id,
+            onSelectTask: onSelectTask,
+            onMoveTask: onMoveTask,
+          ),
+        ),
+        const VerticalDivider(width: 1, color: AppColors.border),
+        SizedBox(
+          width: 360,
+          child: _TaskProtocolPanel(
+            controller: controller,
+            workspace: workspace,
+            task: selectedTask,
+            agentServers: agentServers,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TaskCenterAgentsPanel extends StatefulWidget {
+  const _TaskCenterAgentsPanel({
+    required this.workspace,
+    required this.sessionControllers,
+    required this.onSelectSession,
+  });
+
+  final TaskWorkspace workspace;
+  final List<ChatController> sessionControllers;
+  final ValueChanged<AgentSession>? onSelectSession;
+
+  @override
+  State<_TaskCenterAgentsPanel> createState() => _TaskCenterAgentsPanelState();
+}
+
+class _TaskCenterAgentsPanelState extends State<_TaskCenterAgentsPanel> {
+  String? _selectedSessionId;
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = _agentSessionGroups(
+      widget.workspace,
+      widget.sessionControllers,
+    );
+    final sessions = [for (final group in groups) ...group.sessions];
+    final selectedSession = _selectedAgentSession(sessions);
+    final selectedController = selectedSession == null
+        ? null
+        : _controllerForSession(selectedSession);
+    final isSelectedActive =
+        selectedController?.currentSession?.id == selectedSession?.id;
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 300,
+          child: ColoredBox(
+            color: AppColors.surfaceRaised,
+            child: groups.isEmpty
+                ? const _EmptyAgentsPanel()
+                : ListView(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+                    children: [
+                      const Text(
+                        'Agent Sessions',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      for (final group in groups)
+                        _AgentSessionGroupView(
+                          group: group,
+                          tasks: widget.workspace.tasks,
+                          selectedSessionId: selectedSession?.id,
+                          onSelectSession: _selectSession,
+                        ),
+                    ],
+                  ),
+          ),
+        ),
+        const VerticalDivider(width: 1, color: AppColors.border),
+        Expanded(
+          child: selectedSession == null
+              ? const _AgentTranscriptEmptyState()
+              : isSelectedActive
+              ? _AgentTranscriptView(
+                  controller: selectedController!,
+                  session: selectedSession,
+                )
+              : _AgentTranscriptLoadState(
+                  session: selectedSession,
+                  canLoad: widget.onSelectSession != null,
+                ),
+        ),
+      ],
+    );
+  }
+
+  AgentSession? _selectedAgentSession(List<AgentSession> sessions) {
+    if (sessions.isEmpty) return null;
+    final selectedId = _selectedSessionId;
+    if (selectedId != null) {
+      for (final session in sessions) {
+        if (session.id == selectedId) return session;
+      }
+    }
+    for (final controller in widget.sessionControllers) {
+      final active = controller.currentSession;
+      if (active == null) continue;
+      if (sessions.any((session) => session.id == active.id)) return active;
+    }
+    return sessions.first;
+  }
+
+  ChatController? _controllerForSession(AgentSession session) {
+    for (final controller in widget.sessionControllers) {
+      final current = controller.currentSession;
+      if (current?.id == session.id) return controller;
+      if (controller.sessions.any((item) => item.id == session.id)) {
+        return controller;
+      }
+    }
+    return null;
+  }
+
+  void _selectSession(AgentSession session) {
+    setState(() => _selectedSessionId = session.id);
+    if (_controllerForSession(session)?.currentSession?.id == session.id) {
+      return;
+    }
+    widget.onSelectSession?.call(session);
+  }
+}
+
+class _AgentSessionGroupView extends StatelessWidget {
+  const _AgentSessionGroupView({
+    required this.group,
+    required this.tasks,
+    required this.selectedSessionId,
+    required this.onSelectSession,
+  });
+
+  final _AgentSessionGroup group;
+  final List<TaskCenterTask> tasks;
+  final String? selectedSessionId;
+  final ValueChanged<AgentSession> onSelectSession;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  group.roleLabel,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+              if (group.agentName.isNotEmpty)
+                _TinyPill(
+                  label: group.agentName,
+                  color: AppColors.primaryDark,
+                  background: AppColors.primaryMist,
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (group.sessions.isEmpty)
+            const Text(
+              'No sessions yet',
+              style: TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            )
+          else
+            for (final session in group.sessions)
+              _AgentSessionTile(
+                session: session,
+                tasks: tasks,
+                selected: session.id == selectedSessionId,
+                onPressed: () => onSelectSession(session),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentSessionTile extends StatelessWidget {
+  const _AgentSessionTile({
+    required this.session,
+    required this.tasks,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final AgentSession session;
+  final List<TaskCenterTask> tasks;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final runs = _runsForSession(tasks, session);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: selected ? AppColors.primaryMist : AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              border: Border.all(
+                color: selected
+                    ? AppColors.primary.withValues(alpha: 0.22)
+                    : AppColors.borderSoft,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.chat_bubble_outline_rounded,
+                      size: 15,
+                      color: selected
+                          ? AppColors.primaryDark
+                          : AppColors.textSecondary,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        session.displayTitle,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  session.cwd,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    height: 1.25,
+                    letterSpacing: 0,
+                  ),
+                ),
+                if (runs.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 5,
+                    runSpacing: 5,
+                    children: [
+                      for (final run in runs.take(2))
+                        _AgentSessionRunPill(run: run),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSessionRunPill extends StatelessWidget {
+  const _AgentSessionRunPill({required this.run});
+
+  final TaskCenterWorkRun run;
+
+  @override
+  Widget build(BuildContext context) {
+    final isProblem =
+        run.state == TaskCenterWorkRunState.stale ||
+        run.state == TaskCenterWorkRunState.blocked ||
+        run.state == TaskCenterWorkRunState.failed;
+    return _TinyPill(
+      label: '${run.state.label} · ${_formatRunTime(run.lastHeartbeatAt)}',
+      color: isProblem ? AppColors.danger : AppColors.primaryDark,
+      background: isProblem ? const Color(0xfffff1f2) : AppColors.primaryMist,
+    );
+  }
+}
+
+class _AgentTranscriptView extends StatelessWidget {
+  const _AgentTranscriptView({required this.controller, required this.session});
+
+  final ChatController controller;
+  final AgentSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        if (controller.isStreaming) const _AgentTranscriptRunningBar(),
+        Expanded(
+          child: ChatTimeline(
+            messages: controller.messages,
+            agentName: session.agentName ?? controller.agentName,
+            hasActiveSession: true,
+            activeSessionLabel: session.displayTitle,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AgentTranscriptRunningBar extends StatelessWidget {
+  const _AgentTranscriptRunningBar();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      child: const Row(
+        children: [
+          SizedBox(
+            width: 10,
+            height: 10,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 8),
+          Text(
+            'Running',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentTranscriptEmptyState extends StatelessWidget {
+  const _AgentTranscriptEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Text(
+        'Select an agent session to inspect its transcript.',
+        style: TextStyle(
+          color: AppColors.textSecondary,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentTranscriptLoadState extends StatelessWidget {
+  const _AgentTranscriptLoadState({
+    required this.session,
+    required this.canLoad,
+  });
+
+  final AgentSession session;
+  final bool canLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.manage_search_outlined,
+              color: AppColors.primaryDark,
+              size: 30,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              session.displayTitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              canLoad
+                  ? 'Loading this session will show its latest transcript here.'
+                  : 'This session is not active, so its transcript is not loaded yet.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyAgentsPanel extends StatelessWidget {
+  const _EmptyAgentsPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(18),
+        child: Text(
+          'No agent sessions yet.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSessionGroup {
+  const _AgentSessionGroup({
+    required this.roleLabel,
+    required this.agentName,
+    required this.sessions,
+  });
+
+  final String roleLabel;
+  final String agentName;
+  final List<AgentSession> sessions;
+}
+
+class _AgentRoleSpec {
+  const _AgentRoleSpec(this.roleLabel, this.agentName);
+
+  final String roleLabel;
+  final String agentName;
+}
+
+List<_AgentSessionGroup> _agentSessionGroups(
+  TaskWorkspace workspace,
+  List<ChatController> sessionControllers,
+) {
+  final config = workspace.agentConfig;
+  final specs = <_AgentRoleSpec>[
+    _AgentRoleSpec('Fast Agent', config.fastAgentName.trim()),
+    _AgentRoleSpec('Thinking Agent', config.thinkingAgentName.trim()),
+    for (final entry in config.workAgentNames.indexed)
+      _AgentRoleSpec('Work Agent ${entry.$1 + 1}', entry.$2.trim()),
+  ];
+  final sessions = _agentSessions(sessionControllers)
+    ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
+  final matchedIds = <String>{};
+  final groups = <_AgentSessionGroup>[];
+
+  for (final spec in specs) {
+    if (spec.agentName.isEmpty) continue;
+    final roleSessions = sessions
+        .where((session) => _sessionAgentName(session) == spec.agentName)
+        .toList(growable: false);
+    matchedIds.addAll(roleSessions.map((session) => session.id));
+    groups.add(
+      _AgentSessionGroup(
+        roleLabel: spec.roleLabel,
+        agentName: spec.agentName,
+        sessions: roleSessions,
+      ),
+    );
+  }
+
+  final otherSessions = sessions
+      .where((session) => !matchedIds.contains(session.id))
+      .toList(growable: false);
+  if (otherSessions.isNotEmpty) {
+    groups.add(
+      _AgentSessionGroup(
+        roleLabel: 'Other Agents',
+        agentName: '',
+        sessions: otherSessions,
+      ),
+    );
+  }
+
+  return groups;
+}
+
+List<AgentSession> _agentSessions(List<ChatController> sessionControllers) {
+  final sessionsById = <String, AgentSession>{};
+  for (final controller in sessionControllers) {
+    for (final session in controller.sessions) {
+      sessionsById[session.id] = _sessionWithControllerAgent(
+        session,
+        controller,
+      );
+    }
+    final currentSession = controller.currentSession;
+    if (currentSession != null) {
+      sessionsById[currentSession.id] = _sessionWithControllerAgent(
+        currentSession,
+        controller,
+      );
+    }
+  }
+  return sessionsById.values.toList(growable: false);
+}
+
+AgentSession _sessionWithControllerAgent(
+  AgentSession session,
+  ChatController controller,
+) {
+  if (_sessionAgentName(session).isNotEmpty) return session;
+  return session.copyWith(agentName: controller.agentName);
+}
+
+String _sessionAgentName(AgentSession session) {
+  return session.agentName?.trim() ?? '';
+}
+
+TaskCenterWorkRun? _activeOrLatestRun(TaskCenterTask task) {
+  if (task.workRuns.isEmpty) return null;
+  for (final run in task.workRuns.reversed) {
+    if (run.isActive) return run;
+  }
+  return task.workRuns.last;
+}
+
+List<TaskCenterWorkRun> _runsForSession(
+  List<TaskCenterTask> tasks,
+  AgentSession session,
+) {
+  return [
+    for (final task in tasks)
+      for (final run in task.workRuns)
+        if (run.sessionId == session.id) run,
+  ];
+}
+
+String _formatRunTime(DateTime value) {
+  final local = value.toLocal();
+  String two(int input) => input.toString().padLeft(2, '0');
+  return '${two(local.month)}/${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
 }
 
 class _BoardSurface extends StatelessWidget {
@@ -495,6 +1241,7 @@ class _TaskCard extends StatelessWidget {
     final detailPreview = task.details.isNotEmpty
         ? task.details
         : task.description;
+    final run = _activeOrLatestRun(task);
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -550,6 +1297,16 @@ class _TaskCard extends StatelessWidget {
                   color: _readinessColor(task.readiness),
                   background: _readinessBackground(task.readiness),
                 ),
+                if (run != null)
+                  _TinyPill(
+                    label: '${run.agentName} · ${run.state.label}',
+                    color: run.state == TaskCenterWorkRunState.stale
+                        ? AppColors.danger
+                        : AppColors.primaryDark,
+                    background: run.state == TaskCenterWorkRunState.stale
+                        ? const Color(0xfffff1f2)
+                        : AppColors.primaryMist,
+                  ),
                 _TinyPill(
                   label: task.acceptanceCriteria.isEmpty
                       ? 'No acceptance'
@@ -602,6 +1359,7 @@ class _WorkspaceChatPanel extends StatefulWidget {
 class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
   final TextEditingController _messageController = TextEditingController();
   bool _sending = false;
+  TaskCenterWorkspaceMessageReply? _streamingReply;
 
   @override
   void dispose() {
@@ -611,9 +1369,7 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = widget.workspace.chatMessages.reversed.toList(
-      growable: false,
-    );
+    final streamingReply = _streamingReply;
     return ColoredBox(
       color: AppColors.surface,
       child: Column(
@@ -650,15 +1406,28 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
             ),
           ),
           const Divider(height: 1, color: AppColors.border),
+          _WaitingHumanConfirmations(
+            controller: widget.controller,
+            workspace: widget.workspace,
+            onFastAgentMessage: _sendToFastAgent,
+          ),
+          _WorkerStalledRecoveries(
+            controller: widget.controller,
+            workspace: widget.workspace,
+          ),
           Expanded(
-            child: messages.isEmpty
-                ? const SizedBox.shrink()
-                : ListView.builder(
-                    reverse: true,
-                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      return _WorkspaceChatBubble(message: messages[index]);
+            child: streamingReply == null
+                ? _WorkspaceChatMessageList(
+                    workspace: widget.workspace,
+                    streamingReply: null,
+                  )
+                : ListenableBuilder(
+                    listenable: streamingReply.controller,
+                    builder: (context, _) {
+                      return _WorkspaceChatMessageList(
+                        workspace: widget.workspace,
+                        streamingReply: streamingReply,
+                      );
                     },
                   ),
           ),
@@ -668,18 +1437,32 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    key: const Key('workspace-chat-input'),
-                    controller: _messageController,
-                    enabled: !_sending,
-                    minLines: 1,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      hintText: 'Message workspace',
-                      border: OutlineInputBorder(),
+                  child: Focus(
+                    onKeyEvent: (node, event) {
+                      if (event is! KeyDownEvent ||
+                          event.logicalKey != LogicalKeyboardKey.enter) {
+                        return KeyEventResult.ignored;
+                      }
+                      if (HardwareKeyboard.instance.isShiftPressed) {
+                        return KeyEventResult.ignored;
+                      }
+                      unawaited(_send());
+                      return KeyEventResult.handled;
+                    },
+                    child: TextField(
+                      key: const Key('workspace-chat-input'),
+                      controller: _messageController,
+                      enabled: !_sending,
+                      minLines: 1,
+                      maxLines: 3,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        hintText: 'Message workspace',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                    onSubmitted: (_) => unawaited(_send()),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -705,7 +1488,10 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
   Future<void> _send() async {
     final content = _messageController.text.trim();
     if (content.isEmpty || _sending) return;
-    setState(() => _sending = true);
+    setState(() {
+      _sending = true;
+      _streamingReply = null;
+    });
     _messageController.clear();
 
     final workspace = widget.workspace;
@@ -722,25 +1508,63 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
         await _postSystemMessage('fast agent is not configured.');
         return;
       }
-      final sender = widget.onSendWorkspaceMessage;
-      if (sender == null) {
-        await _postSystemMessage('fast agent runner is not connected.');
-        return;
-      }
-      final response = (await sender(workspace, content)).trim();
-      if (response.isNotEmpty) {
+      await _sendToFastAgent(content: content);
+    } catch (error) {
+      await _postSystemMessage('$error');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _sendToFastAgent({
+    required String content,
+    String? taskId,
+  }) async {
+    final workspace = widget.workspace;
+    final fastAgentName = workspace.agentConfig.fastAgentName.trim();
+    if (fastAgentName.isEmpty) {
+      await _postSystemMessage('fast agent is not configured.');
+      return;
+    }
+
+    final sender = widget.onSendWorkspaceMessage;
+    if (sender == null) {
+      await _postSystemMessage('fast agent runner is not connected.');
+      return;
+    }
+
+    TaskCenterWorkspaceMessageReply? reply;
+    try {
+      final beforeMessages = await widget.controller.listWorkspaceChatMessages(
+        workspaceId: workspace.id,
+      );
+      reply = await sender(workspace, content);
+      if (mounted) setState(() => _streamingReply = reply);
+      final response = (await reply.completedText).trim();
+      final afterMessages = await widget.controller.listWorkspaceChatMessages(
+        workspaceId: workspace.id,
+      );
+      final fastAgentAlreadyPosted = afterMessages
+          .skip(beforeMessages.length)
+          .any(
+            (message) =>
+                message.role == TaskWorkspaceChatRole.fastAgent &&
+                message.actor == fastAgentName,
+          );
+      if (response.isNotEmpty && !fastAgentAlreadyPosted) {
         await widget.controller.postWorkspaceChatMessage(
           workspaceId: workspace.id,
           role: TaskWorkspaceChatRole.fastAgent,
           actor: fastAgentName,
           agentName: fastAgentName,
           content: response,
+          taskId: taskId,
         );
       }
-    } catch (error) {
-      await _postSystemMessage('$error');
     } finally {
-      if (mounted) setState(() => _sending = false);
+      if (mounted && identical(_streamingReply, reply)) {
+        setState(() => _streamingReply = null);
+      }
     }
   }
 
@@ -752,6 +1576,731 @@ class _WorkspaceChatPanelState extends State<_WorkspaceChatPanel> {
       content: content,
     );
   }
+}
+
+class _WorkspaceChatMessageList extends StatefulWidget {
+  const _WorkspaceChatMessageList({
+    required this.workspace,
+    required this.streamingReply,
+  });
+
+  final TaskWorkspace workspace;
+  final TaskCenterWorkspaceMessageReply? streamingReply;
+
+  @override
+  State<_WorkspaceChatMessageList> createState() =>
+      _WorkspaceChatMessageListState();
+}
+
+class _WorkspaceChatMessageListState extends State<_WorkspaceChatMessageList> {
+  final ScrollController _scrollController = ScrollController();
+  String _lastMessageKey = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _lastMessageKey = _messageKey;
+    _scheduleScrollToLatest();
+  }
+
+  @override
+  void didUpdateWidget(covariant _WorkspaceChatMessageList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextKey = _messageKey;
+    if (nextKey == _lastMessageKey) return;
+    _lastMessageKey = nextKey;
+    _scheduleScrollToLatest();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = _workspaceChatMessagesWithStreamingReply(
+      widget.workspace,
+      widget.streamingReply,
+    );
+    if (messages.isEmpty) return const SizedBox.shrink();
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+      itemCount: messages.length,
+      itemBuilder: (context, index) {
+        return _WorkspaceChatBubble(message: messages[index]);
+      },
+    );
+  }
+
+  String get _messageKey {
+    final messages = _workspaceChatMessagesWithStreamingReply(
+      widget.workspace,
+      widget.streamingReply,
+    );
+    if (messages.isEmpty) return '0';
+    final last = messages.last;
+    return '${messages.length}:${last.id}:${last.content.length}';
+  }
+
+  void _scheduleScrollToLatest() {
+    const delays = <Duration>[
+      Duration.zero,
+      Duration(milliseconds: 80),
+      Duration(milliseconds: 240),
+    ];
+    for (final delay in delays) {
+      unawaited(
+        Future<void>.delayed(delay, () {
+          if (!mounted) return;
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _scrollToLatest(),
+          );
+        }),
+      );
+    }
+  }
+
+  void _scrollToLatest() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    _scrollController.jumpTo(position.maxScrollExtent);
+  }
+}
+
+class _WaitingHumanConfirmations extends StatefulWidget {
+  const _WaitingHumanConfirmations({
+    required this.controller,
+    required this.workspace,
+    required this.onFastAgentMessage,
+  });
+
+  final TaskCenterController controller;
+  final TaskWorkspace workspace;
+  final Future<void> Function({required String content, String? taskId})
+  onFastAgentMessage;
+
+  @override
+  State<_WaitingHumanConfirmations> createState() =>
+      _WaitingHumanConfirmationsState();
+}
+
+class _WaitingHumanConfirmationsState
+    extends State<_WaitingHumanConfirmations> {
+  final Map<String, String> _customAnswers = <String, String>{};
+  String? _submittingQuestionId;
+
+  @override
+  Widget build(BuildContext context) {
+    final pending = _pendingHumanQuestions(widget.workspace);
+    if (pending.isEmpty) return const SizedBox.shrink();
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(color: Color(0xfffffbeb)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.rule_folder_outlined,
+                  size: 17,
+                  color: AppColors.warning,
+                ),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'Waiting for you',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0,
+                    ),
+                  ),
+                ),
+                _TinyPill(
+                  label: '${pending.length}',
+                  color: AppColors.warning,
+                  background: const Color(0xfffff7ed),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: pending.length == 1 ? 224 : 252,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
+              itemCount: pending.length,
+              separatorBuilder: (context, index) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final item = pending[index];
+                return _WaitingHumanCard(
+                  task: item.task,
+                  question: item.question,
+                  customAnswer: _customAnswers[item.question.id] ?? '',
+                  submitting: _submittingQuestionId == item.question.id,
+                  onCustomAnswerChanged: (value) {
+                    setState(() => _customAnswers[item.question.id] = value);
+                  },
+                  onAnswer: (answer) => unawaited(
+                    _answerQuestion(item.task, item.question, answer),
+                  ),
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.border),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _answerQuestion(
+    TaskCenterTask task,
+    TaskCenterHumanQuestion question,
+    String answer,
+  ) async {
+    final cleanAnswer = answer.trim();
+    if (cleanAnswer.isEmpty || _submittingQuestionId != null) return;
+    setState(() => _submittingQuestionId = question.id);
+
+    final workspace = widget.workspace;
+    final content = [
+      'Human confirmation answered',
+      'Task ID: ${task.id}',
+      'Task: ${task.title}',
+      'Question: ${question.question}',
+      'Answer: $cleanAnswer',
+    ].join('\n');
+
+    try {
+      final answeredTask = await widget.controller.answerHumanQuestion(
+        workspaceId: workspace.id,
+        taskId: task.id,
+        questionId: question.id,
+        answer: cleanAnswer,
+      );
+      await widget.controller.postWorkspaceChatMessage(
+        workspaceId: workspace.id,
+        role: TaskWorkspaceChatRole.human,
+        actor: 'human',
+        content: content,
+        taskId: task.id,
+        metadata: <String, Object?>{
+          'human_confirmation': 'answered',
+          'question_id': question.id,
+        },
+      );
+
+      if (answeredTask.humanQuestions.any((item) => !item.resolved)) return;
+
+      final fastAgentName = workspace.agentConfig.fastAgentName.trim();
+      if (fastAgentName.isEmpty) {
+        await _postSystemMessage('fast agent is not configured.');
+        return;
+      }
+
+      await widget.controller.transferTaskOwner(
+        workspaceId: workspace.id,
+        taskId: task.id,
+        owner: TaskCenterTaskOwner.fastAgent(fastAgentName),
+        readiness: TaskCenterReadiness.needsInfo,
+        routeReason: 'Human confirmation answered.',
+        actor: 'human',
+      );
+
+      await widget.onFastAgentMessage(content: content, taskId: task.id);
+    } catch (error) {
+      await _postSystemMessage('$error');
+    } finally {
+      if (mounted) setState(() => _submittingQuestionId = null);
+    }
+  }
+
+  Future<void> _postSystemMessage(String content) {
+    return widget.controller.postWorkspaceChatMessage(
+      workspaceId: widget.workspace.id,
+      role: TaskWorkspaceChatRole.system,
+      actor: 'system',
+      content: content,
+    );
+  }
+}
+
+class _WorkerStalledRecoveries extends StatefulWidget {
+  const _WorkerStalledRecoveries({
+    required this.controller,
+    required this.workspace,
+  });
+
+  final TaskCenterController controller;
+  final TaskWorkspace workspace;
+
+  @override
+  State<_WorkerStalledRecoveries> createState() =>
+      _WorkerStalledRecoveriesState();
+}
+
+class _WorkerStalledRecoveriesState extends State<_WorkerStalledRecoveries> {
+  List<TaskCenterTask> _stalled = const <TaskCenterTask>[];
+  String? _submittingTaskId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(covariant _WorkerStalledRecoveries oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.workspace.id != widget.workspace.id ||
+        oldWidget.workspace.updatedAt != widget.workspace.updatedAt) {
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _load() async {
+    final stalled = await widget.controller.listStalledWork(
+      workspaceId: widget.workspace.id,
+    );
+    if (!mounted) return;
+    setState(() => _stalled = stalled);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_stalled.isEmpty) return const SizedBox.shrink();
+    return DecoratedBox(
+      decoration: const BoxDecoration(color: Color(0xfffff1f2)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.report_problem_outlined,
+                  size: 17,
+                  color: AppColors.danger,
+                ),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'Worker stalled',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0,
+                    ),
+                  ),
+                ),
+                _TinyPill(
+                  label: '${_stalled.length}',
+                  color: AppColors.danger,
+                  background: AppColors.surface,
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 224,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
+              itemCount: _stalled.length,
+              separatorBuilder: (context, index) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final task = _stalled[index];
+                return _WorkerStalledCard(
+                  task: task,
+                  workspace: widget.workspace,
+                  submitting: _submittingTaskId == task.id,
+                  onRecover: (action, agentName) =>
+                      unawaited(_recover(task, action, agentName)),
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.border),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _recover(
+    TaskCenterTask task,
+    TaskCenterRecoverAction action,
+    String agentName,
+  ) async {
+    if (_submittingTaskId != null) return;
+    setState(() => _submittingTaskId = task.id);
+    try {
+      await widget.controller.recoverStalledTask(
+        workspaceId: widget.workspace.id,
+        taskId: task.id,
+        action: action,
+        agentName: agentName,
+        reason: 'Recovered from workspace chat.',
+        actor: 'human',
+      );
+      await _load();
+    } finally {
+      if (mounted) setState(() => _submittingTaskId = null);
+    }
+  }
+}
+
+class _WorkerStalledCard extends StatelessWidget {
+  const _WorkerStalledCard({
+    required this.task,
+    required this.workspace,
+    required this.submitting,
+    required this.onRecover,
+  });
+
+  final TaskCenterTask task;
+  final TaskWorkspace workspace;
+  final bool submitting;
+  final void Function(TaskCenterRecoverAction action, String agentName)
+  onRecover;
+
+  @override
+  Widget build(BuildContext context) {
+    final run = task.workRuns.isEmpty ? null : task.workRuns.last;
+    final reassignAgent = _nextWorkerName(workspace, task);
+    return SizedBox(
+      width: 360,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      task.title,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                  _TinyPill(
+                    label: run?.state.label ?? 'Missing run',
+                    color: AppColors.danger,
+                    background: const Color(0xfffff1f2),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                task.routeReason.trim().isEmpty
+                    ? 'Current owner: ${task.currentOwner.label}'
+                    : task.routeReason,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                  letterSpacing: 0,
+                ),
+              ),
+              if (run != null && run.progressSummary.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  run.progressSummary,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  FilledButton.tonal(
+                    onPressed: submitting
+                        ? null
+                        : () => onRecover(
+                            TaskCenterRecoverAction.nudgeWorker,
+                            task.currentOwner.agentName,
+                          ),
+                    child: const Text('催一下 worker'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting || reassignAgent.isEmpty
+                        ? null
+                        : () => onRecover(
+                            TaskCenterRecoverAction.reassignWorker,
+                            reassignAgent,
+                          ),
+                    child: const Text('换一个 worker'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting
+                        ? null
+                        : () => onRecover(
+                            TaskCenterRecoverAction.returnToFast,
+                            '',
+                          ),
+                    child: const Text('交回 fast agent'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting
+                        ? null
+                        : () => onRecover(
+                            TaskCenterRecoverAction.sendToThinking,
+                            '',
+                          ),
+                    child: const Text('转 thinking agent'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting
+                        ? null
+                        : () =>
+                              onRecover(TaskCenterRecoverAction.markFailed, ''),
+                    child: const Text('标记失败'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WaitingHumanCard extends StatelessWidget {
+  const _WaitingHumanCard({
+    required this.task,
+    required this.question,
+    required this.customAnswer,
+    required this.submitting,
+    required this.onCustomAnswerChanged,
+    required this.onAnswer,
+  });
+
+  final TaskCenterTask task;
+  final TaskCenterHumanQuestion question;
+  final String customAnswer;
+  final bool submitting;
+  final ValueChanged<String> onCustomAnswerChanged;
+  final ValueChanged<String> onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 360,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      task.title,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                  _TinyPill(
+                    label: TaskCenterReadiness.waitingHuman.label,
+                    color: AppColors.warning,
+                    background: const Color(0xfffff7ed),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                question.question,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                  letterSpacing: 0,
+                ),
+              ),
+              if (task.routeReason.trim().isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  task.routeReason,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
+              TextField(
+                enabled: !submitting,
+                minLines: 1,
+                maxLines: 2,
+                onChanged: onCustomAnswerChanged,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: 'Custom answer',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 7),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  FilledButton.tonal(
+                    onPressed: submitting ? null : () => onAnswer('确认可以继续。'),
+                    child: const Text('确认可以继续'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting
+                        ? null
+                        : () => onAnswer('需要补充说明：请 fast agent 继续澄清。'),
+                    child: const Text('需要补充说明'),
+                  ),
+                  OutlinedButton(
+                    onPressed: submitting
+                        ? null
+                        : () => onAnswer('打回快速 agent：请重新梳理任务目标和验收条件。'),
+                    child: const Text('打回快速 agent'),
+                  ),
+                  IconButton.filled(
+                    tooltip: 'Send custom answer',
+                    onPressed: submitting || customAnswer.trim().isEmpty
+                        ? null
+                        : () => onAnswer(customAnswer),
+                    icon: submitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.send_outlined, size: 18),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingHumanQuestion {
+  const _PendingHumanQuestion({required this.task, required this.question});
+
+  final TaskCenterTask task;
+  final TaskCenterHumanQuestion question;
+}
+
+List<_PendingHumanQuestion> _pendingHumanQuestions(TaskWorkspace workspace) {
+  final pending = <_PendingHumanQuestion>[];
+  for (final task in workspace.tasks) {
+    final waitingForHuman =
+        task.readiness == TaskCenterReadiness.waitingHuman ||
+        task.currentOwner.kind == TaskCenterOwnerKind.human;
+    if (!waitingForHuman) continue;
+    for (final question in task.humanQuestions) {
+      if (question.resolved) continue;
+      pending.add(_PendingHumanQuestion(task: task, question: question));
+    }
+  }
+  pending.sort((a, b) => b.task.updatedAt.compareTo(a.task.updatedAt));
+  return pending;
+}
+
+String _nextWorkerName(TaskWorkspace workspace, TaskCenterTask task) {
+  for (final agentName in workspace.agentConfig.workAgentNames) {
+    if (agentName != task.currentOwner.agentName) return agentName;
+  }
+  return workspace.agentConfig.workAgentNames.isEmpty
+      ? task.currentOwner.agentName
+      : workspace.agentConfig.workAgentNames.first;
+}
+
+List<TaskWorkspaceChatMessage> _workspaceChatMessagesWithStreamingReply(
+  TaskWorkspace workspace,
+  TaskCenterWorkspaceMessageReply? streamingReply,
+) {
+  final messages = List<TaskWorkspaceChatMessage>.of(workspace.chatMessages);
+  if (streamingReply == null) return messages;
+
+  final fastAgentName = workspace.agentConfig.fastAgentName.trim();
+  final currentText = streamingReply.currentText.trim();
+  messages.add(
+    TaskWorkspaceChatMessage(
+      id: 'streaming-fast-agent-reply',
+      workspaceId: workspace.id,
+      role: TaskWorkspaceChatRole.fastAgent,
+      actor: fastAgentName.isEmpty ? 'fast agent' : fastAgentName,
+      agentName: fastAgentName,
+      content: currentText.isEmpty ? '...' : currentText,
+      createdAt: streamingReply.createdAt,
+      metadata: const <String, Object?>{'streaming': true},
+    ),
+  );
+  return messages;
+}
+
+String _workspaceAgentReplyText(
+  ChatController controller,
+  int messageStartIndex,
+) {
+  return controller.messages
+      .skip(messageStartIndex)
+      .where((message) => message.role == ChatMessageRole.assistant)
+      .map((message) => message.text.trim())
+      .where((text) => text.isNotEmpty)
+      .join('\n')
+      .trim();
 }
 
 class _WorkspaceChatBubble extends StatelessWidget {
@@ -803,21 +2352,78 @@ class _WorkspaceChatBubble extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 4),
-            Text(
-              message.content,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-                height: 1.35,
-                letterSpacing: 0,
-              ),
+            MarkdownBody(
+              data: message.content,
+              selectable: true,
+              onTapLink: (_, href, _) => _openWorkspaceChatLink(href),
+              styleSheet: _workspaceChatMarkdownStyle(context),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+MarkdownStyleSheet _workspaceChatMarkdownStyle(BuildContext context) {
+  const baseTextStyle = TextStyle(
+    color: AppColors.textPrimary,
+    fontSize: 12.5,
+    fontWeight: FontWeight.w600,
+    height: 1.35,
+    letterSpacing: 0,
+  );
+  return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+    p: baseTextStyle,
+    strong: baseTextStyle.copyWith(fontWeight: FontWeight.w900),
+    em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
+    a: baseTextStyle.copyWith(
+      color: AppColors.primaryDark,
+      fontWeight: FontWeight.w800,
+      decoration: TextDecoration.underline,
+      decorationColor: AppColors.primaryDark,
+    ),
+    code: baseTextStyle.copyWith(
+      fontFamily: 'monospace',
+      backgroundColor: AppColors.surfaceRaised,
+      fontSize: 12,
+    ),
+    listBullet: baseTextStyle,
+    blockSpacing: 8,
+    listIndent: 22,
+    codeblockPadding: const EdgeInsets.all(7),
+    codeblockDecoration: BoxDecoration(
+      color: AppColors.surfaceRaised,
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      border: Border.all(color: AppColors.border),
+    ),
+    tableHead: baseTextStyle.copyWith(fontWeight: FontWeight.w900),
+    tableBody: baseTextStyle,
+    tableBorder: TableBorder.all(color: AppColors.border, width: 1),
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+    tableHeadCellsPadding: const EdgeInsets.symmetric(
+      horizontal: 8,
+      vertical: 6,
+    ),
+    tableHeadCellsDecoration: const BoxDecoration(color: AppColors.surface),
+  );
+}
+
+void _openWorkspaceChatLink(String? href) {
+  final raw = href?.trim();
+  if (raw == null || raw.isEmpty) return;
+  final uri = Uri.tryParse(raw);
+  if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) return;
+  if (!Platform.isMacOS) return;
+  unawaited(
+    (() async {
+      try {
+        await Process.run('open', [uri.toString()]);
+      } catch (_) {
+        // Ignore link launch failures; the rendered URL remains selectable.
+      }
+    })(),
+  );
 }
 
 class _TaskProtocolPanel extends StatefulWidget {
@@ -1013,6 +2619,7 @@ class _TaskProtocolPanelState extends State<_TaskProtocolPanel> {
                       ),
                     ],
                   ),
+                  _TaskExecutionPanel(task: task),
                   if (task.events.isNotEmpty)
                     _PanelSection(
                       title: 'History',
@@ -1157,11 +2764,13 @@ class _WorkspaceAgentSettingsDialog extends StatefulWidget {
   const _WorkspaceAgentSettingsDialog({
     required this.controller,
     required this.workspace,
+    required this.defaultWorkspaceCwd,
     required this.agentServers,
   });
 
   final TaskCenterController controller;
   final TaskWorkspace workspace;
+  final String defaultWorkspaceCwd;
   final List<AgentServerConfig> agentServers;
 
   @override
@@ -1179,6 +2788,12 @@ class _WorkspaceAgentSettingsDialogState
       .agentConfig
       .workAgentNames
       .toSet();
+  late final TextEditingController _workspaceCwdController =
+      TextEditingController(
+        text: widget.workspace.workspaceCwd.trim().isEmpty
+            ? widget.defaultWorkspaceCwd
+            : widget.workspace.workspaceCwd,
+      );
   late final TextEditingController _fastPromptController =
       TextEditingController(text: widget.workspace.agentConfig.fastAgentPrompt);
   late final TextEditingController _thinkingPromptController =
@@ -1190,6 +2805,7 @@ class _WorkspaceAgentSettingsDialogState
 
   @override
   void dispose() {
+    _workspaceCwdController.dispose();
     _fastPromptController.dispose();
     _thinkingPromptController.dispose();
     _workPromptController.dispose();
@@ -1210,6 +2826,12 @@ class _WorkspaceAgentSettingsDialogState
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              _ProtocolTextField(
+                label: 'Workspace cwd',
+                controller: _workspaceCwdController,
+                maxLines: 1,
+              ),
+              const SizedBox(height: 10),
               _AgentRoleDropdown(
                 label: 'Main Fast Agent',
                 value: _fastAgentName,
@@ -1299,6 +2921,7 @@ class _WorkspaceAgentSettingsDialogState
   Future<void> _save() async {
     await widget.controller.updateWorkspaceAgentConfig(
       workspaceId: widget.workspace.id,
+      workspaceCwd: _workspaceCwdController.text,
       agentConfig: TaskWorkspaceAgentConfig(
         fastAgentName: _fastAgentName,
         thinkingAgentName: _thinkingAgentName,
@@ -1339,6 +2962,89 @@ class _AgentRoleDropdown extends StatelessWidget {
       onChanged: (value) {
         if (value != null) onChanged(value);
       },
+    );
+  }
+}
+
+class _TaskExecutionPanel extends StatelessWidget {
+  const _TaskExecutionPanel({required this.task});
+
+  final TaskCenterTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    final run = _activeOrLatestRun(task);
+    if (run == null) {
+      return const _PanelSection(
+        title: 'Execution',
+        children: [
+          Text(
+            'No worker run yet.',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+          ),
+        ],
+      );
+    }
+    return _PanelSection(
+      title: 'Execution',
+      children: [
+        _InfoRow(label: 'Worker', value: run.agentName),
+        _InfoRow(label: 'State', value: run.state.label),
+        _InfoRow(
+          label: 'Last heartbeat',
+          value: _formatRunTime(run.lastHeartbeatAt),
+        ),
+        if (run.progressSummary.isNotEmpty)
+          _InfoRow(label: 'Progress', value: run.progressSummary),
+        if (run.blockerReason.isNotEmpty)
+          _InfoRow(label: 'Blocker', value: run.blockerReason),
+      ],
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 98,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

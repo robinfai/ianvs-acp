@@ -40,11 +40,13 @@ class TaskCenterController extends ChangeNotifier {
   Future<TaskWorkspace> createWorkspace({
     required String title,
     String description = '',
+    String workspaceCwd = '',
     TaskWorkspaceAgentConfig agentConfig = const TaskWorkspaceAgentConfig(),
   }) async {
     final workspace = await store.createWorkspace(
       title: title,
       description: description,
+      workspaceCwd: workspaceCwd,
       agentConfig: agentConfig,
     );
     _selectedWorkspaceId = workspace.id;
@@ -55,10 +57,12 @@ class TaskCenterController extends ChangeNotifier {
   Future<TaskWorkspace> updateWorkspaceAgentConfig({
     required String workspaceId,
     required TaskWorkspaceAgentConfig agentConfig,
+    String? workspaceCwd,
   }) async {
     final workspace = await store.updateWorkspaceAgentConfig(
       workspaceId: workspaceId,
       agentConfig: agentConfig,
+      workspaceCwd: workspaceCwd,
     );
     await _refresh();
     return workspace;
@@ -113,6 +117,7 @@ class TaskCenterController extends ChangeNotifier {
     String? executionResult,
     String? verificationNotes,
     TaskCenterStatus? status,
+    Map<String, Object?>? metadata,
   }) async {
     final task = await store.updateTask(
       workspaceId: workspaceId,
@@ -130,6 +135,7 @@ class TaskCenterController extends ChangeNotifier {
       executionResult: executionResult,
       verificationNotes: verificationNotes,
       status: status,
+      metadata: metadata,
     );
     await _refresh();
     return task;
@@ -217,6 +223,24 @@ class TaskCenterController extends ChangeNotifier {
     return task;
   }
 
+  Future<TaskCenterTask> answerHumanQuestion({
+    required String workspaceId,
+    required String taskId,
+    required String questionId,
+    required String answer,
+    String actor = 'human',
+  }) async {
+    final task = await store.answerHumanQuestion(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      questionId: questionId,
+      answer: answer,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
   Future<TaskCenterTask> claimWorkTask({
     required String workspaceId,
     required String taskId,
@@ -231,6 +255,134 @@ class TaskCenterController extends ChangeNotifier {
     );
     await _refresh();
     return task;
+  }
+
+  Future<TaskCenterTask> startWorkRun({
+    required String workspaceId,
+    required String taskId,
+    required String agentName,
+    String sessionId = '',
+    String progressSummary = '',
+    String actor = 'human',
+  }) async {
+    final task = await store.startWorkRun(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      agentName: agentName,
+      sessionId: sessionId,
+      progressSummary: progressSummary,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<TaskCenterTask> heartbeatWorkRun({
+    required String workspaceId,
+    required String taskId,
+    required String runId,
+    required TaskCenterWorkRunState state,
+    String progressSummary = '',
+    int? nextCheckMinutes,
+    String actor = 'human',
+  }) async {
+    final task = await store.heartbeatWorkRun(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      runId: runId,
+      state: state,
+      progressSummary: progressSummary,
+      nextCheckMinutes: nextCheckMinutes,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<TaskCenterTask> bindWorkRunSession({
+    required String workspaceId,
+    required String taskId,
+    required String runId,
+    required String sessionId,
+    String actor = 'app',
+  }) async {
+    final task = await store.bindWorkRunSession(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      runId: runId,
+      sessionId: sessionId,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<TaskCenterTask> reportWorkBlocker({
+    required String workspaceId,
+    required String taskId,
+    required String runId,
+    required TaskCenterWorkBlockerType blockerType,
+    required String blockerReason,
+    List<String> questions = const <String>[],
+    String actor = 'human',
+  }) async {
+    final task = await store.reportWorkBlocker(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      runId: runId,
+      blockerType: blockerType,
+      blockerReason: blockerReason,
+      questions: questions,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<TaskCenterTask> releaseWorkTask({
+    required String workspaceId,
+    required String taskId,
+    required String runId,
+    required String reason,
+    String actor = 'human',
+  }) async {
+    final task = await store.releaseWorkTask(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      runId: runId,
+      reason: reason,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<TaskCenterTask> recoverStalledTask({
+    required String workspaceId,
+    required String taskId,
+    required TaskCenterRecoverAction action,
+    String agentName = '',
+    String reason = '',
+    String actor = 'human',
+  }) async {
+    final task = await store.recoverStalledTask(
+      workspaceId: workspaceId,
+      taskId: taskId,
+      action: action,
+      agentName: agentName,
+      reason: reason,
+      actor: actor,
+    );
+    await _refresh();
+    return task;
+  }
+
+  Future<List<TaskCenterTask>> listStalledWork({
+    required String workspaceId,
+  }) async {
+    final tasks = await store.listStalledWork(workspaceId: workspaceId);
+    await _refresh();
+    return tasks;
   }
 
   void selectWorkspace(String workspaceId) {
