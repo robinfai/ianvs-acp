@@ -18,6 +18,34 @@ void main() {
     expect(discovered.single.args, ['@zed-industries/codex-acp']);
   });
 
+  test('discovers pi ACP through npx when pi is installed', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{
+        'PATH': '/usr/local/bin:/bin',
+        'UNRELATED_API_KEY': 'test-key',
+      },
+      fileExists: (path) =>
+          path == '/usr/local/bin/npx' || path == '/usr/local/bin/pi',
+    );
+
+    expect(discovered, hasLength(2));
+    final pi = discovered.singleWhere((server) => server.name == 'pi ACP');
+    expect(pi.command, '/usr/local/bin/npx');
+    expect(pi.args, ['-y', 'pi-acp']);
+    expect(pi.env, isEmpty);
+  });
+
+  test('does not discover pi ACP when pi is not installed', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{'PATH': '/usr/local/bin:/bin'},
+      fileExists: (path) => path == '/usr/local/bin/npx',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('pi ACP')));
+  });
+
   test(
     'does not suggest Codex when same ACP adapter is already configured',
     () {
@@ -36,6 +64,31 @@ void main() {
       );
 
       expect(discovered, isEmpty);
+    },
+  );
+
+  test(
+    'does not suggest pi ACP when same ACP adapter is already configured',
+    () {
+      final discovered = AcpAgentDiscovery.discoverMissing(
+        AcpClientConfig.fromJson({
+          'agent_servers': {
+            'pi': {
+              'type': 'custom',
+              'command': '/opt/homebrew/bin/npx',
+              'args': ['-y', 'pi-acp'],
+            },
+          },
+        }),
+        environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+        fileExists: (path) =>
+            path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+      );
+
+      expect(
+        discovered.map((server) => server.name),
+        isNot(contains('pi ACP')),
+      );
     },
   );
 

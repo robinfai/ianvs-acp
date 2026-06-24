@@ -10,6 +10,8 @@ class AcpAgentDiscovery {
 
   static const String codexAgentName = 'Codex';
   static const String codexAcpPackage = '@zed-industries/codex-acp';
+  static const String piAgentName = 'pi ACP';
+  static const String piAcpPackage = 'pi-acp';
 
   static List<AgentServerConfig> discoverMissing(
     AcpClientConfig config, {
@@ -40,7 +42,7 @@ class AcpAgentDiscovery {
     );
     if (npx == null) return const <AgentServerConfig>[];
 
-    return <AgentServerConfig>[
+    final agents = <AgentServerConfig>[
       AgentServerConfig(
         name: codexAgentName,
         type: 'custom',
@@ -48,6 +50,28 @@ class AcpAgentDiscovery {
         args: const <String>[codexAcpPackage],
       ),
     ];
+
+    final pi = _resolveExecutable(
+      'pi',
+      environment: environment,
+      fileExists: fileExists,
+      preferredPaths: const <String>[
+        '/opt/homebrew/bin/pi',
+        '/usr/local/bin/pi',
+      ],
+    );
+    if (pi != null) {
+      agents.add(
+        AgentServerConfig(
+          name: piAgentName,
+          type: 'custom',
+          command: npx,
+          args: const <String>['-y', piAcpPackage],
+        ),
+      );
+    }
+
+    return agents;
   }
 
   static Future<AcpClientConfig> writeSelectedAgentServers(

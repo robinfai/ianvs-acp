@@ -29,8 +29,11 @@ agent. The app persists those GUI choices to:
 ```
 
 On startup, the app can detect missing local ACP agents and ask whether to add
-them to `agent_servers`. The first built-in detector covers Codex through a
-local `npx` command running `@zed-industries/codex-acp`.
+them to `agent_servers`. The built-in detectors cover Codex through a local
+`npx` command running `@zed-industries/codex-acp`, and pi ACP through `npx -y
+pi-acp` when both `npx` and the `pi` command are available. Model provider
+credentials for pi remain user-managed through pi itself or the agent server
+`env` fields in Agent Configuration.
 
 Saved shape example for automation and debugging:
 
@@ -43,6 +46,12 @@ Saved shape example for automation and debugging:
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
       "args": ["@zed-industries/codex-acp"]
+    },
+    "pi ACP": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "cwd": "/Users/example/project",
+      "args": ["-y", "pi-acp"]
     }
   },
   "additional_directories": [
