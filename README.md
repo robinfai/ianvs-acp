@@ -118,6 +118,42 @@ Supported environment overrides:
 - `IANVS_ACP_WORKSPACE_CWD`
 - `XDG_CONFIG_HOME`
 
+## Mermaid Rendering
+
+Assistant messages can render fenced Mermaid blocks directly:
+
+````markdown
+```mermaid
+flowchart TD
+  A --> B
+```
+````
+
+The reusable Flutter surface is:
+
+```dart
+MermaidView(
+  source: 'flowchart TD\nA --> B',
+)
+```
+
+Default renderer: `package:merman` through Dart FFI on native platforms.
+
+SVG display: `flutter_svg`.
+
+SVG pipeline: `resvg-safe`.
+
+SVG compatibility: Mermaid CSS rules are inlined before display so native SVG
+rendering does not fall back to black default fills when `flutter_svg` ignores
+`<style>` blocks.
+
+Cache: in-memory LRU keyed by Mermaid source, options JSON, and merman engine
+version.
+
+Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
+`MermaidController` when a live editor needs render state, and
+`layoutJson()` when interaction overlays need node or edge geometry.
+
 ## Development
 
 ```sh

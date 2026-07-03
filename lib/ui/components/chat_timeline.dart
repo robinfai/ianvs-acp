@@ -3,7 +3,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:markdown/markdown.dart' as md;
 
+import '../../mermaid/mermaid_view.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_design_tokens.dart';
 import 'dot_grid_background.dart';
@@ -535,6 +537,9 @@ class _MessageBubble extends StatelessWidget {
                   data: message.text,
                   selectable: true,
                   styleSheet: _markdownStyle(context, textColor, user),
+                  builders: <String, MarkdownElementBuilder>{
+                    'pre': _MermaidCodeBlockBuilder(user: user),
+                  },
                 ),
               ],
               _ContentBlocksPreview(message: message),
@@ -600,6 +605,81 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {
+  _MermaidCodeBlockBuilder({required this.user});
+
+  final bool user;
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final code = _codeChild(element);
+    if (code == null || !_isMermaidCode(code)) return null;
+
+    final source = code.textContent.trimRight();
+    if (source.trim().isEmpty) return null;
+
+    final background = user ? Colors.white : AppColors.surface;
+    return Padding(
+      padding: const EdgeInsets.all(7),
+      child: ClipRect(
+        child: ColoredBox(
+          color: background,
+          child: SizedBox(
+            width: double.infinity,
+            height: 280,
+            child: MermaidView(
+              source: source,
+              semanticsLabel: 'Mermaid diagram',
+              loadingBuilder: (_) => const Center(
+                child: SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+              errorBuilder: (context, error) {
+                final theme = Theme.of(context);
+                return Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: SelectableText(
+                    'Mermaid render failed:\n$error',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  md.Element? _codeChild(md.Element element) {
+    for (final child in element.children ?? const <md.Node>[]) {
+      if (child is md.Element && child.tag == 'code') {
+        return child;
+      }
+    }
+    return null;
+  }
+
+  bool _isMermaidCode(md.Element code) {
+    final className = code.attributes['class'] ?? '';
+    return className
+        .split(RegExp(r'\s+'))
+        .any((part) => part == 'language-mermaid' || part == 'mermaid');
+  }
 }
 
 class _ToolBubble extends StatelessWidget {
