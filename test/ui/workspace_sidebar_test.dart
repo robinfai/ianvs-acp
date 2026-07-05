@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
+import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 void main() {
   testWidgets('WorkspaceSidebar expands workspaces before selecting sessions', (
@@ -112,6 +115,119 @@ void main() {
     expect(find.widgetWithText(OutlinedButton, 'New Session'), findsOneWidget);
   });
 
+  testWidgets('WorkspaceSidebar restores and saves expanded workspaces', (
+    tester,
+  ) async {
+    final store = _MemoryWorkspaceSidebarStateStore({'/workspace/other'});
+
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const <AgentSession>[],
+    );
+    final otherWorkspace = WorkspaceRecord(
+      path: '/workspace/other',
+      name: 'other',
+      sessions: [
+        AgentSession(
+          id: 'other-session',
+          cwd: '/workspace/other',
+          createdAt: DateTime(2026, 5, 1, 10),
+          title: 'Other loaded session',
+          agentName: 'Codex',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [currentWorkspace, otherWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+              stateStore: store,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('Other loaded session'), findsOneWidget);
+
+    await tester.tap(find.text('other'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+
+    expect(find.text('Other loaded session'), findsNothing);
+    expect(store.expandedWorkspacePaths, isNot(contains('/workspace/other')));
+  });
+
+  testWidgets('WorkspaceSidebar auto-loads sessions for expanded workspaces', (
+    tester,
+  ) async {
+    final completer = Completer<void>();
+    var loadCount = 0;
+    WorkspaceRecord? loadedWorkspace;
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const <AgentSession>[],
+    );
+    final otherWorkspace = WorkspaceRecord(
+      path: '/workspace/other',
+      name: 'other',
+      sessions: const <AgentSession>[],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [currentWorkspace, otherWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onLoadWorkspaceSessions: (workspace) {
+                loadCount += 1;
+                loadedWorkspace = workspace;
+                return completer.future;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(loadCount, 0);
+
+    await tester.tap(find.text('other'));
+    await tester.pump();
+
+    expect(loadCount, 1);
+    expect(loadedWorkspace, otherWorkspace);
+    expect(find.text('Loading sessions in other...'), findsOneWidget);
+
+    completer.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.text('No sessions in other'), findsOneWidget);
+  });
+
   testWidgets('WorkspaceSidebar exposes workspace action menu', (tester) async {
     WorkspaceRecord? revealed;
     var newSessionCount = 0;
@@ -208,4 +324,22 @@ void main() {
     expect(find.text('Renamed workspace'), findsOneWidget);
     expect(find.text('current'), findsNothing);
   });
+}
+
+class _MemoryWorkspaceSidebarStateStore extends WorkspaceSidebarStateStore {
+  _MemoryWorkspaceSidebarStateStore(Set<String> initialPaths)
+    : expandedWorkspacePaths = Set<String>.from(initialPaths),
+      super(path: 'memory');
+
+  Set<String> expandedWorkspacePaths;
+
+  @override
+  Future<Set<String>> loadExpandedWorkspacePaths() async {
+    return Set<String>.from(expandedWorkspacePaths);
+  }
+
+  @override
+  Future<void> saveExpandedWorkspacePaths(Set<String> paths) async {
+    expandedWorkspacePaths = Set<String>.from(paths);
+  }
 }

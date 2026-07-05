@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../acp/agent_session.dart';
 import '../../workspace/workspace.dart';
+import '../../workspace/workspace_sidebar_state_store.dart';
 import '../theme/app_design_tokens.dart';
 
 class WorkspaceSidebar extends StatefulWidget {
@@ -15,6 +18,8 @@ class WorkspaceSidebar extends StatefulWidget {
     required this.onResumeSession,
     this.onSelectSession,
     this.onRevealWorkspace,
+    this.onLoadWorkspaceSessions,
+    this.stateStore,
   });
 
   final String agentName;
@@ -25,6 +30,9 @@ class WorkspaceSidebar extends StatefulWidget {
   final VoidCallback? onResumeSession;
   final ValueChanged<AgentSession>? onSelectSession;
   final ValueChanged<WorkspaceRecord>? onRevealWorkspace;
+  final Future<void> Function(WorkspaceRecord workspace)?
+  onLoadWorkspaceSessions;
+  final WorkspaceSidebarStateStore? stateStore;
 
   @override
   State<WorkspaceSidebar> createState() => _WorkspaceSidebarState();
@@ -34,25 +42,33 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   final Set<String> _expandedWorkspacePaths = <String>{};
   final Set<String> _pinnedWorkspacePaths = <String>{};
   final Set<String> _hiddenWorkspacePaths = <String>{};
+  final Set<String> _loadingSessionWorkspacePaths = <String>{};
+  final Set<String> _autoLoadWorkspacePaths = <String>{};
   final Map<String, String> _workspaceDisplayNames = <String, String>{};
+  final Map<String, String> _sessionLoadErrors = <String, String>{};
   String? _hoveredWorkspacePath;
+  bool _sessionCatalogLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+    unawaited(_restoreExpandedWorkspacePaths());
   }
 
   @override
   void didUpdateWidget(covariant WorkspaceSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
     _expandedWorkspacePaths.add(widget.currentWorkspace.path);
-    final availablePaths = widget.workspaces
-        .map((workspace) => workspace.path)
-        .toSet();
-    _expandedWorkspacePaths.removeWhere(
-      (path) => !availablePaths.contains(path),
-    );
+
+    if (oldWidget.stateStore?.path != widget.stateStore?.path) {
+      unawaited(_restoreExpandedWorkspacePaths());
+    }
+
+    if (oldWidget.onLoadWorkspaceSessions == null &&
+        widget.onLoadWorkspaceSessions != null) {
+      _scheduleLoadSessionsForAutoLoadWorkspaces();
+    }
   }
 
   @override
@@ -100,6 +116,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                 final expanded =
                     selected ||
                     _expandedWorkspacePaths.contains(workspace.path);
+                final sessionLoading = _loadingSessionWorkspacePaths.contains(
+                  workspace.path,
+                );
                 return _WorkspaceGroup(
                   agentName: widget.agentName,
                   workspace: workspace,
@@ -110,9 +129,16 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   currentSession: widget.currentSession,
                   onWorkspacePressed: selected
                       ? null
-                      : () => _toggleWorkspace(workspace.path),
+                      : () => _toggleWorkspace(workspace),
                   onSelectSession: widget.onSelectSession,
                   onNewSession: selected ? widget.onNewSession : null,
+                  sessionLoading: sessionLoading,
+                  sessionLoadError: _sessionLoadErrors[workspace.path],
+                  onRetryLoadSessions: widget.onLoadWorkspaceSessions == null
+                      ? null
+                      : () => unawaited(
+                          _loadWorkspaceSessions(workspace, force: true),
+                        ),
                   pinned: _isPinned(workspace),
                   canRevealInFinder: widget.onRevealWorkspace != null,
                   canRemove: !selected,
@@ -131,12 +157,99 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     );
   }
 
-  void _toggleWorkspace(String path) {
+  void _toggleWorkspace(WorkspaceRecord workspace) {
+    var expanded = false;
     setState(() {
-      if (!_expandedWorkspacePaths.remove(path)) {
-        _expandedWorkspacePaths.add(path);
+      if (!_expandedWorkspacePaths.remove(workspace.path)) {
+        _expandedWorkspacePaths.add(workspace.path);
+        _autoLoadWorkspacePaths.add(workspace.path);
+        expanded = true;
+      } else {
+        _autoLoadWorkspacePaths.remove(workspace.path);
       }
     });
+    _persistExpandedWorkspacePaths();
+    if (expanded) {
+      unawaited(_loadWorkspaceSessions(workspace));
+    }
+  }
+
+  Future<void> _restoreExpandedWorkspacePaths() async {
+    final store = widget.stateStore;
+    if (store != null) {
+      final paths = await store.loadExpandedWorkspacePaths();
+      if (!mounted) return;
+      setState(() {
+        _expandedWorkspacePaths.addAll(paths);
+        _autoLoadWorkspacePaths.addAll(paths);
+        _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+      });
+    }
+    if (!mounted) return;
+    _scheduleLoadSessionsForAutoLoadWorkspaces();
+  }
+
+  void _scheduleLoadSessionsForAutoLoadWorkspaces() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _loadSessionsForAutoLoadWorkspaces();
+    });
+  }
+
+  void _persistExpandedWorkspacePaths() {
+    final store = widget.stateStore;
+    if (store == null) return;
+    final pathsToPersist = _expandedWorkspacePaths
+        .where(
+          (path) =>
+              path != widget.currentWorkspace.path ||
+              _autoLoadWorkspacePaths.contains(path),
+        )
+        .toSet();
+    unawaited(
+      store
+          .saveExpandedWorkspacePaths(Set<String>.from(pathsToPersist))
+          .catchError((_) {}),
+    );
+  }
+
+  void _loadSessionsForAutoLoadWorkspaces() {
+    for (final workspace in _visibleWorkspaces()) {
+      if (!_autoLoadWorkspacePaths.contains(workspace.path)) continue;
+      if (!_expandedWorkspacePaths.contains(workspace.path)) continue;
+      unawaited(_loadWorkspaceSessions(workspace));
+    }
+  }
+
+  Future<void> _loadWorkspaceSessions(
+    WorkspaceRecord workspace, {
+    bool force = false,
+  }) async {
+    final loader = widget.onLoadWorkspaceSessions;
+    if (loader == null) return;
+    if (_sessionCatalogLoaded && !force) return;
+    if (_loadingSessionWorkspacePaths.contains(workspace.path)) return;
+
+    setState(() {
+      _loadingSessionWorkspacePaths.add(workspace.path);
+      _sessionLoadErrors.remove(workspace.path);
+    });
+
+    try {
+      await loader(workspace);
+      if (!mounted) return;
+      setState(() {
+        _sessionCatalogLoaded = true;
+        _loadingSessionWorkspacePaths.clear();
+        _sessionLoadErrors.clear();
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingSessionWorkspacePaths.remove(workspace.path);
+        _sessionLoadErrors[workspace.path] = error.toString();
+      });
+    }
   }
 
   List<WorkspaceRecord> _visibleWorkspaces() {
@@ -212,8 +325,10 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         setState(() {
           _hiddenWorkspacePaths.add(workspace.path);
           _expandedWorkspacePaths.remove(workspace.path);
+          _autoLoadWorkspacePaths.remove(workspace.path);
           _pinnedWorkspacePaths.remove(workspace.path);
         });
+        _persistExpandedWorkspacePaths();
     }
   }
 
@@ -274,6 +389,9 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.onWorkspacePressed,
     required this.onSelectSession,
     required this.onNewSession,
+    required this.sessionLoading,
+    required this.sessionLoadError,
+    required this.onRetryLoadSessions,
     required this.pinned,
     required this.canRevealInFinder,
     required this.canRemove,
@@ -291,6 +409,9 @@ class _WorkspaceGroup extends StatelessWidget {
   final VoidCallback? onWorkspacePressed;
   final ValueChanged<AgentSession>? onSelectSession;
   final VoidCallback? onNewSession;
+  final bool sessionLoading;
+  final String? sessionLoadError;
+  final VoidCallback? onRetryLoadSessions;
   final bool pinned;
   final bool canRevealInFinder;
   final bool canRemove;
@@ -332,7 +453,17 @@ class _WorkspaceGroup extends StatelessWidget {
               onNewSession: onNewSession,
               onMenuAction: onMenuAction,
             ),
-            if (expanded && workspace.sessions.isEmpty)
+            if (expanded && sessionLoading && workspace.sessions.isEmpty)
+              _InlineSessionLoadStatus(workspaceName: displayName)
+            else if (expanded &&
+                sessionLoadError != null &&
+                workspace.sessions.isEmpty)
+              _InlineSessionLoadError(
+                workspaceName: displayName,
+                message: sessionLoadError!,
+                onRetry: onRetryLoadSessions,
+              )
+            else if (expanded && workspace.sessions.isEmpty)
               _InlineEmptyWorkspaceSessions(
                 agentName: agentName,
                 workspaceName: displayName,
@@ -844,6 +975,128 @@ class _SessionTile extends StatelessWidget {
   }
 
   String get _agentLabel => session.agentName?.trim() ?? '';
+}
+
+class _InlineSessionLoadStatus extends StatelessWidget {
+  const _InlineSessionLoadStatus({required this.workspaceName});
+
+  final String workspaceName;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InlineWorkspaceStatusFrame(
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Loading sessions in $workspaceName...',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                height: 1.25,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InlineSessionLoadError extends StatelessWidget {
+  const _InlineSessionLoadError({
+    required this.workspaceName,
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String workspaceName;
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InlineWorkspaceStatusFrame(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Could not load sessions in $workspaceName.',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              height: 1.25,
+              letterSpacing: 0,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            message,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textTertiary,
+              fontSize: 10,
+              height: 1.2,
+            ),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 6),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded, size: 14),
+              label: const Text('Retry'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primaryDark,
+                minimumSize: const Size(70, 28),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                textStyle: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _InlineWorkspaceStatusFrame extends StatelessWidget {
+  const _InlineWorkspaceStatusFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(36, 0, 10, 10),
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(left: BorderSide(color: AppColors.borderSoft)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(9, 3, 0, 0),
+          child: child,
+        ),
+      ),
+    );
+  }
 }
 
 class _InlineEmptyWorkspaceSessions extends StatelessWidget {

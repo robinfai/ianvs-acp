@@ -324,6 +324,12 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  Future<List<AcpProjectSessions>> loadSessionCatalog() async {
+    final projects = await listSessions();
+    _mergeSessionCatalog(projects);
+    return projects;
+  }
+
   Future<List<AcpProjectSessions>> listResumableSessions() async {
     final projects = await listSessions();
     if (!supportsSessionResume) {
@@ -1361,6 +1367,53 @@ class ChatController extends ChangeNotifier {
       return;
     }
     sessions.insert(0, session);
+  }
+
+  void _mergeSessionCatalog(List<AcpProjectSessions> projects) {
+    final now = DateTime.now();
+    for (final project in projects) {
+      for (final entry in project.sessions) {
+        final sessionId = entry.id.trim();
+        if (sessionId.isEmpty) continue;
+
+        final existing = _sessionWithId(sessionId);
+        final workspaceCwd = entry.cwd.trim().isEmpty ? project.cwd : entry.cwd;
+        final session = AgentSession(
+          id: sessionId,
+          cwd: workspaceCwd.trim().isEmpty ? cwd : workspaceCwd,
+          createdAt: existing?.createdAt ?? entry.updatedAt ?? now,
+          additionalDirectories: entry.additionalDirectories,
+          title: entry.title,
+          updatedAt: entry.updatedAt,
+          agentName:
+              _agentNameFromSessionCatalog(entry) ??
+              existing?.agentName ??
+              agentName,
+          initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
+        );
+        _retiredSessionIds.remove(session.id);
+        if (currentSession?.id == session.id) currentSession = session;
+        _upsertSession(session);
+      }
+    }
+    _notifyListeners();
+  }
+
+  AgentSession? _sessionWithId(String id) {
+    for (final session in sessions) {
+      if (session.id == id) return session;
+    }
+    return null;
+  }
+
+  String? _agentNameFromSessionCatalog(AcpSessionEntry entry) {
+    final raw =
+        entry.meta['agentName'] ??
+        entry.meta['agent_name'] ??
+        entry.meta['agent'];
+    if (raw is! String) return null;
+    final trimmed = raw.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   List<AcpConfigOption> _configOptionsWithOverride(

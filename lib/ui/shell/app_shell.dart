@@ -10,6 +10,7 @@ import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../../state/workspace_controller.dart';
 import '../../workspace/workspace.dart';
+import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
@@ -86,6 +87,13 @@ class AppShell extends StatelessWidget {
           defaultAgentName: agentName,
         );
         final currentWorkspace = workspaceController.currentWorkspace;
+        final canLoadWorkspaceSessions =
+            controller.supportsSessionList &&
+            !controller.isStreaming &&
+            !controller.isSessionOperationRunning;
+        final workspaceStateStore = WorkspaceSidebarStateStore(
+          path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
+        );
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -184,12 +192,20 @@ class AppShell extends StatelessWidget {
                                     onSelectSession: sessionActionsEnabled
                                         ? onSelectSession
                                         : null,
+                                    onLoadWorkspaceSessions:
+                                        canLoadWorkspaceSessions
+                                        ? (_) async {
+                                            await controller
+                                                .loadSessionCatalog();
+                                          }
+                                        : null,
                                     onRevealWorkspace: (workspace) => unawaited(
                                       _revealWorkspaceInFinder(
                                         context,
                                         workspace,
                                       ),
                                     ),
+                                    stateStore: workspaceStateStore,
                                   ),
                                 ),
                                 const VerticalDivider(

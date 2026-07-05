@@ -290,6 +290,29 @@ void main() {
     expect(controller.isSessionOperationRunning, isFalse);
   });
 
+  test('load session catalog stores listed sessions locally', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+    final projects = await controller.loadSessionCatalog();
+
+    expect(projects.single.cwd, '/workspace/project-a');
+    expect(controller.sessions, hasLength(1));
+    expect(controller.sessions.single.id, 'session-a');
+    expect(controller.sessions.single.cwd, '/workspace/project-a');
+    expect(
+      controller.sessions.single.displayTitle,
+      'Resume this project conversation',
+    );
+    expect(controller.sessions.single.agentName, 'Codex');
+    expect(controller.isSessionOperationRunning, isFalse);
+  });
+
   test('resume session replays history into timeline', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
