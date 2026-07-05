@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -7,6 +8,8 @@ import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
+import '../../state/workspace_controller.dart';
+import '../../workspace/workspace.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/capabilities_dialog.dart';
@@ -17,9 +20,11 @@ import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
-import '../components/session_sidebar.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/status_bar.dart';
+import '../components/workspace_header.dart';
+import '../components/workspace_inspector.dart';
+import '../components/workspace_sidebar.dart';
 import '../theme/app_design_tokens.dart';
 
 class AppShell extends StatelessWidget {
@@ -74,6 +79,13 @@ class AppShell extends StatelessWidget {
             sessionActionsEnabled &&
             (controller.status == ConnectionStatus.disconnected ||
                 controller.status == ConnectionStatus.error);
+        final workspaceController = WorkspaceController(
+          controllers: _controllers(),
+          currentWorkspacePath:
+              controller.currentSession?.cwd ?? controller.cwd,
+          defaultAgentName: agentName,
+        );
+        final currentWorkspace = workspaceController.currentWorkspace;
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -124,7 +136,8 @@ class AppShell extends StatelessWidget {
                       clipBehavior: Clip.antiAlias,
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          final hideSidebar = constraints.maxWidth < 700;
+                          final hideSidebar = constraints.maxWidth < 760;
+                          final hideInspector = constraints.maxWidth < 1120;
                           final timeline = ChatTimeline(
                             messages: controller.messages,
                             agentName: agentName,
@@ -133,31 +146,77 @@ class AppShell extends StatelessWidget {
                                 controller.currentSession?.displayTitle,
                             onNewSession: startNewSession,
                           );
+                          final conversationColumn = Column(
+                            children: [
+                              WorkspaceHeader(
+                                workspace: currentWorkspace,
+                                agentName: agentName,
+                                currentSession: controller.currentSession,
+                                onNewSession: startNewSession,
+                                onResumeSession: controller.canResumeSessions
+                                    ? () => _showResumeDialog(context)
+                                    : null,
+                              ),
+                              const Divider(height: 1, color: AppColors.border),
+                              Expanded(child: timeline),
+                            ],
+                          );
 
-                          if (hideSidebar) return timeline;
+                          if (hideSidebar && hideInspector) {
+                            return conversationColumn;
+                          }
 
                           return Row(
                             children: [
-                              SizedBox(
-                                width: 244,
-                                child: SessionSidebar(
-                                  agentName: agentName,
-                                  sessions: _sessions(),
-                                  currentSession: controller.currentSession,
-                                  onNewSession: startNewSession,
-                                  onResumeSession: controller.canResumeSessions
-                                      ? () => _showResumeDialog(context)
-                                      : null,
-                                  onSelectSession: sessionActionsEnabled
-                                      ? onSelectSession
-                                      : null,
+                              if (!hideSidebar) ...[
+                                SizedBox(
+                                  width: 286,
+                                  child: WorkspaceSidebar(
+                                    agentName: agentName,
+                                    workspaces: workspaceController.workspaces,
+                                    currentWorkspace: currentWorkspace,
+                                    currentSession: controller.currentSession,
+                                    onNewSession: startNewSession,
+                                    onResumeSession:
+                                        controller.canResumeSessions
+                                        ? () => _showResumeDialog(context)
+                                        : null,
+                                    onSelectSession: sessionActionsEnabled
+                                        ? onSelectSession
+                                        : null,
+                                    onRevealWorkspace: (workspace) => unawaited(
+                                      _revealWorkspaceInFinder(
+                                        context,
+                                        workspace,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                              ),
-                              const VerticalDivider(
-                                width: 1,
-                                color: AppColors.border,
-                              ),
-                              Expanded(child: timeline),
+                                const VerticalDivider(
+                                  width: 1,
+                                  color: AppColors.border,
+                                ),
+                              ],
+                              Expanded(child: conversationColumn),
+                              if (!hideInspector) ...[
+                                const VerticalDivider(
+                                  width: 1,
+                                  color: AppColors.border,
+                                ),
+                                SizedBox(
+                                  width: 306,
+                                  child: WorkspaceInspector(
+                                    workspace: currentWorkspace,
+                                    agentName: agentName,
+                                    currentSession: controller.currentSession,
+                                    mcpServers: mcpServers,
+                                    additionalDirectories:
+                                        additionalDirectories,
+                                    clientProviders: clientProviders,
+                                    configPath: configPath,
+                                  ),
+                                ),
+                              ],
                             ],
                           );
                         },
@@ -319,15 +378,40 @@ class AppShell extends StatelessWidget {
     await controller.authenticate(methodId);
   }
 
-  List<AgentSession> _sessions() {
+  List<ChatController> _controllers() {
     final controllers = sessionControllers.isEmpty
         ? <ChatController>[controller]
         : sessionControllers;
-    final sessions = <AgentSession>[
-      for (final controller in controllers) ...controller.sessions,
-    ];
-    sessions.sort((a, b) => b.displayTime.compareTo(a.displayTime));
-    return sessions;
+    return controllers;
+  }
+
+  Future<void> _revealWorkspaceInFinder(
+    BuildContext context,
+    WorkspaceRecord workspace,
+  ) async {
+    try {
+      if (Platform.isMacOS) {
+        final result = await Process.run('open', [workspace.path]);
+        if (result.exitCode != 0) {
+          throw StateError(result.stderr.toString());
+        }
+        return;
+      }
+      if (Platform.isWindows) {
+        final result = await Process.run('explorer', [workspace.path]);
+        if (result.exitCode != 0) {
+          throw StateError(result.stderr.toString());
+        }
+        return;
+      }
+      final result = await Process.run('xdg-open', [workspace.path]);
+      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('Could not reveal workspace: $error')),
+      );
+    }
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {
