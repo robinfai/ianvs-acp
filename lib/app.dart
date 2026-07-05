@@ -15,6 +15,7 @@ import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
+import 'workspace/workspace_sidebar_state_store.dart';
 
 typedef AgentServerDiscoverer =
     FutureOr<List<AgentServerConfig>> Function(AcpClientConfig config);
@@ -60,10 +61,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
+  final Map<ChatController, VoidCallback> _sessionIndexListeners =
+      <ChatController, VoidCallback>{};
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
   bool _agentDiscoveryStarted = false;
+  bool _sessionIndexHydrated = false;
+  bool _sessionIndexPersistScheduled = false;
+  int _sessionIndexHydrationSerial = 0;
+  String? _lastSessionIndexSignature;
 
   @override
   void initState() {
@@ -75,6 +82,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
     if (widget.controller == null) {
       _controller = _cachedControllerFor(_config);
+      unawaited(_hydrateSessionIndex());
     } else {
       _controller = widget.controller!;
     }
@@ -100,7 +108,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (oldWidget.controller == null) _disposeCachedControllers();
       _config = widget.config;
       _widgetConfigSignature = nextConfigSignature;
-      _controller = widget.controller ?? _cachedControllerFor(_config);
+      if (widget.controller == null) {
+        _controller = _cachedControllerFor(_config);
+        unawaited(_hydrateSessionIndex());
+      } else {
+        _controller = widget.controller!;
+      }
       return;
     }
 
@@ -118,6 +131,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     _reconcileControllerCache(_config);
     _controller = _cachedControllerFor(_config);
+    unawaited(_hydrateSessionIndex());
   }
 
   @override
@@ -266,10 +280,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return existing;
     }
 
-    existing?.dispose();
+    if (existing != null) {
+      _detachSessionIndexPersistence(existing);
+      existing.dispose();
+    }
     final controller = _controllerFor(config);
     _controllersByAgent[agentName] = controller;
     _controllerSignaturesByAgent[agentName] = signature;
+    _attachSessionIndexPersistence(controller);
     return controller;
   }
 
@@ -281,6 +299,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           : _controllerSignature(nextAgentConfig);
       if (nextSignature == _controllerSignaturesByAgent[entry.key]) continue;
 
+      _detachSessionIndexPersistence(entry.value);
       entry.value.dispose();
       _controllersByAgent.remove(entry.key);
       _controllerSignaturesByAgent.remove(entry.key);
@@ -296,10 +315,138 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   void _disposeCachedControllers() {
     for (final controller in _controllersByAgent.values) {
+      _detachSessionIndexPersistence(controller);
       controller.dispose();
     }
     _controllersByAgent.clear();
     _controllerSignaturesByAgent.clear();
+  }
+
+  Future<void> _hydrateSessionIndex() async {
+    if (widget.controller != null) return;
+    final serial = ++_sessionIndexHydrationSerial;
+    _sessionIndexHydrated = false;
+
+    final sessions = await _workspaceStateStore.loadSessionIndex();
+    if (!mounted ||
+        widget.controller != null ||
+        serial != _sessionIndexHydrationSerial) {
+      return;
+    }
+
+    for (final session in sessions) {
+      final config = _configForSessionIndex(session);
+      if (config == null) continue;
+      _cachedControllerFor(config).mergeSessionIndex([
+        _sessionIndexWithFallbackAgent(session, config.agentName),
+      ]);
+    }
+
+    _sessionIndexHydrated = true;
+    _schedulePersistSessionIndex();
+    if (mounted) setState(() {});
+  }
+
+  AcpClientConfig? _configForSessionIndex(AgentSession session) {
+    final agentName = session.agentName?.trim();
+    if (agentName == null || agentName.isEmpty) return _config;
+    return _configForAgent(_config, agentName);
+  }
+
+  AgentSession _sessionIndexWithFallbackAgent(
+    AgentSession session,
+    String agentName,
+  ) {
+    final existingAgentName = session.agentName?.trim();
+    if (existingAgentName != null && existingAgentName.isNotEmpty) {
+      return session;
+    }
+    return AgentSession(
+      id: session.id,
+      cwd: session.cwd,
+      createdAt: session.createdAt,
+      additionalDirectories: session.additionalDirectories,
+      title: session.title,
+      updatedAt: session.updatedAt,
+      agentName: agentName,
+    );
+  }
+
+  WorkspaceSidebarStateStore get _workspaceStateStore {
+    return WorkspaceSidebarStateStore(
+      path: WorkspaceSidebarStateStore.defaultPath(
+        configPath: _config.configPath,
+      ),
+    );
+  }
+
+  void _attachSessionIndexPersistence(ChatController controller) {
+    if (widget.controller != null) return;
+    if (_sessionIndexListeners.containsKey(controller)) return;
+    void listener() => _schedulePersistSessionIndex();
+    _sessionIndexListeners[controller] = listener;
+    controller.addListener(listener);
+  }
+
+  void _detachSessionIndexPersistence(ChatController controller) {
+    final listener = _sessionIndexListeners.remove(controller);
+    if (listener == null) return;
+    controller.removeListener(listener);
+  }
+
+  void _schedulePersistSessionIndex() {
+    if (widget.controller != null || !_sessionIndexHydrated) return;
+    if (_sessionIndexPersistScheduled) return;
+    _sessionIndexPersistScheduled = true;
+    scheduleMicrotask(() {
+      _sessionIndexPersistScheduled = false;
+      if (!mounted || widget.controller != null || !_sessionIndexHydrated) {
+        return;
+      }
+
+      final sessions = _persistableSessionIndex();
+      final signature = _sessionIndexSignature(sessions);
+      if (signature == _lastSessionIndexSignature) return;
+      _lastSessionIndexSignature = signature;
+      unawaited(_workspaceStateStore.saveSessionIndex(sessions));
+    });
+  }
+
+  List<AgentSession> _persistableSessionIndex() {
+    final sessionsByKey = <String, AgentSession>{};
+    for (final controller in _controllersByAgent.values) {
+      for (final session in controller.sessions) {
+        final id = session.id.trim();
+        final cwd = session.cwd.trim();
+        if (id.isEmpty || cwd.isEmpty) continue;
+        final agentName = session.agentName?.trim() ?? controller.agentName;
+        sessionsByKey['$agentName\u0000$id'] = _sessionIndexWithFallbackAgent(
+          session,
+          agentName,
+        );
+      }
+    }
+    final sessions = sessionsByKey.values.toList()
+      ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
+    return List.unmodifiable(sessions);
+  }
+
+  String _sessionIndexSignature(List<AgentSession> sessions) {
+    return jsonEncode(
+      sessions
+          .map(
+            (session) => <String, Object?>{
+              'id': session.id,
+              'cwd': session.cwd,
+              'createdAt': session.createdAt.toIso8601String(),
+              'updatedAt': session.updatedAt?.toIso8601String(),
+              'title': session.title,
+              'agentName': session.agentName,
+              'additionalDirectories': session.additionalDirectories,
+            },
+          )
+          .toList(growable: false),
+    );
   }
 
   Future<void> _selectAgent(String agentName) async {

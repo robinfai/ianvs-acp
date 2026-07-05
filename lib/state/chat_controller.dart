@@ -330,6 +330,22 @@ class ChatController extends ChangeNotifier {
     return projects;
   }
 
+  void mergeSessionIndex(Iterable<AgentSession> indexedSessions) {
+    var didChange = false;
+    for (final session in indexedSessions) {
+      if (session.id.trim().isEmpty || session.cwd.trim().isEmpty) continue;
+      if (_retiredSessionIds.contains(session.id)) continue;
+
+      final existing = _sessionWithId(session.id);
+      if (existing != null && _sameSessionIndex(existing, session)) continue;
+
+      if (currentSession?.id == session.id) currentSession = session;
+      _upsertSession(session);
+      didChange = true;
+    }
+    if (didChange) _notifyListeners();
+  }
+
   Future<List<AcpProjectSessions>> listResumableSessions() async {
     final projects = await listSessions();
     if (!supportsSessionResume) {
@@ -1414,6 +1430,24 @@ class ChatController extends ChangeNotifier {
     if (raw is! String) return null;
     final trimmed = raw.trim();
     return trimmed.isEmpty ? null : trimmed;
+  }
+
+  bool _sameSessionIndex(AgentSession a, AgentSession b) {
+    return a.id == b.id &&
+        a.cwd == b.cwd &&
+        a.createdAt == b.createdAt &&
+        a.updatedAt == b.updatedAt &&
+        a.title == b.title &&
+        a.agentName == b.agentName &&
+        _sameStringList(a.additionalDirectories, b.additionalDirectories);
+  }
+
+  bool _sameStringList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
   }
 
   List<AcpConfigOption> _configOptionsWithOverride(

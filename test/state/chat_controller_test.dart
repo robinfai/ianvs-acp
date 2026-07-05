@@ -313,6 +313,34 @@ void main() {
     expect(controller.isSessionOperationRunning, isFalse);
   });
 
+  test('merge session index restores local sidebar metadata', () {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'indexed-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 1, 9),
+        title: 'Indexed workspace session',
+        updatedAt: DateTime(2026, 7, 1, 10),
+        agentName: 'Codex',
+      ),
+    ]);
+
+    expect(controller.sessions, hasLength(1));
+    expect(controller.sessions.single.id, 'indexed-session');
+    expect(controller.sessions.single.cwd, '/workspace/project');
+    expect(
+      controller.sessions.single.displayTitle,
+      'Indexed workspace session',
+    );
+  });
+
   test('resume session replays history into timeline', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
