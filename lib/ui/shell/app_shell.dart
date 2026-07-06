@@ -45,6 +45,7 @@ class AppShell extends StatelessWidget {
     this.defaultAgentName,
     this.startupError,
     this.canSwitchAgent = true,
+    this.autoLoadWorkspaceSessions = true,
     this.onSelectAgent,
     this.onSelectSession,
     this.onNewSession,
@@ -68,6 +69,7 @@ class AppShell extends StatelessWidget {
   final String? defaultAgentName;
   final String? startupError;
   final bool canSwitchAgent;
+  final bool autoLoadWorkspaceSessions;
   final ValueChanged<String>? onSelectAgent;
   final ValueChanged<AgentSession>? onSelectSession;
   final void Function(BuildContext context)? onNewSession;
@@ -132,9 +134,7 @@ class AppShell extends StatelessWidget {
         );
         final currentWorkspace = workspaceController.currentWorkspace;
         final canLoadWorkspaceSessions =
-            controller.supportsSessionList &&
-            !controller.isStreaming &&
-            !controller.isSessionOperationRunning;
+            autoLoadWorkspaceSessions && controller.canListSessions;
         final workspaceStateStore = WorkspaceSidebarStateStore(
           path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
         );

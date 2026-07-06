@@ -66,6 +66,32 @@ class ArchivedSessionSnapshot {
   final int? activeSessionSettingsLoadId;
 }
 
+class _SessionViewSnapshot {
+  _SessionViewSnapshot({
+    required this.session,
+    required this.messages,
+    required this.availableCommands,
+    required this.lastLatency,
+    required this.lastError,
+    required this.sessionSettings,
+    required this.sessionUsage,
+    required this.sessionSettingsLoading,
+    required this.status,
+    required this.activeSessionSettingsLoadId,
+  });
+
+  final AgentSession session;
+  final List<ChatMessage> messages;
+  final List<Map<String, Object?>> availableCommands;
+  final Duration? lastLatency;
+  final String? lastError;
+  final AcpSessionSettings sessionSettings;
+  final AcpSessionUsage? sessionUsage;
+  final bool sessionSettingsLoading;
+  final ConnectionStatus status;
+  final int? activeSessionSettingsLoadId;
+}
+
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -111,6 +137,9 @@ class ChatController extends ChangeNotifier {
   final Set<String> _resolvingPermissionRequestIds = <String>{};
   final Set<String> _reviewingPermissionRequestIds = <String>{};
   final Set<String> _retiredSessionIds = <String>{};
+  final Set<String> _localUnstartedSessionIds = <String>{};
+  final Map<String, _SessionViewSnapshot> _sessionViewSnapshots =
+      <String, _SessionViewSnapshot>{};
   String? lastError;
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
@@ -221,6 +250,7 @@ class ChatController extends ChangeNotifier {
           cwd: workspaceCwd,
           additionalDirectories: additionalDirectories,
         )).copyWith(agentName: agentName);
+        _snapshotCurrentSession();
         _retiredSessionIds.remove(session.id);
         currentSession = session;
         _upsertSession(session);
@@ -232,6 +262,11 @@ class ChatController extends ChangeNotifier {
         sessionUsage = null;
         for (final event in session.initialEvents) {
           _handleAgentEvent(event, notify: false);
+        }
+        if (messages.isEmpty) {
+          _localUnstartedSessionIds.add(session.id);
+        } else {
+          _localUnstartedSessionIds.remove(session.id);
         }
         await _loadSessionSettings(session.id, notify: false);
         if (status != ConnectionStatus.error) {
@@ -255,13 +290,13 @@ class ChatController extends ChangeNotifier {
     if (trimmedSessionId.isEmpty || isStreaming || isSessionOperationRunning) {
       return;
     }
-    final workspaceCwd = cwd == null || cwd.trim().isEmpty
+    if (currentSession?.id == trimmedSessionId) return;
+    final explicitCwd = cwd?.trim();
+    final workspaceCwd = explicitCwd == null || explicitCwd.isEmpty
         ? this.cwd
-        : cwd.trim();
+        : explicitCwd;
     final workspaceAdditionalDirectories =
-        additionalDirectories == null || additionalDirectories.isEmpty
-        ? this.additionalDirectories
-        : additionalDirectories;
+        additionalDirectories ?? this.additionalDirectories;
 
     await _runSessionOperation(() async {
       final previousSession = currentSession;
@@ -282,6 +317,34 @@ class ChatController extends ChangeNotifier {
           if (status == ConnectionStatus.error) return;
         }
 
+        final existingSession = _sessionWithId(trimmedSessionId);
+        _snapshotCurrentSession();
+        final snapshot = _sessionViewSnapshots[trimmedSessionId];
+        if (snapshot != null) {
+          await _activateSessionViewSnapshot(
+            snapshot,
+            cwd: explicitCwd == null || explicitCwd.isEmpty
+                ? null
+                : explicitCwd,
+            additionalDirectories: additionalDirectories,
+            title: title,
+            updatedAt: updatedAt,
+          );
+          return;
+        }
+        if (existingSession != null &&
+            _localUnstartedSessionIds.contains(trimmedSessionId)) {
+          await _activateLocalUnstartedSession(
+            existingSession,
+            cwd: explicitCwd == null || explicitCwd.isEmpty
+                ? null
+                : explicitCwd,
+            additionalDirectories: additionalDirectories,
+            title: title,
+            updatedAt: updatedAt,
+          );
+          return;
+        }
         status = ConnectionStatus.reconnecting;
         isStreaming = false;
         lastError = null;
@@ -290,7 +353,6 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         sessionSettings = const AcpSessionSettings();
         sessionUsage = null;
-        final existingSession = _sessionWithId(trimmedSessionId);
         final session = AgentSession(
           id: trimmedSessionId,
           cwd: workspaceCwd,
@@ -314,6 +376,7 @@ class ChatController extends ChangeNotifier {
           cwd: workspaceCwd,
           additionalDirectories: workspaceAdditionalDirectories,
         );
+        _localUnstartedSessionIds.remove(trimmedSessionId);
         for (final event in replay) {
           _handleAgentEvent(event, notify: false);
         }
@@ -427,6 +490,7 @@ class ChatController extends ChangeNotifier {
     );
 
     _upsertSession(session.copyWith(archived: true, unread: false));
+    _sessionViewSnapshots.remove(sessionId);
     if (wasCurrent) {
       currentSession = null;
       messages.clear();
@@ -471,6 +535,108 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  void _snapshotCurrentSession() {
+    final session = currentSession;
+    if (session == null) return;
+    _sessionViewSnapshots[session.id] = _SessionViewSnapshot(
+      session: session,
+      messages: List<ChatMessage>.from(messages),
+      availableCommands: availableCommands,
+      lastLatency: lastLatency,
+      lastError: lastError,
+      sessionSettings: sessionSettings,
+      sessionUsage: sessionUsage,
+      sessionSettingsLoading: sessionSettingsLoading,
+      status: status,
+      activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
+    );
+  }
+
+  Future<void> _activateSessionViewSnapshot(
+    _SessionViewSnapshot snapshot, {
+    String? cwd,
+    List<String>? additionalDirectories,
+    String? title,
+    DateTime? updatedAt,
+  }) async {
+    final existingSession = _sessionWithId(snapshot.session.id);
+    final sidebarSession = existingSession ?? snapshot.session;
+    final session = sidebarSession.copyWith(
+      cwd: cwd ?? sidebarSession.cwd,
+      additionalDirectories:
+          additionalDirectories ?? sidebarSession.additionalDirectories,
+      title: title ?? sidebarSession.title,
+      updatedAt: updatedAt ?? sidebarSession.updatedAt,
+      archived: false,
+      unread: false,
+    );
+    _retiredSessionIds.remove(session.id);
+    currentSession = session;
+    _upsertSession(session);
+    messages
+      ..clear()
+      ..addAll(snapshot.messages);
+    availableCommands = snapshot.availableCommands;
+    lastLatency = snapshot.lastLatency;
+    lastError = snapshot.lastError;
+    sessionSettings = snapshot.sessionSettings;
+    sessionUsage = snapshot.sessionUsage;
+    sessionSettingsLoading = snapshot.sessionSettingsLoading;
+    status = snapshot.status == ConnectionStatus.streaming
+        ? ConnectionStatus.sessionReady
+        : snapshot.status;
+    _activeSessionSettingsLoadId = snapshot.activeSessionSettingsLoadId;
+    _sessionViewSnapshots[session.id] = _SessionViewSnapshot(
+      session: session,
+      messages: List<ChatMessage>.from(messages),
+      availableCommands: availableCommands,
+      lastLatency: lastLatency,
+      lastError: lastError,
+      sessionSettings: sessionSettings,
+      sessionUsage: sessionUsage,
+      sessionSettingsLoading: sessionSettingsLoading,
+      status: status,
+      activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
+    );
+    _notifyListeners();
+  }
+
+  Future<void> _activateLocalUnstartedSession(
+    AgentSession existingSession, {
+    String? cwd,
+    List<String>? additionalDirectories,
+    String? title,
+    DateTime? updatedAt,
+  }) async {
+    final session = existingSession.copyWith(
+      cwd: cwd ?? existingSession.cwd,
+      additionalDirectories:
+          additionalDirectories ?? existingSession.additionalDirectories,
+      title: title ?? existingSession.title,
+      updatedAt: updatedAt ?? existingSession.updatedAt,
+      archived: false,
+      unread: false,
+    );
+    _retiredSessionIds.remove(session.id);
+    currentSession = session;
+    _upsertSession(session);
+    messages.clear();
+    availableCommands = const <Map<String, Object?>>[];
+    lastLatency = null;
+    lastError = null;
+    sessionSettings = const AcpSessionSettings();
+    sessionUsage = null;
+    sessionSettingsLoading = false;
+    status = ConnectionStatus.reconnecting;
+    _notifyListeners();
+
+    await _loadSessionSettings(session.id, notify: false);
+    if (status != ConnectionStatus.error) {
+      status = ConnectionStatus.sessionReady;
+    }
+    _notifyListeners();
+  }
+
   Future<List<AcpProjectSessions>> listResumableSessions() async {
     final projects = await listSessions();
     if (!supportsSessionResume) {
@@ -499,6 +665,7 @@ class ChatController extends ChangeNotifier {
 
     final session = currentSession;
     if (session == null) return;
+    _localUnstartedSessionIds.remove(session.id);
 
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
@@ -574,6 +741,8 @@ class ChatController extends ChangeNotifier {
       await _cancelPendingPermissionRequest(reportErrors: false);
       currentSession = null;
       sessions.clear();
+      _localUnstartedSessionIds.clear();
+      _sessionViewSnapshots.clear();
       availableCommands = const <Map<String, Object?>>[];
       sessionSettings = const AcpSessionSettings();
       sessionSettingsLoading = false;
@@ -747,6 +916,8 @@ class ChatController extends ChangeNotifier {
         _promptSubscription = null;
         await client.closeSession(sessionId: session.id);
         _retiredSessionIds.add(session.id);
+        _localUnstartedSessionIds.remove(session.id);
+        _sessionViewSnapshots.remove(session.id);
         currentSession = null;
         sessions.removeWhere((item) => item.id == session.id);
         messages.clear();
@@ -778,6 +949,8 @@ class ChatController extends ChangeNotifier {
           _retiredSessionIds.add(session.id);
         }
         _retiredSessionIds.addAll(sessions.map((session) => session.id));
+        _localUnstartedSessionIds.clear();
+        _sessionViewSnapshots.clear();
         currentSession = null;
         sessions.clear();
         messages.clear();
@@ -1549,6 +1722,7 @@ class ChatController extends ChangeNotifier {
           unread: existing?.unread ?? false,
         );
         _retiredSessionIds.remove(session.id);
+        _localUnstartedSessionIds.remove(session.id);
         if (currentSession?.id == session.id) currentSession = session;
         _upsertSession(session);
       }

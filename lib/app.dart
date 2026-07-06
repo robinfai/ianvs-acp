@@ -46,6 +46,7 @@ class AcpClientApp extends StatefulWidget {
     this.initialResumeCwd,
     this.initialResumeAgentName,
     this.openSessionWindow,
+    this.autoLoadWorkspaceSessions = true,
   });
 
   final ChatController? controller;
@@ -58,6 +59,7 @@ class AcpClientApp extends StatefulWidget {
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
   final SessionWindowOpener? openSessionWindow;
+  final bool autoLoadWorkspaceSessions;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -313,6 +315,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         defaultAgentName: _config.defaultAgentServerName,
         startupError: widget.startupError,
         canSwitchAgent: widget.controller == null,
+        autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
         sessionControllers: _sessionControllers,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onNewSessionInWorkspace: (context, workspace) =>
@@ -422,6 +425,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return config.agentServerNamed(agentName) == null
         ? null
         : config.withActiveAgentServer(agentName);
+  }
+
+  bool get _canAutoLoadWorkspaceSessions {
+    if (!widget.autoLoadWorkspaceSessions) return false;
+    if (widget.controller != null) return true;
+    if (_config.activeAgentServer == null) return false;
+    final configPath = _config.configPath?.trim();
+    return configPath != null && configPath.isNotEmpty;
   }
 
   void _disposeCachedControllers() {

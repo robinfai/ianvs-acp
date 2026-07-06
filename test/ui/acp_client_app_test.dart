@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
+import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -33,6 +34,7 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: const AcpClientConfig(configPath: '/tmp/ianvs-acp.json'),
+        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) async => const [
           AgentServerConfig(
             name: 'Codex',
@@ -117,6 +119,7 @@ void main() {
             },
           },
         }, configPath: '/tmp/ianvs-acp-test-settings.json'),
+        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         writeConfig: (config) async {
           savedConfig = config;
@@ -329,6 +332,35 @@ void main() {
       ),
     );
     expect(field.controller?.text, '/workspace/other');
+  });
+
+  testWidgets('AcpClientApp auto-loads workspaces on startup before sessions', (
+    tester,
+  ) async {
+    final fake = _WorkspaceCatalogAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace/project-a',
+    );
+    addTearDown(controller.dispose);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    expect(fake.connected, isTrue);
+    expect(
+      controller.sessions.map((session) => session.id),
+      contains('session-a'),
+    );
+    expect(
+      controller.sessions.map((session) => session.id),
+      contains('session-b'),
+    );
+    expect(find.text('project-a'), findsWidgets);
+    expect(find.text('project-b'), findsOneWidget);
   });
 
   testWidgets('AcpClientApp resumes initial session arguments', (tester) async {
@@ -1185,4 +1217,37 @@ void main() {
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allowed'), findsOneWidget);
   });
+}
+
+class _WorkspaceCatalogAgentClient extends FakeAgentClient {
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return [
+      AcpProjectSessions(
+        cwd: '/workspace/project-b',
+        sessions: [
+          AcpSessionEntry(
+            id: 'session-b',
+            cwd: '/workspace/project-b',
+            title: 'Project B session',
+            updatedAt: DateTime(2026, 7, 6, 12),
+          ),
+        ],
+      ),
+      AcpProjectSessions(
+        cwd: '/workspace/project-a',
+        sessions: [
+          AcpSessionEntry(
+            id: 'session-a',
+            cwd: '/workspace/project-a',
+            title: 'Project A session',
+            updatedAt: DateTime(2026, 7, 6, 11),
+          ),
+        ],
+      ),
+    ];
+  }
 }

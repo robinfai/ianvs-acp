@@ -641,6 +641,95 @@ void main() {
     expect(controller.sessions.single.archived, isFalse);
   });
 
+  test('resume local unstarted session without ACP resume', () async {
+    final fake = _ResourceNotFoundForSessionAgentClient('fake-session-1');
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession(cwd: '/workspace/blank');
+    final blankSession = controller.currentSession!;
+
+    await controller.resumeSession('other-session', cwd: '/workspace/other');
+
+    expect(controller.currentSession?.id, 'other-session');
+    expect(fake.resumedSessionIds, ['other-session']);
+    expect(controller.messages, isNotEmpty);
+
+    await controller.resumeSession(blankSession.id);
+
+    expect(fake.resumedSessionIds, ['other-session']);
+    expect(controller.currentSession?.id, blankSession.id);
+    expect(controller.currentSession?.cwd, '/workspace/blank');
+    expect(controller.messages, isEmpty);
+    expect(controller.lastError, isNull);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
+  test('temporary session switching preserves active local state', () async {
+    final fake = _ResourceNotFoundForSessionAgentClient(
+      'fake-session-1',
+      createSessionEvents: const [
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'review',
+          metadata: {
+            'kind': 'commands',
+            'commands': [
+              {'name': 'review', 'description': 'Review current changes.'},
+            ],
+          },
+        ),
+        AgentEvent(type: AgentEventType.agentTextDelta, text: 'Local reply'),
+      ],
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession(cwd: '/workspace/active');
+    final activeSession = controller.currentSession!;
+    expect(
+      controller.messages
+          .where((message) => message.role == ChatMessageRole.assistant)
+          .single
+          .text,
+      'Local reply',
+    );
+    expect(controller.availableCommands.single['name'], 'review');
+
+    await controller.resumeSession('other-session', cwd: '/workspace/other');
+
+    expect(controller.currentSession?.id, 'other-session');
+    expect(fake.resumedSessionIds, ['other-session']);
+    expect(
+      controller.messages.map((message) => message.text),
+      contains(contains('resumed Codex session')),
+    );
+
+    await controller.resumeSession(activeSession.id);
+
+    expect(fake.resumedSessionIds, ['other-session']);
+    expect(controller.currentSession?.id, activeSession.id);
+    expect(controller.currentSession?.cwd, '/workspace/active');
+    expect(
+      controller.messages
+          .where((message) => message.role == ChatMessageRole.assistant)
+          .single
+          .text,
+      'Local reply',
+    );
+    expect(controller.availableCommands.single['name'], 'review');
+    expect(controller.lastError, isNull);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
   test('failed resume restores previous active session state', () async {
     final fake = _FailingResumeAgentClient(
       createSessionEvents: const [
@@ -2677,6 +2766,33 @@ class _FailingResumeAgentClient extends FakeAgentClient {
   }) async {
     lastResumeCwd = cwd;
     throw StateError('resume failed');
+  }
+}
+
+class _ResourceNotFoundForSessionAgentClient extends FakeAgentClient {
+  _ResourceNotFoundForSessionAgentClient(
+    this.missingSessionId, {
+    super.createSessionEvents,
+  });
+
+  final String missingSessionId;
+  final List<String> resumedSessionIds = <String>[];
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    resumedSessionIds.add(sessionId);
+    if (sessionId == missingSessionId) {
+      throw StateError('JSON-RPC error -32002: Resource not found');
+    }
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
   }
 }
 
