@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
+import '../../platform/file_manager.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../../state/workspace_controller.dart';
@@ -482,34 +483,17 @@ class AppShell extends StatelessWidget {
     WorkspaceRecord workspace,
   ) async {
     try {
-      if (Platform.isMacOS) {
-        final result = await _runProcess('open', ['-R', workspace.path]);
-        if (result.exitCode != 0) {
-          throw StateError(result.stderr.toString());
-        }
-        return;
-      }
-      if (Platform.isWindows) {
-        final result = await _runProcess('explorer', [workspace.path]);
-        if (result.exitCode != 0) {
-          throw StateError(result.stderr.toString());
-        }
-        return;
-      }
-      final result = await _runProcess('xdg-open', [workspace.path]);
-      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+      await revealPathInFileManager(
+        workspace.path,
+        processRunner: processRunner,
+        checkExists: processRunner == null,
+      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(content: Text('Could not reveal workspace: $error')),
       );
     }
-  }
-
-  Future<ProcessResult> _runProcess(String executable, List<String> arguments) {
-    final runner = processRunner;
-    if (runner != null) return runner(executable, arguments);
-    return Process.run(executable, arguments);
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {

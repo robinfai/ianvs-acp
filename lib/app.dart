@@ -11,6 +11,7 @@ import 'acp/acp_permission_reviewer.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'platform/file_manager.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
@@ -1040,18 +1041,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     try {
       final target = path.trim();
       if (target.isEmpty) return;
-      if (Platform.isMacOS) {
-        final result = await Process.run('open', ['-R', target]);
-        if (result.exitCode != 0) throw StateError(result.stderr.toString());
-        return;
-      }
-      if (Platform.isWindows) {
-        final result = await Process.run('explorer', [target]);
-        if (result.exitCode != 0) throw StateError(result.stderr.toString());
-        return;
-      }
-      final result = await Process.run('xdg-open', [target]);
-      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+      await revealPathInFileManager(target);
     } catch (error) {
       if (!context.mounted) return;
       _showSnackBar('Could not reveal $label: $error');

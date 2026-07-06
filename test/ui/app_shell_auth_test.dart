@@ -74,14 +74,16 @@ void main() {
     );
 
     await tester.tap(find.byTooltip('Workspace actions'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Show in Finder'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(processCalls, hasLength(1));
     if (Platform.isMacOS) {
       expect(processCalls.single.executable, 'open');
-      expect(processCalls.single.arguments, ['-R', '/workspace/current']);
+      expect(processCalls.single.arguments, ['/workspace/current']);
     } else if (Platform.isWindows) {
       expect(processCalls.single.executable, 'explorer');
       expect(processCalls.single.arguments, ['/workspace/current']);
