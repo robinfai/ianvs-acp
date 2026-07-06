@@ -43,11 +43,6 @@ class WorkspaceController {
     }).toList();
 
     records.sort((a, b) {
-      final aCurrent = a.path == _currentWorkspacePath;
-      final bCurrent = b.path == _currentWorkspacePath;
-      if (aCurrent && !bCurrent) return -1;
-      if (bCurrent && !aCurrent) return 1;
-
       final aTime = a.lastActivityAt;
       final bTime = b.lastActivityAt;
       if (aTime != null && bTime != null) {

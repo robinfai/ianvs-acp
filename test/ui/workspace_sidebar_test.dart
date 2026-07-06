@@ -146,6 +146,80 @@ void main() {
     expect(find.text('Pinned other work'), findsNothing);
   });
 
+  testWidgets('WorkspaceSidebar keeps workspace order when current changes', (
+    tester,
+  ) async {
+    final firstSession = AgentSession(
+      id: 'first-session',
+      cwd: '/workspace/first',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'First work',
+      agentName: 'Codex',
+    );
+    final secondSession = AgentSession(
+      id: 'second-session',
+      cwd: '/workspace/second',
+      createdAt: DateTime(2026, 5, 2, 10),
+      title: 'Second work',
+      agentName: 'Codex',
+    );
+    final firstWorkspace = WorkspaceRecord(
+      path: '/workspace/first',
+      name: 'first',
+      sessions: [firstSession],
+    );
+    final secondWorkspace = WorkspaceRecord(
+      path: '/workspace/second',
+      name: 'second',
+      sessions: [secondSession],
+    );
+
+    Widget buildSidebar({
+      required WorkspaceRecord currentWorkspace,
+      required AgentSession currentSession,
+    }) {
+      return MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [firstWorkspace, secondWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: currentSession,
+              onNewSession: () {},
+              onResumeSession: () {},
+            ),
+          ),
+        ),
+      );
+    }
+
+    double workspaceTop(String label) {
+      return tester.getTopLeft(find.text(label).first).dy;
+    }
+
+    await tester.pumpWidget(
+      buildSidebar(
+        currentWorkspace: firstWorkspace,
+        currentSession: firstSession,
+      ),
+    );
+
+    expect(workspaceTop('first'), lessThan(workspaceTop('second')));
+
+    await tester.pumpWidget(
+      buildSidebar(
+        currentWorkspace: secondWorkspace,
+        currentSession: secondSession,
+      ),
+    );
+    await tester.pump();
+
+    expect(workspaceTop('first'), lessThan(workspaceTop('second')));
+  });
+
   testWidgets('WorkspaceSidebar shows an empty state for new workspaces', (
     tester,
   ) async {

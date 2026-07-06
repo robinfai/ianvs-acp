@@ -355,11 +355,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         )
         .toList();
     workspaces.sort((a, b) {
-      final aCurrent = a.path == widget.currentWorkspace.path;
-      final bCurrent = b.path == widget.currentWorkspace.path;
-      if (aCurrent && !bCurrent) return -1;
-      if (bCurrent && !aCurrent) return 1;
-
       final aPinned = _isPinned(a);
       final bPinned = _isPinned(b);
       if (aPinned && !bPinned) return -1;

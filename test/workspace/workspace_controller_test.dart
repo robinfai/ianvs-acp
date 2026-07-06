@@ -75,10 +75,46 @@ void main() {
       );
 
       expect(controller.workspaces.map((workspace) => workspace.path), [
-        '/workspace/current',
         '/workspace/other',
+        '/workspace/current',
       ]);
       expect(controller.currentWorkspace.sessions, isEmpty);
+    },
+  );
+
+  test(
+    'WorkspaceController does not move the current workspace to the front',
+    () {
+      final chat = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/older',
+      );
+      addTearDown(chat.dispose);
+      chat.sessions.addAll([
+        AgentSession(
+          id: 'older-session',
+          cwd: '/workspace/older',
+          createdAt: DateTime(2026, 5, 1, 10),
+          title: 'Older',
+        ),
+        AgentSession(
+          id: 'newer-session',
+          cwd: '/workspace/newer',
+          createdAt: DateTime(2026, 5, 2, 10),
+          title: 'Newer',
+        ),
+      ]);
+
+      final controller = WorkspaceController(
+        controllers: [chat],
+        currentWorkspacePath: '/workspace/older',
+      );
+
+      expect(controller.currentWorkspace.path, '/workspace/older');
+      expect(controller.workspaces.map((workspace) => workspace.path), [
+        '/workspace/newer',
+        '/workspace/older',
+      ]);
     },
   );
 

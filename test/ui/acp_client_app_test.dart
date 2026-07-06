@@ -322,7 +322,22 @@ void main() {
     await mouse.moveTo(tester.getCenter(find.text('other')));
     await tester.pump();
 
-    await tester.tap(find.byTooltip('New session in this workspace').last);
+    final otherCenter = tester.getCenter(find.text('other'));
+    Offset? newSessionButtonCenter;
+    for (final element
+        in find.byTooltip('New session in this workspace').evaluate()) {
+      final renderObject = element.renderObject;
+      if (renderObject is! RenderBox) continue;
+      final center = renderObject.localToGlobal(
+        renderObject.size.center(Offset.zero),
+      );
+      if ((center.dy - otherCenter.dy).abs() < 24) {
+        newSessionButtonCenter = center;
+        break;
+      }
+    }
+    expect(newSessionButtonCenter, isNotNull);
+    await tester.tapAt(newSessionButtonCenter!);
     await tester.pumpAndSettle();
 
     final field = tester.widget<TextField>(
