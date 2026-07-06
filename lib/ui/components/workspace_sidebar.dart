@@ -16,8 +16,13 @@ class WorkspaceSidebar extends StatefulWidget {
     required this.currentSession,
     required this.onNewSession,
     required this.onResumeSession,
+    this.onNewSessionInWorkspace,
     this.onSelectSession,
+    this.canForkSession,
+    this.onSessionMenuAction,
     this.onRevealWorkspace,
+    this.onCreateWorkspaceWorktree,
+    this.onArchiveWorkspaceSessions,
     this.onLoadWorkspaceSessions,
     this.stateStore,
   });
@@ -28,8 +33,19 @@ class WorkspaceSidebar extends StatefulWidget {
   final AgentSession? currentSession;
   final VoidCallback? onNewSession;
   final VoidCallback? onResumeSession;
+  final ValueChanged<WorkspaceRecord>? onNewSessionInWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
+  final bool Function(AgentSession session)? canForkSession;
+  final FutureOr<void> Function(
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  )?
+  onSessionMenuAction;
   final ValueChanged<WorkspaceRecord>? onRevealWorkspace;
+  final FutureOr<void> Function(WorkspaceRecord workspace)?
+  onCreateWorkspaceWorktree;
+  final FutureOr<void> Function(WorkspaceRecord workspace)?
+  onArchiveWorkspaceSessions;
   final Future<void> Function(WorkspaceRecord workspace)?
   onLoadWorkspaceSessions;
   final WorkspaceSidebarStateStore? stateStore;
@@ -39,36 +55,61 @@ class WorkspaceSidebar extends StatefulWidget {
 }
 
 class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
+  static const Duration _currentWorkspaceAutoLoadDelay = Duration(
+    milliseconds: 1,
+  );
+
   final Set<String> _expandedWorkspacePaths = <String>{};
   final Set<String> _pinnedWorkspacePaths = <String>{};
   final Set<String> _hiddenWorkspacePaths = <String>{};
   final Set<String> _loadingSessionWorkspacePaths = <String>{};
   final Set<String> _autoLoadWorkspacePaths = <String>{};
+  final Set<String> _loadedSessionWorkspacePaths = <String>{};
   final Map<String, String> _workspaceDisplayNames = <String, String>{};
   final Map<String, String> _sessionLoadErrors = <String, String>{};
+  Timer? _currentWorkspaceAutoLoadTimer;
   String? _hoveredWorkspacePath;
-  bool _sessionCatalogLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+    _scheduleLoadCurrentWorkspaceSessions();
     unawaited(_restoreExpandedWorkspacePaths());
+    unawaited(_restoreWorkspaceStates());
   }
 
   @override
   void didUpdateWidget(covariant WorkspaceSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+    if (oldWidget.currentWorkspace.path != widget.currentWorkspace.path) {
+      _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+      _autoLoadWorkspacePaths.add(widget.currentWorkspace.path);
+      _persistExpandedWorkspacePaths();
+    }
 
     if (oldWidget.stateStore?.path != widget.stateStore?.path) {
       unawaited(_restoreExpandedWorkspacePaths());
+      unawaited(_restoreWorkspaceStates());
     }
 
-    if (oldWidget.onLoadWorkspaceSessions == null &&
-        widget.onLoadWorkspaceSessions != null) {
+    final loaderBecameAvailable =
+        oldWidget.onLoadWorkspaceSessions == null &&
+        widget.onLoadWorkspaceSessions != null;
+    if (loaderBecameAvailable ||
+        oldWidget.currentWorkspace.path != widget.currentWorkspace.path) {
+      _scheduleLoadCurrentWorkspaceSessions();
+    }
+
+    if (loaderBecameAvailable) {
       _scheduleLoadSessionsForAutoLoadWorkspaces();
     }
+  }
+
+  @override
+  void dispose() {
+    _currentWorkspaceAutoLoadTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -113,9 +154,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                 final workspace = workspaces[index];
                 final selected = workspace.path == widget.currentWorkspace.path;
                 final hovered = workspace.path == _hoveredWorkspacePath;
-                final expanded =
-                    selected ||
-                    _expandedWorkspacePaths.contains(workspace.path);
+                final expanded = _expandedWorkspacePaths.contains(
+                  workspace.path,
+                );
                 final sessionLoading = _loadingSessionWorkspacePaths.contains(
                   workspace.path,
                 );
@@ -127,11 +168,15 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   hovered: hovered,
                   expanded: expanded,
                   currentSession: widget.currentSession,
-                  onWorkspacePressed: selected
-                      ? null
-                      : () => _toggleWorkspace(workspace),
+                  onWorkspacePressed: _workspacePressedCallback(
+                    workspace,
+                    selected,
+                  ),
+                  onToggleWorkspace: () => _toggleWorkspace(workspace),
                   onSelectSession: widget.onSelectSession,
-                  onNewSession: selected ? widget.onNewSession : null,
+                  canForkSession: widget.canForkSession,
+                  onSessionMenuAction: widget.onSessionMenuAction,
+                  onNewSession: _newSessionCallbackFor(workspace, selected),
                   sessionLoading: sessionLoading,
                   sessionLoadError: _sessionLoadErrors[workspace.path],
                   onRetryLoadSessions: widget.onLoadWorkspaceSessions == null
@@ -141,6 +186,11 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                         ),
                   pinned: _isPinned(workspace),
                   canRevealInFinder: widget.onRevealWorkspace != null,
+                  canCreatePermanentWorktree:
+                      widget.onCreateWorkspaceWorktree != null,
+                  canArchiveConversations:
+                      widget.onArchiveWorkspaceSessions != null &&
+                      workspace.sessions.isNotEmpty,
                   canRemove: !selected,
                   onHoverChanged: (hovered) =>
                       _setHoveredWorkspace(workspace.path, hovered),
@@ -155,6 +205,30 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         ],
       ),
     );
+  }
+
+  VoidCallback? _newSessionCallbackFor(
+    WorkspaceRecord workspace,
+    bool selected,
+  ) {
+    final workspaceCallback = widget.onNewSessionInWorkspace;
+    if (workspaceCallback != null) {
+      return () => workspaceCallback(workspace);
+    }
+    if (!selected) return null;
+    return widget.onNewSession;
+  }
+
+  VoidCallback? _workspacePressedCallback(
+    WorkspaceRecord workspace,
+    bool selected,
+  ) {
+    if (selected) return null;
+    final selectSession = widget.onSelectSession;
+    if (selectSession != null && workspace.sessions.isNotEmpty) {
+      return () => selectSession(workspace.sessions.first);
+    }
+    return () => _toggleWorkspace(workspace);
   }
 
   void _toggleWorkspace(WorkspaceRecord workspace) {
@@ -177,12 +251,17 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   Future<void> _restoreExpandedWorkspacePaths() async {
     final store = widget.stateStore;
     if (store != null) {
+      final hasSavedPaths = await store.hasSavedExpandedWorkspacePaths();
       final paths = await store.loadExpandedWorkspacePaths();
       if (!mounted) return;
       setState(() {
-        _expandedWorkspacePaths.addAll(paths);
+        _expandedWorkspacePaths
+          ..clear()
+          ..addAll(paths);
         _autoLoadWorkspacePaths.addAll(paths);
-        _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+        if (!hasSavedPaths) {
+          _expandedWorkspacePaths.add(widget.currentWorkspace.path);
+        }
       });
     }
     if (!mounted) return;
@@ -196,19 +275,28 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     });
   }
 
+  void _scheduleLoadCurrentWorkspaceSessions() {
+    if (widget.onLoadWorkspaceSessions == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.onLoadWorkspaceSessions == null) return;
+      _currentWorkspaceAutoLoadTimer?.cancel();
+      _currentWorkspaceAutoLoadTimer = Timer(
+        _currentWorkspaceAutoLoadDelay,
+        () {
+          _currentWorkspaceAutoLoadTimer = null;
+          if (!mounted || widget.onLoadWorkspaceSessions == null) return;
+          unawaited(_loadWorkspaceSessions(widget.currentWorkspace));
+        },
+      );
+    });
+  }
+
   void _persistExpandedWorkspacePaths() {
     final store = widget.stateStore;
     if (store == null) return;
-    final pathsToPersist = _expandedWorkspacePaths
-        .where(
-          (path) =>
-              path != widget.currentWorkspace.path ||
-              _autoLoadWorkspacePaths.contains(path),
-        )
-        .toSet();
     unawaited(
       store
-          .saveExpandedWorkspacePaths(Set<String>.from(pathsToPersist))
+          .saveExpandedWorkspacePaths(Set<String>.from(_expandedWorkspacePaths))
           .catchError((_) {}),
     );
   }
@@ -227,7 +315,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   }) async {
     final loader = widget.onLoadWorkspaceSessions;
     if (loader == null) return;
-    if (_sessionCatalogLoaded && !force) return;
+    if (_loadedSessionWorkspacePaths.contains(workspace.path) && !force) {
+      return;
+    }
     if (_loadingSessionWorkspacePaths.contains(workspace.path)) return;
 
     setState(() {
@@ -239,9 +329,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
       await loader(workspace);
       if (!mounted) return;
       setState(() {
-        _sessionCatalogLoaded = true;
-        _loadingSessionWorkspacePaths.clear();
-        _sessionLoadErrors.clear();
+        _loadedSessionWorkspacePaths.add(workspace.path);
+        _loadingSessionWorkspacePaths.remove(workspace.path);
+        _sessionLoadErrors.remove(workspace.path);
       });
     } catch (error) {
       if (!mounted) return;
@@ -313,15 +403,20 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
             _pinnedWorkspacePaths.add(workspace.path);
           }
         });
+        _persistWorkspaceStates();
       case _WorkspaceMenuAction.revealInFinder:
         widget.onRevealWorkspace?.call(workspace);
       case _WorkspaceMenuAction.createPermanentWorktree:
+        await widget.onCreateWorkspaceWorktree?.call(workspace);
       case _WorkspaceMenuAction.archiveConversations:
-        break;
+        await widget.onArchiveWorkspaceSessions?.call(workspace);
       case _WorkspaceMenuAction.rename:
         await _renameWorkspace(context, workspace);
       case _WorkspaceMenuAction.remove:
         if (workspace.path == widget.currentWorkspace.path) return;
+        final wasPinned = _pinnedWorkspacePaths.contains(workspace.path);
+        final wasExpanded = _expandedWorkspacePaths.contains(workspace.path);
+        final wasAutoLoad = _autoLoadWorkspacePaths.contains(workspace.path);
         setState(() {
           _hiddenWorkspacePaths.add(workspace.path);
           _expandedWorkspacePaths.remove(workspace.path);
@@ -329,7 +424,43 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           _pinnedWorkspacePaths.remove(workspace.path);
         });
         _persistExpandedWorkspacePaths();
+        _persistWorkspaceStates();
+        _showRemoveWorkspaceUndo(
+          context,
+          workspace,
+          wasPinned: wasPinned,
+          wasExpanded: wasExpanded,
+          wasAutoLoad: wasAutoLoad,
+        );
     }
+  }
+
+  void _showRemoveWorkspaceUndo(
+    BuildContext context,
+    WorkspaceRecord workspace, {
+    required bool wasPinned,
+    required bool wasExpanded,
+    required bool wasAutoLoad,
+  }) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text('Removed "${_workspaceName(workspace)}".'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            if (!mounted) return;
+            setState(() {
+              _hiddenWorkspacePaths.remove(workspace.path);
+              if (wasPinned) _pinnedWorkspacePaths.add(workspace.path);
+              if (wasExpanded) _expandedWorkspacePaths.add(workspace.path);
+              if (wasAutoLoad) _autoLoadWorkspacePaths.add(workspace.path);
+            });
+            _persistExpandedWorkspacePaths();
+            _persistWorkspaceStates();
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _renameWorkspace(
@@ -374,6 +505,49 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     setState(() {
       _workspaceDisplayNames[workspace.path] = trimmed;
     });
+    _persistWorkspaceStates();
+  }
+
+  Future<void> _restoreWorkspaceStates() async {
+    final store = widget.stateStore;
+    if (store == null) return;
+    final states = await store.loadWorkspaceStates();
+    if (!mounted) return;
+    setState(() {
+      _pinnedWorkspacePaths.clear();
+      _hiddenWorkspacePaths.clear();
+      _workspaceDisplayNames.clear();
+      for (final state in states) {
+        if (state.pinned) _pinnedWorkspacePaths.add(state.path);
+        if (state.hidden) _hiddenWorkspacePaths.add(state.path);
+        final displayName = state.displayName?.trim();
+        if (displayName != null && displayName.isNotEmpty) {
+          _workspaceDisplayNames[state.path] = displayName;
+        }
+      }
+      _hiddenWorkspacePaths.remove(widget.currentWorkspace.path);
+    });
+  }
+
+  void _persistWorkspaceStates() {
+    final store = widget.stateStore;
+    if (store == null) return;
+    final paths = <String>{
+      ..._pinnedWorkspacePaths,
+      ..._hiddenWorkspacePaths,
+      ..._workspaceDisplayNames.keys,
+    };
+    final states = paths
+        .map((path) {
+          return WorkspaceSidebarWorkspaceState(
+            path: path,
+            displayName: _workspaceDisplayNames[path],
+            pinned: _pinnedWorkspacePaths.contains(path),
+            hidden: _hiddenWorkspacePaths.contains(path),
+          );
+        })
+        .toList(growable: false);
+    unawaited(store.saveWorkspaceStates(states).catchError((_) {}));
   }
 }
 
@@ -387,13 +561,18 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.expanded,
     required this.currentSession,
     required this.onWorkspacePressed,
+    required this.onToggleWorkspace,
     required this.onSelectSession,
+    required this.canForkSession,
+    required this.onSessionMenuAction,
     required this.onNewSession,
     required this.sessionLoading,
     required this.sessionLoadError,
     required this.onRetryLoadSessions,
     required this.pinned,
     required this.canRevealInFinder,
+    required this.canCreatePermanentWorktree,
+    required this.canArchiveConversations,
     required this.canRemove,
     required this.onHoverChanged,
     required this.onMenuAction,
@@ -407,13 +586,22 @@ class _WorkspaceGroup extends StatelessWidget {
   final bool expanded;
   final AgentSession? currentSession;
   final VoidCallback? onWorkspacePressed;
+  final VoidCallback? onToggleWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
+  final bool Function(AgentSession session)? canForkSession;
+  final FutureOr<void> Function(
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  )?
+  onSessionMenuAction;
   final VoidCallback? onNewSession;
   final bool sessionLoading;
   final String? sessionLoadError;
   final VoidCallback? onRetryLoadSessions;
   final bool pinned;
   final bool canRevealInFinder;
+  final bool canCreatePermanentWorktree;
+  final bool canArchiveConversations;
   final bool canRemove;
   final ValueChanged<bool> onHoverChanged;
   final ValueChanged<_WorkspaceMenuAction> onMenuAction;
@@ -448,8 +636,11 @@ class _WorkspaceGroup extends StatelessWidget {
               expanded: expanded,
               pinned: pinned,
               canRevealInFinder: canRevealInFinder,
+              canCreatePermanentWorktree: canCreatePermanentWorktree,
+              canArchiveConversations: canArchiveConversations,
               canRemove: canRemove,
               onPressed: onWorkspacePressed,
+              onToggleWorkspace: onToggleWorkspace,
               onNewSession: onNewSession,
               onMenuAction: onMenuAction,
             ),
@@ -478,6 +669,8 @@ class _WorkspaceGroup extends StatelessWidget {
                   workspace: workspace,
                   currentSession: currentSession,
                   onSelectSession: onSelectSession,
+                  canForkSession: canForkSession,
+                  onSessionMenuAction: onSessionMenuAction,
                 ),
               ),
           ],
@@ -493,12 +686,20 @@ class _NestedSessionList extends StatelessWidget {
     required this.workspace,
     required this.currentSession,
     required this.onSelectSession,
+    required this.canForkSession,
+    required this.onSessionMenuAction,
   });
 
   final String agentName;
   final WorkspaceRecord workspace;
   final AgentSession? currentSession;
   final ValueChanged<AgentSession>? onSelectSession;
+  final bool Function(AgentSession session)? canForkSession;
+  final FutureOr<void> Function(
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  )?
+  onSessionMenuAction;
 
   @override
   Widget build(BuildContext context) {
@@ -533,6 +734,8 @@ class _NestedSessionList extends StatelessWidget {
                 onSelectSession == null || session.id == currentSession?.id
                 ? null
                 : () => onSelectSession!(session),
+            canFork: canForkSession?.call(session) ?? false,
+            onMenuAction: onSessionMenuAction,
           ),
         );
         widgets.add(const SizedBox(height: 5));
@@ -553,8 +756,11 @@ class _WorkspaceTile extends StatelessWidget {
     required this.expanded,
     required this.pinned,
     required this.canRevealInFinder,
+    required this.canCreatePermanentWorktree,
+    required this.canArchiveConversations,
     required this.canRemove,
     required this.onPressed,
+    required this.onToggleWorkspace,
     required this.onNewSession,
     required this.onMenuAction,
   });
@@ -566,8 +772,11 @@ class _WorkspaceTile extends StatelessWidget {
   final bool expanded;
   final bool pinned;
   final bool canRevealInFinder;
+  final bool canCreatePermanentWorktree;
+  final bool canArchiveConversations;
   final bool canRemove;
   final VoidCallback? onPressed;
+  final VoidCallback? onToggleWorkspace;
   final VoidCallback? onNewSession;
   final ValueChanged<_WorkspaceMenuAction> onMenuAction;
 
@@ -581,82 +790,165 @@ class _WorkspaceTile extends StatelessWidget {
       label: displayName,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          borderRadius: radius,
-          onTap: onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: selected ? AppColors.primaryMist : Colors.transparent,
-              borderRadius: radius,
-              border: Border.all(
-                color: selected
-                    ? AppColors.primary.withValues(alpha: 0.22)
-                    : Colors.transparent,
+        child: GestureDetector(
+          onSecondaryTapDown: (details) =>
+              _showContextMenu(context, details.globalPosition),
+          child: InkWell(
+            borderRadius: radius,
+            onTap: onPressed,
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: selected ? AppColors.primaryMist : Colors.transparent,
+                borderRadius: radius,
+                border: Border.all(
+                  color: selected
+                      ? AppColors.primary.withValues(alpha: 0.22)
+                      : Colors.transparent,
+                ),
+              ),
+              child: Row(
+                children: [
+                  _WorkspaceDisclosureButton(
+                    expanded: expanded,
+                    label: displayName,
+                    onPressed: onToggleWorkspace,
+                  ),
+                  const SizedBox(width: 2),
+                  Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? AppColors.primarySoft
+                          : AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      border: Border.all(color: AppColors.borderSoft),
+                    ),
+                    child: Icon(
+                      expanded
+                          ? Icons.folder_open_rounded
+                          : Icons.folder_outlined,
+                      size: 14,
+                      color: selected
+                          ? AppColors.primaryDark
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayName,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          workspace.path,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textTertiary,
+                            fontSize: 10,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  if (showActions)
+                    _WorkspaceInlineActions(
+                      workspace: workspace,
+                      pinned: pinned,
+                      canRevealInFinder: canRevealInFinder,
+                      canCreatePermanentWorktree: canCreatePermanentWorktree,
+                      canArchiveConversations: canArchiveConversations,
+                      canRemove: canRemove,
+                      onNewSession: onNewSession,
+                      onMenuAction: onMenuAction,
+                    )
+                  else
+                    _CountPill(count: workspace.sessionCount),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: selected ? AppColors.primarySoft : AppColors.surface,
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
-                    border: Border.all(color: AppColors.borderSoft),
-                  ),
-                  child: Icon(
-                    expanded
-                        ? Icons.folder_open_rounded
-                        : Icons.folder_outlined,
-                    size: 14,
-                    color: selected
-                        ? AppColors.primaryDark
-                        : AppColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        displayName,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        workspace.path,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textTertiary,
-                          fontSize: 10,
-                          height: 1.2,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 6),
-                if (showActions)
-                  _WorkspaceInlineActions(
-                    workspace: workspace,
-                    pinned: pinned,
-                    canRevealInFinder: canRevealInFinder,
-                    canRemove: canRemove,
-                    onNewSession: selected ? onNewSession : null,
-                    onMenuAction: onMenuAction,
-                  )
-                else
-                  _CountPill(count: workspace.sessionCount),
-              ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showContextMenu(BuildContext context, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final action = await showMenu<_WorkspaceMenuAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      surfaceTintColor: Colors.transparent,
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      items: _workspaceMenuItems(
+        pinned: pinned,
+        canRevealInFinder: canRevealInFinder,
+        canCreatePermanentWorktree: canCreatePermanentWorktree,
+        canArchiveConversations: canArchiveConversations,
+        canRemove: canRemove,
+      ),
+    );
+    if (action == null) return;
+    onMenuAction(action);
+  }
+}
+
+class _WorkspaceDisclosureButton extends StatelessWidget {
+  const _WorkspaceDisclosureButton({
+    required this.expanded,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final bool expanded;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final tooltip = expanded ? 'Collapse $label' : 'Expand $label';
+    return Semantics(
+      button: true,
+      enabled: onPressed != null,
+      label: tooltip,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 18,
+            height: 28,
+            child: Icon(
+              expanded
+                  ? Icons.keyboard_arrow_down_rounded
+                  : Icons.chevron_right_rounded,
+              size: 17,
+              color: onPressed == null
+                  ? AppColors.textTertiary
+                  : AppColors.textSecondary,
             ),
           ),
         ),
@@ -670,6 +962,8 @@ class _WorkspaceInlineActions extends StatelessWidget {
     required this.workspace,
     required this.pinned,
     required this.canRevealInFinder,
+    required this.canCreatePermanentWorktree,
+    required this.canArchiveConversations,
     required this.canRemove,
     required this.onNewSession,
     required this.onMenuAction,
@@ -678,6 +972,8 @@ class _WorkspaceInlineActions extends StatelessWidget {
   final WorkspaceRecord workspace;
   final bool pinned;
   final bool canRevealInFinder;
+  final bool canCreatePermanentWorktree;
+  final bool canArchiveConversations;
   final bool canRemove;
   final VoidCallback? onNewSession;
   final ValueChanged<_WorkspaceMenuAction> onMenuAction;
@@ -688,8 +984,11 @@ class _WorkspaceInlineActions extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         _WorkspaceMenuButton(
+          key: ValueKey<String>('workspace-actions:${workspace.path}'),
           pinned: pinned,
           canRevealInFinder: canRevealInFinder,
+          canCreatePermanentWorktree: canCreatePermanentWorktree,
+          canArchiveConversations: canArchiveConversations,
           canRemove: canRemove,
           onSelected: onMenuAction,
         ),
@@ -708,14 +1007,19 @@ class _WorkspaceInlineActions extends StatelessWidget {
 
 class _WorkspaceMenuButton extends StatelessWidget {
   const _WorkspaceMenuButton({
+    super.key,
     required this.pinned,
     required this.canRevealInFinder,
+    required this.canCreatePermanentWorktree,
+    required this.canArchiveConversations,
     required this.canRemove,
     required this.onSelected,
   });
 
   final bool pinned;
   final bool canRevealInFinder;
+  final bool canCreatePermanentWorktree;
+  final bool canArchiveConversations;
   final bool canRemove;
   final ValueChanged<_WorkspaceMenuAction> onSelected;
 
@@ -734,81 +1038,97 @@ class _WorkspaceMenuButton extends StatelessWidget {
       ),
       onSelected: onSelected,
       itemBuilder: (context) {
-        return [
-          _menuItem(
-            value: _WorkspaceMenuAction.togglePinned,
-            icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
-            label: pinned ? 'Unpin Project' : 'Pin Project',
-          ),
-          _menuItem(
-            value: _WorkspaceMenuAction.revealInFinder,
-            icon: Icons.folder_open_outlined,
-            label: 'Show in Finder',
-            enabled: canRevealInFinder,
-          ),
-          _menuItem(
-            value: _WorkspaceMenuAction.createPermanentWorktree,
-            icon: Icons.call_split_rounded,
-            label: 'Create Permanent Worktree',
-            enabled: false,
-          ),
-          _menuItem(
-            value: _WorkspaceMenuAction.rename,
-            icon: Icons.edit_outlined,
-            label: 'Rename Project',
-          ),
-          const PopupMenuDivider(height: 8),
-          _menuItem(
-            value: _WorkspaceMenuAction.archiveConversations,
-            icon: Icons.archive_outlined,
-            label: 'Archive Conversations',
-            enabled: false,
-          ),
-          _menuItem(
-            value: _WorkspaceMenuAction.remove,
-            icon: Icons.close_rounded,
-            label: 'Remove',
-            enabled: canRemove,
-            destructive: true,
-          ),
-        ];
+        return _workspaceMenuItems(
+          pinned: pinned,
+          canRevealInFinder: canRevealInFinder,
+          canCreatePermanentWorktree: canCreatePermanentWorktree,
+          canArchiveConversations: canArchiveConversations,
+          canRemove: canRemove,
+        );
       },
     );
   }
+}
 
-  PopupMenuItem<_WorkspaceMenuAction> _menuItem({
-    required _WorkspaceMenuAction value,
-    required IconData icon,
-    required String label,
-    bool enabled = true,
-    bool destructive = false,
-  }) {
-    final color = destructive ? AppColors.danger : AppColors.textPrimary;
-    final disabledColor = AppColors.textTertiary;
-    return PopupMenuItem<_WorkspaceMenuAction>(
-      value: value,
-      enabled: enabled,
-      height: 38,
-      child: Row(
-        children: [
-          Icon(icon, size: 17, color: enabled ? color : disabledColor),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: enabled ? color : disabledColor,
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0,
-              ),
+List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
+  required bool pinned,
+  required bool canRevealInFinder,
+  required bool canCreatePermanentWorktree,
+  required bool canArchiveConversations,
+  required bool canRemove,
+}) {
+  return [
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.togglePinned,
+      icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
+      label: pinned ? 'Unpin Project' : 'Pin Project',
+    ),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.revealInFinder,
+      icon: Icons.folder_open_outlined,
+      label: 'Show in Finder',
+      enabled: canRevealInFinder,
+    ),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.createPermanentWorktree,
+      icon: Icons.call_split_rounded,
+      label: 'Create Permanent Worktree',
+      enabled: canCreatePermanentWorktree,
+    ),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.rename,
+      icon: Icons.edit_outlined,
+      label: 'Rename Project',
+    ),
+    const PopupMenuDivider(height: 8),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.archiveConversations,
+      icon: Icons.archive_outlined,
+      label: 'Archive Conversations',
+      enabled: canArchiveConversations,
+    ),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.remove,
+      icon: Icons.close_rounded,
+      label: 'Remove',
+      enabled: canRemove,
+      destructive: true,
+    ),
+  ];
+}
+
+PopupMenuItem<_WorkspaceMenuAction> _workspaceMenuItem({
+  required _WorkspaceMenuAction value,
+  required IconData icon,
+  required String label,
+  bool enabled = true,
+  bool destructive = false,
+}) {
+  final color = destructive ? AppColors.danger : AppColors.textPrimary;
+  final disabledColor = AppColors.textTertiary;
+  return PopupMenuItem<_WorkspaceMenuAction>(
+    value: value,
+    enabled: enabled,
+    height: 38,
+    child: Row(
+      children: [
+        Icon(icon, size: 17, color: enabled ? color : disabledColor),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: enabled ? color : disabledColor,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
             ),
           ),
-        ],
-      ),
-    );
-  }
+        ),
+      ],
+    ),
+  );
 }
 
 class _TinyActionButton extends StatelessWidget {
@@ -864,108 +1184,206 @@ enum _WorkspaceMenuAction {
   remove,
 }
 
-class _SessionTile extends StatelessWidget {
+enum WorkspaceSessionMenuAction {
+  togglePinned,
+  rename,
+  archive,
+  toggleUnread,
+  revealInFinder,
+  copyWorkingDirectory,
+  copySessionId,
+  copyDeepLink,
+  forkLocally,
+  forkToNewWorktree,
+  openInNewWindow,
+}
+
+class _SessionTile extends StatefulWidget {
   const _SessionTile({
     required this.session,
     required this.selected,
     required this.onPressed,
+    required this.canFork,
+    required this.onMenuAction,
   });
 
   final AgentSession session;
   final bool selected;
   final VoidCallback? onPressed;
+  final bool canFork;
+  final FutureOr<void> Function(
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  )?
+  onMenuAction;
+
+  @override
+  State<_SessionTile> createState() => _SessionTileState();
+}
+
+class _SessionTileState extends State<_SessionTile> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final radius = BorderRadius.circular(AppRadius.sm);
+    final selected = widget.selected;
+    final session = widget.session;
+    final onPressed = widget.onPressed;
+    final onMenuAction = widget.onMenuAction;
+    final showActions = selected || _hovered;
     return Semantics(
       button: onPressed != null,
       selected: selected,
       label: session.displayTitle,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          borderRadius: radius,
-          onTap: onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: selected ? AppColors.primaryMist : AppColors.surface,
-              border: Border.all(
-                color: selected
-                    ? AppColors.primary.withValues(alpha: 0.22)
-                    : AppColors.borderSoft,
-              ),
+        child: MouseRegion(
+          onEnter: (_) => _setHovered(true),
+          onExit: (_) => _setHovered(false),
+          child: GestureDetector(
+            onSecondaryTapDown: onMenuAction == null
+                ? null
+                : (details) =>
+                      _showContextMenu(context, details.globalPosition),
+            child: InkWell(
               borderRadius: radius,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        color: selected
-                            ? AppColors.primarySoft
-                            : AppColors.surfaceRaised,
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                      ),
-                      child: Icon(
-                        Icons.chat_bubble_outline_rounded,
-                        size: 13,
-                        color: selected
-                            ? AppColors.primaryDark
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(width: 7),
-                    Expanded(
-                      child: Text(
-                        session.displayTitle,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 12,
-                          letterSpacing: 0,
-                        ),
-                      ),
-                    ),
-                    if (_agentLabel.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      _AgentPill(label: _agentLabel),
-                    ],
-                  ],
+              onTap: onPressed,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.primaryMist : AppColors.surface,
+                  border: Border.all(
+                    color: selected
+                        ? AppColors.primary.withValues(alpha: 0.22)
+                        : AppColors.borderSoft,
+                  ),
+                  borderRadius: radius,
                 ),
-                const SizedBox(height: 5),
-                Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(
-                      Icons.access_time_rounded,
-                      size: 12,
-                      color: AppColors.textTertiary,
+                    Row(
+                      children: [
+                        Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            Container(
+                              width: 22,
+                              height: 22,
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? AppColors.primarySoft
+                                    : AppColors.surfaceRaised,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.sm,
+                                ),
+                              ),
+                              child: Icon(
+                                session.unread
+                                    ? Icons.mark_chat_unread_outlined
+                                    : Icons.chat_bubble_outline_rounded,
+                                size: 13,
+                                color: selected
+                                    ? AppColors.primaryDark
+                                    : AppColors.textSecondary,
+                              ),
+                            ),
+                            if (session.unread)
+                              Positioned(
+                                right: -2,
+                                top: -2,
+                                child: Container(
+                                  width: 7,
+                                  height: 7,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadius.pill,
+                                    ),
+                                    border: Border.all(
+                                      color: selected
+                                          ? AppColors.primaryMist
+                                          : AppColors.surface,
+                                      width: 1.2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            session.displayTitle,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                              letterSpacing: 0,
+                            ),
+                          ),
+                        ),
+                        if (session.pinned) ...[
+                          const SizedBox(width: 5),
+                          const Icon(
+                            Icons.push_pin,
+                            size: 13,
+                            color: AppColors.primaryDark,
+                          ),
+                        ],
+                        if (_agentLabel.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          _AgentPill(label: _agentLabel),
+                        ],
+                        if (onMenuAction != null && showActions) ...[
+                          const SizedBox(width: 4),
+                          _SessionMenuButton(
+                            session: session,
+                            canFork: widget.canFork,
+                            onSelected: (action) =>
+                                onMenuAction.call(session, action),
+                          ),
+                        ],
+                      ],
                     ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        _formatCreatedAt(session.displayTime),
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                    const SizedBox(height: 5),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.access_time_rounded,
+                          size: 12,
                           color: AppColors.textTertiary,
-                          fontSize: 11,
                         ),
-                      ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            _formatCreatedAt(session.displayTime),
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  void _setHovered(bool hovered) {
+    if (_hovered == hovered) return;
+    setState(() {
+      _hovered = hovered;
+    });
   }
 
   String _formatCreatedAt(DateTime createdAt) {
@@ -974,7 +1392,165 @@ class _SessionTile extends StatelessWidget {
         '${two(createdAt.hour)}:${two(createdAt.minute)}';
   }
 
-  String get _agentLabel => session.agentName?.trim() ?? '';
+  String get _agentLabel => widget.session.agentName?.trim() ?? '';
+
+  Future<void> _showContextMenu(BuildContext context, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final action = await showMenu<WorkspaceSessionMenuAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      surfaceTintColor: Colors.transparent,
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      items: _sessionMenuItems(
+        session: widget.session,
+        canFork: widget.canFork,
+      ),
+    );
+    if (action == null) return;
+    await widget.onMenuAction?.call(widget.session, action);
+  }
+}
+
+class _SessionMenuButton extends StatelessWidget {
+  const _SessionMenuButton({
+    required this.session,
+    required this.canFork,
+    required this.onSelected,
+  });
+
+  final AgentSession session;
+  final bool canFork;
+  final ValueChanged<WorkspaceSessionMenuAction> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<WorkspaceSessionMenuAction>(
+      tooltip: 'Session actions',
+      padding: EdgeInsets.zero,
+      icon: const Icon(Icons.more_horiz_rounded, size: 16),
+      iconColor: AppColors.textSecondary,
+      surfaceTintColor: Colors.transparent,
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      onSelected: onSelected,
+      itemBuilder: (context) {
+        return _sessionMenuItems(session: session, canFork: canFork);
+      },
+    );
+  }
+}
+
+List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
+  required AgentSession session,
+  required bool canFork,
+}) {
+  return [
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.togglePinned,
+      icon: session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+      label: session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.rename,
+      icon: Icons.edit_outlined,
+      label: 'Rename Conversation',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.archive,
+      icon: Icons.archive_outlined,
+      label: 'Archive Conversation',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.toggleUnread,
+      icon: session.unread
+          ? Icons.mark_chat_read_outlined
+          : Icons.mark_chat_unread_outlined,
+      label: session.unread ? 'Mark as Read' : 'Mark as Unread',
+    ),
+    const PopupMenuDivider(height: 8),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.revealInFinder,
+      icon: Icons.folder_open_outlined,
+      label: 'Show in Finder',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.copyWorkingDirectory,
+      icon: Icons.content_copy_rounded,
+      label: 'Copy Working Directory',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.copySessionId,
+      icon: Icons.tag_rounded,
+      label: 'Copy Session ID',
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.copyDeepLink,
+      icon: Icons.link_rounded,
+      label: 'Copy Deep Link',
+    ),
+    const PopupMenuDivider(height: 8),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.forkLocally,
+      icon: Icons.call_split_rounded,
+      label: 'Fork Locally',
+      enabled: canFork,
+    ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.forkToNewWorktree,
+      icon: Icons.account_tree_outlined,
+      label: 'Fork to New Worktree',
+      enabled: canFork,
+    ),
+    const PopupMenuDivider(height: 8),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.openInNewWindow,
+      icon: Icons.open_in_new_rounded,
+      label: 'Open in New Window',
+    ),
+  ];
+}
+
+PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
+  required WorkspaceSessionMenuAction value,
+  required IconData icon,
+  required String label,
+  bool enabled = true,
+}) {
+  final color = enabled ? AppColors.textPrimary : AppColors.textTertiary;
+  return PopupMenuItem<WorkspaceSessionMenuAction>(
+    value: value,
+    enabled: enabled,
+    height: 38,
+    child: Row(
+      children: [
+        Icon(icon, size: 17, color: color),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: color,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _InlineSessionLoadStatus extends StatelessWidget {
@@ -1142,7 +1718,7 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
                       letterSpacing: 0,
                     ),
                   ),
-                  if (active && onNewSession != null) ...[
+                  if (onNewSession != null) ...[
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
                       onPressed: onNewSession,

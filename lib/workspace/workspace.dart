@@ -49,7 +49,11 @@ class WorkspaceRecord {
     }
 
     for (final group in grouped.values) {
-      group.sort((a, b) => b.displayTime.compareTo(a.displayTime));
+      group.sort((a, b) {
+        if (a.pinned && !b.pinned) return -1;
+        if (b.pinned && !a.pinned) return 1;
+        return b.displayTime.compareTo(a.displayTime);
+      });
     }
 
     final orderedKeys = grouped.keys.toList()

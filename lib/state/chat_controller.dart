@@ -38,6 +38,34 @@ class ChatMessage {
   final Map<String, Object?> metadata;
 }
 
+class ArchivedSessionSnapshot {
+  ArchivedSessionSnapshot({
+    required this.session,
+    required this.wasCurrent,
+    required this.messages,
+    required this.availableCommands,
+    required this.lastLatency,
+    required this.lastError,
+    required this.sessionSettings,
+    required this.sessionUsage,
+    required this.sessionSettingsLoading,
+    required this.status,
+    required this.activeSessionSettingsLoadId,
+  });
+
+  final AgentSession session;
+  final bool wasCurrent;
+  final List<ChatMessage> messages;
+  final List<Map<String, Object?>> availableCommands;
+  final Duration? lastLatency;
+  final String? lastError;
+  final AcpSessionSettings sessionSettings;
+  final AcpSessionUsage? sessionUsage;
+  final bool sessionSettingsLoading;
+  final ConnectionStatus status;
+  final int? activeSessionSettingsLoadId;
+}
+
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -262,14 +290,19 @@ class ChatController extends ChangeNotifier {
         lastLatency = null;
         sessionSettings = const AcpSessionSettings();
         sessionUsage = null;
+        final existingSession = _sessionWithId(trimmedSessionId);
         final session = AgentSession(
           id: trimmedSessionId,
           cwd: workspaceCwd,
-          createdAt: DateTime.now(),
+          createdAt: existingSession?.createdAt ?? DateTime.now(),
           additionalDirectories: workspaceAdditionalDirectories,
-          title: title,
+          title: title ?? existingSession?.title,
+          titleOverride: existingSession?.titleOverride,
           updatedAt: updatedAt,
           agentName: agentName,
+          pinned: existingSession?.pinned ?? false,
+          archived: false,
+          unread: false,
         );
         _retiredSessionIds.remove(session.id);
         currentSession = session;
@@ -337,13 +370,105 @@ class ChatController extends ChangeNotifier {
       if (_retiredSessionIds.contains(session.id)) continue;
 
       final existing = _sessionWithId(session.id);
-      if (existing != null && _sameSessionIndex(existing, session)) continue;
+      final nextSession = existing == null
+          ? session
+          : _mergeSessionIndexMetadata(existing, session);
+      if (existing != null && _sameSessionIndex(existing, nextSession)) {
+        continue;
+      }
 
-      if (currentSession?.id == session.id) currentSession = session;
-      _upsertSession(session);
+      if (currentSession?.id == nextSession.id) currentSession = nextSession;
+      _upsertSession(nextSession);
       didChange = true;
     }
     if (didChange) _notifyListeners();
+  }
+
+  void setSessionPinned(String sessionId, bool pinned) {
+    _updateSessionMetadata(sessionId, (session) {
+      if (session.pinned == pinned) return session;
+      return session.copyWith(pinned: pinned);
+    });
+  }
+
+  void renameSession(String sessionId, String title) {
+    final trimmedTitle = title.trim();
+    if (trimmedTitle.isEmpty) return;
+    _updateSessionMetadata(sessionId, (session) {
+      if (session.titleOverride == trimmedTitle) return session;
+      return session.copyWith(titleOverride: trimmedTitle);
+    });
+  }
+
+  void setSessionArchived(String sessionId, bool archived) {
+    _updateSessionMetadata(sessionId, (session) {
+      if (session.archived == archived) return session;
+      return session.copyWith(archived: archived);
+    });
+  }
+
+  ArchivedSessionSnapshot? archiveSessionLocally(String sessionId) {
+    if (isStreaming || isSessionOperationRunning) return null;
+    final session = _sessionWithId(sessionId);
+    if (session == null || session.archived) return null;
+    final wasCurrent = currentSession?.id == sessionId;
+    final snapshot = ArchivedSessionSnapshot(
+      session: session,
+      wasCurrent: wasCurrent,
+      messages: List<ChatMessage>.from(messages),
+      availableCommands: availableCommands,
+      lastLatency: lastLatency,
+      lastError: lastError,
+      sessionSettings: sessionSettings,
+      sessionUsage: sessionUsage,
+      sessionSettingsLoading: sessionSettingsLoading,
+      status: status,
+      activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
+    );
+
+    _upsertSession(session.copyWith(archived: true, unread: false));
+    if (wasCurrent) {
+      currentSession = null;
+      messages.clear();
+      availableCommands = const <Map<String, Object?>>[];
+      lastLatency = null;
+      lastError = null;
+      sessionSettings = const AcpSessionSettings();
+      sessionUsage = null;
+      sessionSettingsLoading = false;
+      _activeSessionSettingsLoadId = null;
+      if (status == ConnectionStatus.sessionReady) {
+        status = ConnectionStatus.connected;
+      }
+    }
+    _notifyListeners();
+    return snapshot;
+  }
+
+  void restoreArchivedSessionLocally(ArchivedSessionSnapshot snapshot) {
+    _upsertSession(snapshot.session);
+    if (snapshot.wasCurrent && currentSession == null) {
+      currentSession = snapshot.session;
+      messages
+        ..clear()
+        ..addAll(snapshot.messages);
+      availableCommands = snapshot.availableCommands;
+      lastLatency = snapshot.lastLatency;
+      lastError = snapshot.lastError;
+      sessionSettings = snapshot.sessionSettings;
+      sessionUsage = snapshot.sessionUsage;
+      sessionSettingsLoading = snapshot.sessionSettingsLoading;
+      status = snapshot.status;
+      _activeSessionSettingsLoadId = snapshot.activeSessionSettingsLoadId;
+    }
+    _notifyListeners();
+  }
+
+  void setSessionUnread(String sessionId, bool unread) {
+    _updateSessionMetadata(sessionId, (session) {
+      if (session.unread == unread) return session;
+      return session.copyWith(unread: unread);
+    });
   }
 
   Future<List<AcpProjectSessions>> listResumableSessions() async {
@@ -560,10 +685,22 @@ class ChatController extends ChangeNotifier {
     if (session == null || !supportsSessionFork) return;
     if (isStreaming || isSessionOperationRunning) return;
 
+    await forkSession(session);
+  }
+
+  Future<void> forkSession(AgentSession session) async {
+    if (!supportsSessionFork) return;
+    if (isStreaming || isSessionOperationRunning) return;
+
     await _runSessionOperation(() async {
       try {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
+        if (status == ConnectionStatus.disconnected ||
+            status == ConnectionStatus.error) {
+          await _connectWithStatus(ConnectionStatus.connecting);
+          if (status == ConnectionStatus.error) return;
+        }
         final forked = await client.forkSession(
           sessionId: session.id,
           cwd: session.cwd,
@@ -1400,12 +1537,16 @@ class ChatController extends ChangeNotifier {
           createdAt: existing?.createdAt ?? entry.updatedAt ?? now,
           additionalDirectories: entry.additionalDirectories,
           title: entry.title,
+          titleOverride: existing?.titleOverride,
           updatedAt: entry.updatedAt,
           agentName:
               _agentNameFromSessionCatalog(entry) ??
               existing?.agentName ??
               agentName,
           initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
+          pinned: existing?.pinned ?? false,
+          archived: existing?.archived ?? false,
+          unread: existing?.unread ?? false,
         );
         _retiredSessionIds.remove(session.id);
         if (currentSession?.id == session.id) currentSession = session;
@@ -1420,6 +1561,53 @@ class ChatController extends ChangeNotifier {
       if (session.id == id) return session;
     }
     return null;
+  }
+
+  AgentSession _mergeSessionIndexMetadata(
+    AgentSession existing,
+    AgentSession indexed,
+  ) {
+    final existingAgentName = existing.agentName?.trim();
+    final indexedAgentName = indexed.agentName?.trim();
+    final isCurrent = currentSession?.id == existing.id;
+    final titleOverride = indexed.titleOverride?.trim().isNotEmpty == true
+        ? indexed.titleOverride
+        : existing.titleOverride;
+    return AgentSession(
+      id: existing.id,
+      cwd: existing.cwd.trim().isEmpty ? indexed.cwd : existing.cwd,
+      createdAt: existing.createdAt,
+      additionalDirectories: existing.additionalDirectories.isEmpty
+          ? indexed.additionalDirectories
+          : existing.additionalDirectories,
+      title: existing.title ?? indexed.title,
+      titleOverride: titleOverride,
+      updatedAt: existing.updatedAt ?? indexed.updatedAt,
+      agentName: existingAgentName != null && existingAgentName.isNotEmpty
+          ? existing.agentName
+          : indexedAgentName != null && indexedAgentName.isNotEmpty
+          ? indexed.agentName
+          : null,
+      initialEvents: existing.initialEvents,
+      pinned: indexed.pinned,
+      archived: isCurrent ? false : indexed.archived,
+      unread: isCurrent ? false : indexed.unread,
+    );
+  }
+
+  void _updateSessionMetadata(
+    String sessionId,
+    AgentSession Function(AgentSession session) update,
+  ) {
+    final session = _sessionWithId(sessionId);
+    if (session == null) return;
+    final updated = update(session);
+    if (identical(updated, session) || _sameSessionIndex(updated, session)) {
+      return;
+    }
+    if (currentSession?.id == sessionId) currentSession = updated;
+    _upsertSession(updated);
+    _notifyListeners();
   }
 
   String? _agentNameFromSessionCatalog(AcpSessionEntry entry) {
@@ -1438,7 +1626,11 @@ class ChatController extends ChangeNotifier {
         a.createdAt == b.createdAt &&
         a.updatedAt == b.updatedAt &&
         a.title == b.title &&
+        a.titleOverride == b.titleOverride &&
         a.agentName == b.agentName &&
+        a.pinned == b.pinned &&
+        a.archived == b.archived &&
+        a.unread == b.unread &&
         _sameStringList(a.additionalDirectories, b.additionalDirectories);
   }
 

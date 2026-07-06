@@ -82,6 +82,54 @@ void main() {
     },
   );
 
+  test(
+    'WorkspaceController hides archived sessions and sorts pinned first',
+    () {
+      final chat = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+
+      chat.sessions.addAll([
+        AgentSession(
+          id: 'newer',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Newer',
+          agentName: 'Codex',
+        ),
+        AgentSession(
+          id: 'pinned',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 1, 10),
+          title: 'Pinned',
+          agentName: 'Codex',
+          pinned: true,
+        ),
+        AgentSession(
+          id: 'archived',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 4, 10),
+          title: 'Archived',
+          agentName: 'Codex',
+          archived: true,
+        ),
+      ]);
+
+      final controller = WorkspaceController(
+        controllers: [chat],
+        currentWorkspacePath: '/workspace/app',
+      );
+
+      expect(
+        controller.currentWorkspace.sessions.map((session) => session.id),
+        ['pinned', 'newer'],
+      );
+    },
+  );
+
   test('workspaceNameFromPath returns the last path segment', () {
     expect(workspaceNameFromPath('/Users/me/project'), 'project');
     expect(workspaceNameFromPath('/Users/me/project/'), 'project');

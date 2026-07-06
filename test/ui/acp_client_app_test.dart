@@ -1,6 +1,9 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -285,6 +288,522 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.currentSession?.cwd, '/other/project');
+  });
+
+  testWidgets('AcpClientApp starts workspace sessions with workspace cwd', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'other-session',
+        cwd: '/workspace/other',
+        createdAt: DateTime(2026, 7, 6, 12),
+        title: 'Other session',
+        agentName: 'Codex',
+      ),
+    ]);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.text('other')));
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('New session in this workspace').last);
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+    );
+    expect(field.controller?.text, '/workspace/other');
+  });
+
+  testWidgets('AcpClientApp resumes initial session arguments', (tester) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        initialResumeSessionId: 'session-from-link',
+        initialResumeCwd: '/workspace/from-link',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.id, 'session-from-link');
+    expect(controller.currentSession?.cwd, '/workspace/from-link');
+  });
+
+  testWidgets('AcpClientApp opens workspace worktree dialog from sidebar', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Create Permanent Worktree'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Create Permanent Worktree'), findsOneWidget);
+    expect(find.text('/workspace/current-worktree'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp copies session deep links with agent metadata', (
+    tester,
+  ) async {
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final args = call.arguments;
+          if (args is Map) clipboardText = args['text'] as String?;
+          return null;
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+    });
+
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace/current',
+      agentName: 'Kimi Code Dev',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy Deep Link'));
+    await tester.pump();
+
+    final uri = Uri.parse(clipboardText!);
+    expect(uri.scheme, 'ianvs-acp');
+    expect(uri.host, 'session');
+    expect(uri.queryParameters['id'], sessionId);
+    expect(uri.queryParameters['cwd'], '/workspace/current');
+    expect(uri.queryParameters['agent'], 'Kimi Code Dev');
+    expect(find.text('Deep link copied.'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp handles session copy and unread menu actions', (
+    tester,
+  ) async {
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final args = call.arguments;
+          if (args is Map) clipboardText = args['text'] as String?;
+          return null;
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+    });
+
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace/current',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy Working Directory'));
+    await tester.pump();
+
+    expect(clipboardText, '/workspace/current');
+    expect(find.text('Working directory copied.'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy Session ID'));
+    await tester.pump();
+
+    expect(clipboardText, sessionId);
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mark as Unread'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isTrue,
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Mark as Read'), findsOneWidget);
+    await tester.tap(find.text('Mark as Read'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isFalse,
+    );
+  });
+
+  testWidgets('AcpClientApp opens sessions in a new window from the menu', (
+    tester,
+  ) async {
+    List<String>? openedArgs;
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace/current',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        openSessionWindow: (args) async {
+          openedArgs = args;
+        },
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open in New Window'));
+    await tester.pumpAndSettle();
+
+    expect(openedArgs, [
+      '--resume-session-id',
+      sessionId,
+      '--resume-cwd',
+      '/workspace/current',
+      '--resume-agent',
+      'Codex',
+    ]);
+  });
+
+  testWidgets('AcpClientApp marks unread sessions read when opened', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'other-session',
+        cwd: '/workspace/other',
+        createdAt: DateTime(2026, 7, 6, 12),
+        title: 'Unread other session',
+        agentName: 'Codex',
+        unread: true,
+      ),
+    ]);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == 'other-session')
+          .unread,
+      isTrue,
+    );
+
+    await tester.tap(find.text('other'));
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.id, 'other-session');
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == 'other-session')
+          .unread,
+      isFalse,
+    );
+  });
+
+  testWidgets('AcpClientApp forks sessions from the session menu', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sourceSessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fork Locally'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastForkedSessionId, sourceSessionId);
+    expect(controller.currentSession?.id, 'fake-fork-2');
+    expect(controller.currentSession?.cwd, '/workspace/current');
+    expect(controller.currentSession?.displayTitle, 'Fork of fake-ses');
+    expect(controller.sessions.first.id, 'fake-fork-2');
+    expect(
+      controller.sessions.map((session) => session.id),
+      containsAll(['fake-fork-2', sourceSessionId]),
+    );
+  });
+
+  testWidgets('AcpClientApp opens session worktree fork dialog from menu', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fork to New Worktree'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Fork to New Worktree'), findsOneWidget);
+    expect(find.text('/workspace/current-fake-ses-fork'), findsOneWidget);
+    expect(fake.lastForkedSessionId, isNull);
+  });
+
+  testWidgets('AcpClientApp pins and renames sessions from the session menu', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Pin Conversation'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .pinned,
+      isTrue,
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unpin Conversation'), findsOneWidget);
+    await tester.tap(find.text('Rename Conversation'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      'Renamed conversation',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.displayTitle, 'Renamed conversation');
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .displayTitle,
+      'Renamed conversation',
+    );
+    expect(find.text('Renamed conversation'), findsWidgets);
+  });
+
+  testWidgets('AcpClientApp offers undo after archiving a session', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+    controller.setSessionUnread(sessionId, true);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive Conversation'));
+    await tester.pump();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .archived,
+      isTrue,
+    );
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isFalse,
+    );
+    expect(controller.currentSession, isNull);
+    await tester.pumpAndSettle();
+    expect(find.text('Undo'), findsOneWidget);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .archived,
+      isFalse,
+    );
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isTrue,
+    );
+    expect(controller.currentSession?.id, sessionId);
+  });
+
+  testWidgets('AcpClientApp offers undo after archiving workspace sessions', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+    controller.setSessionUnread(sessionId, true);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive Conversations'));
+    await tester.pump();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .archived,
+      isTrue,
+    );
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isFalse,
+    );
+    expect(controller.currentSession, isNull);
+    await tester.pumpAndSettle();
+    expect(find.text('Undo'), findsOneWidget);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .archived,
+      isFalse,
+    );
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == sessionId)
+          .unread,
+      isTrue,
+    );
+    expect(controller.currentSession?.id, sessionId);
   });
 
   testWidgets('AcpClientApp disables prompt input during session operations', (

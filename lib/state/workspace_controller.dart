@@ -18,6 +18,7 @@ class WorkspaceController {
     final sessionsByPath = <String, List<AgentSession>>{};
     for (final controller in _controllers) {
       for (final session in controller.sessions) {
+        if (session.archived) continue;
         final path = normalizeWorkspacePath(session.cwd);
         if (path.isEmpty) continue;
         sessionsByPath.putIfAbsent(path, () => <AgentSession>[]).add(session);
@@ -28,7 +29,11 @@ class WorkspaceController {
 
     final records = sessionsByPath.entries.map((entry) {
       final sessions = List<AgentSession>.from(entry.value)
-        ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
+        ..sort((a, b) {
+          if (a.pinned && !b.pinned) return -1;
+          if (b.pinned && !a.pinned) return 1;
+          return b.displayTime.compareTo(a.displayTime);
+        });
       return WorkspaceRecord(
         path: entry.key,
         name: workspaceNameFromPath(entry.key),

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -5,6 +7,19 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 
 void main() {
+  Future<void> pumpWithWindowSize(
+    WidgetTester tester,
+    Widget widget,
+    Size size,
+  ) async {
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(widget);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('AppShell authenticates advertised method from agent menu', (
     tester,
   ) async {
@@ -32,5 +47,47 @@ void main() {
 
     expect(fake.lastAuthenticatedMethodId, 'browser');
     expect(controller.lastError, isNull);
+  });
+
+  testWidgets('AppShell reveals workspaces in the platform file browser', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/current',
+    );
+    addTearDown(controller.dispose);
+    final processCalls = <({String executable, List<String> arguments})>[];
+
+    await pumpWithWindowSize(
+      tester,
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          processRunner: (executable, arguments) async {
+            processCalls.add((executable: executable, arguments: arguments));
+            return ProcessResult(0, 0, '', '');
+          },
+        ),
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Show in Finder'));
+    await tester.pumpAndSettle();
+
+    expect(processCalls, hasLength(1));
+    if (Platform.isMacOS) {
+      expect(processCalls.single.executable, 'open');
+      expect(processCalls.single.arguments, ['-R', '/workspace/current']);
+    } else if (Platform.isWindows) {
+      expect(processCalls.single.executable, 'explorer');
+      expect(processCalls.single.arguments, ['/workspace/current']);
+    } else {
+      expect(processCalls.single.executable, 'xdg-open');
+      expect(processCalls.single.arguments, ['/workspace/current']);
+    }
   });
 }

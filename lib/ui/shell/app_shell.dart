@@ -28,6 +28,9 @@ import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../theme/app_design_tokens.dart';
 
+typedef AppShellProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
+
 class AppShell extends StatelessWidget {
   const AppShell({
     super.key,
@@ -44,8 +47,14 @@ class AppShell extends StatelessWidget {
     this.onSelectAgent,
     this.onSelectSession,
     this.onNewSession,
+    this.onNewSessionInWorkspace,
+    this.canForkSession,
+    this.onSessionMenuAction,
+    this.onCreateWorkspaceWorktree,
+    this.onArchiveWorkspaceSessions,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
+    this.processRunner,
   });
 
   final ChatController controller;
@@ -61,8 +70,28 @@ class AppShell extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final ValueChanged<AgentSession>? onSelectSession;
   final void Function(BuildContext context)? onNewSession;
+  final void Function(BuildContext context, WorkspaceRecord workspace)?
+  onNewSessionInWorkspace;
+  final bool Function(AgentSession session)? canForkSession;
+  final FutureOr<void> Function(
+    BuildContext context,
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  )?
+  onSessionMenuAction;
+  final FutureOr<void> Function(
+    BuildContext context,
+    WorkspaceRecord workspace,
+  )?
+  onCreateWorkspaceWorktree;
+  final FutureOr<void> Function(
+    BuildContext context,
+    WorkspaceRecord workspace,
+  )?
+  onArchiveWorkspaceSessions;
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
+  final AppShellProcessRunner? processRunner;
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +104,20 @@ class AppShell extends StatelessWidget {
             ? onNewSession == null
                   ? controller.newSession
                   : () => onNewSession!(context)
+            : null;
+        final ValueChanged<WorkspaceRecord>? startNewSessionInWorkspace =
+            sessionActionsEnabled
+            ? (workspace) {
+                if (onNewSessionInWorkspace != null) {
+                  onNewSessionInWorkspace!(context, workspace);
+                  return;
+                }
+                if (onNewSession != null) {
+                  onNewSession!(context);
+                  return;
+                }
+                unawaited(controller.newSession(cwd: workspace.path));
+              }
             : null;
         final canReconnect =
             sessionActionsEnabled &&
@@ -185,6 +228,8 @@ class AppShell extends StatelessWidget {
                                     currentWorkspace: currentWorkspace,
                                     currentSession: controller.currentSession,
                                     onNewSession: startNewSession,
+                                    onNewSessionInWorkspace:
+                                        startNewSessionInWorkspace,
                                     onResumeSession:
                                         controller.canResumeSessions
                                         ? () => _showResumeDialog(context)
@@ -192,9 +237,24 @@ class AppShell extends StatelessWidget {
                                     onSelectSession: sessionActionsEnabled
                                         ? onSelectSession
                                         : null,
+                                    canForkSession: canForkSession,
+                                    onSessionMenuAction:
+                                        onSessionMenuAction == null
+                                        ? null
+                                        : (session, action) =>
+                                              onSessionMenuAction!(
+                                                context,
+                                                session,
+                                                action,
+                                              ),
                                     onLoadWorkspaceSessions:
                                         canLoadWorkspaceSessions
                                         ? (_) async {
+                                            if (controller.isStreaming ||
+                                                controller
+                                                    .isSessionOperationRunning) {
+                                              return;
+                                            }
                                             await controller
                                                 .loadSessionCatalog();
                                           }
@@ -205,6 +265,22 @@ class AppShell extends StatelessWidget {
                                         workspace,
                                       ),
                                     ),
+                                    onCreateWorkspaceWorktree:
+                                        onCreateWorkspaceWorktree == null
+                                        ? null
+                                        : (workspace) =>
+                                              onCreateWorkspaceWorktree!(
+                                                context,
+                                                workspace,
+                                              ),
+                                    onArchiveWorkspaceSessions:
+                                        onArchiveWorkspaceSessions == null
+                                        ? null
+                                        : (workspace) =>
+                                              onArchiveWorkspaceSessions!(
+                                                context,
+                                                workspace,
+                                              ),
                                     stateStore: workspaceStateStore,
                                   ),
                                 ),
@@ -407,20 +483,20 @@ class AppShell extends StatelessWidget {
   ) async {
     try {
       if (Platform.isMacOS) {
-        final result = await Process.run('open', [workspace.path]);
+        final result = await _runProcess('open', ['-R', workspace.path]);
         if (result.exitCode != 0) {
           throw StateError(result.stderr.toString());
         }
         return;
       }
       if (Platform.isWindows) {
-        final result = await Process.run('explorer', [workspace.path]);
+        final result = await _runProcess('explorer', [workspace.path]);
         if (result.exitCode != 0) {
           throw StateError(result.stderr.toString());
         }
         return;
       }
-      final result = await Process.run('xdg-open', [workspace.path]);
+      final result = await _runProcess('xdg-open', [workspace.path]);
       if (result.exitCode != 0) throw StateError(result.stderr.toString());
     } catch (error) {
       if (!context.mounted) return;
@@ -428,6 +504,12 @@ class AppShell extends StatelessWidget {
         SnackBar(content: Text('Could not reveal workspace: $error')),
       );
     }
+  }
+
+  Future<ProcessResult> _runProcess(String executable, List<String> arguments) {
+    final runner = processRunner;
+    if (runner != null) return runner(executable, arguments);
+    return Process.run(executable, arguments);
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {

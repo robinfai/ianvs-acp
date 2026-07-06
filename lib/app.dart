@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
@@ -10,11 +11,14 @@ import 'acp/acp_permission_reviewer.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
+import 'ui/components/workspace_sidebar.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
+import 'workspace/workspace.dart';
 import 'workspace/workspace_sidebar_state_store.dart';
 
 typedef AgentServerDiscoverer =
@@ -26,6 +30,7 @@ typedef DiscoveredAgentServerWriter =
     );
 typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
+typedef SessionWindowOpener = Future<void> Function(List<String> args);
 
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
@@ -36,6 +41,10 @@ class AcpClientApp extends StatefulWidget {
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
+    this.initialResumeSessionId,
+    this.initialResumeCwd,
+    this.initialResumeAgentName,
+    this.openSessionWindow,
   });
 
   final ChatController? controller;
@@ -44,6 +53,10 @@ class AcpClientApp extends StatefulWidget {
   final AgentServerDiscoverer? discoverAgentServers;
   final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
   final AcpConfigWriter? writeConfig;
+  final String? initialResumeSessionId;
+  final String? initialResumeCwd;
+  final String? initialResumeAgentName;
+  final SessionWindowOpener? openSessionWindow;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -52,6 +65,9 @@ class AcpClientApp extends StatefulWidget {
 class _AcpClientAppState extends State<AcpClientApp> {
   static const String _initialResumeSessionId = String.fromEnvironment(
     'ACP_RESUME_SESSION_ID',
+  );
+  static const MethodChannel _deepLinkChannel = MethodChannel(
+    'ianvs_acp/deep_links',
   );
 
   late AcpClientConfig _config;
@@ -63,6 +79,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
+  final Set<String> _handledDeepLinks = <String>{};
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
@@ -75,8 +92,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
   @override
   void initState() {
     super.initState();
-    _config = widget.config;
-    _widgetConfigSignature = _configSignature(widget.config);
+    _config = _configWithInitialAgent(widget.config);
+    _widgetConfigSignature = _configSignature(_config);
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
       currentDirectory: Directory.current.path,
     );
@@ -86,11 +103,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
     } else {
       _controller = widget.controller!;
     }
-    if (_initialResumeSessionId.isNotEmpty) {
+    final initialStartupOptions = _initialStartupOptions;
+    if (initialStartupOptions.hasResumeSession) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(_controller.resumeSession(_initialResumeSessionId));
+        unawaited(_resumeFromStartupOptions(initialStartupOptions));
       });
     }
+    _setupDeepLinkHandling();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_maybeDiscoverAgents());
     });
@@ -100,13 +119,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
   void didUpdateWidget(covariant AcpClientApp oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    final nextConfigSignature = _configSignature(widget.config);
+    final nextWidgetConfig = _configWithInitialAgent(widget.config);
+    final nextConfigSignature = _configSignature(nextWidgetConfig);
     final configChanged = nextConfigSignature != _widgetConfigSignature;
     final controllerChanged = oldWidget.controller != widget.controller;
 
     if (controllerChanged) {
       if (oldWidget.controller == null) _disposeCachedControllers();
-      _config = widget.config;
+      _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       if (widget.controller == null) {
         _controller = _cachedControllerFor(_config);
@@ -122,7 +142,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
-    _config = widget.config;
+    _config = nextWidgetConfig;
     _widgetConfigSignature = nextConfigSignature;
     if (widget.controller != null) {
       _controller = widget.controller!;
@@ -134,12 +154,93 @@ class _AcpClientAppState extends State<AcpClientApp> {
     unawaited(_hydrateSessionIndex());
   }
 
+  StartupOptions get _initialStartupOptions {
+    final runtime = widget.initialResumeSessionId?.trim();
+    return StartupOptions(
+      resumeSessionId: runtime != null && runtime.isNotEmpty
+          ? runtime
+          : _initialResumeSessionId,
+      resumeCwd: _trimmedOrNull(widget.initialResumeCwd),
+      resumeAgentName: _trimmedOrNull(widget.initialResumeAgentName),
+    );
+  }
+
+  AcpClientConfig _configWithInitialAgent(AcpClientConfig config) {
+    final agentName = widget.initialResumeAgentName?.trim();
+    if (agentName == null || agentName.isEmpty) return config;
+    try {
+      return config.withActiveAgentServer(agentName);
+    } catch (_) {
+      return config;
+    }
+  }
+
   @override
   void dispose() {
     if (widget.controller == null) {
+      _deepLinkChannel.setMethodCallHandler(null);
       _disposeCachedControllers();
     }
     super.dispose();
+  }
+
+  void _setupDeepLinkHandling() {
+    if (widget.controller != null) return;
+    _deepLinkChannel.setMethodCallHandler((call) async {
+      if (call.method != 'openDeepLink') return null;
+      final rawLink = call.arguments;
+      if (rawLink is String) await _handleDeepLink(rawLink);
+      return null;
+    });
+    unawaited(_loadInitialDeepLinks());
+  }
+
+  Future<void> _loadInitialDeepLinks() async {
+    try {
+      final rawLinks = await _deepLinkChannel.invokeMethod<List<Object?>>(
+        'getInitialDeepLinks',
+      );
+      if (rawLinks == null) return;
+      for (final rawLink in rawLinks) {
+        if (rawLink is String) await _handleDeepLink(rawLink);
+      }
+    } on MissingPluginException {
+      return;
+    }
+  }
+
+  Future<void> _handleDeepLink(String rawLink) async {
+    final normalizedLink = rawLink.trim();
+    if (normalizedLink.isEmpty || !_handledDeepLinks.add(normalizedLink)) {
+      return;
+    }
+    final options = StartupOptions.fromDeepLink(normalizedLink);
+    if (options == null || !options.hasResumeSession) return;
+    await _resumeFromStartupOptions(options);
+  }
+
+  Future<void> _resumeFromStartupOptions(StartupOptions options) async {
+    final sessionId = _trimmedOrNull(options.resumeSessionId);
+    if (sessionId == null || !mounted) return;
+
+    var controller = _controller;
+    final agentName = _trimmedOrNull(options.resumeAgentName);
+    if (widget.controller == null && agentName != null) {
+      final config = _configForAgent(_config, agentName);
+      if (config == null) {
+        _showSnackBar('Could not select agent "$agentName".');
+        return;
+      }
+      controller = _activateAgent(config);
+    }
+
+    await controller.resumeSession(sessionId, cwd: options.resumeCwd);
+    if (mounted) setState(() {});
+  }
+
+  String? _trimmedOrNull(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
   @override
@@ -213,7 +314,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
         canSwitchAgent: widget.controller == null,
         sessionControllers: _sessionControllers,
         onNewSession: (context) => unawaited(_startNewSession(context)),
+        onNewSessionInWorkspace: (context, workspace) =>
+            unawaited(_startNewSession(context, initialCwd: workspace.path)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
+        canForkSession: _canForkSession,
+        onSessionMenuAction: (context, session, action) =>
+            unawaited(_handleSessionMenuAction(context, session, action)),
+        onCreateWorkspaceWorktree: (context, workspace) =>
+            unawaited(_createWorkspaceWorktree(context, workspace)),
+        onArchiveWorkspaceSessions: (context, workspace) =>
+            _archiveWorkspaceSessions(workspace),
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -326,6 +436,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (widget.controller != null) return;
     final serial = ++_sessionIndexHydrationSerial;
     _sessionIndexHydrated = false;
+    _lastSessionIndexSignature = null;
 
     final sessions = await _workspaceStateStore.loadSessionIndex();
     if (!mounted ||
@@ -367,8 +478,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
       createdAt: session.createdAt,
       additionalDirectories: session.additionalDirectories,
       title: session.title,
+      titleOverride: session.titleOverride,
       updatedAt: session.updatedAt,
       agentName: agentName,
+      pinned: session.pinned,
+      archived: session.archived,
+      unread: session.unread,
     );
   }
 
@@ -441,8 +556,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
               'createdAt': session.createdAt.toIso8601String(),
               'updatedAt': session.updatedAt?.toIso8601String(),
               'title': session.title,
+              'titleOverride': session.titleOverride,
               'agentName': session.agentName,
               'additionalDirectories': session.additionalDirectories,
+              'pinned': session.pinned,
+              'archived': session.archived,
+              'unread': session.unread,
             },
           )
           .toList(growable: false),
@@ -475,7 +594,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return nextConfig;
   }
 
-  Future<void> _startNewSession(BuildContext dialogContext) async {
+  Future<void> _startNewSession(
+    BuildContext dialogContext, {
+    String? initialCwd,
+  }) async {
     if (_controller.isStreaming || _controller.isSessionOperationRunning) {
       return;
     }
@@ -488,7 +610,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
             ? agentServers
             : const <AgentServerConfig>[],
         currentAgentName: _config.agentName,
-        initialCwd: _controller.currentSession?.cwd ?? _controller.cwd,
+        initialCwd:
+            _trimmedOrNull(initialCwd) ??
+            _controller.currentSession?.cwd ??
+            _controller.cwd,
       ),
     );
     if (selection == null) return;
@@ -551,6 +676,452 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (mounted) setState(() {});
   }
 
+  bool _canForkSession(AgentSession session) {
+    final controller = _controllerForSession(session);
+    return controller.supportsSessionFork &&
+        !controller.isStreaming &&
+        !controller.isSessionOperationRunning;
+  }
+
+  Future<void> _handleSessionMenuAction(
+    BuildContext context,
+    AgentSession session,
+    WorkspaceSessionMenuAction action,
+  ) async {
+    final controller = _controllerForSession(session);
+    switch (action) {
+      case WorkspaceSessionMenuAction.togglePinned:
+        controller.setSessionPinned(session.id, !session.pinned);
+        if (mounted) setState(() {});
+      case WorkspaceSessionMenuAction.rename:
+        await _renameSession(context, controller, session);
+      case WorkspaceSessionMenuAction.archive:
+        final snapshot = controller.archiveSessionLocally(session.id);
+        if (snapshot == null) return;
+        _showUndoableSnackBar('Archived "${session.displayTitle}".', () {
+          controller.restoreArchivedSessionLocally(snapshot);
+          if (mounted) setState(() {});
+        });
+        if (mounted) setState(() {});
+      case WorkspaceSessionMenuAction.toggleUnread:
+        controller.setSessionUnread(session.id, !session.unread);
+        if (mounted) setState(() {});
+      case WorkspaceSessionMenuAction.revealInFinder:
+        await _revealPathInFinder(context, session.cwd, label: 'session');
+      case WorkspaceSessionMenuAction.copyWorkingDirectory:
+        await _copyToClipboard(session.cwd, label: 'Working directory');
+      case WorkspaceSessionMenuAction.copySessionId:
+        await _copyToClipboard(session.id, label: 'Session ID');
+      case WorkspaceSessionMenuAction.copyDeepLink:
+        await _copyToClipboard(
+          _deepLinkForSession(session),
+          label: 'Deep link',
+        );
+      case WorkspaceSessionMenuAction.forkLocally:
+        await _forkSession(session);
+      case WorkspaceSessionMenuAction.forkToNewWorktree:
+        await _forkSessionToNewWorktree(context, session);
+      case WorkspaceSessionMenuAction.openInNewWindow:
+        await _openSessionInNewWindow(session);
+    }
+  }
+
+  void _archiveWorkspaceSessions(WorkspaceRecord workspace) {
+    final workspacePath = normalizeWorkspacePath(workspace.path);
+    final snapshotsByController =
+        <ChatController, List<ArchivedSessionSnapshot>>{};
+    var archivedCount = 0;
+    for (final controller in _sessionControllers) {
+      for (final session in controller.sessions.toList(growable: false)) {
+        if (normalizeWorkspacePath(session.cwd) != workspacePath) continue;
+        if (session.archived) continue;
+        final snapshot = controller.archiveSessionLocally(session.id);
+        if (snapshot == null) continue;
+        snapshotsByController
+            .putIfAbsent(controller, () => <ArchivedSessionSnapshot>[])
+            .add(snapshot);
+        archivedCount += 1;
+      }
+    }
+    if (archivedCount > 0) {
+      _showUndoableSnackBar('Archived $archivedCount conversation(s).', () {
+        for (final entry in snapshotsByController.entries) {
+          for (final snapshot in entry.value) {
+            entry.key.restoreArchivedSessionLocally(snapshot);
+          }
+        }
+        if (mounted) setState(() {});
+      });
+    }
+    if (mounted) setState(() {});
+  }
+
+  ChatController _controllerForSession(AgentSession session) {
+    final agentName = session.agentName?.trim();
+    if (widget.controller == null &&
+        agentName != null &&
+        agentName.isNotEmpty) {
+      final config = _configForAgent(_config, agentName);
+      if (config != null) return _cachedControllerFor(config);
+    }
+    return _controller;
+  }
+
+  Future<void> _renameSession(
+    BuildContext context,
+    ChatController controller,
+    AgentSession session,
+  ) async {
+    var draftTitle = session.displayTitle;
+    final nextTitle = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Rename Conversation'),
+          content: SizedBox(
+            width: 340,
+            child: TextFormField(
+              initialValue: draftTitle,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Display name',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => draftTitle = value,
+              onFieldSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(draftTitle),
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
+    final trimmed = nextTitle?.trim();
+    if (trimmed == null || trimmed.isEmpty) return;
+    controller.renameSession(session.id, trimmed);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _forkSession(AgentSession session) async {
+    if (!_canForkSession(session)) {
+      _showSnackBar('This agent does not advertise session/fork.');
+      return;
+    }
+
+    var controller = _controllerForSession(session);
+    final agentName = session.agentName?.trim();
+    if (widget.controller == null &&
+        agentName != null &&
+        agentName.isNotEmpty &&
+        agentName != _config.agentName) {
+      final config = _configForAgent(_config, agentName);
+      if (config == null) {
+        _showSnackBar('Could not select agent "$agentName".');
+        return;
+      }
+      controller = _activateAgent(config);
+    }
+
+    await controller.forkSession(session);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _forkSessionToNewWorktree(
+    BuildContext context,
+    AgentSession session,
+  ) async {
+    if (!_canForkSession(session)) {
+      _showSnackBar('This agent does not advertise session/fork.');
+      return;
+    }
+
+    final worktreePath = await _promptWorktreePath(context, session);
+    if (worktreePath == null) return;
+
+    try {
+      final gitRoot = await _gitRootFor(session.cwd);
+      final branchName = _worktreeBranchName(
+        session.cwd,
+        '${session.shortId}-fork',
+      );
+      final result = await Process.run('git', [
+        '-C',
+        gitRoot,
+        'worktree',
+        'add',
+        '-b',
+        branchName,
+        worktreePath,
+        'HEAD',
+      ]);
+      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+
+      await _forkSession(session.copyWith(cwd: worktreePath));
+    } catch (error) {
+      _showSnackBar('Could not fork to new worktree: $error');
+    }
+  }
+
+  Future<void> _createWorkspaceWorktree(
+    BuildContext context,
+    WorkspaceRecord workspace,
+  ) async {
+    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+      return;
+    }
+
+    final worktreePath = await _promptWorkspaceWorktreePath(context, workspace);
+    if (worktreePath == null) return;
+
+    try {
+      final gitRoot = await _gitRootFor(workspace.path);
+      final branchName = _worktreeBranchName(workspace.path, 'worktree');
+      final result = await Process.run('git', [
+        '-C',
+        gitRoot,
+        'worktree',
+        'add',
+        '-b',
+        branchName,
+        worktreePath,
+        'HEAD',
+      ]);
+      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+
+      await _controller.newSession(cwd: worktreePath);
+      _showSnackBar('Created worktree "$branchName".');
+      if (mounted) setState(() {});
+    } catch (error) {
+      _showSnackBar('Could not create worktree: $error');
+    }
+  }
+
+  Future<String?> _promptWorktreePath(
+    BuildContext context,
+    AgentSession session,
+  ) async {
+    var draftPath = _defaultWorktreePath(session);
+    final nextPath = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Fork to New Worktree'),
+          content: SizedBox(
+            width: 440,
+            child: TextFormField(
+              initialValue: draftPath,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Worktree path',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => draftPath = value,
+              onFieldSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(draftPath),
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+    final trimmed = nextPath?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<String?> _promptWorkspaceWorktreePath(
+    BuildContext context,
+    WorkspaceRecord workspace,
+  ) async {
+    var draftPath = _defaultWorkspaceWorktreePath(workspace);
+    final nextPath = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Create Permanent Worktree'),
+          content: SizedBox(
+            width: 440,
+            child: TextFormField(
+              initialValue: draftPath,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Worktree path',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => draftPath = value,
+              onFieldSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(draftPath),
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+    final trimmed = nextPath?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  String _defaultWorktreePath(AgentSession session) {
+    final normalized = normalizeWorkspacePath(session.cwd);
+    final directory = Directory(normalized);
+    final parent = directory.parent.path;
+    final workspaceName = workspaceNameFromPath(normalized);
+    return _joinPath(parent, '$workspaceName-${session.shortId}-fork');
+  }
+
+  String _defaultWorkspaceWorktreePath(WorkspaceRecord workspace) {
+    final normalized = normalizeWorkspacePath(workspace.path);
+    final directory = Directory(normalized);
+    final parent = directory.parent.path;
+    final workspaceName = workspaceNameFromPath(normalized);
+    return _joinPath(parent, '$workspaceName-worktree');
+  }
+
+  Future<String> _gitRootFor(String cwd) async {
+    final result = await Process.run('git', [
+      '-C',
+      cwd,
+      'rev-parse',
+      '--show-toplevel',
+    ]);
+    if (result.exitCode != 0) {
+      throw StateError(result.stderr.toString());
+    }
+    final root = result.stdout.toString().trim();
+    if (root.isEmpty) throw StateError('No git root found for $cwd.');
+    return root;
+  }
+
+  String _worktreeBranchName(String workspacePath, String suffix) {
+    final workspaceName = workspaceNameFromPath(workspacePath)
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9._-]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    final prefix = workspaceName.isEmpty ? 'session' : workspaceName;
+    return 'codex/$prefix-$suffix-${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  String _joinPath(String directory, String basename) {
+    if (directory.endsWith(Platform.pathSeparator)) {
+      return '$directory$basename';
+    }
+    return '$directory${Platform.pathSeparator}$basename';
+  }
+
+  Future<void> _revealPathInFinder(
+    BuildContext context,
+    String path, {
+    required String label,
+  }) async {
+    try {
+      final target = path.trim();
+      if (target.isEmpty) return;
+      if (Platform.isMacOS) {
+        final result = await Process.run('open', ['-R', target]);
+        if (result.exitCode != 0) throw StateError(result.stderr.toString());
+        return;
+      }
+      if (Platform.isWindows) {
+        final result = await Process.run('explorer', [target]);
+        if (result.exitCode != 0) throw StateError(result.stderr.toString());
+        return;
+      }
+      final result = await Process.run('xdg-open', [target]);
+      if (result.exitCode != 0) throw StateError(result.stderr.toString());
+    } catch (error) {
+      if (!context.mounted) return;
+      _showSnackBar('Could not reveal $label: $error');
+    }
+  }
+
+  Future<void> _copyToClipboard(String text, {required String label}) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    _showSnackBar('$label copied.');
+  }
+
+  String _deepLinkForSession(AgentSession session) {
+    return Uri(
+      scheme: 'ianvs-acp',
+      host: 'session',
+      queryParameters: <String, String>{
+        'id': session.id,
+        'cwd': session.cwd,
+        if (session.agentName?.trim().isNotEmpty == true)
+          'agent': session.agentName!.trim(),
+      },
+    ).toString();
+  }
+
+  Future<void> _openSessionInNewWindow(AgentSession session) async {
+    final args = <String>[
+      '--resume-session-id',
+      session.id,
+      '--resume-cwd',
+      session.cwd,
+      if (session.agentName?.trim().isNotEmpty == true) ...[
+        '--resume-agent',
+        session.agentName!.trim(),
+      ],
+    ];
+
+    try {
+      final injectedOpener = widget.openSessionWindow;
+      if (injectedOpener != null) {
+        await injectedOpener(List<String>.unmodifiable(args));
+        return;
+      }
+
+      if (Platform.isMacOS) {
+        final bundlePath = _macAppBundlePath(Platform.resolvedExecutable);
+        if (bundlePath != null) {
+          final result = await Process.run('open', [
+            '-n',
+            bundlePath,
+            '--args',
+            ...args,
+          ]);
+          if (result.exitCode != 0) throw StateError(result.stderr.toString());
+          return;
+        }
+      }
+
+      await Process.start(Platform.resolvedExecutable, args);
+    } catch (error) {
+      _showSnackBar('Could not open session in a new window: $error');
+    }
+  }
+
+  String? _macAppBundlePath(String executablePath) {
+    const marker = '.app/Contents/MacOS/';
+    final index = executablePath.indexOf(marker);
+    if (index == -1) return null;
+    return executablePath.substring(0, index + '.app'.length);
+  }
+
   ChatController _activateAgent(AcpClientConfig nextConfig) {
     final controller = _cachedControllerFor(nextConfig);
     setState(() {
@@ -563,6 +1134,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
   void _showSnackBar(String message) {
     if (!mounted) return;
     _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showUndoableSnackBar(String message, VoidCallback onUndo) {
+    if (!mounted) return;
+    _messengerKey.currentState?.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        action: SnackBarAction(label: 'Undo', onPressed: onUndo),
+      ),
+    );
   }
 
   DartAcpAgentClient _agentClient(AcpClientConfig config) {

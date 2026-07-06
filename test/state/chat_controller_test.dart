@@ -327,18 +327,225 @@ void main() {
         cwd: '/workspace/project',
         createdAt: DateTime(2026, 7, 1, 9),
         title: 'Indexed workspace session',
+        titleOverride: 'Renamed indexed session',
         updatedAt: DateTime(2026, 7, 1, 10),
         agentName: 'Codex',
+        pinned: true,
+        unread: true,
       ),
     ]);
 
     expect(controller.sessions, hasLength(1));
     expect(controller.sessions.single.id, 'indexed-session');
     expect(controller.sessions.single.cwd, '/workspace/project');
-    expect(
-      controller.sessions.single.displayTitle,
-      'Indexed workspace session',
+    expect(controller.sessions.single.displayTitle, 'Renamed indexed session');
+    expect(controller.sessions.single.pinned, isTrue);
+    expect(controller.sessions.single.unread, isTrue);
+  });
+
+  test('merge session index does not archive the current session', () {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
     );
+    addTearDown(controller.dispose);
+    final current = AgentSession(
+      id: 'active-session',
+      cwd: '/workspace/project',
+      createdAt: DateTime(2026, 7, 1, 9),
+      title: 'Runtime title',
+      updatedAt: DateTime(2026, 7, 2, 9),
+      agentName: 'Codex',
+    );
+    controller.currentSession = current;
+    controller.sessions.add(current);
+
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'active-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 1, 9),
+        title: 'Stale indexed title',
+        titleOverride: 'Local title',
+        updatedAt: DateTime(2026, 7, 1, 10),
+        agentName: 'Codex',
+        pinned: true,
+        archived: true,
+        unread: true,
+      ),
+    ]);
+
+    expect(controller.currentSession?.title, 'Runtime title');
+    expect(controller.currentSession?.displayTitle, 'Local title');
+    expect(controller.currentSession?.pinned, isTrue);
+    expect(controller.currentSession?.archived, isFalse);
+    expect(controller.currentSession?.unread, isFalse);
+    expect(controller.currentSession?.updatedAt, DateTime(2026, 7, 2, 9));
+  });
+
+  test('local session menu metadata updates sessions and current session', () {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    final session = AgentSession(
+      id: 'session-a',
+      cwd: '/workspace/project',
+      createdAt: DateTime(2026, 7, 1, 9),
+      title: 'Agent title',
+      agentName: 'Codex',
+    );
+    controller.currentSession = session;
+    controller.sessions.add(session);
+
+    controller.renameSession('session-a', 'Local title');
+    controller.setSessionPinned('session-a', true);
+    controller.setSessionUnread('session-a', true);
+    controller.setSessionArchived('session-a', true);
+
+    expect(controller.currentSession?.displayTitle, 'Local title');
+    expect(controller.sessions.single.pinned, isTrue);
+    expect(controller.sessions.single.unread, isTrue);
+    expect(controller.sessions.single.archived, isTrue);
+  });
+
+  test('local archive detaches and restores the current session', () {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    final session = AgentSession(
+      id: 'session-a',
+      cwd: '/workspace/project',
+      createdAt: DateTime(2026, 7, 1, 9),
+      title: 'Agent title',
+      agentName: 'Codex',
+      unread: true,
+    );
+    controller.currentSession = session;
+    controller.sessions.add(session);
+    controller.messages.add(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'Existing reply'),
+    );
+    controller.status = app_state.ConnectionStatus.sessionReady;
+
+    final snapshot = controller.archiveSessionLocally('session-a');
+
+    expect(snapshot, isNotNull);
+    expect(controller.currentSession, isNull);
+    expect(controller.messages, isEmpty);
+    expect(controller.status, app_state.ConnectionStatus.connected);
+    expect(controller.sessions.single.archived, isTrue);
+    expect(controller.sessions.single.unread, isFalse);
+
+    controller.restoreArchivedSessionLocally(snapshot!);
+
+    expect(controller.currentSession?.id, 'session-a');
+    expect(controller.currentSession?.archived, isFalse);
+    expect(controller.sessions.single.archived, isFalse);
+    expect(controller.sessions.single.unread, isTrue);
+    expect(controller.messages.single.text, 'Existing reply');
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
+  test('sending after local archive starts a new session', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    final archivedSessionId = controller.currentSession!.id;
+    final snapshot = controller.archiveSessionLocally(archivedSessionId);
+
+    expect(snapshot, isNotNull);
+    expect(controller.currentSession, isNull);
+
+    await controller.sendPrompt('Continue somewhere else');
+    await pumpEventQueue(times: 12);
+
+    expect(controller.currentSession?.id, 'fake-session-2');
+    expect(fake.sessionCount, 2);
+    expect(fake.lastPrompt, 'Continue somewhere else');
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == archivedSessionId)
+          .archived,
+      isTrue,
+    );
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == 'fake-session-2')
+          .archived,
+      isFalse,
+    );
+  });
+
+  test('restore after switching sessions keeps the active session', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    final archivedSessionId = controller.currentSession!.id;
+    final snapshot = controller.archiveSessionLocally(archivedSessionId);
+    await controller.newSession();
+    final activeSessionId = controller.currentSession!.id;
+
+    controller.restoreArchivedSessionLocally(snapshot!);
+
+    expect(controller.currentSession?.id, activeSessionId);
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == archivedSessionId)
+          .archived,
+      isFalse,
+    );
+  });
+
+  test('session catalog preserves local sidebar metadata', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'session-a',
+        cwd: '/workspace/project-a',
+        createdAt: DateTime(2026, 5, 1, 9),
+        title: 'Previous agent title',
+        titleOverride: 'Local title',
+        agentName: 'Codex',
+        pinned: true,
+        archived: true,
+        unread: true,
+      ),
+    ]);
+
+    await controller.connect();
+    await controller.loadSessionCatalog();
+
+    expect(
+      controller.sessions.single.title,
+      'Resume this project conversation',
+    );
+    expect(controller.sessions.single.displayTitle, 'Local title');
+    expect(controller.sessions.single.pinned, isTrue);
+    expect(controller.sessions.single.archived, isTrue);
+    expect(controller.sessions.single.unread, isTrue);
   });
 
   test('resume session replays history into timeline', () async {
@@ -398,6 +605,40 @@ void main() {
     expect(controller.currentSession?.cwd, '/other/project');
     expect(fake.lastResumeCwd, '/other/project');
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
+  });
+
+  test('resume session makes archived local session visible again', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'archived-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 1, 9),
+        title: 'Archived session',
+        titleOverride: 'Local archived title',
+        agentName: 'Codex',
+        pinned: true,
+        archived: true,
+        unread: true,
+      ),
+    ]);
+
+    await controller.resumeSession(
+      'archived-session',
+      cwd: '/workspace/project',
+    );
+
+    expect(controller.currentSession?.id, 'archived-session');
+    expect(controller.currentSession?.displayTitle, 'Local archived title');
+    expect(controller.currentSession?.pinned, isTrue);
+    expect(controller.currentSession?.archived, isFalse);
+    expect(controller.currentSession?.unread, isFalse);
+    expect(controller.sessions.single.archived, isFalse);
   });
 
   test('failed resume restores previous active session state', () async {
