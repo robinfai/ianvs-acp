@@ -439,7 +439,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   }) {
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
-        content: Text('Removed "${_workspaceName(workspace)}".'),
+        content: Text('Hidden "${_workspaceName(workspace)}".'),
         action: SnackBarAction(
           label: 'Undo',
           onPressed: () {
@@ -1085,7 +1085,7 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
     _workspaceMenuItem(
       value: _WorkspaceMenuAction.remove,
       icon: Icons.close_rounded,
-      label: 'Remove',
+      label: 'Hide from Sidebar',
       enabled: canRemove,
       destructive: true,
     ),

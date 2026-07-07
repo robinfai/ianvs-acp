@@ -692,7 +692,7 @@ void main() {
     expect(find.text('Create Permanent Worktree'), findsOneWidget);
     expect(find.text('Rename Project'), findsOneWidget);
     expect(find.text('Archive Conversations'), findsOneWidget);
-    expect(find.text('Remove'), findsOneWidget);
+    expect(find.text('Hide from Sidebar'), findsOneWidget);
 
     await tester.tap(find.text('Create Permanent Worktree'));
     await tester.pumpAndSettle();
@@ -800,7 +800,7 @@ void main() {
     expect(find.text('Create Permanent Worktree'), findsOneWidget);
     expect(find.text('Rename Project'), findsOneWidget);
     expect(find.text('Archive Conversations'), findsOneWidget);
-    expect(find.text('Remove'), findsOneWidget);
+    expect(find.text('Hide from Sidebar'), findsOneWidget);
 
     await tester.tap(find.text('Show in Finder'));
     await tester.pumpAndSettle();
@@ -1186,7 +1186,7 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Remove'));
+    await tester.tap(find.text('Hide from Sidebar'));
     await tester.pumpAndSettle();
 
     expect(find.text('other'), findsNothing);

@@ -13,8 +13,17 @@ import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
 import 'connection_state.dart';
+import '../tasks/egress_policy.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
+
+enum ChatPermissionEventType { requested, resolved }
+
+typedef ChatAgentEventObserver =
+    FutureOr<void> Function(AgentSession? session, AgentEvent event);
+
+typedef ChatPermissionEventObserver =
+    FutureOr<void> Function(ChatPermissionEvent event);
 
 const List<String> _toolCallIdMetadataKeys = [
   'toolCallId',
@@ -36,6 +45,27 @@ class ChatMessage {
   String text;
   final DateTime timestamp;
   final Map<String, Object?> metadata;
+}
+
+class ChatPermissionEvent {
+  const ChatPermissionEvent.requested(this.request)
+    : type = ChatPermissionEventType.requested,
+      decision = null,
+      decisionSource = null,
+      status = AcpPermissionAuditStatus.pending;
+
+  const ChatPermissionEvent.resolved(
+    this.request, {
+    required this.decision,
+    required this.decisionSource,
+    required this.status,
+  }) : type = ChatPermissionEventType.resolved;
+
+  final ChatPermissionEventType type;
+  final AcpPermissionRequest request;
+  final AcpPermissionDecision? decision;
+  final AcpPermissionDecisionSource? decisionSource;
+  final AcpPermissionAuditStatus status;
 }
 
 class ArchivedSessionSnapshot {
@@ -138,6 +168,10 @@ class ChatController extends ChangeNotifier {
   final Set<String> _reviewingPermissionRequestIds = <String>{};
   final Set<String> _retiredSessionIds = <String>{};
   final Set<String> _localUnstartedSessionIds = <String>{};
+  final List<ChatAgentEventObserver> _agentEventObservers =
+      <ChatAgentEventObserver>[];
+  final List<ChatPermissionEventObserver> _permissionEventObservers =
+      <ChatPermissionEventObserver>[];
   final Map<String, _SessionViewSnapshot> _sessionViewSnapshots =
       <String, _SessionViewSnapshot>{};
   String? lastError;
@@ -232,6 +266,18 @@ class ChatController extends ChangeNotifier {
     await _runSessionOperation(() async {
       await _connectWithStatus(ConnectionStatus.connecting);
     });
+  }
+
+  VoidCallback addAgentEventObserver(ChatAgentEventObserver observer) {
+    _agentEventObservers.add(observer);
+    return () => _agentEventObservers.remove(observer);
+  }
+
+  VoidCallback addPermissionEventObserver(
+    ChatPermissionEventObserver observer,
+  ) {
+    _permissionEventObservers.add(observer);
+    return () => _permissionEventObservers.remove(observer);
   }
 
   Future<void> newSession({String? cwd}) async {
@@ -1064,6 +1110,7 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handleAgentEvent(AgentEvent event, {bool notify = true}) {
+    _notifyAgentEventObservers(event);
     switch (event.type) {
       case AgentEventType.userMessage:
         messages.add(
@@ -1149,6 +1196,55 @@ class ChatController extends ChangeNotifier {
     return Map.unmodifiable(merged);
   }
 
+  void _notifyAgentEventObservers(AgentEvent event) {
+    if (_agentEventObservers.isEmpty) return;
+    final session = currentSession;
+    for (final observer in List<ChatAgentEventObserver>.from(
+      _agentEventObservers,
+    )) {
+      unawaited(
+        Future<void>.sync(() => observer(session, event)).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'ianvs_acp',
+              context: ErrorDescription('while notifying an agent observer'),
+            ),
+          );
+        }),
+      );
+    }
+  }
+
+  void _notifyPermissionEventObservers(ChatPermissionEvent event) {
+    if (_permissionEventObservers.isEmpty) return;
+    for (final observer in List<ChatPermissionEventObserver>.from(
+      _permissionEventObservers,
+    )) {
+      unawaited(
+        Future<void>.sync(() => observer(event)).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'ianvs_acp',
+              context: ErrorDescription(
+                'while notifying a permission observer',
+              ),
+            ),
+          );
+        }),
+      );
+    }
+  }
+
   void _handlePermissionRequest(AcpPermissionRequest request) {
     if (_hasDeliveredPermissionDecision(request.id)) return;
 
@@ -1187,6 +1283,7 @@ class ChatController extends ChangeNotifier {
     }
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
+    _notifyPermissionEventObservers(ChatPermissionEvent.requested(request));
     _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
   }
@@ -1238,6 +1335,8 @@ class ChatController extends ChangeNotifier {
   }
 
   void _resolvePendingPermissionForPolicy(AcpPermissionRequest request) {
+    if (_holdEgressSensitivePermissionForManualReview(request)) return;
+
     switch (toolCallExecutionPolicy) {
       case AcpToolCallExecutionPolicy.defaultPermissions:
         return;
@@ -1265,6 +1364,28 @@ class ChatController extends ChangeNotifier {
         );
         return;
     }
+  }
+
+  bool _holdEgressSensitivePermissionForManualReview(
+    AcpPermissionRequest request,
+  ) {
+    final match = egressPolicyMatchForPermission(request);
+    if (match == null) return false;
+
+    _recordPermissionReview(
+      request.id,
+      AcpPermissionReviewResult(
+        risk: 'egress',
+        rationale: 'Export-sensitive command requires manual approval.',
+        reviewer: 'egress-policy',
+        details: <String, Object?>{
+          'egressSensitive': true,
+          'egressReason': match.reason,
+          'commandLine': match.commandLine,
+        },
+      ),
+    );
+    return true;
   }
 
   Future<void> _resolvePermissionRequest(
@@ -1431,11 +1552,21 @@ class ChatController extends ChangeNotifier {
       (entry) => entry.request.id == requestId,
     );
     if (index == -1) return;
+    final request = _permissionHistory[index].request;
+    final status = _permissionAuditStatus(decision);
     _permissionHistory[index] = _permissionHistory[index].copyWith(
       status: _permissionAuditStatus(decision),
       resolvedAt: DateTime.now(),
       decisionSource: source,
       reviewResult: reviewResult,
+    );
+    _notifyPermissionEventObservers(
+      ChatPermissionEvent.resolved(
+        request,
+        decision: decision,
+        decisionSource: source,
+        status: status,
+      ),
     );
   }
 

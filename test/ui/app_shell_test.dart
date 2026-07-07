@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
+import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/shell/app_shell.dart';
 
 void _noop() {}
 
@@ -330,5 +334,100 @@ void main() {
     expect(find.text('Codex'), findsNothing);
     expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
+  });
+
+  testWidgets('AppShell loads session catalogs for every controller', (
+    tester,
+  ) async {
+    final codexClient = FakeAgentClient();
+    final piClient = FakeAgentClient();
+    final codex = ChatController(
+      client: codexClient,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final pi = ChatController(
+      client: piClient,
+      cwd: '/workspace/app',
+      agentName: 'pi ACP',
+    );
+    addTearDown(codex.dispose);
+    addTearDown(pi.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: codex,
+          agentName: 'Codex',
+          sessionControllers: [codex, pi],
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(codexClient.connected, isTrue);
+    expect(piClient.connected, isTrue);
+    expect(codex.sessions.map((session) => session.id), contains('session-a'));
+    expect(pi.sessions.map((session) => session.id), contains('session-a'));
+  });
+
+  testWidgets('AppShell resumes sessions from another agent', (tester) async {
+    final codexClient = FakeAgentClient(
+      supportsListSessions: false,
+      supportsLoadSession: false,
+    );
+    final piClient = FakeAgentClient();
+    final codex = ChatController(
+      client: codexClient,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final pi = ChatController(
+      client: piClient,
+      cwd: '/workspace/app',
+      agentName: 'pi ACP',
+    );
+    AgentSession? selectedSession;
+    addTearDown(codex.dispose);
+    addTearDown(pi.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: codex,
+          agentName: 'Codex',
+          sessionControllers: [codex, pi],
+          onSelectSession: (session) => selectedSession = session,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('pi ACP - Resume this project conversation'),
+      findsWidgets,
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+
+    expect(selectedSession?.agentName, 'pi ACP');
+    expect(selectedSession?.id, 'session-a');
+    expect(selectedSession?.cwd, '/workspace/project-a');
   });
 }

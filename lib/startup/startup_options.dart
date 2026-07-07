@@ -3,14 +3,21 @@ class StartupOptions {
     this.resumeSessionId,
     this.resumeCwd,
     this.resumeAgentName,
+    this.taskId,
   });
 
   final String? resumeSessionId;
   final String? resumeCwd;
   final String? resumeAgentName;
+  final String? taskId;
 
   bool get hasResumeSession {
     final id = resumeSessionId?.trim();
+    return id != null && id.isNotEmpty;
+  }
+
+  bool get hasTaskLink {
+    final id = taskId?.trim();
     return id != null && id.isNotEmpty;
   }
 
@@ -23,15 +30,22 @@ class StartupOptions {
       resumeCwd: _argValue(args, '--resume-cwd') ?? deepLinkOptions?.resumeCwd,
       resumeAgentName:
           _argValue(args, '--resume-agent') ?? deepLinkOptions?.resumeAgentName,
+      taskId: deepLinkOptions?.taskId,
     );
   }
 
   static StartupOptions? fromDeepLink(String rawLink) {
     final uri = Uri.tryParse(rawLink.trim());
     if (uri == null || uri.scheme != 'ianvs-acp') return null;
-    if (uri.host != 'session') return null;
 
     final query = uri.queryParameters;
+    if (uri.host == 'task' || uri.host == 'task-review') {
+      final taskId = _trimmedOrNull(query['id'] ?? query['task_id']);
+      if (taskId == null) return null;
+      return StartupOptions(taskId: taskId);
+    }
+
+    if (uri.host != 'session') return null;
     final sessionId = _trimmedOrNull(query['id'] ?? query['session_id']);
     if (sessionId == null) return null;
 

@@ -35,6 +35,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.authMethods = const <Map<String, Object?>>[],
     this.createSessionEvents = const <AgentEvent>[],
     this.forkSessionEvents = const <AgentEvent>[],
+    this.promptEvents,
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
@@ -87,6 +88,7 @@ class FakeAgentClient implements AcpAgentClient {
   final List<Map<String, Object?>> authMethods;
   final List<AgentEvent> createSessionEvents;
   final List<AgentEvent> forkSessionEvents;
+  final List<AgentEvent>? promptEvents;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
 
@@ -405,6 +407,17 @@ class FakeAgentClient implements AcpAgentClient {
     lastAttachments = attachments;
     if (promptError != null) {
       throw promptError!;
+    }
+    final customEvents = promptEvents;
+    if (customEvents != null) {
+      for (final event in customEvents) {
+        if (cancelled) break;
+        if (chunkDelay > Duration.zero) {
+          await Future<void>.delayed(chunkDelay);
+        }
+        yield event;
+      }
+      return;
     }
     for (final chunk in const ['Hello', ',', ' I am Codex', '.']) {
       if (cancelled) break;

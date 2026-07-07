@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'acp/acp_agent_client.dart';
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
@@ -14,6 +15,11 @@ import 'config/acp_config_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
+import 'tasks/controlled_exporter.dart';
+import 'tasks/task_inbox_controller.dart';
+import 'tasks/task_inbox_state_store.dart';
+import 'tasks/task_record.dart';
+import 'tasks/task_runner.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
@@ -32,6 +38,7 @@ typedef DiscoveredAgentServerWriter =
 typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef SessionWindowOpener = Future<void> Function(List<String> args);
+typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
 
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
@@ -45,8 +52,11 @@ class AcpClientApp extends StatefulWidget {
     this.initialResumeSessionId,
     this.initialResumeCwd,
     this.initialResumeAgentName,
+    this.initialTaskId,
     this.openSessionWindow,
     this.autoLoadWorkspaceSessions = true,
+    this.taskInboxController,
+    this.createAgentClient,
   });
 
   final ChatController? controller;
@@ -58,8 +68,11 @@ class AcpClientApp extends StatefulWidget {
   final String? initialResumeSessionId;
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
+  final String? initialTaskId;
   final SessionWindowOpener? openSessionWindow;
   final bool autoLoadWorkspaceSessions;
+  final TaskInboxController? taskInboxController;
+  final AcpAgentClientFactory? createAgentClient;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -86,10 +99,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
+  TaskInboxController? _taskInboxController;
+  String? _selectedTaskId;
+  bool _ownsTaskInboxController = false;
+  String? _taskInboxStorePath;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
   int _sessionIndexHydrationSerial = 0;
+  int _sessionCatalogLoadSerial = 0;
   String? _lastSessionIndexSignature;
 
   @override
@@ -102,14 +120,21 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
     if (widget.controller == null) {
       _controller = _cachedControllerFor(_config);
+      _ensureControllersForSelectableAgents(_config);
       unawaited(_hydrateSessionIndex());
     } else {
       _controller = widget.controller!;
     }
+    _configureTaskInboxController();
     final initialStartupOptions = _initialStartupOptions;
     if (initialStartupOptions.hasResumeSession) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_resumeFromStartupOptions(initialStartupOptions));
+      });
+    }
+    if (initialStartupOptions.hasTaskLink) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _openTaskFromStartupOptions(initialStartupOptions);
       });
     }
     _setupDeepLinkHandling();
@@ -133,15 +158,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _widgetConfigSignature = nextConfigSignature;
       if (widget.controller == null) {
         _controller = _cachedControllerFor(_config);
+        _ensureControllersForSelectableAgents(_config);
         unawaited(_hydrateSessionIndex());
       } else {
         _controller = widget.controller!;
       }
+      _configureTaskInboxController();
       return;
     }
 
     if (!configChanged) {
       if (widget.controller != null) _controller = widget.controller!;
+      _configureTaskInboxController();
       return;
     }
 
@@ -149,12 +177,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _widgetConfigSignature = nextConfigSignature;
     if (widget.controller != null) {
       _controller = widget.controller!;
+      _configureTaskInboxController();
       return;
     }
 
     _reconcileControllerCache(_config);
     _controller = _cachedControllerFor(_config);
+    _ensureControllersForSelectableAgents(_config);
     unawaited(_hydrateSessionIndex());
+    _configureTaskInboxController();
   }
 
   StartupOptions get _initialStartupOptions {
@@ -165,6 +196,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           : _initialResumeSessionId,
       resumeCwd: _trimmedOrNull(widget.initialResumeCwd),
       resumeAgentName: _trimmedOrNull(widget.initialResumeAgentName),
+      taskId: _trimmedOrNull(widget.initialTaskId),
     );
   }
 
@@ -184,7 +216,52 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _deepLinkChannel.setMethodCallHandler(null);
       _disposeCachedControllers();
     }
+    _disposeOwnedTaskInboxController();
     super.dispose();
+  }
+
+  void _configureTaskInboxController() {
+    final injected = widget.taskInboxController;
+    if (injected != null) {
+      _disposeOwnedTaskInboxController();
+      _taskInboxController = injected;
+      _ownsTaskInboxController = false;
+      _taskInboxStorePath = null;
+      return;
+    }
+
+    if (widget.controller != null) {
+      _disposeOwnedTaskInboxController();
+      _taskInboxController = null;
+      _ownsTaskInboxController = false;
+      _taskInboxStorePath = null;
+      return;
+    }
+
+    final storePath = TaskInboxStateStore.defaultPath(
+      configPath: _config.configPath,
+    );
+    if (_ownsTaskInboxController &&
+        _taskInboxController != null &&
+        _taskInboxStorePath == storePath) {
+      return;
+    }
+
+    _disposeOwnedTaskInboxController();
+    final controller = TaskInboxController(
+      store: TaskInboxStateStore(path: storePath),
+    );
+    _taskInboxController = controller;
+    _ownsTaskInboxController = true;
+    _taskInboxStorePath = storePath;
+    unawaited(controller.load());
+  }
+
+  void _disposeOwnedTaskInboxController() {
+    if (_ownsTaskInboxController) {
+      _taskInboxController?.dispose();
+    }
+    _ownsTaskInboxController = false;
   }
 
   void _setupDeepLinkHandling() {
@@ -218,8 +295,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
     final options = StartupOptions.fromDeepLink(normalizedLink);
-    if (options == null || !options.hasResumeSession) return;
-    await _resumeFromStartupOptions(options);
+    if (options == null) return;
+    if (options.hasResumeSession) {
+      await _resumeFromStartupOptions(options);
+      return;
+    }
+    if (options.hasTaskLink) {
+      _openTaskFromStartupOptions(options);
+    }
   }
 
   Future<void> _resumeFromStartupOptions(StartupOptions options) async {
@@ -239,6 +322,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     await controller.resumeSession(sessionId, cwd: options.resumeCwd);
     if (mounted) setState(() {});
+  }
+
+  void _openTaskFromStartupOptions(StartupOptions options) {
+    final taskId = _trimmedOrNull(options.taskId);
+    if (taskId == null || !mounted) return;
+    if (_taskInboxController == null) {
+      _showSnackBar('Task Inbox is unavailable.');
+      return;
+    }
+    setState(() => _selectedTaskId = taskId);
   }
 
   String? _trimmedOrNull(String? value) {
@@ -306,6 +399,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
       ),
       home: AppShell(
         controller: _controller,
+        taskInboxController: _taskInboxController,
+        initialSidebarMode: _selectedTaskId == null
+            ? AppShellSidebarMode.workspaces
+            : AppShellSidebarMode.inbox,
+        selectedTaskId: _selectedTaskId,
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
         mcpServers: _config.mcpServers,
@@ -328,6 +426,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
             unawaited(_createWorkspaceWorktree(context, workspace)),
         onArchiveWorkspaceSessions: (context, workspace) =>
             _archiveWorkspaceSessions(workspace),
+        onRunTask: (context, task) => _runTask(context, task),
+        onExportTask: (context, task) => _exportTask(context, task),
+        onOpenTaskSession: (context, task) => _openTaskSession(context, task),
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -367,6 +468,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (!mounted) return;
       _reconcileControllerCache(nextConfig);
       _activateAgent(nextConfig);
+      unawaited(_loadAllAgentSessionCatalogs());
       _showSnackBar('Added ${selected.length} discovered ACP agent(s).');
     } catch (error) {
       _showSnackBar('Could not add discovered agents: $error');
@@ -383,6 +485,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
     );
+  }
+
+  void _ensureControllersForSelectableAgents(AcpClientConfig config) {
+    if (widget.controller != null) return;
+    final seenAgentNames = <String>{};
+    for (final server in config.selectableAgentServers) {
+      final agentName = server.name.trim();
+      if (agentName.isEmpty || !seenAgentNames.add(agentName)) continue;
+      final agentConfig = _configForAgent(config, agentName);
+      if (agentConfig != null) _cachedControllerFor(agentConfig);
+    }
   }
 
   ChatController _cachedControllerFor(AcpClientConfig config) {
@@ -403,6 +516,80 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _controllerSignaturesByAgent[agentName] = signature;
     _attachSessionIndexPersistence(controller);
     return controller;
+  }
+
+  ChatController? _controllerForTaskAgent(String agentName) {
+    final trimmedAgentName = agentName.trim();
+    if (trimmedAgentName.isEmpty) return _controller;
+    if (widget.controller != null) {
+      return _controller.agentName == trimmedAgentName ? _controller : null;
+    }
+    final config = _configForAgent(_config, trimmedAgentName);
+    return config == null ? null : _cachedControllerFor(config);
+  }
+
+  Future<void> _runTask(BuildContext _, TaskRecord task) async {
+    final taskController = _taskInboxController;
+    if (taskController == null) return;
+    final runner = TaskRunner(
+      taskController: taskController,
+      controllerForAgent: _controllerForTaskAgent,
+    );
+    await runner.runTask(task.id);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _exportTask(BuildContext _, TaskRecord task) async {
+    final taskController = _taskInboxController;
+    if (taskController == null) return;
+    final approval = _latestApprovedExportApproval(taskController, task.id);
+    if (approval == null) {
+      _showSnackBar('Approve export before running exporter.');
+      return;
+    }
+    final exporter = ControlledExporter(taskController: taskController);
+    final result = await exporter.export(approval.id);
+    _showSnackBar(result.message);
+    if (mounted) setState(() {});
+  }
+
+  ApprovalRequestRecord? _latestApprovedExportApproval(
+    TaskInboxController taskController,
+    String taskId,
+  ) {
+    for (final approval in taskController.approvals.reversed) {
+      if (approval.taskId == taskId &&
+          approval.kind == ApprovalKind.export &&
+          approval.status == ApprovalStatus.approved) {
+        return approval;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _openTaskSession(BuildContext _, TaskRecord task) async {
+    final sessionId = task.sessionId?.trim();
+    if (sessionId == null || sessionId.isEmpty) {
+      _showSnackBar('This task does not have a linked session yet.');
+      return;
+    }
+
+    var controller = _controller;
+    final agentName = task.agentName.trim();
+    if (widget.controller == null && agentName.isNotEmpty) {
+      final config = _configForAgent(_config, agentName);
+      if (config == null) {
+        _showSnackBar('Could not select agent "$agentName".');
+        return;
+      }
+      controller = _activateAgent(config);
+    } else if (widget.controller != null && agentName != controller.agentName) {
+      _showSnackBar('Could not open task session for agent "$agentName".');
+      return;
+    }
+
+    await controller.resumeSession(sessionId, cwd: task.workspacePath);
+    if (mounted) setState(() {});
   }
 
   void _reconcileControllerCache(AcpClientConfig config) {
@@ -457,6 +644,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
+    _ensureControllersForSelectableAgents(_config);
     for (final session in sessions) {
       final config = _configForSessionIndex(session);
       if (config == null) continue;
@@ -468,6 +656,32 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _sessionIndexHydrated = true;
     _schedulePersistSessionIndex();
     if (mounted) setState(() {});
+    unawaited(_loadAllAgentSessionCatalogs());
+  }
+
+  Future<void> _loadAllAgentSessionCatalogs() async {
+    if (widget.controller != null || !_canAutoLoadWorkspaceSessions) return;
+    final serial = ++_sessionCatalogLoadSerial;
+    _ensureControllersForSelectableAgents(_config);
+    final controllers = _controllersByAgent.values.toList(growable: false);
+    await Future.wait(
+      controllers.map((controller) async {
+        if (serial != _sessionCatalogLoadSerial) return;
+        if (controller.isStreaming || controller.isSessionOperationRunning) {
+          return;
+        }
+        if (!controller.canListSessions) return;
+        try {
+          await controller.loadSessionCatalog();
+        } catch (_) {
+          // One agent may not support session/list or may be offline; keep
+          // loading the rest so workspace aggregation remains best-effort.
+        }
+      }),
+    );
+    if (!mounted || serial != _sessionCatalogLoadSerial) return;
+    _schedulePersistSessionIndex();
+    setState(() {});
   }
 
   AcpClientConfig? _configForSessionIndex(AgentSession session) {
@@ -602,6 +816,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (!mounted) return nextConfig;
     _reconcileControllerCache(nextConfig);
     _activateAgent(nextConfig);
+    unawaited(_loadAllAgentSessionCatalogs());
     _showSnackBar('Saved agent configuration.');
     return nextConfig;
   }
@@ -1125,6 +1340,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
     final controller = _cachedControllerFor(nextConfig);
+    _ensureControllersForSelectableAgents(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
@@ -1147,7 +1363,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
   }
 
-  DartAcpAgentClient _agentClient(AcpClientConfig config) {
+  AcpAgentClient _agentClient(AcpClientConfig config) {
+    final createAgentClient = widget.createAgentClient;
+    if (createAgentClient != null) return createAgentClient(config);
+
     final server = config.activeAgentServer;
     final mcpServers = config.mcpServers
         .map((server) => server.toJson())

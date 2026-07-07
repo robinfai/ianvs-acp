@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../theme/app_design_tokens.dart';
 
+const String resumeSessionAgentNameMetaKey = 'agentName';
+
 class ResumeSessionSelection {
   const ResumeSessionSelection({
     required this.project,
@@ -238,7 +240,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                         (conversation) => DropdownMenuItem<AcpSessionEntry>(
                           value: conversation,
                           child: Text(
-                            conversation.dropdownLabel,
+                            _conversationLabel(conversation),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -324,6 +326,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
           ? ''
           : _formatDateTime(conversation.updatedAt!);
       return conversation.title.toLowerCase().contains(query) ||
+          _conversationAgentName(conversation).toLowerCase().contains(query) ||
           conversation.id.toLowerCase().contains(query) ||
           conversation.shortId.toLowerCase().contains(query) ||
           conversation.cwd.toLowerCase().contains(query) ||
@@ -331,6 +334,17 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
           updatedAt.toLowerCase().contains(query);
     }).toList();
   }
+}
+
+String _conversationLabel(AcpSessionEntry conversation) {
+  final agentName = _conversationAgentName(conversation);
+  if (agentName.isEmpty) return conversation.dropdownLabel;
+  return '$agentName - ${conversation.dropdownLabel}';
+}
+
+String _conversationAgentName(AcpSessionEntry conversation) {
+  final agentName = conversation.meta[resumeSessionAgentNameMetaKey];
+  return agentName is String ? agentName.trim() : '';
 }
 
 class _SearchField extends StatelessWidget {
@@ -481,6 +495,13 @@ class _ConversationPreview extends StatelessWidget {
           const SizedBox(height: 8),
           _PreviewRow(icon: Icons.tag_rounded, label: conversation.id),
           const SizedBox(height: 5),
+          if (_conversationAgentName(conversation).isNotEmpty) ...[
+            _PreviewRow(
+              icon: Icons.smart_toy_outlined,
+              label: _conversationAgentName(conversation),
+            ),
+            const SizedBox(height: 5),
+          ],
           _PreviewRow(icon: Icons.folder_outlined, label: conversation.cwd),
           if (conversation.updatedAt != null) ...[
             const SizedBox(height: 5),

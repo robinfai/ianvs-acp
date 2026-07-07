@@ -21,6 +21,7 @@ Future<void> main(List<String> args) async {
         initialResumeSessionId: startupOptions.resumeSessionId,
         initialResumeCwd: startupOptions.resumeCwd,
         initialResumeAgentName: startupOptions.resumeAgentName,
+        initialTaskId: startupOptions.taskId,
       ),
     );
   } catch (error) {
@@ -31,6 +32,7 @@ Future<void> main(List<String> args) async {
         initialResumeSessionId: startupOptions.resumeSessionId,
         initialResumeCwd: startupOptions.resumeCwd,
         initialResumeAgentName: startupOptions.resumeAgentName,
+        initialTaskId: startupOptions.taskId,
       ),
     );
   }

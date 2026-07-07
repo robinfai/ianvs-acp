@@ -11,6 +11,10 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
+import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
+import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
+import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/task_store.dart';
 
 void main() {
   Future<void> pumpWithWindowSize(
@@ -394,6 +398,67 @@ void main() {
 
     expect(controller.currentSession?.id, 'session-from-link');
     expect(controller.currentSession?.cwd, '/workspace/from-link');
+  });
+
+  testWidgets('AcpClientApp opens task review deep links in the Inbox', (
+    tester,
+  ) async {
+    const deepLinkChannel = MethodChannel('ianvs_acp/deep_links');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      deepLinkChannel,
+      (call) async {
+        if (call.method == 'getInitialDeepLinks') {
+          return <Object?>['ianvs-acp://task-review?id=task-review-1'];
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        deepLinkChannel,
+        null,
+      );
+    });
+
+    final taskController = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 7, 9),
+          tasks: [
+            TaskRecord(
+              id: 'task-review-1',
+              title: 'Review from deep link',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.needsHumanReview,
+              priority: TaskPriority.normal,
+              createdAt: DateTime(2026, 7, 7, 8),
+              updatedAt: DateTime(2026, 7, 7, 9),
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        taskInboxController: taskController,
+        autoLoadWorkspaceSessions: false,
+      ),
+      const Size(1400, 900),
+    );
+
+    expect(find.text('Review from deep link'), findsWidgets);
+    expect(find.text('Needs Review'), findsOneWidget);
+    expect(find.byKey(const Key('task-approve-export-button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('task-mark-done-locally-button')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('AcpClientApp opens workspace worktree dialog from sidebar', (
@@ -1264,5 +1329,20 @@ class _WorkspaceCatalogAgentClient extends FakeAgentClient {
         ],
       ),
     ];
+  }
+}
+
+class _MemoryTaskStore implements TaskStore {
+  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
+    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
+
+  TaskInboxSnapshot _snapshot;
+
+  @override
+  Future<TaskInboxSnapshot> load() async => _snapshot;
+
+  @override
+  Future<void> save(TaskInboxSnapshot snapshot) async {
+    _snapshot = snapshot;
   }
 }
