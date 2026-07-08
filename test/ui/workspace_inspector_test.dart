@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
 
@@ -65,5 +66,48 @@ void main() {
     expect(find.text('Filesystem MCP'), findsOneWidget);
     expect(find.text('read'), findsOneWidget);
     expect(find.text('Enabled'), findsOneWidget);
+  });
+
+  testWidgets('WorkspaceInspector shows relative recent session times', (
+    tester,
+  ) async {
+    final now = DateTime(2026, 7, 8, 12);
+    debugSessionTimeNow = () => now;
+    addTearDown(() {
+      debugSessionTimeNow = null;
+    });
+    final session = AgentSession(
+      id: 'session-1',
+      cwd: '/workspace/app',
+      createdAt: now.subtract(const Duration(hours: 4, minutes: 5)),
+      title: 'Build workspace shell',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/app',
+      name: 'app',
+      sessions: [session],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 620,
+            child: WorkspaceInspector(
+              workspace: workspace,
+              agentName: 'Codex',
+              currentSession: session,
+              mcpServers: const [],
+              additionalDirectories: const [],
+              clientProviders: const AcpClientProviderConfig(),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Codex - 4h ago'), findsOneWidget);
   });
 }

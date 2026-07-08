@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 void main() {
   Widget timeline(
@@ -10,8 +12,10 @@ void main() {
     bool hasActiveSession = false,
     String? activeSessionLabel,
     VoidCallback? onNewSession,
+    ThemeData? theme,
   }) {
     return MaterialApp(
+      theme: theme,
       home: Scaffold(
         body: ChatTimeline(
           messages: messages,
@@ -94,6 +98,47 @@ void main() {
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('Hello, human.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline gives user message selections contrast', (
+    tester,
+  ) async {
+    final appSelectionColor = AppColors.primary.withValues(alpha: 0.18);
+    const userSelectionColor = Color(0x3d000000);
+
+    await tester.pumpWidget(
+      timeline(
+        [
+          ChatMessage(role: ChatMessageRole.user, text: 'Pick this text'),
+          ChatMessage(role: ChatMessageRole.assistant, text: 'Keep default'),
+        ],
+        theme: ThemeData(
+          textSelectionTheme: TextSelectionThemeData(
+            selectionColor: appSelectionColor,
+          ),
+        ),
+      ),
+    );
+
+    final userMarkdown = find.byWidgetPredicate(
+      (widget) => widget is MarkdownBody && widget.data == 'Pick this text',
+    );
+    final assistantMarkdown = find.byWidgetPredicate(
+      (widget) => widget is MarkdownBody && widget.data == 'Keep default',
+    );
+
+    expect(
+      TextSelectionTheme.of(tester.element(userMarkdown)).selectionColor,
+      userSelectionColor,
+    );
+    expect(
+      DefaultSelectionStyle.of(tester.element(userMarkdown)).selectionColor,
+      userSelectionColor,
+    );
+    expect(
+      TextSelectionTheme.of(tester.element(assistantMarkdown)).selectionColor,
+      appSelectionColor,
+    );
   });
 
   testWidgets('ChatTimeline renders streaming text as one assistant message', (

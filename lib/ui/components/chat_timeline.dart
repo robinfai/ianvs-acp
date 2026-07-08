@@ -17,6 +17,7 @@ const List<String> _toolCallIdMetadataKeys = [
   'callId',
   'call_id',
 ];
+const _userMessageSelectionColor = Color(0x3d000000);
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -533,13 +534,10 @@ class _MessageBubble extends StatelessWidget {
               ),
               if (message.text.isNotEmpty) ...[
                 const SizedBox(height: 6),
-                MarkdownBody(
+                _SelectableMessageMarkdown(
                   data: message.text,
-                  selectable: true,
+                  user: user,
                   styleSheet: _markdownStyle(context, textColor, user),
-                  builders: <String, MarkdownElementBuilder>{
-                    'pre': _MermaidCodeBlockBuilder(user: user),
-                  },
                 ),
               ],
               _ContentBlocksPreview(message: message),
@@ -605,6 +603,45 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+class _SelectableMessageMarkdown extends StatelessWidget {
+  const _SelectableMessageMarkdown({
+    required this.data,
+    required this.user,
+    required this.styleSheet,
+  });
+
+  final String data;
+  final bool user;
+  final MarkdownStyleSheet styleSheet;
+
+  @override
+  Widget build(BuildContext context) {
+    final markdown = MarkdownBody(
+      data: data,
+      selectable: true,
+      styleSheet: styleSheet,
+      builders: <String, MarkdownElementBuilder>{
+        'pre': _MermaidCodeBlockBuilder(user: user),
+      },
+    );
+
+    if (!user) return markdown;
+
+    return TextSelectionTheme(
+      data: TextSelectionTheme.of(context).copyWith(
+        cursorColor: Colors.white,
+        selectionColor: _userMessageSelectionColor,
+        selectionHandleColor: Colors.white,
+      ),
+      child: DefaultSelectionStyle(
+        cursorColor: Colors.white,
+        selectionColor: _userMessageSelectionColor,
+        child: markdown,
+      ),
+    );
+  }
 }
 
 class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {

@@ -67,7 +67,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(writtenServers.map((server) => server.name), ['Codex']);
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -95,7 +95,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -115,7 +115,7 @@ void main() {
         const Size(1400, 900),
       );
 
-      await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+      await tester.tap(find.byTooltip('New Session'));
       await tester.pumpAndSettle();
 
       expect(find.byType(AlertDialog), findsNothing);
@@ -217,7 +217,7 @@ void main() {
 
     await tester.tap(find.widgetWithText(TextButton, 'Close'));
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.tap(find.byTooltip('New Session'));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -298,7 +298,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -343,7 +343,7 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+    await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
     final field = find.descendant(
@@ -387,21 +387,25 @@ void main() {
     await tester.pump();
 
     final otherCenter = tester.getCenter(find.text('other'));
-    Offset? newSessionButtonCenter;
-    for (final element
-        in find.byTooltip('New session in this workspace').evaluate()) {
+    await mouse.moveTo(otherCenter);
+    await tester.pump();
+
+    Offset? workspaceMenuButtonCenter;
+    for (final element in find.byTooltip('Workspace actions').evaluate()) {
       final renderObject = element.renderObject;
       if (renderObject is! RenderBox) continue;
       final center = renderObject.localToGlobal(
         renderObject.size.center(Offset.zero),
       );
       if ((center.dy - otherCenter.dy).abs() < 24) {
-        newSessionButtonCenter = center;
+        workspaceMenuButtonCenter = center;
         break;
       }
     }
-    expect(newSessionButtonCenter, isNotNull);
-    await tester.tapAt(newSessionButtonCenter!);
+    expect(workspaceMenuButtonCenter, isNotNull);
+    await tester.tapAt(workspaceMenuButtonCenter!);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New Session').last);
     await tester.pumpAndSettle();
 
     final field = tester.widget<TextField>(
@@ -535,7 +539,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.tap(find.byTooltip('Workspace actions').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Create Permanent Worktree'));
     await tester.pumpAndSettle();
@@ -939,7 +943,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.tap(find.byTooltip('Workspace actions').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Archive Conversations'));
     await tester.pump();
@@ -989,14 +993,18 @@ void main() {
     await controller.connect();
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
-    await tester.enterText(find.byType(TextField), 'Keep this draft');
+    final promptField = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(promptField, 'Keep this draft');
     await tester.pump();
 
     final loading = controller.listSessions();
     await tester.pump();
 
     expect(controller.isSessionOperationRunning, isTrue);
-    final textField = tester.widget<TextField>(find.byType(TextField));
+    final textField = tester.widget<TextField>(promptField);
     final sendButton = tester.widget<FilledButton>(
       find.ancestor(
         of: find.byIcon(Icons.arrow_upward_rounded),
@@ -1012,7 +1020,7 @@ void main() {
     await tester.pump();
 
     expect(controller.isSessionOperationRunning, isFalse);
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(tester.widget<TextField>(promptField).enabled, isTrue);
   });
 
   testWidgets('AcpClientApp keeps active sessions usable in narrow windows', (

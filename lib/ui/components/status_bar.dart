@@ -19,43 +19,49 @@ class StatusBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 30,
+      height: 26,
       decoration: const BoxDecoration(
         color: AppColors.bg,
         border: Border(top: BorderSide(color: AppColors.border)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 9),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final showSecondaryActions = constraints.maxWidth >= 700;
+          final pathMaxWidth = constraints.maxWidth < 960 ? 180.0 : 320.0;
           return Align(
-            alignment: Alignment.centerRight,
+            alignment: Alignment.centerLeft,
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              reverse: true,
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _StatusItem(
-                    icon: Icons.folder_open_outlined,
-                    label: controller.currentSession?.cwd ?? controller.cwd,
-                    maxWidth: constraints.maxWidth < 960 ? 220 : 320,
+                    icon: Icons.radio_button_checked,
+                    label: controller.status.label,
+                    color: _statusColor(controller.status),
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 9),
                   _StatusItem(
-                    icon: Icons.tag_rounded,
-                    label: controller.currentSession?.shortId ?? 'no session',
+                    icon: Icons.bolt_outlined,
+                    label: controller.isStreaming ? 'streaming' : 'idle',
+                  ),
+                  const SizedBox(width: 9),
+                  _StatusItem(
+                    icon: Icons.timer_outlined,
+                    label: _latencyLabel(controller.lastLatency),
                   ),
                   if (_currentModelLabel(controller) != null) ...[
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 9),
                     _StatusItem(
                       icon: Icons.memory_rounded,
                       label: _currentModelLabel(controller)!,
                       color: AppColors.primaryDark,
+                      maxWidth: constraints.maxWidth < 760 ? 180 : 260,
                     ),
                   ],
                   if (_currentModeLabel(controller) != null) ...[
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 9),
                     _StatusItem(
                       icon: Icons.swap_horiz_rounded,
                       label: _currentModeLabel(controller)!,
@@ -63,7 +69,7 @@ class StatusBar extends StatelessWidget {
                     ),
                   ],
                   if (_usageLabel(controller) != null) ...[
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 9),
                     _StatusItem(
                       icon: Icons.data_usage_rounded,
                       label: _usageLabel(controller)!,
@@ -71,24 +77,19 @@ class StatusBar extends StatelessWidget {
                       color: _usageColor(controller),
                     ),
                   ],
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 9),
                   _StatusItem(
-                    icon: Icons.radio_button_checked,
-                    label: controller.status.label,
-                    color: _statusColor(controller.status),
+                    icon: Icons.tag_rounded,
+                    label: controller.currentSession?.shortId ?? 'no session',
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 9),
                   _StatusItem(
-                    icon: Icons.bolt_outlined,
-                    label: controller.isStreaming ? 'streaming' : 'idle',
-                  ),
-                  const SizedBox(width: 14),
-                  _StatusItem(
-                    icon: Icons.timer_outlined,
-                    label: _latencyLabel(controller.lastLatency),
+                    icon: Icons.folder_open_outlined,
+                    label: controller.currentSession?.cwd ?? controller.cwd,
+                    maxWidth: pathMaxWidth,
                   ),
                   if (controller.lastError != null) ...[
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 9),
                     _StatusItem(
                       icon: Icons.error_outline,
                       label: controller.lastError!,
@@ -97,23 +98,17 @@ class StatusBar extends StatelessWidget {
                     ),
                   ],
                   if (showSecondaryActions) ...[
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 10),
                     _StatusIcon(
                       icon: Icons.tune_rounded,
                       tooltip: 'Session settings',
                       onPressed: onShowSessionSettings,
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     _StatusIcon(
                       icon: Icons.fact_check_outlined,
                       tooltip: 'ACP compatibility',
                       onPressed: onShowCapabilities,
-                    ),
-                    const SizedBox(width: 8),
-                    const _StatusIcon(
-                      icon: Icons.wb_sunny_outlined,
-                      tooltip: 'Theme',
-                      onPressed: null,
                     ),
                   ],
                 ],
@@ -241,8 +236,8 @@ class _StatusItem extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 5),
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 4),
           Flexible(
             child: Text(
               label,
@@ -287,11 +282,11 @@ class _StatusIcon extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppRadius.sm),
           onTap: onPressed,
           child: SizedBox(
-            width: 24,
-            height: 24,
+            width: 22,
+            height: 22,
             child: Icon(
               icon,
-              size: 15,
+              size: 14,
               color: onPressed == null
                   ? AppColors.textTertiary
                   : AppColors.textSecondary,

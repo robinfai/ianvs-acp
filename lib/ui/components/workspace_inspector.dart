@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../workspace/workspace.dart';
+import 'session_time_label.dart';
 import '../theme/app_design_tokens.dart';
 
 class WorkspaceInspector extends StatelessWidget {
@@ -305,7 +306,7 @@ class _MiniSessionRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${session.agentName ?? 'Agent'} - ${_formatDate(session.displayTime)}',
+                  '${session.agentName ?? 'Agent'} - ${formatRelativeSessionTime(session.displayTime)}',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textTertiary,

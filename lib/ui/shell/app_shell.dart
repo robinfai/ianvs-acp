@@ -166,6 +166,48 @@ class AppShell extends StatelessWidget {
         final workspaceStateStore = WorkspaceSidebarStateStore(
           path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
         );
+        Widget promptDock() => PromptInput(
+          agentName: agentName,
+          enabled: !controller.isSessionOperationRunning,
+          isSending: controller.isStreaming,
+          availableCommands: controller.availableCommands,
+          promptCapabilities: controller.capabilities?.prompt,
+          pendingPermissionRequest: controller.pendingPermissionRequest,
+          onAllowPermission: () => unawaited(
+            controller.resolvePermissionRequest(AcpPermissionDecision.allow),
+          ),
+          onDenyPermission: () => unawaited(
+            controller.resolvePermissionRequest(AcpPermissionDecision.deny),
+          ),
+          onCancelPermission: () => unawaited(
+            controller.resolvePermissionRequest(AcpPermissionDecision.cancel),
+          ),
+          toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
+          hasPermissionReviewer: controller.hasPermissionReviewer,
+          onToolCallExecutionPolicyChanged:
+              controller.setToolCallExecutionPolicy,
+          modelOption: controller.sessionSettings.modelOption,
+          reasoningEffortOption:
+              controller.sessionSettings.reasoningEffortOption,
+          onModelSelected:
+              controller.currentSession != null && sessionActionsEnabled
+              ? (value) => unawaited(controller.setSessionModel(value))
+              : null,
+          onReasoningEffortSelected:
+              controller.currentSession != null && sessionActionsEnabled
+              ? (value) =>
+                    unawaited(controller.setSessionReasoningEffort(value))
+              : null,
+          onSend: (text, attachments) =>
+              controller.sendPrompt(text, attachments: attachments),
+          onStop: controller.stop,
+        );
+
+        Widget statusDock() => StatusBar(
+          controller: controller,
+          onShowSessionSettings: () => _showSessionSettingsDialog(context),
+          onShowCapabilities: () => _showCapabilitiesDialog(context),
+        );
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -205,11 +247,11 @@ class AppShell extends StatelessWidget {
                   ErrorBanner(message: controller.lastError!),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
                     child: Container(
                       decoration: BoxDecoration(
                         color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.md),
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
                         border: Border.all(color: AppColors.border),
                         boxShadow: AppShadows.soft,
                       ),
@@ -224,7 +266,7 @@ class AppShell extends StatelessWidget {
                             hasActiveSession: controller.currentSession != null,
                             activeSessionLabel:
                                 controller.currentSession?.displayTitle,
-                            onNewSession: startNewSession,
+                            onNewSession: null,
                           );
                           final conversationColumn = Column(
                             children: [
@@ -232,13 +274,11 @@ class AppShell extends StatelessWidget {
                                 workspace: currentWorkspace,
                                 agentName: agentName,
                                 currentSession: controller.currentSession,
-                                onNewSession: startNewSession,
-                                onResumeSession: canResumeSessions
-                                    ? () => _showResumeDialog(context)
-                                    : null,
                               ),
                               const Divider(height: 1, color: AppColors.border),
                               Expanded(child: timeline),
+                              promptDock(),
+                              statusDock(),
                             ],
                           );
 
@@ -250,7 +290,7 @@ class AppShell extends StatelessWidget {
                             children: [
                               if (!hideSidebar) ...[
                                 SizedBox(
-                                  width: 286,
+                                  width: 270,
                                   child: _ShellSidebar(
                                     workspaceSidebar: WorkspaceSidebar(
                                       agentName: agentName,
@@ -361,7 +401,7 @@ class AppShell extends StatelessWidget {
                                   color: AppColors.border,
                                 ),
                                 SizedBox(
-                                  width: 306,
+                                  width: 292,
                                   child: WorkspaceInspector(
                                     workspace: currentWorkspace,
                                     agentName: agentName,
@@ -380,55 +420,6 @@ class AppShell extends StatelessWidget {
                       ),
                     ),
                   ),
-                ),
-                PromptInput(
-                  agentName: agentName,
-                  enabled: !controller.isSessionOperationRunning,
-                  isSending: controller.isStreaming,
-                  availableCommands: controller.availableCommands,
-                  promptCapabilities: controller.capabilities?.prompt,
-                  pendingPermissionRequest: controller.pendingPermissionRequest,
-                  onAllowPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.allow,
-                    ),
-                  ),
-                  onDenyPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.deny,
-                    ),
-                  ),
-                  onCancelPermission: () => unawaited(
-                    controller.resolvePermissionRequest(
-                      AcpPermissionDecision.cancel,
-                    ),
-                  ),
-                  toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
-                  hasPermissionReviewer: controller.hasPermissionReviewer,
-                  onToolCallExecutionPolicyChanged:
-                      controller.setToolCallExecutionPolicy,
-                  modelOption: controller.sessionSettings.modelOption,
-                  reasoningEffortOption:
-                      controller.sessionSettings.reasoningEffortOption,
-                  onModelSelected:
-                      controller.currentSession != null && sessionActionsEnabled
-                      ? (value) => unawaited(controller.setSessionModel(value))
-                      : null,
-                  onReasoningEffortSelected:
-                      controller.currentSession != null && sessionActionsEnabled
-                      ? (value) => unawaited(
-                          controller.setSessionReasoningEffort(value),
-                        )
-                      : null,
-                  onSend: (text, attachments) =>
-                      controller.sendPrompt(text, attachments: attachments),
-                  onStop: controller.stop,
-                ),
-                StatusBar(
-                  controller: controller,
-                  onShowSessionSettings: () =>
-                      _showSessionSettingsDialog(context),
-                  onShowCapabilities: () => _showCapabilitiesDialog(context),
                 ),
               ],
             ),

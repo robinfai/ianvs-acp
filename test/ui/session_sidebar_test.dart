@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/ui/components/session_sidebar.dart';
+import 'package:ianvs_acp/ui/components/session_time_label.dart';
 
 void main() {
   testWidgets('SessionSidebar shows each session agent', (tester) async {
@@ -81,5 +82,40 @@ void main() {
     await tester.pump();
 
     expect(selected, previous);
+  });
+
+  testWidgets('SessionSidebar shows relative session times', (tester) async {
+    final now = DateTime(2026, 7, 8, 12);
+    debugSessionTimeNow = () => now;
+    addTearDown(() {
+      debugSessionTimeNow = null;
+    });
+    final session = AgentSession(
+      id: 'session-codex',
+      cwd: '/workspace',
+      createdAt: now.subtract(const Duration(days: 3, hours: 1)),
+      title: 'Fix UX',
+      agentName: 'Codex',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 260,
+            height: 500,
+            child: SessionSidebar(
+              agentName: 'Codex',
+              currentSession: session,
+              sessions: [session],
+              onNewSession: () {},
+              onResumeSession: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('3d ago'), findsOneWidget);
   });
 }

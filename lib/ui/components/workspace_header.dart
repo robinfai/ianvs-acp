@@ -10,120 +10,63 @@ class WorkspaceHeader extends StatelessWidget {
     required this.workspace,
     required this.agentName,
     required this.currentSession,
-    required this.onNewSession,
-    required this.onResumeSession,
   });
 
   final WorkspaceRecord workspace;
   final String agentName;
   final AgentSession? currentSession;
-  final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+      padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 620;
+          final workspaceSurface = _WorkspaceHeaderSurface(
+            key: const Key('workspace-header-workspace-surface'),
+            icon: Icons.folder_open_rounded,
+            accent: AppColors.primary,
+            title: workspace.name,
+            detail: workspace.path,
+            trailing: _HeaderPill(
+              icon: Icons.forum_outlined,
+              label:
+                  '${workspace.sessionCount} ${workspace.sessionCount == 1 ? 'session' : 'sessions'}',
+            ),
+          );
+          final sessionSurface = _WorkspaceHeaderSurface(
+            key: const Key('workspace-header-session-surface'),
+            icon: currentSession == null
+                ? Icons.chat_bubble_outline_rounded
+                : Icons.bolt_rounded,
+            accent: currentSession == null
+                ? AppColors.textTertiary
+                : AppColors.primaryDark,
+            title: _sessionTitle(),
+            detail: _sessionDetail(),
+            trailing: compact
+                ? null
+                : _HeaderPill(icon: Icons.smart_toy_outlined, label: agentName),
+          );
+
+          if (compact) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                workspaceSurface,
+                const SizedBox(height: 6),
+                sessionSurface,
+              ],
+            );
+          }
+
           return Row(
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: AppColors.primarySoft,
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                ),
-                child: const Icon(
-                  Icons.folder_open_rounded,
-                  color: AppColors.primaryDark,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            workspace.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 0,
-                            ),
-                          ),
-                        ),
-                        if (!compact) ...[
-                          const SizedBox(width: 8),
-                          _HeaderPill(
-                            icon: Icons.smart_toy_outlined,
-                            label: agentName,
-                          ),
-                          const SizedBox(width: 6),
-                          _HeaderPill(
-                            icon: Icons.forum_outlined,
-                            label:
-                                '${workspace.sessionCount} ${workspace.sessionCount == 1 ? 'session' : 'sessions'}',
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      _subtitle(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        height: 1.25,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              _HeaderIconButton(
-                icon: Icons.history_rounded,
-                tooltip: 'Resume session',
-                onPressed: onResumeSession,
-              ),
-              const SizedBox(width: 6),
-              compact
-                  ? _HeaderIconButton(
-                      icon: Icons.add_rounded,
-                      tooltip: 'New session',
-                      onPressed: onNewSession,
-                    )
-                  : FilledButton.icon(
-                      onPressed: onNewSession,
-                      icon: const Icon(Icons.add_rounded, size: 17),
-                      label: const Text('New Session'),
-                      style: FilledButton.styleFrom(
-                        foregroundColor: AppColors.primaryDark,
-                        backgroundColor: AppColors.primarySoft,
-                        elevation: 0,
-                        minimumSize: const Size(128, 34),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppRadius.pill),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0,
-                        ),
-                      ),
-                    ),
+              Expanded(flex: 6, child: workspaceSurface),
+              const SizedBox(width: 7),
+              Expanded(flex: 5, child: sessionSurface),
             ],
           );
         },
@@ -131,12 +74,96 @@ class WorkspaceHeader extends StatelessWidget {
     );
   }
 
-  String _subtitle() {
+  String _sessionTitle() {
+    final session = currentSession;
+    if (session == null) return 'No active session';
+    final title = session.displayTitle.trim();
+    return title.isEmpty ? session.shortId : title;
+  }
+
+  String _sessionDetail() {
     final session = currentSession;
     if (session == null) return workspace.path;
-    final title = session.displayTitle.trim();
-    if (title.isEmpty) return workspace.path;
-    return '$title - ${workspace.path}';
+    final agent = session.agentName?.trim();
+    final shortId = session.shortId;
+    if (agent == null || agent.isEmpty) return shortId;
+    return '$agent / $shortId';
+  }
+}
+
+class _WorkspaceHeaderSurface extends StatelessWidget {
+  const _WorkspaceHeaderSurface({
+    super.key,
+    required this.icon,
+    required this.accent,
+    required this.title,
+    required this.detail,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final Color accent;
+  final String title;
+  final String detail;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 40),
+      padding: const EdgeInsets.fromLTRB(7, 5, 7, 5),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 28,
+            decoration: BoxDecoration(
+              color: accent,
+              borderRadius: BorderRadius.circular(AppRadius.pill),
+            ),
+          ),
+          const SizedBox(width: 7),
+          Icon(icon, size: 15, color: accent),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
+                    height: 1.1,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  detail,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 10.5,
+                    height: 1.15,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (trailing != null) ...[const SizedBox(width: 7), trailing!],
+        ],
+      ),
+    );
   }
 }
 
@@ -150,8 +177,8 @@ class _HeaderPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 22,
-      constraints: const BoxConstraints(maxWidth: 140),
-      padding: const EdgeInsets.symmetric(horizontal: 7),
+      constraints: const BoxConstraints(maxWidth: 124),
+      padding: const EdgeInsets.symmetric(horizontal: 6),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -161,64 +188,20 @@ class _HeaderPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, size: 12, color: AppColors.textSecondary),
-          const SizedBox(width: 4),
+          const SizedBox(width: 3),
           Flexible(
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textSecondary,
-                fontSize: 11,
+                fontSize: 10.5,
                 fontWeight: FontWeight.w800,
                 letterSpacing: 0,
               ),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _HeaderIconButton extends StatelessWidget {
-  const _HeaderIconButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      enabled: onPressed != null,
-      label: tooltip,
-      child: Tooltip(
-        message: tooltip,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
-          onTap: onPressed,
-          child: Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: AppColors.surfaceRaised,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Icon(
-              icon,
-              color: onPressed == null
-                  ? AppColors.textTertiary
-                  : AppColors.textSecondary,
-              size: 17,
-            ),
-          ),
-        ),
       ),
     );
   }

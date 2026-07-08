@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
+import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
@@ -251,7 +252,55 @@ void main() {
     expect(find.text('Workspaces'), findsOneWidget);
     expect(find.text('No sessions yet'), findsOneWidget);
     expect(find.text('Sessions'), findsNothing);
-    expect(find.widgetWithText(OutlinedButton, 'New Session'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'New Session'), findsNothing);
+  });
+
+  testWidgets('WorkspaceSidebar filters workspaces from the search field', (
+    tester,
+  ) async {
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const <AgentSession>[],
+    );
+    final otherWorkspace = WorkspaceRecord(
+      path: '/workspace/other',
+      name: 'other',
+      sessions: const <AgentSession>[],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [currentWorkspace, otherWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.widgetWithText(TextField, 'Search workspaces...'),
+      findsOneWidget,
+    );
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Search workspaces...'),
+      'other',
+    );
+    await tester.pump();
+
+    expect(find.text('other'), findsNWidgets(2));
+    expect(find.text('current'), findsNothing);
   });
 
   testWidgets('WorkspaceSidebar restores and saves expanded workspaces', (
@@ -638,10 +687,20 @@ void main() {
 
     await tester.tap(find.text('other'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(OutlinedButton, 'New Session').last);
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    final otherCenter = tester.getCenter(find.text('other'));
+    await mouse.moveTo(otherCenter);
     await tester.pump();
 
-    expect(newSessionWorkspace, otherWorkspace);
+    await tester.tap(find.byTooltip('Workspace actions').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New Session').last);
+    await tester.pumpAndSettle();
+
+    expect(newSessionWorkspace?.path, otherWorkspace.path);
   });
 
   testWidgets('WorkspaceSidebar exposes workspace action menu', (tester) async {
@@ -687,6 +746,7 @@ void main() {
     await tester.tap(find.byTooltip('Workspace actions'));
     await tester.pumpAndSettle();
 
+    expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Pin Project'), findsOneWidget);
     expect(find.text('Show in Finder'), findsOneWidget);
     expect(find.text('Create Permanent Worktree'), findsOneWidget);
@@ -704,7 +764,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(revealed, workspace);
 
-    await tester.tap(find.byTooltip('New session in this workspace'));
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New Session'));
     await tester.pump();
     expect(newSessionCount, 1);
   });
@@ -865,6 +927,218 @@ void main() {
 
     expect(actionSession, session);
     expect(action, WorkspaceSessionMenuAction.copySessionId);
+  });
+
+  testWidgets(
+    'WorkspaceSidebar separates active session from compact history',
+    (tester) async {
+      final currentSession = AgentSession(
+        id: 'current-session',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2026, 5, 1, 10),
+        title: 'Current work',
+        agentName: 'Codex',
+      );
+      final historySession = AgentSession(
+        id: 'history-session',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2026, 5, 1, 9),
+        title: 'History work',
+        agentName: 'Codex',
+      );
+      final workspace = WorkspaceRecord(
+        path: '/workspace/current',
+        name: 'current',
+        sessions: [currentSession, historySession],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 520,
+              child: WorkspaceSidebar(
+                agentName: 'Codex',
+                workspaces: [workspace],
+                currentWorkspace: workspace,
+                currentSession: currentSession,
+                onNewSession: () {},
+                onResumeSession: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final activeTile = find.byKey(
+        const Key('workspace-session-active:current-session'),
+      );
+      final historyRow = find.byKey(
+        const Key('workspace-session-history:history-session'),
+      );
+
+      expect(
+        find.byKey(const Key('workspace-project-strip:/workspace/current')),
+        findsOneWidget,
+      );
+      expect(activeTile, findsOneWidget);
+      expect(historyRow, findsOneWidget);
+      expect(
+        tester.getRect(activeTile).height,
+        greaterThan(tester.getRect(historyRow).height),
+      );
+    },
+  );
+
+  testWidgets('WorkspaceSidebar shows relative session times', (tester) async {
+    final now = DateTime(2026, 7, 8, 12);
+    debugSessionTimeNow = () => now;
+    addTearDown(() {
+      debugSessionTimeNow = null;
+    });
+    final currentSession = AgentSession(
+      id: 'current-session',
+      cwd: '/workspace/current',
+      createdAt: now.subtract(const Duration(minutes: 5)),
+      title: 'Current work',
+      agentName: 'Codex',
+    );
+    final historySession = AgentSession(
+      id: 'history-session',
+      cwd: '/workspace/current',
+      createdAt: now.subtract(const Duration(hours: 2)),
+      title: 'History work',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [currentSession, historySession],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: currentSession,
+              onNewSession: () {},
+              onResumeSession: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('5m ago'), findsOneWidget);
+    expect(find.text('2h ago'), findsOneWidget);
+  });
+
+  testWidgets(
+    'WorkspaceSidebar marks active workspace without a filled frame',
+    (tester) async {
+      final workspace = WorkspaceRecord(
+        path: '/workspace/current',
+        name: 'current',
+        sessions: const <AgentSession>[],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 520,
+              child: WorkspaceSidebar(
+                agentName: 'Codex',
+                workspaces: [workspace],
+                currentWorkspace: workspace,
+                currentSession: null,
+                onNewSession: () {},
+                onResumeSession: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final projectStrip = tester.widget<Container>(
+        find.byKey(const Key('workspace-project-strip:/workspace/current')),
+      );
+      final groupFrame = tester.widget<Container>(
+        find.byKey(const Key('workspace-group:/workspace/current')),
+      );
+      final stripDecoration = projectStrip.decoration! as BoxDecoration;
+      final groupDecoration = groupFrame.decoration! as BoxDecoration;
+
+      expect(stripDecoration.color, Colors.transparent);
+      expect(stripDecoration.border, isNull);
+      expect(groupDecoration.color, Colors.transparent);
+      expect(groupDecoration.border, isNull);
+    },
+  );
+
+  testWidgets('WorkspaceSidebar keeps session row height stable on hover', (
+    tester,
+  ) async {
+    final currentSession = AgentSession(
+      id: 'current-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Current work',
+      agentName: 'Codex',
+    );
+    final historySession = AgentSession(
+      id: 'history-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 9),
+      title: 'History work',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [currentSession, historySession],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: currentSession,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onSessionMenuAction: (_, _) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final historyRow = find.byKey(
+      const Key('workspace-session-history:history-session'),
+    );
+    final beforeHoverHeight = tester.getRect(historyRow).height;
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.text('History work')));
+    await tester.pump();
+
+    expect(tester.getRect(historyRow).height, beforeHoverHeight);
   });
 
   testWidgets('WorkspaceSidebar shows session actions on hover', (
@@ -1095,7 +1369,13 @@ void main() {
     await tester.tap(find.text('Rename Project'));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'Renamed workspace');
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      'Renamed workspace',
+    );
     await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
     await tester.pumpAndSettle();
 

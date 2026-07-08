@@ -6,6 +6,9 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/components/status_bar.dart';
+import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
+import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 
 void _noop() {}
@@ -375,6 +378,72 @@ void main() {
     expect(piClient.connected, isTrue);
     expect(codex.sessions.map((session) => session.id), contains('session-a'));
     expect(pi.sessions.map((session) => session.id), contains('session-a'));
+  });
+
+  testWidgets('AppShell docks prompt and status inside conversation column', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final promptRect = tester.getRect(
+      find.byKey(const Key('prompt-input-surface')),
+    );
+    final statusRect = tester.getRect(find.byType(StatusBar));
+    final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
+    final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
+
+    expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
+    expect(promptRect.right, lessThan(inspectorRect.left));
+    expect(statusRect.left, greaterThanOrEqualTo(sidebarRect.right));
+    expect(statusRect.right, lessThan(inspectorRect.left));
+  });
+
+  testWidgets('AppShell keeps one visible New Session entry on desktop', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('New Session'), findsOneWidget);
   });
 
   testWidgets('AppShell resumes sessions from another agent', (tester) async {

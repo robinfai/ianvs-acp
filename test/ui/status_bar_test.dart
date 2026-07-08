@@ -29,7 +29,7 @@ void main() {
   ChatController controller() =>
       ChatController(client: FakeAgentClient(), cwd: '/workspace');
 
-  testWidgets('StatusBar keeps secondary actions on desktop widths', (
+  testWidgets('StatusBar keeps only concrete secondary actions on desktop', (
     tester,
   ) async {
     final chatController = controller();
@@ -39,7 +39,7 @@ void main() {
 
     expect(find.byTooltip('Session settings'), findsOneWidget);
     expect(find.byTooltip('ACP compatibility'), findsOneWidget);
-    expect(find.byTooltip('Theme'), findsOneWidget);
+    expect(find.byTooltip('Theme'), findsNothing);
   });
 
   testWidgets('StatusBar hides secondary actions in narrow widths', (
@@ -56,5 +56,19 @@ void main() {
     expect(find.byTooltip('Theme'), findsNothing);
     expect(find.text('disconnected'), findsOneWidget);
     expect(find.text('idle'), findsOneWidget);
+  });
+
+  testWidgets('StatusBar prioritizes live status before long paths', (
+    tester,
+  ) async {
+    final chatController = controller();
+    addTearDown(chatController.dispose);
+
+    await tester.pumpWidget(statusBar(controller: chatController, width: 620));
+
+    expect(
+      tester.getTopLeft(find.text('disconnected')).dx,
+      lessThan(tester.getTopLeft(find.text('/workspace')).dx),
+    );
   });
 }

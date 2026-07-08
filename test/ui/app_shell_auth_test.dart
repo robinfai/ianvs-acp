@@ -73,7 +73,9 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('workspace-actions:/workspace/current')),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Show in Finder'));
