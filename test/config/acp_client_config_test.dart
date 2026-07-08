@@ -66,6 +66,14 @@ void main() {
     expect(config.defaultAgentServerName, 'Kimi Code Dev');
   });
 
+  test('resolves saved Codex sessions without configured agent servers', () {
+    const config = AcpClientConfig();
+
+    expect(config.configForSessionIndexAgent('Codex'), same(config));
+    expect(config.configForSessionIndexAgent(''), same(config));
+    expect(config.configForSessionIndexAgent('Kimi'), isNull);
+  });
+
   test('loads camelCase agent server config aliases', () {
     final config = AcpClientConfig.fromJson({
       'defaultAgentServer': 'Remote Agent',

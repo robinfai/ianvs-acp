@@ -103,6 +103,66 @@ void main() {
     expect(find.text('Codex'), findsOneWidget);
   });
 
+  testWidgets(
+    'AcpClientApp asks for an agent before starting sessions without config',
+    (tester) async {
+      await pumpWithWindowSize(
+        tester,
+        const AcpClientApp(
+          config: AcpClientConfig(),
+          autoLoadWorkspaceSessions: false,
+        ),
+        const Size(1400, 900),
+      );
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'New Session'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(
+        find.text('Add an ACP agent before starting a session.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('AcpClientApp creates Inbox tasks without configured agents', (
+    tester,
+  ) async {
+    final taskController = TaskInboxController(
+      store: _MemoryTaskStore(),
+      clock: () => DateTime(2026, 7, 7, 8),
+      idGenerator: (_) => 'task-1',
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: const AcpClientConfig(),
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.text('Inbox').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('New task'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('task-title-field')),
+      'Round2 no-agent task',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(taskController.tasks.single.title, 'Round2 no-agent task');
+    expect(taskController.tasks.single.agentName, 'Codex');
+  });
+
   testWidgets('AcpClientApp saves edited agent config', (tester) async {
     AcpClientConfig? savedConfig;
 

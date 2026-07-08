@@ -9,6 +9,7 @@ import 'acp/acp_agent_client.dart';
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
+import 'acp/unavailable_acp_agent_client.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
@@ -39,6 +40,9 @@ typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef SessionWindowOpener = Future<void> Function(List<String> args);
 typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
+
+const String _noAgentConfiguredMessage =
+    'Add an ACP agent before starting a session.';
 
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
@@ -608,7 +612,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   AcpClientConfig? _configForAgent(AcpClientConfig config, String agentName) {
-    if (config.agentName == agentName) return config;
+    if (config.activeAgentServer != null && config.agentName == agentName) {
+      return config;
+    }
     return config.agentServerNamed(agentName) == null
         ? null
         : config.withActiveAgentServer(agentName);
@@ -685,9 +691,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   AcpClientConfig? _configForSessionIndex(AgentSession session) {
-    final agentName = session.agentName?.trim();
-    if (agentName == null || agentName.isEmpty) return _config;
-    return _configForAgent(_config, agentName);
+    return _config.configForSessionIndexAgent(session.agentName);
   }
 
   AgentSession _sessionIndexWithFallbackAgent(
@@ -830,6 +834,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
 
     final agentServers = _config.selectableAgentServers;
+    if (widget.controller == null && agentServers.isEmpty) {
+      _showSnackBar(_noAgentConfiguredMessage);
+      return;
+    }
     final selection = await showDialog<NewSessionSelection>(
       context: dialogContext,
       builder: (context) => NewSessionAgentDialog(
@@ -1372,16 +1380,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
         .map((server) => server.toJson())
         .toList();
     if (server == null) {
-      return DartAcpAgentClient(
-        mcpServers: mcpServers,
-        enableFilesystemReadTextFile:
-            config.clientProviders.filesystem.readTextFile,
-        enableFilesystemWriteTextFile:
-            config.clientProviders.filesystem.writeTextFile,
-        allowFilesystemReadOutsideWorkspace:
-            config.clientProviders.filesystem.allowReadOutsideWorkspace,
-        enableTerminalProvider: config.clientProviders.terminal.enabled,
-        additionalDirectories: config.additionalDirectories,
+      return const UnavailableAcpAgentClient(
+        message: _noAgentConfiguredMessage,
       );
     }
     return DartAcpAgentClient(

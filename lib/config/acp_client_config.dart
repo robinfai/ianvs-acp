@@ -60,6 +60,21 @@ class AcpClientConfig {
     );
   }
 
+  AcpClientConfig? configForSessionIndexAgent(String? name) {
+    final trimmed = name?.trim();
+    if (trimmed == null || trimmed.isEmpty) return this;
+    if (activeAgentServer != null && agentName == trimmed) return this;
+    if (agentServerNamed(trimmed) != null) {
+      return withActiveAgentServer(trimmed);
+    }
+    if (activeAgentServer == null &&
+        selectableAgentServers.isEmpty &&
+        agentName == trimmed) {
+      return this;
+    }
+    return null;
+  }
+
   static Future<AcpClientConfig> load({
     String? path,
     Map<String, String>? environment,
