@@ -991,6 +991,63 @@ void main() {
     },
   );
 
+  testWidgets('WorkspaceSidebar only highlights the active agent session', (
+    tester,
+  ) async {
+    AgentSession? selectedSession;
+    final currentSession = AgentSession(
+      id: 'shared-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Codex active work',
+      agentName: 'Codex',
+    );
+    final kimiSession = AgentSession(
+      id: 'shared-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 9),
+      title: 'Kimi same id work',
+      agentName: 'Kimi',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [currentSession, kimiSession],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: currentSession,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onSelectSession: (session) => selectedSession = session,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const Key('workspace-session-active:shared-session')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('workspace-session-history:shared-session')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Kimi same id work'));
+    expect(selectedSession, kimiSession);
+  });
+
   testWidgets('WorkspaceSidebar shows relative session times', (tester) async {
     final now = DateTime(2026, 7, 8, 12);
     debugSessionTimeNow = () => now;

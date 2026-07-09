@@ -805,37 +805,11 @@ class _ShellSidebarState extends State<_ShellSidebar> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-            child: SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<AppShellSidebarMode>(
-                showSelectedIcon: false,
-                style: ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                  textStyle: WidgetStateProperty.all(
-                    const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0,
-                    ),
-                  ),
-                ),
-                segments: const [
-                  ButtonSegment<AppShellSidebarMode>(
-                    value: AppShellSidebarMode.workspaces,
-                    icon: Icon(Icons.folder_open_rounded, size: 16),
-                    label: Text('Workspaces'),
-                  ),
-                  ButtonSegment<AppShellSidebarMode>(
-                    value: AppShellSidebarMode.inbox,
-                    icon: Icon(Icons.inbox_rounded, size: 16),
-                    label: Text('Inbox'),
-                  ),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (selection) {
-                  setState(() => _mode = selection.single);
-                },
-              ),
+            child: _SidebarModeSwitch(
+              selectedMode: _mode,
+              onChanged: (mode) {
+                setState(() => _mode = mode);
+              },
             ),
           ),
           Expanded(
@@ -844,6 +818,118 @@ class _ShellSidebarState extends State<_ShellSidebar> {
                 : widget.taskInboxSidebar!,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SidebarModeSwitch extends StatelessWidget {
+  const _SidebarModeSwitch({
+    required this.selectedMode,
+    required this.onChanged,
+  });
+
+  final AppShellSidebarMode selectedMode;
+  final ValueChanged<AppShellSidebarMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 32,
+      width: double.infinity,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _SidebarModeSegment(
+                flex: 7,
+                mode: AppShellSidebarMode.workspaces,
+                selected: selectedMode == AppShellSidebarMode.workspaces,
+                icon: Icons.folder_open_rounded,
+                label: 'Workspaces',
+                onChanged: onChanged,
+              ),
+              const VerticalDivider(width: 1, color: AppColors.border),
+              _SidebarModeSegment(
+                flex: 5,
+                mode: AppShellSidebarMode.inbox,
+                selected: selectedMode == AppShellSidebarMode.inbox,
+                icon: Icons.inbox_rounded,
+                label: 'Inbox',
+                onChanged: onChanged,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarModeSegment extends StatelessWidget {
+  const _SidebarModeSegment({
+    required this.flex,
+    required this.mode,
+    required this.selected,
+    required this.icon,
+    required this.label,
+    required this.onChanged,
+  });
+
+  final int flex;
+  final AppShellSidebarMode mode;
+  final bool selected;
+  final IconData icon;
+  final String label;
+  final ValueChanged<AppShellSidebarMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? AppColors.textPrimary : AppColors.textSecondary;
+    return Expanded(
+      flex: flex,
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: label,
+        child: Material(
+          color: selected ? AppColors.primarySoft : Colors.transparent,
+          child: InkWell(
+            onTap: selected ? null : () => onChanged(mode),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 15, color: color),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                        height: 1,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

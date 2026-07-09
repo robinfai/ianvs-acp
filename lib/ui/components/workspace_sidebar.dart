@@ -809,12 +809,12 @@ class _NestedSessionList extends StatelessWidget {
         widgets.add(_AgentGroupLabel(label: entry.key));
       }
       for (final session in entry.value) {
+        final selected = _isCurrentSession(session);
         widgets.add(
           _SessionTile(
             session: session,
-            selected: session.id == currentSession?.id,
-            onPressed:
-                onSelectSession == null || session.id == currentSession?.id
+            selected: selected,
+            onPressed: onSelectSession == null || selected
                 ? null
                 : () => onSelectSession!(session),
             canFork: canForkSession?.call(session) ?? false,
@@ -827,6 +827,18 @@ class _NestedSessionList extends StatelessWidget {
     }
     if (widgets.isNotEmpty) widgets.removeLast();
     return widgets;
+  }
+
+  bool _isCurrentSession(AgentSession session) {
+    final current = currentSession;
+    if (current == null || session.id != current.id) return false;
+    return _sessionAgentKey(session) == _sessionAgentKey(current) &&
+        normalizeWorkspacePath(session.cwd) ==
+            normalizeWorkspacePath(current.cwd);
+  }
+
+  String _sessionAgentKey(AgentSession session) {
+    return session.agentName?.trim() ?? '';
   }
 }
 
