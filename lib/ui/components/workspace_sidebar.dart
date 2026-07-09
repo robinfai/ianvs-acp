@@ -59,8 +59,10 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   static const Duration _currentWorkspaceAutoLoadDelay = Duration(
     milliseconds: 1,
   );
+  static const int _defaultVisibleSessionCount = 5;
 
   final Set<String> _expandedWorkspacePaths = <String>{};
+  final Set<String> _showAllSessionWorkspacePaths = <String>{};
   final Set<String> _pinnedWorkspacePaths = <String>{};
   final Set<String> _hiddenWorkspacePaths = <String>{};
   final Set<String> _loadingSessionWorkspacePaths = <String>{};
@@ -167,6 +169,14 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   hovered: hovered,
                   expanded: expanded,
                   currentSession: widget.currentSession,
+                  visibleSessionLimit: _defaultVisibleSessionCount,
+                  showAllSessions: _showAllSessionWorkspacePaths.contains(
+                    workspace.path,
+                  ),
+                  onExpandSessions: () =>
+                      _setWorkspaceSessionsVisible(workspace.path, true),
+                  onCollapseSessions: () =>
+                      _setWorkspaceSessionsVisible(workspace.path, false),
                   onWorkspacePressed: _workspacePressedCallback(
                     workspace,
                     selected,
@@ -399,6 +409,16 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     });
   }
 
+  void _setWorkspaceSessionsVisible(String path, bool showAll) {
+    setState(() {
+      if (showAll) {
+        _showAllSessionWorkspacePaths.add(path);
+      } else {
+        _showAllSessionWorkspacePaths.remove(path);
+      }
+    });
+  }
+
   Future<void> _handleWorkspaceMenuAction(
     BuildContext context,
     WorkspaceRecord workspace,
@@ -430,9 +450,13 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         final wasPinned = _pinnedWorkspacePaths.contains(workspace.path);
         final wasExpanded = _expandedWorkspacePaths.contains(workspace.path);
         final wasAutoLoad = _autoLoadWorkspacePaths.contains(workspace.path);
+        final wasShowingAllSessions = _showAllSessionWorkspacePaths.contains(
+          workspace.path,
+        );
         setState(() {
           _hiddenWorkspacePaths.add(workspace.path);
           _expandedWorkspacePaths.remove(workspace.path);
+          _showAllSessionWorkspacePaths.remove(workspace.path);
           _autoLoadWorkspacePaths.remove(workspace.path);
           _pinnedWorkspacePaths.remove(workspace.path);
         });
@@ -444,6 +468,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           wasPinned: wasPinned,
           wasExpanded: wasExpanded,
           wasAutoLoad: wasAutoLoad,
+          wasShowingAllSessions: wasShowingAllSessions,
         );
     }
   }
@@ -454,6 +479,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     required bool wasPinned,
     required bool wasExpanded,
     required bool wasAutoLoad,
+    required bool wasShowingAllSessions,
   }) {
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       SnackBar(
@@ -466,6 +492,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
               _hiddenWorkspacePaths.remove(workspace.path);
               if (wasPinned) _pinnedWorkspacePaths.add(workspace.path);
               if (wasExpanded) _expandedWorkspacePaths.add(workspace.path);
+              if (wasShowingAllSessions) {
+                _showAllSessionWorkspacePaths.add(workspace.path);
+              }
               if (wasAutoLoad) _autoLoadWorkspacePaths.add(workspace.path);
             });
             _persistExpandedWorkspacePaths();
@@ -646,6 +675,10 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.hovered,
     required this.expanded,
     required this.currentSession,
+    required this.visibleSessionLimit,
+    required this.showAllSessions,
+    required this.onExpandSessions,
+    required this.onCollapseSessions,
     required this.onWorkspacePressed,
     required this.onToggleWorkspace,
     required this.onSelectSession,
@@ -670,6 +703,10 @@ class _WorkspaceGroup extends StatelessWidget {
   final bool hovered;
   final bool expanded;
   final AgentSession? currentSession;
+  final int visibleSessionLimit;
+  final bool showAllSessions;
+  final VoidCallback onExpandSessions;
+  final VoidCallback onCollapseSessions;
   final VoidCallback? onWorkspacePressed;
   final VoidCallback? onToggleWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
@@ -703,9 +740,6 @@ class _WorkspaceGroup extends StatelessWidget {
               ? AppColors.surfaceMuted.withValues(alpha: 0.54)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(AppRadius.sm),
-          border: !selected && hovered
-              ? Border.all(color: AppColors.borderSoft)
-              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -747,6 +781,10 @@ class _WorkspaceGroup extends StatelessWidget {
                 child: _NestedSessionList(
                   workspace: workspace,
                   currentSession: currentSession,
+                  visibleSessionLimit: visibleSessionLimit,
+                  showAllSessions: showAllSessions,
+                  onExpandSessions: onExpandSessions,
+                  onCollapseSessions: onCollapseSessions,
                   onSelectSession: onSelectSession,
                   canForkSession: canForkSession,
                   onSessionMenuAction: onSessionMenuAction,
@@ -763,6 +801,10 @@ class _NestedSessionList extends StatelessWidget {
   const _NestedSessionList({
     required this.workspace,
     required this.currentSession,
+    required this.visibleSessionLimit,
+    required this.showAllSessions,
+    required this.onExpandSessions,
+    required this.onCollapseSessions,
     required this.onSelectSession,
     required this.canForkSession,
     required this.onSessionMenuAction,
@@ -770,6 +812,10 @@ class _NestedSessionList extends StatelessWidget {
 
   final WorkspaceRecord workspace;
   final AgentSession? currentSession;
+  final int visibleSessionLimit;
+  final bool showAllSessions;
+  final VoidCallback onExpandSessions;
+  final VoidCallback onCollapseSessions;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
   final FutureOr<void> Function(
@@ -796,7 +842,11 @@ class _NestedSessionList extends StatelessWidget {
 
   List<Widget> _sessionGroups() {
     final widgets = <Widget>[];
-    for (final session in workspace.sessions) {
+    final hasHiddenSessions = workspace.sessions.length > visibleSessionLimit;
+    final sessions = hasHiddenSessions && !showAllSessions
+        ? workspace.sessions.take(visibleSessionLimit)
+        : workspace.sessions;
+    for (final session in sessions) {
       final selected = _isCurrentSession(session);
       widgets.add(
         _SessionTile(
@@ -807,6 +857,16 @@ class _NestedSessionList extends StatelessWidget {
               : () => onSelectSession!(session),
           canFork: canForkSession?.call(session) ?? false,
           onMenuAction: onSessionMenuAction,
+        ),
+      );
+      widgets.add(const SizedBox(height: 5));
+    }
+    if (hasHiddenSessions) {
+      widgets.add(
+        _SessionListToggle(
+          workspacePath: workspace.path,
+          expanded: showAllSessions,
+          onPressed: showAllSessions ? onCollapseSessions : onExpandSessions,
         ),
       );
       widgets.add(const SizedBox(height: 5));
@@ -825,6 +885,51 @@ class _NestedSessionList extends StatelessWidget {
 
   String _sessionAgentKey(AgentSession session) {
     return session.agentName?.trim() ?? '';
+  }
+}
+
+class _SessionListToggle extends StatelessWidget {
+  const _SessionListToggle({
+    required this.workspacePath,
+    required this.expanded,
+    required this.onPressed,
+  });
+
+  final String workspacePath;
+  final bool expanded;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = expanded ? '折叠显示' : '展开显示';
+    return Semantics(
+      button: true,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          key: Key(
+            'workspace-session-${expanded ? 'collapse' : 'expand'}:$workspacePath',
+          ),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(4, 5, 4, 4),
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+                height: 1.1,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -864,6 +969,7 @@ class _WorkspaceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final radius = BorderRadius.circular(AppRadius.sm);
+    final reservesHoverBorder = !selected;
     return Semantics(
       button: onPressed != null,
       selected: selected,
@@ -878,14 +984,20 @@ class _WorkspaceTile extends StatelessWidget {
             onTap: onPressed,
             child: Container(
               key: Key('workspace-project-strip:${workspace.path}'),
-              padding: const EdgeInsets.fromLTRB(5, 5, 5, 5),
+              padding: reservesHoverBorder
+                  ? const EdgeInsets.fromLTRB(2, 4, 4, 4)
+                  : const EdgeInsets.fromLTRB(3, 5, 5, 5),
               decoration: BoxDecoration(
                 color: !selected && hovered
                     ? AppColors.surface
                     : Colors.transparent,
                 borderRadius: radius,
-                border: !selected && hovered
-                    ? Border.all(color: AppColors.borderSoft)
+                border: reservesHoverBorder
+                    ? Border.all(
+                        color: hovered
+                            ? AppColors.borderSoft
+                            : Colors.transparent,
+                      )
                     : null,
               ),
               child: Row(
@@ -898,7 +1010,7 @@ class _WorkspaceTile extends StatelessWidget {
                       borderRadius: BorderRadius.circular(AppRadius.pill),
                     ),
                   ),
-                  const SizedBox(width: 5),
+                  const SizedBox(width: 3),
                   _WorkspaceDisclosureButton(
                     expanded: expanded,
                     label: displayName,
@@ -1286,9 +1398,7 @@ class _SessionTileState extends State<_SessionTile> {
                       ? 'workspace-session-active:${session.id}'
                       : 'workspace-session-history:${session.id}',
                 ),
-                padding: selected
-                    ? const EdgeInsets.fromLTRB(7, 7, 5, 7)
-                    : const EdgeInsets.fromLTRB(5, 3, 4, 3),
+                padding: const EdgeInsets.fromLTRB(3, 3, 4, 3),
                 decoration: BoxDecoration(
                   color: selected ? AppColors.primaryMist : Colors.transparent,
                   border: Border.all(
@@ -1300,13 +1410,12 @@ class _SessionTileState extends State<_SessionTile> {
                   ),
                   borderRadius: radius,
                 ),
-                child: selected
-                    ? _activeSessionContent(session, onMenuAction)
-                    : _historySessionContent(
-                        session,
-                        onMenuAction,
-                        showActions,
-                      ),
+                child: _sessionContent(
+                  session,
+                  onMenuAction,
+                  showActions,
+                  selected: selected,
+                ),
               ),
             ),
           ),
@@ -1315,120 +1424,28 @@ class _SessionTileState extends State<_SessionTile> {
     );
   }
 
-  Widget _activeSessionContent(
+  Widget _sessionContent(
     AgentSession session,
     FutureOr<void> Function(
       AgentSession session,
       WorkspaceSessionMenuAction action,
     )?
     onMenuAction,
-  ) {
+    bool showActions, {
+    required bool selected,
+  }) {
+    final titleColor = selected ? AppColors.primaryDark : AppColors.textPrimary;
+    final timeColor = selected
+        ? AppColors.primaryDark.withValues(alpha: 0.7)
+        : AppColors.textTertiary;
     return Row(
       children: [
-        Container(
-          width: 3,
-          height: 36,
-          decoration: BoxDecoration(
-            color: AppColors.primary,
-            borderRadius: BorderRadius.circular(AppRadius.pill),
-          ),
-        ),
-        const SizedBox(width: 7),
-        _sessionGlyph(session, selected: true),
-        const SizedBox(width: 7),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      session.displayTitle,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 12,
-                        letterSpacing: 0,
-                        height: 1.1,
-                      ),
-                    ),
-                  ),
-                  if (session.pinned) ...[
-                    const SizedBox(width: 4),
-                    const Icon(
-                      Icons.push_pin,
-                      size: 13,
-                      color: AppColors.primaryDark,
-                    ),
-                  ],
-                  if (_agentLabel.isNotEmpty) ...[
-                    const SizedBox(width: 5),
-                    _AgentPill(label: _agentLabel),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.access_time_rounded,
-                    size: 11,
-                    color: AppColors.textTertiary,
-                  ),
-                  const SizedBox(width: 3),
-                  Expanded(
-                    child: Text(
-                      formatRelativeSessionTime(session.displayTime),
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textTertiary,
-                        fontSize: 10.5,
-                        height: 1.1,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        if (onMenuAction != null) ...[
-          const SizedBox(width: 3),
-          _SessionActionSlot(
-            visible: true,
-            child: _SessionMenuButton(
-              session: session,
-              canFork: widget.canFork,
-              onSelected: (action) => onMenuAction.call(session, action),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _historySessionContent(
-    AgentSession session,
-    FutureOr<void> Function(
-      AgentSession session,
-      WorkspaceSessionMenuAction action,
-    )?
-    onMenuAction,
-    bool showActions,
-  ) {
-    return Row(
-      children: [
-        _sessionGlyph(session, selected: false),
-        const SizedBox(width: 6),
         Expanded(
           child: Text(
             session.displayTitle,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
+            style: TextStyle(
+              color: titleColor,
               fontWeight: FontWeight.w800,
               fontSize: 11.5,
               letterSpacing: 0,
@@ -1449,11 +1466,7 @@ class _SessionTileState extends State<_SessionTile> {
           child: Text(
             formatRelativeSessionTime(session.displayTime),
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
-              fontSize: 10,
-              height: 1.1,
-            ),
+            style: TextStyle(color: timeColor, fontSize: 10, height: 1.1),
           ),
         ),
         if (onMenuAction != null) ...[
@@ -1467,47 +1480,6 @@ class _SessionTileState extends State<_SessionTile> {
             ),
           ),
         ],
-      ],
-    );
-  }
-
-  Widget _sessionGlyph(AgentSession session, {required bool selected}) {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Container(
-          width: selected ? 22 : 18,
-          height: selected ? 22 : 18,
-          decoration: BoxDecoration(
-            color: selected ? AppColors.primarySoft : AppColors.surfaceRaised,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: AppColors.borderSoft),
-          ),
-          child: Icon(
-            session.unread
-                ? Icons.mark_chat_unread_outlined
-                : Icons.chat_bubble_outline_rounded,
-            size: selected ? 13 : 11,
-            color: selected ? AppColors.primaryDark : AppColors.textSecondary,
-          ),
-        ),
-        if (session.unread)
-          Positioned(
-            right: -2,
-            top: -2,
-            child: Container(
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(AppRadius.pill),
-                border: Border.all(
-                  color: selected ? AppColors.primaryMist : AppColors.surface,
-                  width: 1.2,
-                ),
-              ),
-            ),
-          ),
       ],
     );
   }

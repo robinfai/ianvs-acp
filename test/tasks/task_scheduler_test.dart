@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/tasks/retry_policy.dart';
+import 'package:ianvs_acp/tasks/runtime_registry.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
@@ -82,15 +84,130 @@ void main() {
     expect(worker.startedTaskIds, ['task-urgent', 'task-high', 'task-normal']);
   });
 
-  test('TaskScheduler honors max concurrent tasks', () async {
+  test('TaskScheduler stop prevents queued task scans', () async {
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start();
+    scheduler.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+
+    expect(scheduler.isStarted, isFalse);
+    expect(worker.startedTaskIds, isEmpty);
+    expect(controller.runs, isEmpty);
+  });
+
+  test('TaskScheduler dispatches a run before starting work', () async {
+    final ids = _DeterministicIds();
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+      clock: () => DateTime(2026, 7, 8, 9, 30),
+      idGenerator: ids.next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.length == 1);
+
+    expect(controller.runs.single.status, TaskStatus.dispatched);
+    expect(controller.runs.single.taskId, 'task-1');
+    expect(controller.tasks.single.currentRunId, 'run-1');
+    expect(controller.events.single.text, 'Task dispatched.');
+    expect(controller.events.single.metadata['task_status'], 'dispatched');
+  });
+
+  test(
+    'TaskScheduler runs different workspaces up to max concurrency',
+    () async {
+      final controller = TaskInboxController(
+        store: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: DateTime(2026, 7, 8, 9),
+            tasks: [
+              _task(
+                id: 'task-1',
+                workspacePath: '/workspace/app',
+                createdAt: DateTime(2026, 7, 8, 9),
+              ),
+              _task(
+                id: 'task-2',
+                workspacePath: '/workspace/other',
+                createdAt: DateTime(2026, 7, 8, 9, 1),
+              ),
+              _task(
+                id: 'task-3',
+                workspacePath: '/workspace/third',
+                createdAt: DateTime(2026, 7, 8, 9, 2),
+              ),
+            ],
+          ),
+        ),
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        maxConcurrentTasks: 2,
+      );
+      addTearDown(scheduler.dispose);
+
+      await scheduler.start();
+      await _waitUntil(() => worker.startedTaskIds.length == 2);
+      expect(worker.startedTaskIds, ['task-1', 'task-2']);
+      expect(scheduler.activeCount, 2);
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(worker.startedTaskIds, ['task-1', 'task-2']);
+
+      worker.complete('task-1');
+      await _waitUntil(() => worker.startedTaskIds.length == 3);
+      expect(worker.startedTaskIds, ['task-1', 'task-2', 'task-3']);
+    },
+  );
+
+  test('TaskScheduler serializes tasks with the same workspace path', () async {
     final controller = TaskInboxController(
       store: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [
-            _task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9)),
-            _task(id: 'task-2', createdAt: DateTime(2026, 7, 8, 9, 1)),
-            _task(id: 'task-3', createdAt: DateTime(2026, 7, 8, 9, 2)),
+            _task(
+              id: 'task-1',
+              workspacePath: '/workspace/app',
+              createdAt: DateTime(2026, 7, 8, 9),
+            ),
+            _task(
+              id: 'task-2',
+              workspacePath: '/workspace/app/',
+              createdAt: DateTime(2026, 7, 8, 9, 1),
+            ),
+            _task(
+              id: 'task-3',
+              workspacePath: '/workspace/other',
+              createdAt: DateTime(2026, 7, 8, 9, 2),
+            ),
           ],
         ),
       ),
@@ -101,21 +218,241 @@ void main() {
     final scheduler = TaskScheduler(
       taskController: controller,
       worker: worker,
-      maxConcurrentTasks: 2,
+      maxConcurrentTasks: 3,
     );
     addTearDown(scheduler.dispose);
 
     await scheduler.start();
     await _waitUntil(() => worker.startedTaskIds.length == 2);
-    expect(worker.startedTaskIds, ['task-1', 'task-2']);
-    expect(scheduler.activeCount, 2);
+    expect(worker.startedTaskIds, ['task-1', 'task-3']);
 
     await Future<void>.delayed(const Duration(milliseconds: 25));
-    expect(worker.startedTaskIds, ['task-1', 'task-2']);
+    expect(worker.startedTaskIds, ['task-1', 'task-3']);
 
     worker.complete('task-1');
     await _waitUntil(() => worker.startedTaskIds.length == 3);
-    expect(worker.startedTaskIds, ['task-1', 'task-2', 'task-3']);
+    expect(worker.startedTaskIds, ['task-1', 'task-3', 'task-2']);
+  });
+
+  test(
+    'TaskScheduler keeps runtime offline tasks queued with an event',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        store: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [_task(id: 'task-1', createdAt: now)],
+          ),
+        ),
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final runtimeRegistry = LocalRuntimeRegistry(clock: () => now)
+        ..setStatus(
+          LocalRuntimeStatus.unavailable(
+            agentName: 'Codex',
+            checkedAt: now,
+            reason: 'Agent process is offline.',
+          ),
+        );
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        runtimeRegistry: runtimeRegistry,
+        retryPolicy: const RetryPolicy(baseDelay: Duration(hours: 1)),
+      );
+      addTearDown(scheduler.dispose);
+
+      await scheduler.start();
+      await _waitUntil(() => controller.events.isNotEmpty);
+
+      expect(worker.startedTaskIds, isEmpty);
+      expect(controller.tasks.single.status, TaskStatus.queued);
+      expect(controller.tasks.single.summary, contains('Runtime unavailable'));
+      expect(
+        controller.tasks.single.metadata['failure_reason'],
+        'runtimeOffline',
+      );
+      expect(controller.tasks.single.metadata['next_retry_at'], isNotNull);
+      expect(controller.runs.single.status, TaskStatus.failed);
+      expect(
+        controller.events.map((event) => event.text),
+        contains(contains('Runtime unavailable')),
+      );
+    },
+  );
+
+  test('TaskScheduler blocks auth-required runtime without retrying', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final runtimeRegistry = LocalRuntimeRegistry(clock: () => now)
+      ..setStatus(
+        LocalRuntimeStatus.authRequired(
+          agentName: 'Codex',
+          checkedAt: now,
+          reason: 'Run authentication first.',
+        ),
+      );
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: runtimeRegistry,
+    );
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start();
+    await _waitUntil(() => controller.events.isNotEmpty);
+
+    expect(worker.startedTaskIds, isEmpty);
+    expect(controller.tasks.single.status, TaskStatus.blockedOnUserInput);
+    expect(
+      controller.tasks.single.summary,
+      contains('Authentication required'),
+    );
+    expect(controller.tasks.single.metadata['failure_reason'], 'authRequired');
+    expect(controller.runs.single.status, TaskStatus.failed);
+    expect(
+      controller.events.map((event) => event.text),
+      contains(contains('Authentication required')),
+    );
+  });
+
+  test('TaskScheduler retries retryable failures with a new run', () async {
+    final ids = _DeterministicIds();
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+      clock: () => DateTime(2026, 7, 8, 10),
+      idGenerator: ids.next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final worker = _FailOnceTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      retryPolicy: const RetryPolicy(baseDelay: Duration.zero),
+    );
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.length == 2);
+    worker.complete('task-1');
+    await _waitUntil(
+      () => controller.tasks.single.status == TaskStatus.needsHumanReview,
+    );
+
+    expect(worker.startedTaskIds, ['task-1', 'task-1']);
+    expect(controller.runs.map((run) => run.attempt), [1, 2]);
+    expect(controller.runs.map((run) => run.id), ['run-1', 'run-2']);
+    expect(
+      controller.events.map((event) => event.text),
+      contains('Task retry queued.'),
+    );
+  });
+
+  test(
+    'TaskScheduler moves retry wake earlier for newly queued task',
+    () async {
+      final now = DateTime.now();
+      final controller = TaskInboxController(
+        store: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [
+              _task(
+                id: 'task-late',
+                createdAt: now,
+                metadata: <String, Object?>{
+                  'next_retry_at': now
+                      .add(const Duration(milliseconds: 350))
+                      .toIso8601String(),
+                },
+              ),
+              _task(
+                id: 'task-early',
+                createdAt: now.add(const Duration(milliseconds: 1)),
+                metadata: <String, Object?>{
+                  'next_retry_at': now
+                      .add(const Duration(milliseconds: 50))
+                      .toIso8601String(),
+                },
+              ),
+            ],
+          ),
+        ),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        maxConcurrentTasks: 1,
+      );
+      addTearDown(scheduler.dispose);
+
+      await scheduler.start();
+      await _waitUntil(
+        () => worker.startedTaskIds.contains('task-early'),
+        attempts: 20,
+      );
+
+      expect(worker.startedTaskIds, ['task-early']);
+    },
+  );
+
+  test('TaskScheduler does not retry non-retryable failures', () async {
+    final ids = _DeterministicIds();
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+      clock: () => DateTime(2026, 7, 8, 10),
+      idGenerator: ids.next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final worker = _NonRetryableFailureTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      retryPolicy: const RetryPolicy(baseDelay: Duration.zero),
+    );
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.length == 1);
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+
+    expect(worker.startedTaskIds, ['task-1']);
+    expect(controller.runs, hasLength(1));
+    expect(controller.tasks.single.status, TaskStatus.failed);
+    expect(controller.tasks.single.error, contains('permissionDenied'));
   });
 
   test(
@@ -146,7 +483,7 @@ void main() {
           ),
         ),
         clock: () => DateTime(2026, 7, 8, 10),
-        idGenerator: (_) => 'event-1',
+        idGenerator: _DeterministicIds().next,
       );
       addTearDown(controller.dispose);
       await controller.load();
@@ -166,8 +503,11 @@ void main() {
         controller.taskById('task-interrupted')!.status,
         TaskStatus.failed,
       );
-      expect(controller.runs.single.status, TaskStatus.failed);
-      expect(controller.runs.single.endedAt, DateTime(2026, 7, 8, 10));
+      final recoveredRun = controller.runs.singleWhere(
+        (run) => run.id == 'run-1',
+      );
+      expect(recoveredRun.status, TaskStatus.failed);
+      expect(recoveredRun.endedAt, DateTime(2026, 7, 8, 10));
     },
   );
 }
@@ -177,19 +517,22 @@ TaskRecord _task({
   TaskPriority priority = TaskPriority.normal,
   required DateTime createdAt,
   TaskStatus status = TaskStatus.queued,
+  String workspacePath = '/workspace/app',
   String? currentRunId,
+  Map<String, Object?> metadata = const <String, Object?>{},
 }) {
   return TaskRecord(
     id: id,
     title: id,
     description: '',
-    workspacePath: '/workspace/app',
+    workspacePath: workspacePath,
     agentName: 'Codex',
     status: status,
     priority: priority,
     createdAt: createdAt,
     updatedAt: createdAt,
     currentRunId: currentRunId,
+    metadata: metadata,
   );
 }
 
@@ -217,6 +560,75 @@ class _RecordingTaskWorker implements TaskWorker {
   }
 }
 
+class _FailOnceTaskWorker implements TaskWorker {
+  _FailOnceTaskWorker(this.controller);
+
+  final TaskInboxController controller;
+  final List<String> startedTaskIds = <String>[];
+  final Map<String, Completer<void>> _completions = <String, Completer<void>>{};
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) async {
+    startedTaskIds.add(task.id);
+    final runId = task.currentRunId!;
+    if (startedTaskIds.length == 1) {
+      await controller.updateRun(
+        runId,
+        status: TaskStatus.failed,
+        endedAt: DateTime(2026, 7, 8, 10),
+        error: 'runtimeOffline: agent disconnected',
+      );
+      return controller.updateTask(
+        task.id,
+        status: TaskStatus.failed,
+        error: 'runtimeOffline: agent disconnected',
+      );
+    }
+
+    final completion = Completer<void>();
+    _completions[task.id] = completion;
+    await controller.updateRun(runId, status: TaskStatus.running);
+    await controller.updateTaskStatus(task.id, TaskStatus.running);
+    await completion.future;
+    await controller.updateRun(
+      runId,
+      status: TaskStatus.needsHumanReview,
+      endedAt: DateTime(2026, 7, 8, 10, 1),
+    );
+    return controller.updateTaskStatus(task.id, TaskStatus.needsHumanReview);
+  }
+
+  void complete(String taskId) {
+    final completion = _completions[taskId];
+    if (completion == null || completion.isCompleted) return;
+    completion.complete();
+  }
+}
+
+class _NonRetryableFailureTaskWorker implements TaskWorker {
+  _NonRetryableFailureTaskWorker(this.controller);
+
+  final TaskInboxController controller;
+  final List<String> startedTaskIds = <String>[];
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) async {
+    startedTaskIds.add(task.id);
+    final runId = task.currentRunId!;
+    await controller.updateRun(
+      runId,
+      status: TaskStatus.failed,
+      endedAt: DateTime(2026, 7, 8, 10),
+      error: 'permissionDenied: user denied tool access',
+    );
+    return controller.updateTask(
+      task.id,
+      status: TaskStatus.failed,
+      error: 'permissionDenied: user denied tool access',
+    );
+  }
+}
+
 class _MemoryTaskStore implements TaskStore {
   _MemoryTaskStore([TaskInboxSnapshot? snapshot])
     : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
@@ -231,6 +643,16 @@ class _MemoryTaskStore implements TaskStore {
   Future<void> save(TaskInboxSnapshot snapshot) async {
     _snapshot = snapshot;
     savedSnapshots.add(snapshot);
+  }
+}
+
+class _DeterministicIds {
+  final Map<String, int> _counts = <String, int>{};
+
+  String next(String prefix) {
+    final count = (_counts[prefix] ?? 0) + 1;
+    _counts[prefix] = count;
+    return '$prefix-$count';
   }
 }
 

@@ -18,7 +18,6 @@ class TaskInboxSidebar extends StatefulWidget {
     this.agentNames = const <String>[],
     this.selectedTaskId,
     this.onRunTask,
-    this.onExportTask,
     this.onOpenLinkedSession,
   });
 
@@ -28,7 +27,6 @@ class TaskInboxSidebar extends StatefulWidget {
   final List<String> agentNames;
   final String? selectedTaskId;
   final FutureOr<void> Function(TaskRecord task)? onRunTask;
-  final FutureOr<void> Function(TaskRecord task)? onExportTask;
   final ValueChanged<TaskRecord>? onOpenLinkedSession;
 
   @override
@@ -38,7 +36,6 @@ class TaskInboxSidebar extends StatefulWidget {
 class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
   String? _selectedTaskId;
   final Set<String> _runningTaskIds = <String>{};
-  final Set<String> _exportingTaskIds = <String>{};
 
   @override
   void initState() {
@@ -104,20 +101,15 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
                       group: group,
                       selectedTaskId: _selectedTaskId,
                       runningTaskIds: _runningTaskIds,
-                      exportingTaskIds: _exportingTaskIds,
                       artifactsByTask: artifactsByTask,
                       onSelectTask: (task) {
                         setState(() => _selectedTaskId = task.id);
                       },
                       onRunTask: widget.onRunTask == null ? null : _runTask,
-                      onExportTask: widget.onExportTask == null
-                          ? null
-                          : _exportTask,
                       onOpenLinkedSession: widget.onOpenLinkedSession,
                       onMarkDoneLocally: _markDoneLocally,
                       onRequestChanges: _requestChanges,
                       onRejectTask: _rejectTask,
-                      onApproveExport: _approveExport,
                     );
                   },
                   separatorBuilder: (context, index) {
@@ -186,27 +178,6 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
     }
   }
 
-  Future<void> _exportTask(TaskRecord task) async {
-    final exportTask = widget.onExportTask;
-    if (exportTask == null || _exportingTaskIds.contains(task.id)) return;
-    setState(() {
-      _selectedTaskId = task.id;
-      _exportingTaskIds.add(task.id);
-    });
-    try {
-      await exportTask(task);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(SnackBar(content: Text('Could not export task: $error')));
-    } finally {
-      if (mounted) {
-        setState(() => _exportingTaskIds.remove(task.id));
-      }
-    }
-  }
-
   Future<void> _markDoneLocally(TaskRecord task) async {
     await _runReviewAction(
       () => widget.controller.markTaskDoneLocally(task.id),
@@ -225,13 +196,6 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
     await _runReviewAction(
       () => widget.controller.rejectTask(task.id),
       failureLabel: 'reject task',
-    );
-  }
-
-  Future<void> _approveExport(TaskRecord task) async {
-    await _runReviewAction(
-      () => widget.controller.approveTaskExport(task.id),
-      failureLabel: 'approve export',
     );
   }
 
@@ -260,30 +224,24 @@ class _TaskStatusGroup extends StatelessWidget {
     required this.group,
     required this.selectedTaskId,
     required this.runningTaskIds,
-    required this.exportingTaskIds,
     required this.artifactsByTask,
     required this.onSelectTask,
     required this.onMarkDoneLocally,
     required this.onRequestChanges,
     required this.onRejectTask,
-    required this.onApproveExport,
     this.onRunTask,
-    this.onExportTask,
     this.onOpenLinkedSession,
   });
 
   final _TaskGroup group;
   final String? selectedTaskId;
   final Set<String> runningTaskIds;
-  final Set<String> exportingTaskIds;
   final Map<String, List<ArtifactRecord>> artifactsByTask;
   final ValueChanged<TaskRecord> onSelectTask;
   final FutureOr<void> Function(TaskRecord task) onMarkDoneLocally;
   final FutureOr<void> Function(TaskRecord task) onRequestChanges;
   final FutureOr<void> Function(TaskRecord task) onRejectTask;
-  final FutureOr<void> Function(TaskRecord task) onApproveExport;
   final FutureOr<void> Function(TaskRecord task)? onRunTask;
-  final FutureOr<void> Function(TaskRecord task)? onExportTask;
   final ValueChanged<TaskRecord>? onOpenLinkedSession;
 
   @override
@@ -322,16 +280,13 @@ class _TaskStatusGroup extends StatelessWidget {
             task: task,
             selected: task.id == selectedTaskId,
             running: runningTaskIds.contains(task.id),
-            exporting: exportingTaskIds.contains(task.id),
             artifacts: artifactsByTask[task.id] ?? const <ArtifactRecord>[],
             onTap: () => onSelectTask(task),
             onRunTask: onRunTask,
-            onExportTask: onExportTask,
             onOpenLinkedSession: onOpenLinkedSession,
             onMarkDoneLocally: onMarkDoneLocally,
             onRequestChanges: onRequestChanges,
             onRejectTask: onRejectTask,
-            onApproveExport: onApproveExport,
           ),
           if (task != group.tasks.last) const SizedBox(height: 6),
         ],
@@ -345,31 +300,25 @@ class _TaskTile extends StatelessWidget {
     required this.task,
     required this.selected,
     required this.running,
-    required this.exporting,
     required this.artifacts,
     required this.onTap,
     this.onRunTask,
-    this.onExportTask,
     this.onOpenLinkedSession,
     required this.onMarkDoneLocally,
     required this.onRequestChanges,
     required this.onRejectTask,
-    required this.onApproveExport,
   });
 
   final TaskRecord task;
   final bool selected;
   final bool running;
-  final bool exporting;
   final List<ArtifactRecord> artifacts;
   final VoidCallback onTap;
   final FutureOr<void> Function(TaskRecord task)? onRunTask;
-  final FutureOr<void> Function(TaskRecord task)? onExportTask;
   final ValueChanged<TaskRecord>? onOpenLinkedSession;
   final FutureOr<void> Function(TaskRecord task) onMarkDoneLocally;
   final FutureOr<void> Function(TaskRecord task) onRequestChanges;
   final FutureOr<void> Function(TaskRecord task) onRejectTask;
-  final FutureOr<void> Function(TaskRecord task) onApproveExport;
 
   @override
   Widget build(BuildContext context) {
@@ -470,6 +419,32 @@ class _TaskTile extends StatelessWidget {
                   ),
                 ],
               ),
+              if (_skillSummary(task) != null) ...[
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.school_outlined,
+                      size: 14,
+                      color: AppColors.textTertiary,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        _skillSummary(task)!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               if (task.summary != null && task.summary!.trim().isNotEmpty) ...[
                 const SizedBox(height: 7),
                 Text(
@@ -502,20 +477,6 @@ class _TaskTile extends StatelessWidget {
                   ),
                   const SizedBox(width: 6),
                   _TileActionButton(
-                    icon: exporting
-                        ? Icons.hourglass_top_rounded
-                        : Icons.ios_share_outlined,
-                    tooltip: 'Export task',
-                    onPressed: _canExport
-                        ? () {
-                            unawaited(
-                              Future<void>.sync(() => onExportTask!(task)),
-                            );
-                          }
-                        : null,
-                  ),
-                  const SizedBox(width: 6),
-                  _TileActionButton(
                     icon: Icons.open_in_new_rounded,
                     tooltip: 'Open linked session',
                     onPressed: _canOpenLinkedSession
@@ -534,7 +495,6 @@ class _TaskTile extends StatelessWidget {
                   onMarkDoneLocally: () => onMarkDoneLocally(task),
                   onRequestChanges: () => onRequestChanges(task),
                   onRejectTask: () => onRejectTask(task),
-                  onApproveExport: () => onApproveExport(task),
                 ),
               ],
             ],
@@ -555,12 +515,6 @@ class _TaskTile extends StatelessWidget {
     };
   }
 
-  bool get _canExport {
-    return !exporting &&
-        onExportTask != null &&
-        task.status == TaskStatus.approvedForExport;
-  }
-
   bool get _canOpenLinkedSession {
     return onOpenLinkedSession != null &&
         task.sessionId != null &&
@@ -575,13 +529,11 @@ class _ReviewActionPanel extends StatelessWidget {
     required this.onMarkDoneLocally,
     required this.onRequestChanges,
     required this.onRejectTask,
-    required this.onApproveExport,
   });
 
   final FutureOr<void> Function() onMarkDoneLocally;
   final FutureOr<void> Function() onRequestChanges;
   final FutureOr<void> Function() onRejectTask;
-  final FutureOr<void> Function() onApproveExport;
 
   @override
   Widget build(BuildContext context) {
@@ -594,20 +546,6 @@ class _ReviewActionPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            FilledButton.icon(
-              key: const Key('task-approve-export-button'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(34),
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                ),
-              ),
-              onPressed: () => unawaited(Future<void>.sync(onApproveExport)),
-              icon: const Icon(Icons.verified_outlined, size: 15),
-              label: const Text('Approve Export'),
-            ),
-            const SizedBox(height: 6),
             OutlinedButton.icon(
               key: const Key('task-mark-done-locally-button'),
               style: OutlinedButton.styleFrom(
@@ -876,18 +814,15 @@ List<_TaskGroup> _groups(List<TaskRecord> tasks) {
   return [
     _TaskGroup(
       title: 'Needs Review',
-      tasks: _tasksWithStatuses(sorted, const {
-        TaskStatus.needsHumanReview,
-        TaskStatus.approvedForExport,
-      }),
+      tasks: _tasksWithStatuses(sorted, const {TaskStatus.needsHumanReview}),
     ),
     _TaskGroup(
       title: 'Running',
       tasks: _tasksWithStatuses(sorted, const {
         TaskStatus.queued,
+        TaskStatus.dispatched,
         TaskStatus.running,
         TaskStatus.collectingArtifacts,
-        TaskStatus.exporting,
       }),
     ),
     _TaskGroup(
@@ -957,4 +892,18 @@ String _priorityLabel(TaskPriority priority) {
     TaskPriority.high => 'High',
     TaskPriority.urgent => 'Urgent',
   };
+}
+
+String? _skillSummary(TaskRecord task) {
+  final paths = task.metadata['skill_paths'];
+  if (paths is List) {
+    final values = paths
+        .whereType<String>()
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    if (values.isNotEmpty) return values.join(', ');
+  }
+  if (task.skillIds.isEmpty) return null;
+  return task.skillIds.join(', ');
 }

@@ -1,13 +1,12 @@
 enum TaskStatus {
   inbox,
   queued,
+  dispatched,
   running,
   blockedOnPermission,
   blockedOnUserInput,
   collectingArtifacts,
   needsHumanReview,
-  approvedForExport,
-  exporting,
   done,
   failed,
   cancelled,
@@ -25,7 +24,6 @@ enum TaskEventKind {
   permission,
   review,
   artifact,
-  export,
   error,
   system,
 }
@@ -40,21 +38,11 @@ enum ArtifactKind {
   patch,
 }
 
-enum ArtifactStatus { candidate, reviewed, approved, rejected, exported }
+enum ArtifactStatus { candidate, reviewed, approved, rejected }
 
-enum ApprovalKind { toolPermission, export }
+enum ApprovalKind { toolPermission }
 
 enum ApprovalStatus { pending, approved, denied, cancelled }
-
-enum ExportTarget {
-  simulated,
-  gitCommit,
-  gitPush,
-  pullRequest,
-  copyToExternalDirectory,
-  uploadHttp,
-  sendWebhook,
-}
 
 const Object _unchanged = Object();
 
@@ -73,6 +61,8 @@ class TaskRecord {
     this.currentRunId,
     this.summary,
     this.error,
+    this.resourceId,
+    this.skillIds = const <String>[],
     this.metadata = const <String, Object?>{},
   });
 
@@ -89,6 +79,8 @@ class TaskRecord {
   final String? currentRunId;
   final String? summary;
   final String? error;
+  final String? resourceId;
+  final List<String> skillIds;
   final Map<String, Object?> metadata;
 
   TaskRecord copyWith({
@@ -105,6 +97,8 @@ class TaskRecord {
     Object? currentRunId = _unchanged,
     Object? summary = _unchanged,
     Object? error = _unchanged,
+    Object? resourceId = _unchanged,
+    List<String>? skillIds,
     Map<String, Object?>? metadata,
   }) {
     return TaskRecord(
@@ -127,6 +121,10 @@ class TaskRecord {
           ? this.summary
           : summary as String?,
       error: identical(error, _unchanged) ? this.error : error as String?,
+      resourceId: identical(resourceId, _unchanged)
+          ? this.resourceId
+          : resourceId as String?,
+      skillIds: skillIds ?? this.skillIds,
       metadata: metadata ?? this.metadata,
     );
   }
@@ -171,6 +169,8 @@ class TaskRecord {
       ),
       summary: _stringFromJson(json['summary']),
       error: _stringFromJson(json['error']),
+      resourceId: _stringFromJson(json['resource_id'] ?? json['resourceId']),
+      skillIds: _stringListFromJson(json['skill_ids'] ?? json['skillIds']),
       metadata: _jsonMap(json['metadata']) ?? const <String, Object?>{},
     );
   }
@@ -180,6 +180,7 @@ class TaskRecord {
     final currentRunId = this.currentRunId?.trim();
     final summary = this.summary?.trim();
     final error = this.error?.trim();
+    final resourceId = this.resourceId?.trim();
     return <String, Object?>{
       'id': id,
       'title': title,
@@ -195,6 +196,9 @@ class TaskRecord {
         'current_run_id': currentRunId,
       if (summary != null && summary.isNotEmpty) 'summary': summary,
       if (error != null && error.isNotEmpty) 'error': error,
+      if (resourceId != null && resourceId.isNotEmpty)
+        'resource_id': resourceId,
+      if (skillIds.isNotEmpty) 'skill_ids': skillIds,
       if (metadata.isNotEmpty) 'metadata': metadata,
     };
   }
@@ -517,11 +521,7 @@ class ApprovalRequestRecord {
     required this.createdAt,
     this.runId,
     this.resolvedAt,
-    this.target,
-    this.destination,
-    this.riskSummary,
     this.rationale,
-    this.artifactIds = const <String>[],
     this.metadata = const <String, Object?>{},
   });
 
@@ -532,11 +532,7 @@ class ApprovalRequestRecord {
   final ApprovalStatus status;
   final DateTime createdAt;
   final DateTime? resolvedAt;
-  final ExportTarget? target;
-  final String? destination;
-  final String? riskSummary;
   final String? rationale;
-  final List<String> artifactIds;
   final Map<String, Object?> metadata;
 
   ApprovalRequestRecord copyWith({
@@ -547,11 +543,7 @@ class ApprovalRequestRecord {
     ApprovalStatus? status,
     DateTime? createdAt,
     Object? resolvedAt = _unchanged,
-    Object? target = _unchanged,
-    Object? destination = _unchanged,
-    Object? riskSummary = _unchanged,
     Object? rationale = _unchanged,
-    List<String>? artifactIds,
     Map<String, Object?>? metadata,
   }) {
     return ApprovalRequestRecord(
@@ -564,19 +556,9 @@ class ApprovalRequestRecord {
       resolvedAt: identical(resolvedAt, _unchanged)
           ? this.resolvedAt
           : resolvedAt as DateTime?,
-      target: identical(target, _unchanged)
-          ? this.target
-          : target as ExportTarget?,
-      destination: identical(destination, _unchanged)
-          ? this.destination
-          : destination as String?,
-      riskSummary: identical(riskSummary, _unchanged)
-          ? this.riskSummary
-          : riskSummary as String?,
       rationale: identical(rationale, _unchanged)
           ? this.rationale
           : rationale as String?,
-      artifactIds: artifactIds ?? this.artifactIds,
       metadata: metadata ?? this.metadata,
     );
   }
@@ -590,6 +572,7 @@ class ApprovalRequestRecord {
       json['created_at'] ?? json['createdAt'],
     );
     if (id == null || taskId == null || createdAt == null) return null;
+    if (_enumToken(json['kind']) == 'export') return null;
     return ApprovalRequestRecord(
       id: id,
       taskId: taskId,
@@ -598,21 +581,13 @@ class ApprovalRequestRecord {
       status: approvalStatusFromJson(json['status']),
       createdAt: createdAt,
       resolvedAt: _dateTimeFromJson(json['resolved_at'] ?? json['resolvedAt']),
-      target: exportTargetFromJson(json['target']),
-      destination: _stringFromJson(json['destination']),
-      riskSummary: _stringFromJson(json['risk_summary'] ?? json['riskSummary']),
       rationale: _stringFromJson(json['rationale']),
-      artifactIds: _stringListFromJson(
-        json['artifact_ids'] ?? json['artifactIds'],
-      ),
       metadata: _jsonMap(json['metadata']) ?? const <String, Object?>{},
     );
   }
 
   Map<String, Object?> toJson() {
     final runId = this.runId?.trim();
-    final destination = this.destination?.trim();
-    final riskSummary = this.riskSummary?.trim();
     final rationale = this.rationale?.trim();
     return <String, Object?>{
       'id': id,
@@ -622,13 +597,7 @@ class ApprovalRequestRecord {
       'status': status.jsonValue,
       'created_at': createdAt.toIso8601String(),
       if (resolvedAt != null) 'resolved_at': resolvedAt!.toIso8601String(),
-      if (target != null) 'target': target!.jsonValue,
-      if (destination != null && destination.isNotEmpty)
-        'destination': destination,
-      if (riskSummary != null && riskSummary.isNotEmpty)
-        'risk_summary': riskSummary,
       if (rationale != null && rationale.isNotEmpty) 'rationale': rationale,
-      if (artifactIds.isNotEmpty) 'artifact_ids': artifactIds,
       if (metadata.isNotEmpty) 'metadata': metadata,
     };
   }
@@ -639,13 +608,12 @@ extension TaskStatusJson on TaskStatus {
     return switch (this) {
       TaskStatus.inbox => 'inbox',
       TaskStatus.queued => 'queued',
+      TaskStatus.dispatched => 'dispatched',
       TaskStatus.running => 'running',
       TaskStatus.blockedOnPermission => 'blocked_on_permission',
       TaskStatus.blockedOnUserInput => 'blocked_on_user_input',
       TaskStatus.collectingArtifacts => 'collecting_artifacts',
       TaskStatus.needsHumanReview => 'needs_human_review',
-      TaskStatus.approvedForExport => 'approved_for_export',
-      TaskStatus.exporting => 'exporting',
       TaskStatus.done => 'done',
       TaskStatus.failed => 'failed',
       TaskStatus.cancelled => 'cancelled',
@@ -676,7 +644,6 @@ extension TaskEventKindJson on TaskEventKind {
       TaskEventKind.permission => 'permission',
       TaskEventKind.review => 'review',
       TaskEventKind.artifact => 'artifact',
-      TaskEventKind.export => 'export',
       TaskEventKind.error => 'error',
       TaskEventKind.system => 'system',
     };
@@ -704,7 +671,6 @@ extension ArtifactStatusJson on ArtifactStatus {
       ArtifactStatus.reviewed => 'reviewed',
       ArtifactStatus.approved => 'approved',
       ArtifactStatus.rejected => 'rejected',
-      ArtifactStatus.exported => 'exported',
     };
   }
 }
@@ -713,7 +679,6 @@ extension ApprovalKindJson on ApprovalKind {
   String get jsonValue {
     return switch (this) {
       ApprovalKind.toolPermission => 'tool_permission',
-      ApprovalKind.export => 'export',
     };
   }
 }
@@ -729,20 +694,6 @@ extension ApprovalStatusJson on ApprovalStatus {
   }
 }
 
-extension ExportTargetJson on ExportTarget {
-  String get jsonValue {
-    return switch (this) {
-      ExportTarget.simulated => 'simulated',
-      ExportTarget.gitCommit => 'git_commit',
-      ExportTarget.gitPush => 'git_push',
-      ExportTarget.pullRequest => 'pull_request',
-      ExportTarget.copyToExternalDirectory => 'copy_to_external_directory',
-      ExportTarget.uploadHttp => 'upload_http',
-      ExportTarget.sendWebhook => 'send_webhook',
-    };
-  }
-}
-
 TaskStatus taskStatusFromJson(
   Object? raw, {
   TaskStatus fallback = TaskStatus.inbox,
@@ -750,6 +701,7 @@ TaskStatus taskStatusFromJson(
   return switch (_enumToken(raw)) {
     'inbox' => TaskStatus.inbox,
     'queued' => TaskStatus.queued,
+    'dispatched' => TaskStatus.dispatched,
     'running' => TaskStatus.running,
     'blocked_on_permission' ||
     'blockedonpermission' => TaskStatus.blockedOnPermission,
@@ -759,8 +711,8 @@ TaskStatus taskStatusFromJson(
     'collectingartifacts' => TaskStatus.collectingArtifacts,
     'needs_human_review' || 'needshumanreview' => TaskStatus.needsHumanReview,
     'approved_for_export' ||
-    'approvedforexport' => TaskStatus.approvedForExport,
-    'exporting' => TaskStatus.exporting,
+    'approvedforexport' ||
+    'exporting' => TaskStatus.needsHumanReview,
     'done' => TaskStatus.done,
     'failed' => TaskStatus.failed,
     'cancelled' || 'canceled' => TaskStatus.cancelled,
@@ -795,7 +747,7 @@ TaskEventKind taskEventKindFromJson(
     'permission' => TaskEventKind.permission,
     'review' => TaskEventKind.review,
     'artifact' => TaskEventKind.artifact,
-    'export' => TaskEventKind.export,
+    'export' => TaskEventKind.system,
     'error' => TaskEventKind.error,
     'system' => TaskEventKind.system,
     _ => fallback,
@@ -827,18 +779,17 @@ ArtifactStatus artifactStatusFromJson(
     'reviewed' => ArtifactStatus.reviewed,
     'approved' => ArtifactStatus.approved,
     'rejected' => ArtifactStatus.rejected,
-    'exported' => ArtifactStatus.exported,
+    'exported' => ArtifactStatus.approved,
     _ => fallback,
   };
 }
 
 ApprovalKind approvalKindFromJson(
   Object? raw, {
-  ApprovalKind fallback = ApprovalKind.export,
+  ApprovalKind fallback = ApprovalKind.toolPermission,
 }) {
   return switch (_enumToken(raw)) {
     'tool_permission' || 'toolpermission' => ApprovalKind.toolPermission,
-    'export' => ApprovalKind.export,
     _ => fallback,
   };
 }
@@ -853,20 +804,6 @@ ApprovalStatus approvalStatusFromJson(
     'denied' => ApprovalStatus.denied,
     'cancelled' || 'canceled' => ApprovalStatus.cancelled,
     _ => fallback,
-  };
-}
-
-ExportTarget? exportTargetFromJson(Object? raw) {
-  return switch (_enumToken(raw)) {
-    'simulated' => ExportTarget.simulated,
-    'git_commit' || 'gitcommit' => ExportTarget.gitCommit,
-    'git_push' || 'gitpush' => ExportTarget.gitPush,
-    'pull_request' || 'pullrequest' => ExportTarget.pullRequest,
-    'copy_to_external_directory' ||
-    'copytoexternaldirectory' => ExportTarget.copyToExternalDirectory,
-    'upload_http' || 'uploadhttp' => ExportTarget.uploadHttp,
-    'send_webhook' || 'sendwebhook' => ExportTarget.sendWebhook,
-    _ => null,
   };
 }
 

@@ -77,6 +77,8 @@ class TaskInboxController extends ChangeNotifier {
     required String workspacePath,
     required String agentName,
     TaskPriority priority = TaskPriority.normal,
+    String? resourceId,
+    List<String> skillIds = const <String>[],
     Map<String, Object?> metadata = const <String, Object?>{},
   }) async {
     await _ensureLoaded();
@@ -91,6 +93,8 @@ class TaskInboxController extends ChangeNotifier {
       priority: priority,
       createdAt: now,
       updatedAt: now,
+      resourceId: _trimmedOrNull(resourceId),
+      skillIds: _cleanStringList(skillIds),
       metadata: Map.unmodifiable(metadata),
     );
 
@@ -143,6 +147,8 @@ class TaskInboxController extends ChangeNotifier {
     TaskStatus? status,
     DateTime? endedAt,
     String? sessionId,
+    Object? promptSnapshot = _unchanged,
+    Object? model = _unchanged,
     String? error,
   }) async {
     await _ensureLoaded();
@@ -156,6 +162,12 @@ class TaskInboxController extends ChangeNotifier {
       status: status,
       endedAt: endedAt ?? existing.endedAt,
       sessionId: sessionId ?? existing.sessionId,
+      promptSnapshot: identical(promptSnapshot, _unchanged)
+          ? existing.promptSnapshot
+          : _trimmedOrNull(promptSnapshot as String?),
+      model: identical(model, _unchanged)
+          ? existing.model
+          : _trimmedOrNull(model as String?),
       error: error ?? existing.error,
     );
     final runs = [..._snapshot.runs];
@@ -518,54 +530,6 @@ class TaskInboxController extends ChangeNotifier {
     return taskById(task.id) ?? task;
   }
 
-  Future<ApprovalRequestRecord> createExportApprovalRequest({
-    required String taskId,
-    ExportTarget target = ExportTarget.simulated,
-    String? destination,
-    String? riskSummary,
-    String? rationale,
-    List<String>? artifactIds,
-    Map<String, Object?> metadata = const <String, Object?>{},
-  }) async {
-    await _ensureLoaded();
-    final task = taskById(taskId);
-    if (task == null) throw StateError('Task not found: $taskId');
-    final now = _clock();
-    final approval = ApprovalRequestRecord(
-      id: _newId('approval'),
-      taskId: task.id,
-      runId: _trimmedOrNull(task.currentRunId),
-      kind: ApprovalKind.export,
-      status: ApprovalStatus.pending,
-      createdAt: now,
-      target: target,
-      destination: _trimmedOrNull(destination),
-      riskSummary: _trimmedOrNull(riskSummary),
-      rationale: _trimmedOrNull(rationale),
-      artifactIds: List.unmodifiable(
-        artifactIds ?? _artifactIdsForTaskRun(task.id, task.currentRunId),
-      ),
-      metadata: Map.unmodifiable(metadata),
-    );
-    _snapshot = _snapshot.copyWith(
-      approvals: [..._snapshot.approvals, approval],
-      updatedAt: now,
-    );
-    await store.save(_snapshot);
-    notifyListeners();
-    await _appendReviewEventIfPossible(
-      task,
-      'Export approval requested.',
-      metadata: <String, Object?>{
-        'review_action': 'request_export_approval',
-        'approval_id': approval.id,
-        'approval_status': approval.status.name,
-        'target': target.name,
-      },
-    );
-    return approval;
-  }
-
   Future<ApprovalRequestRecord> resolveApproval(
     String approvalId,
     ApprovalStatus status, {
@@ -590,41 +554,17 @@ class TaskInboxController extends ChangeNotifier {
     );
     final approvals = [..._snapshot.approvals];
     approvals[index] = resolved;
-    var tasks = _snapshot.tasks;
-    final taskIndex = _indexOfTask(existing.taskId);
-    if (taskIndex >= 0 &&
-        existing.kind == ApprovalKind.export &&
-        status == ApprovalStatus.approved) {
-      tasks = [..._snapshot.tasks];
-      tasks[taskIndex] = tasks[taskIndex].copyWith(
-        status: TaskStatus.approvedForExport,
-        updatedAt: now,
-      );
-    }
-    _snapshot = _snapshot.copyWith(
-      tasks: tasks,
-      approvals: approvals,
-      updatedAt: now,
-    );
+    _snapshot = _snapshot.copyWith(approvals: approvals, updatedAt: now);
     await store.save(_snapshot);
     notifyListeners();
-    if (existing.kind == ApprovalKind.export &&
-        status == ApprovalStatus.approved &&
-        resolved.artifactIds.isNotEmpty) {
-      await updateArtifactStatuses(
-        taskId: existing.taskId,
-        artifactIds: resolved.artifactIds,
-        status: ArtifactStatus.approved,
-      );
-    }
 
     final task = taskById(existing.taskId);
     if (task != null) {
       await _appendReviewEventIfPossible(
         task,
-        'Export approval ${status.name}.',
+        'Approval ${status.name}.',
         metadata: <String, Object?>{
-          'review_action': 'resolve_export_approval',
+          'review_action': 'resolve_approval',
           'approval_id': resolved.id,
           'approval_status': resolved.status.name,
           if (_trimmedOrNull(rationale) != null)
@@ -633,79 +573,6 @@ class TaskInboxController extends ChangeNotifier {
       );
     }
     return resolved;
-  }
-
-  Future<ApprovalRequestRecord> approveTaskExport(
-    String taskId, {
-    ExportTarget target = ExportTarget.simulated,
-    String? destination,
-    String? riskSummary,
-    String? rationale,
-  }) async {
-    await _ensureLoaded();
-    final task = taskById(taskId);
-    if (task == null) throw StateError('Task not found: $taskId');
-    final pending = _pendingExportApprovalFor(task.id);
-    if (pending != null) {
-      return resolveApproval(
-        pending.id,
-        ApprovalStatus.approved,
-        rationale: rationale,
-      );
-    }
-
-    final now = _clock();
-    final artifactIds = _artifactIdsForTaskRun(
-      task.id,
-      task.currentRunId,
-      preferApproved: true,
-    );
-    final approval = ApprovalRequestRecord(
-      id: _newId('approval'),
-      taskId: task.id,
-      runId: _trimmedOrNull(task.currentRunId),
-      kind: ApprovalKind.export,
-      status: ApprovalStatus.approved,
-      createdAt: now,
-      resolvedAt: now,
-      target: target,
-      destination: _trimmedOrNull(destination),
-      riskSummary: _trimmedOrNull(riskSummary),
-      rationale: _trimmedOrNull(rationale),
-      artifactIds: List.unmodifiable(artifactIds),
-      metadata: const <String, Object?>{},
-    );
-    final taskIndex = _indexOfTask(task.id);
-    final tasks = [..._snapshot.tasks];
-    tasks[taskIndex] = tasks[taskIndex].copyWith(
-      status: TaskStatus.approvedForExport,
-      updatedAt: now,
-    );
-    _snapshot = _snapshot.copyWith(
-      tasks: _dedupeTasks(tasks),
-      approvals: [..._snapshot.approvals, approval],
-      updatedAt: now,
-    );
-    await store.save(_snapshot);
-    notifyListeners();
-    if (artifactIds.isNotEmpty) {
-      await updateArtifactStatuses(
-        taskId: task.id,
-        artifactIds: artifactIds,
-        status: ArtifactStatus.approved,
-      );
-    }
-    await _appendReviewEventIfPossible(
-      taskById(task.id) ?? task,
-      'Export approved.',
-      metadata: <String, Object?>{
-        'review_action': 'approve_export',
-        'approval_id': approval.id,
-        'approval_status': approval.status.name,
-        'target': target.name,
-      },
-    );
-    return approval;
   }
 
   Future<TaskRecord> updateTask(
@@ -720,6 +587,8 @@ class TaskInboxController extends ChangeNotifier {
     Object? currentRunId = _unchanged,
     Object? summary = _unchanged,
     Object? error = _unchanged,
+    Object? resourceId = _unchanged,
+    List<String>? skillIds,
     Map<String, Object?>? metadata,
   }) async {
     await _ensureLoaded();
@@ -752,6 +621,10 @@ class TaskInboxController extends ChangeNotifier {
       error: identical(error, _unchanged)
           ? existing.error
           : _trimmedOrNull(error as String?),
+      resourceId: identical(resourceId, _unchanged)
+          ? existing.resourceId
+          : _trimmedOrNull(resourceId as String?),
+      skillIds: skillIds == null ? null : _cleanStringList(skillIds),
       metadata: metadata == null ? null : Map.unmodifiable(metadata),
     );
 
@@ -836,18 +709,8 @@ class TaskInboxController extends ChangeNotifier {
     return _snapshot.runs.any((run) => run.id == id) ||
         _snapshot.events.any((event) => event.id == id) ||
         _snapshot.artifacts.any((artifact) => artifact.id == id) ||
-        _snapshot.approvals.any((approval) => approval.id == id);
-  }
-
-  ApprovalRequestRecord? _pendingExportApprovalFor(String taskId) {
-    for (final approval in _snapshot.approvals.reversed) {
-      if (approval.taskId == taskId &&
-          approval.kind == ApprovalKind.export &&
-          approval.status == ApprovalStatus.pending) {
-        return approval;
-      }
-    }
-    return null;
+        _snapshot.approvals.any((approval) => approval.id == id) ||
+        _snapshot.resources.any((resource) => resource.id == id);
   }
 
   TaskRunRecord? _runById(String runId) {
@@ -864,6 +727,7 @@ class TaskInboxController extends ChangeNotifier {
   bool _isInterruptedTaskStatus(TaskStatus status) {
     return switch (status) {
       TaskStatus.running ||
+      TaskStatus.dispatched ||
       TaskStatus.blockedOnPermission ||
       TaskStatus.blockedOnUserInput ||
       TaskStatus.collectingArtifacts => true,
@@ -887,24 +751,6 @@ class TaskInboxController extends ChangeNotifier {
               (targetRunId == null || artifact.runId == targetRunId),
         )
         .toList(growable: false);
-  }
-
-  List<String> _artifactIdsForTaskRun(
-    String taskId,
-    String? runId, {
-    bool preferApproved = false,
-  }) {
-    final artifacts = _artifactsForTaskRun(taskId, runId)
-        .where((artifact) => artifact.status != ArtifactStatus.rejected)
-        .toList(growable: false);
-    if (preferApproved) {
-      final approved = artifacts
-          .where((artifact) => artifact.status == ArtifactStatus.approved)
-          .map((artifact) => artifact.id)
-          .toList(growable: false);
-      if (approved.isNotEmpty) return approved;
-    }
-    return artifacts.map((artifact) => artifact.id).toList(growable: false);
   }
 
   Future<void> _appendReviewEventIfPossible(
@@ -958,5 +804,14 @@ class TaskInboxController extends ChangeNotifier {
   String? _trimmedOrNull(String? value) {
     final trimmed = value?.trim();
     return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  List<String> _cleanStringList(Iterable<String> values) {
+    return List.unmodifiable(
+      values
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toSet(),
+    );
   }
 }

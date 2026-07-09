@@ -16,11 +16,13 @@ import 'config/acp_config_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
-import 'tasks/controlled_exporter.dart';
+import 'state/connection_state.dart';
+import 'tasks/runtime_registry.dart';
 import 'tasks/task_inbox_controller.dart';
 import 'tasks/task_inbox_state_store.dart';
 import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
+import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
@@ -104,6 +106,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
   TaskInboxController? _taskInboxController;
+  TaskScheduler? _taskScheduler;
+  TaskInboxController? _schedulerTaskController;
   String? _selectedTaskId;
   bool _ownsTaskInboxController = false;
   String? _taskInboxStorePath;
@@ -216,6 +220,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
+    _disposeTaskScheduler();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
       _disposeCachedControllers();
@@ -231,6 +236,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _taskInboxController = injected;
       _ownsTaskInboxController = false;
       _taskInboxStorePath = null;
+      _configureTaskScheduler();
       return;
     }
 
@@ -239,6 +245,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _taskInboxController = null;
       _ownsTaskInboxController = false;
       _taskInboxStorePath = null;
+      _configureTaskScheduler();
       return;
     }
 
@@ -248,6 +255,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (_ownsTaskInboxController &&
         _taskInboxController != null &&
         _taskInboxStorePath == storePath) {
+      _configureTaskScheduler();
       return;
     }
 
@@ -259,6 +267,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _ownsTaskInboxController = true;
     _taskInboxStorePath = storePath;
     unawaited(controller.load());
+    _configureTaskScheduler();
   }
 
   void _disposeOwnedTaskInboxController() {
@@ -266,6 +275,37 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _taskInboxController?.dispose();
     }
     _ownsTaskInboxController = false;
+  }
+
+  void _configureTaskScheduler() {
+    final taskController = _taskInboxController;
+    if (taskController == null) {
+      _disposeTaskScheduler();
+      return;
+    }
+    if (_taskScheduler != null && _schedulerTaskController == taskController) {
+      return;
+    }
+
+    _disposeTaskScheduler();
+    final runner = TaskRunner(
+      taskController: taskController,
+      controllerForAgent: _controllerForTaskAgent,
+    );
+    final scheduler = TaskScheduler(
+      taskController: taskController,
+      worker: TaskRunnerWorker(runner: runner),
+      runtimeRegistry: LocalRuntimeRegistry(probe: _probeTaskRuntime),
+    );
+    _taskScheduler = scheduler;
+    _schedulerTaskController = taskController;
+    unawaited(scheduler.start());
+  }
+
+  void _disposeTaskScheduler() {
+    _taskScheduler?.dispose();
+    _taskScheduler = null;
+    _schedulerTaskController = null;
   }
 
   void _setupDeepLinkHandling() {
@@ -431,7 +471,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
         onArchiveWorkspaceSessions: (context, workspace) =>
             _archiveWorkspaceSessions(workspace),
         onRunTask: (context, task) => _runTask(context, task),
-        onExportTask: (context, task) => _exportTask(context, task),
         onOpenTaskSession: (context, task) => _openTaskSession(context, task),
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
@@ -535,6 +574,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   Future<void> _runTask(BuildContext _, TaskRecord task) async {
     final taskController = _taskInboxController;
     if (taskController == null) return;
+    final scheduler = _taskScheduler;
+    if (scheduler != null) {
+      await scheduler.enqueueTask(task.id);
+      if (mounted) setState(() {});
+      return;
+    }
     final runner = TaskRunner(
       taskController: taskController,
       controllerForAgent: _controllerForTaskAgent,
@@ -543,32 +588,57 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _exportTask(BuildContext _, TaskRecord task) async {
-    final taskController = _taskInboxController;
-    if (taskController == null) return;
-    final approval = _latestApprovedExportApproval(taskController, task.id);
-    if (approval == null) {
-      _showSnackBar('Approve export before running exporter.');
-      return;
+  LocalRuntimeStatus _probeTaskRuntime(String agentName) {
+    final checkedAt = DateTime.now();
+    final controller = _controllerForTaskAgent(agentName);
+    final trimmedAgentName = agentName.trim();
+    if (controller == null) {
+      return LocalRuntimeStatus.unavailable(
+        agentName: trimmedAgentName,
+        checkedAt: checkedAt,
+        reason: 'No ACP controller is configured for $trimmedAgentName.',
+      );
     }
-    final exporter = ControlledExporter(taskController: taskController);
-    final result = await exporter.export(approval.id);
-    _showSnackBar(result.message);
-    if (mounted) setState(() {});
+
+    final lastError = controller.lastError?.trim();
+    if (controller.status == ConnectionStatus.error) {
+      if (_looksLikeAuthRequired(lastError) || controller.canAuthenticate) {
+        return LocalRuntimeStatus.authRequired(
+          agentName: controller.agentName,
+          checkedAt: checkedAt,
+          reason: lastError ?? 'Authentication is required.',
+        );
+      }
+      return LocalRuntimeStatus.unavailable(
+        agentName: controller.agentName,
+        checkedAt: checkedAt,
+        reason: lastError ?? 'Agent connection is in an error state.',
+      );
+    }
+
+    if (controller.isStreaming || controller.isSessionOperationRunning) {
+      return LocalRuntimeStatus.unavailable(
+        agentName: controller.agentName,
+        checkedAt: checkedAt,
+        reason: 'Agent is busy with another session operation.',
+      );
+    }
+
+    return LocalRuntimeStatus.available(
+      agentName: controller.agentName,
+      checkedAt: checkedAt,
+      supportsSessionResume: controller.canResumeSessions,
+      supportsPermissions: controller.hasPermissionReviewer,
+      maxConcurrentTasks: 1,
+    );
   }
 
-  ApprovalRequestRecord? _latestApprovedExportApproval(
-    TaskInboxController taskController,
-    String taskId,
-  ) {
-    for (final approval in taskController.approvals.reversed) {
-      if (approval.taskId == taskId &&
-          approval.kind == ApprovalKind.export &&
-          approval.status == ApprovalStatus.approved) {
-        return approval;
-      }
-    }
-    return null;
+  bool _looksLikeAuthRequired(String? message) {
+    final lower = message?.toLowerCase();
+    if (lower == null || lower.isEmpty) return false;
+    return lower.contains('auth') ||
+        lower.contains('login') ||
+        lower.contains('credential');
   }
 
   Future<void> _openTaskSession(BuildContext _, TaskRecord task) async {

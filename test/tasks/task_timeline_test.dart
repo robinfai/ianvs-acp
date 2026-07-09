@@ -26,7 +26,7 @@ void main() {
     expect(entries.first.title, 'Run #1 started');
     expect(entries[1].title, 'Agent responded.');
     expect(entries[2].title, 'Git diff');
-    expect(entries[3].title, 'Export approval approved');
+    expect(entries[3].title, 'Tool permission approval approved');
     expect(entries.last.title, 'Run #1 failed');
   });
 
@@ -112,12 +112,10 @@ TaskInboxSnapshot _snapshot() {
         id: 'approval-1',
         taskId: 'task-1',
         runId: 'run-1',
-        kind: ApprovalKind.export,
+        kind: ApprovalKind.toolPermission,
         status: ApprovalStatus.approved,
         createdAt: DateTime(2026, 7, 8, 8, 25),
         resolvedAt: DateTime(2026, 7, 8, 8, 26),
-        target: ExportTarget.simulated,
-        artifactIds: const ['artifact-1'],
       ),
     ],
   );

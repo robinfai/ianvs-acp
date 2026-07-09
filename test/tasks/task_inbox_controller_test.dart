@@ -321,44 +321,8 @@ void main() {
   );
 
   test(
-    'TaskInboxController creates and resolves export approval requests',
+    'TaskInboxController reviews artifacts without creating export approval',
     () async {
-      final ids = _DeterministicIds();
-      final store = _MemoryTaskStore(_reviewSnapshot());
-      final controller = TaskInboxController(
-        store: store,
-        clock: () => DateTime(2026, 7, 7, 9),
-        idGenerator: ids.next,
-      );
-      addTearDown(controller.dispose);
-      await controller.load();
-
-      final pending = await controller.createExportApprovalRequest(
-        taskId: 'task-1',
-        riskSummary: 'Local diff only.',
-      );
-
-      expect(pending.id, 'approval-1');
-      expect(pending.kind, ApprovalKind.export);
-      expect(pending.status, ApprovalStatus.pending);
-      expect(pending.target, ExportTarget.simulated);
-      expect(pending.artifactIds, ['artifact-1']);
-      expect(controller.tasks.single.status, TaskStatus.needsHumanReview);
-
-      final approved = await controller.approveTaskExport('task-1');
-
-      expect(approved.id, pending.id);
-      expect(approved.status, ApprovalStatus.approved);
-      expect(approved.resolvedAt, DateTime(2026, 7, 7, 9));
-      expect(controller.tasks.single.status, TaskStatus.approvedForExport);
-      expect(controller.approvals.single.status, ApprovalStatus.approved);
-    },
-  );
-
-  test(
-    'TaskInboxController reviews artifacts before export approval',
-    () async {
-      final ids = _DeterministicIds();
       final store = _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 8),
@@ -417,7 +381,6 @@ void main() {
       final controller = TaskInboxController(
         store: store,
         clock: () => DateTime(2026, 7, 7, 9),
-        idGenerator: ids.next,
       );
       addTearDown(controller.dispose);
       await controller.load();
@@ -443,41 +406,13 @@ void main() {
       expect(controller.events.single.metadata['rejected_artifact_ids'], [
         'artifact-2',
       ]);
-
-      final approval = await controller.approveTaskExport('task-1');
-
-      expect(approval.artifactIds, ['artifact-1']);
-      expect(controller.tasks.single.status, TaskStatus.approvedForExport);
+      expect(controller.approvals, isEmpty);
+      expect(controller.tasks.single.status, TaskStatus.needsHumanReview);
       expect(controller.artifacts.map((artifact) => artifact.status), [
         ArtifactStatus.approved,
         ArtifactStatus.rejected,
         ArtifactStatus.reviewed,
       ]);
-    },
-  );
-
-  test(
-    'TaskInboxController approve export creates approved approval record',
-    () async {
-      final ids = _DeterministicIds();
-      final store = _MemoryTaskStore(_reviewSnapshot());
-      final controller = TaskInboxController(
-        store: store,
-        clock: () => DateTime(2026, 7, 7, 9),
-        idGenerator: ids.next,
-      );
-      addTearDown(controller.dispose);
-      await controller.load();
-
-      final approval = await controller.approveTaskExport('task-1');
-
-      expect(approval.id, 'approval-1');
-      expect(approval.kind, ApprovalKind.export);
-      expect(approval.status, ApprovalStatus.approved);
-      expect(approval.createdAt, DateTime(2026, 7, 7, 9));
-      expect(approval.resolvedAt, DateTime(2026, 7, 7, 9));
-      expect(approval.artifactIds, ['artifact-1']);
-      expect(controller.tasks.single.status, TaskStatus.approvedForExport);
     },
   );
 

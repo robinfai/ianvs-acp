@@ -177,7 +177,8 @@ void main() {
     await tester.tap(find.text('Review artifacts'));
     await _pumpFrames(tester);
 
-    expect(find.text('Approve Export'), findsOneWidget);
+    expect(find.text('Approve Export'), findsNothing);
+    expect(find.byKey(const Key('task-approve-export-button')), findsNothing);
     expect(find.text('Mark Done Locally'), findsOneWidget);
     expect(find.text('Request Changes'), findsOneWidget);
     expect(find.text('Reject'), findsOneWidget);
@@ -195,7 +196,7 @@ void main() {
     await pumpSidebar(tester, controller, selectedTaskId: 'task-1');
 
     expect(find.text('Review artifacts'), findsWidgets);
-    expect(find.byKey(const Key('task-approve-export-button')), findsOneWidget);
+    expect(find.byKey(const Key('task-approve-export-button')), findsNothing);
     expect(
       find.byKey(const Key('task-mark-done-locally-button')),
       findsOneWidget,
@@ -221,38 +222,14 @@ void main() {
     expect(controller.approvals, isEmpty);
   });
 
-  testWidgets('TaskInboxSidebar approves export from review actions', (
+  testWidgets('TaskInboxSidebar does not expose export actions', (
     tester,
   ) async {
-    final ids = _DeterministicIds();
     final controller = TaskInboxController(
       store: _MemoryTaskStore(_reviewSnapshot()),
-      idGenerator: ids.next,
     );
     addTearDown(controller.dispose);
     await controller.load();
-    await pumpSidebar(tester, controller);
-
-    await tester.tap(find.text('Review artifacts'));
-    await _pumpFrames(tester);
-    await tester.tap(find.byKey(const Key('task-approve-export-button')));
-    await _pumpFrames(tester);
-
-    expect(controller.tasks.single.status, TaskStatus.approvedForExport);
-    expect(controller.approvals.single.kind, ApprovalKind.export);
-    expect(controller.approvals.single.status, ApprovalStatus.approved);
-    expect(controller.approvals.single.artifactIds, ['artifact-1']);
-  });
-
-  testWidgets('TaskInboxSidebar exposes export action for approved tasks', (
-    tester,
-  ) async {
-    final controller = TaskInboxController(
-      store: _MemoryTaskStore(_approvedExportSnapshot()),
-    );
-    addTearDown(controller.dispose);
-    await controller.load();
-    TaskRecord? exportedTask;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -264,9 +241,6 @@ void main() {
               controller: controller,
               defaultWorkspacePath: '/workspace/app',
               defaultAgentName: 'Codex',
-              onExportTask: (task) {
-                exportedTask = task;
-              },
             ),
           ),
         ),
@@ -274,10 +248,7 @@ void main() {
     );
     await _pumpFrames(tester);
 
-    await tester.tap(find.byTooltip('Export task'));
-    await _pumpFrames(tester);
-
-    expect(exportedTask?.id, 'task-1');
+    expect(find.byTooltip('Export task'), findsNothing);
   });
 
   testWidgets('TaskInboxSidebar exposes run and linked session actions', (
@@ -563,28 +534,6 @@ TaskInboxSnapshot _reviewSnapshot() {
         title: 'Git diff preview',
         createdAt: DateTime(2026, 7, 7, 9),
         contentPreview: 'diff --git a/note.txt b/note.txt\n+after',
-      ),
-    ],
-  );
-}
-
-TaskInboxSnapshot _approvedExportSnapshot() {
-  final snapshot = _reviewSnapshot();
-  return snapshot.copyWith(
-    tasks: [
-      snapshot.tasks.single.copyWith(status: TaskStatus.approvedForExport),
-    ],
-    approvals: [
-      ApprovalRequestRecord(
-        id: 'approval-1',
-        taskId: 'task-1',
-        runId: 'run-1',
-        kind: ApprovalKind.export,
-        status: ApprovalStatus.approved,
-        createdAt: DateTime(2026, 7, 7, 9),
-        resolvedAt: DateTime(2026, 7, 7, 9),
-        target: ExportTarget.simulated,
-        artifactIds: const ['artifact-1'],
       ),
     ],
   );

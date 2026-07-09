@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_state_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 void main() {
   test('TaskInboxStateStore resolves default path near config', () {
@@ -75,7 +76,16 @@ void main() {
           sessionId: 'session-1',
           currentRunId: 'run-1',
           summary: 'Ready for review',
+          resourceId: 'resource-1',
+          skillIds: const ['skill-review'],
           metadata: const {'source': 'test'},
+        ),
+      ],
+      resources: [
+        WorkspaceResource.localDirectory(
+          id: 'resource-1',
+          label: 'App workspace',
+          path: '/workspace/app',
         ),
       ],
       runs: [
@@ -124,14 +134,10 @@ void main() {
           id: 'approval-1',
           taskId: 'task-1',
           runId: 'run-1',
-          kind: ApprovalKind.export,
+          kind: ApprovalKind.toolPermission,
           status: ApprovalStatus.pending,
           createdAt: updatedAt,
-          target: ExportTarget.simulated,
-          destination: 'local audit',
-          riskSummary: 'No network export',
           rationale: 'Test approval',
-          artifactIds: const ['artifact-1'],
           metadata: const {'requestedBy': 'user'},
         ),
       ],
@@ -145,6 +151,11 @@ void main() {
     expect(loaded.tasks.single.status, TaskStatus.needsHumanReview);
     expect(loaded.tasks.single.priority, TaskPriority.high);
     expect(loaded.tasks.single.sessionId, 'session-1');
+    expect(loaded.tasks.single.resourceId, 'resource-1');
+    expect(loaded.tasks.single.skillIds, ['skill-review']);
+    expect(loaded.resources.single.id, 'resource-1');
+    expect(loaded.resources.single.type, ResourceType.localDirectory);
+    expect(loaded.resources.single.ref['path'], '/workspace/app');
     expect(loaded.runs.single.attempt, 2);
     expect(loaded.runs.single.model, 'gpt-5');
     expect(loaded.events.single.kind, TaskEventKind.system);
@@ -152,12 +163,13 @@ void main() {
     expect(loaded.artifacts.single.kind, ArtifactKind.gitDiff);
     expect(loaded.artifacts.single.status, ArtifactStatus.approved);
     expect(loaded.artifacts.single.sizeBytes, 42);
-    expect(loaded.approvals.single.target, ExportTarget.simulated);
-    expect(loaded.approvals.single.artifactIds, ['artifact-1']);
+    expect(loaded.approvals.single.kind, ApprovalKind.toolPermission);
+    expect(loaded.approvals.single.rationale, 'Test approval');
 
     final raw = jsonDecode(await file.readAsString()) as Map<String, Object?>;
     expect(raw['schema'], TaskInboxSnapshot.schema);
     expect(raw['tasks'], isA<List<Object?>>());
+    expect(raw['resources'], isA<List<Object?>>());
   });
 
   test('TaskInboxSnapshot handles unknown enum values safely', () {
@@ -203,7 +215,6 @@ void main() {
           'task_id': 'task-1',
           'kind': 'future_approval',
           'status': 'future_status',
-          'target': 'future_target',
           'created_at': '2026-07-07T09:00:00.000',
         },
       ],
@@ -214,9 +225,43 @@ void main() {
     expect(snapshot.events.single.kind, TaskEventKind.system);
     expect(snapshot.artifacts.single.kind, ArtifactKind.file);
     expect(snapshot.artifacts.single.status, ArtifactStatus.candidate);
-    expect(snapshot.approvals.single.kind, ApprovalKind.export);
+    expect(snapshot.approvals.single.kind, ApprovalKind.toolPermission);
     expect(snapshot.approvals.single.status, ApprovalStatus.pending);
-    expect(snapshot.approvals.single.target, isNull);
+  });
+
+  test('TaskInboxSnapshot persists dispatched task status', () {
+    final snapshot = TaskInboxSnapshot.fromJson({
+      'updated_at': '2026-07-09T09:00:00.000',
+      'tasks': [
+        {
+          'id': 'task-1',
+          'title': 'Dispatched task',
+          'description': '',
+          'workspace_path': '/workspace/app',
+          'agent_name': 'Codex',
+          'status': 'dispatched',
+          'priority': 'normal',
+          'created_at': '2026-07-09T08:00:00.000',
+          'updated_at': '2026-07-09T09:00:00.000',
+        },
+      ],
+      'runs': [
+        {
+          'id': 'run-1',
+          'task_id': 'task-1',
+          'attempt': 1,
+          'status': 'dispatched',
+          'started_at': '2026-07-09T09:00:00.000',
+        },
+      ],
+    });
+
+    expect(snapshot.tasks.single.status, TaskStatus.dispatched);
+    expect(snapshot.runs.single.status, TaskStatus.dispatched);
+    expect(
+      snapshot.toJson()['tasks'],
+      contains(containsPair('status', 'dispatched')),
+    );
   });
 
   test('TaskInboxSnapshot resolves duplicate ids deterministically', () {

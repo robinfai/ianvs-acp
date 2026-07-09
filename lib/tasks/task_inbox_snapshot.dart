@@ -1,4 +1,5 @@
 import 'task_record.dart';
+import 'workspace_resource.dart';
 
 class TaskInboxSnapshot {
   const TaskInboxSnapshot({
@@ -8,6 +9,7 @@ class TaskInboxSnapshot {
     this.events = const <TaskEventRecord>[],
     this.artifacts = const <ArtifactRecord>[],
     this.approvals = const <ApprovalRequestRecord>[],
+    this.resources = const <WorkspaceResource>[],
   });
 
   static const String schema = 'ianvs-acp.task-inbox.v1';
@@ -18,6 +20,7 @@ class TaskInboxSnapshot {
   final List<TaskEventRecord> events;
   final List<ArtifactRecord> artifacts;
   final List<ApprovalRequestRecord> approvals;
+  final List<WorkspaceResource> resources;
 
   factory TaskInboxSnapshot.empty({DateTime? updatedAt}) {
     return TaskInboxSnapshot(updatedAt: updatedAt ?? DateTime.now());
@@ -30,6 +33,7 @@ class TaskInboxSnapshot {
     List<TaskEventRecord>? events,
     List<ArtifactRecord>? artifacts,
     List<ApprovalRequestRecord>? approvals,
+    List<WorkspaceResource>? resources,
   }) {
     return TaskInboxSnapshot(
       updatedAt: updatedAt ?? this.updatedAt,
@@ -38,6 +42,7 @@ class TaskInboxSnapshot {
       events: List.unmodifiable(events ?? this.events),
       artifacts: List.unmodifiable(artifacts ?? this.artifacts),
       approvals: List.unmodifiable(approvals ?? this.approvals),
+      resources: List.unmodifiable(resources ?? this.resources),
     );
   }
 
@@ -59,6 +64,9 @@ class TaskInboxSnapshot {
       approvals: _dedupeById(
         _recordsFromJson(json['approvals'], ApprovalRequestRecord.fromJson),
       ),
+      resources: _dedupeById(
+        _recordsFromJson(json['resources'], WorkspaceResource.fromJson),
+      ),
     );
   }
 
@@ -74,6 +82,9 @@ class TaskInboxSnapshot {
           .toList(growable: false),
       'approvals': approvals
           .map((approval) => approval.toJson())
+          .toList(growable: false),
+      'resources': resources
+          .map((resource) => resource.toJson())
           .toList(growable: false),
     };
   }
@@ -108,6 +119,7 @@ String? _recordId(Object? record) {
     TaskEventRecord(:final id) => id,
     ArtifactRecord(:final id) => id,
     ApprovalRequestRecord(:final id) => id,
+    WorkspaceResource(:final id) => id,
     _ => null,
   };
 }

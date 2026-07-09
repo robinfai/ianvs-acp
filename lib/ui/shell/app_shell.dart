@@ -64,7 +64,6 @@ class AppShell extends StatelessWidget {
     this.onCreateWorkspaceWorktree,
     this.onArchiveWorkspaceSessions,
     this.onRunTask,
-    this.onExportTask,
     this.onOpenTaskSession,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
@@ -109,8 +108,6 @@ class AppShell extends StatelessWidget {
   onArchiveWorkspaceSessions;
   final FutureOr<void> Function(BuildContext context, TaskRecord task)?
   onRunTask;
-  final FutureOr<void> Function(BuildContext context, TaskRecord task)?
-  onExportTask;
   final FutureOr<void> Function(BuildContext context, TaskRecord task)?
   onOpenTaskSession;
   final AcpConfigSaveCallback? onSaveConfig;
@@ -291,7 +288,7 @@ class AppShell extends StatelessWidget {
                             children: [
                               if (!hideSidebar) ...[
                                 SizedBox(
-                                  width: 270,
+                                  width: 350,
                                   child: _ShellSidebar(
                                     workspaceSidebar: WorkspaceSidebar(
                                       agentName: agentName,
@@ -367,12 +364,6 @@ class AppShell extends StatelessWidget {
                                                 ? null
                                                 : (task) =>
                                                       onRunTask!(context, task),
-                                            onExportTask: onExportTask == null
-                                                ? null
-                                                : (task) => onExportTask!(
-                                                    context,
-                                                    task,
-                                                  ),
                                             onOpenLinkedSession:
                                                 onOpenTaskSession == null
                                                 ? null

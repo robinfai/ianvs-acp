@@ -416,6 +416,7 @@ void main() {
     final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
 
+    expect(sidebarRect.width, moreOrLessEquals(350));
     expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
     expect(promptRect.right, lessThan(inspectorRect.left));
     expect(statusRect.left, greaterThanOrEqualTo(sidebarRect.right));

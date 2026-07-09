@@ -611,7 +611,7 @@ void main() {
 
     expect(find.text('Review from deep link'), findsWidgets);
     expect(find.text('Needs Review'), findsOneWidget);
-    expect(find.byKey(const Key('task-approve-export-button')), findsOneWidget);
+    expect(find.byKey(const Key('task-approve-export-button')), findsNothing);
     expect(
       find.byKey(const Key('task-mark-done-locally-button')),
       findsOneWidget,

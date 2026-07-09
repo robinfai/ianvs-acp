@@ -1,28 +1,26 @@
 import 'dart:async';
 
+import 'retry_policy.dart';
+import 'runtime_registry.dart';
 import 'task_inbox_controller.dart';
 import 'task_record.dart';
-import 'task_runner.dart';
+import 'task_worker.dart';
+import 'workspace_execution_gate.dart';
+import 'workspace_resource.dart';
 
-abstract interface class TaskWorker {
-  Future<TaskRecord> run(TaskRecord task);
-}
-
-class TaskRunnerWorker implements TaskWorker {
-  const TaskRunnerWorker({required this.runner});
-
-  final TaskRunner runner;
-
-  @override
-  Future<TaskRecord> run(TaskRecord task) => runner.runTask(task.id);
-}
+export 'task_worker.dart';
 
 class TaskScheduler {
   TaskScheduler({
     required this.taskController,
     required this.worker,
     this.maxConcurrentTasks = 1,
-  }) {
+    WorkspaceExecutionGate? workspaceGate,
+    this.runtimeRegistry,
+    this.retryPolicy = const RetryPolicy(),
+    DateTime Function()? clock,
+  }) : workspaceGate = workspaceGate ?? WorkspaceExecutionGate(),
+       _clock = clock ?? DateTime.now {
     if (maxConcurrentTasks < 1) {
       throw ArgumentError.value(
         maxConcurrentTasks,
@@ -35,11 +33,17 @@ class TaskScheduler {
   final TaskInboxController taskController;
   final TaskWorker worker;
   final int maxConcurrentTasks;
+  final WorkspaceExecutionGate workspaceGate;
+  final LocalRuntimeRegistry? runtimeRegistry;
+  final RetryPolicy retryPolicy;
+  final DateTime Function() _clock;
   final Set<String> _activeTaskIds = <String>{};
   bool _started = false;
   bool _disposed = false;
   bool _drainScheduled = false;
   bool _draining = false;
+  Timer? _retryWakeTimer;
+  DateTime? _retryWakeAt;
 
   bool get isStarted => _started;
 
@@ -60,6 +64,9 @@ class TaskScheduler {
   void stop() {
     if (!_started) return;
     _started = false;
+    _retryWakeTimer?.cancel();
+    _retryWakeTimer = null;
+    _retryWakeAt = null;
     taskController.removeListener(_onTaskControllerChanged);
   }
 
@@ -71,10 +78,14 @@ class TaskScheduler {
 
   Future<TaskRecord> enqueueTask(String taskId) async {
     _ensureNotDisposed();
-    final queued = await taskController.updateTaskStatus(
+    final queued = await taskController.updateTask(
       taskId,
-      TaskStatus.queued,
+      status: TaskStatus.queued,
       summary: 'Queued for agent run.',
+      error: null,
+      metadata: _retryMetadataCleared(
+        taskController.taskById(taskId)?.metadata ?? const <String, Object?>{},
+      ),
     );
     _scheduleDrain();
     return queued;
@@ -102,8 +113,25 @@ class TaskScheduler {
           _activeTaskIds.length < maxConcurrentTasks) {
         final task = _nextQueuedTask();
         if (task == null) return;
+        final serialKey = _serialGateKey(task);
+        if (!workspaceGate.tryAcquire(serialKey, task.id)) {
+          return;
+        }
         _activeTaskIds.add(task.id);
-        unawaited(_runTask(task));
+
+        try {
+          final dispatched = await _dispatchTask(task);
+          final runtimeStatus = await _runtimeStatusFor(dispatched);
+          if (_isRuntimeBlocked(runtimeStatus)) {
+            await _handleRuntimeBlocked(dispatched, runtimeStatus!);
+            _releaseTask(dispatched);
+            continue;
+          }
+          unawaited(_runTask(dispatched));
+        } catch (error) {
+          _releaseTask(task);
+          await _markTaskFailed(task, error);
+        }
       }
     } finally {
       _draining = false;
@@ -115,7 +143,9 @@ class TaskScheduler {
         .where(
           (task) =>
               task.status == TaskStatus.queued &&
-              !_activeTaskIds.contains(task.id),
+              !_activeTaskIds.contains(task.id) &&
+              !workspaceGate.isLocked(_serialGateKey(task)) &&
+              _retryReady(task),
         )
         .toList(growable: false);
     if (queued.isEmpty) return null;
@@ -123,15 +153,252 @@ class TaskScheduler {
     return queued.first;
   }
 
+  bool _retryReady(TaskRecord task) {
+    final nextRetryAt = _nextRetryAt(task);
+    if (nextRetryAt == null) return true;
+    final now = _clock();
+    if (!nextRetryAt.isAfter(now)) return true;
+    _scheduleRetryWake(nextRetryAt);
+    return false;
+  }
+
+  DateTime? _nextRetryAt(TaskRecord task) {
+    final raw = task.metadata['next_retry_at'];
+    if (raw is! String || raw.trim().isEmpty) return null;
+    return DateTime.tryParse(raw.trim())?.toLocal();
+  }
+
+  void _scheduleRetryWake(DateTime wakeAt) {
+    if (!_started || _disposed) return;
+    final delay = wakeAt.difference(_clock());
+    if (delay <= Duration.zero) {
+      _scheduleDrain();
+      return;
+    }
+    final existing = _retryWakeTimer;
+    final existingWakeAt = _retryWakeAt;
+    if (existing != null &&
+        existing.isActive &&
+        existingWakeAt != null &&
+        !wakeAt.isBefore(existingWakeAt)) {
+      return;
+    }
+    existing?.cancel();
+    _retryWakeAt = wakeAt;
+    _retryWakeTimer = Timer(delay, () {
+      _retryWakeTimer = null;
+      _retryWakeAt = null;
+      _scheduleDrain();
+    });
+  }
+
+  Future<TaskRecord> _dispatchTask(TaskRecord task) async {
+    final run = await taskController.createRun(
+      taskId: task.id,
+      status: TaskStatus.dispatched,
+    );
+    await taskController.appendEvent(
+      taskId: task.id,
+      runId: run.id,
+      kind: TaskEventKind.system,
+      text: 'Task dispatched.',
+      metadata: const <String, Object?>{'task_status': 'dispatched'},
+    );
+    return taskController.taskById(task.id) ?? task;
+  }
+
+  Future<LocalRuntimeStatus?> _runtimeStatusFor(TaskRecord task) async {
+    final registry = runtimeRegistry;
+    if (registry == null) return null;
+    return registry.probeAgent(task.agentName);
+  }
+
+  bool _isRuntimeBlocked(LocalRuntimeStatus? status) {
+    return switch (status?.availability) {
+      RuntimeAvailability.unavailable ||
+      RuntimeAvailability.authRequired ||
+      RuntimeAvailability.misconfigured => true,
+      RuntimeAvailability.unknown ||
+      RuntimeAvailability.available ||
+      null => false,
+    };
+  }
+
+  Future<void> _handleRuntimeBlocked(
+    TaskRecord task,
+    LocalRuntimeStatus status,
+  ) async {
+    final run = _currentRunFor(task);
+    if (run == null) return;
+    final reason = _failureReasonForRuntime(status);
+    final label = taskFailureReasonLabel(reason);
+    final detail = status.unavailableReason;
+    final message = detail == null || detail.isEmpty
+        ? '$label for ${task.agentName}.'
+        : '$label for ${task.agentName}: $detail';
+
+    await taskController.updateRun(
+      run.id,
+      status: TaskStatus.failed,
+      endedAt: _clock(),
+      error: message,
+    );
+    await taskController.appendEvent(
+      taskId: task.id,
+      runId: run.id,
+      kind: TaskEventKind.system,
+      text: message,
+      metadata: <String, Object?>{
+        'runtime_availability': status.availability.name,
+        'failure_reason': reason.name,
+        'unavailable_reason': detail,
+      },
+    );
+
+    if (retryPolicy.shouldRetry(reason, run.attempt)) {
+      await _queueRetry(task, run, reason, message);
+      return;
+    }
+
+    await taskController.updateTask(
+      task.id,
+      status: reason == TaskFailureReason.authRequired
+          ? TaskStatus.blockedOnUserInput
+          : TaskStatus.failed,
+      summary: message,
+      error: message,
+      metadata: _failureMetadata(task.metadata, reason, status: status),
+    );
+  }
+
+  TaskFailureReason _failureReasonForRuntime(LocalRuntimeStatus status) {
+    return switch (status.availability) {
+      RuntimeAvailability.authRequired => TaskFailureReason.authRequired,
+      RuntimeAvailability.unavailable ||
+      RuntimeAvailability.misconfigured => TaskFailureReason.runtimeOffline,
+      RuntimeAvailability.unknown ||
+      RuntimeAvailability.available => TaskFailureReason.agentError,
+    };
+  }
+
   Future<void> _runTask(TaskRecord task) async {
     try {
-      await worker.run(task);
+      final result = await worker.run(taskController.taskById(task.id) ?? task);
+      await _handleWorkerResult(result);
     } catch (error) {
-      await _markTaskFailed(task, error);
+      await _handleWorkerError(task, error);
     } finally {
-      _activeTaskIds.remove(task.id);
+      _releaseTask(task);
       _scheduleDrain();
     }
+  }
+
+  Future<void> _handleWorkerResult(TaskRecord result) async {
+    if (result.status == TaskStatus.failed) {
+      await _maybeRetryFailedTask(result);
+      return;
+    }
+    await _finalizeRunIfNeeded(result);
+  }
+
+  Future<void> _handleWorkerError(TaskRecord task, Object error) async {
+    final message = _messageForError(error);
+    final run = _currentRunFor(task);
+    if (run != null) {
+      await taskController.updateRun(
+        run.id,
+        status: TaskStatus.failed,
+        endedAt: _clock(),
+        error: message,
+      );
+      await taskController.appendEvent(
+        taskId: task.id,
+        runId: run.id,
+        kind: TaskEventKind.system,
+        text: 'Task run failed: $message',
+      );
+    }
+    final failed = await taskController.updateTask(
+      task.id,
+      status: TaskStatus.failed,
+      error: message,
+    );
+    await _maybeRetryFailedTask(failed);
+  }
+
+  Future<void> _maybeRetryFailedTask(TaskRecord task) async {
+    final run = _currentRunFor(task);
+    final reason = taskFailureReasonFromText(task.error ?? task.summary);
+    if (run != null && retryPolicy.shouldRetry(reason, run.attempt)) {
+      await _queueRetry(
+        task,
+        run,
+        reason,
+        task.error ?? task.summary ?? taskFailureReasonLabel(reason),
+      );
+      return;
+    }
+    await taskController.updateTask(
+      task.id,
+      metadata: _failureMetadata(task.metadata, reason),
+    );
+  }
+
+  Future<void> _queueRetry(
+    TaskRecord task,
+    TaskRunRecord run,
+    TaskFailureReason reason,
+    String message,
+  ) async {
+    final delay = retryPolicy.delayForAttempt(run.attempt);
+    final nextRetryAt = _clock().add(delay);
+    final queued = await taskController.retryTask(
+      task.id,
+      rationale: 'Retrying after ${taskFailureReasonLabel(reason)}.',
+    );
+    await taskController.updateTask(
+      queued.id,
+      status: TaskStatus.queued,
+      summary: delay == Duration.zero
+          ? 'Queued for retry after ${taskFailureReasonLabel(reason)}.'
+          : '${taskFailureReasonLabel(reason)}. Retrying at '
+                '${nextRetryAt.toIso8601String()}.',
+      error: null,
+      metadata: _failureMetadata(
+        queued.metadata,
+        reason,
+        nextRetryAt: delay == Duration.zero ? null : nextRetryAt,
+        message: message,
+      ),
+    );
+  }
+
+  Future<void> _finalizeRunIfNeeded(TaskRecord task) async {
+    final run = _currentRunFor(task);
+    if (run == null) return;
+    if (run.status != TaskStatus.dispatched &&
+        run.status != TaskStatus.running) {
+      return;
+    }
+    if (!_isCompletedStatus(task.status)) return;
+    await taskController.updateRun(
+      run.id,
+      status: task.status,
+      endedAt: _clock(),
+      error: task.error,
+    );
+  }
+
+  bool _isCompletedStatus(TaskStatus status) {
+    return switch (status) {
+      TaskStatus.needsHumanReview ||
+      TaskStatus.done ||
+      TaskStatus.failed ||
+      TaskStatus.cancelled ||
+      TaskStatus.rejected ||
+      TaskStatus.needsChanges => true,
+      _ => false,
+    };
   }
 
   Future<void> _markTaskFailed(TaskRecord task, Object error) async {
@@ -142,8 +409,52 @@ class TaskScheduler {
         error: _messageForError(error),
       );
     } catch (_) {
-      // The task may have been deleted while the worker was running.
+      // The task may have been deleted while the scheduler was dispatching.
     }
+  }
+
+  TaskRunRecord? _currentRunFor(TaskRecord task) {
+    final runId = task.currentRunId?.trim();
+    if (runId == null || runId.isEmpty) return null;
+    for (final run in taskController.runs) {
+      if (run.id == runId && run.taskId == task.id) return run;
+    }
+    return null;
+  }
+
+  Map<String, Object?> _failureMetadata(
+    Map<String, Object?> existing,
+    TaskFailureReason reason, {
+    LocalRuntimeStatus? status,
+    DateTime? nextRetryAt,
+    String? message,
+  }) {
+    return <String, Object?>{
+      ..._retryMetadataCleared(existing),
+      'failure_reason': reason.name,
+      if (status != null) 'runtime_availability': status.availability.name,
+      if (status?.unavailableReason != null)
+        'unavailable_reason': status!.unavailableReason,
+      if (nextRetryAt != null) 'next_retry_at': nextRetryAt.toIso8601String(),
+      if (message != null && message.trim().isNotEmpty)
+        'last_failure_message': message.trim(),
+    };
+  }
+
+  Map<String, Object?> _retryMetadataCleared(Map<String, Object?> existing) {
+    return <String, Object?>{
+      for (final entry in existing.entries)
+        if (entry.key != 'next_retry_at') entry.key: entry.value,
+    };
+  }
+
+  void _releaseTask(TaskRecord task) {
+    _activeTaskIds.remove(task.id);
+    workspaceGate.release(_serialGateKey(task), task.id);
+  }
+
+  String _serialGateKey(TaskRecord task) {
+    return serialGateKeyForTask(task, taskController.snapshot.resources);
   }
 
   String _messageForError(Object error) {

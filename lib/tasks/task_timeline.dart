@@ -143,18 +143,13 @@ List<TaskTimelineEntry> buildTaskTimeline(
           title:
               '${_approvalKindLabel(approval.kind)} approval '
               '${approval.status.name}',
-          detail: approval.riskSummary ?? approval.rationale,
+          detail: approval.rationale,
           metadata: <String, Object?>{
             ...approval.metadata,
             'approval_kind': approval.kind.name,
             'approval_status': approval.status.name,
             if (approval.resolvedAt != null)
               'resolved_at': approval.resolvedAt!.toIso8601String(),
-            if (approval.target != null) 'target': approval.target!.name,
-            if (approval.destination != null)
-              'destination': approval.destination,
-            if (approval.artifactIds.isNotEmpty)
-              'artifact_ids': approval.artifactIds,
           },
         ),
       ),
@@ -192,7 +187,6 @@ String _runEndLabel(TaskStatus status) {
 
 String _approvalKindLabel(ApprovalKind kind) {
   return switch (kind) {
-    ApprovalKind.export => 'Export',
     ApprovalKind.toolPermission => 'Tool permission',
   };
 }
