@@ -8,7 +8,9 @@ class AppDelegate: FlutterAppDelegate {
   private var pendingDeepLinks: [String] = []
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
-    super.applicationDidFinishLaunching(notification)
+    // FlutterAppDelegate does not safely implement this optional callback on
+    // every engine version; calling super here can raise an Objective-C
+    // forwarding exception during launch.
     configureDeepLinkChannel()
   }
 
