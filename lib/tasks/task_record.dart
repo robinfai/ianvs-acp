@@ -40,6 +40,8 @@ enum ArtifactKind {
   patch,
 }
 
+enum ArtifactStatus { candidate, reviewed, approved, rejected, exported }
+
 enum ApprovalKind { toolPermission, export }
 
 enum ApprovalStatus { pending, approved, denied, cancelled }
@@ -394,6 +396,7 @@ class ArtifactRecord {
     required this.kind,
     required this.title,
     required this.createdAt,
+    this.status = ArtifactStatus.candidate,
     this.path,
     this.contentPreview,
     this.sha256,
@@ -405,6 +408,7 @@ class ArtifactRecord {
   final String taskId;
   final String runId;
   final ArtifactKind kind;
+  final ArtifactStatus status;
   final String title;
   final DateTime createdAt;
   final String? path;
@@ -418,6 +422,7 @@ class ArtifactRecord {
     String? taskId,
     String? runId,
     ArtifactKind? kind,
+    ArtifactStatus? status,
     String? title,
     DateTime? createdAt,
     Object? path = _unchanged,
@@ -431,6 +436,7 @@ class ArtifactRecord {
       taskId: taskId ?? this.taskId,
       runId: runId ?? this.runId,
       kind: kind ?? this.kind,
+      status: status ?? this.status,
       title: title ?? this.title,
       createdAt: createdAt ?? this.createdAt,
       path: identical(path, _unchanged) ? this.path : path as String?,
@@ -467,6 +473,7 @@ class ArtifactRecord {
       taskId: taskId,
       runId: runId,
       kind: artifactKindFromJson(json['kind']),
+      status: artifactStatusFromJson(json['status']),
       title: title,
       createdAt: createdAt,
       path: _stringFromJson(json['path']),
@@ -488,6 +495,7 @@ class ArtifactRecord {
       'task_id': taskId,
       'run_id': runId,
       'kind': kind.jsonValue,
+      'status': status.jsonValue,
       'title': title,
       'created_at': createdAt.toIso8601String(),
       if (path != null && path.isNotEmpty) 'path': path,
@@ -689,6 +697,18 @@ extension ArtifactKindJson on ArtifactKind {
   }
 }
 
+extension ArtifactStatusJson on ArtifactStatus {
+  String get jsonValue {
+    return switch (this) {
+      ArtifactStatus.candidate => 'candidate',
+      ArtifactStatus.reviewed => 'reviewed',
+      ArtifactStatus.approved => 'approved',
+      ArtifactStatus.rejected => 'rejected',
+      ArtifactStatus.exported => 'exported',
+    };
+  }
+}
+
 extension ApprovalKindJson on ApprovalKind {
   String get jsonValue {
     return switch (this) {
@@ -794,6 +814,20 @@ ArtifactKind artifactKindFromJson(
     'test_log' || 'testlog' => ArtifactKind.testLog,
     'agent_summary' || 'agentsummary' => ArtifactKind.agentSummary,
     'patch' => ArtifactKind.patch,
+    _ => fallback,
+  };
+}
+
+ArtifactStatus artifactStatusFromJson(
+  Object? raw, {
+  ArtifactStatus fallback = ArtifactStatus.candidate,
+}) {
+  return switch (_enumToken(raw)) {
+    'candidate' => ArtifactStatus.candidate,
+    'reviewed' => ArtifactStatus.reviewed,
+    'approved' => ArtifactStatus.approved,
+    'rejected' => ArtifactStatus.rejected,
+    'exported' => ArtifactStatus.exported,
     _ => fallback,
   };
 }

@@ -356,6 +356,107 @@ void main() {
   );
 
   test(
+    'TaskInboxController reviews artifacts before export approval',
+    () async {
+      final ids = _DeterministicIds();
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 7, 8),
+          tasks: [
+            TaskRecord(
+              id: 'task-1',
+              title: 'Review artifacts',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.needsHumanReview,
+              priority: TaskPriority.normal,
+              createdAt: DateTime(2026, 7, 7, 8),
+              updatedAt: DateTime(2026, 7, 7, 8),
+              currentRunId: 'run-1',
+              sessionId: 'session-1',
+            ),
+          ],
+          runs: [
+            TaskRunRecord(
+              id: 'run-1',
+              taskId: 'task-1',
+              attempt: 1,
+              status: TaskStatus.needsHumanReview,
+              startedAt: DateTime(2026, 7, 7, 8),
+            ),
+          ],
+          artifacts: [
+            ArtifactRecord(
+              id: 'artifact-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.gitDiff,
+              title: 'Safe diff',
+              createdAt: DateTime(2026, 7, 7, 8),
+            ),
+            ArtifactRecord(
+              id: 'artifact-2',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.outboxFile,
+              title: 'Unsafe file',
+              createdAt: DateTime(2026, 7, 7, 8),
+            ),
+            ArtifactRecord(
+              id: 'artifact-3',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.testLog,
+              title: 'Evidence log',
+              createdAt: DateTime(2026, 7, 7, 8),
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        store: store,
+        clock: () => DateTime(2026, 7, 7, 9),
+        idGenerator: ids.next,
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+
+      final reviewed = await controller.reviewArtifactsForRun(
+        taskId: 'task-1',
+        runId: 'run-1',
+        approvedArtifactIds: const ['artifact-1'],
+        rejectedArtifactIds: const ['artifact-2'],
+        rationale: 'Only the diff should leave the machine.',
+      );
+
+      expect(reviewed.map((artifact) => artifact.status), [
+        ArtifactStatus.approved,
+        ArtifactStatus.rejected,
+        ArtifactStatus.reviewed,
+      ]);
+      expect(controller.events.single.kind, TaskEventKind.review);
+      expect(controller.events.single.text, 'Artifact review completed.');
+      expect(controller.events.single.metadata['approved_artifact_ids'], [
+        'artifact-1',
+      ]);
+      expect(controller.events.single.metadata['rejected_artifact_ids'], [
+        'artifact-2',
+      ]);
+
+      final approval = await controller.approveTaskExport('task-1');
+
+      expect(approval.artifactIds, ['artifact-1']);
+      expect(controller.tasks.single.status, TaskStatus.approvedForExport);
+      expect(controller.artifacts.map((artifact) => artifact.status), [
+        ArtifactStatus.approved,
+        ArtifactStatus.rejected,
+        ArtifactStatus.reviewed,
+      ]);
+    },
+  );
+
+  test(
     'TaskInboxController approve export creates approved approval record',
     () async {
       final ids = _DeterministicIds();
@@ -379,6 +480,134 @@ void main() {
       expect(controller.tasks.single.status, TaskStatus.approvedForExport);
     },
   );
+
+  test('TaskInboxController queues retry and preserves run history', () async {
+    final ids = _DeterministicIds();
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: DateTime(2026, 7, 8, 8),
+        tasks: [
+          TaskRecord(
+            id: 'task-1',
+            title: 'Retry me',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.failed,
+            priority: TaskPriority.normal,
+            createdAt: DateTime(2026, 7, 8, 8),
+            updatedAt: DateTime(2026, 7, 8, 8),
+            currentRunId: 'run-1',
+            sessionId: 'session-1',
+            error: 'boom',
+          ),
+        ],
+        runs: [
+          TaskRunRecord(
+            id: 'run-1',
+            taskId: 'task-1',
+            attempt: 1,
+            status: TaskStatus.failed,
+            startedAt: DateTime(2026, 7, 8, 8),
+            endedAt: DateTime(2026, 7, 8, 8, 5),
+            sessionId: 'session-1',
+            error: 'boom',
+          ),
+        ],
+      ),
+    );
+    final controller = TaskInboxController(
+      store: store,
+      clock: () => DateTime(2026, 7, 8, 9),
+      idGenerator: ids.next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    final queued = await controller.retryTask(
+      'task-1',
+      rationale: 'Try again with a smaller change.',
+    );
+
+    expect(queued.status, TaskStatus.queued);
+    expect(queued.summary, 'Try again with a smaller change.');
+    expect(queued.error, isNull);
+    expect(queued.sessionId, isNull);
+    expect(queued.currentRunId, isNull);
+    expect(controller.runs.single.id, 'run-1');
+    expect(controller.runs.single.status, TaskStatus.failed);
+    expect(controller.events.single.kind, TaskEventKind.system);
+    expect(controller.events.single.runId, 'run-1');
+    expect(controller.events.single.text, 'Task retry queued.');
+
+    final secondRun = await controller.createRun(taskId: 'task-1');
+
+    expect(secondRun.id, 'run-2');
+    expect(secondRun.attempt, 2);
+    expect(controller.tasks.single.currentRunId, 'run-2');
+  });
+
+  test('TaskInboxController recovers interrupted runs as failed', () async {
+    final ids = _DeterministicIds();
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: DateTime(2026, 7, 8, 8),
+        tasks: [
+          TaskRecord(
+            id: 'task-1',
+            title: 'Interrupted',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.running,
+            priority: TaskPriority.normal,
+            createdAt: DateTime(2026, 7, 8, 8),
+            updatedAt: DateTime(2026, 7, 8, 8),
+            currentRunId: 'run-1',
+            sessionId: 'session-1',
+          ),
+        ],
+        runs: [
+          TaskRunRecord(
+            id: 'run-1',
+            taskId: 'task-1',
+            attempt: 1,
+            status: TaskStatus.running,
+            startedAt: DateTime(2026, 7, 8, 8),
+            sessionId: 'session-1',
+          ),
+        ],
+      ),
+    );
+    final controller = TaskInboxController(
+      store: store,
+      clock: () => DateTime(2026, 7, 8, 9),
+      idGenerator: ids.next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    final recovered = await controller.recoverInterruptedRuns();
+
+    expect(recovered.map((task) => task.id), ['task-1']);
+    expect(controller.tasks.single.status, TaskStatus.failed);
+    expect(
+      controller.tasks.single.error,
+      'Task run interrupted before completion.',
+    );
+    expect(controller.tasks.single.currentRunId, 'run-1');
+    expect(controller.runs.single.status, TaskStatus.failed);
+    expect(controller.runs.single.endedAt, DateTime(2026, 7, 8, 9));
+    expect(
+      controller.runs.single.error,
+      'Task run interrupted before completion.',
+    );
+    expect(controller.events.single.kind, TaskEventKind.system);
+    expect(
+      controller.events.single.text,
+      'Task run recovered as failed: Task run interrupted before completion.',
+    );
+  });
 }
 
 class _MemoryTaskStore implements TaskStore {

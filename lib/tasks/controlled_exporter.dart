@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'task_inbox_controller.dart';
 import 'task_record.dart';
@@ -41,6 +42,16 @@ class ControlledExporter {
         'Approval references missing artifact(s): ${missingArtifactIds.join(', ')}',
       );
     }
+    final unapprovedArtifactIds = artifacts
+        .where((artifact) => artifact.status != ArtifactStatus.approved)
+        .map((artifact) => artifact.id)
+        .toList(growable: false);
+    if (unapprovedArtifactIds.isNotEmpty) {
+      throw ExportException(
+        'Approval references artifact(s) not approved for export: '
+        '${unapprovedArtifactIds.join(', ')}',
+      );
+    }
 
     final target = approval.target ?? ExportTarget.simulated;
     final startedAt = _clock();
@@ -68,6 +79,11 @@ class ControlledExporter {
         target,
       );
       final endedAt = _clock();
+      await taskController.updateArtifactStatuses(
+        taskId: task.id,
+        artifactIds: artifacts.map((artifact) => artifact.id),
+        status: ArtifactStatus.exported,
+      );
       await taskController.updateTaskStatus(
         task.id,
         TaskStatus.done,
@@ -164,8 +180,84 @@ class ControlledExporter {
   ) async {
     return switch (target) {
       ExportTarget.simulated => _simulatedExecutor(context),
+      ExportTarget.gitCommit => _gitCommit(context),
       _ => throw ExportException('Unsupported export target: ${target.name}'),
     };
+  }
+
+  Future<ExportExecutionResult> _gitCommit(ExportContext context) async {
+    final workspacePath = context.task.workspacePath.trim();
+    if (workspacePath.isEmpty || !await Directory(workspacePath).exists()) {
+      throw ExportException('Workspace does not exist: $workspacePath');
+    }
+    await _runGit(workspacePath, ['rev-parse', '--is-inside-work-tree']);
+    final statusBeforeAdd = await _runGit(workspacePath, [
+      'status',
+      '--porcelain',
+    ]);
+    if (statusBeforeAdd.trim().isEmpty) {
+      throw const ExportException('No local changes to commit.');
+    }
+
+    await _runGit(workspacePath, ['add', '-A']);
+    final statusAfterAdd = await _runGit(workspacePath, [
+      'status',
+      '--porcelain',
+    ]);
+    if (statusAfterAdd.trim().isEmpty) {
+      throw const ExportException('No staged changes to commit.');
+    }
+
+    final message = _commitMessageFor(context);
+    await _runGit(workspacePath, [
+      '-c',
+      'user.name=Ianvs ACP',
+      '-c',
+      'user.email=ianvs-acp@local.invalid',
+      'commit',
+      '-m',
+      message,
+    ]);
+    final commit = (await _runGit(workspacePath, ['rev-parse', 'HEAD'])).trim();
+    final shortCommit = commit.length > 12 ? commit.substring(0, 12) : commit;
+    return ExportExecutionResult(
+      message: 'Created git commit $shortCommit.',
+      metadata: <String, Object?>{
+        'mode': 'git_commit',
+        'commit': commit,
+        'commit_message': message,
+      },
+    );
+  }
+
+  String _commitMessageFor(ExportContext context) {
+    final destination = context.approval.destination?.trim();
+    if (destination != null && destination.isNotEmpty) {
+      return destination.replaceAll(RegExp(r'\s+'), ' ');
+    }
+    final title = context.task.title.trim();
+    return title.isEmpty
+        ? 'Export approved task artifacts'
+        : title.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  Future<String> _runGit(String workingDirectory, List<String> args) async {
+    final result = await Process.run(
+      'git',
+      args,
+      workingDirectory: workingDirectory,
+    );
+    if (result.exitCode != 0) {
+      final stderr = (result.stderr as String).trim();
+      final stdout = (result.stdout as String).trim();
+      final detail = stderr.isNotEmpty ? stderr : stdout;
+      throw ExportException(
+        detail.isEmpty
+            ? 'git ${args.join(' ')} failed.'
+            : 'git ${args.join(' ')} failed: $detail',
+      );
+    }
+    return result.stdout as String;
   }
 
   Future<void> _appendExportEvent(

@@ -4,6 +4,7 @@ import '../workspace/workspace.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
 import 'task_store.dart';
+import 'task_timeline.dart';
 
 typedef TaskInboxClock = DateTime Function();
 typedef TaskInboxIdGenerator = String Function(String prefix);
@@ -35,6 +36,10 @@ class TaskInboxController extends ChangeNotifier {
   List<ArtifactRecord> get artifacts => _snapshot.artifacts;
 
   List<ApprovalRequestRecord> get approvals => _snapshot.approvals;
+
+  List<TaskTimelineEntry> timelineForTask(String taskId) {
+    return buildTaskTimeline(_snapshot, taskId);
+  }
 
   Future<void> load() async {
     _snapshot = await store.load();
@@ -250,6 +255,128 @@ class TaskInboxController extends ChangeNotifier {
     return List.unmodifiable(artifacts);
   }
 
+  Future<List<ArtifactRecord>> reviewArtifactsForRun({
+    required String taskId,
+    required String runId,
+    List<String> approvedArtifactIds = const <String>[],
+    List<String> rejectedArtifactIds = const <String>[],
+    String? rationale,
+  }) async {
+    await _ensureLoaded();
+    final task = taskById(taskId);
+    if (task == null) throw StateError('Task not found: $taskId');
+    final run = _runById(runId);
+    if (run == null || run.taskId != task.id) {
+      throw StateError('Task run not found: $runId');
+    }
+
+    final approvedIds = _artifactIdSet(approvedArtifactIds);
+    final rejectedIds = _artifactIdSet(rejectedArtifactIds);
+    final overlap = approvedIds.intersection(rejectedIds);
+    if (overlap.isNotEmpty) {
+      throw StateError(
+        'Artifact cannot be both approved and rejected: ${overlap.join(', ')}',
+      );
+    }
+
+    final runArtifacts = _artifactsForTaskRun(task.id, run.id);
+    final knownIds = runArtifacts.map((artifact) => artifact.id).toSet();
+    final unknownIds = approvedIds.union(rejectedIds).difference(knownIds);
+    if (unknownIds.isNotEmpty) {
+      throw StateError('Artifact not found: ${unknownIds.join(', ')}');
+    }
+
+    final reviewedIds = <String>[];
+    final artifacts = <ArtifactRecord>[];
+    for (final artifact in _snapshot.artifacts) {
+      if (artifact.taskId != task.id || artifact.runId != run.id) {
+        artifacts.add(artifact);
+        continue;
+      }
+      if (approvedIds.contains(artifact.id)) {
+        artifacts.add(artifact.copyWith(status: ArtifactStatus.approved));
+        continue;
+      }
+      if (rejectedIds.contains(artifact.id)) {
+        artifacts.add(artifact.copyWith(status: ArtifactStatus.rejected));
+        continue;
+      }
+      if (artifact.status == ArtifactStatus.candidate) {
+        reviewedIds.add(artifact.id);
+        artifacts.add(artifact.copyWith(status: ArtifactStatus.reviewed));
+        continue;
+      }
+      artifacts.add(artifact);
+    }
+
+    final now = _clock();
+    _snapshot = _snapshot.copyWith(
+      artifacts: List.unmodifiable(artifacts),
+      updatedAt: now,
+    );
+    await store.save(_snapshot);
+    notifyListeners();
+
+    await appendEvent(
+      taskId: task.id,
+      runId: run.id,
+      kind: TaskEventKind.review,
+      text: 'Artifact review completed.',
+      sessionId: task.sessionId,
+      metadata: <String, Object?>{
+        'review_action': 'review_artifacts',
+        'approved_artifact_ids': approvedIds.toList(growable: false),
+        'rejected_artifact_ids': rejectedIds.toList(growable: false),
+        'reviewed_artifact_ids': reviewedIds,
+        if (_trimmedOrNull(rationale) != null)
+          'rationale': _trimmedOrNull(rationale),
+      },
+    );
+    return _artifactsForTaskRun(task.id, run.id);
+  }
+
+  Future<List<ArtifactRecord>> updateArtifactStatuses({
+    required String taskId,
+    required Iterable<String> artifactIds,
+    required ArtifactStatus status,
+  }) async {
+    await _ensureLoaded();
+    final task = taskById(taskId);
+    if (task == null) throw StateError('Task not found: $taskId');
+    final ids = _artifactIdSet(artifactIds);
+    if (ids.isEmpty) return const <ArtifactRecord>[];
+
+    final knownIds = _snapshot.artifacts
+        .where((artifact) => artifact.taskId == task.id)
+        .map((artifact) => artifact.id)
+        .toSet();
+    final unknownIds = ids.difference(knownIds);
+    if (unknownIds.isNotEmpty) {
+      throw StateError('Artifact not found: ${unknownIds.join(', ')}');
+    }
+
+    final updatedArtifacts = <ArtifactRecord>[];
+    final changed = <ArtifactRecord>[];
+    for (final artifact in _snapshot.artifacts) {
+      if (artifact.taskId == task.id && ids.contains(artifact.id)) {
+        final updated = artifact.copyWith(status: status);
+        updatedArtifacts.add(updated);
+        changed.add(updated);
+      } else {
+        updatedArtifacts.add(artifact);
+      }
+    }
+
+    final now = _clock();
+    _snapshot = _snapshot.copyWith(
+      artifacts: List.unmodifiable(updatedArtifacts),
+      updatedAt: now,
+    );
+    await store.save(_snapshot);
+    notifyListeners();
+    return List.unmodifiable(changed);
+  }
+
   Future<TaskRecord> markTaskDoneLocally(
     String taskId, {
     String? rationale,
@@ -290,6 +417,87 @@ class TaskInboxController extends ChangeNotifier {
       },
     );
     return taskById(task.id) ?? task;
+  }
+
+  Future<TaskRecord> retryTask(String taskId, {String? rationale}) async {
+    await _ensureLoaded();
+    final task = taskById(taskId);
+    if (task == null) throw StateError('Task not found: $taskId');
+    final previousRunId = _trimmedOrNull(task.currentRunId);
+    final previousStatus = task.status;
+    final retrySummary = _trimmedOrNull(rationale) ?? 'Queued for retry.';
+
+    final queued = await updateTask(
+      task.id,
+      status: TaskStatus.queued,
+      sessionId: null,
+      currentRunId: null,
+      summary: retrySummary,
+      error: null,
+    );
+
+    if (previousRunId != null && _runExists(previousRunId)) {
+      await appendEvent(
+        taskId: task.id,
+        runId: previousRunId,
+        kind: TaskEventKind.system,
+        text: 'Task retry queued.',
+        sessionId: task.sessionId,
+        metadata: <String, Object?>{
+          'retry': true,
+          'previous_status': previousStatus.name,
+          if (_trimmedOrNull(rationale) != null)
+            'rationale': _trimmedOrNull(rationale),
+        },
+      );
+    }
+    return taskById(task.id) ?? queued;
+  }
+
+  Future<List<TaskRecord>> recoverInterruptedRuns({
+    String reason = 'Task run interrupted before completion.',
+  }) async {
+    await _ensureLoaded();
+    final recovered = <TaskRecord>[];
+    final tasks = List<TaskRecord>.of(_snapshot.tasks);
+    for (final task in tasks) {
+      if (!_isInterruptedTaskStatus(task.status)) continue;
+      final runId = _trimmedOrNull(task.currentRunId);
+      if (runId != null) {
+        final run = _runById(runId);
+        if (run != null && _isInterruptedTaskStatus(run.status)) {
+          await updateRun(
+            run.id,
+            status: TaskStatus.failed,
+            endedAt: _clock(),
+            error: reason,
+          );
+        }
+      }
+
+      final updated = await updateTask(
+        task.id,
+        status: TaskStatus.failed,
+        summary: reason,
+        error: reason,
+      );
+      recovered.add(updated);
+
+      if (runId != null && _runExists(runId)) {
+        await appendEvent(
+          taskId: task.id,
+          runId: runId,
+          kind: TaskEventKind.system,
+          text: 'Task run recovered as failed: $reason',
+          sessionId: task.sessionId,
+          metadata: <String, Object?>{
+            'recovered': true,
+            'previous_status': task.status.name,
+          },
+        );
+      }
+    }
+    return List.unmodifiable(recovered);
   }
 
   Future<TaskRecord> rejectTask(String taskId, {String? rationale}) async {
@@ -400,6 +608,15 @@ class TaskInboxController extends ChangeNotifier {
     );
     await store.save(_snapshot);
     notifyListeners();
+    if (existing.kind == ApprovalKind.export &&
+        status == ApprovalStatus.approved &&
+        resolved.artifactIds.isNotEmpty) {
+      await updateArtifactStatuses(
+        taskId: existing.taskId,
+        artifactIds: resolved.artifactIds,
+        status: ArtifactStatus.approved,
+      );
+    }
 
     final task = taskById(existing.taskId);
     if (task != null) {
@@ -438,6 +655,11 @@ class TaskInboxController extends ChangeNotifier {
     }
 
     final now = _clock();
+    final artifactIds = _artifactIdsForTaskRun(
+      task.id,
+      task.currentRunId,
+      preferApproved: true,
+    );
     final approval = ApprovalRequestRecord(
       id: _newId('approval'),
       taskId: task.id,
@@ -450,9 +672,7 @@ class TaskInboxController extends ChangeNotifier {
       destination: _trimmedOrNull(destination),
       riskSummary: _trimmedOrNull(riskSummary),
       rationale: _trimmedOrNull(rationale),
-      artifactIds: List.unmodifiable(
-        _artifactIdsForTaskRun(task.id, task.currentRunId),
-      ),
+      artifactIds: List.unmodifiable(artifactIds),
       metadata: const <String, Object?>{},
     );
     final taskIndex = _indexOfTask(task.id);
@@ -468,6 +688,13 @@ class TaskInboxController extends ChangeNotifier {
     );
     await store.save(_snapshot);
     notifyListeners();
+    if (artifactIds.isNotEmpty) {
+      await updateArtifactStatuses(
+        taskId: task.id,
+        artifactIds: artifactIds,
+        status: ArtifactStatus.approved,
+      );
+    }
     await _appendReviewEventIfPossible(
       taskById(task.id) ?? task,
       'Export approved.',
@@ -623,7 +850,35 @@ class TaskInboxController extends ChangeNotifier {
     return null;
   }
 
-  List<String> _artifactIdsForTaskRun(String taskId, String? runId) {
+  TaskRunRecord? _runById(String runId) {
+    final target = runId.trim();
+    if (target.isEmpty) return null;
+    for (final run in _snapshot.runs) {
+      if (run.id == target) return run;
+    }
+    return null;
+  }
+
+  bool _runExists(String runId) => _runById(runId) != null;
+
+  bool _isInterruptedTaskStatus(TaskStatus status) {
+    return switch (status) {
+      TaskStatus.running ||
+      TaskStatus.blockedOnPermission ||
+      TaskStatus.blockedOnUserInput ||
+      TaskStatus.collectingArtifacts => true,
+      _ => false,
+    };
+  }
+
+  Set<String> _artifactIdSet(Iterable<String> artifactIds) {
+    return artifactIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+  }
+
+  List<ArtifactRecord> _artifactsForTaskRun(String taskId, String? runId) {
     final targetRunId = _trimmedOrNull(runId);
     return _snapshot.artifacts
         .where(
@@ -631,8 +886,25 @@ class TaskInboxController extends ChangeNotifier {
               artifact.taskId == taskId &&
               (targetRunId == null || artifact.runId == targetRunId),
         )
-        .map((artifact) => artifact.id)
         .toList(growable: false);
+  }
+
+  List<String> _artifactIdsForTaskRun(
+    String taskId,
+    String? runId, {
+    bool preferApproved = false,
+  }) {
+    final artifacts = _artifactsForTaskRun(taskId, runId)
+        .where((artifact) => artifact.status != ArtifactStatus.rejected)
+        .toList(growable: false);
+    if (preferApproved) {
+      final approved = artifacts
+          .where((artifact) => artifact.status == ArtifactStatus.approved)
+          .map((artifact) => artifact.id)
+          .toList(growable: false);
+      if (approved.isNotEmpty) return approved;
+    }
+    return artifacts.map((artifact) => artifact.id).toList(growable: false);
   }
 
   Future<void> _appendReviewEventIfPossible(

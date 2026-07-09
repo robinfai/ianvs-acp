@@ -109,6 +109,7 @@ void main() {
           taskId: 'task-1',
           runId: 'run-1',
           kind: ArtifactKind.gitDiff,
+          status: ArtifactStatus.approved,
           title: 'Git diff',
           createdAt: updatedAt,
           path: 'lib/tasks/task_record.dart',
@@ -149,6 +150,7 @@ void main() {
     expect(loaded.events.single.kind, TaskEventKind.system);
     expect(loaded.events.single.metadata['phase'], 'run');
     expect(loaded.artifacts.single.kind, ArtifactKind.gitDiff);
+    expect(loaded.artifacts.single.status, ArtifactStatus.approved);
     expect(loaded.artifacts.single.sizeBytes, 42);
     expect(loaded.approvals.single.target, ExportTarget.simulated);
     expect(loaded.approvals.single.artifactIds, ['artifact-1']);
@@ -190,6 +192,7 @@ void main() {
           'task_id': 'task-1',
           'run_id': 'run-1',
           'kind': 'future_artifact',
+          'status': 'future_artifact_status',
           'title': 'unknown',
           'created_at': '2026-07-07T09:00:00.000',
         },
@@ -210,6 +213,7 @@ void main() {
     expect(snapshot.tasks.single.priority, TaskPriority.normal);
     expect(snapshot.events.single.kind, TaskEventKind.system);
     expect(snapshot.artifacts.single.kind, ArtifactKind.file);
+    expect(snapshot.artifacts.single.status, ArtifactStatus.candidate);
     expect(snapshot.approvals.single.kind, ApprovalKind.export);
     expect(snapshot.approvals.single.status, ApprovalStatus.pending);
     expect(snapshot.approvals.single.target, isNull);
