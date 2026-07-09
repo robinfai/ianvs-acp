@@ -161,7 +161,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   workspace.path,
                 );
                 return _WorkspaceGroup(
-                  agentName: widget.agentName,
                   workspace: workspace,
                   displayName: _workspaceName(workspace),
                   selected: selected,
@@ -641,7 +640,6 @@ class _WorkspaceSearchField extends StatelessWidget {
 
 class _WorkspaceGroup extends StatelessWidget {
   const _WorkspaceGroup({
-    required this.agentName,
     required this.workspace,
     required this.displayName,
     required this.selected,
@@ -666,7 +664,6 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.onMenuAction,
   });
 
-  final String agentName;
   final WorkspaceRecord workspace;
   final String displayName;
   final bool selected;
@@ -748,7 +745,6 @@ class _WorkspaceGroup extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 3, 5),
                 child: _NestedSessionList(
-                  agentName: agentName,
                   workspace: workspace,
                   currentSession: currentSession,
                   onSelectSession: onSelectSession,
@@ -765,7 +761,6 @@ class _WorkspaceGroup extends StatelessWidget {
 
 class _NestedSessionList extends StatelessWidget {
   const _NestedSessionList({
-    required this.agentName,
     required this.workspace,
     required this.currentSession,
     required this.onSelectSession,
@@ -773,7 +768,6 @@ class _NestedSessionList extends StatelessWidget {
     required this.onSessionMenuAction,
   });
 
-  final String agentName;
   final WorkspaceRecord workspace;
   final AgentSession? currentSession;
   final ValueChanged<AgentSession>? onSelectSession;
@@ -801,29 +795,21 @@ class _NestedSessionList extends StatelessWidget {
   }
 
   List<Widget> _sessionGroups() {
-    final grouped = workspace.sessionsByAgent(preferredAgent: agentName);
-    final showAgentHeadings = grouped.length > 1;
     final widgets = <Widget>[];
-    for (final entry in grouped.entries) {
-      if (showAgentHeadings) {
-        widgets.add(_AgentGroupLabel(label: entry.key));
-      }
-      for (final session in entry.value) {
-        final selected = _isCurrentSession(session);
-        widgets.add(
-          _SessionTile(
-            session: session,
-            selected: selected,
-            onPressed: onSelectSession == null || selected
-                ? null
-                : () => onSelectSession!(session),
-            canFork: canForkSession?.call(session) ?? false,
-            onMenuAction: onSessionMenuAction,
-          ),
-        );
-        widgets.add(const SizedBox(height: 5));
-      }
-      if (showAgentHeadings) widgets.add(const SizedBox(height: 3));
+    for (final session in workspace.sessions) {
+      final selected = _isCurrentSession(session);
+      widgets.add(
+        _SessionTile(
+          session: session,
+          selected: selected,
+          onPressed: onSelectSession == null || selected
+              ? null
+              : () => onSelectSession!(session),
+          canFork: canForkSession?.call(session) ?? false,
+          onMenuAction: onSessionMenuAction,
+        ),
+      );
+      widgets.add(const SizedBox(height: 5));
     }
     if (widgets.isNotEmpty) widgets.removeLast();
     return widgets;
@@ -1453,9 +1439,13 @@ class _SessionTileState extends State<_SessionTile> {
           const SizedBox(width: 4),
           const Icon(Icons.push_pin, size: 12, color: AppColors.primaryDark),
         ],
+        if (_agentLabel.isNotEmpty) ...[
+          const SizedBox(width: 5),
+          _AgentPill(label: _agentLabel, maxWidth: 58),
+        ],
         const SizedBox(width: 5),
-        Flexible(
-          flex: 0,
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 44),
           child: Text(
             formatRelativeSessionTime(session.displayTime),
             overflow: TextOverflow.ellipsis,
@@ -1880,38 +1870,16 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
   }
 }
 
-class _AgentGroupLabel extends StatelessWidget {
-  const _AgentGroupLabel({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
-      child: Text(
-        label,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: AppColors.textTertiary,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0,
-        ),
-      ),
-    );
-  }
-}
-
 class _AgentPill extends StatelessWidget {
-  const _AgentPill({required this.label});
+  const _AgentPill({required this.label, this.maxWidth = 78});
 
   final String label;
+  final double maxWidth;
 
   @override
   Widget build(BuildContext context) {
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 78),
+      constraints: BoxConstraints(maxWidth: maxWidth),
       child: Container(
         height: 20,
         padding: const EdgeInsets.symmetric(horizontal: 6),

@@ -152,7 +152,7 @@ class AppShell extends StatelessWidget {
           controllers: sessionControllerList,
           currentWorkspacePath:
               controller.currentSession?.cwd ?? controller.cwd,
-          defaultAgentName: agentName,
+          defaultAgentName: defaultAgentName ?? agentName,
         );
         final currentWorkspace = workspaceController.currentWorkspace;
         final canResumeSessions = sessionControllerList.any(

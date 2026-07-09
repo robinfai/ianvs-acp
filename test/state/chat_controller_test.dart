@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
+import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -309,8 +310,23 @@ void main() {
       controller.sessions.single.displayTitle,
       'Resume this project conversation',
     );
-    expect(controller.sessions.single.agentName, 'Codex');
+    expect(controller.sessions.single.agentName, isNull);
     expect(controller.isSessionOperationRunning, isFalse);
+  });
+
+  test('load session catalog preserves explicit agent metadata', () async {
+    final controller = ChatController(
+      client: _AgentNamedCatalogClient(),
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+    await controller.loadSessionCatalog();
+
+    expect(controller.sessions.single.id, 'session-fast');
+    expect(controller.sessions.single.agentName, 'codex-fast');
   });
 
   test('merge session index restores local sidebar metadata', () {
@@ -3272,6 +3288,29 @@ class _DelayedSettingsMutationAgentClient extends FakeAgentClient {
       configId: configId,
       value: value,
     );
+  }
+}
+
+class _AgentNamedCatalogClient extends FakeAgentClient {
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return [
+      AcpProjectSessions(
+        cwd: '/workspace/project',
+        sessions: [
+          AcpSessionEntry(
+            id: 'session-fast',
+            cwd: '/workspace/project',
+            title: 'Fast session',
+            updatedAt: DateTime(2026, 5, 28, 12),
+            meta: const {'agentName': 'codex-fast'},
+          ),
+        ],
+      ),
+    ];
   }
 }
 

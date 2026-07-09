@@ -991,6 +991,75 @@ void main() {
     },
   );
 
+  testWidgets(
+    'WorkspaceSidebar lists workspace sessions flat with agent labels',
+    (tester) async {
+      final currentSession = AgentSession(
+        id: 'current-session',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2026, 5, 1, 10),
+        title: 'Current work',
+        agentName: 'Codex',
+      );
+      final fastSession = AgentSession(
+        id: 'fast-session',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2026, 5, 1, 9),
+        title: 'Fast follow-up',
+        agentName: 'codex-fast',
+      );
+      final codexHistory = AgentSession(
+        id: 'codex-history',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2026, 5, 1, 8),
+        title: 'Codex history',
+        agentName: 'Codex',
+      );
+      final workspace = WorkspaceRecord(
+        path: '/workspace/current',
+        name: 'current',
+        sessions: [currentSession, fastSession, codexHistory],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 340,
+              height: 520,
+              child: WorkspaceSidebar(
+                agentName: 'Codex',
+                workspaces: [workspace],
+                currentWorkspace: workspace,
+                currentSession: currentSession,
+                onNewSession: () {},
+                onResumeSession: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final fastRow = find.byKey(
+        const Key('workspace-session-history:fast-session'),
+      );
+      final codexHistoryRow = find.byKey(
+        const Key('workspace-session-history:codex-history'),
+      );
+
+      expect(fastRow, findsOneWidget);
+      expect(codexHistoryRow, findsOneWidget);
+      expect(
+        tester.getTopLeft(fastRow).dy,
+        lessThan(tester.getTopLeft(codexHistoryRow).dy),
+      );
+      expect(
+        find.descendant(of: fastRow, matching: find.text('codex-fast')),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('WorkspaceSidebar only highlights the active agent session', (
     tester,
   ) async {

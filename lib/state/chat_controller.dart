@@ -1843,10 +1843,7 @@ class ChatController extends ChangeNotifier {
           title: entry.title,
           titleOverride: existing?.titleOverride,
           updatedAt: entry.updatedAt,
-          agentName:
-              _agentNameFromSessionCatalog(entry) ??
-              existing?.agentName ??
-              agentName,
+          agentName: _agentNameFromSessionCatalog(entry) ?? existing?.agentName,
           initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
           pinned: existing?.pinned ?? false,
           archived: existing?.archived ?? false,

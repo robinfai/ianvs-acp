@@ -166,6 +166,184 @@ void main() {
     },
   );
 
+  test(
+    'WorkspaceController deduplicates the same session listed by multiple agents',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fast = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-fast',
+      );
+      final thinking = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-thinking',
+      );
+      final worker = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-worker',
+      );
+      addTearDown(codex.dispose);
+      addTearDown(fast.dispose);
+      addTearDown(thinking.dispose);
+      addTearDown(worker.dispose);
+
+      for (final controller in [codex, fast, thinking, worker]) {
+        controller.sessions.add(
+          AgentSession(
+            id: 'shared-session',
+            cwd: '/workspace/app',
+            createdAt: DateTime(2026, 5, 3, 10),
+            title: 'Shared catalog session',
+          ),
+        );
+      }
+
+      final controller = WorkspaceController(
+        controllers: [codex, fast, thinking, worker],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Codex',
+      );
+
+      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(controller.currentWorkspace.sessionCount, 1);
+      expect(controller.currentWorkspace.sessions.single.id, 'shared-session');
+      expect(controller.currentWorkspace.sessions.single.agentName, 'Codex');
+    },
+  );
+
+  test(
+    'WorkspaceController uses the only source agent for an unattributed session',
+    () {
+      final pi = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'pi ACP',
+      );
+      addTearDown(pi.dispose);
+
+      pi.sessions.add(
+        AgentSession(
+          id: 'pi-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Pi session',
+        ),
+      );
+
+      final controller = WorkspaceController(
+        controllers: [pi],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Codex',
+      );
+
+      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(controller.currentWorkspace.sessions.single.agentName, 'pi ACP');
+    },
+  );
+
+  test(
+    'WorkspaceController keeps an explicit agent on duplicated sessions',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fast = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-fast',
+      );
+      addTearDown(codex.dispose);
+      addTearDown(fast.dispose);
+
+      codex.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Shared catalog session',
+        ),
+      );
+      fast.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Shared catalog session',
+          agentName: 'codex-fast',
+        ),
+      );
+
+      final controller = WorkspaceController(
+        controllers: [codex, fast],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Codex',
+      );
+
+      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(
+        controller.currentWorkspace.sessions.single.agentName,
+        'codex-fast',
+      );
+    },
+  );
+
+  test(
+    'WorkspaceController keeps the active agent when a duplicate is current',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final worker = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-worker',
+      );
+      addTearDown(codex.dispose);
+      addTearDown(worker.dispose);
+
+      final codexSession = AgentSession(
+        id: 'shared-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 5, 3, 10),
+        title: 'Shared catalog session',
+        agentName: 'Codex',
+      );
+      final workerSession = AgentSession(
+        id: 'shared-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 5, 3, 10),
+        title: 'Shared catalog session',
+        agentName: 'codex-worker',
+      );
+      codex.sessions.add(codexSession);
+      worker.sessions.add(workerSession);
+      worker.currentSession = workerSession;
+
+      final controller = WorkspaceController(
+        controllers: [codex, worker],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Codex',
+      );
+
+      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(
+        controller.currentWorkspace.sessions.single.agentName,
+        'codex-worker',
+      );
+    },
+  );
+
   test('workspaceNameFromPath returns the last path segment', () {
     expect(workspaceNameFromPath('/Users/me/project'), 'project');
     expect(workspaceNameFromPath('/Users/me/project/'), 'project');
