@@ -11,6 +11,7 @@ void main() {
     String agentName = 'Codex',
     bool hasActiveSession = false,
     String? activeSessionLabel,
+    bool isLoadingSession = false,
     VoidCallback? onNewSession,
     ThemeData? theme,
   }) {
@@ -22,6 +23,7 @@ void main() {
           agentName: agentName,
           hasActiveSession: hasActiveSession,
           activeSessionLabel: activeSessionLabel,
+          isLoadingSession: isLoadingSession,
           onNewSession: onNewSession,
         ),
       ),
@@ -81,6 +83,28 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Start a session to chat with Codex'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'New Session'), findsNothing);
+  });
+
+  testWidgets('ChatTimeline shows loading state while session replay loads', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline(
+        const [],
+        hasActiveSession: true,
+        activeSessionLabel: 'Implement attachment flow',
+        isLoadingSession: true,
+      ),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('Loading session'), findsOneWidget);
+    expect(
+      find.textContaining('Loading Implement attachment flow.'),
+      findsOneWidget,
+    );
+    expect(find.text('Session ready'), findsNothing);
     expect(find.widgetWithText(FilledButton, 'New Session'), findsNothing);
   });
 
@@ -287,6 +311,24 @@ void main() {
 
     position = timelinePosition();
     expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
+  });
+
+  testWidgets('ChatTimeline limits initial render for large histories', (
+    tester,
+  ) async {
+    final messages = List<ChatMessage>.generate(
+      260,
+      (index) => ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'Large history message $index',
+      ),
+    );
+
+    await tester.pumpWidget(timeline(messages));
+    await tester.pump();
+
+    expect(find.text('Showing latest 200 of 260 messages'), findsOneWidget);
+    expect(find.text('Large history message 0'), findsNothing);
   });
 
   testWidgets('ChatTimeline renders error card', (tester) async {

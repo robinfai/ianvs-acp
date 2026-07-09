@@ -586,6 +586,53 @@ void main() {
     expect(controller.messages[1].text, contains('medium-sized transcript'));
   });
 
+  test('resume session exposes loading state before replay returns', () async {
+    final fake = FakeAgentClient(resumeDelay: const Duration(milliseconds: 20));
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    final pendingResume = controller.resumeSession('resumed-session-loading');
+    await pumpEventQueue();
+
+    expect(controller.currentSession?.id, 'resumed-session-loading');
+    expect(controller.isSessionReplayLoading, isTrue);
+    expect(controller.messages, isEmpty);
+
+    await pendingResume;
+
+    expect(controller.isSessionReplayLoading, isFalse);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+    expect(controller.messages, isNotEmpty);
+  });
+
+  test(
+    'resume session does not notify partial replay text while loading',
+    () async {
+      final replayEvents = List<AgentEvent>.generate(
+        96,
+        (_) => const AgentEvent(type: AgentEventType.agentTextDelta, text: 'x'),
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(resumeEvents: replayEvents),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      final partialReplayTexts = <String>[];
+      controller.addListener(() {
+        if (controller.isSessionReplayLoading &&
+            controller.messages.isNotEmpty) {
+          partialReplayTexts.add(controller.messages.single.text);
+        }
+      });
+
+      await controller.resumeSession('resumed-session-large');
+
+      expect(partialReplayTexts, isEmpty);
+      expect(controller.messages, hasLength(1));
+      expect(controller.messages.single.text.length, replayEvents.length);
+    },
+  );
+
   test('resume session preserves consecutive user messages', () async {
     final controller = ChatController(
       client: FakeAgentClient(

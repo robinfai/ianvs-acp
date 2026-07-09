@@ -18,6 +18,7 @@ const List<String> _toolCallIdMetadataKeys = [
   'call_id',
 ];
 const _userMessageSelectionColor = Color(0x3d000000);
+const int _maxRenderedTimelineMessages = 200;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -26,6 +27,7 @@ class ChatTimeline extends StatefulWidget {
     this.agentName = 'Codex',
     this.hasActiveSession = false,
     this.activeSessionLabel,
+    this.isLoadingSession = false,
     this.onNewSession,
   });
 
@@ -33,6 +35,7 @@ class ChatTimeline extends StatefulWidget {
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final bool isLoadingSession;
   final VoidCallback? onNewSession;
 
   @override
@@ -41,7 +44,10 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   final ScrollController _scrollController = ScrollController();
-  late int _messageSignature = _messagesSignature(widget.messages);
+  late int _messageSignature = _timelineMessagesSignature(
+    widget.messages,
+    isLoadingSession: widget.isLoadingSession,
+  );
 
   @override
   void initState() {
@@ -68,21 +74,36 @@ class _ChatTimelineState extends State<ChatTimeline> {
             agentName: widget.agentName,
             hasActiveSession: widget.hasActiveSession,
             activeSessionLabel: widget.activeSessionLabel,
+            isLoadingSession: widget.isLoadingSession,
             onNewSession: widget.onNewSession,
           ),
         ),
       );
     }
 
-    final entries = _timelineEntries(widget.messages);
+    final visibleMessages = _visibleTimelineMessages(widget.messages);
+    final skippedMessageCount = widget.messages.length - visibleMessages.length;
+    final hasTrimmedHistory = skippedMessageCount > 0;
+    final entries = _timelineEntries(visibleMessages);
+    final historyNoticeCount = hasTrimmedHistory ? 1 : 0;
+    final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
     return DotGridBackground(
       child: ListView.separated(
         controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
-        itemCount: entries.length,
+        itemCount: entries.length + historyNoticeCount + loadingFooterCount,
         separatorBuilder: (context, index) => const SizedBox(height: 10),
         itemBuilder: (context, index) {
+          if (hasTrimmedHistory && index == entries.length) {
+            return _TrimmedHistoryNotice(
+              shownCount: visibleMessages.length,
+              totalCount: widget.messages.length,
+            );
+          }
+          if (index >= entries.length + historyNoticeCount) {
+            return const _SessionLoadingFooter();
+          }
           final entry = entries[index];
           return entry.toolMessages == null
               ? _MessageBubble(message: entry.message!)
@@ -93,7 +114,10 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 
   void _syncMessageSignature() {
-    final nextSignature = _messagesSignature(widget.messages);
+    final nextSignature = _timelineMessagesSignature(
+      widget.messages,
+      isLoadingSession: widget.isLoadingSession,
+    );
     if (nextSignature == _messageSignature) return;
     _messageSignature = nextSignature;
     if (widget.messages.isNotEmpty) {
@@ -120,13 +144,36 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 }
 
-int _messagesSignature(List<ChatMessage> messages) {
+int _timelineMessagesSignature(
+  List<ChatMessage> messages, {
+  required bool isLoadingSession,
+}) {
+  final visibleMessages = _visibleTimelineMessages(messages);
+  return _messagesSignature(
+    visibleMessages,
+    skippedCount: messages.length - visibleMessages.length,
+    isLoadingSession: isLoadingSession,
+  );
+}
+
+List<ChatMessage> _visibleTimelineMessages(List<ChatMessage> messages) {
+  if (messages.length <= _maxRenderedTimelineMessages) return messages;
+  return messages.sublist(messages.length - _maxRenderedTimelineMessages);
+}
+
+int _messagesSignature(
+  List<ChatMessage> messages, {
+  required int skippedCount,
+  required bool isLoadingSession,
+}) {
   return Object.hashAll([
+    skippedCount,
+    isLoadingSession,
     messages.length,
     for (final message in messages) ...[
       message.role,
       message.text.length,
-      message.text,
+      message.timestamp.microsecondsSinceEpoch,
       _metadataSignature(message.metadata),
     ],
   ]);
@@ -244,12 +291,14 @@ class _EmptyTimeline extends StatelessWidget {
     required this.agentName,
     required this.hasActiveSession,
     this.activeSessionLabel,
+    required this.isLoadingSession,
     this.onNewSession,
   });
 
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final bool isLoadingSession;
   final VoidCallback? onNewSession;
 
   @override
@@ -269,10 +318,21 @@ class _EmptyTimeline extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _CodeCardIllustration(compact: compact),
+                  isLoadingSession
+                      ? SizedBox(
+                          width: compact ? 34 : 40,
+                          height: compact ? 34 : 40,
+                          child: const CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: AppColors.primary,
+                          ),
+                        )
+                      : _CodeCardIllustration(compact: compact),
                   SizedBox(height: compact ? 12 : 14),
                   Text(
-                    hasActiveSession
+                    isLoadingSession
+                        ? 'Loading session'
+                        : hasActiveSession
                         ? 'Session ready'
                         : 'Start a session to chat with $agentName',
                     textAlign: TextAlign.center,
@@ -285,7 +345,9 @@ class _EmptyTimeline extends StatelessWidget {
                   ),
                   SizedBox(height: compact ? 5 : 6),
                   Text(
-                    hasActiveSession
+                    isLoadingSession
+                        ? _loadingSessionSubtitle()
+                        : hasActiveSession
                         ? _activeSessionSubtitle()
                         : 'Ask questions, get help with code, and more.',
                     textAlign: TextAlign.center,
@@ -330,6 +392,83 @@ class _EmptyTimeline extends StatelessWidget {
     final label = activeSessionLabel?.trim();
     final prefix = label == null || label.isEmpty ? '' : '$label loaded. ';
     return '${prefix}No replayed messages were returned; continue below.';
+  }
+
+  String _loadingSessionSubtitle() {
+    final label = activeSessionLabel?.trim();
+    if (label == null || label.isEmpty) {
+      return 'Loading conversation history. Large sessions can take a moment.';
+    }
+    return 'Loading $label. Large sessions can take a moment.';
+  }
+}
+
+class _SessionLoadingFooter extends StatelessWidget {
+  const _SessionLoadingFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.primary,
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              'Loading session history',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrimmedHistoryNotice extends StatelessWidget {
+  const _TrimmedHistoryNotice({
+    required this.shownCount,
+    required this.totalCount,
+  });
+
+  final int shownCount;
+  final int totalCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: AppColors.borderSoft),
+        ),
+        child: Text(
+          'Showing latest $shownCount of $totalCount messages',
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -273,7 +273,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _deepLinkChannel.setMethodCallHandler((call) async {
       if (call.method != 'openDeepLink') return null;
       final rawLink = call.arguments;
-      if (rawLink is String) await _handleDeepLink(rawLink);
+      if (rawLink is String) unawaited(_handleDeepLink(rawLink));
       return null;
     });
     unawaited(_loadInitialDeepLinks());

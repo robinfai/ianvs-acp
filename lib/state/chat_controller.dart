@@ -32,6 +32,7 @@ const List<String> _toolCallIdMetadataKeys = [
   'callId',
   'call_id',
 ];
+const int _sessionReplayBatchSize = 32;
 
 class ChatMessage {
   ChatMessage({
@@ -178,6 +179,7 @@ class ChatController extends ChangeNotifier {
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
+  bool isSessionReplayLoading = false;
   bool _isDisposed = false;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
@@ -354,6 +356,7 @@ class ChatController extends ChangeNotifier {
       final previousSessionUsage = sessionUsage;
       final previousSessionSettingsLoading = sessionSettingsLoading;
       final previousSettingsLoadId = _activeSessionSettingsLoadId;
+      final previousSessionReplayLoading = isSessionReplayLoading;
       try {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
@@ -415,7 +418,9 @@ class ChatController extends ChangeNotifier {
         _retiredSessionIds.remove(session.id);
         currentSession = session;
         _upsertSession(session);
+        isSessionReplayLoading = true;
         _notifyListeners();
+        await Future<void>.delayed(Duration.zero);
 
         final replay = await client.resumeSession(
           sessionId: trimmedSessionId,
@@ -423,10 +428,9 @@ class ChatController extends ChangeNotifier {
           additionalDirectories: workspaceAdditionalDirectories,
         );
         _localUnstartedSessionIds.remove(trimmedSessionId);
-        for (final event in replay) {
-          _handleAgentEvent(event, notify: false);
-        }
+        await _replaySessionEvents(replay);
         await _loadSessionSettings(trimmedSessionId, notify: false);
+        isSessionReplayLoading = false;
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
@@ -445,9 +449,47 @@ class ChatController extends ChangeNotifier {
         sessionUsage = previousSessionUsage;
         sessionSettingsLoading = previousSessionSettingsLoading;
         _activeSessionSettingsLoadId = previousSettingsLoadId;
+        isSessionReplayLoading = previousSessionReplayLoading;
         _setError(error);
       }
     });
+  }
+
+  Future<void> _replaySessionEvents(List<AgentEvent> replay) async {
+    var pendingText = StringBuffer();
+    Map<String, Object?> pendingTextMetadata = const <String, Object?>{};
+
+    void flushPendingText() {
+      if (pendingText.isEmpty) return;
+      _handleAgentEvent(
+        AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text: pendingText.toString(),
+          metadata: pendingTextMetadata,
+        ),
+        notify: false,
+      );
+      pendingText = StringBuffer();
+      pendingTextMetadata = const <String, Object?>{};
+    }
+
+    for (var index = 0; index < replay.length; index += 1) {
+      final event = replay[index];
+      if (event.type == AgentEventType.agentTextDelta &&
+          event.metadata.isEmpty) {
+        pendingText.write(event.text);
+      } else {
+        flushPendingText();
+        _handleAgentEvent(event, notify: false);
+      }
+      final shouldYield =
+          (index + 1) % _sessionReplayBatchSize == 0 &&
+          index + 1 < replay.length;
+      if (shouldYield) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+    flushPendingText();
   }
 
   Future<List<AcpProjectSessions>> listSessions() async {

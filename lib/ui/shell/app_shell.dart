@@ -266,6 +266,7 @@ class AppShell extends StatelessWidget {
                             hasActiveSession: controller.currentSession != null,
                             activeSessionLabel:
                                 controller.currentSession?.displayTitle,
+                            isLoadingSession: controller.isSessionReplayLoading,
                             onNewSession: null,
                           );
                           final conversationColumn = Column(

@@ -464,6 +464,99 @@ void main() {
     expect(controller.currentSession?.cwd, '/workspace/from-link');
   });
 
+  testWidgets(
+    'AcpClientApp shows loading state during initial session resume',
+    (tester) async {
+      final fake = FakeAgentClient(
+        resumeDelay: const Duration(milliseconds: 50),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          controller: controller,
+          initialResumeSessionId: 'session-from-link',
+          initialResumeCwd: '/workspace/from-link',
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.isSessionReplayLoading, isTrue);
+      expect(find.text('Loading session'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Loading session'), findsNothing);
+      expect(controller.currentSession?.id, 'session-from-link');
+      expect(controller.currentSession?.cwd, '/workspace/from-link');
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp acknowledges runtime session deep links before resume finishes',
+    (tester) async {
+      const deepLinkChannel = MethodChannel('ianvs_acp/deep_links');
+      final fake = FakeAgentClient(
+        resumeDelay: const Duration(milliseconds: 50),
+      );
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: (_) => fake,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      var platformMessageReplied = false;
+      final replyFuture = tester.binding.defaultBinaryMessenger
+          .handlePlatformMessage(
+            deepLinkChannel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              const MethodCall(
+                'openDeepLink',
+                'ianvs-acp://session?id=session-runtime&cwd=/workspace/runtime',
+              ),
+            ),
+            null,
+          )
+          .then((_) => platformMessageReplied = true);
+      await tester.pump();
+
+      expect(platformMessageReplied, isTrue);
+      await replyFuture;
+      await tester.pump();
+
+      expect(find.text('Loading session'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle();
+
+      expect(fake.lastResumeCwd, '/workspace/runtime');
+      expect(find.text('Loading session'), findsNothing);
+    },
+  );
+
   testWidgets('AcpClientApp opens task review deep links in the Inbox', (
     tester,
   ) async {
