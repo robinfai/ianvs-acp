@@ -6,6 +6,7 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
   test('permission review payload includes command context and model', () {
@@ -222,6 +223,7 @@ void main() {
         clientFactory: () => fake,
       );
       addTearDown(reviewer.dispose);
+      expect(reviewer.canAutoApprove, isFalse);
 
       final result = await reviewer.review(
         AcpPermissionRequest(
@@ -253,6 +255,21 @@ void main() {
       expect(fake.lastPrompt, contains('"line": "ls -la"'));
     },
   );
+
+  test('configured MCP reviewer can auto approve', () {
+    final reviewer = McpPermissionReviewAgent(
+      config: const AcpPermissionReviewAgentConfig(enabled: true),
+      mcpServer: const McpServerConfig(
+        raw: <String, dynamic>{
+          'name': 'permission-reviewer',
+          'command': 'permission-reviewer',
+        },
+      ),
+    );
+    addTearDown(reviewer.dispose);
+
+    expect(reviewer.canAutoApprove, isTrue);
+  });
 }
 
 class _ReviewFakeAgentClient extends FakeAgentClient {

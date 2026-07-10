@@ -1326,7 +1326,11 @@ void main() {
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
 
-    await tester.tap(find.text('自动审查'));
+    expect(
+      controller.toolCallExecutionPolicy,
+      AcpToolCallExecutionPolicy.defaultPermissions,
+    );
+    await tester.tap(find.text('默认权限'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('完全访问权限'));
     await tester.pumpAndSettle();

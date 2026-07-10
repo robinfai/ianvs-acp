@@ -1591,6 +1591,19 @@ void main() {
     },
   );
 
+  test('permission policy defaults to manual confirmation', () {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    expect(
+      controller.toolCallExecutionPolicy,
+      AcpToolCallExecutionPolicy.defaultPermissions,
+    );
+  });
+
   test('permission trust rules auto resolve matching requests', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(
@@ -1605,6 +1618,9 @@ void main() {
       ],
     );
     addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -1665,6 +1681,9 @@ void main() {
       ],
     );
     addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -1706,6 +1725,87 @@ void main() {
     );
   });
 
+  test('same-agent reviewer cannot auto approve', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'low',
+        rationale: 'The executing agent considers this safe.',
+        reviewer: 'same-agent',
+      ),
+      canAutoApprove: false,
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-same-agent',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(reviewer.requests.single.id, 'permission-same-agent');
+    expect(controller.pendingPermissionRequest?.id, 'permission-same-agent');
+    expect(fake.lastPermissionRequestId, isNull);
+    expect(fake.lastPermissionDecision, isNull);
+    expect(controller.permissionHistory.single.reviewResult?.risk, 'low');
+  });
+
+  test('independent reviewer cannot auto approve non-low risk', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'medium',
+        rationale: 'The result is still ambiguous.',
+        reviewer: 'independent-reviewer',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-medium-risk',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(controller.pendingPermissionRequest?.id, 'permission-medium-risk');
+    expect(fake.lastPermissionDecision, isNull);
+    expect(controller.permissionHistory.single.reviewResult?.risk, 'medium');
+  });
+
   test('auto review uses active session workspace roots', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
@@ -1729,6 +1829,9 @@ void main() {
       additionalDirectories: const ['/other/shared'],
     );
     addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -1768,6 +1871,9 @@ void main() {
       permissionReviewer: reviewer,
     );
     addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -1804,6 +1910,9 @@ void main() {
       client: fake,
       cwd: '/workspace',
       permissionReviewer: reviewer,
+    );
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
@@ -1975,6 +2084,9 @@ void main() {
         ],
       );
       addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
 
       fake.emitPermissionRequest(
         AcpPermissionRequest(
@@ -2023,6 +2135,9 @@ void main() {
       permissionReviewer: reviewer,
     );
     addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -2111,6 +2226,9 @@ void main() {
         ],
       );
       addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
 
       fake.emitPermissionRequest(
         AcpPermissionRequest(
@@ -3274,9 +3392,11 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
 }
 
 class _FakePermissionReviewer extends AcpPermissionReviewer {
-  _FakePermissionReviewer(this.result);
+  _FakePermissionReviewer(this.result, {this.canAutoApprove = true});
 
   final AcpPermissionReviewResult result;
+  @override
+  final bool canAutoApprove;
   final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
   final List<String> workspaceRoots = <String>[];
   final List<List<String>> additionalDirectories = <List<String>>[];

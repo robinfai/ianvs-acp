@@ -162,7 +162,7 @@ class ChatController extends ChangeNotifier {
   AcpSessionUsage? sessionUsage;
   AcpPermissionRequest? pendingPermissionRequest;
   AcpToolCallExecutionPolicy toolCallExecutionPolicy =
-      AcpToolCallExecutionPolicy.autoReview;
+      AcpToolCallExecutionPolicy.defaultPermissions;
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
   final Set<String> _resolvingPermissionRequestIds = <String>{};
@@ -1512,6 +1512,12 @@ class ChatController extends ChangeNotifier {
         _recordPermissionReview(request.id, result);
         final decision = result.decision;
         if (decision == null) {
+          _notifyListeners();
+          return;
+        }
+        if (decision == AcpPermissionDecision.allow &&
+            (!reviewer.canAutoApprove ||
+                result.risk.trim().toLowerCase() != 'low')) {
           _notifyListeners();
           return;
         }

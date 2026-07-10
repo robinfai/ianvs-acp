@@ -34,7 +34,8 @@ class PromptInput extends StatefulWidget {
     this.onDenyPermission,
     this.onCancelPermission,
     this.onSelectPermissionOption,
-    this.toolCallExecutionPolicy = AcpToolCallExecutionPolicy.autoReview,
+    this.toolCallExecutionPolicy =
+        AcpToolCallExecutionPolicy.defaultPermissions,
     this.hasPermissionReviewer = false,
     this.onToolCallExecutionPolicyChanged,
     this.modelOption,

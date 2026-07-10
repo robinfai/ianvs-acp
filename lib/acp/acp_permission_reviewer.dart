@@ -11,6 +11,8 @@ import 'agent_event.dart';
 import 'agent_session.dart';
 
 abstract class AcpPermissionReviewer {
+  bool get canAutoApprove => false;
+
   Future<AcpPermissionReviewResult?> review(
     AcpPermissionRequest request, {
     required String workspaceRoot,
@@ -290,6 +292,9 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
 
   mcp.McpClient? _client;
   mcp.Transport? _transport;
+
+  @override
+  bool get canAutoApprove => true;
 
   @override
   Future<AcpPermissionReviewResult?> review(
