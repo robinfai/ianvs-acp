@@ -1200,6 +1200,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       await Future<void>.delayed(Duration.zero);
       acceptingUpdates = true;
       unawaited(() async {
+        client.beginPromptTurn(sessionId);
         try {
           final response = await client.sendRaw(
             'session/prompt',
@@ -1211,6 +1212,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         } catch (error, stackTrace) {
           if (!events.isClosed) events.addError(error, stackTrace);
         } finally {
+          client.endPromptTurn(sessionId);
           if (!events.isClosed) {
             await events.close();
           }

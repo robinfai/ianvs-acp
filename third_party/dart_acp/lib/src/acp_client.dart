@@ -113,6 +113,16 @@ class AcpClient {
   Stream<AcpUpdate> sessionUpdates(String sessionId) =>
       _sessionManager.sessionUpdates(sessionId);
 
+  /// Mark a raw `session/prompt` request as active.
+  void beginPromptTurn(String sessionId) {
+    _sessionManager.beginPromptTurn(sessionId);
+  }
+
+  /// Clear turn-local state after a raw `session/prompt` request completes.
+  void endPromptTurn(String sessionId) {
+    _sessionManager.endPromptTurn(sessionId);
+  }
+
   /// Cancel the current turn for the given session.
   Future<void> cancel({required String sessionId}) async =>
       _sessionManager.cancel(sessionId: sessionId);

@@ -1844,6 +1844,144 @@ Future<void> main() async {
     }
   });
 
+  test('cancelled turn does not cancel permissions in the next turn', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final firstPromptStartedFile = File('${tempDir.path}/first_prompt_started');
+    final permissionResponseFile = File(
+      '${tempDir.path}/permission_response.json',
+    );
+    final agentScript = File('${tempDir.path}/fake_cancelled_turn_agent.dart');
+    final firstPromptStartedPath = jsonEncode(firstPromptStartedFile.path);
+    final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  Object? firstPromptId;
+  Object? secondPromptId;
+  var promptCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      promptCount += 1;
+      if (promptCount == 1) {
+        firstPromptId = message['id'];
+        await File($firstPromptStartedPath).writeAsString('started');
+      } else {
+        secondPromptId = message['id'];
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 'permission-second-turn',
+          'method': 'session/request_permission',
+          'params': <String, dynamic>{
+            'sessionId': 'session-1',
+            'toolCall': <String, dynamic>{
+              'title': 'Run second turn command',
+              'kind': 'execute',
+            },
+            'options': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'optionId': 'allow-once',
+                'kind': 'allow_once',
+                'name': 'Allow once',
+              },
+              <String, dynamic>{
+                'optionId': 'reject-once',
+                'kind': 'reject_once',
+                'name': 'Reject once',
+              },
+            ],
+          },
+        }));
+      }
+    } else if (message['method'] == 'session/cancel') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': firstPromptId,
+        'result': <String, dynamic>{'stopReason': 'cancelled'},
+      }));
+    } else if (message['id'] == 'permission-second-turn') {
+      await File($permissionResponsePath).writeAsString(jsonEncode(message));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': secondPromptId,
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+    final secondPermission = Completer<AcpPermissionRequest>();
+    final subscription = client.permissionRequests.listen((request) {
+      if (!secondPermission.isCompleted) {
+        secondPermission.complete(request);
+      }
+    });
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+
+      final firstTurn = client
+          .sendPrompt(sessionId: session.id, prompt: 'first turn')
+          .toList();
+      await _waitForFile(firstPromptStartedFile);
+      await client.cancel();
+      await firstTurn.timeout(const Duration(seconds: 5));
+
+      final secondTurn = client
+          .sendPrompt(sessionId: session.id, prompt: 'second turn')
+          .toList();
+      final request = await secondPermission.future.timeout(
+        const Duration(seconds: 5),
+      );
+      expect(request.sessionId, 'session-1');
+      await client.respondToPermissionRequest(
+        id: request.id,
+        decision: AcpPermissionDecision.allow,
+        selectedOptionId: 'allow-once',
+      );
+      await secondTurn.timeout(const Duration(seconds: 5));
+
+      await _waitForFile(permissionResponseFile);
+      final permissionResponse =
+          jsonDecode(await permissionResponseFile.readAsString())
+              as Map<String, dynamic>;
+      expect(
+        permissionResponse['result'],
+        containsPair('outcome', containsPair('optionId', 'allow-once')),
+      );
+    } finally {
+      await subscription.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test(
     'cancels agent permission requests when no interactive UI is listening',
     () async {

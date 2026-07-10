@@ -470,7 +470,8 @@ class SessionManager {
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
   final Map<String, List<AcpUpdate>> _replayBuffers = {};
-  final Set<String> _cancellingSessions = <String>{};
+  final Set<String> _activePromptSessions = <String>{};
+  final Set<String> _cancelledPromptSessions = <String>{};
   final StreamController<TerminalEvent> _terminalEvents =
       StreamController<TerminalEvent>.broadcast();
   // Track tool calls by session and tool call ID for proper merging
@@ -488,6 +489,8 @@ class SessionManager {
     _sessionStreams.clear();
     _replayBuffers.clear();
     _toolCalls.clear();
+    _activePromptSessions.clear();
+    _cancelledPromptSessions.clear();
     _sessionWorkspaceRoots.clear();
     _sessionAdditionalDirectories.clear();
   }
@@ -695,6 +698,7 @@ class SessionManager {
         );
 
         unawaited(() async {
+          beginPromptTurn(sessionId);
           try {
             final resp = await peer.prompt({
               'sessionId': sessionId,
@@ -706,9 +710,6 @@ class SessionManager {
             final turnEnded = TurnEnded(stop);
             _replayBuffers[sessionId]?.add(turnEnded);
             _sessionStreams[sessionId]!.add(turnEnded);
-            if (stop == StopReason.cancelled) {
-              _cancellingSessions.remove(sessionId);
-            }
           } on Object catch (e, st) {
             _log.warning('prompt error: $e');
             // Surface error to listeners so UIs can react
@@ -717,6 +718,8 @@ class SessionManager {
             const turnEnded = TurnEnded(StopReason.other);
             _replayBuffers[sessionId]?.add(turnEnded);
             _sessionStreams[sessionId]!.add(turnEnded);
+          } finally {
+            endPromptTurn(sessionId);
           }
         }());
       },
@@ -725,9 +728,23 @@ class SessionManager {
     return controller.stream;
   }
 
+  /// Mark [sessionId] as having an active prompt turn.
+  void beginPromptTurn(String sessionId) {
+    _activePromptSessions.add(sessionId);
+    _cancelledPromptSessions.remove(sessionId);
+  }
+
+  /// Clear all turn-local state for [sessionId].
+  void endPromptTurn(String sessionId) {
+    _activePromptSessions.remove(sessionId);
+    _cancelledPromptSessions.remove(sessionId);
+  }
+
   /// Cancel the current turn for a session.
   Future<void> cancel({required String sessionId}) async {
-    _cancellingSessions.add(sessionId);
+    if (_activePromptSessions.contains(sessionId)) {
+      _cancelledPromptSessions.add(sessionId);
+    }
     await peer.cancel({'sessionId': sessionId});
   }
 
@@ -1050,7 +1067,7 @@ class SessionManager {
 
   Future<Json> _onRequestPermission(Json req) async {
     final reqSessionId = _sessionIdFromMap(req) ?? '';
-    if (_cancellingSessions.contains(reqSessionId)) {
+    if (_cancelledPromptSessions.contains(reqSessionId)) {
       return {
         'outcome': {'outcome': 'cancelled'},
       };
