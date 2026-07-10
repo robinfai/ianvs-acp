@@ -1099,6 +1099,60 @@ void main() {
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
 
+  test('manual permission selection sends the exact option id', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-1',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        options: const ['Allow once', 'Always allow', 'Reject'],
+        choices: const [
+          AcpPermissionChoice(
+            optionId: 'allow-once',
+            name: 'Allow once',
+            kind: 'allow_once',
+          ),
+          AcpPermissionChoice(
+            optionId: 'allow-always',
+            name: 'Always allow',
+            kind: 'allow_always',
+          ),
+          AcpPermissionChoice(
+            optionId: 'reject-once',
+            name: 'Reject',
+            kind: 'reject_once',
+          ),
+        ],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    await controller.resolvePermissionOption('allow-always');
+
+    expect(fake.lastPermissionRequestId, 'permission-1');
+    expect(fake.lastPermissionOptionId, 'allow-always');
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.manual,
+    );
+    expect(
+      controller.permissionHistory.single.selectedOptionId,
+      'allow-always',
+    );
+  });
+
   test(
     'duplicate permission decisions are ignored while one is sending',
     () async {
@@ -3055,13 +3109,18 @@ class _DelayedPermissionResponseAgentClient extends FakeAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
     permissionResponseCount += 1;
     if (!responseStarted.isCompleted) {
       responseStarted.complete();
     }
     await allowResponse.future;
-    await super.respondToPermissionRequest(id: id, decision: decision);
+    await super.respondToPermissionRequest(
+      id: id,
+      decision: decision,
+      selectedOptionId: selectedOptionId,
+    );
   }
 }
 
@@ -3072,9 +3131,14 @@ class _CountingPermissionResponseAgentClient extends FakeAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
     permissionResponseCount += 1;
-    await super.respondToPermissionRequest(id: id, decision: decision);
+    await super.respondToPermissionRequest(
+      id: id,
+      decision: decision,
+      selectedOptionId: selectedOptionId,
+    );
   }
 }
 

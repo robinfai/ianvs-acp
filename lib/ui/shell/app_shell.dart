@@ -179,6 +179,8 @@ class AppShell extends StatelessWidget {
           onCancelPermission: () => unawaited(
             controller.resolvePermissionRequest(AcpPermissionDecision.cancel),
           ),
+          onSelectPermissionOption: (optionId) =>
+              unawaited(controller.resolvePermissionOption(optionId)),
           toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
           hasPermissionReviewer: controller.hasPermissionReviewer,
           onToolCallExecutionPolicyChanged:

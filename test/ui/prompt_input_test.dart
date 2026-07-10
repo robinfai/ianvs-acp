@@ -23,6 +23,7 @@ void main() {
     VoidCallback? onAllowPermission,
     VoidCallback? onDenyPermission,
     VoidCallback? onCancelPermission,
+    ValueChanged<String>? onSelectPermissionOption,
     AcpToolCallExecutionPolicy toolCallExecutionPolicy =
         AcpToolCallExecutionPolicy.autoReview,
     bool hasPermissionReviewer = false,
@@ -44,6 +45,7 @@ void main() {
       onAllowPermission: onAllowPermission,
       onDenyPermission: onDenyPermission,
       onCancelPermission: onCancelPermission,
+      onSelectPermissionOption: onSelectPermissionOption,
       toolCallExecutionPolicy: toolCallExecutionPolicy,
       hasPermissionReviewer: hasPermissionReviewer,
       onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
@@ -479,6 +481,54 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
     await tester.pump();
     expect(denied, isTrue);
+  });
+
+  testWidgets('PromptInput returns the exact structured permission option', (
+    tester,
+  ) async {
+    String? selectedOptionId;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          options: const ['Allow once', 'Always allow', 'Reject'],
+          choices: const [
+            AcpPermissionChoice(
+              optionId: 'allow-once',
+              name: 'Allow once',
+              kind: 'allow_once',
+            ),
+            AcpPermissionChoice(
+              optionId: 'allow-always',
+              name: 'Always allow',
+              kind: 'allow_always',
+            ),
+            AcpPermissionChoice(
+              optionId: 'reject-once',
+              name: 'Reject',
+              kind: 'reject_once',
+            ),
+          ],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+        onSelectPermissionOption: (optionId) => selectedOptionId = optionId,
+      ),
+    );
+
+    expect(find.text('Allow once'), findsOneWidget);
+    expect(find.text('Always allow'), findsOneWidget);
+    expect(find.text('Reject'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Always allow'));
+    await tester.pump();
+
+    expect(selectedOptionId, 'allow-always');
   });
 
   testWidgets('PromptInput changes tool call execution policy', (tester) async {

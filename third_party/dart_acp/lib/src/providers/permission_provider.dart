@@ -10,6 +10,50 @@ enum PermissionOutcome {
   cancelled,
 }
 
+/// A permission decision and, when selected, the exact ACP option id.
+class PermissionDecision {
+  /// Create a decision for [outcome].
+  const PermissionDecision(this.outcome, {this.optionId});
+
+  /// Create an allowed decision.
+  const PermissionDecision.allow({this.optionId})
+    : outcome = PermissionOutcome.allow;
+
+  /// Create a denied decision.
+  const PermissionDecision.deny({this.optionId})
+    : outcome = PermissionOutcome.deny;
+
+  /// Create a cancelled decision.
+  const PermissionDecision.cancelled()
+    : outcome = PermissionOutcome.cancelled,
+      optionId = null;
+
+  /// Semantic decision used by local policy checks.
+  final PermissionOutcome outcome;
+
+  /// Exact option selected by the user, when one was selected.
+  final String? optionId;
+}
+
+/// One permission option exactly as advertised by the agent.
+class PermissionChoice {
+  /// Create a structured permission option.
+  const PermissionChoice({
+    required this.optionId,
+    required this.name,
+    this.kind,
+  });
+
+  /// Protocol identifier returned when this option is selected.
+  final String optionId;
+
+  /// Human-readable option label.
+  final String name;
+
+  /// ACP option kind, such as `allow_once` or `reject_once`.
+  final String? kind;
+}
+
 /// Structured permission request options sent to a provider.
 class PermissionOptions {
   /// Create options describing the tool and choices.
@@ -19,6 +63,7 @@ class PermissionOptions {
     required this.options,
     required this.sessionId,
     required this.toolName,
+    this.choices = const <PermissionChoice>[],
     this.toolKind,
     this.metadata = const <String, Object?>{},
   });
@@ -31,6 +76,9 @@ class PermissionOptions {
 
   /// Display-only option names provided by the agent.
   final List<String> options;
+
+  /// Structured choices supplied by the agent.
+  final List<PermissionChoice> choices;
 
   /// Owning session identifier.
   final String sessionId;
@@ -48,12 +96,12 @@ class PermissionOptions {
 /// Provider interface for answering permission requests.
 abstract class PermissionProvider {
   /// Return a decision for the given options.
-  Future<PermissionOutcome> request(PermissionOptions options);
+  Future<PermissionDecision> request(PermissionOptions options);
 }
 
 /// Callback signature for handling permission prompts.
 typedef PermissionCallback =
-    Future<PermissionOutcome> Function(PermissionOptions options);
+    Future<PermissionDecision> Function(PermissionOptions options);
 
 /// Default provider with simple policy and optional callback override.
 class DefaultPermissionProvider implements PermissionProvider {
@@ -66,7 +114,7 @@ class DefaultPermissionProvider implements PermissionProvider {
   @override
   /// Return a decision for the given [options]. If [onRequest] is provided,
   /// it is invoked; otherwise a simple policy is applied.
-  Future<PermissionOutcome> request(PermissionOptions options) async {
+  Future<PermissionDecision> request(PermissionOptions options) async {
     if (onRequest != null) {
       return onRequest!(options);
     }
@@ -74,8 +122,8 @@ class DefaultPermissionProvider implements PermissionProvider {
     final lowerName = options.toolName.toLowerCase();
     final lowerKind = options.toolKind?.toLowerCase();
     if (lowerKind == 'read' || lowerName.contains('read')) {
-      return PermissionOutcome.allow;
+      return const PermissionDecision.allow();
     }
-    return PermissionOutcome.deny;
+    return const PermissionDecision.deny();
   }
 }

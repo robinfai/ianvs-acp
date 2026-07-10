@@ -102,6 +102,7 @@ class FakeAgentClient implements AcpAgentClient {
   Object? lastConfigValue;
   String? lastPermissionRequestId;
   AcpPermissionDecision? lastPermissionDecision;
+  String? lastPermissionOptionId;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
   String? lastAuthenticatedMethodId;
@@ -459,9 +460,11 @@ class FakeAgentClient implements AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
     lastPermissionRequestId = id;
     lastPermissionDecision = decision;
+    lastPermissionOptionId = selectedOptionId;
     if (permissionResponseError != null) {
       throw permissionResponseError!;
     }

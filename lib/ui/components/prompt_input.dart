@@ -33,6 +33,7 @@ class PromptInput extends StatefulWidget {
     this.onAllowPermission,
     this.onDenyPermission,
     this.onCancelPermission,
+    this.onSelectPermissionOption,
     this.toolCallExecutionPolicy = AcpToolCallExecutionPolicy.autoReview,
     this.hasPermissionReviewer = false,
     this.onToolCallExecutionPolicyChanged,
@@ -54,6 +55,7 @@ class PromptInput extends StatefulWidget {
   final VoidCallback? onAllowPermission;
   final VoidCallback? onDenyPermission;
   final VoidCallback? onCancelPermission;
+  final ValueChanged<String>? onSelectPermissionOption;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
   final bool hasPermissionReviewer;
   final ValueChanged<AcpToolCallExecutionPolicy>?
@@ -162,6 +164,7 @@ class _PromptInputState extends State<PromptInput> {
                         onAllow: widget.onAllowPermission,
                         onDeny: widget.onDenyPermission,
                         onCancel: widget.onCancelPermission,
+                        onSelectOption: widget.onSelectPermissionOption,
                       ),
                     ),
                   if (commandSuggestions.isNotEmpty)
@@ -288,12 +291,62 @@ class _PromptPermissionCard extends StatelessWidget {
     required this.onAllow,
     required this.onDeny,
     required this.onCancel,
+    required this.onSelectOption,
   });
 
   final AcpPermissionRequest request;
   final VoidCallback? onAllow;
   final VoidCallback? onDeny;
   final VoidCallback? onCancel;
+  final ValueChanged<String>? onSelectOption;
+
+  bool _isRejectChoice(AcpPermissionChoice choice) {
+    return choice.decision == AcpPermissionDecision.deny;
+  }
+
+  Widget _structuredChoiceButton(AcpPermissionChoice choice) {
+    final onPressed = onSelectOption == null
+        ? null
+        : () => onSelectOption!(choice.optionId);
+    if (_isRejectChoice(choice)) {
+      return OutlinedButton.icon(
+        key: Key('prompt-permission-option-${choice.optionId}'),
+        onPressed: onPressed,
+        icon: const Icon(Icons.block_rounded, size: 15),
+        label: Text(choice.name),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.danger,
+          backgroundColor: Colors.white,
+          minimumSize: const Size(0, 34),
+          padding: const EdgeInsets.symmetric(horizontal: 11),
+          side: const BorderSide(color: Color(0xfffecaca)),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+        ),
+      );
+    }
+    if (choice.decision != AcpPermissionDecision.allow) {
+      return OutlinedButton(
+        key: Key('prompt-permission-option-${choice.optionId}'),
+        onPressed: null,
+        child: Text(choice.name),
+      );
+    }
+    return FilledButton.icon(
+      key: Key('prompt-permission-option-${choice.optionId}'),
+      onPressed: onPressed,
+      icon: const Icon(Icons.check_rounded, size: 15),
+      label: Text(choice.name),
+      style: FilledButton.styleFrom(
+        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xffc2410c),
+        minimumSize: const Size(0, 34),
+        padding: const EdgeInsets.symmetric(horizontal: 11),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -447,33 +500,37 @@ class _PromptPermissionCard extends StatelessWidget {
                   runSpacing: 6,
                   alignment: WrapAlignment.end,
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: onDeny,
-                      icon: const Icon(Icons.block_rounded, size: 15),
-                      label: Text(request.denyActionLabel),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.danger,
-                        backgroundColor: Colors.white,
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 11),
-                        side: const BorderSide(color: Color(0xfffecaca)),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
+                    if (request.choices.isNotEmpty)
+                      ...request.choices.map(_structuredChoiceButton)
+                    else ...[
+                      OutlinedButton.icon(
+                        onPressed: onDeny,
+                        icon: const Icon(Icons.block_rounded, size: 15),
+                        label: Text(request.denyActionLabel),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.danger,
+                          backgroundColor: Colors.white,
+                          minimumSize: const Size(0, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                          side: const BorderSide(color: Color(0xfffecaca)),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ),
-                    ),
-                    FilledButton.icon(
-                      onPressed: onAllow,
-                      icon: const Icon(Icons.check_rounded, size: 15),
-                      label: Text(request.allowActionLabel),
-                      style: FilledButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        backgroundColor: const Color(0xffc2410c),
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 11),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
+                      FilledButton.icon(
+                        onPressed: onAllow,
+                        icon: const Icon(Icons.check_rounded, size: 15),
+                        label: Text(request.allowActionLabel),
+                        style: FilledButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          backgroundColor: const Color(0xffc2410c),
+                          minimumSize: const Size(0, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ),
-                    ),
+                    ],
                     IconButton(
                       tooltip: 'Cancel permission request',
                       onPressed: onCancel,

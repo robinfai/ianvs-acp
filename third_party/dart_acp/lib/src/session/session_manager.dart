@@ -78,12 +78,57 @@ String? _permissionOptionIdForOutcome(
 ) {
   if (outcome == PermissionOutcome.cancelled) return null;
   for (final choice in choices) {
-    if (_permissionKindMatches(choice.kind, outcome)) return choice.optionId;
+    if (!_permissionChoiceIsPersistent(choice) &&
+        _permissionKindMatches(choice.kind, outcome)) {
+      return choice.optionId;
+    }
   }
   for (final choice in choices) {
-    if (_permissionLabelMatches(choice, outcome)) return choice.optionId;
+    if (!_permissionChoiceIsPersistent(choice) &&
+        _permissionLabelMatches(choice, outcome)) {
+      return choice.optionId;
+    }
   }
-  return choices.length == 1 ? choices.single.optionId : null;
+  return null;
+}
+
+bool _permissionChoiceIsPersistent(_PermissionChoice choice) {
+  final normalizedKind = choice.kind?.trim().toLowerCase() ?? '';
+  if (normalizedKind.endsWith('_always')) return true;
+  final words = choice.searchableText
+      .toLowerCase()
+      .split(RegExp(r'[^a-z0-9]+'))
+      .where((word) => word.isNotEmpty)
+      .toSet();
+  const persistentWords = <String>{
+    'always',
+    'forever',
+    'permanent',
+    'persist',
+    'remember',
+    'session',
+    'project',
+  };
+  return words.any(persistentWords.contains);
+}
+
+String? _permissionOptionIdForDecision(
+  List<_PermissionChoice> choices,
+  PermissionDecision decision,
+) {
+  final selectedOptionId = decision.optionId?.trim();
+  if (selectedOptionId != null && selectedOptionId.isNotEmpty) {
+    for (final choice in choices) {
+      if (choice.optionId != selectedOptionId) continue;
+      if (_permissionKindMatches(choice.kind, decision.outcome) ||
+          _permissionLabelMatches(choice, decision.outcome)) {
+        return choice.optionId;
+      }
+      return null;
+    }
+    return null;
+  }
+  return _permissionOptionIdForOutcome(choices, decision.outcome);
 }
 
 bool _permissionKindMatches(String? kind, PermissionOutcome outcome) {
@@ -913,7 +958,7 @@ class SessionManager {
           },
         ),
       );
-      if (outcome != PermissionOutcome.allow) {
+      if (outcome.outcome != PermissionOutcome.allow) {
         throw Exception('Permission denied');
       }
     } catch (e) {
@@ -982,7 +1027,7 @@ class SessionManager {
           },
         ),
       );
-      if (outcome != PermissionOutcome.allow) {
+      if (outcome.outcome != PermissionOutcome.allow) {
         throw Exception('Permission denied');
       }
     } catch (e) {
@@ -1021,6 +1066,15 @@ class SessionManager {
         title: toolName,
         rationale: 'Requested by agent',
         options: options.map((choice) => choice.label).toList(),
+        choices: options
+            .map(
+              (choice) => PermissionChoice(
+                optionId: choice.optionId,
+                name: choice.label,
+                kind: choice.kind,
+              ),
+            )
+            .toList(growable: false),
         sessionId: reqSessionId,
         toolName: toolName,
         toolKind: toolKind,
@@ -1028,13 +1082,13 @@ class SessionManager {
       ),
     );
 
-    if (outcome == PermissionOutcome.cancelled) {
+    if (outcome.outcome == PermissionOutcome.cancelled) {
       return {
         'outcome': {'outcome': 'cancelled'},
       };
     }
 
-    final optionId = _permissionOptionIdForOutcome(options, outcome);
+    final optionId = _permissionOptionIdForDecision(options, outcome);
     if (optionId == null) {
       return {
         'outcome': {'outcome': 'cancelled'},
@@ -1088,7 +1142,7 @@ class SessionManager {
         metadata: permissionMetadata,
       ),
     );
-    if (execOutcome != PermissionOutcome.allow) {
+    if (execOutcome.outcome != PermissionOutcome.allow) {
       throw Exception('Permission denied');
     }
     var cwd = requestedCwd;

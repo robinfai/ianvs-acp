@@ -1889,6 +1889,11 @@ Future<void> main() async {
               'name': 'Allow',
             },
             <String, dynamic>{
+              'optionId': 'allow-always',
+              'kind': 'allow_always',
+              'name': 'Always allow',
+            },
+            <String, dynamic>{
               'optionId': 'deny',
               'kind': 'reject_once',
               'name': 'Deny',
@@ -1972,6 +1977,11 @@ Future<void> main() async {
               'name': 'Allow',
             },
             <String, dynamic>{
+              'optionId': 'allow-always',
+              'kind': 'allow_always',
+              'name': 'Always allow',
+            },
+            <String, dynamic>{
               'optionId': 'deny',
               'kind': 'reject_once',
               'name': 'Deny',
@@ -2000,6 +2010,7 @@ Future<void> main() async {
           client.respondToPermissionRequest(
             id: request.id,
             decision: AcpPermissionDecision.allow,
+            selectedOptionId: 'allow-always',
           ),
         );
       });
@@ -2013,6 +2024,16 @@ Future<void> main() async {
 
         expect(request.displayTitle, 'Read file');
         expect(request.displayKind, 'read');
+        expect(request.choices.map((choice) => choice.optionId), const [
+          'allow',
+          'allow-always',
+          'deny',
+        ]);
+        expect(request.choices.map((choice) => choice.kind), const [
+          'allow_once',
+          'allow_always',
+          'reject_once',
+        ]);
         final permissionResponse =
             jsonDecode(await permissionResponseFile.readAsString())
                 as Map<String, dynamic>;
@@ -2023,7 +2044,7 @@ Future<void> main() async {
         );
         expect(
           permissionResponse['result'],
-          containsPair('outcome', containsPair('optionId', 'allow')),
+          containsPair('outcome', containsPair('optionId', 'allow-always')),
         );
       } finally {
         await subscription.cancel();
@@ -2032,6 +2053,115 @@ Future<void> main() async {
       }
     },
   );
+
+  for (final scenario in const [
+    (
+      name: 'does not turn deny into the only allow option',
+      optionId: 'allow-once',
+      optionKind: 'allow_once',
+      optionName: 'Allow once',
+      decision: AcpPermissionDecision.deny,
+    ),
+    (
+      name: 'does not turn allow into the only reject option',
+      optionId: 'reject-once',
+      optionKind: 'reject_once',
+      optionName: 'Reject once',
+      decision: AcpPermissionDecision.allow,
+    ),
+  ]) {
+    test(scenario.name, () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final permissionResponseFile = File(
+        '${tempDir.path}/permission_response.json',
+      );
+      final agentScript = File(
+        '${tempDir.path}/fake_single_permission_agent.dart',
+      );
+      final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+      final optionId = jsonEncode(scenario.optionId);
+      final optionKind = jsonEncode(scenario.optionKind);
+      final optionName = jsonEncode(scenario.optionName);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'permission-single',
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'session-1',
+          'toolCall': <String, dynamic>{
+            'title': 'Single choice',
+            'kind': 'execute',
+          },
+          'options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'optionId': $optionId,
+              'kind': $optionKind,
+              'name': $optionName,
+            },
+          ],
+        },
+      }));
+    } else if (message['id'] == 'permission-single') {
+      await File($permissionResponsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      );
+      final subscription = client.permissionRequests.listen((request) {
+        unawaited(
+          client.respondToPermissionRequest(
+            id: request.id,
+            decision: scenario.decision,
+          ),
+        );
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        await _waitForFile(permissionResponseFile);
+        final permissionResponse =
+            jsonDecode(await permissionResponseFile.readAsString())
+                as Map<String, dynamic>;
+
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('outcome', 'cancelled')),
+        );
+        expect(
+          jsonEncode(permissionResponse),
+          isNot(contains(scenario.optionId)),
+        );
+      } finally {
+        await subscription.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    });
+  }
 
   for (final scenario in const [
     (
@@ -2083,7 +2213,7 @@ Future<void> main() async {
             'title': 'Run command',
             'kind': 'execute',
           },
-          'options': <String>['allow', 'deny'],
+          'options': <String>['always allow', 'allow', 'deny'],
         },
       }));
     } else if (message['id'] == 'permission-strings') {
@@ -2118,7 +2248,7 @@ Future<void> main() async {
         );
         await _waitForFile(permissionResponseFile);
 
-        expect(request.options, const ['allow', 'deny']);
+        expect(request.options, const ['always allow', 'allow', 'deny']);
         final permissionResponse =
             jsonDecode(await permissionResponseFile.readAsString())
                 as Map<String, dynamic>;

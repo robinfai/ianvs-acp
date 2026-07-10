@@ -67,6 +67,7 @@ abstract class AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   });
 
   Future<void> dispose();

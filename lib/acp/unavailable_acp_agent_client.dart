@@ -62,6 +62,7 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) => _failure<void>();
 
   @override

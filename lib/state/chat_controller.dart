@@ -1111,6 +1111,22 @@ class ChatController extends ChangeNotifier {
     );
   }
 
+  Future<void> resolvePermissionOption(String optionId) async {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    final choice = request.choiceById(optionId);
+    final decision = choice?.decision;
+    if (choice == null || decision == null) {
+      throw StateError('Unknown permission option: $optionId');
+    }
+    await _resolvePermissionRequest(
+      request,
+      decision,
+      source: AcpPermissionDecisionSource.manual,
+      selectedOptionId: choice.optionId,
+    );
+  }
+
   Future<void> _connectWithStatus(ConnectionStatus connectingStatus) async {
     status = connectingStatus;
     capabilities = null;
@@ -1435,14 +1451,23 @@ class ChatController extends ChangeNotifier {
     AcpPermissionDecision decision, {
     required AcpPermissionDecisionSource source,
     AcpPermissionReviewResult? reviewResult,
+    String? selectedOptionId,
   }) async {
     if (_isDisposed) return;
     if (_hasDeliveredPermissionDecision(request.id)) return;
     if (!_resolvingPermissionRequestIds.add(request.id)) return;
     try {
+      final resolvedOptionId =
+          selectedOptionId ?? request.singleUseChoiceFor(decision)?.optionId;
+      if (decision != AcpPermissionDecision.cancel &&
+          request.choices.isNotEmpty &&
+          resolvedOptionId == null) {
+        return;
+      }
       final didSend = await _sendPermissionDecision(
         id: request.id,
         decision: decision,
+        selectedOptionId: resolvedOptionId,
       );
       if (_isDisposed || !didSend) return;
       if (pendingPermissionRequest?.id == request.id) {
@@ -1453,6 +1478,7 @@ class ChatController extends ChangeNotifier {
         decision,
         source: source,
         reviewResult: reviewResult,
+        selectedOptionId: resolvedOptionId,
       );
       _notifyListeners();
     } finally {
@@ -1510,10 +1536,15 @@ class ChatController extends ChangeNotifier {
   Future<bool> _sendPermissionDecision({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
     bool reportErrors = true,
   }) async {
     try {
-      await client.respondToPermissionRequest(id: id, decision: decision);
+      await client.respondToPermissionRequest(
+        id: id,
+        decision: decision,
+        selectedOptionId: selectedOptionId,
+      );
       return true;
     } catch (error) {
       if (reportErrors) {
@@ -1589,6 +1620,7 @@ class ChatController extends ChangeNotifier {
     AcpPermissionDecision decision, {
     AcpPermissionDecisionSource source = AcpPermissionDecisionSource.manual,
     AcpPermissionReviewResult? reviewResult,
+    String? selectedOptionId,
   }) {
     final index = _permissionHistory.indexWhere(
       (entry) => entry.request.id == requestId,
@@ -1601,6 +1633,7 @@ class ChatController extends ChangeNotifier {
       resolvedAt: DateTime.now(),
       decisionSource: source,
       reviewResult: reviewResult,
+      selectedOptionId: selectedOptionId,
     );
     _notifyPermissionEventObservers(
       ChatPermissionEvent.resolved(

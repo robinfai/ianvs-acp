@@ -34,4 +34,53 @@ void main() {
     expect(item.allowActionLabel, 'Allow Once');
     expect(item.denyActionLabel, 'Do not allow');
   });
+
+  test('permission requests preserve structured agent choices', () {
+    final item = AcpPermissionRequest(
+      id: 'permission-1',
+      title: 'Review action',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'tool',
+      options: const ['Allow this time', 'Reject this time'],
+      choices: const [
+        AcpPermissionChoice(
+          optionId: 'allow-once',
+          name: 'Allow this time',
+          kind: 'allow_once',
+        ),
+        AcpPermissionChoice(
+          optionId: 'reject-once',
+          name: 'Reject this time',
+          kind: 'reject_once',
+        ),
+      ],
+      requestedAt: DateTime(2026, 5, 31, 12),
+    );
+
+    expect(item.choices.first.optionId, 'allow-once');
+    expect(item.choices.last.kind, 'reject_once');
+    expect(item.toJson()['choices'], [
+      {
+        'optionId': 'allow-once',
+        'name': 'Allow this time',
+        'kind': 'allow_once',
+      },
+      {
+        'optionId': 'reject-once',
+        'name': 'Reject this time',
+        'kind': 'reject_once',
+      },
+    ]);
+  });
+
+  test('legacy persistent choices are not treated as single use', () {
+    const choice = AcpPermissionChoice(
+      optionId: 'allow-always',
+      name: 'Always allow',
+    );
+
+    expect(choice.decision, AcpPermissionDecision.allow);
+    expect(choice.isSingleUse, isFalse);
+  });
 }

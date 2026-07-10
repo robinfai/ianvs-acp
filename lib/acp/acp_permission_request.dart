@@ -14,6 +14,76 @@ enum AcpPermissionDecisionSource {
 
 enum AcpToolCallExecutionPolicy { defaultPermissions, autoReview, fullAccess }
 
+class AcpPermissionChoice {
+  const AcpPermissionChoice({
+    required this.optionId,
+    required this.name,
+    this.kind,
+  });
+
+  final String optionId;
+  final String name;
+  final String? kind;
+
+  AcpPermissionDecision? get decision {
+    final normalized = kind?.trim().toLowerCase() ?? '';
+    if (normalized == 'allow' ||
+        normalized == 'allow_once' ||
+        normalized == 'allow_always') {
+      return AcpPermissionDecision.allow;
+    }
+    if (normalized == 'deny' ||
+        normalized == 'deny_once' ||
+        normalized == 'deny_always' ||
+        normalized == 'reject' ||
+        normalized == 'reject_once' ||
+        normalized == 'reject_always') {
+      return AcpPermissionDecision.deny;
+    }
+    final words = name
+        .trim()
+        .toLowerCase()
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((word) => word.isNotEmpty)
+        .toSet();
+    final looksDenied =
+        words.any(_denyPermissionKeywords.contains) ||
+        name.toLowerCase().contains("don't allow") ||
+        name.toLowerCase().contains('do not allow');
+    if (looksDenied) return AcpPermissionDecision.deny;
+    if (words.any(_allowPermissionKeywords.contains)) {
+      return AcpPermissionDecision.allow;
+    }
+    return null;
+  }
+
+  bool get isSingleUse {
+    final normalized = kind?.trim().toLowerCase() ?? '';
+    if (normalized.isNotEmpty) {
+      return normalized.endsWith('_once') ||
+          normalized == 'allow' ||
+          normalized == 'deny' ||
+          normalized == 'reject';
+    }
+    final legacyText = '$optionId $name'.trim().toLowerCase();
+    final words = legacyText
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((word) => word.isNotEmpty)
+        .toSet();
+    return words.contains('once') ||
+        legacyText.contains('this time') ||
+        legacyText.contains('one time');
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'optionId': optionId,
+      'name': name,
+      if (kind != null) 'kind': kind,
+    };
+  }
+}
+
 class AcpPermissionTrustRule {
   const AcpPermissionTrustRule({
     required this.toolName,
@@ -50,6 +120,7 @@ class AcpPermissionRequest {
     required this.toolName,
     required this.options,
     required this.requestedAt,
+    this.choices = const <AcpPermissionChoice>[],
     this.toolKind,
     this.metadata = const <String, Object?>{},
   });
@@ -61,6 +132,7 @@ class AcpPermissionRequest {
   final String toolName;
   final String? toolKind;
   final List<String> options;
+  final List<AcpPermissionChoice> choices;
   final DateTime requestedAt;
   final Map<String, Object?> metadata;
 
@@ -113,6 +185,23 @@ class AcpPermissionRequest {
     );
   }
 
+  AcpPermissionChoice? choiceById(String optionId) {
+    final target = optionId.trim();
+    if (target.isEmpty) return null;
+    for (final choice in choices) {
+      if (choice.optionId == target) return choice;
+    }
+    return null;
+  }
+
+  AcpPermissionChoice? singleUseChoiceFor(AcpPermissionDecision decision) {
+    if (decision == AcpPermissionDecision.cancel) return null;
+    final matching = choices
+        .where((choice) => choice.decision == decision && choice.isSingleUse)
+        .toList(growable: false);
+    return matching.length == 1 ? matching.single : null;
+  }
+
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'id': id,
@@ -122,6 +211,8 @@ class AcpPermissionRequest {
       'toolName': toolName,
       if (toolKind != null) 'toolKind': toolKind,
       'options': options,
+      if (choices.isNotEmpty)
+        'choices': choices.map((choice) => choice.toJson()).toList(),
       'requestedAt': requestedAt.toUtc().toIso8601String(),
       if (metadata.isNotEmpty) 'metadata': metadata,
     };
@@ -175,6 +266,7 @@ class AcpPermissionAuditEntry {
     this.resolvedAt,
     this.decisionSource,
     this.reviewResult,
+    this.selectedOptionId,
   });
 
   final AcpPermissionRequest request;
@@ -183,6 +275,7 @@ class AcpPermissionAuditEntry {
   final DateTime? resolvedAt;
   final AcpPermissionDecisionSource? decisionSource;
   final AcpPermissionReviewResult? reviewResult;
+  final String? selectedOptionId;
 
   AcpPermissionAuditEntry copyWith({
     AcpPermissionRequest? request,
@@ -191,6 +284,7 @@ class AcpPermissionAuditEntry {
     DateTime? resolvedAt,
     AcpPermissionDecisionSource? decisionSource,
     AcpPermissionReviewResult? reviewResult,
+    String? selectedOptionId,
   }) {
     return AcpPermissionAuditEntry(
       request: request ?? this.request,
@@ -199,6 +293,7 @@ class AcpPermissionAuditEntry {
       resolvedAt: resolvedAt ?? this.resolvedAt,
       decisionSource: decisionSource ?? this.decisionSource,
       reviewResult: reviewResult ?? this.reviewResult,
+      selectedOptionId: selectedOptionId ?? this.selectedOptionId,
     );
   }
 
@@ -229,6 +324,7 @@ class AcpPermissionAuditEntry {
       if (resolvedAt != null)
         'resolvedAt': resolvedAt!.toUtc().toIso8601String(),
       if (decisionSource != null) 'decisionSource': decisionSource!.name,
+      if (selectedOptionId != null) 'selectedOptionId': selectedOptionId,
       if (reviewResult != null) 'review': reviewResult!.toJson(),
       'request': request.toJson(),
     };
@@ -313,5 +409,19 @@ const List<String> _allowPermissionKeywords = [
   'continue',
   'proceed',
 ];
+
+const Set<String> _denyPermissionKeywords = {
+  'deny',
+  'denied',
+  'reject',
+  'rejected',
+  'decline',
+  'declined',
+  'block',
+  'blocked',
+  'disallow',
+  'disallowed',
+  'no',
+};
 
 const Set<String> _permissionNegationWords = {'no', 'not', 'never', 'without'};

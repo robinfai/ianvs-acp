@@ -1944,8 +1944,13 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
-    _permissionBridge.respond(id: id, decision: decision);
+    _permissionBridge.respond(
+      id: id,
+      decision: decision,
+      selectedOptionId: selectedOptionId,
+    );
   }
 
   @override
@@ -2070,13 +2075,13 @@ class _InteractivePermissionProvider implements acp.PermissionProvider {
   final bool allowFilesystemWriteTextFile;
 
   @override
-  Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
+  Future<acp.PermissionDecision> request(acp.PermissionOptions options) async {
     if (options.toolName == 'read_text_file' && !allowFilesystemReadTextFile) {
-      return acp.PermissionOutcome.deny;
+      return const acp.PermissionDecision.deny();
     }
     if (options.toolName == 'write_text_file' &&
         !allowFilesystemWriteTextFile) {
-      return acp.PermissionOutcome.deny;
+      return const acp.PermissionDecision.deny();
     }
     return bridge.request(options);
   }
@@ -2092,15 +2097,16 @@ class _AcpPermissionBridge {
 
   Stream<AcpPermissionRequest> get requests => _requests.stream;
 
-  Future<acp.PermissionOutcome> request(acp.PermissionOptions options) async {
+  Future<acp.PermissionDecision> request(acp.PermissionOptions options) async {
     if (_isClosed || !_requests.hasListener) {
-      return acp.PermissionOutcome.cancelled;
+      return const acp.PermissionDecision.cancelled();
     }
 
     final id = 'permission-${++_nextId}';
-    final completer = Completer<acp.PermissionOutcome>();
+    final completer = Completer<acp.PermissionDecision>();
     _pending[id] = _PendingPermissionRequest(
       sessionId: options.sessionId,
+      choices: List<acp.PermissionChoice>.unmodifiable(options.choices),
       completer: completer,
     );
     _requests.add(
@@ -2112,6 +2118,15 @@ class _AcpPermissionBridge {
         toolName: options.toolName,
         toolKind: options.toolKind,
         options: List<String>.unmodifiable(options.options),
+        choices: List<AcpPermissionChoice>.unmodifiable(
+          options.choices.map(
+            (choice) => AcpPermissionChoice(
+              optionId: choice.optionId,
+              name: choice.name,
+              kind: choice.kind,
+            ),
+          ),
+        ),
         requestedAt: DateTime.now(),
         metadata: Map<String, Object?>.unmodifiable(options.metadata),
       ),
@@ -2124,10 +2139,32 @@ class _AcpPermissionBridge {
     }
   }
 
-  void respond({required String id, required AcpPermissionDecision decision}) {
+  void respond({
+    required String id,
+    required AcpPermissionDecision decision,
+    String? selectedOptionId,
+  }) {
     final pending = _pending[id];
     if (pending == null || pending.completer.isCompleted) return;
-    pending.completer.complete(_outcomeForDecision(decision));
+    final optionId = selectedOptionId?.trim();
+    if (optionId != null && optionId.isNotEmpty) {
+      final choice = pending.choiceById(optionId);
+      final choiceDecision = choice == null ? null : _decisionForChoice(choice);
+      if (choiceDecision == null || choiceDecision != decision) {
+        pending.completer.complete(const acp.PermissionDecision.cancelled());
+        return;
+      }
+      pending.completer.complete(
+        acp.PermissionDecision(
+          _outcomeForDecision(decision),
+          optionId: choice!.optionId,
+        ),
+      );
+      return;
+    }
+    pending.completer.complete(
+      acp.PermissionDecision(_outcomeForDecision(decision)),
+    );
   }
 
   void cancelSession(String sessionId) {
@@ -2161,16 +2198,80 @@ class _AcpPermissionBridge {
       AcpPermissionDecision.cancel => acp.PermissionOutcome.cancelled,
     };
   }
+
+  AcpPermissionDecision? _decisionForChoice(acp.PermissionChoice choice) {
+    final kind = choice.kind?.trim().toLowerCase() ?? '';
+    if (kind == 'allow' || kind == 'allow_once' || kind == 'allow_always') {
+      return AcpPermissionDecision.allow;
+    }
+    if (kind == 'deny' ||
+        kind == 'deny_once' ||
+        kind == 'deny_always' ||
+        kind == 'reject' ||
+        kind == 'reject_once' ||
+        kind == 'reject_always') {
+      return AcpPermissionDecision.deny;
+    }
+    final text = choice.name.trim().toLowerCase();
+    final words = text
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((word) => word.isNotEmpty)
+        .toSet();
+    const deniedWords = <String>{
+      'deny',
+      'denied',
+      'reject',
+      'rejected',
+      'decline',
+      'declined',
+      'block',
+      'blocked',
+      'disallow',
+      'disallowed',
+      'no',
+    };
+    if (words.any(deniedWords.contains) ||
+        text.contains("don't allow") ||
+        text.contains('do not allow')) {
+      return AcpPermissionDecision.deny;
+    }
+    const allowedWords = <String>{
+      'allow',
+      'allowed',
+      'approve',
+      'approved',
+      'accept',
+      'accepted',
+      'continue',
+      'continued',
+      'proceed',
+      'proceeded',
+      'yes',
+    };
+    if (words.any(allowedWords.contains)) {
+      return AcpPermissionDecision.allow;
+    }
+    return null;
+  }
 }
 
 class _PendingPermissionRequest {
   const _PendingPermissionRequest({
     required this.sessionId,
+    required this.choices,
     required this.completer,
   });
 
   final String sessionId;
-  final Completer<acp.PermissionOutcome> completer;
+  final List<acp.PermissionChoice> choices;
+  final Completer<acp.PermissionDecision> completer;
+
+  acp.PermissionChoice? choiceById(String optionId) {
+    for (final choice in choices) {
+      if (choice.optionId == optionId) return choice;
+    }
+    return null;
+  }
 }
 
 class _RawProtocolRequest {
