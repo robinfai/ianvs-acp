@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/artifact_collector.dart';
 import 'package:ianvs_acp/tasks/local_skill.dart';
@@ -123,6 +126,46 @@ void main() {
     );
     expect(taskController.events.last.text, contains('Task run failed'));
     expect(taskController.events.last.text, contains('boom'));
+  });
+
+  test('TaskRunner fails and cancels prompts after the deadline', () async {
+    final store = _MemoryTaskStore();
+    final ids = _DeterministicIds();
+    final taskController = TaskInboxController(
+      store: store,
+      clock: () => DateTime(2026, 7, 7, 8),
+      idGenerator: ids.next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Hanging task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final fake = _HangingPromptAgentClient();
+    final chat = ChatController(
+      client: fake,
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      controllerForAgent: (_) => chat,
+      promptDeadline: const Duration(milliseconds: 50),
+    );
+
+    final result = await runner
+        .runTask(task.id)
+        .timeout(const Duration(seconds: 2));
+
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('Task prompt exceeded'));
+    expect(taskController.runs.single.status, TaskStatus.failed);
+    expect(fake.cancelled, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
   test('TaskRunner records assistant tool and status events', () async {
@@ -614,6 +657,26 @@ class _MemorySkillRepository implements LocalSkillRepository {
     required String workspacePath,
   }) async {
     return skills[skillId.trim()];
+  }
+}
+
+class _HangingPromptAgentClient extends FakeAgentClient {
+  final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    return _events.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _events.close();
+    await super.dispose();
   }
 }
 

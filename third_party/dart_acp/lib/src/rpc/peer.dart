@@ -11,7 +11,15 @@ class JsonRpcPeer {
   JsonRpcPeer(StreamChannel<String> channel) : _peer = rpc.Peer(channel) {
     _registerClientHandlers();
     // Start listening for messages; fire-and-forget intentionally.
-    unawaited(_peer.listen());
+    unawaited(() async {
+      try {
+        await _peer.listen();
+      } on Object {
+        // Pending requests receive the channel failure directly. The peer's
+        // listener future must not report the same transport error again as
+        // an unhandled asynchronous exception.
+      }
+    }());
   }
 
   /// Underlying JSON-RPC peer.

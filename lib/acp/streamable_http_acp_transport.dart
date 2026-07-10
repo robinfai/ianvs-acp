@@ -11,12 +11,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.headers = const <String, String>{},
     this.onProtocolOut,
     this.onProtocolIn,
-  });
+    this.requestTimeout = const Duration(seconds: 30),
+    this.firstByteTimeout = const Duration(seconds: 15),
+    this.sseIdleTimeout = const Duration(minutes: 5),
+  }) : assert(requestTimeout > Duration.zero),
+       assert(firstByteTimeout > Duration.zero),
+       assert(sseIdleTimeout > Duration.zero);
 
   final Uri endpoint;
   final Map<String, String> headers;
   final void Function(String line)? onProtocolOut;
   final void Function(String line)? onProtocolIn;
+  final Duration requestTimeout;
+  final Duration firstByteTimeout;
+  final Duration sseIdleTimeout;
 
   final Map<String, String> _pendingMethodsById = <String, String>{};
   final Map<String, String> _serverRequestSessionsById = <String, String>{};
@@ -83,17 +91,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         await _ensureInboundStream(sessionId);
       }
 
-      final request = await client.postUrl(endpoint);
+      final request = await client.postUrl(endpoint).timeout(requestTimeout);
       _applyRequestHeaders(
         request,
         contentType: ContentType.json,
         sessionId: sessionId,
       );
       request.write(line);
-      final response = await request.close();
+      final response = await request.close().timeout(firstByteTimeout);
       _storeCookies(response.cookies);
 
-      final body = await response.transform(utf8.decoder).join();
+      final body = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(requestTimeout);
       if (isInitialize) {
         _handleInitializeResponse(response, body);
         return;
@@ -182,13 +193,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final key = sessionId ?? '';
     return _streamStartsByKey.putIfAbsent(key, () async {
       try {
-        final request = await client.getUrl(endpoint);
+        final request = await client.getUrl(endpoint).timeout(requestTimeout);
         _applyRequestHeaders(request, accept: 'text/event-stream');
         request.headers.set('Acp-Connection-Id', connectionId);
         if (sessionId != null) {
           request.headers.set('Acp-Session-Id', sessionId);
         }
-        final response = await request.close();
+        final response = await request.close().timeout(firstByteTimeout);
         _storeCookies(response.cookies);
         if (response.statusCode < 200 || response.statusCode >= 300) {
           throw HttpException(
@@ -196,10 +207,12 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
             uri: endpoint,
           );
         }
+        var streamFailed = false;
         late final StreamSubscription<String> subscription;
-        subscription = _sseEvents(response).listen(
+        subscription = _sseEvents(_withSseIdleTimeout(response)).listen(
           _handleSseEvent,
           onError: (Object error, StackTrace stackTrace) {
+            streamFailed = true;
             if (!_stopping) {
               _controller?.local.sink.addError(error, stackTrace);
             }
@@ -207,6 +220,16 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
           onDone: () {
             _streamStartsByKey.remove(key);
             _streamSubscriptions.remove(subscription);
+            if (!_stopping && !streamFailed) {
+              _controller?.local.sink.addError(
+                StateError(
+                  sessionId == null
+                      ? 'ACP connection SSE stream closed'
+                      : 'ACP session SSE stream closed: $sessionId',
+                ),
+                StackTrace.current,
+              );
+            }
           },
         );
         _streamSubscriptions.add(subscription);
@@ -217,6 +240,22 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         rethrow;
       }
     });
+  }
+
+  Stream<List<int>> _withSseIdleTimeout(Stream<List<int>> response) {
+    return response.timeout(
+      sseIdleTimeout,
+      onTimeout: (sink) {
+        sink.addError(
+          TimeoutException(
+            'ACP SSE stream was idle for $sseIdleTimeout',
+            sseIdleTimeout,
+          ),
+          StackTrace.current,
+        );
+        sink.close();
+      },
+    );
   }
 
   Stream<String> _sseEvents(Stream<List<int>> response) async* {

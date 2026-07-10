@@ -24,15 +24,20 @@ class TaskRunner {
     ArtifactCollector? artifactCollector,
     LocalSkillRepository? skillRepository,
     TaskRunnerClock? clock,
+    this.promptDeadline = const Duration(minutes: 30),
   }) : artifactCollector = artifactCollector ?? ArtifactCollector(),
        skillRepository = skillRepository ?? LocalSkillRegistry(),
-       _clock = clock ?? DateTime.now;
+       _clock = clock ?? DateTime.now,
+       assert(promptDeadline > Duration.zero);
 
   final TaskInboxController taskController;
   final TaskControllerForAgent controllerForAgent;
   final ArtifactCollector artifactCollector;
   final LocalSkillRepository skillRepository;
+  final Duration promptDeadline;
   final TaskRunnerClock _clock;
+
+  static const Duration _promptCancellationTimeout = Duration(seconds: 2);
 
   Future<TaskRecord> runTask(String taskId) async {
     final task = taskController.taskById(taskId);
@@ -193,7 +198,21 @@ class TaskRunner {
       );
 
       await controller.sendPrompt(prompt);
-      await _waitForPromptTurn(controller);
+      await _waitForPromptTurn(controller).timeout(
+        promptDeadline,
+        onTimeout: () async {
+          try {
+            await controller.stop().timeout(_promptCancellationTimeout);
+          } on Object {
+            // The task still needs a terminal failed state if cancellation
+            // itself cannot complete promptly.
+          }
+          throw TimeoutException(
+            'Task prompt exceeded $promptDeadline',
+            promptDeadline,
+          );
+        },
+      );
       await flushEventWrites();
       _throwIfControllerFailed(controller, 'Task prompt failed');
       runFinished = true;

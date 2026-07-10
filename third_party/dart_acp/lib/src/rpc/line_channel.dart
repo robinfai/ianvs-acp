@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:stream_channel/stream_channel.dart';
@@ -23,9 +22,11 @@ class LineJsonChannel {
             onInboundLine?.call(line);
             _controller.local.sink.add(line);
           },
-          onError: (e) {
-            // Log but don't crash on stdout errors
-            dev.log('[LineJsonChannel] stdout error: $e');
+          onError: (Object error, StackTrace stackTrace) {
+            unawaited(closeInbound(error, stackTrace));
+          },
+          onDone: () {
+            unawaited(closeInbound());
           },
         );
     // Always drain stderr to prevent subprocess blocking, even if no callback
@@ -38,28 +39,31 @@ class LineJsonChannel {
             onStderr?.call(line);
           },
           onError: (e) {
-            // Log but don't crash on stderr errors
-            dev.log('[LineJsonChannel] stderr error: $e');
+            // Stderr is diagnostic-only; stdout owns the protocol lifetime.
           },
         );
 
-    _controller.local.stream.listen((out) {
-      // Each outgoing payload is one JSON-RPC message; append newline
-      onOutboundLine?.call(out);
-      try {
-        process.stdin.add(utf8.encode(out));
-        process.stdin.add([0x0A]);
-        // Flush to ensure immediate delivery
-        unawaited(
-          process.stdin.flush().catchError((_) {
-            // Ignore flush errors (process may have exited)
-          }),
-        );
-      } on Object catch (e) {
-        // Process has likely exited - propagate the error
-        _controller.local.sink.addError(e);
-      }
-    });
+    _outboundSub = _controller.local.stream.listen(
+      (out) {
+        // Each outgoing payload is one JSON-RPC message; append newline
+        onOutboundLine?.call(out);
+        try {
+          process.stdin.add(utf8.encode(out));
+          process.stdin.add([0x0A]);
+          // Flush to ensure immediate delivery
+          unawaited(
+            process.stdin.flush().catchError((Object error) {
+              unawaited(closeInbound(error, StackTrace.current));
+            }),
+          );
+        } on Object catch (error, stackTrace) {
+          unawaited(closeInbound(error, stackTrace));
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        unawaited(closeInbound(error, stackTrace));
+      },
+    );
   }
 
   /// Underlying process.
@@ -67,6 +71,8 @@ class LineJsonChannel {
   final StreamChannelController<String> _controller = StreamChannelController();
   late final StreamSubscription _stdoutSub;
   late final StreamSubscription _stderrSub;
+  late final StreamSubscription<String> _outboundSub;
+  Future<void>? _closeInboundFuture;
 
   /// Callback invoked for raw inbound lines.
   final void Function(String line)? onInboundLine;
@@ -77,10 +83,38 @@ class LineJsonChannel {
   /// Exposed stream channel used by the JSON-RPC peer.
   StreamChannel<String> get channel => _controller.foreign;
 
+  /// Close the protocol input seen by the JSON-RPC peer.
+  Future<void> closeInbound([Object? error, StackTrace? stackTrace]) {
+    final existing = _closeInboundFuture;
+    if (existing != null) return existing;
+    final completer = Completer<void>();
+    _closeInboundFuture = completer.future;
+    try {
+      if (error != null) {
+        _controller.local.sink.addError(error, stackTrace);
+      }
+      unawaited(
+        _controller.local.sink.close().then(
+          (_) => completer.complete(),
+          onError: completer.completeError,
+        ),
+      );
+    } on Object catch (closeError, closeStackTrace) {
+      completer.completeError(closeError, closeStackTrace);
+    }
+    return completer.future;
+  }
+
   /// Dispose resources and flush stdin.
   Future<void> dispose() async {
+    await closeInbound();
+    await _outboundSub.cancel();
     await _stdoutSub.cancel();
     await _stderrSub.cancel();
-    await process.stdin.flush();
+    try {
+      await process.stdin.flush();
+    } on Object {
+      // The process may already have exited.
+    }
   }
 }

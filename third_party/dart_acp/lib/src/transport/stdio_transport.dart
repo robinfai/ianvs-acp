@@ -94,25 +94,21 @@ class StdioTransport implements AcpTransport {
       throw StateError('Agent process exited immediately with code $exitCode');
     }
 
-    // Monitor process exit to detect later crashes
-    unawaited(
-      _exitCodeFuture!.then((code) {
-        if (code != 0) {
-          logger.warning('Agent process exited with code $code');
-          // The process has crashed - close the channel controller
-          // to propagate the error
-          _channel?.channel.sink.addError(
-            StateError('Agent process exited unexpectedly with code $code'),
-          );
-        }
-      }),
-    );
-
     _channel = LineJsonChannel(
       proc,
       onStderr: (s) => logger.finer('[agent stderr] $s'),
       onInboundLine: onProtocolIn,
       onOutboundLine: onProtocolOut,
+    );
+
+    // Any process exit ends the protocol stream and all pending requests.
+    unawaited(
+      _exitCodeFuture!.then((code) {
+        if (code != 0) {
+          logger.warning('Agent process exited with code $code');
+        }
+        return _channel?.closeInbound();
+      }),
     );
   }
 

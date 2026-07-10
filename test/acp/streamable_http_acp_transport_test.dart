@@ -147,6 +147,135 @@ void main() {
     }
   });
 
+  test('unexpected session SSE closure is reported', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final inboundMessages = <Map<String, dynamic>>[];
+    final transportErrors = <Object>[];
+    final sessionStream = Completer<HttpResponse>();
+    final promptAccepted = Completer<void>();
+    var disposed = false;
+
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response.bufferOutput = false;
+        request.response.headers
+          ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+          ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        openResponses.add(request.response);
+        if (request.headers.value('Acp-Session-Id') == 'session-1' &&
+            !sessionStream.isCompleted) {
+          sessionStream.complete(request.response);
+        }
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      request.response.headers.contentType = ContentType.json;
+      if (message['method'] == 'initialize') {
+        request.response
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{
+                'connectionId': 'connection-1',
+                'protocolVersion': 1,
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+      } else if (message['method'] == 'session/new') {
+        request.response.write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{'sessionId': 'session-1'},
+          }),
+        );
+      } else if (message['method'] == 'session/prompt') {
+        request.response.statusCode = HttpStatus.accepted;
+        if (!promptAccepted.isCompleted) promptAccepted.complete();
+      }
+      await request.response.close();
+    });
+
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+    await transport.start();
+    final channel = transport.channel;
+    final inboundSubscription = channel.stream.listen((line) {
+      inboundMessages.add(jsonDecode(line) as Map<String, dynamic>);
+    }, onError: transportErrors.add);
+
+    try {
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 1),
+      );
+
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'method': 'session/new',
+          'params': <String, dynamic>{'cwd': '/workspace'},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 2),
+      );
+      final sessionResponse = await sessionStream.future.timeout(
+        const Duration(seconds: 2),
+      );
+
+      channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 3,
+          'method': 'session/prompt',
+          'params': <String, dynamic>{'sessionId': 'session-1'},
+        }),
+      );
+      await promptAccepted.future.timeout(const Duration(seconds: 2));
+      await sessionResponse.close();
+
+      await _waitFor(() => transportErrors.isNotEmpty);
+      expect(transportErrors.last, isA<StateError>());
+
+      await transport.stop().timeout(const Duration(seconds: 5));
+      disposed = true;
+    } finally {
+      await inboundSubscription.cancel();
+      if (!disposed) {
+        await transport.stop();
+      }
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('session setup opens SSE stream for snake case session ids', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
@@ -871,6 +1000,7 @@ void main() {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
     final inboundMessages = <Map<String, dynamic>>[];
+    final transportErrors = <Object>[];
     final firstSessionStream = Completer<HttpResponse>();
     final secondSessionStream = Completer<HttpResponse>();
     var sessionStreamCount = 0;
@@ -946,7 +1076,7 @@ void main() {
     final channel = transport.channel;
     final inboundSubscription = channel.stream.listen((line) {
       inboundMessages.add(jsonDecode(line) as Map<String, dynamic>);
-    });
+    }, onError: transportErrors.add);
 
     try {
       channel.sink.add(
@@ -976,7 +1106,8 @@ void main() {
         const Duration(seconds: 2),
       );
       await firstStream.close();
-      await pumpEventQueue(times: 5);
+      await _waitFor(() => transportErrors.isNotEmpty);
+      expect(transportErrors.single, isA<StateError>());
 
       channel.sink.add(
         jsonEncode(<String, dynamic>{
@@ -1234,6 +1365,127 @@ void main() {
       if (!disposed) {
         await transport.stop();
       }
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('HTTP response first-byte timeout is reported', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final transportErrors = <Object>[];
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      openResponses.add(request.response);
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      requestTimeout: const Duration(seconds: 1),
+      firstByteTimeout: const Duration(milliseconds: 50),
+      sseIdleTimeout: const Duration(seconds: 1),
+    );
+    await transport.start();
+    final subscription = transport.channel.stream.listen(
+      (_) {},
+      onError: transportErrors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+
+      await _waitFor(() => transportErrors.isNotEmpty);
+      expect(transportErrors.single, isA<TimeoutException>());
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('SSE idle timeout is reported', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final inboundMessages = <Map<String, dynamic>>[];
+    final transportErrors = <Object>[];
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response.bufferOutput = false;
+        request.response.headers
+          ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+          ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        openResponses.add(request.response);
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-1')
+        ..write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{
+              'connectionId': 'connection-1',
+              'protocolVersion': 1,
+              'agentCapabilities': <String, dynamic>{},
+              'authMethods': <Map<String, dynamic>>[],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      requestTimeout: const Duration(seconds: 1),
+      firstByteTimeout: const Duration(seconds: 1),
+      sseIdleTimeout: const Duration(milliseconds: 50),
+    );
+    await transport.start();
+    final subscription = transport.channel.stream.listen((line) {
+      inboundMessages.add(jsonDecode(line) as Map<String, dynamic>);
+    }, onError: transportErrors.add);
+
+    try {
+      transport.channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+      await _waitFor(
+        () => inboundMessages.any((message) => message['id'] == 1),
+      );
+
+      await _waitFor(() => transportErrors.isNotEmpty);
+      expect(transportErrors.single, isA<TimeoutException>());
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
       for (final response in openResponses) {
         await response.close();
       }
