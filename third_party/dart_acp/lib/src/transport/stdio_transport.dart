@@ -118,9 +118,18 @@ class StdioTransport implements AcpTransport {
       await _channel!.dispose();
       _channel = null;
     }
-    if (_process != null) {
-      _process!.kill(ProcessSignal.sigterm);
-      _process = null;
+    final process = _process;
+    final exitCode = process == null ? null : _exitCodeFuture;
+    _process = null;
+    _exitCodeFuture = null;
+    if (process == null) return;
+
+    process.kill(ProcessSignal.sigterm);
+    try {
+      await exitCode?.timeout(const Duration(milliseconds: 500));
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
+      await exitCode?.timeout(const Duration(milliseconds: 500));
     }
   }
 }

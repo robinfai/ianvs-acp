@@ -223,6 +223,16 @@ abstract class TaskRepository {
   Future<void> close();
 }
 
+abstract interface class AtomicTaskClaimMetadataRepository {
+  Future<TaskClaim?> claimTaskWithMetadata(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+    required Map<String, Object?> claimedMetadata,
+  });
+}
+
 abstract class TaskMigrationRepository {
   Future<TaskMigrationMetadata> migrationMetadata();
 

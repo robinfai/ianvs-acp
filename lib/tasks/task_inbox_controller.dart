@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../workspace/workspace.dart';
+import 'task_data_sanitizer.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
 import 'task_repository.dart';
@@ -14,22 +15,59 @@ typedef TaskInboxIdGenerator = String Function(String prefix);
 
 const Object _unchanged = Object();
 
+class TaskPersistenceStalledException implements Exception {
+  const TaskPersistenceStalledException({
+    required this.operation,
+    required this.watchdog,
+    required this.generation,
+  });
+
+  final String operation;
+  final Duration watchdog;
+  final int generation;
+
+  @override
+  String toString() {
+    return 'Task persistence stalled during $operation after $watchdog '
+        '(generation $generation). The controller is quarantined; reload '
+        'the repository with a new controller after the pending operation '
+        'has quiesced.';
+  }
+}
+
 class TaskInboxController extends ChangeNotifier {
+  static const Duration defaultPersistenceWatchdog = Duration(seconds: 15);
+
   TaskInboxController({
     required this.repository,
     TaskInboxClock? clock,
     this.idGenerator,
-  }) : _clock = clock ?? DateTime.now;
+    this.persistenceWatchdog = defaultPersistenceWatchdog,
+    TaskDataSanitizer? dataSanitizer,
+  }) : _clock = clock ?? DateTime.now,
+       dataSanitizer = dataSanitizer ?? const TaskDataSanitizer(),
+       assert(persistenceWatchdog > Duration.zero);
 
   final TaskRepository repository;
   final TaskInboxClock _clock;
   final TaskInboxIdGenerator? idGenerator;
+  final TaskDataSanitizer dataSanitizer;
+
+  /// Bounds asynchronous repository calls after SQLite's five-second busy
+  /// timeout. A Dart timer cannot interrupt a synchronous native call that is
+  /// blocking the same isolate; it only quarantines calls whose Future can be
+  /// observed by the event loop.
+  final Duration persistenceWatchdog;
   TaskInboxSnapshot _snapshot = TaskInboxSnapshot.empty();
   bool _loaded = false;
   Future<void>? _loadFuture;
   Future<void> _stateTransition = Future<void>.value();
   int _revision = -1;
   int _idCounter = 0;
+  int _persistenceGeneration = 0;
+  TaskPersistenceStalledException? _persistenceFault;
+  final Set<Future<void>> _repositoryOperations = <Future<void>>{};
+  Completer<void>? _persistenceQuiesced;
 
   TaskInboxSnapshot get snapshot => _snapshot;
 
@@ -43,15 +81,33 @@ class TaskInboxController extends ChangeNotifier {
 
   List<ApprovalRequestRecord> get approvals => _snapshot.approvals;
 
+  bool get isPersistenceFaulted => _persistenceFault != null;
+
+  TaskPersistenceStalledException? get persistenceFault => _persistenceFault;
+
+  bool get isPersistenceQuiesced => _repositoryOperations.isEmpty;
+
+  Future<void> get whenPersistenceQuiesced {
+    if (_repositoryOperations.isEmpty) return Future<void>.value();
+    return (_persistenceQuiesced ??= Completer<void>()).future;
+  }
+
   List<TaskTimelineEntry> timelineForTask(String taskId) {
     return buildTaskTimeline(_snapshot, taskId);
   }
 
-  Future<void> load() => _loadFuture ??= _loadOnce();
+  Future<void> load() {
+    final fault = _persistenceFault;
+    if (fault != null) return Future<void>.error(fault);
+    return _loadFuture ??= _loadOnce();
+  }
 
   Future<void> _loadOnce() async {
     try {
-      final loaded = await repository.loadRepository();
+      final loaded = await _awaitRepository(
+        'loadRepository',
+        repository.loadRepository,
+      );
       _snapshot = loaded.snapshot;
       _revision = loaded.revision;
       _loaded = true;
@@ -65,9 +121,15 @@ class TaskInboxController extends ChangeNotifier {
   Future<bool> refreshIfChanged() async {
     if (!_loaded) await load();
     return _withStateTransition(() async {
-      final currentRevision = await repository.revision();
+      final currentRevision = await _awaitRepository(
+        'revision',
+        repository.revision,
+      );
       if (currentRevision == _revision) return false;
-      final loaded = await repository.loadRepository();
+      final loaded = await _awaitRepository(
+        'loadRepository',
+        repository.loadRepository,
+      );
       if (loaded.revision == _revision) return false;
       _snapshot = loaded.snapshot;
       _revision = loaded.revision;
@@ -125,10 +187,13 @@ class TaskInboxController extends ChangeNotifier {
         updatedAt: now,
         resourceId: _trimmedOrNull(resourceId),
         skillIds: _cleanStringList(skillIds),
-        metadata: Map.unmodifiable(metadata),
+        metadata: dataSanitizer.sanitize(metadata),
       );
 
-      final inserted = await repository.insertTask(task);
+      final inserted = await _awaitRepository(
+        'insertTask',
+        () => repository.insertTask(task),
+      );
       _snapshot = _snapshot.copyWith(
         tasks: _dedupeTasks([..._snapshot.tasks, inserted]),
         updatedAt: now,
@@ -170,11 +235,15 @@ class TaskInboxController extends ChangeNotifier {
         currentRunId: run.id,
         updatedAt: now,
         sessionId: run.sessionId,
+        metadata: dataSanitizer.sanitize(existingTask.metadata),
       );
-      final created = await repository.createRun(
-        expectedTask: existingTask,
-        task: updatedTask,
-        run: run,
+      final created = await _awaitRepository(
+        'createRun',
+        () => repository.createRun(
+          expectedTask: existingTask,
+          task: updatedTask,
+          run: run,
+        ),
       );
       final tasks = [..._snapshot.tasks];
       final currentIndex = tasks.indexWhere(
@@ -232,12 +301,34 @@ class TaskInboxController extends ChangeNotifier {
         createdAt: now,
         metadata: const <String, Object?>{'task_status': 'dispatched'},
       );
-      final claim = await repository.claimTask(
-        task,
-        run,
-        dispatchEvent: dispatchEvent,
-        expectedResource: expectedResource,
-      );
+      final claimedMetadata = dataSanitizer.sanitize(task.metadata);
+      final claim = await _awaitRepository('claimTask', () {
+        final target = repository;
+        if (target is AtomicTaskClaimMetadataRepository) {
+          return (target as AtomicTaskClaimMetadataRepository)
+              .claimTaskWithMetadata(
+                task,
+                run,
+                dispatchEvent: dispatchEvent,
+                expectedResource: expectedResource,
+                claimedMetadata: claimedMetadata,
+              );
+        }
+        if (!_jsonValuesEqual(task.metadata, claimedMetadata)) {
+          return Future<TaskClaim?>.error(
+            UnsupportedError(
+              'This task repository cannot atomically sanitize metadata '
+              'while claiming a task.',
+            ),
+          );
+        }
+        return target.claimTask(
+          task,
+          run,
+          dispatchEvent: dispatchEvent,
+          expectedResource: expectedResource,
+        );
+      });
       if (claim == null) {
         await _reloadRepositoryWithinTransition();
         return null;
@@ -330,14 +421,22 @@ class TaskInboxController extends ChangeNotifier {
       }
       if (run == null) throw StateError('Task run not found: $runId');
 
+      final sanitizedArtifacts = _sanitizeArtifacts(artifacts);
       final artifactIds = <String>{};
-      for (final artifact in artifacts) {
+      for (final artifact in sanitizedArtifacts) {
         final artifactId = artifact.id.trim();
         if (artifactId.isEmpty) {
           throw StateError('Artifact id is required.');
         }
         if (!artifactIds.add(artifactId)) {
           throw StateError('Duplicate artifact id: $artifactId');
+        }
+        if (_recordIdExistsOutsideArtifactRun(
+          artifactId,
+          taskId: task.id,
+          runId: run.id,
+        )) {
+          throw StateError('Duplicate persisted id: $artifactId');
         }
         if (artifact.taskId != task.id || artifact.runId != run.id) {
           throw StateError('Artifact does not belong to task run: $artifactId');
@@ -346,12 +445,15 @@ class TaskInboxController extends ChangeNotifier {
 
       final now = _clock();
       final expectedArtifacts = _artifactsForTaskRun(task.id, run.id);
-      await repository.replaceArtifactsForRun(
-        taskId: task.id,
-        runId: targetRunId,
-        expectedArtifacts: expectedArtifacts,
-        artifacts: artifacts,
-        updatedAt: now,
+      await _awaitRepository(
+        'replaceArtifactsForRun',
+        () => repository.replaceArtifactsForRun(
+          taskId: task.id,
+          runId: targetRunId,
+          expectedArtifacts: expectedArtifacts,
+          artifacts: sanitizedArtifacts,
+          updatedAt: now,
+        ),
       );
       final retained = _snapshot.artifacts
           .where(
@@ -359,14 +461,14 @@ class TaskInboxController extends ChangeNotifier {
                 artifact.taskId != task.id || artifact.runId != targetRunId,
           )
           .toList(growable: true);
-      retained.addAll(artifacts);
+      retained.addAll(sanitizedArtifacts);
       _snapshot = _snapshot.copyWith(
         artifacts: List.unmodifiable(retained),
         updatedAt: now,
       );
       _markRepositoryChanged();
       notifyListeners();
-      return List.unmodifiable(artifacts);
+      return sanitizedArtifacts;
     });
   }
 
@@ -427,18 +529,20 @@ class TaskInboxController extends ChangeNotifier {
       }
 
       final now = _clock();
-      final updatedRunArtifacts = artifacts
-          .where(
-            (artifact) =>
-                artifact.taskId == task.id && artifact.runId == run.id,
-          )
-          .toList(growable: false);
-      await repository.replaceArtifactsForRun(
-        taskId: task.id,
-        runId: run.id,
-        expectedArtifacts: previousArtifacts,
-        artifacts: updatedRunArtifacts,
-        updatedAt: now,
+      final updatedRunArtifacts = _sanitizeArtifacts(
+        artifacts.where(
+          (artifact) => artifact.taskId == task.id && artifact.runId == run.id,
+        ),
+      );
+      await _awaitRepository(
+        'replaceArtifactsForRun',
+        () => repository.replaceArtifactsForRun(
+          taskId: task.id,
+          runId: run.id,
+          expectedArtifacts: previousArtifacts,
+          artifacts: updatedRunArtifacts,
+          updatedAt: now,
+        ),
       );
       final merged =
           _snapshot.artifacts
@@ -498,7 +602,7 @@ class TaskInboxController extends ChangeNotifier {
       final changed = <ArtifactRecord>[];
       for (final artifact in _snapshot.artifacts) {
         if (artifact.taskId == task.id && ids.contains(artifact.id)) {
-          final updated = artifact.copyWith(status: status);
+          final updated = _sanitizeArtifact(artifact.copyWith(status: status));
           changed.add(updated);
         }
       }
@@ -507,10 +611,13 @@ class TaskInboxController extends ChangeNotifier {
       final expectedArtifacts = _snapshot.artifacts
           .where((artifact) => ids.contains(artifact.id))
           .toList(growable: false);
-      await repository.updateArtifacts(
-        expectedArtifacts: expectedArtifacts,
-        artifacts: changed,
-        updatedAt: now,
+      await _awaitRepository(
+        'updateArtifacts',
+        () => repository.updateArtifacts(
+          expectedArtifacts: expectedArtifacts,
+          artifacts: changed,
+          updatedAt: now,
+        ),
       );
       final changedById = <String, ArtifactRecord>{
         for (final artifact in changed) artifact.id: artifact,
@@ -710,11 +817,15 @@ class TaskInboxController extends ChangeNotifier {
         status: status,
         resolvedAt: now,
         rationale: _trimmedOrNull(rationale) ?? existing.rationale,
+        metadata: dataSanitizer.sanitize(existing.metadata),
       );
-      await repository.upsertApproval(
-        resolved,
-        expected: existing,
-        updatedAt: now,
+      await _awaitRepository(
+        'upsertApproval',
+        () => repository.upsertApproval(
+          resolved,
+          expected: existing,
+          updatedAt: now,
+        ),
       );
       final approvals = [..._snapshot.approvals];
       final currentIndex = approvals.indexWhere(
@@ -810,7 +921,10 @@ class TaskInboxController extends ChangeNotifier {
       if (tasks.length == _snapshot.tasks.length) return;
       final expected = TaskDeleteExpectation.fromSnapshot(_snapshot, target);
       final now = _clock();
-      await repository.deleteTask(expected, updatedAt: now);
+      await _awaitRepository(
+        'deleteTask',
+        () => repository.deleteTask(expected, updatedAt: now),
+      );
       _snapshot = _snapshot.copyWith(
         tasks: _snapshot.tasks
             .where((task) => task.id != target)
@@ -842,7 +956,10 @@ class TaskInboxController extends ChangeNotifier {
   }
 
   Future<void> _reloadRepositoryWithinTransition() async {
-    final loaded = await repository.loadRepository();
+    final loaded = await _awaitRepository(
+      'loadRepository',
+      repository.loadRepository,
+    );
     _snapshot = loaded.snapshot;
     _revision = loaded.revision;
     notifyListeners();
@@ -862,6 +979,8 @@ class TaskInboxController extends ChangeNotifier {
   }
 
   Future<T> _withStateTransition<T>(Future<T> Function() action) {
+    final fault = _persistenceFault;
+    if (fault != null) return Future<T>.error(fault);
     final previous = _stateTransition;
     final result = Completer<T>();
     final transition = () async {
@@ -871,6 +990,7 @@ class TaskInboxController extends ChangeNotifier {
         // A failed transition must not prevent later repository operations.
       }
       try {
+        _throwIfPersistenceFaulted();
         result.complete(await action());
       } on Object catch (error, stackTrace) {
         result.completeError(error, stackTrace);
@@ -881,14 +1001,61 @@ class TaskInboxController extends ChangeNotifier {
   }
 
   Future<void> settle() async {
+    _throwIfPersistenceFaulted();
     final loading = _loadFuture;
     if (loading != null) await loading;
     await Future<void>.value();
     while (true) {
       final transition = _stateTransition;
       await transition;
+      _throwIfPersistenceFaulted();
       if (identical(transition, _stateTransition)) return;
     }
+  }
+
+  Future<T> _awaitRepository<T>(
+    String operationName,
+    Future<T> Function() operation,
+  ) async {
+    _throwIfPersistenceFaulted();
+    final generation = _persistenceGeneration + 1;
+    final source = operation();
+    late final Future<void> tracked;
+    tracked = source.then<void>(
+      (_) => _repositoryOperationCompleted(tracked),
+      onError: (Object _, StackTrace _) {
+        _repositoryOperationCompleted(tracked);
+      },
+    );
+    _repositoryOperations.add(tracked);
+    if (_persistenceQuiesced?.isCompleted ?? false) {
+      _persistenceQuiesced = null;
+    }
+    return source.timeout(
+      persistenceWatchdog,
+      onTimeout: () {
+        final fault = _persistenceFault ??= TaskPersistenceStalledException(
+          operation: operationName,
+          watchdog: persistenceWatchdog,
+          generation: generation,
+        );
+        _persistenceGeneration = fault.generation;
+        throw fault;
+      },
+    );
+  }
+
+  void _repositoryOperationCompleted(Future<void> operation) {
+    _repositoryOperations.remove(operation);
+    if (_repositoryOperations.isNotEmpty) return;
+    final quiesced = _persistenceQuiesced;
+    _persistenceQuiesced = null;
+    if (quiesced != null && !quiesced.isCompleted) quiesced.complete();
+  }
+
+  void _throwIfPersistenceFaulted() {
+    final fault = _persistenceFault;
+    if (fault != null) throw fault;
   }
 
   int _indexOfTask(String taskId) {
@@ -916,6 +1083,23 @@ class TaskInboxController extends ChangeNotifier {
         _snapshot.artifacts.any((artifact) => artifact.id == id) ||
         _snapshot.approvals.any((approval) => approval.id == id) ||
         _snapshot.resources.any((resource) => resource.id == id);
+  }
+
+  bool _recordIdExistsOutsideArtifactRun(
+    String id, {
+    required String taskId,
+    required String runId,
+  }) {
+    if (taskById(id) != null) return true;
+    return _snapshot.runs.any((run) => run.id == id) ||
+        _snapshot.events.any((event) => event.id == id) ||
+        _snapshot.approvals.any((approval) => approval.id == id) ||
+        _snapshot.resources.any((resource) => resource.id == id) ||
+        _snapshot.artifacts.any(
+          (artifact) =>
+              artifact.id == id &&
+              (artifact.taskId != taskId || artifact.runId != runId),
+        );
   }
 
   TaskRunRecord? _runById(String runId) {
@@ -964,6 +1148,18 @@ class TaskInboxController extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  List<ArtifactRecord> _sanitizeArtifacts(Iterable<ArtifactRecord> artifacts) {
+    return List<ArtifactRecord>.unmodifiable(artifacts.map(_sanitizeArtifact));
+  }
+
+  ArtifactRecord _sanitizeArtifact(ArtifactRecord artifact) {
+    return artifact.copyWith(
+      metadata: dataSanitizer.sanitize(
+        Map<String, Object?>.of(artifact.metadata),
+      ),
+    );
+  }
+
   Future<TaskRunRecord> _updateRunWithinTransition(
     String runId, {
     TaskStatus? status,
@@ -990,10 +1186,9 @@ class TaskInboxController extends ChangeNotifier {
           : _trimmedOrNull(model as String?),
       error: error ?? existing.error,
     );
-    final persisted = await repository.updateRun(
-      updated,
-      expected: existing,
-      updatedAt: now,
+    final persisted = await _awaitRepository(
+      'updateRun',
+      () => repository.updateRun(updated, expected: existing, updatedAt: now),
     );
     final runs = [..._snapshot.runs];
     final currentIndex = runs.indexWhere(
@@ -1057,9 +1252,12 @@ class TaskInboxController extends ChangeNotifier {
           ? existing.resourceId
           : _trimmedOrNull(resourceId as String?),
       skillIds: skillIds == null ? null : _cleanStringList(skillIds),
-      metadata: metadata == null ? null : Map.unmodifiable(metadata),
+      metadata: dataSanitizer.sanitize(metadata ?? existing.metadata),
     );
-    final persisted = await repository.updateTask(updated, expected: existing);
+    final persisted = await _awaitRepository(
+      'updateTask',
+      () => repository.updateTask(updated, expected: existing),
+    );
     final tasks = [..._snapshot.tasks];
     final currentIndex = tasks.indexWhere(
       (candidate) => candidate.id == persisted.id,
@@ -1092,12 +1290,15 @@ class TaskInboxController extends ChangeNotifier {
       taskId: task.id,
       runId: run.id,
       kind: kind,
-      text: text.trim(),
+      text: kind == TaskEventKind.assistant ? text : text.trim(),
       createdAt: now,
       sessionId: _trimmedOrNull(sessionId),
-      metadata: Map.unmodifiable(metadata),
+      metadata: dataSanitizer.sanitize(metadata),
     );
-    await repository.appendEvents(<TaskEventRecord>[event], updatedAt: now);
+    await _awaitRepository(
+      'appendEvents',
+      () => repository.appendEvents(<TaskEventRecord>[event], updatedAt: now),
+    );
     _snapshot = _snapshot.copyWith(
       events: [..._snapshot.events, event],
       updatedAt: now,
@@ -1168,4 +1369,25 @@ class TaskInboxController extends ChangeNotifier {
           .toSet(),
     );
   }
+}
+
+bool _jsonValuesEqual(Object? left, Object? right) {
+  if (left is Map && right is Map) {
+    if (left.length != right.length) return false;
+    for (final entry in left.entries) {
+      if (!right.containsKey(entry.key) ||
+          !_jsonValuesEqual(entry.value, right[entry.key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (left is List && right is List) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index += 1) {
+      if (!_jsonValuesEqual(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  return left == right;
 }

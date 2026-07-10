@@ -7,7 +7,8 @@ import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 typedef MemoryRepositoryHook = Future<void> Function(String operation);
 
-class MemoryTaskRepository implements TaskRepository {
+class MemoryTaskRepository
+    implements TaskRepository, AtomicTaskClaimMetadataRepository {
   MemoryTaskRepository([TaskInboxSnapshot? snapshot, this.beforeOperation])
     : _snapshot =
           snapshot ??
@@ -161,6 +162,38 @@ class MemoryTaskRepository implements TaskRepository {
     TaskRunRecord run, {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
+  }) {
+    return _claimTask(
+      expectedTask,
+      run,
+      dispatchEvent: dispatchEvent,
+      expectedResource: expectedResource,
+    );
+  }
+
+  @override
+  Future<TaskClaim?> claimTaskWithMetadata(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+    required Map<String, Object?> claimedMetadata,
+  }) {
+    return _claimTask(
+      expectedTask,
+      run,
+      dispatchEvent: dispatchEvent,
+      expectedResource: expectedResource,
+      claimedMetadata: claimedMetadata,
+    );
+  }
+
+  Future<TaskClaim?> _claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+    Map<String, Object?>? claimedMetadata,
   }) async {
     if (run.status != TaskStatus.dispatched || run.endedAt != null) {
       throw ArgumentError('Claimed task runs must start dispatched.');
@@ -220,6 +253,7 @@ class MemoryTaskRepository implements TaskRepository {
       status: TaskStatus.dispatched,
       currentRunId: actualRun.id,
       updatedAt: claimAt,
+      metadata: claimedMetadata ?? existing.metadata,
     );
     final tasks = [..._snapshot.tasks];
     tasks[index] = claimed;

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
@@ -13,6 +14,154 @@ import 'package:sqlite3/sqlite3.dart';
 import '../support/memory_task_repository.dart';
 
 void main() {
+  test(
+    'controller rejects artifact ids that would corrupt strict reload',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-task-global-id-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final path = '${tempDir.path}/task-inbox.sqlite3';
+      final store = TaskInboxSqliteStore(path: path);
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: (prefix) => '$prefix-1',
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final task = await controller.createTask(
+        title: 'Global id validation',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final run = await controller.createRun(taskId: task.id);
+      final event = await controller.appendEvent(
+        taskId: task.id,
+        runId: run.id,
+        kind: TaskEventKind.system,
+        text: 'Existing event',
+      );
+
+      await expectLater(
+        controller.replaceArtifactsForRun(
+          taskId: task.id,
+          runId: run.id,
+          artifacts: <ArtifactRecord>[
+            ArtifactRecord(
+              id: event.id,
+              taskId: task.id,
+              runId: run.id,
+              kind: ArtifactKind.file,
+              title: 'collision.txt',
+              createdAt: DateTime.utc(2026, 7, 11),
+            ),
+          ],
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => '$error',
+            'message',
+            contains('Duplicate persisted id: ${event.id}'),
+          ),
+        ),
+      );
+
+      expect(controller.artifacts, isEmpty);
+      await store.close();
+      final reopened = TaskInboxSqliteStore(path: path);
+      addTearDown(reopened.close);
+      final reloaded = await reopened.loadRepository();
+      expect(reloaded.snapshot.events.single.id, event.id);
+      expect(reloaded.snapshot.artifacts, isEmpty);
+    },
+  );
+
+  test('cross-controller writes enforce globally unique record ids', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-global-id-race-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final path = '${tempDir.path}/task-inbox.sqlite3';
+    final createdAt = DateTime.utc(2026, 7, 11, 8);
+    final initial = TaskInboxSqliteStore(path: path);
+    await initial.activateVerifiedSnapshot(
+      TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: <TaskRecord>[
+          TaskRecord(
+            id: 'task-1',
+            title: 'Concurrent ids',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.running,
+            priority: TaskPriority.normal,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+            currentRunId: 'run-1',
+          ),
+        ],
+        runs: <TaskRunRecord>[
+          TaskRunRecord(
+            id: 'run-1',
+            taskId: 'task-1',
+            attempt: 1,
+            status: TaskStatus.running,
+            startedAt: createdAt,
+          ),
+        ],
+      ),
+      checksum: 'global-id-race',
+    );
+    await initial.close();
+
+    final storeA = TaskInboxSqliteStore(path: path);
+    final storeB = TaskInboxSqliteStore(path: path);
+    addTearDown(storeA.close);
+    addTearDown(storeB.close);
+    final controllerA = TaskInboxController(
+      repository: storeA,
+      idGenerator: (_) => 'shared-record-id',
+    );
+    final controllerB = TaskInboxController(repository: storeB);
+    addTearDown(controllerA.dispose);
+    addTearDown(controllerB.dispose);
+    await Future.wait(<Future<void>>[controllerA.load(), controllerB.load()]);
+
+    await controllerA.appendEvent(
+      taskId: 'task-1',
+      runId: 'run-1',
+      kind: TaskEventKind.system,
+      text: 'Committed after controller B loaded.',
+    );
+    await expectLater(
+      controllerB.replaceArtifactsForRun(
+        taskId: 'task-1',
+        runId: 'run-1',
+        artifacts: <ArtifactRecord>[
+          ArtifactRecord(
+            id: 'shared-record-id',
+            taskId: 'task-1',
+            runId: 'run-1',
+            kind: ArtifactKind.file,
+            title: 'collision.txt',
+            createdAt: createdAt,
+          ),
+        ],
+      ),
+      throwsA(isA<TaskRepositoryConflict>()),
+    );
+
+    await storeA.close();
+    await storeB.close();
+    final reopened = TaskInboxSqliteStore(path: path);
+    addTearDown(reopened.close);
+    final snapshot = (await reopened.loadRepository()).snapshot;
+    expect(snapshot.events.single.id, 'shared-record-id');
+    expect(snapshot.artifacts, isEmpty);
+  });
+
   test('creates normalized task tables with required pragmas', () async {
     final tempDir = await Directory.systemTemp.createTemp(
       'ianvs-acp-task-schema-',

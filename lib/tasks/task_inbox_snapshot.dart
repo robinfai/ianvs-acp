@@ -147,12 +147,13 @@ class TaskInboxSnapshot {
   }
 
   void validateReferences() {
-    final taskIds = _uniqueIds(tasks, 'task');
-    _uniqueIds(runs, 'run');
-    final resourceIds = _uniqueIds(resources, 'resource');
-    _uniqueIds(events, 'event');
-    _uniqueIds(artifacts, 'artifact');
-    _uniqueIds(approvals, 'approval');
+    final persistedIds = <String>{};
+    final taskIds = _uniqueIds(tasks, 'task', persistedIds);
+    _uniqueIds(runs, 'run', persistedIds);
+    final resourceIds = _uniqueIds(resources, 'resource', persistedIds);
+    _uniqueIds(events, 'event', persistedIds);
+    _uniqueIds(artifacts, 'artifact', persistedIds);
+    _uniqueIds(approvals, 'approval', persistedIds);
 
     final runsById = <String, TaskRunRecord>{
       for (final run in runs) run.id: run,
@@ -312,7 +313,11 @@ Map<String, Object?> _normalizeHistoricalRecord(
   return normalized;
 }
 
-Set<String> _uniqueIds(Iterable<Object?> records, String recordType) {
+Set<String> _uniqueIds(
+  Iterable<Object?> records,
+  String recordType,
+  Set<String> persistedIds,
+) {
   final ids = <String>{};
   for (final record in records) {
     final id = _recordId(record);
@@ -321,6 +326,9 @@ Set<String> _uniqueIds(Iterable<Object?> records, String recordType) {
     }
     if (!ids.add(id)) {
       throw FormatException('Duplicate $recordType id: $id');
+    }
+    if (!persistedIds.add(id)) {
+      throw FormatException('Duplicate persisted id: $id');
     }
   }
   return ids;

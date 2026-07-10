@@ -24,6 +24,15 @@ void main() {
     expect(policy.shouldRetry(TaskFailureReason.humanRejected, 1), isFalse);
   });
 
+  test('RetryPolicy recognizes the user-facing authentication message', () {
+    expect(
+      taskFailureReasonFromText(
+        'Authentication required. Open the Agents menu and try again.',
+      ),
+      TaskFailureReason.authRequired,
+    );
+  });
+
   test('RetryPolicy increases delay by attempt', () {
     const policy = RetryPolicy(baseDelay: Duration(seconds: 2));
 

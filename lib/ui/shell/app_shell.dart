@@ -35,6 +35,8 @@ import '../theme/app_design_tokens.dart';
 
 typedef AppShellProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
+typedef AppShellAgentAuthenticated =
+    FutureOr<void> Function(String agentName, String methodId);
 
 enum AppShellSidebarMode { workspaces, inbox }
 
@@ -65,6 +67,7 @@ class AppShell extends StatelessWidget {
     this.onArchiveWorkspaceSessions,
     this.onRunTask,
     this.onOpenTaskSession,
+    this.onAgentAuthenticated,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
@@ -110,6 +113,7 @@ class AppShell extends StatelessWidget {
   onRunTask;
   final FutureOr<void> Function(BuildContext context, TaskRecord task)?
   onOpenTaskSession;
+  final AppShellAgentAuthenticated? onAgentAuthenticated;
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
@@ -138,7 +142,9 @@ class AppShell extends StatelessWidget {
                   onNewSession!(context);
                   return;
                 }
-                unawaited(controller.newSession(cwd: workspace.path));
+                unawaited(() async {
+                  await controller.newSession(cwd: workspace.path);
+                }());
               }
             : null;
         final canReconnect =
@@ -517,7 +523,12 @@ class AppShell extends StatelessWidget {
           );
     if (methodId == null || methodId.isEmpty) return;
     if (!context.mounted) return;
-    await controller.authenticate(methodId);
+    final authenticated = await controller.authenticate(methodId);
+    final callback = onAgentAuthenticated;
+    if (!authenticated || callback == null) return;
+    await Future<void>.sync(
+      () => callback(controller.agentName, methodId),
+    );
   }
 
   List<ChatController> _controllers() {

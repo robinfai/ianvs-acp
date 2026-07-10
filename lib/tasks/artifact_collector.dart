@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:crypto/crypto.dart';
-
+import '../platform/secure_file_reader.dart';
+import 'task_data_sanitizer.dart';
 import 'task_record.dart';
 
 typedef ArtifactCollectorClock = DateTime Function();
 typedef ArtifactCollectorIdGenerator = String Function(String prefix);
+typedef ArtifactCollectorNonceGenerator = List<int> Function(int length);
+typedef ArtifactCollectorBeforeSecureRead =
+    FutureOr<void> Function(String relativePath);
 
 const int defaultArtifactPreviewLimit = 64 * 1024;
 
@@ -17,12 +20,21 @@ class ArtifactCollector {
     this.previewLimit = defaultArtifactPreviewLimit,
     ArtifactCollectorClock? clock,
     this.idGenerator,
-  }) : _clock = clock ?? DateTime.now;
+    this.nonceGenerator,
+    this.beforeSecureRead,
+    TaskDataSanitizer? dataSanitizer,
+  }) : _clock = clock ?? DateTime.now,
+       dataSanitizer = dataSanitizer ?? const TaskDataSanitizer(),
+       _random = math.Random.secure();
 
   final int previewLimit;
   final ArtifactCollectorClock _clock;
   final ArtifactCollectorIdGenerator? idGenerator;
-  int _idCounter = 0;
+  final ArtifactCollectorNonceGenerator? nonceGenerator;
+  final ArtifactCollectorBeforeSecureRead? beforeSecureRead;
+  final TaskDataSanitizer dataSanitizer;
+  final math.Random _random;
+  final Set<String> _issuedDefaultIds = <String>{};
 
   Future<List<ArtifactRecord>> collect(
     TaskRecord task,
@@ -122,27 +134,63 @@ class ArtifactCollector {
     TaskRunRecord run,
     Directory workspace,
   ) async {
+    final ianvsDirectory = Directory(_joinPath(workspace.path, '.ianvs'));
+    final outboxParent = Directory(
+      _joinPath(workspace.path, '.ianvs', 'outbox'),
+    );
     final outbox = Directory(
       _joinPath(workspace.path, '.ianvs', 'outbox', task.id),
     );
     if (!outbox.existsSync()) return const <ArtifactRecord>[];
 
-    final files = <File>[];
+    late final String resolvedWorkspacePath;
+    late final String resolvedOutboxPath;
+    try {
+      for (final directory in <Directory>[
+        ianvsDirectory,
+        outboxParent,
+        outbox,
+      ]) {
+        final type = await FileSystemEntity.type(
+          directory.path,
+          followLinks: false,
+        );
+        if (type == FileSystemEntityType.link) {
+          return const <ArtifactRecord>[];
+        }
+      }
+      resolvedWorkspacePath = await workspace.resolveSymbolicLinks();
+      resolvedOutboxPath = await outbox.resolveSymbolicLinks();
+    } on Object {
+      return const <ArtifactRecord>[];
+    }
+    if (!_isPathWithin(resolvedWorkspacePath, resolvedOutboxPath)) {
+      return const <ArtifactRecord>[];
+    }
+
+    final relativePaths = <String>[];
     try {
       await for (final entity in outbox.list(
         recursive: true,
         followLinks: false,
       )) {
-        if (entity is File) files.add(entity);
+        if (entity is! File) continue;
+        relativePaths.add(_relativePath(workspace.path, entity.path));
       }
     } on Object {
       return const <ArtifactRecord>[];
     }
-    files.sort((a, b) => a.path.compareTo(b.path));
+    relativePaths.sort();
 
     final artifacts = <ArtifactRecord>[];
-    for (final file in files) {
-      final record = await _artifactForOutboxFile(task, run, workspace, file);
+    for (final relativePath in relativePaths) {
+      await beforeSecureRead?.call(relativePath);
+      final record = await _artifactForOutboxFile(
+        task,
+        run,
+        resolvedWorkspacePath,
+        relativePath,
+      );
       if (record != null) artifacts.add(record);
     }
     return artifacts;
@@ -151,35 +199,36 @@ class ArtifactCollector {
   Future<ArtifactRecord?> _artifactForOutboxFile(
     TaskRecord task,
     TaskRunRecord run,
-    Directory workspace,
-    File file,
+    String resolvedWorkspacePath,
+    String relativePath,
   ) async {
-    try {
-      final stat = await file.stat();
-      final size = stat.size;
-      final relativePath = _relativePath(workspace.path, file.path);
-      final preview = await _previewForFile(file, size);
-      final digest = await sha256.bind(file.openRead()).first;
-      return _artifact(
-        task: task,
-        run: run,
-        kind: ArtifactKind.outboxFile,
-        title: relativePath,
-        path: relativePath,
-        contentPreview: preview.text,
-        sha256: digest.toString(),
-        sizeBytes: size,
-        metadata: <String, Object?>{
-          'source': 'outbox',
-          'relative_path': relativePath,
-          'preview_limit_bytes': previewLimit,
-          'truncated': preview.truncated,
-          'binary': preview.binary,
-        },
-      );
-    } on Object {
-      return null;
-    }
+    final read = await readWorkspaceFileSecurely(
+      resolvedWorkspacePath: resolvedWorkspacePath,
+      relativePath: relativePath,
+      previewLimit: previewLimit,
+    );
+    if (read == null) return null;
+    final binary = read.previewBytes.contains(0);
+    final contentPreview = binary
+        ? null
+        : utf8.decode(read.previewBytes, allowMalformed: true);
+    return _artifact(
+      task: task,
+      run: run,
+      kind: ArtifactKind.outboxFile,
+      title: relativePath,
+      path: relativePath,
+      contentPreview: contentPreview,
+      sha256: read.sha256,
+      sizeBytes: read.sizeBytes,
+      metadata: <String, Object?>{
+        'source': 'outbox',
+        'relative_path': relativePath,
+        'preview_limit_bytes': previewLimit,
+        'truncated': read.sizeBytes > previewLimit,
+        'binary': binary,
+      },
+    );
   }
 
   ArtifactRecord _artifact({
@@ -194,7 +243,7 @@ class ArtifactCollector {
     Map<String, Object?> metadata = const <String, Object?>{},
   }) {
     return ArtifactRecord(
-      id: _newId(),
+      id: _newId(task: task, run: run),
       taskId: task.id,
       runId: run.id,
       kind: kind,
@@ -204,16 +253,32 @@ class ArtifactCollector {
       contentPreview: contentPreview,
       sha256: sha256,
       sizeBytes: sizeBytes,
-      metadata: Map.unmodifiable(metadata),
+      metadata: dataSanitizer.sanitize(metadata),
     );
   }
 
-  String _newId() {
-    final generated =
-        idGenerator?.call('artifact') ?? 'artifact-${_idCounter++}';
-    final id = generated.trim();
-    if (id.isEmpty) return 'artifact-${_idCounter++}';
-    return id;
+  String _newId({required TaskRecord task, required TaskRunRecord run}) {
+    final id = idGenerator?.call('artifact').trim();
+    if (id != null && id.isNotEmpty) return id;
+    for (var attempt = 0; attempt < 100; attempt += 1) {
+      final nonce = _generateNonce(16);
+      final encodedNonce = base64UrlEncode(nonce).replaceAll('=', '');
+      final id = 'artifact-${task.id}-${run.id}-$encodedNonce';
+      if (_issuedDefaultIds.add(id)) return id;
+    }
+    throw StateError('Could not generate a unique artifact id.');
+  }
+
+  List<int> _generateNonce(int length) {
+    final nonce =
+        nonceGenerator?.call(length) ??
+        List<int>.generate(length, (_) => _random.nextInt(256));
+    if (nonce.length != length || nonce.any((byte) => byte < 0 || byte > 255)) {
+      throw StateError(
+        'Artifact nonce generator must return exactly $length bytes.',
+      );
+    }
+    return nonce;
   }
 
   Map<String, Object?> _metadataForGitCommand(
@@ -237,27 +302,6 @@ class ArtifactCollector {
   bool _isTextTruncated(String value) {
     return utf8.encode(value).length > previewLimit;
   }
-
-  Future<_FilePreview> _previewForFile(File file, int size) async {
-    final bytesToRead = math.min(size, previewLimit + 1);
-    final bytes = <int>[];
-    await for (final chunk in file.openRead(0, bytesToRead)) {
-      bytes.addAll(chunk);
-    }
-    final truncated = size > previewLimit || bytes.length > previewLimit;
-    final previewBytes = truncated
-        ? bytes.take(previewLimit).toList(growable: false)
-        : bytes;
-    final binary = previewBytes.contains(0);
-    if (binary) {
-      return _FilePreview(text: null, truncated: truncated, binary: binary);
-    }
-    return _FilePreview(
-      text: utf8.decode(previewBytes, allowMalformed: true),
-      truncated: truncated,
-      binary: binary,
-    );
-  }
 }
 
 class _GitResult {
@@ -265,18 +309,6 @@ class _GitResult {
 
   final String stdout;
   final String stderr;
-}
-
-class _FilePreview {
-  const _FilePreview({
-    required this.text,
-    required this.truncated,
-    required this.binary,
-  });
-
-  final String? text;
-  final bool truncated;
-  final bool binary;
 }
 
 String _joinPath(String first, String second, [String? third, String? fourth]) {
@@ -307,4 +339,15 @@ String _withoutTrailingSeparator(String path) {
     value = value.substring(0, value.length - Platform.pathSeparator.length);
   }
   return value;
+}
+
+bool _isPathWithin(String rootPath, String candidatePath) {
+  var root = _withoutTrailingSeparator(File(rootPath).absolute.path);
+  var candidate = File(candidatePath).absolute.path;
+  if (Platform.isWindows) {
+    root = root.toLowerCase();
+    candidate = candidate.toLowerCase();
+  }
+  return candidate == root ||
+      candidate.startsWith('$root${Platform.pathSeparator}');
 }

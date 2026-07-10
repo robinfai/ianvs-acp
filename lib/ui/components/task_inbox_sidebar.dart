@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../tasks/task_inbox_controller.dart';
 import '../../tasks/task_record.dart';
+import '../../tasks/retry_policy.dart';
 import '../../workspace/workspace.dart';
 import '../theme/app_design_tokens.dart';
 import 'task_editor_dialog.dart';
@@ -511,6 +512,9 @@ class _TaskTile extends StatelessWidget {
       TaskStatus.queued ||
       TaskStatus.failed ||
       TaskStatus.needsChanges => true,
+      TaskStatus.blockedOnUserInput =>
+        task.metadata['failure_reason'] ==
+            TaskFailureReason.authRequired.name,
       _ => false,
     };
   }

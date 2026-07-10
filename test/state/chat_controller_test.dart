@@ -150,8 +150,9 @@ void main() {
     );
     addTearDown(controller.dispose);
 
-    await controller.newSession();
+    final created = await controller.newSession();
 
+    expect(created, isFalse);
     expect(controller.currentSession?.id, 'fake-session-1');
     expect(controller.status, app_state.ConnectionStatus.error);
     expect(controller.lastError, contains('session setup failed'));
@@ -225,11 +226,12 @@ void main() {
 
       final first = controller.newSession();
       final second = controller.newSession();
-      await Future.wait([first, second]);
+      final results = await Future.wait([first, second]);
 
       expect(fake.sessionCount, 1);
       expect(controller.sessions, hasLength(1));
       expect(controller.isSessionOperationRunning, isFalse);
+      expect(results, containsAll(<bool>[true, false]));
     },
   );
 
@@ -259,7 +261,7 @@ void main() {
 
         await controller.connect();
         controller.dispose();
-        await pumpEventQueue(times: 4);
+        await controller.disposalComplete;
       },
       (error, stackTrace) {
         errors.add(error);
@@ -1465,6 +1467,78 @@ void main() {
       expect(controller.lastError, contains('permission response failed'));
     },
   );
+
+  test(
+    'stop bounds a permission cancellation response that never settles',
+    () async {
+      final fake = _NeverRespondingPermissionAgentClient(
+        chunkDelay: const Duration(milliseconds: 50),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('Hi');
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-never-responds',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'fake-session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      await controller
+          .stop(cancellationTimeout: const Duration(milliseconds: 20))
+          .timeout(const Duration(seconds: 1));
+
+      expect(fake.cancelled, isTrue);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.lastError, contains('TimeoutException'));
+    },
+  );
+
+  test('late permission cancellation failure does not poison a new session', (
+    ) async {
+    final fake = _DelayedFailingPermissionAgentClient(
+      chunkDelay: const Duration(milliseconds: 50),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await controller.sendPrompt('Hi');
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-late-failure',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: 'fake-session-1',
+        toolName: 'terminal',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue();
+
+    await controller.stop(
+      cancellationTimeout: const Duration(milliseconds: 20),
+    );
+    expect(controller.lastError, contains('TimeoutException'));
+    expect(await controller.newSession(), isTrue);
+    expect(controller.lastError, isNull);
+
+    fake.failResponse();
+    await pumpEventQueue();
+
+    expect(controller.lastError, isNull);
+    expect(controller.currentSession?.id, 'fake-session-2');
+  });
 
   test(
     'permission history cancels pending request when stream closes',
@@ -2699,10 +2773,12 @@ void main() {
     expect(controller.canAuthenticate, isTrue);
     expect(controller.authMethods.single['id'], 'browser');
 
-    await controller.authenticate('browser');
+    final authenticated = await controller.authenticate('browser');
 
+    expect(authenticated, isTrue);
     expect(fake.lastAuthenticatedMethodId, 'browser');
     expect(controller.lastError, isNull);
+    expect(controller.status, app_state.ConnectionStatus.connected);
     expect(controller.isSessionOperationRunning, isFalse);
   });
 
@@ -3002,8 +3078,9 @@ void main() {
     addTearDown(controller.dispose);
 
     await controller.newSession();
-    await controller.sendPrompt('Hi');
+    final result = await controller.sendPrompt('Hi');
 
+    expect(result, ChatPromptSubmissionResult.failed);
     expect(controller.isStreaming, isFalse);
     expect(controller.status, app_state.ConnectionStatus.error);
     expect(controller.lastError, contains('prompt setup failed'));
@@ -3019,8 +3096,13 @@ void main() {
     addTearDown(controller.dispose);
 
     await controller.newSession();
-    await controller.sendPrompt('Hi');
+    final first = await controller.sendPrompt('Hi');
     expect(controller.isStreaming, isTrue);
+    final second = await controller.sendPrompt('Ignored while busy');
+
+    expect(first, ChatPromptSubmissionResult.submitted);
+    expect(second, ChatPromptSubmissionResult.busy);
+    expect(fake.lastPrompt, 'Hi');
 
     await controller.stop();
 
@@ -3239,6 +3321,53 @@ class _DelayedPermissionResponseAgentClient extends FakeAgentClient {
       decision: decision,
       selectedOptionId: selectedOptionId,
     );
+  }
+}
+
+class _NeverRespondingPermissionAgentClient extends FakeAgentClient {
+  _NeverRespondingPermissionAgentClient({super.chunkDelay});
+
+  final Completer<void> _response = Completer<void>();
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+    String? selectedOptionId,
+  }) {
+    return _response.future;
+  }
+
+  @override
+  Future<void> dispose() async {
+    if (!_response.isCompleted) _response.complete();
+    await super.dispose();
+  }
+}
+
+class _DelayedFailingPermissionAgentClient extends FakeAgentClient {
+  _DelayedFailingPermissionAgentClient({super.chunkDelay});
+
+  final Completer<void> _response = Completer<void>();
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+    String? selectedOptionId,
+  }) async {
+    await _response.future;
+    throw StateError('late permission response failed');
+  }
+
+  void failResponse() {
+    if (!_response.isCompleted) _response.complete();
+  }
+
+  @override
+  Future<void> dispose() async {
+    failResponse();
+    await super.dispose();
   }
 }
 

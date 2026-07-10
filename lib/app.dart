@@ -16,12 +16,14 @@ import 'config/acp_config_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
-import 'state/connection_state.dart';
+import 'tasks/task_agent_pool.dart';
 import 'tasks/runtime_registry.dart';
+import 'tasks/retry_policy.dart';
 import 'tasks/task_inbox_controller.dart';
 import 'tasks/task_inbox_migrator.dart';
 import 'tasks/task_inbox_sqlite_store.dart';
 import 'tasks/task_inbox_state_store.dart';
+import 'tasks/task_persistence_cleanup.dart';
 import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
 import 'tasks/task_scheduler.dart';
@@ -65,6 +67,9 @@ class AcpClientApp extends StatefulWidget {
     this.autoLoadWorkspaceSessions = true,
     this.taskInboxController,
     this.createAgentClient,
+    this.createTaskAgentClient,
+    this.agentClientFactoryKey,
+    this.taskAgentClientFactoryKey,
   });
 
   final ChatController? controller;
@@ -81,6 +86,15 @@ class AcpClientApp extends StatefulWidget {
   final bool autoLoadWorkspaceSessions;
   final TaskInboxController? taskInboxController;
   final AcpAgentClientFactory? createAgentClient;
+  final AcpAgentClientFactory? createTaskAgentClient;
+
+  /// Change this key when [createAgentClient] changes behavior. Keep it stable
+  /// across ordinary widget rebuilds.
+  final Object? agentClientFactoryKey;
+
+  /// Change this key when [createTaskAgentClient] changes behavior. Keep it
+  /// stable across ordinary widget rebuilds.
+  final Object? taskAgentClientFactoryKey;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -121,6 +135,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   Future<void>? _taskInboxTransition;
   Timer? _taskInboxRefreshTimer;
   Future<void>? _taskInboxRefresh;
+  TaskPersistenceQuarantineRegistry get _taskPersistenceQuarantine =>
+      TaskPersistenceQuarantineRegistry.shared;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
@@ -170,12 +186,39 @@ class _AcpClientAppState extends State<AcpClientApp>
     final nextConfigSignature = _configSignature(nextWidgetConfig);
     final configChanged = nextConfigSignature != _widgetConfigSignature;
     final controllerChanged = oldWidget.controller != widget.controller;
+    final foregroundAgentFactoryChanged =
+        oldWidget.agentClientFactoryKey != widget.agentClientFactoryKey ||
+        (oldWidget.createAgentClient == null) !=
+            (widget.createAgentClient == null);
+    final explicitTaskAgentFactoryChanged =
+        oldWidget.taskAgentClientFactoryKey !=
+            widget.taskAgentClientFactoryKey ||
+        (oldWidget.createTaskAgentClient == null) !=
+            (widget.createTaskAgentClient == null);
+    final taskAgentFactoryChanged =
+        explicitTaskAgentFactoryChanged ||
+        (oldWidget.createTaskAgentClient == null &&
+            widget.createTaskAgentClient == null &&
+            foregroundAgentFactoryChanged);
+    final taskInboxControllerChanged =
+        oldWidget.taskInboxController != widget.taskInboxController;
 
     if (controllerChanged) {
       Future<void>? previousTaskCleanup;
+      final foregroundChangesInboxAvailability =
+          oldWidget.taskInboxController == null &&
+          widget.taskInboxController == null &&
+          (oldWidget.controller == null) != (widget.controller == null);
+      final taskInputsChanged =
+          configChanged ||
+          taskAgentFactoryChanged ||
+          taskInboxControllerChanged ||
+          foregroundChangesInboxAvailability;
+      if (taskInputsChanged) {
+        previousTaskCleanup = _stopTaskInboxTransition();
+      }
       if (oldWidget.controller == null) {
         final cachedControllers = _takeCachedControllers();
-        previousTaskCleanup = _stopTaskInboxTransition();
         if (previousTaskCleanup == null) {
           _disposeControllerList(cachedControllers);
         } else {
@@ -200,6 +243,21 @@ class _AcpClientAppState extends State<AcpClientApp>
       return;
     }
 
+    if (!configChanged &&
+        (foregroundAgentFactoryChanged || taskAgentFactoryChanged)) {
+      final previousTaskCleanup = taskAgentFactoryChanged
+          ? _stopTaskInboxTransition()
+          : null;
+      if (foregroundAgentFactoryChanged && widget.controller == null) {
+        _replaceOwnedControllerFactory(
+          previousTaskCleanup: previousTaskCleanup,
+        );
+      }
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
+      if (mounted) setState(() {});
+      return;
+    }
+
     if (!configChanged) {
       if (widget.controller != null) _controller = widget.controller!;
       _configureTaskInboxController();
@@ -207,10 +265,11 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
 
     if (widget.controller != null) {
+      final previousTaskCleanup = _stopTaskInboxTransition();
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       _controller = widget.controller!;
-      _configureTaskInboxController();
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       return;
     }
 
@@ -352,23 +411,66 @@ class _AcpClientAppState extends State<AcpClientApp>
     TaskInboxController? controller;
     TaskScheduler? scheduler;
     try {
-      if (previousCleanup != null) await previousCleanup;
+      await prepareTaskPersistenceTarget(
+        registry: _taskPersistenceQuarantine,
+        previousCleanup: previousCleanup,
+        targetPath: repositoryPath,
+      );
       if (!mounted || serial != _taskInboxInitializationSerial) return;
       repository = TaskInboxSqliteStore(path: repositoryPath);
-      final migration = await TaskInboxMigrator(
-        source: TaskInboxStateStore(path: sourcePath),
-        repository: repository,
-      ).migrateIfNeeded();
+      final migrationRepository = repository;
+      final pendingMigration = TaskPersistencePendingOperation<
+        TaskMigrationResult
+      >(
+        path: repositoryPath,
+        operationName: 'migrateIfNeeded',
+        watchdog: TaskInboxController.defaultPersistenceWatchdog,
+        operation: () => TaskInboxMigrator(
+          source: TaskInboxStateStore(path: sourcePath),
+          repository: migrationRepository,
+        ).migrateIfNeeded(),
+        closeRepository: migrationRepository.close,
+      );
+      _taskPersistenceQuarantine.retain(pendingMigration);
+      late final TaskMigrationResult migration;
+      try {
+        migration = await pendingMigration.result;
+      } on Object {
+        pendingMigration.abandon();
+        repository = null;
+        try {
+          await _taskPersistenceQuarantine.ensurePathAvailable(
+            pendingMigration.path,
+          );
+        } on Object {
+          // The process-wide owner retains the repository until the source
+          // migration Future quiesces, so cleanup must not close it here.
+        }
+        rethrow;
+      }
       if (migration.status == TaskMigrationStatus.awaitingBackupFinalization) {
+        pendingMigration.abandon();
+        repository = null;
+        await _taskPersistenceQuarantine.ensurePathAvailable(
+          pendingMigration.path,
+        );
         throw StateError('The legacy task backup could not be verified.');
       }
-      controller = TaskInboxController(repository: repository);
+      pendingMigration.transfer();
+      _taskPersistenceQuarantine.release(pendingMigration);
+      controller = TaskInboxController(repository: migrationRepository);
       scheduler = _createTaskScheduler(controller);
       await scheduler.start(dispatchQueuedTasks: false);
       if (!mounted || serial != _taskInboxInitializationSerial) {
-        await scheduler.shutdown();
-        controller.dispose();
-        await repository.close();
+        final cleanup = _startTaskPersistenceCleanup(
+          scheduler: scheduler,
+          controller: controller,
+          repository: repository,
+        );
+        scheduler = null;
+        controller = null;
+        repository = null;
+        await cleanup;
         return;
       }
 
@@ -382,15 +484,26 @@ class _AcpClientAppState extends State<AcpClientApp>
       scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
-      await scheduler?.shutdown();
-      controller?.dispose();
-      await repository?.close();
+      var reportedError = error;
+      final cleanup = _startTaskPersistenceCleanup(
+        scheduler: scheduler,
+        controller: controller,
+        repository: repository,
+      );
+      scheduler = null;
+      controller = null;
+      repository = null;
+      try {
+        await cleanup;
+      } on Object catch (cleanupError) {
+        reportedError = cleanupError;
+      }
       if (!mounted || serial != _taskInboxInitializationSerial) return;
       _taskInboxInitializationPending = false;
       _pendingTaskInboxController = null;
       _taskInboxController = null;
       _ownsTaskInboxController = false;
-      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      _taskInboxInitializationError = _taskInboxErrorMessage(reportedError);
       setState(() {});
     }
   }
@@ -402,7 +515,11 @@ class _AcpClientAppState extends State<AcpClientApp>
   }) async {
     TaskScheduler? scheduler;
     try {
-      if (previousCleanup != null) await previousCleanup;
+      await prepareTaskPersistenceTarget(
+        registry: _taskPersistenceQuarantine,
+        previousCleanup: previousCleanup,
+        injectedController: true,
+      );
       if (!mounted || serial != _taskInboxInitializationSerial) return;
       scheduler = _createTaskScheduler(controller);
       await scheduler.start(dispatchQueuedTasks: false);
@@ -448,20 +565,17 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (scheduler == null && controller == null && repository == null) {
       return refreshCleanup;
     }
+    final persistenceCleanup = _startTaskPersistenceCleanup(
+      scheduler: scheduler,
+      controller: controller,
+      repository: repository,
+    );
     if (refreshCleanup == null) {
-      return _finishTaskInboxCleanup(
-        scheduler: scheduler,
-        controller: controller,
-        repository: repository,
-      );
+      return persistenceCleanup;
     }
     return () async {
       await refreshCleanup;
-      await _finishTaskInboxCleanup(
-        scheduler: scheduler,
-        controller: controller,
-        repository: repository,
-      );
+      await persistenceCleanup;
     }();
   }
 
@@ -488,6 +602,17 @@ class _AcpClientAppState extends State<AcpClientApp>
   Future<void> _refreshTaskInbox(TaskInboxController controller) async {
     try {
       await controller.refreshIfChanged();
+    } on TaskPersistenceStalledException catch (error) {
+      _taskInboxRefreshTimer?.cancel();
+      _taskInboxRefreshTimer = null;
+      final scheduler = _taskScheduler;
+      if (scheduler != null) {
+        scheduler.handlePersistenceFault(error);
+        return;
+      }
+      if (!mounted || _taskInboxController != controller) return;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
     } on Object {
       // A transient read failure is retried by the next foreground poll.
     }
@@ -507,32 +632,55 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   TaskScheduler _createTaskScheduler(TaskInboxController taskController) {
+    final agentPool = _createTaskAgentPool(_config);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: _controllerForTaskAgent,
+      agentPool: agentPool,
     );
-    return TaskScheduler(
+    late final TaskScheduler scheduler;
+    scheduler = TaskScheduler(
       taskController: taskController,
       worker: TaskRunnerWorker(runner: runner),
-      runtimeRegistry: LocalRuntimeRegistry(probe: _probeTaskRuntime),
+      runtimeRegistry: LocalRuntimeRegistry(probe: agentPool.probeAgent),
+      onPersistenceFault: (error) {
+        _handleTaskSchedulerPersistenceFault(scheduler, error);
+      },
     );
+    return scheduler;
   }
 
-  Future<void> _finishTaskInboxCleanup({
+  void _handleTaskSchedulerPersistenceFault(
+    TaskScheduler scheduler,
+    TaskPersistenceStalledException error,
+  ) {
+    if (!mounted || !identical(_taskScheduler, scheduler)) return;
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
+    _taskInboxInitializationError = _taskInboxErrorMessage(error);
+    setState(() {});
+  }
+
+  Future<void> _startTaskPersistenceCleanup({
     TaskScheduler? scheduler,
     TaskInboxController? controller,
     TaskInboxSqliteStore? repository,
-  }) async {
-    try {
-      await scheduler?.shutdown();
-    } finally {
-      try {
-        await controller?.settle();
-      } finally {
-        controller?.dispose();
-        await repository?.close();
-      }
+  }) {
+    if (controller != null && repository != null) {
+      final owner = TaskPersistenceOwnerCleanup(
+        path: repository.path,
+        controller: controller,
+        shutdownScheduler: () => scheduler?.shutdown() ?? Future<void>.value(),
+        disposeController: controller.dispose,
+        closeRepository: repository.close,
+      );
+      _taskPersistenceQuarantine.retain(owner);
+      return _taskPersistenceQuarantine.ensurePathAvailable(owner.path);
     }
+    return () async {
+      await scheduler?.shutdown();
+      controller?.dispose();
+      await repository?.close();
+    }();
   }
 
   Future<void>? _joinTaskCleanup(Future<void>? first, Future<void>? second) {
@@ -569,6 +717,12 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (error is FormatException) {
       return 'Could not initialize Task Inbox: legacy task data is invalid; '
           'the original file was not changed.';
+    }
+    if (error is TaskPersistenceStalledException) {
+      return 'Task persistence stalled during ${error.operation}. '
+          'Background task dispatch was stopped. The repository remains '
+          'quarantined until the pending operation finishes; retry the '
+          'configuration change afterward.';
     }
     return 'Could not initialize Task Inbox: $error';
   }
@@ -741,6 +895,7 @@ class _AcpClientAppState extends State<AcpClientApp>
             _archiveWorkspaceSessions(workspace),
         onRunTask: (context, task) => _runTask(context, task),
         onOpenTaskSession: (context, task) => _openTaskSession(context, task),
+        onAgentAuthenticated: _authenticateTaskAgent,
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -798,9 +953,24 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   ChatController _controllerFor(AcpClientConfig config) {
+    final createAgentClient = widget.createAgentClient ?? _defaultAgentClient;
+    return _controllerForWithFactory(config, createAgentClient);
+  }
+
+  ChatController _controllerForWithFactory(
+    AcpClientConfig config,
+    AcpAgentClientFactory createAgentClient,
+  ) {
+    return _controllerForClient(config, createAgentClient(config));
+  }
+
+  ChatController _controllerForClient(
+    AcpClientConfig config,
+    AcpAgentClient client,
+  ) {
     final permissions = _permissionConfig(config);
     return ChatController(
-      client: _agentClient(config),
+      client: client,
       cwd: _cwd,
       additionalDirectories: config.additionalDirectories,
       agentName: config.agentName,
@@ -840,15 +1010,28 @@ class _AcpClientAppState extends State<AcpClientApp>
     return controller;
   }
 
-  ChatController? _controllerForTaskAgent(String agentName) {
-    if (!mounted) return null;
-    final trimmedAgentName = agentName.trim();
-    if (trimmedAgentName.isEmpty) return _controller;
-    if (widget.controller != null) {
-      return _controller.agentName == trimmedAgentName ? _controller : null;
-    }
-    final config = _configForAgent(_config, trimmedAgentName);
-    return config == null ? null : _cachedControllerFor(config);
+  LocalTaskAgentPool _createTaskAgentPool(AcpClientConfig config) {
+    final createAgentClient =
+        widget.createTaskAgentClient ??
+        widget.createAgentClient ??
+        _defaultAgentClient;
+    return LocalTaskAgentPool(
+      controllerFactory: (agentName) {
+        if (!mounted) return null;
+        final agentConfig = _configForAgent(config, agentName.trim());
+        if (agentConfig == null) return null;
+        final client = createAgentClient(agentConfig);
+        final reusesForegroundClient = _sessionControllers.any(
+          (foreground) => identical(foreground.client, client),
+        );
+        if (reusesForegroundClient) {
+          throw StateError(
+            'The task agent factory must create a separate ACP client.',
+          );
+        }
+        return _controllerForClient(agentConfig, client);
+      },
+    );
   }
 
   Future<void> _runTask(BuildContext _, TaskRecord task) async {
@@ -856,69 +1039,63 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (taskController == null) return;
     final scheduler = _taskScheduler;
     if (scheduler != null) {
-      await scheduler.enqueueTask(task.id);
+      try {
+        await scheduler.enqueueTask(task.id);
+      } on TaskPersistenceStalledException catch (error) {
+        scheduler.handlePersistenceFault(error);
+        if (mounted) {
+          _taskInboxInitializationError = _taskInboxErrorMessage(error);
+        }
+      }
       if (mounted) setState(() {});
       return;
     }
+    final agentPool = _createTaskAgentPool(_config);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: _controllerForTaskAgent,
+      agentPool: agentPool,
     );
-    await runner.runTask(task.id);
+    try {
+      await runner.runTask(task.id);
+    } on TaskPersistenceStalledException catch (error) {
+      if (mounted) {
+        _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      }
+    } finally {
+      await runner.dispose();
+    }
     if (mounted) setState(() {});
   }
 
-  LocalRuntimeStatus _probeTaskRuntime(String agentName) {
-    final checkedAt = DateTime.now();
-    final controller = _controllerForTaskAgent(agentName);
-    final trimmedAgentName = agentName.trim();
-    if (controller == null) {
-      return LocalRuntimeStatus.unavailable(
-        agentName: trimmedAgentName,
-        checkedAt: checkedAt,
-        reason: 'No ACP controller is configured for $trimmedAgentName.',
+  Future<void> _authenticateTaskAgent(
+    String agentName,
+    String methodId,
+  ) async {
+    final hasBlockedTask = _taskInboxController?.tasks.any(
+      (task) =>
+          task.agentName == agentName &&
+          task.status == TaskStatus.blockedOnUserInput &&
+          task.metadata['failure_reason'] ==
+              TaskFailureReason.authRequired.name,
+    );
+    if (hasBlockedTask != true) return;
+    final scheduler = _taskScheduler;
+    if (scheduler == null) return;
+    try {
+      final authenticated = await scheduler.authenticateAgent(
+        agentName,
+        methodId,
       );
-    }
-
-    final lastError = controller.lastError?.trim();
-    if (controller.status == ConnectionStatus.error) {
-      if (_looksLikeAuthRequired(lastError) || controller.canAuthenticate) {
-        return LocalRuntimeStatus.authRequired(
-          agentName: controller.agentName,
-          checkedAt: checkedAt,
-          reason: lastError ?? 'Authentication is required.',
+      if (!authenticated && mounted) {
+        _showSnackBar(
+          'The background task agent still requires authentication.',
         );
       }
-      return LocalRuntimeStatus.unavailable(
-        agentName: controller.agentName,
-        checkedAt: checkedAt,
-        reason: lastError ?? 'Agent connection is in an error state.',
-      );
+    } on Object catch (error) {
+      if (mounted) {
+        _showSnackBar('Could not authenticate the background task agent: $error');
+      }
     }
-
-    if (controller.isStreaming || controller.isSessionOperationRunning) {
-      return LocalRuntimeStatus.busy(
-        agentName: controller.agentName,
-        checkedAt: checkedAt,
-        reason: 'Agent is busy with another session operation.',
-      );
-    }
-
-    return LocalRuntimeStatus.available(
-      agentName: controller.agentName,
-      checkedAt: checkedAt,
-      supportsSessionResume: controller.canResumeSessions,
-      supportsPermissions: controller.hasPermissionReviewer,
-      maxConcurrentTasks: 1,
-    );
-  }
-
-  bool _looksLikeAuthRequired(String? message) {
-    final lower = message?.toLowerCase();
-    if (lower == null || lower.isEmpty) return false;
-    return lower.contains('auth') ||
-        lower.contains('login') ||
-        lower.contains('credential');
   }
 
   Future<void> _openTaskSession(BuildContext _, TaskRecord task) async {
@@ -965,6 +1142,23 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
     _configureTaskInboxController(previousCleanup: taskCleanup);
     if (rebuild && mounted) setState(() {});
+  }
+
+  void _replaceOwnedControllerFactory({Future<void>? previousTaskCleanup}) {
+    final staleControllers = _takeCachedControllers();
+    _controller = _cachedControllerFor(_config);
+    _ensureControllersForSelectableAgents(_config);
+    unawaited(_hydrateSessionIndex());
+    if (previousTaskCleanup == null) {
+      _disposeControllerList(staleControllers);
+    } else {
+      unawaited(
+        _disposeControllersAfterTaskCleanup(
+          previousTaskCleanup,
+          staleControllers,
+        ),
+      );
+    }
   }
 
   AcpClientConfig? _configForAgent(AcpClientConfig config, String agentName) {
@@ -1733,10 +1927,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     );
   }
 
-  AcpAgentClient _agentClient(AcpClientConfig config) {
-    final createAgentClient = widget.createAgentClient;
-    if (createAgentClient != null) return createAgentClient(config);
-
+  AcpAgentClient _defaultAgentClient(AcpClientConfig config) {
     final server = config.activeAgentServer;
     final mcpServers = config.mcpServers
         .map((server) => server.toJson())

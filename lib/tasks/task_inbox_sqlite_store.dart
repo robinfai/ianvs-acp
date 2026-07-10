@@ -8,7 +8,11 @@ import 'task_record.dart';
 import 'task_repository.dart';
 import 'workspace_resource.dart';
 
-class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
+class TaskInboxSqliteStore
+    implements
+        TaskRepository,
+        TaskMigrationRepository,
+        AtomicTaskClaimMetadataRepository {
   TaskInboxSqliteStore({required this.path});
 
   static const String fileName = 'task_inbox_state.sqlite3';
@@ -270,6 +274,38 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
     TaskRunRecord run, {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
+  }) {
+    return _claimTask(
+      expectedTask,
+      run,
+      dispatchEvent: dispatchEvent,
+      expectedResource: expectedResource,
+    );
+  }
+
+  @override
+  Future<TaskClaim?> claimTaskWithMetadata(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+    required Map<String, Object?> claimedMetadata,
+  }) {
+    return _claimTask(
+      expectedTask,
+      run,
+      dispatchEvent: dispatchEvent,
+      expectedResource: expectedResource,
+      claimedMetadata: claimedMetadata,
+    );
+  }
+
+  Future<TaskClaim?> _claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+    Map<String, Object?>? claimedMetadata,
   }) async {
     if (run.status != TaskStatus.dispatched || run.endedAt != null) {
       throw ArgumentError('Claimed task runs must start dispatched.');
@@ -331,6 +367,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
         status: TaskStatus.dispatched,
         currentRunId: actualRun.id,
         updatedAt: claimAt,
+        metadata: claimedMetadata ?? task.metadata,
       );
       _upsertRun(database, actualRun);
       _validateTaskLinks(database, claimedTask);
@@ -1073,6 +1110,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
 
   static void _upsertTask(Database database, TaskRecord task) {
     _validateCanonicalRecord(task);
+    _ensureGlobalIdAvailable(database, task.id, owningTable: 'tasks');
     database.execute(
       'INSERT INTO tasks '
       '(id, title, description, workspace_path, agent_name, status, priority, '
@@ -1148,6 +1186,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
 
   static void _upsertRun(Database database, TaskRunRecord run) {
     _validateCanonicalRecord(run);
+    _ensureGlobalIdAvailable(database, run.id, owningTable: 'task_runs');
     database.execute(
       'INSERT INTO task_runs '
       '(id, task_id, attempt, status, started_at, ended_at, session_id, '
@@ -1175,6 +1214,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
 
   static void _insertEvent(Database database, TaskEventRecord event) {
     _validateCanonicalRecord(event);
+    _ensureGlobalIdAvailable(database, event.id, owningTable: 'task_events');
     database.execute(
       'INSERT INTO task_events '
       '(id, task_id, run_id, kind, text, created_at, session_id, '
@@ -1195,6 +1235,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
 
   static void _insertArtifact(Database database, ArtifactRecord artifact) {
     _validateCanonicalRecord(artifact);
+    _ensureGlobalIdAvailable(database, artifact.id, owningTable: 'artifacts');
     database.execute(
       'INSERT INTO artifacts '
       '(id, task_id, run_id, kind, status, title, created_at, path, '
@@ -1223,6 +1264,11 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
     ApprovalRequestRecord approval,
   ) {
     _validateCanonicalRecord(approval);
+    _ensureGlobalIdAvailable(
+      database,
+      approval.id,
+      owningTable: 'approval_requests',
+    );
     database.execute(
       'INSERT INTO approval_requests '
       '(id, task_id, run_id, kind, status, created_at, resolved_at, rationale, '
@@ -1247,6 +1293,11 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
 
   static void _upsertResource(Database database, WorkspaceResource resource) {
     _validateCanonicalRecord(resource);
+    _ensureGlobalIdAvailable(
+      database,
+      resource.id,
+      owningTable: 'workspace_resources',
+    );
     database.execute(
       'INSERT INTO workspace_resources '
       '(id, type, label, ref_json, serial, payload_json) '
@@ -1327,6 +1378,28 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
     if (restored == null ||
         jsonEncode(_recordToJson(restored)) != jsonEncode(json)) {
       throw ArgumentError('Task record must use canonical values: $record');
+    }
+  }
+
+  static void _ensureGlobalIdAvailable(
+    Database database,
+    String id, {
+    required String owningTable,
+  }) {
+    for (final table in const <String>[
+      'workspace_resources',
+      'tasks',
+      'task_runs',
+      'task_events',
+      'artifacts',
+      'approval_requests',
+    ]) {
+      if (table == owningTable) continue;
+      if (_recordExists(database, table, id)) {
+        throw TaskRepositoryConflict(
+          'Persisted id already exists in $table: $id',
+        );
+      }
     }
   }
 

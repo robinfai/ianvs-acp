@@ -61,11 +61,16 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
+  acp.AcpClient? _connectingClient;
+  acp.AcpTransport? _connectingTransport;
   AcpAgentCapabilities? _capabilities;
   final _AcpPermissionBridge _permissionBridge = _AcpPermissionBridge();
   bool _supportsLoadSession = false;
   bool _supportsListSessions = false;
   bool _supportsResumeSession = false;
+  bool _connectInProgress = false;
+  bool _disposed = false;
+  Future<void>? _disposeFuture;
   String? _activeSessionId;
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, AcpSessionModeInfo> _modesBySession =
@@ -111,94 +116,134 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   @override
   Future<void> connect() async {
-    await _disposeActiveClient(closePermissionStream: false);
-    final configuredMcpServers = mcpServers
-        .map(Map<String, dynamic>.from)
-        .toList();
-    final sessionMcpServers = configuredMcpServers
-        .map(Map<String, dynamic>.from)
-        .toList();
-    final enableFilesystemProvider =
-        enableFilesystemReadTextFile || enableFilesystemWriteTextFile;
-    final config = acp.AcpConfig(
-      agentCommand: agentCommand,
-      agentArgs: agentArgs,
-      envOverrides: envOverrides,
-      mcpServers: sessionMcpServers,
-      capabilities: acp.AcpCapabilities(
-        fs: acp.FsCapabilities(
-          readTextFile: enableFilesystemReadTextFile,
-          writeTextFile: enableFilesystemWriteTextFile,
-        ),
-        terminal: enableTerminalProvider,
-      ),
-      fsProvider: enableFilesystemProvider
-          ? acp.DefaultFsProvider(workspaceRoot: '/')
-          : null,
-      permissionProvider: _InteractivePermissionProvider(
-        _permissionBridge,
-        allowFilesystemReadTextFile: enableFilesystemReadTextFile,
-        allowFilesystemWriteTextFile: enableFilesystemWriteTextFile,
-      ),
-      allowReadOutsideWorkspace: allowFilesystemReadOutsideWorkspace,
-      terminalProvider: enableTerminalProvider
-          ? acp.DefaultTerminalProvider()
-          : null,
-    );
-    final transport = _transportForConfig(config);
-    final client = await acp.AcpClient.start(
-      config: config,
-      transport: transport,
-    );
-    try {
-      final clientCapabilities = Map<String, dynamic>.from(
-        config.capabilities.toJson(),
-      );
-      if (config.terminalProvider != null) {
-        clientCapabilities['terminal'] = true;
-      }
-      final initializeResult = await client
-          .sendRaw('initialize', <String, dynamic>{
-            'protocolVersion': 1,
-            'clientCapabilities': clientCapabilities,
-            'clientInfo': _clientInfo,
-          });
-      final protocolVersion =
-          (initializeResult['protocolVersion'] as num?)?.toInt() ?? 0;
-      if (protocolVersion < acp.AcpConfig.minimumProtocolVersion) {
-        throw StateError(
-          'Unsupported ACP protocol version: $protocolVersion. '
-          'Minimum required: ${acp.AcpConfig.minimumProtocolVersion}.',
-        );
-      }
-      final capabilities = AcpAgentCapabilities.fromInitialize(
-        protocolVersion: protocolVersion,
-        agentCapabilities: _dynamicMap(initializeResult['agentCapabilities']),
-        agentInfo: _dynamicMap(initializeResult['agentInfo']),
-        authMethods: _dynamicMapList(initializeResult['authMethods']),
-        clientInfo: _clientInfo,
-        clientCapabilities: clientCapabilities,
-        hasFsProvider: config.fsProvider != null,
-        hasTerminalProvider: config.terminalProvider != null,
-        allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
-      );
-      _supportsLoadSession = capabilities.loadSession;
-      _supportsListSessions = capabilities.session.list;
-      _supportsResumeSession = capabilities.session.resume;
-      _capabilities = capabilities;
-      final compatibleMcpServers = _mcpServersForCapabilities(
-        configuredMcpServers,
-        capabilities,
-      );
-      sessionMcpServers
-        ..clear()
-        ..addAll(compatibleMcpServers);
-    } catch (_) {
-      await _disposeClient(client, transport);
-      rethrow;
+    if (_disposed) {
+      throw StateError('Codex ACP client has been disposed.');
     }
-    _client = client;
-    _transport = transport;
+    if (_connectInProgress) {
+      throw StateError('Codex ACP client connection is already in progress.');
+    }
+    _connectInProgress = true;
+    try {
+      await _disposeActiveClient(closePermissionStream: false);
+      if (_disposed) {
+        throw StateError('Codex ACP client has been disposed.');
+      }
+      final configuredMcpServers = mcpServers
+          .map(Map<String, dynamic>.from)
+          .toList();
+      final sessionMcpServers = configuredMcpServers
+          .map(Map<String, dynamic>.from)
+          .toList();
+      final enableFilesystemProvider =
+          enableFilesystemReadTextFile || enableFilesystemWriteTextFile;
+      final config = acp.AcpConfig(
+        agentCommand: agentCommand,
+        agentArgs: agentArgs,
+        envOverrides: envOverrides,
+        mcpServers: sessionMcpServers,
+        capabilities: acp.AcpCapabilities(
+          fs: acp.FsCapabilities(
+            readTextFile: enableFilesystemReadTextFile,
+            writeTextFile: enableFilesystemWriteTextFile,
+          ),
+          terminal: enableTerminalProvider,
+        ),
+        fsProvider: enableFilesystemProvider
+            ? acp.DefaultFsProvider(workspaceRoot: '/')
+            : null,
+        permissionProvider: _InteractivePermissionProvider(
+          _permissionBridge,
+          allowFilesystemReadTextFile: enableFilesystemReadTextFile,
+          allowFilesystemWriteTextFile: enableFilesystemWriteTextFile,
+        ),
+        allowReadOutsideWorkspace: allowFilesystemReadOutsideWorkspace,
+        terminalProvider: enableTerminalProvider
+            ? acp.DefaultTerminalProvider()
+            : null,
+      );
+      final transport = _transportForConfig(config);
+      _connectingTransport = transport;
+      late final acp.AcpClient client;
+      try {
+        client = await acp.AcpClient.start(
+          config: config,
+          transport: transport,
+        );
+      } on Object {
+        if (identical(_connectingTransport, transport)) {
+          _connectingTransport = null;
+          await transport.stop();
+        }
+        rethrow;
+      }
+      if (_disposed || !identical(_connectingTransport, transport)) {
+        await _disposeClient(client, transport);
+        throw StateError('Codex ACP client has been disposed.');
+      }
+      _connectingClient = client;
+      try {
+        final clientCapabilities = Map<String, dynamic>.from(
+          config.capabilities.toJson(),
+        );
+        if (config.terminalProvider != null) {
+          clientCapabilities['terminal'] = true;
+        }
+        final initializeResult = await client
+            .sendRaw('initialize', <String, dynamic>{
+              'protocolVersion': 1,
+              'clientCapabilities': clientCapabilities,
+              'clientInfo': _clientInfo,
+            });
+        if (_disposed || !identical(_connectingClient, client)) {
+          throw StateError('Codex ACP client has been disposed.');
+        }
+        final protocolVersion =
+            (initializeResult['protocolVersion'] as num?)?.toInt() ?? 0;
+        if (protocolVersion < acp.AcpConfig.minimumProtocolVersion) {
+          throw StateError(
+            'Unsupported ACP protocol version: $protocolVersion. '
+            'Minimum required: ${acp.AcpConfig.minimumProtocolVersion}.',
+          );
+        }
+        final capabilities = AcpAgentCapabilities.fromInitialize(
+          protocolVersion: protocolVersion,
+          agentCapabilities: _dynamicMap(
+            initializeResult['agentCapabilities'],
+          ),
+          agentInfo: _dynamicMap(initializeResult['agentInfo']),
+          authMethods: _dynamicMapList(initializeResult['authMethods']),
+          clientInfo: _clientInfo,
+          clientCapabilities: clientCapabilities,
+          hasFsProvider: config.fsProvider != null,
+          hasTerminalProvider: config.terminalProvider != null,
+          allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
+        );
+        final compatibleMcpServers = _mcpServersForCapabilities(
+          configuredMcpServers,
+          capabilities,
+        );
+        sessionMcpServers
+          ..clear()
+          ..addAll(compatibleMcpServers);
+        _connectingClient = null;
+        _connectingTransport = null;
+        _client = client;
+        _transport = transport;
+        _supportsLoadSession = capabilities.loadSession;
+        _supportsListSessions = capabilities.session.list;
+        _supportsResumeSession = capabilities.session.resume;
+        _capabilities = capabilities;
+      } catch (_) {
+        if (identical(_connectingClient, client)) {
+          _connectingClient = null;
+          _connectingTransport = null;
+          await _disposeClient(client, transport);
+        }
+        rethrow;
+      }
+    } finally {
+      _connectInProgress = false;
+    }
   }
 
   acp.AcpTransport _transportForConfig(acp.AcpConfig config) {
@@ -1956,8 +2001,29 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<void> dispose() async {
-    await _disposeActiveClient(closePermissionStream: true);
+  Future<void> dispose() {
+    final existing = _disposeFuture;
+    if (existing != null) return existing;
+    _disposed = true;
+    final connectingClient = _connectingClient;
+    final connectingTransport = _connectingTransport;
+    _connectingClient = null;
+    _connectingTransport = null;
+    return _disposeFuture = _disposeAll(
+      connectingClient,
+      connectingTransport,
+    );
+  }
+
+  Future<void> _disposeAll(
+    acp.AcpClient? connectingClient,
+    acp.AcpTransport? connectingTransport,
+  ) async {
+    try {
+      await _disposeClient(connectingClient, connectingTransport);
+    } finally {
+      await _disposeActiveClient(closePermissionStream: true);
+    }
   }
 
   Future<void> _disposeActiveClient({
@@ -2055,12 +2121,26 @@ class DartAcpAgentClient implements AcpAgentClient {
     acp.AcpClient? client,
     acp.AcpTransport? transport,
   ) async {
-    await transport?.stop();
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    try {
+      await transport?.stop();
+    } on Object catch (error, stackTrace) {
+      firstError = error;
+      firstStackTrace = stackTrace;
+    }
     try {
       await client?.dispose().timeout(const Duration(milliseconds: 500));
     } on TimeoutException {
       // The underlying package can wait for a still-open JSON-RPC stream while
       // shutting down. The stdio process has already been stopped above.
+    } on Object catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+    final cleanupError = firstError;
+    if (cleanupError != null) {
+      Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
   }
 }

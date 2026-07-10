@@ -36,8 +36,18 @@ void main() {
     addTearDown(controller.dispose);
 
     await controller.connect();
+    String? authenticatedAgent;
+    String? authenticatedMethod;
     await tester.pumpWidget(
-      MaterialApp(home: AppShell(controller: controller)),
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          onAgentAuthenticated: (agentName, methodId) {
+            authenticatedAgent = agentName;
+            authenticatedMethod = methodId;
+          },
+        ),
+      ),
     );
 
     await tester.tap(find.byTooltip('Agents'));
@@ -46,6 +56,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(fake.lastAuthenticatedMethodId, 'browser');
+    expect(authenticatedAgent, 'Codex');
+    expect(authenticatedMethod, 'browser');
     expect(controller.lastError, isNull);
   });
 

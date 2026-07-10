@@ -19,6 +19,7 @@ class TaskScheduler {
     WorkspaceExecutionGate? workspaceGate,
     this.runtimeRegistry,
     this.retryPolicy = const RetryPolicy(),
+    this.onPersistenceFault,
     DateTime Function()? clock,
   }) : workspaceGate = workspaceGate ?? WorkspaceExecutionGate(),
        _clock = clock ?? DateTime.now {
@@ -37,6 +38,8 @@ class TaskScheduler {
   final WorkspaceExecutionGate workspaceGate;
   final LocalRuntimeRegistry? runtimeRegistry;
   final RetryPolicy retryPolicy;
+  final void Function(TaskPersistenceStalledException error)?
+      onPersistenceFault;
   final DateTime Function() _clock;
   final Set<String> _activeTaskIds = <String>{};
   final Map<String, String> _serialKeysByTaskId = <String, String>{};
@@ -52,16 +55,29 @@ class TaskScheduler {
   Timer? _runtimeWakeTimer;
   DateTime? _retryWakeAt;
   Future<void>? _shutdownFuture;
+  Future<void>? _faultCancellation;
+  TaskPersistenceStalledException? _persistenceFault;
 
   bool get isStarted => _started;
 
   int get activeCount => _activeTaskIds.length;
 
+  TaskPersistenceStalledException? get persistenceFault => _persistenceFault;
+
+  void handlePersistenceFault(TaskPersistenceStalledException error) {
+    _stopForPersistenceFault(error);
+  }
+
   Future<void> start({bool dispatchQueuedTasks = true}) async {
     _ensureNotDisposed();
     if (_started) return;
-    await taskController.load();
-    await taskController.recoverInterruptedRuns();
+    try {
+      await taskController.load();
+      await taskController.recoverInterruptedRuns();
+    } on TaskPersistenceStalledException catch (error) {
+      _stopForPersistenceFault(error);
+      rethrow;
+    }
     _ensureNotDisposed();
     if (_started) return;
     _started = true;
@@ -108,8 +124,11 @@ class TaskScheduler {
       stop();
       _disposed = true;
     }
+    final persistenceCancellation = _faultCancellation;
     final cancellableWorker = worker;
-    if (cancellableWorker is CancellableTaskWorker) {
+    if (persistenceCancellation != null) {
+      await _ignoreErrors(persistenceCancellation);
+    } else if (cancellableWorker is CancellableTaskWorker) {
       try {
         await cancellableWorker.cancelActive();
       } on Object {
@@ -126,21 +145,64 @@ class TaskScheduler {
       }
       await Future.wait(active.map(_ignoreErrors));
     }
+    final disposableWorker = worker;
+    if (disposableWorker is DisposableTaskWorker) {
+      try {
+        await disposableWorker.dispose();
+      } on Object {
+        // Task persistence is already settled; worker cleanup is best effort.
+      }
+    }
   }
 
   Future<TaskRecord> enqueueTask(String taskId) async {
+    _throwIfPersistenceFaulted();
     _ensureNotDisposed();
+    final existing = taskController.taskById(taskId);
+    if (existing == null) throw StateError('Task not found: $taskId');
+    final resettingAuthentication =
+        existing.status == TaskStatus.blockedOnUserInput &&
+        existing.metadata['failure_reason'] ==
+            TaskFailureReason.authRequired.name;
+    if (resettingAuthentication) {
+      final resettableWorker = worker;
+      if (resettableWorker is ResettableTaskWorker) {
+        await resettableWorker.resetAgent(existing.agentName);
+      }
+    }
     final queued = await taskController.updateTask(
       taskId,
       status: TaskStatus.queued,
       summary: 'Queued for agent run.',
       error: null,
-      metadata: _retryMetadataCleared(
-        taskController.taskById(taskId)?.metadata ?? const <String, Object?>{},
-      ),
+      metadata: resettingAuthentication
+          ? _runtimeFailureMetadataCleared(existing.metadata)
+          : _retryMetadataCleared(existing.metadata),
     );
     _scheduleDrain();
     return queued;
+  }
+
+  Future<bool> authenticateAgent(String agentName, String methodId) async {
+    _throwIfPersistenceFaulted();
+    _ensureNotDisposed();
+    final authenticatableWorker = worker;
+    if (authenticatableWorker is! AuthenticatableTaskWorker) return false;
+    final authenticated = await authenticatableWorker.authenticateAgent(
+      agentName,
+      methodId,
+    );
+    if (!authenticated) return false;
+    final registry = runtimeRegistry;
+    if (registry != null) {
+      try {
+        await registry.probeAgent(agentName);
+      } on Object {
+        _scheduleRuntimeWake();
+      }
+    }
+    _scheduleDrain();
+    return true;
   }
 
   void _onTaskControllerChanged() {
@@ -176,6 +238,9 @@ class TaskScheduler {
     try {
       try {
         await taskController.refreshIfChanged();
+      } on TaskPersistenceStalledException catch (error) {
+        _stopForPersistenceFault(error);
+        return;
       } on Object {
         _scheduleRefreshRetry();
         return;
@@ -183,6 +248,9 @@ class TaskScheduler {
       if (!_started || !_dispatchEnabled || _disposed) return;
       try {
         await _requeueAuthenticatedTasks();
+      } on TaskPersistenceStalledException catch (error) {
+        _stopForPersistenceFault(error);
+        return;
       } on Object {
         _scheduleRefreshRetry();
         return;
@@ -225,6 +293,31 @@ class TaskScheduler {
         if (serialKey.isNotEmpty) {
           _serialKeysByTaskId[task.id] = serialKey;
         }
+        TaskWorkerLease? workerLease;
+        if (!_isRuntimeBlocked(runtimeStatus)) {
+          final reservableWorker = worker;
+          if (reservableWorker is ReservableTaskWorker) {
+            try {
+              workerLease = await reservableWorker.tryAcquire(task);
+            } on Object {
+              _releaseTask(task);
+              deferredTaskIds.add(task.id);
+              _scheduleRuntimeWake();
+              continue;
+            }
+            if (!_started || !_dispatchEnabled || _disposed) {
+              await _releaseWorkerLease(workerLease);
+              _releaseTask(task);
+              return;
+            }
+            if (workerLease == null) {
+              _releaseTask(task);
+              deferredTaskIds.add(task.id);
+              _scheduleRuntimeWake();
+              continue;
+            }
+          }
+        }
         _activeTaskIds.add(task.id);
 
         try {
@@ -233,6 +326,7 @@ class TaskScheduler {
             expectedResource: route.expectedResource,
           );
           if (dispatched == null) {
+            await _releaseWorkerLease(workerLease);
             _releaseTask(task);
             deferredTaskIds.add(task.id);
             _scheduleRuntimeWake();
@@ -240,14 +334,17 @@ class TaskScheduler {
           }
           if (_isRuntimeBlocked(runtimeStatus)) {
             await _handleRuntimeBlocked(dispatched, runtimeStatus!);
+            await _releaseWorkerLease(workerLease);
             _releaseTask(dispatched);
             continue;
           }
           if (!_started || !_dispatchEnabled || _disposed) {
+            await _releaseWorkerLease(workerLease);
             _releaseTask(dispatched);
             return;
           }
-          final activeRun = _runTask(dispatched);
+          final activeRun = _runTask(dispatched, workerLease);
+          workerLease = null;
           _activeRuns.add(activeRun);
           unawaited(
             activeRun.then<void>(
@@ -257,16 +354,26 @@ class TaskScheduler {
               },
             ),
           );
+        } on TaskPersistenceStalledException catch (error) {
+          await _releaseWorkerLease(workerLease);
+          _releaseTask(task);
+          _stopForPersistenceFault(error);
+          return;
         } on TaskRepositoryConflict {
+          await _releaseWorkerLease(workerLease);
           _releaseTask(task);
           deferredTaskIds.add(task.id);
           try {
             await taskController.refreshIfChanged();
+          } on TaskPersistenceStalledException catch (error) {
+            _stopForPersistenceFault(error);
+            return;
           } on Object {
             _scheduleRefreshRetry();
           }
           _scheduleRuntimeWake();
         } catch (_) {
+          await _releaseWorkerLease(workerLease);
           _releaseTask(task);
           deferredTaskIds.add(task.id);
           _scheduleRefreshRetry();
@@ -477,15 +584,37 @@ class TaskScheduler {
     };
   }
 
-  Future<void> _runTask(TaskRecord task) async {
+  Future<void> _runTask(
+    TaskRecord task,
+    TaskWorkerLease? workerLease,
+  ) async {
     try {
-      final result = await worker.run(taskController.taskById(task.id) ?? task);
+      final currentTask = taskController.taskById(task.id) ?? task;
+      final result = workerLease == null
+          ? await worker.run(currentTask)
+          : await workerLease.run(currentTask);
       await _handleWorkerResult(result);
+    } on TaskPersistenceStalledException catch (error) {
+      _stopForPersistenceFault(error);
     } catch (error) {
-      await _handleWorkerError(task, error);
+      try {
+        await _handleWorkerError(task, error);
+      } on TaskPersistenceStalledException catch (persistenceError) {
+        _stopForPersistenceFault(persistenceError);
+      }
     } finally {
+      await _releaseWorkerLease(workerLease);
       _releaseTask(task);
       _scheduleDrain();
+    }
+  }
+
+  Future<void> _releaseWorkerLease(TaskWorkerLease? lease) async {
+    if (lease == null) return;
+    try {
+      await lease.release();
+    } on Object {
+      // A released task must not retain scheduler capacity on cleanup errors.
     }
   }
 
@@ -525,6 +654,18 @@ class TaskScheduler {
   Future<void> _maybeRetryFailedTask(TaskRecord task) async {
     final run = _currentRunFor(task);
     final reason = taskFailureReasonFromText(task.error ?? task.summary);
+    if (reason == TaskFailureReason.authRequired) {
+      final message = task.error ?? taskFailureReasonLabel(reason);
+      await taskController.updateTask(
+        task.id,
+        status: TaskStatus.blockedOnUserInput,
+        summary: message,
+        error: message,
+        metadata: _failureMetadata(task.metadata, reason),
+      );
+      _scheduleRuntimeWake();
+      return;
+    }
     if (run != null && retryPolicy.shouldRetry(reason, run.attempt)) {
       await _queueRetry(
         task,
@@ -695,6 +836,28 @@ class TaskScheduler {
     if (_disposed) {
       throw StateError('TaskScheduler has been disposed.');
     }
+  }
+
+  void _stopForPersistenceFault(TaskPersistenceStalledException error) {
+    if (_persistenceFault != null) return;
+    _persistenceFault = error;
+    stop();
+    final cancellableWorker = worker;
+    if (cancellableWorker is CancellableTaskWorker) {
+      final cancellation = Future<void>.sync(cancellableWorker.cancelActive);
+      _faultCancellation = cancellation;
+      unawaited(_ignoreErrors(cancellation));
+    }
+    try {
+      onPersistenceFault?.call(error);
+    } on Object {
+      // A presentation callback must not prevent runtime cancellation.
+    }
+  }
+
+  void _throwIfPersistenceFaulted() {
+    final fault = _persistenceFault;
+    if (fault != null) throw fault;
   }
 }
 

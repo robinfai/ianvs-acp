@@ -63,7 +63,10 @@ TaskFailureReason taskFailureReasonFromText(String? text) {
   }
   if (normalized.contains('authrequired') ||
       normalized.contains('authenticationrequired') ||
-      normalized.contains('loginrequired')) {
+      normalized.contains('auth required') ||
+      normalized.contains('authentication required') ||
+      normalized.contains('loginrequired') ||
+      normalized.contains('login required')) {
     return TaskFailureReason.authRequired;
   }
   if (normalized.contains('permissiondenied') ||

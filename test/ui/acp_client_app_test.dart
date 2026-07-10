@@ -463,6 +463,562 @@ void main() {
     expect(find.text('Inbox'), findsOneWidget);
   });
 
+  testWidgets('AcpClientApp reports scheduler persistence fault immediately', (
+    tester,
+  ) async {
+    final store = _MemoryTaskStore();
+    final revisionStarted = Completer<void>();
+    final releaseRevision = Completer<void>();
+    final taskController = TaskInboxController(
+      repository: store,
+      persistenceWatchdog: const Duration(milliseconds: 20),
+    );
+    addTearDown(taskController.dispose);
+    addTearDown(() async {
+      if (!releaseRevision.isCompleted) releaseRevision.complete();
+      await taskController.whenPersistenceQuiesced;
+    });
+    await taskController.load();
+    store.beforeOperation = (operation) async {
+      if (operation != 'revision') return;
+      if (!revisionStarted.isCompleted) revisionStarted.complete();
+      await releaseRevision.future;
+    };
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+      ),
+    );
+    await tester.pump();
+    await revisionStarted.future;
+    await tester.pump(const Duration(milliseconds: 25));
+    await tester.pump();
+
+    expect(
+      find.textContaining('Task persistence stalled during revision'),
+      findsOneWidget,
+    );
+    releaseRevision.complete();
+    await taskController.whenPersistenceQuiesced;
+  });
+
+  testWidgets('AcpClientApp uses a distinct controller for background tasks', (
+    tester,
+  ) async {
+    final createdAt = DateTime(2026, 7, 10, 9);
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: [
+            TaskRecord(
+              id: 'background-task',
+              title: 'Background task',
+              description: 'Do not replace the foreground session.',
+              workspacePath: '/workspace/background',
+              agentName: 'Codex',
+              status: TaskStatus.queued,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(taskController.dispose);
+    final clients = <FakeAgentClient>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    FakeAgentClient createClient(AcpClientConfig _) {
+      final client = FakeAgentClient();
+      clients.add(client);
+      return client;
+    }
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+        createAgentClient: createClient,
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () =>
+          clients.length >= 2 &&
+          clients.any((client) => client.lastPrompt != null) &&
+          taskController.taskById('background-task')?.status ==
+              TaskStatus.needsHumanReview,
+    );
+
+    final foregroundClient = clients.first;
+    final backgroundClient = clients.singleWhere(
+      (client) => client.lastPrompt != null,
+    );
+    expect(identical(foregroundClient, backgroundClient), isFalse);
+    expect(foregroundClient.sessionCount, 0);
+    expect(foregroundClient.lastPrompt, isNull);
+    expect(backgroundClient.sessionCount, 1);
+    expect(backgroundClient.lastPrompt, contains('Task ID: background-task'));
+    expect(
+      taskController.taskById('background-task')?.status,
+      TaskStatus.needsHumanReview,
+    );
+  });
+
+  testWidgets(
+    'AcpClientApp never reuses a busy injected foreground controller',
+    (tester) async {
+      final foregroundClient = _TrackingHangingAgentClient();
+      final foregroundController = ChatController(
+        client: foregroundClient,
+        cwd: '/workspace/ui',
+        agentName: 'Codex',
+      );
+      addTearDown(foregroundController.shutdown);
+      await foregroundController.newSession();
+      await foregroundController.sendPrompt('Foreground prompt');
+      expect(foregroundController.isStreaming, isTrue);
+
+      final createdAt = DateTime(2026, 7, 10, 9);
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              TaskRecord(
+                id: 'injected-background-task',
+                title: 'Background task',
+                description: '',
+                workspacePath: '/workspace/background',
+                agentName: 'Codex',
+                status: TaskStatus.queued,
+                priority: TaskPriority.normal,
+                createdAt: createdAt,
+                updatedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+      );
+      addTearDown(taskController.dispose);
+      final backgroundClient = FakeAgentClient();
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          controller: foregroundController,
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          taskInboxController: taskController,
+          createTaskAgentClient: (_) => backgroundClient,
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            taskController.taskById('injected-background-task')?.status ==
+            TaskStatus.needsHumanReview,
+      );
+
+      expect(foregroundController.isStreaming, isTrue);
+      expect(foregroundClient.cancelled, isFalse);
+      expect(foregroundClient.lastPrompt, 'Foreground prompt');
+      expect(
+        backgroundClient.lastPrompt,
+        contains('Task ID: injected-background-task'),
+      );
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp authenticates a process-scoped background task agent',
+    (tester) async {
+      final foregroundClient = FakeAgentClient(
+        authMethods: const [
+          <String, Object?>{'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      );
+      final foregroundController = ChatController(
+        client: foregroundClient,
+        cwd: '/workspace/ui',
+        agentName: 'Codex',
+      );
+      addTearDown(foregroundController.shutdown);
+      await foregroundController.connect();
+      final backgroundClient = _ProcessScopedAuthAgentClient();
+      final createdAt = DateTime(2026, 7, 10, 9);
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              TaskRecord(
+                id: 'process-auth-task',
+                title: 'Authenticate background process',
+                description: '',
+                workspacePath: '/workspace/background',
+                agentName: 'Codex',
+                status: TaskStatus.queued,
+                priority: TaskPriority.normal,
+                createdAt: createdAt,
+                updatedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+      );
+      addTearDown(taskController.dispose);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          controller: foregroundController,
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          taskInboxController: taskController,
+          createTaskAgentClient: (_) => backgroundClient,
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            taskController.tasks.single.status ==
+            TaskStatus.blockedOnUserInput,
+      );
+
+      await tester.tap(find.byTooltip('Agents'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Authenticate'));
+      await _pumpUntil(
+        tester,
+        () =>
+            taskController.tasks.single.status ==
+            TaskStatus.needsHumanReview,
+      );
+
+      expect(foregroundClient.lastAuthenticatedMethodId, 'browser');
+      expect(backgroundClient.lastAuthenticatedMethodId, 'browser');
+      expect(backgroundClient.sessionCount, 1);
+      expect(
+        backgroundClient.lastPrompt,
+        contains('Task ID: process-auth-task'),
+      );
+    },
+  );
+
+  testWidgets('AcpClientApp replaces owned clients when factory changes', (
+    tester,
+  ) async {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final oldClients = <_TrackingHangingAgentClient>[];
+    final newClients = <_TrackingHangingAgentClient>[];
+    _TrackingHangingAgentClient oldFactory(AcpClientConfig _) {
+      final client = _TrackingHangingAgentClient();
+      oldClients.add(client);
+      return client;
+    }
+
+    _TrackingHangingAgentClient newFactory(AcpClientConfig _) {
+      final client = _TrackingHangingAgentClient();
+      newClients.add(client);
+      return client;
+    }
+
+    AcpClientApp app(AcpAgentClientFactory factory, Object factoryKey) =>
+        AcpClientApp(
+      key: const ValueKey('foreground-factory-replacement'),
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: factory,
+      agentClientFactoryKey: factoryKey,
+    );
+
+    await tester.pumpWidget(app(oldFactory, 'old'));
+    expect(oldClients, isNotEmpty);
+    final oldClient = oldClients.first;
+
+    await tester.pumpWidget(app(newFactory, 'new'));
+    await _pumpUntil(
+      tester,
+      () => oldClient.disposed && newClients.isNotEmpty,
+    );
+
+    expect(oldClient.disposed, isTrue);
+    expect(newClients.single.disposed, isFalse);
+  });
+
+  testWidgets('AcpClientApp replaces only the keyed task agent factory', (
+    tester,
+  ) async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    final foreground = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/ui',
+      agentName: 'Codex',
+    );
+    addTearDown(foreground.shutdown);
+    final oldClients = <FakeAgentClient>[];
+    final newClients = <FakeAgentClient>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    FakeAgentClient oldFactory(AcpClientConfig _) {
+      final client = FakeAgentClient();
+      oldClients.add(client);
+      return client;
+    }
+
+    FakeAgentClient newFactory(AcpClientConfig _) {
+      final client = FakeAgentClient();
+      newClients.add(client);
+      return client;
+    }
+
+    AcpClientApp app(AcpAgentClientFactory factory, Object factoryKey) {
+      return AcpClientApp(
+        key: const ValueKey('task-factory-only-replacement'),
+        controller: foreground,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+        createTaskAgentClient: factory,
+        taskAgentClientFactoryKey: factoryKey,
+      );
+    }
+
+    await tester.pumpWidget(app(oldFactory, 'old'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(app(newFactory, 'new'));
+    await tester.pumpAndSettle();
+    final task = await taskController.createTask(
+      title: 'Use replacement task factory',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    await taskController.updateTask(task.id, status: TaskStatus.queued);
+
+    await _pumpUntil(
+      tester,
+      () =>
+          taskController.taskById(task.id)?.status ==
+          TaskStatus.needsHumanReview,
+    );
+
+    expect(oldClients, isEmpty);
+    expect(newClients.single.lastPrompt, contains('Task ID: ${task.id}'));
+  });
+
+  testWidgets(
+    'AcpClientApp restarts task agents when injected controller and factory change',
+    (tester) async {
+      final createdAt = DateTime(2026, 7, 10, 9);
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              TaskRecord(
+                id: 'factory-restart-task',
+                title: 'Restart factory task',
+                description: '',
+                workspacePath: '/workspace/app',
+                agentName: 'Codex',
+                status: TaskStatus.queued,
+                priority: TaskPriority.normal,
+                createdAt: createdAt,
+                updatedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+      );
+      addTearDown(taskController.dispose);
+      final firstForeground = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/ui-1',
+        agentName: 'Codex',
+      );
+      final secondForeground = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/ui-2',
+        agentName: 'Codex',
+      );
+      addTearDown(firstForeground.shutdown);
+      addTearDown(secondForeground.shutdown);
+      final oldBackground = _TrackingHangingAgentClient();
+      final newBackgroundClients = <FakeAgentClient>[];
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+
+      AcpClientApp app({
+        required ChatController controller,
+        required AcpAgentClientFactory taskFactory,
+        required Object taskFactoryKey,
+      }) {
+        return AcpClientApp(
+          key: const ValueKey('injected-controller-factory-replacement'),
+          controller: controller,
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          taskInboxController: taskController,
+          createTaskAgentClient: taskFactory,
+          taskAgentClientFactoryKey: taskFactoryKey,
+        );
+      }
+
+      await tester.pumpWidget(
+        app(
+          controller: firstForeground,
+          taskFactory: (_) => oldBackground,
+          taskFactoryKey: 'old',
+        ),
+      );
+      await _pumpUntil(tester, () => oldBackground.lastPrompt != null);
+
+      await tester.pumpWidget(
+        app(
+          controller: secondForeground,
+          taskFactory: (_) {
+            final client = FakeAgentClient();
+            newBackgroundClients.add(client);
+            return client;
+          },
+          taskFactoryKey: 'new',
+        ),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            oldBackground.cancelled &&
+            oldBackground.disposed &&
+            taskController.tasks.single.status == TaskStatus.failed,
+      );
+
+      await taskController.retryTask('factory-restart-task');
+      await _pumpUntil(
+        tester,
+        () =>
+            newBackgroundClients.any((client) => client.lastPrompt != null) &&
+            taskController.tasks.single.status ==
+                TaskStatus.needsHumanReview,
+      );
+
+      expect(oldBackground.disposed, isTrue);
+      expect(
+        newBackgroundClients.single.lastPrompt,
+        contains('Task ID: factory-restart-task'),
+      );
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp keeps injected inbox work running across foreground controller changes',
+    (tester) async {
+      final createdAt = DateTime(2026, 7, 10, 9);
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              TaskRecord(
+                id: 'foreground-switch-task',
+                title: 'Keep running in background',
+                description: '',
+                workspacePath: '/workspace/app',
+                agentName: 'Codex',
+                status: TaskStatus.queued,
+                priority: TaskPriority.normal,
+                createdAt: createdAt,
+                updatedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+      );
+      addTearDown(taskController.dispose);
+      final ownedForeground = _TrackingHangingAgentClient();
+      final injectedForeground = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/injected',
+        agentName: 'Codex',
+      );
+      addTearDown(injectedForeground.shutdown);
+      final background = _TrackingHangingAgentClient();
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      _TrackingHangingAgentClient foregroundFactory(AcpClientConfig _) {
+        return ownedForeground;
+      }
+
+      AcpClientApp app(ChatController? controller) => AcpClientApp(
+        key: const ValueKey('foreground-controller-switch'),
+        controller: controller,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+        createAgentClient: foregroundFactory,
+        createTaskAgentClient: (_) => background,
+      );
+
+      await tester.pumpWidget(app(null));
+      await _pumpUntil(tester, () => background.lastPrompt != null);
+
+      await tester.pumpWidget(app(injectedForeground));
+      await _pumpUntil(tester, () => ownedForeground.disposed);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(background.cancelled, isFalse);
+      expect(background.disposed, isFalse);
+      expect(taskController.tasks.single.status, TaskStatus.running);
+    },
+  );
+
   testWidgets('AcpClientApp refreshes tasks only while in foreground', (
     tester,
   ) async {
@@ -547,24 +1103,27 @@ void main() {
         },
       },
     });
+    _TrackingHangingAgentClient createClient(AcpClientConfig _) {
+      final client = _TrackingHangingAgentClient();
+      clients.add(client);
+      return client;
+    }
     AcpClientApp app(String version) => AcpClientApp(
       key: const ValueKey('config-replacement-app'),
       config: config(version),
       autoLoadWorkspaceSessions: false,
       taskInboxController: taskController,
-      createAgentClient: (_) {
-        final client = _TrackingHangingAgentClient();
-        clients.add(client);
-        return client;
-      },
+      createAgentClient: createClient,
+      createTaskAgentClient: createClient,
     );
 
     await tester.pumpWidget(app('v1'));
     await _pumpUntil(
       tester,
-      () => clients.isNotEmpty && clients.first.lastPrompt != null,
+      () => clients.any((client) => client.lastPrompt != null),
     );
-    final oldClient = clients.single;
+    final oldForegroundClient = clients.first;
+    final oldClient = clients.singleWhere((client) => client.lastPrompt != null);
 
     await tester.pumpWidget(app('v2'));
     await _pumpUntil(
@@ -572,16 +1131,22 @@ void main() {
       () =>
           oldClient.cancelled &&
           oldClient.disposed &&
+          oldForegroundClient.disposed &&
           taskController.taskById('queued-task')?.status == TaskStatus.failed,
     );
 
     expect(oldClient.cancelled, isTrue);
     expect(oldClient.disposed, isTrue);
+    expect(oldForegroundClient.cancelled, isFalse);
+    expect(oldForegroundClient.disposed, isTrue);
     expect(
       taskController.taskById('queued-task')?.error,
       contains('cancelled'),
     );
-    expect(clients.length, 2);
+    final liveClients = clients.where((client) => !client.disposed).toList();
+    expect(liveClients, hasLength(1));
+    expect(identical(liveClients.single, oldClient), isFalse);
+    expect(identical(liveClients.single, oldForegroundClient), isFalse);
   });
 
   testWidgets('AcpClientApp serializes config changes during task startup', (
@@ -1885,7 +2450,8 @@ class _WorkspaceCatalogAgentClient extends FakeAgentClient {
 }
 
 class _TrackingHangingAgentClient extends FakeAgentClient {
-  final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
+  final StreamController<AgentEvent> _events =
+      StreamController<AgentEvent>.broadcast();
   bool disposed = false;
 
   @override
@@ -1907,8 +2473,47 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
   }
 }
 
+class _ProcessScopedAuthAgentClient extends FakeAgentClient {
+  _ProcessScopedAuthAgentClient()
+    : super(
+        authMethods: const [
+          <String, Object?>{'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      );
+
+  bool authenticated = false;
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    if (!authenticated) throw StateError('auth_required');
+    return super.createSession(
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
+
+  @override
+  Future<void> authenticate({required String methodId}) async {
+    await super.authenticate(methodId: methodId);
+    authenticated = true;
+  }
+}
+
 class _MemoryTaskStore extends MemoryTaskRepository {
   _MemoryTaskStore([super.snapshot]);
+}
+
+class _DeterministicIds {
+  final Map<String, int> _counts = <String, int>{};
+
+  String next(String prefix) {
+    final count = (_counts[prefix] ?? 0) + 1;
+    _counts[prefix] = count;
+    return '$prefix-$count';
+  }
 }
 
 class _BlockingFirstLoadTaskStore extends MemoryTaskRepository {

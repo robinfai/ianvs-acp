@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/app.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
@@ -309,6 +310,102 @@ void main() {
     expect(openedTask?.sessionId, 'session-1');
   });
 
+  testWidgets('TaskInboxSidebar lets an auth-blocked task be retried', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-auth',
+      title: 'Authenticate and retry',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.blockedOnUserInput,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+      metadata: const <String, Object?>{'failure_reason': 'authRequired'},
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    TaskRecord? retriedTask;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 720,
+            child: TaskInboxSidebar(
+              controller: controller,
+              defaultWorkspacePath: '/workspace/app',
+              defaultAgentName: 'Codex',
+              onRunTask: (task) => retriedTask = task,
+            ),
+          ),
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    await tester.tap(find.byTooltip('Run task'));
+    await _pumpFrames(tester);
+
+    expect(retriedTask?.id, 'task-auth');
+  });
+
+  testWidgets('TaskInboxSidebar does not run other user-input blocks', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-permission',
+      title: 'Resolve permission first',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.blockedOnUserInput,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+      metadata: const <String, Object?>{'failure_reason': 'permissionDenied'},
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    var runCalls = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 720,
+            child: TaskInboxSidebar(
+              controller: controller,
+              defaultWorkspacePath: '/workspace/app',
+              defaultAgentName: 'Codex',
+              onRunTask: (_) => runCalls += 1,
+            ),
+          ),
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    await tester.tap(find.byTooltip('Run task'));
+    await _pumpFrames(tester);
+
+    expect(runCalls, 0);
+  });
+
   testWidgets('AppShell switches between Workspaces and Inbox sidebars', (
     tester,
   ) async {
@@ -402,13 +499,20 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final fake = FakeAgentClient();
+    final foregroundFake = FakeAgentClient();
     final chat = ChatController(
-      client: fake,
+      client: foregroundFake,
       cwd: '/workspace/default',
       agentName: 'Codex',
     );
     addTearDown(chat.dispose);
+    final backgroundFake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
       repository: _MemoryTaskStore(),
@@ -425,7 +529,13 @@ void main() {
     );
 
     await tester.pumpWidget(
-      AcpClientApp(controller: chat, taskInboxController: taskController),
+      AcpClientApp(
+        controller: chat,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+        createTaskAgentClient: (_) => backgroundFake,
+      ),
     );
     await _pumpFrames(tester);
     await tester.tap(find.text('Inbox').first);
@@ -442,8 +552,9 @@ void main() {
     );
 
     expect(taskController.tasks.single.sessionId, 'fake-session-1');
-    expect(chat.currentSession?.cwd, '/workspace/app');
-    expect(fake.lastPrompt, contains('Task ID: task-1'));
+    expect(chat.currentSession, isNull);
+    expect(foregroundFake.lastPrompt, isNull);
+    expect(backgroundFake.lastPrompt, contains('Task ID: task-1'));
     expect(find.text('Needs Review'), findsOneWidget);
     expect(find.text('Review'), findsOneWidget);
     expect(find.byTooltip('Open linked session'), findsOneWidget);

@@ -3,11 +3,15 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/artifact_collector.dart';
 import 'package:ianvs_acp/tasks/local_skill.dart';
+import 'package:ianvs_acp/tasks/runtime_registry.dart';
+import 'package:ianvs_acp/tasks/task_agent_pool.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_runner.dart';
@@ -40,7 +44,9 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (agentName) => agentName == 'Codex' ? chat : null,
+      agentPool: LocalTaskAgentPool(
+        controllerFactory: (agentName) => agentName == 'Codex' ? chat : null,
+      ),
       clock: () => DateTime(2026, 7, 7, 9),
     );
 
@@ -86,6 +92,398 @@ void main() {
     expect(savedStatuses.last, TaskStatus.needsHumanReview);
   });
 
+  test('TaskRunner leaves the foreground chat session untouched', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Background task',
+      description: 'Run outside the foreground chat.',
+      workspacePath: '/workspace/background',
+      agentName: 'Codex',
+    );
+    final uiFake = FakeAgentClient();
+    final uiChat = ChatController(
+      client: uiFake,
+      cwd: '/workspace/ui',
+      agentName: 'Codex',
+    );
+    addTearDown(uiChat.dispose);
+    await uiChat.newSession(cwd: '/workspace/ui');
+    await uiChat.sendPrompt('Keep this foreground conversation.');
+    await _waitUntil(() => !uiChat.isStreaming);
+    final uiSessionId = uiChat.currentSession!.id;
+    final uiMessages = uiChat.messages
+        .map((message) => '${message.role.name}:${message.text}')
+        .toList(growable: false);
+
+    final backgroundFake = FakeAgentClient();
+    final backgroundChat = ChatController(
+      client: backgroundFake,
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(backgroundChat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => backgroundChat),
+    );
+
+    final result = await runner.runTask(task.id);
+
+    expect(result.status, TaskStatus.needsHumanReview);
+    expect(uiChat.currentSession?.id, uiSessionId);
+    expect(
+      uiChat.messages.map((message) => '${message.role.name}:${message.text}'),
+      uiMessages,
+    );
+    expect(uiFake.lastPrompt, 'Keep this foreground conversation.');
+    expect(backgroundFake.lastPrompt, contains('Task ID: ${task.id}'));
+    expect(backgroundChat.currentSession?.cwd, '/workspace/background');
+  });
+
+  test('TaskRunner direct path leaves a busy agent task queued', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Busy agent task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    final pool = LocalTaskAgentPool(controllerFactory: (_) => chat);
+    addTearDown(pool.dispose);
+    final occupied = await pool.tryAcquire('Codex');
+    final runner = TaskRunner(taskController: taskController, agentPool: pool);
+
+    final busy = await runner.runTask(task.id);
+
+    expect(busy.status, TaskStatus.queued);
+    expect(taskController.runs, isEmpty);
+    expect(taskController.events, isEmpty);
+
+    await occupied!.release();
+    final result = await runner.runTask(task.id);
+    expect(result.status, TaskStatus.needsHumanReview);
+  });
+
+  test(
+    'TaskRunner quarantines a stalled createRun without failure writes',
+    () async {
+      final store = _MemoryTaskStore();
+      final ids = _DeterministicIds();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: ids.next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled run creation',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final operationStarted = Completer<void>();
+      final releaseOperation = Completer<void>();
+      final operations = <String>[];
+      store.beforeOperation = (operation) async {
+        operations.add(operation);
+        if (operation != 'createRun') return;
+        if (!operationStarted.isCompleted) operationStarted.complete();
+        await releaseOperation.future;
+      };
+      final chat = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final pool = _TrackingTaskAgentPool(chat);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+      );
+
+      final running = runner.runTask(task.id);
+      await operationStarted.future;
+      await expectLater(
+        running.timeout(const Duration(seconds: 1)),
+        throwsA(isA<TaskPersistenceStalledException>()),
+      );
+
+      expect(pool.lease.invalidateCalls, 1);
+      expect(pool.lease.releaseCalls, 0);
+      expect(operations, ['createRun']);
+      expect(taskController.runs, isEmpty);
+      expect(taskController.events, isEmpty);
+      expect(taskController.taskById(task.id)?.status, TaskStatus.inbox);
+
+      releaseOperation.complete();
+      await taskController.whenPersistenceQuiesced;
+      expect(taskController.runs, isEmpty);
+      expect(taskController.taskById(task.id)?.status, TaskStatus.inbox);
+    },
+  );
+
+  test(
+    'TaskRunner quarantines a stalled append without terminal rewrites',
+    () async {
+      final store = _MemoryTaskStore();
+      final ids = _DeterministicIds();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: ids.next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled event append',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final operationStarted = Completer<void>();
+      final releaseOperation = Completer<void>();
+      final operations = <String>[];
+      store.beforeOperation = (operation) async {
+        operations.add(operation);
+        if (operation != 'appendEvents') return;
+        if (!operationStarted.isCompleted) operationStarted.complete();
+        await releaseOperation.future;
+      };
+      final chat = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final pool = _TrackingTaskAgentPool(chat);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+      );
+
+      final running = runner.runTask(task.id);
+      await operationStarted.future;
+      await expectLater(
+        running.timeout(const Duration(seconds: 1)),
+        throwsA(isA<TaskPersistenceStalledException>()),
+      );
+
+      expect(pool.lease.invalidateCalls, 1);
+      expect(pool.lease.releaseCalls, 0);
+      expect(operations, ['createRun', 'appendEvents']);
+      expect(taskController.events, isEmpty);
+      expect(taskController.runs.single.status, TaskStatus.running);
+      expect(taskController.taskById(task.id)?.status, TaskStatus.running);
+
+      releaseOperation.complete();
+      await taskController.whenPersistenceQuiesced;
+      expect(taskController.events, isEmpty);
+      expect(taskController.runs.single.status, TaskStatus.running);
+      expect(taskController.taskById(task.id)?.status, TaskStatus.running);
+    },
+  );
+
+  test(
+    'TaskRunner consumes queued observer write failures after quarantine',
+    () async {
+      final store = _BlockingAssistantEventStore();
+      final ids = _DeterministicIds();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: ids.next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled observer event',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: _AssistantThenHangingPromptAgentClient(),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final pool = _TrackingTaskAgentPool(chat);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+      );
+      final uncaughtErrors = <Object>[];
+
+      await runZonedGuarded(() async {
+        final running = runner.runTask(task.id);
+        await store.assistantAppendStarted.future;
+        await expectLater(
+          running.timeout(const Duration(seconds: 1)),
+          throwsA(isA<TaskPersistenceStalledException>()),
+        );
+        store.releaseAssistantAppend();
+        await taskController.whenPersistenceQuiesced;
+        await Future<void>.delayed(Duration.zero);
+      }, (error, _) => uncaughtErrors.add(error));
+
+      expect(uncaughtErrors, isEmpty);
+      expect(pool.lease.invalidateCalls, 1);
+      expect(store.terminalWriteCalls, 0);
+      expect(
+        taskController.events.any(
+          (event) => event.text.contains('Task run failed:'),
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'TaskRunner propagates observer persistence faults during session setup',
+    () async {
+      final store = _BlockingAssistantEventStore();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled session observer event',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = _AssistantThenHangingSessionAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final pool = _TrackingTaskAgentPool(chat);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+        sessionSetupDeadline: const Duration(minutes: 5),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      final running = runner.runTask(task.id);
+      await fake.sessionSettingsStarted.future;
+      await store.assistantAppendStarted.future;
+      await expectLater(
+        running.timeout(const Duration(seconds: 1)),
+        throwsA(isA<TaskPersistenceStalledException>()),
+      );
+
+      expect(pool.lease.invalidateCalls, 1);
+      expect(pool.lease.releaseCalls, 0);
+      expect(store.terminalWriteCalls, 0);
+
+      fake.releaseSessionSettings();
+      store.releaseAssistantAppend();
+      await taskController.whenPersistenceQuiesced;
+      await Future<void>.delayed(Duration.zero);
+      expect(store.terminalWriteCalls, 0);
+    },
+  );
+
+  test(
+    'TaskRunner promptly propagates ordinary observer write errors',
+    () async {
+      final store = _FailingAssistantEventStore();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Failed observer write',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = _AssistantThenHangingPromptAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final pool = _TrackingTaskAgentPool(chat);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+        promptDeadline: const Duration(minutes: 30),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      final running = runner.runTask(task.id);
+      await fake.deltaEmitted.future;
+      final failed = await running.timeout(const Duration(seconds: 1));
+
+      expect(failed.status, TaskStatus.failed);
+      expect(failed.error, contains('assistant event write failed'));
+      expect(pool.lease.invalidateCalls, 1);
+      expect(pool.lease.releaseCalls, 0);
+      expect(
+        taskController.events.map((event) => event.text),
+        contains(contains('assistant event write failed')),
+      );
+    },
+  );
+
+  test('TaskRunner releases a direct lease if the task is deleted', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Deleted while acquiring',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final pool = _DelayedTaskAgentPool(chat);
+    final runner = TaskRunner(taskController: taskController, agentPool: pool);
+
+    final running = runner.runTask(task.id);
+    await pool.acquireStarted.future;
+    await taskController.deleteTask(task.id);
+    pool.releaseAcquisition();
+
+    await expectLater(running, throwsA(isA<StateError>()));
+    expect(pool.releaseCalls, 1);
+  });
+
   test('TaskRunner records failed prompt runs', () async {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
@@ -110,7 +508,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       clock: () => DateTime(2026, 7, 7, 9),
     );
 
@@ -126,6 +524,109 @@ void main() {
     );
     expect(taskController.events.last.text, contains('Task run failed'));
     expect(taskController.events.last.text, contains('boom'));
+  });
+
+  test(
+    'TaskRunner flushes the last assistant delta after a prompt error',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Delta before prompt error',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: _DeltaThenErrorPromptAgentClient(),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+
+      final result = await runner.runTask(task.id);
+
+      expect(result.status, TaskStatus.failed);
+      expect(
+        taskController.events
+            .where((event) => event.kind == TaskEventKind.assistant)
+            .single
+            .text,
+        'last delta before error ',
+      );
+    },
+  );
+
+  test('TaskRunner rejects a reused background session id', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Distinct session task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final fake = _ReusedSessionAgentClient();
+    final chat = ChatController(
+      client: fake,
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    await chat.newSession();
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+    );
+
+    final result = await runner.runTask(task.id);
+
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('distinct session'));
+    expect(fake.lastPrompt, isNull);
+  });
+
+  test('TaskRunner rejects a prompt that was not submitted', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Prompt submission task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: _ThrowingPromptAgentClient(),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+    );
+
+    final result = await runner.runTask(task.id);
+
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('prompt setup failed'));
+    expect(taskController.runs.single.status, TaskStatus.failed);
   });
 
   test('TaskRunner fails and cancels prompts after the deadline', () async {
@@ -153,7 +654,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       promptDeadline: const Duration(milliseconds: 50),
     );
 
@@ -162,11 +663,62 @@ void main() {
         .timeout(const Duration(seconds: 2));
 
     expect(result.status, TaskStatus.failed);
-    expect(result.error, contains('Task prompt exceeded'));
+    expect(result.error, contains('Task prompt timed out'));
     expect(taskController.runs.single.status, TaskStatus.failed);
     expect(fake.cancelled, isTrue);
     expect(chat.isStreaming, isFalse);
   });
+
+  test(
+    'TaskRunner retires a stalled agent after the prompt deadline',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Prompt cancellation never settles',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final clients = <FakeAgentClient>[];
+      final pool = LocalTaskAgentPool(
+        controllerFactory: (agentName) {
+          final client = clients.isEmpty
+              ? _NeverCancellingPromptAgentClient()
+              : FakeAgentClient();
+          clients.add(client);
+          return ChatController(
+            client: client,
+            cwd: '/workspace/default',
+            agentName: agentName,
+          );
+        },
+      );
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: pool,
+        promptDeadline: const Duration(milliseconds: 20),
+        promptCancellationTimeout: const Duration(milliseconds: 20),
+      );
+
+      final timedOut = await runner.runTask(task.id);
+      expect(timedOut.status, TaskStatus.failed);
+      expect(timedOut.error, contains('Task prompt timed out'));
+      expect(
+        (clients.first as _NeverCancellingPromptAgentClient).disposed,
+        isTrue,
+      );
+
+      await taskController.retryTask(task.id);
+      final retried = await runner.runTask(task.id);
+      expect(retried.status, TaskStatus.needsHumanReview);
+      expect(clients, hasLength(2));
+    },
+  );
 
   test('TaskRunner cancelActive stops and fails an active prompt', () async {
     final taskController = TaskInboxController(
@@ -181,7 +733,7 @@ void main() {
       workspacePath: '/workspace/app',
       agentName: 'Codex',
     );
-    final fake = _HangingPromptAgentClient();
+    final fake = _AssistantThenHangingPromptAgentClient();
     final chat = ChatController(
       client: fake,
       cwd: '/workspace/default',
@@ -190,18 +742,205 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       promptDeadline: const Duration(minutes: 5),
     );
 
     final running = runner.runTask(task.id);
-    await _waitUntil(() => chat.isStreaming);
+    await fake.deltaEmitted.future;
+    await Future<void>.delayed(Duration.zero);
     await runner.cancelActive();
     final result = await running.timeout(const Duration(seconds: 2));
 
     expect(fake.cancelled, isTrue);
     expect(result.status, TaskStatus.failed);
     expect(result.error, contains('cancelled'));
+    expect(
+      taskController.events
+          .where((event) => event.kind == TaskEventKind.assistant)
+          .single
+          .text,
+      'queued observer event before a never-ending prompt',
+    );
+  });
+
+  test(
+    'TaskRunner dispose waits for the active run buffer to finish',
+    () async {
+      final store = _BlockingAssistantEventStore();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(seconds: 1),
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Dispose with pending delta',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = _AssistantThenHangingPromptAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+      final running = runner.runTask(task.id);
+      await fake.deltaEmitted.future;
+      await Future<void>.delayed(Duration.zero);
+
+      var disposed = false;
+      final disposing = runner.dispose().then<void>((_) => disposed = true);
+      await store.assistantAppendStarted.future;
+      await Future<void>.delayed(Duration.zero);
+      expect(disposed, isFalse);
+
+      store.releaseAssistantAppend();
+      await disposing.timeout(const Duration(seconds: 1));
+      final result = await running.timeout(const Duration(seconds: 1));
+      expect(disposed, isTrue);
+      expect(result.status, TaskStatus.failed);
+      expect(
+        taskController.events
+            .where((event) => event.kind == TaskEventKind.assistant)
+            .single
+            .text,
+        'queued observer event before a never-ending prompt',
+      );
+    },
+  );
+
+  test(
+    'TaskRunner cancellation settles when agent cancellation stalls',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled cancellation task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = _NeverCancellingPromptAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        promptCancellationTimeout: const Duration(milliseconds: 20),
+      );
+
+      final running = runner.runTask(task.id);
+      await _waitUntil(() => chat.isStreaming);
+      await runner.cancelActive().timeout(const Duration(seconds: 1));
+      final result = await running.timeout(const Duration(seconds: 1));
+
+      expect(result.status, TaskStatus.failed);
+      expect(result.error, contains('cancelled'));
+      expect(chat.isStreaming, isFalse);
+    },
+  );
+
+  test(
+    'TaskRunner cancellation settles while session creation stalls',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Stalled session setup',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = _NeverCreatingSessionAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        sessionSetupDeadline: const Duration(minutes: 5),
+        promptCancellationTimeout: const Duration(milliseconds: 20),
+      );
+
+      final running = runner.runTask(task.id);
+      await fake.createSessionStarted.future;
+      await runner.cancelActive().timeout(const Duration(seconds: 1));
+      final result = await running.timeout(const Duration(seconds: 1));
+
+      expect(result.status, TaskStatus.failed);
+      expect(result.error, contains('cancelled'));
+      expect(fake.disposed, isTrue);
+    },
+  );
+
+  test('TaskRunner retires an agent after session setup times out', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Timed out session setup',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final clients = <FakeAgentClient>[];
+    final pool = LocalTaskAgentPool(
+      controllerFactory: (agentName) {
+        final client = clients.isEmpty
+            ? _NeverCreatingSessionAgentClient()
+            : FakeAgentClient();
+        clients.add(client);
+        return ChatController(
+          client: client,
+          cwd: '/workspace/default',
+          agentName: agentName,
+        );
+      },
+    );
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: pool,
+      sessionSetupDeadline: const Duration(milliseconds: 20),
+      promptCancellationTimeout: const Duration(milliseconds: 20),
+    );
+
+    final timedOut = await runner.runTask(task.id);
+    expect(timedOut.status, TaskStatus.failed);
+    expect(timedOut.error, contains('session setup timed out'));
+    expect(
+      (clients.first as _NeverCreatingSessionAgentClient).disposed,
+      isTrue,
+    );
+
+    await taskController.retryTask(task.id);
+    final retried = await runner.runTask(task.id);
+    expect(retried.status, TaskStatus.needsHumanReview);
+    expect(clients, hasLength(2));
   });
 
   test(
@@ -232,16 +971,16 @@ void main() {
       );
       addTearDown(chat.dispose);
       final skills = _BlockingSkillRepository();
+      addTearDown(skills.release);
       final runner = TaskRunner(
         taskController: taskController,
-        controllerForAgent: (_) => chat,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
         skillRepository: skills,
       );
 
       final running = runner.runTask(task.id);
       await skills.started.future;
       await runner.cancelActive();
-      skills.release();
       final result = await running.timeout(const Duration(seconds: 2));
 
       expect(result.status, TaskStatus.failed);
@@ -251,6 +990,86 @@ void main() {
       expect(fake.lastPrompt, isNull);
     },
   );
+
+  test('TaskRunner total deadline settles a stalled skill lookup', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Skill lookup deadline',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      skillIds: const ['slow-skill'],
+    );
+    final skills = _BlockingSkillRepository();
+    addTearDown(skills.release);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(
+        controllerFactory: (agentName) => ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace/default',
+          agentName: agentName,
+        ),
+      ),
+      skillRepository: skills,
+      taskDeadline: const Duration(milliseconds: 20),
+      promptCancellationTimeout: const Duration(milliseconds: 20),
+    );
+
+    final result = await runner
+        .runTask(task.id)
+        .timeout(const Duration(seconds: 1));
+
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('Task run timed out'));
+    expect(taskController.runs, hasLength(1));
+    expect(taskController.runs.single.status, TaskStatus.failed);
+    expect(
+      taskController.events.map((event) => event.text),
+      contains(contains('Task run timed out')),
+    );
+  });
+
+  test('TaskRunner cancellation settles during artifact collection', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Artifact cancellation',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final collector = _BlockingArtifactCollector();
+    addTearDown(collector.release);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(
+        controllerFactory: (agentName) => ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace/default',
+          agentName: agentName,
+        ),
+      ),
+      artifactCollector: collector,
+    );
+
+    final running = runner.runTask(task.id);
+    await collector.started.future;
+    await runner.cancelActive();
+    final result = await running.timeout(const Duration(seconds: 1));
+
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('cancelled'));
+  });
 
   test('TaskRunner records assistant tool and status events', () async {
     final store = _MemoryTaskStore();
@@ -295,7 +1114,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
     );
 
     await runner.runTask(task.id);
@@ -324,6 +1143,165 @@ void main() {
     expect(statuses, contains('Assistant turn completed.'));
   });
 
+  test(
+    'TaskRunner batches ten thousand assistant deltas into one event',
+    () async {
+      final store = _CountingAgentEventStore();
+      final taskController = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Large streaming task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final promptEvents = <AgentEvent>[
+        ...List<AgentEvent>.generate(
+          10000,
+          (_) =>
+              const AgentEvent(type: AgentEventType.agentTextDelta, text: 'x'),
+        ),
+        const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+      ];
+      final chat = ChatController(
+        client: FakeAgentClient(promptEvents: promptEvents),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+
+      await runner.runTask(task.id);
+
+      final assistantEvents = taskController.events
+          .where((event) => event.kind == TaskEventKind.assistant)
+          .toList(growable: false);
+      expect(assistantEvents, hasLength(1));
+      expect(assistantEvents.single.text.length, 10000);
+      expect(store.agentEventAppendCalls, lessThanOrEqualTo(2));
+    },
+  );
+
+  test('TaskRunner preserves assistant whitespace across boundaries', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Whitespace task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: FakeAgentClient(
+        promptEvents: const <AgentEvent>[
+          AgentEvent(type: AgentEventType.agentTextDelta, text: ' leading '),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: '   '),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: 'trailing '),
+          AgentEvent(type: AgentEventType.toolCall, text: 'tool boundary'),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: '  '),
+          AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+        ],
+      ),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+    );
+
+    await runner.runTask(task.id);
+
+    final streamed = taskController.events
+        .where(
+          (event) =>
+              event.kind == TaskEventKind.assistant ||
+              event.kind == TaskEventKind.tool ||
+              event.kind == TaskEventKind.status,
+        )
+        .toList(growable: false);
+    expect(
+      streamed.map((event) => '${event.kind.name}:${event.text}'),
+      <String>[
+        'assistant: leading    trailing ',
+        'tool:tool boundary',
+        'assistant:  ',
+        'status:Assistant turn completed.',
+      ],
+    );
+  });
+
+  test(
+    'TaskRunner flushes initial assistant text before system linkage',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Initial event ordering',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: FakeAgentClient(
+          createSessionEvents: const <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: 'initial text ',
+            ),
+          ],
+          promptEvents: const <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: 'prompt text',
+            ),
+            AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+          ],
+        ),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+
+      await runner.runTask(task.id);
+
+      final ordered = taskController.events
+          .where(
+            (event) =>
+                event.text == 'initial text ' ||
+                event.text.startsWith('Linked ACP session') ||
+                event.text == 'prompt text',
+          )
+          .map((event) => event.text)
+          .toList(growable: false);
+      expect(ordered, <String>[
+        'initial text ',
+        'Linked ACP session fake-session-1.',
+        'prompt text',
+      ]);
+    },
+  );
+
   test('TaskRunner stores collected artifacts before review', () async {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
@@ -348,7 +1326,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       artifactCollector: _FakeArtifactCollector(),
     );
 
@@ -400,7 +1378,7 @@ void main() {
       addTearDown(chat.dispose);
       final runner = TaskRunner(
         taskController: taskController,
-        controllerForAgent: (_) => chat,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       );
 
       final pending = runner.runTask(task.id);
@@ -489,7 +1467,7 @@ void main() {
       chat.setToolCallExecutionPolicy(AcpToolCallExecutionPolicy.fullAccess);
       final runner = TaskRunner(
         taskController: taskController,
-        controllerForAgent: (_) => chat,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       );
 
       final pending = runner.runTask(task.id);
@@ -564,7 +1542,7 @@ void main() {
     );
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => null,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => null),
       clock: () => DateTime(2026, 7, 7, 9),
     );
 
@@ -572,9 +1550,12 @@ void main() {
 
     expect(result.status, TaskStatus.failed);
     expect(result.sessionId, isNull);
-    expect(result.error, contains('No ACP controller'));
+    expect(result.error, contains('No background ACP controller'));
     expect(taskController.runs.single.status, TaskStatus.failed);
-    expect(taskController.events.last.text, contains('No ACP controller'));
+    expect(
+      taskController.events.last.text,
+      contains('No background ACP controller'),
+    );
   });
 
   test('TaskRunner injects attached skill markdown into prompt', () async {
@@ -603,7 +1584,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       skillRepository: _MemorySkillRepository(
         skills: const {
           'reviewer': LocalSkill(
@@ -686,7 +1667,7 @@ void main() {
     addTearDown(chat.dispose);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: (_) => chat,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
       skillRepository: _MemorySkillRepository(),
     );
 
@@ -730,6 +1711,25 @@ class _FakeArtifactCollector extends ArtifactCollector {
   }
 }
 
+class _BlockingArtifactCollector extends ArtifactCollector {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _released = Completer<void>();
+
+  @override
+  Future<List<ArtifactRecord>> collect(
+    TaskRecord task,
+    TaskRunRecord run,
+  ) async {
+    if (!started.isCompleted) started.complete();
+    await _released.future;
+    return const <ArtifactRecord>[];
+  }
+
+  void release() {
+    if (!_released.isCompleted) _released.complete();
+  }
+}
+
 class _MemorySkillRepository implements LocalSkillRepository {
   _MemorySkillRepository({this.skills = const <String, LocalSkill>{}});
 
@@ -763,6 +1763,126 @@ class _BlockingSkillRepository implements LocalSkillRepository {
   }
 }
 
+class _DelayedTaskAgentPool implements TaskAgentPool {
+  _DelayedTaskAgentPool(this.controller);
+
+  final ChatController controller;
+  final Completer<void> acquireStarted = Completer<void>();
+  final Completer<void> _acquireRelease = Completer<void>();
+  int releaseCalls = 0;
+
+  @override
+  Future<TaskAgentLease?> tryAcquire(String agentName) async {
+    if (!acquireStarted.isCompleted) acquireStarted.complete();
+    await _acquireRelease.future;
+    return _TestTaskAgentLease(
+      agentName: agentName,
+      controller: controller,
+      onRelease: () => releaseCalls += 1,
+    );
+  }
+
+  void releaseAcquisition() {
+    if (!_acquireRelease.isCompleted) _acquireRelease.complete();
+  }
+
+  @override
+  Future<LocalRuntimeStatus> probeAgent(String agentName) async {
+    return LocalRuntimeStatus.available(
+      agentName: agentName,
+      checkedAt: DateTime(2026, 7, 10, 12),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _TrackingTaskAgentPool implements TaskAgentPool {
+  _TrackingTaskAgentPool(ChatController controller)
+    : lease = _TrackingTaskAgentLease(controller);
+
+  final _TrackingTaskAgentLease lease;
+  bool _acquired = false;
+
+  @override
+  Future<TaskAgentLease?> tryAcquire(String agentName) async {
+    if (_acquired) return null;
+    _acquired = true;
+    return lease;
+  }
+
+  @override
+  Future<LocalRuntimeStatus> probeAgent(String agentName) async {
+    return LocalRuntimeStatus.available(
+      agentName: agentName,
+      checkedAt: DateTime(2026, 7, 10, 12),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _TrackingTaskAgentLease implements TaskAgentLease {
+  _TrackingTaskAgentLease(this.controller);
+
+  @override
+  String get agentName => 'Codex';
+
+  @override
+  final ChatController controller;
+
+  int invalidateCalls = 0;
+  int releaseCalls = 0;
+  bool _finished = false;
+
+  @override
+  Future<void> invalidate({
+    Duration cancellationTimeout = ChatController.defaultCleanupTimeout,
+  }) async {
+    if (_finished) return;
+    _finished = true;
+    invalidateCalls += 1;
+  }
+
+  @override
+  Future<void> release() async {
+    if (_finished) return;
+    _finished = true;
+    releaseCalls += 1;
+  }
+}
+
+class _TestTaskAgentLease implements TaskAgentLease {
+  _TestTaskAgentLease({
+    required this.agentName,
+    required this.controller,
+    required this.onRelease,
+  });
+
+  @override
+  final String agentName;
+
+  @override
+  final ChatController controller;
+
+  final void Function() onRelease;
+  bool _released = false;
+
+  @override
+  Future<void> release() async {
+    if (_released) return;
+    _released = true;
+    onRelease();
+  }
+
+  @override
+  Future<void> invalidate({
+    Duration cancellationTimeout = ChatController.defaultCleanupTimeout,
+  }) => release();
+}
+
 class _HangingPromptAgentClient extends FakeAgentClient {
   final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
 
@@ -783,6 +1903,163 @@ class _HangingPromptAgentClient extends FakeAgentClient {
   }
 }
 
+class _AssistantThenHangingPromptAgentClient extends FakeAgentClient {
+  final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
+  final Completer<void> deltaEmitted = Completer<void>();
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    scheduleMicrotask(() {
+      if (_events.isClosed) return;
+      _events.add(
+        const AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text: 'queued observer event before a never-ending prompt',
+        ),
+      );
+      if (!deltaEmitted.isCompleted) deltaEmitted.complete();
+    });
+    return _events.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _events.close();
+    await super.dispose();
+  }
+}
+
+class _AssistantThenHangingSessionAgentClient extends FakeAgentClient {
+  _AssistantThenHangingSessionAgentClient()
+    : super(
+        createSessionEvents: const <AgentEvent>[
+          AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'queued during session setup',
+          ),
+        ],
+      );
+
+  final Completer<void> sessionSettingsStarted = Completer<void>();
+  final Completer<AcpSessionSettings> _sessionSettings =
+      Completer<AcpSessionSettings>();
+
+  @override
+  Future<AcpSessionSettings> sessionSettings(String sessionId) {
+    if (!sessionSettingsStarted.isCompleted) {
+      sessionSettingsStarted.complete();
+    }
+    return _sessionSettings.future;
+  }
+
+  void releaseSessionSettings() {
+    if (!_sessionSettings.isCompleted) {
+      _sessionSettings.complete(const AcpSessionSettings());
+    }
+  }
+}
+
+class _DeltaThenErrorPromptAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    lastPrompt = prompt;
+    yield const AgentEvent(
+      type: AgentEventType.agentTextDelta,
+      text: 'last delta before error ',
+    );
+    throw StateError('prompt stream failed');
+  }
+}
+
+class _NeverCancellingPromptAgentClient extends FakeAgentClient {
+  final Completer<void> _cancelRelease = Completer<void>();
+  final Completer<void> _subscriptionRelease = Completer<void>();
+  late final StreamController<AgentEvent> _events =
+      StreamController<AgentEvent>(onCancel: () => _subscriptionRelease.future);
+  bool disposed = false;
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    return _events.stream;
+  }
+
+  @override
+  Future<void> cancel() => _cancelRelease.future;
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    if (!_cancelRelease.isCompleted) _cancelRelease.complete();
+    if (!_subscriptionRelease.isCompleted) _subscriptionRelease.complete();
+    await _events.close();
+    await super.dispose();
+  }
+}
+
+class _NeverCreatingSessionAgentClient extends FakeAgentClient {
+  final Completer<void> createSessionStarted = Completer<void>();
+  final Completer<AgentSession> _session = Completer<AgentSession>();
+  bool disposed = false;
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    if (!createSessionStarted.isCompleted) createSessionStarted.complete();
+    return _session.future;
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    if (!_session.isCompleted) {
+      _session.completeError(StateError('session setup disposed'));
+    }
+    await super.dispose();
+  }
+}
+
+class _ReusedSessionAgentClient extends FakeAgentClient {
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    return AgentSession(
+      id: 'reused-session',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 10, 12),
+      additionalDirectories: additionalDirectories,
+    );
+  }
+}
+
+class _ThrowingPromptAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    throw StateError('prompt setup failed');
+  }
+}
+
 Future<void> _waitUntil(bool Function() condition, {int attempts = 40}) async {
   for (var attempt = 0; attempt < attempts; attempt += 1) {
     if (condition()) return;
@@ -792,3 +2069,77 @@ Future<void> _waitUntil(bool Function() condition, {int attempts = 40}) async {
 }
 
 class _MemoryTaskStore extends MemoryTaskRepository {}
+
+class _CountingAgentEventStore extends MemoryTaskRepository {
+  int agentEventAppendCalls = 0;
+
+  @override
+  Future<void> appendEvents(
+    List<TaskEventRecord> events, {
+    required DateTime updatedAt,
+  }) async {
+    if (events.any(
+      (event) =>
+          event.kind == TaskEventKind.assistant ||
+          event.kind == TaskEventKind.tool ||
+          event.kind == TaskEventKind.status ||
+          event.kind == TaskEventKind.error ||
+          event.kind == TaskEventKind.user,
+    )) {
+      agentEventAppendCalls += 1;
+    }
+    await super.appendEvents(events, updatedAt: updatedAt);
+  }
+}
+
+class _BlockingAssistantEventStore extends MemoryTaskRepository {
+  final Completer<void> assistantAppendStarted = Completer<void>();
+  final Completer<void> _assistantAppendRelease = Completer<void>();
+  int terminalWriteCalls = 0;
+
+  @override
+  Future<TaskRunRecord> updateRun(
+    TaskRunRecord run, {
+    required TaskRunRecord expected,
+    required DateTime updatedAt,
+  }) {
+    if (run.status == TaskStatus.failed) terminalWriteCalls += 1;
+    return super.updateRun(run, expected: expected, updatedAt: updatedAt);
+  }
+
+  @override
+  Future<void> appendEvents(
+    List<TaskEventRecord> events, {
+    required DateTime updatedAt,
+  }) async {
+    if (events.any((event) => event.text.startsWith('Task run failed:'))) {
+      terminalWriteCalls += 1;
+    }
+    if (events.any((event) => event.kind == TaskEventKind.assistant)) {
+      if (!assistantAppendStarted.isCompleted) {
+        assistantAppendStarted.complete();
+      }
+      await _assistantAppendRelease.future;
+    }
+    await super.appendEvents(events, updatedAt: updatedAt);
+  }
+
+  void releaseAssistantAppend() {
+    if (!_assistantAppendRelease.isCompleted) {
+      _assistantAppendRelease.complete();
+    }
+  }
+}
+
+class _FailingAssistantEventStore extends MemoryTaskRepository {
+  @override
+  Future<void> appendEvents(
+    List<TaskEventRecord> events, {
+    required DateTime updatedAt,
+  }) {
+    if (events.any((event) => event.kind == TaskEventKind.assistant)) {
+      throw StateError('assistant event write failed');
+    }
+    return super.appendEvents(events, updatedAt: updatedAt);
+  }
+}

@@ -69,7 +69,7 @@ void main() {
     );
     final worker = _RecordingTaskWorker(controller);
     final scheduler = TaskScheduler(taskController: controller, worker: worker);
-    addTearDown(scheduler.dispose);
+    addTearDown(scheduler.shutdown);
 
     final queued = await scheduler.enqueueTask(task.id);
 
@@ -667,6 +667,72 @@ void main() {
     expect(controller.events, isEmpty);
   });
 
+  test(
+    'TaskScheduler acquires a worker lease before claiming a task',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final probeStarted = Completer<void>();
+      final releaseProbe = Completer<void>();
+      final registry = LocalRuntimeRegistry(
+        clock: () => now,
+        probe: (agentName) async {
+          if (!probeStarted.isCompleted) {
+            probeStarted.complete();
+            await releaseProbe.future;
+          }
+          return LocalRuntimeStatus.available(
+            agentName: agentName,
+            checkedAt: now,
+          );
+        },
+      );
+      final worker = _ReservableRecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        runtimeRegistry: registry,
+      );
+      addTearDown(scheduler.shutdown);
+      addTearDown(() => worker.complete('task-1'));
+      final revisionBeforeStart = await store.revision();
+
+      await scheduler.start();
+      await probeStarted.future;
+      worker.acceptingLeases = false;
+      releaseProbe.complete();
+      await _waitUntil(() => worker.acquireCalls > 0);
+
+      expect(controller.tasks.single.status, TaskStatus.queued);
+      expect(controller.runs, isEmpty);
+      expect(controller.events, isEmpty);
+      expect(worker.startedTaskIds, isEmpty);
+      expect(await store.revision(), revisionBeforeStart);
+
+      worker.acceptingLeases = true;
+      registry.setStatus(
+        LocalRuntimeStatus.available(agentName: 'Codex', checkedAt: now),
+      );
+      await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+      expect(controller.runs, hasLength(1));
+      expect(worker.startedTaskIds, ['task-1']);
+      expect(worker.acquireCalls, 2);
+      worker.complete('task-1');
+    },
+  );
+
   test('TaskScheduler lets available agents pass a busy task', () async {
     final now = DateTime(2026, 7, 8, 9);
     final controller = TaskInboxController(
@@ -737,7 +803,7 @@ void main() {
         idGenerator: _DeterministicIds().next,
       );
       addTearDown(controller.dispose);
-      final worker = _RecordingTaskWorker(controller);
+      final worker = _ReservableRecordingTaskWorker(controller);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
@@ -749,14 +815,45 @@ void main() {
 
       expect(worker.startedTaskIds, ['task-queued']);
       expect(store.claimCalls, 2);
+      expect(worker.acquireCalls, 2);
+      expect(worker.releaseCalls, 1);
       expect(controller.taskById('task-queued')!.status, TaskStatus.running);
       expect(
         controller.runs.singleWhere((run) => run.taskId == 'task-queued').id,
         'run-2',
       );
       worker.complete('task-queued');
+      await _waitUntil(() => worker.releaseCalls == 2);
     },
   );
+
+  test('TaskScheduler releases a worker lease after worker failure', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final worker = _ReservableRecordingTaskWorker(controller)
+      ..runError = StateError('reserved worker failed');
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
+    addTearDown(scheduler.shutdown);
+
+    await scheduler.start();
+    await _waitUntil(() => controller.tasks.single.status == TaskStatus.failed);
+
+    expect(controller.runs.single.status, TaskStatus.failed);
+    expect(controller.tasks.single.error, contains('reserved worker failed'));
+    expect(worker.acquireCalls, 1);
+    expect(worker.releaseCalls, 1);
+    expect(scheduler.activeCount, 0);
+  });
 
   test(
     'TaskScheduler retries refresh after another scheduler wins the claim',
@@ -774,7 +871,7 @@ void main() {
         idGenerator: _DeterministicIds().next,
       );
       addTearDown(controller.dispose);
-      final worker = _RecordingTaskWorker(controller);
+      final worker = _ReservableRecordingTaskWorker(controller);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
@@ -790,6 +887,8 @@ void main() {
       expect(store.claimCalls, 1);
       expect(store.remainingLoadFailures, 0);
       expect(worker.startedTaskIds, isEmpty);
+      expect(worker.acquireCalls, 1);
+      expect(worker.releaseCalls, 1);
       expect(controller.tasks.single.status, TaskStatus.dispatched);
       expect(controller.runs.single.id, 'run-external');
       expect(controller.events.single.id, 'event-external');
@@ -870,13 +969,13 @@ void main() {
           reason: 'Run authentication first.',
         ),
       );
-    final worker = _RecordingTaskWorker(controller);
+    final worker = _ReservableRecordingTaskWorker(controller);
     final scheduler = TaskScheduler(
       taskController: controller,
       worker: worker,
       runtimeRegistry: runtimeRegistry,
     );
-    addTearDown(scheduler.dispose);
+    addTearDown(scheduler.shutdown);
 
     await scheduler.start();
     await _waitUntil(
@@ -884,6 +983,7 @@ void main() {
     );
 
     expect(worker.startedTaskIds, isEmpty);
+    expect(worker.acquireCalls, 0);
     expect(controller.tasks.single.status, TaskStatus.blockedOnUserInput);
     expect(
       controller.tasks.single.summary,
@@ -902,11 +1002,134 @@ void main() {
     await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
 
     expect(worker.startedTaskIds, ['task-1']);
+    expect(worker.acquireCalls, 1);
     expect(controller.runs, hasLength(2));
     expect(controller.tasks.single.metadata['failure_reason'], isNull);
     expect(controller.tasks.single.metadata['runtime_availability'], isNull);
     worker.complete('task-1');
   });
+
+  test(
+    'TaskScheduler resets an auth-blocked agent on explicit enqueue',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [
+              _task(
+                id: 'task-1',
+                createdAt: now,
+                status: TaskStatus.blockedOnUserInput,
+                metadata: const <String, Object?>{
+                  'failure_reason': 'authRequired',
+                  'runtime_availability': 'authRequired',
+                  'unavailable_reason': 'Sign in first.',
+                  'last_failure_message': 'Authentication required.',
+                  'next_retry_at': '2026-07-08T09:05:00.000',
+                  'keep': 'value',
+                },
+              ),
+            ],
+          ),
+        ),
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final registry = LocalRuntimeRegistry(
+        probe: (agentName) => LocalRuntimeStatus.authRequired(
+          agentName: agentName,
+          checkedAt: now,
+        ),
+      );
+      final worker = _ReservableRecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        runtimeRegistry: registry,
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start();
+      scheduler.stop();
+      await scheduler.enqueueTask('task-1');
+
+      expect(worker.resetAgentNames, ['Codex']);
+      expect(controller.tasks.single.status, TaskStatus.queued);
+      expect(controller.tasks.single.metadata['failure_reason'], isNull);
+      expect(controller.tasks.single.metadata['runtime_availability'], isNull);
+      expect(controller.tasks.single.metadata['unavailable_reason'], isNull);
+      expect(controller.tasks.single.metadata['last_failure_message'], isNull);
+      expect(controller.tasks.single.metadata['next_retry_at'], isNull);
+      expect(controller.tasks.single.metadata['keep'], 'value');
+    },
+  );
+
+  test(
+    'TaskScheduler recovers authentication discovered by the worker',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [_task(id: 'task-1', createdAt: now)],
+          ),
+        ),
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      var authenticationRequired = false;
+      final registry = LocalRuntimeRegistry(
+        clock: () => now,
+        probe: (agentName) => authenticationRequired
+            ? LocalRuntimeStatus.authRequired(
+                agentName: agentName,
+                checkedAt: now,
+              )
+            : LocalRuntimeStatus.available(
+                agentName: agentName,
+                checkedAt: now,
+              ),
+      );
+      final worker = _AuthFailOnceTaskWorker(
+        controller,
+        onAuthenticationRequired: () => authenticationRequired = true,
+      );
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        runtimeRegistry: registry,
+      );
+      addTearDown(scheduler.shutdown);
+      addTearDown(() => worker.complete('task-1'));
+
+      await scheduler.start();
+      await _waitUntil(
+        () => controller.tasks.single.status == TaskStatus.blockedOnUserInput,
+      );
+
+      expect(controller.runs, hasLength(1));
+      expect(controller.runs.single.status, TaskStatus.failed);
+      expect(
+        controller.tasks.single.metadata['failure_reason'],
+        'authRequired',
+      );
+
+      authenticationRequired = false;
+      registry.setStatus(
+        LocalRuntimeStatus.available(agentName: 'Codex', checkedAt: now),
+      );
+      await _waitUntil(() => worker.startedTaskIds.length == 2);
+
+      expect(controller.runs, hasLength(2));
+      expect(controller.tasks.single.metadata['failure_reason'], isNull);
+      worker.complete('task-1');
+    },
+  );
 
   test('TaskScheduler only requeues the authenticated agent tasks', () async {
     final now = DateTime(2026, 7, 8, 9);
@@ -1374,10 +1597,8 @@ void main() {
       idGenerator: _DeterministicIds().next,
     );
     addTearDown(controller.dispose);
-    final scheduler = TaskScheduler(
-      taskController: controller,
-      worker: _RecordingTaskWorker(controller),
-    );
+    final worker = _ReservableRecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
 
     await scheduler.start();
     await store.saveStarted.future;
@@ -1390,7 +1611,252 @@ void main() {
     await shutdown;
     expect(shutdownFinished, isTrue);
     expect(scheduler.activeCount, 0);
+    expect(worker.lifecycle, ['release', 'dispose']);
   });
+
+  test(
+    'TaskScheduler stops dispatch and shuts down after stalled revision',
+    () async {
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [
+            _task(
+              id: 'task-1',
+              createdAt: DateTime(2026, 7, 8, 9),
+              status: TaskStatus.blockedOnUserInput,
+              metadata: const <String, Object?>{
+                'failure_reason': 'authRequired',
+              },
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final revisionStarted = Completer<void>();
+      final releaseRevision = Completer<void>();
+      var revisionCalls = 0;
+      store.beforeOperation = (operation) async {
+        if (operation != 'revision') return;
+        revisionCalls += 1;
+        if (!revisionStarted.isCompleted) revisionStarted.complete();
+        await releaseRevision.future;
+      };
+      final worker = _ReservableRecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+      );
+
+      await scheduler.start();
+      await revisionStarted.future;
+      await _waitUntil(() => scheduler.persistenceFault != null);
+
+      expect(scheduler.isStarted, isFalse);
+      await expectLater(
+        scheduler.enqueueTask('task-1'),
+        throwsA(isA<TaskPersistenceStalledException>()),
+      );
+      await expectLater(
+        scheduler.authenticateAgent('Codex', 'login'),
+        throwsA(isA<TaskPersistenceStalledException>()),
+      );
+      expect(worker.resetAgentNames, isEmpty);
+      expect(worker.authenticateCalls, 0);
+      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+
+      expect(
+        scheduler.persistenceFault,
+        isA<TaskPersistenceStalledException>(),
+      );
+      expect(scheduler.activeCount, 0);
+      expect(worker.acquireCalls, 0);
+      expect(revisionCalls, 1);
+
+      releaseRevision.complete();
+      await controller.whenPersistenceQuiesced;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(revisionCalls, 1);
+    },
+  );
+
+  test(
+    'TaskScheduler releases lease and workspace gate after stalled claim',
+    () async {
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+      final claimStarted = Completer<void>();
+      final releaseClaim = Completer<void>();
+      var claimCalls = 0;
+      store.beforeOperation = (operation) async {
+        if (operation != 'claimTask') return;
+        claimCalls += 1;
+        if (!claimStarted.isCompleted) claimStarted.complete();
+        await releaseClaim.future;
+      };
+      final gate = WorkspaceExecutionGate();
+      final worker = _ReservableRecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        workspaceGate: gate,
+      );
+
+      await scheduler.start();
+      await claimStarted.future;
+      expect(gate.ownerFor('/workspace/app'), 'task-1');
+      await _waitUntil(() => scheduler.persistenceFault != null);
+      await _waitUntil(
+        () =>
+            scheduler.activeCount == 0 &&
+            worker.releaseCalls == 1 &&
+            !gate.isLocked('/workspace/app'),
+      );
+
+      expect(
+        scheduler.persistenceFault,
+        isA<TaskPersistenceStalledException>(),
+      );
+      expect(scheduler.activeCount, 0);
+      expect(gate.isLocked('/workspace/app'), isFalse);
+      expect(worker.acquireCalls, 1);
+      expect(worker.releaseCalls, 1);
+      expect(worker.lifecycle, ['release']);
+      expect(claimCalls, 1);
+      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      expect(worker.lifecycle, ['release', 'dispose']);
+
+      releaseClaim.complete();
+      await controller.whenPersistenceQuiesced;
+      expect(controller.runs, isEmpty);
+      expect(controller.taskById('task-1')?.status, TaskStatus.queued);
+    },
+  );
+
+  test(
+    'persistence fault cancels other active runs and releases all capacity',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final store = _StallTaskAUpdateStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(id: 'task-a', createdAt: now, workspacePath: '/workspace/a'),
+            _task(id: 'task-b', createdAt: now, workspacePath: '/workspace/b'),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      final worker = _ConcurrentFaultWorker(controller);
+      final gate = WorkspaceExecutionGate();
+      final faults = <TaskPersistenceStalledException>[];
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        workspaceGate: gate,
+        maxConcurrentTasks: 2,
+        onPersistenceFault: faults.add,
+      );
+
+      await scheduler.start();
+      await worker.bothRunsStarted.future;
+      await store.updateStarted.future;
+      await _waitUntil(() => scheduler.persistenceFault != null);
+      await _waitUntil(
+        () =>
+            scheduler.activeCount == 0 &&
+            worker.releaseCalls == 2 &&
+            !gate.isLocked('/workspace/a') &&
+            !gate.isLocked('/workspace/b'),
+      );
+
+      expect(faults, hasLength(1));
+      expect(worker.cancelCalls, 1);
+      expect(worker.releaseCalls, 2);
+      expect(scheduler.activeCount, 0);
+      expect(gate.isLocked('/workspace/a'), isFalse);
+      expect(gate.isLocked('/workspace/b'), isFalse);
+      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+
+      store.releaseUpdate();
+      await controller.whenPersistenceQuiesced;
+    },
+  );
+
+  test(
+    'externally observed refresh fault cancels an active scheduler run',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(id: 'task-b', createdAt: now, workspacePath: '/workspace/b'),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+        persistenceWatchdog: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+      final worker = _ConcurrentFaultWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+      );
+      await scheduler.start();
+      await worker.firstRunStarted.future;
+      final revisionStarted = Completer<void>();
+      final releaseRevision = Completer<void>();
+      store.beforeOperation = (operation) async {
+        if (operation != 'revision') return;
+        if (!revisionStarted.isCompleted) revisionStarted.complete();
+        await releaseRevision.future;
+      };
+
+      final refresh = controller.refreshIfChanged();
+      await revisionStarted.future;
+      try {
+        await refresh;
+        fail('Refresh should have entered persistence quarantine.');
+      } on TaskPersistenceStalledException catch (error) {
+        scheduler.handlePersistenceFault(error);
+      }
+      await _waitUntil(
+        () => scheduler.activeCount == 0 && worker.releaseCalls == 1,
+      );
+
+      expect(worker.cancelCalls, 1);
+      expect(scheduler.persistenceFault, isNotNull);
+      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      releaseRevision.complete();
+      await controller.whenPersistenceQuiesced;
+    },
+  );
 
   test('TaskScheduler can recover without dispatching queued work', () async {
     final controller = TaskInboxController(
@@ -1469,6 +1935,100 @@ class _RecordingTaskWorker implements TaskWorker {
   }
 }
 
+class _ReservableRecordingTaskWorker
+    implements
+        ReservableTaskWorker,
+        CancellableTaskWorker,
+        DisposableTaskWorker,
+        ResettableTaskWorker,
+        AuthenticatableTaskWorker {
+  _ReservableRecordingTaskWorker(this.controller);
+
+  final TaskInboxController controller;
+  final List<String> startedTaskIds = <String>[];
+  final Map<String, Completer<void>> _completions = <String, Completer<void>>{};
+  final List<String> lifecycle = <String>[];
+  final List<String> resetAgentNames = <String>[];
+  bool acceptingLeases = true;
+  bool _leased = false;
+  Object? runError;
+  int acquireCalls = 0;
+  int releaseCalls = 0;
+  int authenticateCalls = 0;
+
+  @override
+  Future<void> cancelActive() async {}
+
+  @override
+  Future<void> dispose() async {
+    lifecycle.add('dispose');
+  }
+
+  @override
+  Future<void> resetAgent(String agentName) async {
+    resetAgentNames.add(agentName);
+  }
+
+  @override
+  Future<bool> authenticateAgent(String agentName, String methodId) async {
+    authenticateCalls += 1;
+    return true;
+  }
+
+  @override
+  Future<TaskWorkerLease?> tryAcquire(TaskRecord task) async {
+    acquireCalls += 1;
+    if (!acceptingLeases || _leased) return null;
+    _leased = true;
+    return _RecordingWorkerLease(this);
+  }
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) {
+    throw StateError('Scheduler must use the reserved worker lease.');
+  }
+
+  Future<TaskRecord> runLeased(TaskRecord task) async {
+    startedTaskIds.add(task.id);
+    final error = runError;
+    if (error != null) throw error;
+    final completion = Completer<void>();
+    _completions[task.id] = completion;
+    await controller.updateTaskStatus(task.id, TaskStatus.running);
+    await completion.future;
+    return controller.updateTaskStatus(task.id, TaskStatus.needsHumanReview);
+  }
+
+  void complete(String taskId) {
+    final completion = _completions[taskId];
+    if (completion == null || completion.isCompleted) return;
+    completion.complete();
+  }
+
+  void release() {
+    _leased = false;
+    releaseCalls += 1;
+    lifecycle.add('release');
+  }
+}
+
+class _RecordingWorkerLease implements TaskWorkerLease {
+  _RecordingWorkerLease(this.worker);
+
+  final _ReservableRecordingTaskWorker worker;
+  bool _released = false;
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) => worker.runLeased(task);
+
+  @override
+  Future<void> release() async {
+    if (_released) return;
+    _released = true;
+    worker.release();
+  }
+}
+
 class _FailOnceTaskWorker implements TaskWorker {
   _FailOnceTaskWorker(this.controller);
 
@@ -1504,6 +2064,51 @@ class _FailOnceTaskWorker implements TaskWorker {
       status: TaskStatus.needsHumanReview,
       endedAt: DateTime(2026, 7, 8, 10, 1),
     );
+    return controller.updateTaskStatus(task.id, TaskStatus.needsHumanReview);
+  }
+
+  void complete(String taskId) {
+    final completion = _completions[taskId];
+    if (completion == null || completion.isCompleted) return;
+    completion.complete();
+  }
+}
+
+class _AuthFailOnceTaskWorker implements TaskWorker {
+  _AuthFailOnceTaskWorker(
+    this.controller, {
+    required this.onAuthenticationRequired,
+  });
+
+  final TaskInboxController controller;
+  final void Function() onAuthenticationRequired;
+  final List<String> startedTaskIds = <String>[];
+  final Map<String, Completer<void>> _completions = <String, Completer<void>>{};
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) async {
+    startedTaskIds.add(task.id);
+    final runId = task.currentRunId!;
+    if (startedTaskIds.length == 1) {
+      onAuthenticationRequired();
+      await controller.updateRun(
+        runId,
+        status: TaskStatus.failed,
+        endedAt: DateTime(2026, 7, 8, 10),
+        error: 'authRequired: login required',
+      );
+      return controller.updateTask(
+        task.id,
+        status: TaskStatus.failed,
+        error: 'authRequired: login required',
+      );
+    }
+
+    final completion = Completer<void>();
+    _completions[task.id] = completion;
+    await controller.updateRun(runId, status: TaskStatus.running);
+    await controller.updateTaskStatus(task.id, TaskStatus.running);
+    await completion.future;
     return controller.updateTaskStatus(task.id, TaskStatus.needsHumanReview);
   }
 
@@ -1585,6 +2190,103 @@ class _BlockingSaveTaskStore extends MemoryTaskRepository {
   }
 }
 
+class _StallTaskAUpdateStore extends MemoryTaskRepository {
+  _StallTaskAUpdateStore(super.snapshot);
+
+  final Completer<void> updateStarted = Completer<void>();
+  final Completer<void> _updateRelease = Completer<void>();
+
+  @override
+  Future<TaskRecord> updateTask(
+    TaskRecord task, {
+    required TaskRecord expected,
+  }) async {
+    if (task.id == 'task-a' && task.status == TaskStatus.running) {
+      if (!updateStarted.isCompleted) updateStarted.complete();
+      await _updateRelease.future;
+    }
+    return super.updateTask(task, expected: expected);
+  }
+
+  void releaseUpdate() {
+    if (!_updateRelease.isCompleted) _updateRelease.complete();
+  }
+}
+
+class _ConcurrentFaultWorker
+    implements
+        ReservableTaskWorker,
+        CancellableTaskWorker,
+        DisposableTaskWorker {
+  _ConcurrentFaultWorker(this.controller);
+
+  final TaskInboxController controller;
+  final Completer<void> firstRunStarted = Completer<void>();
+  final Completer<void> bothRunsStarted = Completer<void>();
+  final Completer<void> _cancelled = Completer<void>();
+  final Set<String> _leasedTaskIds = <String>{};
+  final Set<String> _startedTaskIds = <String>{};
+  int cancelCalls = 0;
+  int releaseCalls = 0;
+
+  @override
+  Future<void> cancelActive() async {
+    cancelCalls += 1;
+    if (!_cancelled.isCompleted) _cancelled.complete();
+  }
+
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Future<TaskWorkerLease?> tryAcquire(TaskRecord task) async {
+    if (!_leasedTaskIds.add(task.id)) return null;
+    return _ConcurrentFaultLease(this, task.id);
+  }
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) {
+    throw StateError('Scheduler must use the reserved worker lease.');
+  }
+
+  Future<TaskRecord> runLeased(TaskRecord task) async {
+    _startedTaskIds.add(task.id);
+    if (!firstRunStarted.isCompleted) firstRunStarted.complete();
+    if (_startedTaskIds.length == 2 && !bothRunsStarted.isCompleted) {
+      bothRunsStarted.complete();
+    }
+    if (task.id == 'task-a') {
+      await bothRunsStarted.future;
+      return controller.updateTaskStatus(task.id, TaskStatus.running);
+    }
+    await _cancelled.future;
+    throw StateError('Concurrent task cancelled after persistence fault.');
+  }
+
+  void release(String taskId) {
+    if (!_leasedTaskIds.remove(taskId)) return;
+    releaseCalls += 1;
+  }
+}
+
+class _ConcurrentFaultLease implements TaskWorkerLease {
+  _ConcurrentFaultLease(this.worker, this.taskId);
+
+  final _ConcurrentFaultWorker worker;
+  final String taskId;
+  bool _released = false;
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) => worker.runLeased(task);
+
+  @override
+  Future<void> release() async {
+    if (_released) return;
+    _released = true;
+    worker.release(taskId);
+  }
+}
+
 class _LoseFirstClaimStore extends MemoryTaskRepository {
   _LoseFirstClaimStore(super.snapshot);
 
@@ -1602,23 +2304,25 @@ class _LoseFirstClaimStore extends MemoryTaskRepository {
   }
 
   @override
-  Future<TaskClaim?> claimTask(
+  Future<TaskClaim?> claimTaskWithMetadata(
     TaskRecord expectedTask,
     TaskRunRecord run, {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
+    required Map<String, Object?> claimedMetadata,
   }) async {
     claimCalls += 1;
     if (claimCalls != 1) {
-      return super.claimTask(
+      return super.claimTaskWithMetadata(
         expectedTask,
         run,
         dispatchEvent: dispatchEvent,
         expectedResource: expectedResource,
+        claimedMetadata: claimedMetadata,
       );
     }
     final startedAt = run.startedAt;
-    await super.claimTask(
+    await super.claimTaskWithMetadata(
       expectedTask,
       TaskRunRecord(
         id: 'run-external',
@@ -1636,6 +2340,7 @@ class _LoseFirstClaimStore extends MemoryTaskRepository {
         createdAt: startedAt,
       ),
       expectedResource: expectedResource,
+      claimedMetadata: claimedMetadata,
     );
     _externalClaimed = true;
     return null;
@@ -1648,21 +2353,23 @@ class _ConflictOnceClaimStore extends MemoryTaskRepository {
   int claimCalls = 0;
 
   @override
-  Future<TaskClaim?> claimTask(
+  Future<TaskClaim?> claimTaskWithMetadata(
     TaskRecord expectedTask,
     TaskRunRecord run, {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
+    required Map<String, Object?> claimedMetadata,
   }) {
     claimCalls += 1;
     if (claimCalls == 1) {
       throw const TaskRepositoryConflict('simulated run id collision');
     }
-    return super.claimTask(
+    return super.claimTaskWithMetadata(
       expectedTask,
       run,
       dispatchEvent: dispatchEvent,
       expectedResource: expectedResource,
+      claimedMetadata: claimedMetadata,
     );
   }
 }

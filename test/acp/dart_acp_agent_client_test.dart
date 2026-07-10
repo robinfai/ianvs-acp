@@ -46,6 +46,74 @@ void main() {
     await subscription.cancel();
   });
 
+  test('dispose stops an agent whose initialize request is pending', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final startedFile = File('${tempDir.path}/initialize_started');
+    final pidFile = File('${tempDir.path}/agent_pid');
+    final releaseFile = File('${tempDir.path}/release_initialize');
+    final agentScript = File('${tempDir.path}/pending_initialize_agent.dart');
+    final startedPath = jsonEncode(startedFile.path);
+    final pidPath = jsonEncode(pidFile.path);
+    final releasePath = jsonEncode(releaseFile.path);
+    await agentScript.writeAsString('''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await File($pidPath).writeAsString('\$pid');
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] != 'initialize') continue;
+    await File($startedPath).writeAsString('started');
+    while (!File($releasePath).existsSync()) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': message['id'],
+      'result': <String, dynamic>{
+        'protocolVersion': 1,
+        'agentCapabilities': <String, dynamic>{},
+        'authMethods': <Map<String, dynamic>>[],
+      },
+    }));
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+    );
+    final connecting = client.connect();
+
+    try {
+      await _waitForFile(startedFile);
+      final connectionFailure = expectLater(connecting, throwsA(anything));
+      await client.dispose().timeout(const Duration(seconds: 2));
+
+      await connectionFailure.timeout(
+        const Duration(seconds: 2),
+      );
+      final agentPid = int.parse(await pidFile.readAsString());
+      expect(
+        Process.killPid(agentPid, ProcessSignal.sigterm),
+        isFalse,
+      );
+    } finally {
+      await releaseFile.writeAsString('release');
+      try {
+        await connecting.timeout(const Duration(seconds: 2));
+      } on Object {
+        // A disposed pending connection must settle with an error.
+      }
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('starts stdio agent in configured working directory', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final launchDir = Directory('${tempDir.path}/launch-root');

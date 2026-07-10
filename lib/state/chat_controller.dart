@@ -19,6 +19,14 @@ enum ChatMessageRole { user, assistant, tool, error, status }
 
 enum ChatPermissionEventType { requested, resolved }
 
+enum ChatPromptSubmissionResult {
+  submitted,
+  empty,
+  busy,
+  sessionUnavailable,
+  failed,
+}
+
 typedef ChatAgentEventObserver =
     FutureOr<void> Function(AgentSession? session, AgentEvent event);
 
@@ -143,6 +151,7 @@ class ChatController extends ChangeNotifier {
   }
 
   static const int defaultPermissionHistoryLimit = 500;
+  static const Duration defaultCleanupTimeout = Duration(seconds: 2);
 
   final AcpAgentClient client;
   final String cwd;
@@ -181,6 +190,7 @@ class ChatController extends ChangeNotifier {
   bool isSessionOperationRunning = false;
   bool isSessionReplayLoading = false;
   bool _isDisposed = false;
+  Future<void>? _disposalFuture;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -282,11 +292,12 @@ class ChatController extends ChangeNotifier {
     return () => _permissionEventObservers.remove(observer);
   }
 
-  Future<void> newSession({String? cwd}) async {
-    if (isStreaming || isSessionOperationRunning) return;
+  Future<bool> newSession({String? cwd}) async {
+    if (isStreaming || isSessionOperationRunning) return false;
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
         ? this.cwd
         : cwd.trim();
+    var created = false;
     await _runSessionOperation(() async {
       try {
         if (status == ConnectionStatus.disconnected ||
@@ -319,12 +330,14 @@ class ChatController extends ChangeNotifier {
         await _loadSessionSettings(session.id, notify: false);
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
+          created = currentSession?.id == session.id;
         }
         _notifyListeners();
       } catch (error) {
         _setError(error);
       }
     });
+    return created;
   }
 
   Future<void> resumeSession(
@@ -735,24 +748,27 @@ class ChatController extends ChangeNotifier {
     return projects;
   }
 
-  Future<void> sendPrompt(
+  Future<ChatPromptSubmissionResult> sendPrompt(
     String text, {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async {
     final prompt = text.trim();
-    if ((prompt.isEmpty && attachments.isEmpty) ||
-        isStreaming ||
-        isSessionOperationRunning) {
-      return;
+    if (prompt.isEmpty && attachments.isEmpty) {
+      return ChatPromptSubmissionResult.empty;
+    }
+    if (isStreaming || isSessionOperationRunning) {
+      return ChatPromptSubmissionResult.busy;
     }
 
     if (currentSession == null) {
-      await newSession();
-      if (status == ConnectionStatus.error) return;
+      final created = await newSession();
+      if (!created || status == ConnectionStatus.error) {
+        return ChatPromptSubmissionResult.sessionUnavailable;
+      }
     }
 
     final session = currentSession;
-    if (session == null) return;
+    if (session == null) return ChatPromptSubmissionResult.sessionUnavailable;
     _localUnstartedSessionIds.remove(session.id);
 
     final contentBlocks = attachments
@@ -794,24 +810,42 @@ class ChatController extends ChangeNotifier {
             },
             onDone: _finishStreaming,
           );
+      return ChatPromptSubmissionResult.submitted;
     } catch (error) {
       _handleAgentEvent(
         AgentEvent(type: AgentEventType.error, text: _messageForError(error)),
       );
       _finishStreaming();
+      return ChatPromptSubmissionResult.failed;
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop({
+    Duration cancellationTimeout = defaultCleanupTimeout,
+  }) async {
     if (!isStreaming) return;
     Object? cancelError;
     try {
-      await _cancelPendingPermissionRequest();
-      await client.cancel();
-    } catch (error) {
+      final permissionError = await _cancelPendingPermissionRequest(
+        reportErrors: false,
+      ).timeout(cancellationTimeout);
+      cancelError = permissionError;
+    } on Object catch (error) {
       cancelError = error;
+    }
+    try {
+      await client.cancel().timeout(cancellationTimeout);
+    } on Object catch (error) {
+      cancelError ??= error;
     } finally {
-      await _promptSubscription?.cancel();
+      try {
+        final promptSubscription = _promptSubscription;
+        if (promptSubscription != null) {
+          await promptSubscription.cancel().timeout(cancellationTimeout);
+        }
+      } on Object catch (error) {
+        cancelError ??= error;
+      }
       _promptSubscription = null;
       _finishStreaming();
     }
@@ -1057,19 +1091,25 @@ class ChatController extends ChangeNotifier {
     });
   }
 
-  Future<void> authenticate(String methodId) async {
+  Future<bool> authenticate(String methodId) async {
     final trimmedMethodId = methodId.trim();
-    if (trimmedMethodId.isEmpty || !canAuthenticate) return;
+    if (trimmedMethodId.isEmpty || !canAuthenticate) return false;
 
+    var authenticated = false;
     await _runSessionOperation(() async {
       try {
         await client.authenticate(methodId: trimmedMethodId);
         lastError = null;
+        status = currentSession == null
+            ? ConnectionStatus.connected
+            : ConnectionStatus.sessionReady;
+        authenticated = true;
         _notifyListeners();
       } catch (error) {
         _setActionError(error);
       }
     });
+    return authenticated;
   }
 
   Future<Map<String, Object?>> sendExtensionRequest({
@@ -1134,11 +1174,16 @@ class ChatController extends ChangeNotifier {
     _notifyListeners();
     try {
       await client.connect();
+      if (_isDisposed) {
+        await _ignoreCleanup(client.dispose);
+        return;
+      }
       _retiredSessionIds.clear();
       capabilities = client.capabilities;
       status = ConnectionStatus.connected;
       _notifyListeners();
     } catch (error) {
+      if (_isDisposed) return;
       _setError(error);
     }
   }
@@ -1560,22 +1605,27 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _cancelPendingPermissionRequest({
+  Future<Object?> _cancelPendingPermissionRequest({
     bool reportErrors = true,
   }) async {
     final request = pendingPermissionRequest;
-    if (request == null) return;
+    if (request == null) return null;
     pendingPermissionRequest = null;
     _recordPermissionDecision(
       request.id,
       AcpPermissionDecision.cancel,
       source: AcpPermissionDecisionSource.system,
     );
-    await _sendPermissionDecision(
-      id: request.id,
-      decision: AcpPermissionDecision.cancel,
-      reportErrors: reportErrors,
-    );
+    try {
+      await client.respondToPermissionRequest(
+        id: request.id,
+        decision: AcpPermissionDecision.cancel,
+      );
+      return null;
+    } catch (error) {
+      if (reportErrors) _setActionError(error);
+      return error;
+    }
   }
 
   void _cancelPendingPermissionRequestAfterPromptEnd() {
@@ -2183,25 +2233,52 @@ class ChatController extends ChangeNotifier {
     return !_isDisposed && currentSession?.id == sessionId;
   }
 
+  Future<void> shutdown({
+    Duration cancellationTimeout = defaultCleanupTimeout,
+  }) async {
+    if (!_isDisposed) {
+      try {
+        await stop(cancellationTimeout: cancellationTimeout);
+      } on Object {
+        // Resource disposal still needs to run when cancellation fails.
+      }
+      dispose();
+    }
+    await disposalComplete;
+  }
+
+  Future<void> get disposalComplete =>
+      _disposalFuture ?? Future<void>.value();
+
   @override
   void dispose() {
+    if (_isDisposed) return;
     _isDisposed = true;
-    _disposeLater(() => _promptSubscription?.cancel());
-    _disposeLater(_permissionSubscription.cancel);
-    _disposeLater(client.dispose);
-    _disposeLater(() => permissionReviewer?.dispose());
+    final promptSubscription = _promptSubscription;
+    _promptSubscription = null;
+    _disposalFuture = _disposeResources(promptSubscription);
+    unawaited(_disposalFuture);
     _resolvingPermissionRequestIds.clear();
     _reviewingPermissionRequestIds.clear();
     super.dispose();
   }
 
-  void _disposeLater(Future<void>? Function() action) {
+  Future<void> _disposeResources(
+    StreamSubscription<AgentEvent>? promptSubscription,
+  ) async {
+    await _ignoreCleanup(() => promptSubscription?.cancel());
+    await _ignoreCleanup(_permissionSubscription.cancel);
+    await _ignoreCleanup(client.dispose);
+    await _ignoreCleanup(() => permissionReviewer?.dispose());
+  }
+
+  Future<void> _ignoreCleanup(Future<void>? Function() action) async {
     try {
       final cleanup = action();
       if (cleanup == null) return;
-      unawaited(cleanup.catchError((_) {}));
+      await cleanup.timeout(defaultCleanupTimeout);
     } on Object {
-      // Dispose must stay best-effort; teardown errors have no live UI target.
+      // Cleanup remains best effort while disposalComplete still settles.
     }
   }
 
