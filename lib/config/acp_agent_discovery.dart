@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 
 typedef FileExists = bool Function(String path);
@@ -86,41 +87,46 @@ class AcpAgentDiscovery {
     }
 
     final file = File(configPath);
-    Map<String, dynamic> raw;
-    if (await file.exists()) {
-      final decoded = jsonDecode(await file.readAsString());
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('ACP config root must be a JSON object.');
+    return SecureAtomicFile.synchronized(file, () async {
+      Map<String, dynamic> raw;
+      if (await file.exists()) {
+        final decoded = jsonDecode(await file.readAsString());
+        if (decoded is! Map<String, dynamic>) {
+          throw const FormatException('ACP config root must be a JSON object.');
+        }
+        raw = Map<String, dynamic>.from(decoded);
+      } else {
+        raw = <String, dynamic>{};
       }
-      raw = Map<String, dynamic>.from(decoded);
-    } else {
-      raw = <String, dynamic>{};
-    }
 
-    final serversKey =
-        raw.containsKey('agentServers') && !raw.containsKey('agent_servers')
-        ? 'agentServers'
-        : 'agent_servers';
-    final existingServers = _agentServersJson(raw[serversKey]);
-    final hadConfiguredAgents = existingServers.isNotEmpty;
+      final serversKey =
+          raw.containsKey('agentServers') && !raw.containsKey('agent_servers')
+          ? 'agentServers'
+          : 'agent_servers';
+      final existingServers = _agentServersJson(raw[serversKey]);
+      final hadConfiguredAgents = existingServers.isNotEmpty;
 
-    for (final server in servers) {
-      if (existingServers.containsKey(server.name)) continue;
-      existingServers[server.name] = server.toJson();
-    }
-    raw[serversKey] = existingServers;
+      for (final server in servers) {
+        if (existingServers.containsKey(server.name)) continue;
+        existingServers[server.name] = server.toJson();
+      }
+      raw[serversKey] = existingServers;
 
-    if (!hadConfiguredAgents &&
-        !raw.containsKey('default_agent_server') &&
-        !raw.containsKey('defaultAgentServer')) {
-      raw['default_agent_server'] = servers.first.name;
-    }
+      if (!hadConfiguredAgents &&
+          !raw.containsKey('default_agent_server') &&
+          !raw.containsKey('defaultAgentServer')) {
+        raw['default_agent_server'] = servers.first.name;
+      }
 
-    await file.parent.create(recursive: true);
-    const encoder = JsonEncoder.withIndent('  ');
-    await file.writeAsString('${encoder.convert(raw)}\n');
+      const encoder = JsonEncoder.withIndent('  ');
+      await SecureAtomicFile.writeString(
+        file,
+        '${encoder.convert(raw)}\n',
+        protectExistingParent: false,
+      );
 
-    return AcpClientConfig.fromJson(raw, configPath: configPath);
+      return AcpClientConfig.fromJson(raw, configPath: configPath);
+    });
   }
 
   static Map<String, dynamic> _agentServersJson(Object? raw) {

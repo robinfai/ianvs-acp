@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 
 class AcpConfigStore {
@@ -16,16 +17,24 @@ class AcpConfigStore {
     }
 
     final file = File(path);
-    final raw = await _readExistingJson(file);
-    for (final key in _managedConfigKeys) {
-      raw.remove(key);
-    }
-    final canonicalJson = <String, dynamic>{...raw, ...toSettingsJson(config)};
+    return SecureAtomicFile.synchronized(file, () async {
+      final raw = await _readExistingJson(file);
+      for (final key in _managedConfigKeys) {
+        raw.remove(key);
+      }
+      final canonicalJson = <String, dynamic>{
+        ...raw,
+        ...toSettingsJson(config),
+      };
 
-    await file.parent.create(recursive: true);
-    const encoder = JsonEncoder.withIndent('  ');
-    await file.writeAsString('${encoder.convert(canonicalJson)}\n');
-    return AcpClientConfig.fromJson(canonicalJson, configPath: path);
+      const encoder = JsonEncoder.withIndent('  ');
+      await SecureAtomicFile.writeString(
+        file,
+        '${encoder.convert(canonicalJson)}\n',
+        protectExistingParent: false,
+      );
+      return AcpClientConfig.fromJson(canonicalJson, configPath: path);
+    });
   }
 
   static Map<String, Object?> toSettingsJson(AcpClientConfig config) {

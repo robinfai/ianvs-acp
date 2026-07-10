@@ -20,6 +20,7 @@ import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 import '../support/memory_task_repository.dart';
 
@@ -707,8 +708,7 @@ void main() {
       await _pumpUntil(
         tester,
         () =>
-            taskController.tasks.single.status ==
-            TaskStatus.blockedOnUserInput,
+            taskController.tasks.single.status == TaskStatus.blockedOnUserInput,
       );
 
       await tester.tap(find.byTooltip('Agents'));
@@ -716,9 +716,7 @@ void main() {
       await tester.tap(find.text('Authenticate'));
       await _pumpUntil(
         tester,
-        () =>
-            taskController.tasks.single.status ==
-            TaskStatus.needsHumanReview,
+        () => taskController.tasks.single.status == TaskStatus.needsHumanReview,
       );
 
       expect(foregroundClient.lastAuthenticatedMethodId, 'browser');
@@ -756,22 +754,19 @@ void main() {
 
     AcpClientApp app(AcpAgentClientFactory factory, Object factoryKey) =>
         AcpClientApp(
-      key: const ValueKey('foreground-factory-replacement'),
-      config: config,
-      autoLoadWorkspaceSessions: false,
-      createAgentClient: factory,
-      agentClientFactoryKey: factoryKey,
-    );
+          key: const ValueKey('foreground-factory-replacement'),
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: factory,
+          agentClientFactoryKey: factoryKey,
+        );
 
     await tester.pumpWidget(app(oldFactory, 'old'));
     expect(oldClients, isNotEmpty);
     final oldClient = oldClients.first;
 
     await tester.pumpWidget(app(newFactory, 'new'));
-    await _pumpUntil(
-      tester,
-      () => oldClient.disposed && newClients.isNotEmpty,
-    );
+    await _pumpUntil(tester, () => oldClient.disposed && newClients.isNotEmpty);
 
     expect(oldClient.disposed, isTrue);
     expect(newClients.single.disposed, isFalse);
@@ -941,8 +936,7 @@ void main() {
         tester,
         () =>
             newBackgroundClients.any((client) => client.lastPrompt != null) &&
-            taskController.tasks.single.status ==
-                TaskStatus.needsHumanReview,
+            taskController.tasks.single.status == TaskStatus.needsHumanReview,
       );
 
       expect(oldBackground.disposed, isTrue);
@@ -1108,6 +1102,7 @@ void main() {
       clients.add(client);
       return client;
     }
+
     AcpClientApp app(String version) => AcpClientApp(
       key: const ValueKey('config-replacement-app'),
       config: config(version),
@@ -1123,7 +1118,9 @@ void main() {
       () => clients.any((client) => client.lastPrompt != null),
     );
     final oldForegroundClient = clients.first;
-    final oldClient = clients.singleWhere((client) => client.lastPrompt != null);
+    final oldClient = clients.singleWhere(
+      (client) => client.lastPrompt != null,
+    );
 
     await tester.pumpWidget(app('v2'));
     await _pumpUntil(
@@ -2397,6 +2394,33 @@ void main() {
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allowed'), findsOneWidget);
   });
+
+  testWidgets(
+    'AcpClientApp retries an unchanged session index after a save failure',
+    (tester) async {
+      final store = _FailOnceWorkspaceStateStore();
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: store,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(tester, () => store.saveAttempts >= 2);
+
+      expect(store.successfulSaves, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 Future<void> _pumpUntil(
@@ -2504,6 +2528,27 @@ class _ProcessScopedAuthAgentClient extends FakeAgentClient {
 
 class _MemoryTaskStore extends MemoryTaskRepository {
   _MemoryTaskStore([super.snapshot]);
+}
+
+class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
+  _FailOnceWorkspaceStateStore() : super(path: 'memory');
+
+  int saveAttempts = 0;
+  int successfulSaves = 0;
+
+  @override
+  Future<List<AgentSession>> loadSessionIndex() async {
+    return const <AgentSession>[];
+  }
+
+  @override
+  Future<void> saveSessionIndex(Iterable<AgentSession> sessions) async {
+    saveAttempts += 1;
+    if (saveAttempts == 1) {
+      throw const FileSystemException('injected session index failure');
+    }
+    successfulSaves += 1;
+  }
 }
 
 class _DeterministicIds {

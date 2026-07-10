@@ -1,0 +1,424 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ffi';
+import 'dart:io';
+
+typedef SecureAtomicProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
+typedef SecureAtomicRename =
+    Future<File> Function(File source, String destination);
+
+class SecureAtomicFile {
+  const SecureAtomicFile._();
+
+  static int _temporarySequence = 0;
+  static final Map<String, _SecureAtomicFileCoordinator> _coordinators =
+      <String, _SecureAtomicFileCoordinator>{};
+
+  static Future<T> synchronized<T>(
+    File target,
+    Future<T> Function() operation,
+  ) {
+    final key = Uri.file(target.absolute.path).normalizePath().toFilePath();
+    final coordinator = _coordinators.putIfAbsent(
+      key,
+      _SecureAtomicFileCoordinator.new,
+    );
+    coordinator.retain();
+    return coordinator.schedule(operation).whenComplete(() {
+      if (coordinator.release() && identical(_coordinators[key], coordinator)) {
+        _coordinators.remove(key);
+      }
+    });
+  }
+
+  static Future<void> writeString(
+    File target,
+    String value, {
+    SecureAtomicProcessRunner? processRunner,
+    SecureAtomicRename? rename,
+    bool protectExistingParent = false,
+  }) async {
+    final moveFile =
+        rename ??
+        (File source, String destination) => source.rename(destination);
+
+    final parentExisted = await target.parent.exists();
+    await target.parent.create(recursive: true);
+    if (!parentExisted || protectExistingParent) {
+      await _chmod(processRunner, mode: '0700', path: target.parent.path);
+    }
+    final parentMode = (await target.parent.stat()).mode;
+    final isWritableByOtherPrincipals = parentMode & 0x12 != 0;
+    final hasStickyBit = parentMode & 0x200 != 0;
+    final hasTrustedStickyOwner =
+        hasStickyBit &&
+        _NativeFilePermissions.isOwnedByEffectiveUserOrRoot(target.parent.path);
+    if (isWritableByOtherPrincipals && !hasTrustedStickyOwner) {
+      throw FileSystemException(
+        'Secure file parent must not be group- or world-writable.',
+        target.parent.path,
+      );
+    }
+
+    final temporary = File(
+      '${target.path}.tmp-$pid-${DateTime.now().microsecondsSinceEpoch}-${_temporarySequence++}',
+    );
+    int? fileDescriptor;
+    try {
+      fileDescriptor = _NativeFilePermissions.openExclusive(
+        temporary.path,
+        0x180,
+      );
+      _NativeFilePermissions.fchmod(fileDescriptor, 0x180, temporary.path);
+      if (processRunner != null) {
+        await _chmod(processRunner, mode: '0600', path: temporary.path);
+      }
+      _ensureTemporaryIdentity(fileDescriptor, temporary);
+      _NativeFilePermissions.writeAll(
+        fileDescriptor,
+        utf8.encode(value),
+        temporary.path,
+      );
+      _NativeFilePermissions.flush(fileDescriptor, temporary.path);
+      _ensureTemporaryIdentity(fileDescriptor, temporary);
+      await moveFile(temporary, target.path);
+    } catch (_) {
+      try {
+        final type = await FileSystemEntity.type(
+          temporary.path,
+          followLinks: false,
+        );
+        if (type != FileSystemEntityType.notFound) await temporary.delete();
+      } catch (_) {
+        // Preserve the original write failure.
+      }
+      rethrow;
+    } finally {
+      if (fileDescriptor != null) {
+        _NativeFilePermissions.close(fileDescriptor);
+      }
+    }
+  }
+
+  static void _ensureTemporaryIdentity(int fileDescriptor, File temporary) {
+    if (!_NativeFilePermissions.matchesPath(fileDescriptor, temporary.path)) {
+      throw FileSystemException(
+        'Secure temporary file was replaced before commit.',
+        temporary.path,
+      );
+    }
+  }
+
+  static Future<void> _chmod(
+    SecureAtomicProcessRunner? processRunner, {
+    required String mode,
+    required String path,
+  }) async {
+    if (processRunner == null) {
+      final error = _NativeFilePermissions.chmod(
+        path,
+        int.parse(mode, radix: 8),
+      );
+      if (error == 0) return;
+      throw FileSystemException(
+        'chmod $mode failed with errno $error',
+        path,
+        OSError('chmod $mode failed', error),
+      );
+    }
+
+    final result = await processRunner('/bin/chmod', <String>[mode, path]);
+    if (result.exitCode == 0) return;
+
+    final message = result.stderr.toString().trim();
+    throw FileSystemException(
+      message.isEmpty
+          ? 'chmod $mode failed with exit code ${result.exitCode}'
+          : 'chmod $mode failed: $message',
+      path,
+      OSError(message, result.exitCode),
+    );
+  }
+}
+
+class _NativeFilePermissions {
+  static final DynamicLibrary _libc = DynamicLibrary.process();
+  static final int Function(Pointer<Char>, int) _chmodMac = _libc
+      .lookupFunction<
+        Int32 Function(Pointer<Char>, Uint16),
+        int Function(Pointer<Char>, int)
+      >('chmod');
+  static final int Function(Pointer<Char>, int) _chmodLinux = _libc
+      .lookupFunction<
+        Int32 Function(Pointer<Char>, Uint32),
+        int Function(Pointer<Char>, int)
+      >('chmod');
+  static final int Function(Pointer<Char>, int, int) _open = _libc
+      .lookupFunction<
+        Int32 Function(Pointer<Char>, Int32, Uint32),
+        int Function(Pointer<Char>, int, int)
+      >('open');
+  static final int Function(int, int) _fchmodMac = _libc
+      .lookupFunction<Int32 Function(Int32, Uint16), int Function(int, int)>(
+        'fchmod',
+      );
+  static final int Function(int, int) _fchmodLinux = _libc
+      .lookupFunction<Int32 Function(Int32, Uint32), int Function(int, int)>(
+        'fchmod',
+      );
+  static final int Function(int, Pointer<Void>, int) _write = _libc
+      .lookupFunction<
+        IntPtr Function(Int32, Pointer<Void>, IntPtr),
+        int Function(int, Pointer<Void>, int)
+      >('write');
+  static final int Function(int) _fsync = _libc
+      .lookupFunction<Int32 Function(Int32), int Function(int)>('fsync');
+  static final int Function(int) _close = _libc
+      .lookupFunction<Int32 Function(Int32), int Function(int)>('close');
+  static final int Function(int, Pointer<Void>) _fstat = _libc
+      .lookupFunction<
+        Int32 Function(Int32, Pointer<Void>),
+        int Function(int, Pointer<Void>)
+      >(_fstatSymbol);
+  static final int Function(Pointer<Char>, Pointer<Void>) _lstat = _libc
+      .lookupFunction<
+        Int32 Function(Pointer<Char>, Pointer<Void>),
+        int Function(Pointer<Char>, Pointer<Void>)
+      >(_lstatSymbol);
+  static final int Function(Pointer<Char>, Pointer<Void>) _stat = _libc
+      .lookupFunction<
+        Int32 Function(Pointer<Char>, Pointer<Void>),
+        int Function(Pointer<Char>, Pointer<Void>)
+      >(_statSymbol);
+  static final int Function() _geteuid = _libc
+      .lookupFunction<Uint32 Function(), int Function()>('geteuid');
+  static final Pointer<Void> Function(int) _malloc = _libc
+      .lookupFunction<
+        Pointer<Void> Function(IntPtr),
+        Pointer<Void> Function(int)
+      >('malloc');
+  static final void Function(Pointer<Void>) _free = _libc
+      .lookupFunction<
+        Void Function(Pointer<Void>),
+        void Function(Pointer<Void>)
+      >('free');
+
+  static int chmod(String path, int mode) {
+    _requireSupportedPlatform();
+    return _withNativePath(path, (nativePath) {
+      final result = Platform.isMacOS
+          ? _chmodMac(nativePath, mode)
+          : _chmodLinux(nativePath, mode);
+      if (result == 0) return 0;
+      return _errno;
+    });
+  }
+
+  static int openExclusive(String path, int mode) {
+    _requireSupportedPlatform();
+    return _withNativePath(path, (nativePath) {
+      final flags = Platform.isMacOS
+          ? 0x00000001 | 0x00000200 | 0x00000800 | 0x00000100 | 0x01000000
+          : 0x00000001 | 0x00000040 | 0x00000080 | 0x00020000 | 0x00080000;
+      final fileDescriptor = _open(nativePath, flags, mode);
+      if (fileDescriptor >= 0) return fileDescriptor;
+      final error = _errno;
+      throw FileSystemException(
+        'Could not create secure temporary file.',
+        path,
+        OSError('open failed', error),
+      );
+    });
+  }
+
+  static void fchmod(int fileDescriptor, int mode, String path) {
+    final result = Platform.isMacOS
+        ? _fchmodMac(fileDescriptor, mode)
+        : _fchmodLinux(fileDescriptor, mode);
+    if (result == 0) return;
+    final error = _errno;
+    throw FileSystemException(
+      'Could not protect secure temporary file.',
+      path,
+      OSError('fchmod failed', error),
+    );
+  }
+
+  static void writeAll(int fileDescriptor, List<int> value, String path) {
+    if (value.isEmpty) return;
+    final allocation = _malloc(value.length);
+    if (allocation.address == 0) {
+      throw StateError('Could not allocate a native write buffer.');
+    }
+    try {
+      allocation.cast<Uint8>().asTypedList(value.length).setAll(0, value);
+      var offset = 0;
+      while (offset < value.length) {
+        final written = _write(
+          fileDescriptor,
+          (allocation.cast<Uint8>() + offset).cast<Void>(),
+          value.length - offset,
+        );
+        if (written <= 0) {
+          final error = written < 0 ? _errno : 5;
+          throw FileSystemException(
+            'Could not write secure temporary file.',
+            path,
+            OSError('write failed', error),
+          );
+        }
+        offset += written;
+      }
+    } finally {
+      _free(allocation);
+    }
+  }
+
+  static void flush(int fileDescriptor, String path) {
+    if (_fsync(fileDescriptor) == 0) return;
+    final error = _errno;
+    throw FileSystemException(
+      'Could not flush secure temporary file.',
+      path,
+      OSError('fsync failed', error),
+    );
+  }
+
+  static void close(int fileDescriptor) {
+    _close(fileDescriptor);
+  }
+
+  static bool matchesPath(int fileDescriptor, String path) {
+    final descriptorStat = _malloc(512);
+    final pathStat = _malloc(512);
+    if (descriptorStat.address == 0 || pathStat.address == 0) {
+      if (descriptorStat.address != 0) _free(descriptorStat);
+      if (pathStat.address != 0) _free(pathStat);
+      throw StateError('Could not allocate native stat buffers.');
+    }
+    try {
+      if (_fstat(fileDescriptor, descriptorStat) != 0) return false;
+      final pathResult = _withNativePath(
+        path,
+        (nativePath) => _lstat(nativePath, pathStat),
+      );
+      if (pathResult != 0) return false;
+      if (Platform.isMacOS) {
+        final descriptorDevice = descriptorStat.cast<Uint32>().value;
+        final pathDevice = pathStat.cast<Uint32>().value;
+        final descriptorInode = (descriptorStat.cast<Uint8>() + 8)
+            .cast<Uint64>()
+            .value;
+        final pathInode = (pathStat.cast<Uint8>() + 8).cast<Uint64>().value;
+        return descriptorDevice == pathDevice && descriptorInode == pathInode;
+      }
+      final descriptorDevice = descriptorStat.cast<Uint64>().value;
+      final pathDevice = pathStat.cast<Uint64>().value;
+      final descriptorInode = (descriptorStat.cast<Uint8>() + 8)
+          .cast<Uint64>()
+          .value;
+      final pathInode = (pathStat.cast<Uint8>() + 8).cast<Uint64>().value;
+      return descriptorDevice == pathDevice && descriptorInode == pathInode;
+    } finally {
+      _free(descriptorStat);
+      _free(pathStat);
+    }
+  }
+
+  static bool isOwnedByEffectiveUserOrRoot(String path) {
+    final statBuffer = _malloc(512);
+    if (statBuffer.address == 0) {
+      throw StateError('Could not allocate a native stat buffer.');
+    }
+    try {
+      final result = _withNativePath(
+        path,
+        (nativePath) => _stat(nativePath, statBuffer),
+      );
+      if (result != 0) return false;
+      final uidOffset = switch (Abi.current()) {
+        Abi.macosArm64 || Abi.macosX64 => 16,
+        Abi.linuxArm64 => 24,
+        Abi.linuxX64 => 28,
+        _ => -1,
+      };
+      if (uidOffset < 0) return false;
+      final owner = (statBuffer.cast<Uint8>() + uidOffset).cast<Uint32>().value;
+      return owner == 0 || owner == _geteuid();
+    } finally {
+      _free(statBuffer);
+    }
+  }
+
+  static T _withNativePath<T>(
+    String path,
+    T Function(Pointer<Char> path) action,
+  ) {
+    if (path.contains('\u0000')) {
+      throw ArgumentError.value(path, 'path', 'Must not contain NUL.');
+    }
+    final encoded = utf8.encode(path);
+    final allocation = _malloc(encoded.length + 1);
+    if (allocation.address == 0) {
+      throw StateError('Could not allocate a native path buffer.');
+    }
+    try {
+      final bytes = allocation.cast<Uint8>().asTypedList(encoded.length + 1);
+      bytes.setRange(0, encoded.length, encoded);
+      bytes[encoded.length] = 0;
+      return action(allocation.cast<Char>());
+    } finally {
+      _free(allocation);
+    }
+  }
+
+  static void _requireSupportedPlatform() {
+    if (Platform.isMacOS || Platform.isLinux) return;
+    throw UnsupportedError(
+      'SecureAtomicFile permissions require macOS or Linux.',
+    );
+  }
+
+  static int get _errno {
+    final symbol = Platform.isMacOS ? '__error' : '__errno_location';
+    final accessor = _libc
+        .lookupFunction<Pointer<Int32> Function(), Pointer<Int32> Function()>(
+          symbol,
+        );
+    return accessor().value;
+  }
+
+  static String get _fstatSymbol =>
+      Abi.current() == Abi.macosX64 ? r'fstat$INODE64' : 'fstat';
+
+  static String get _lstatSymbol =>
+      Abi.current() == Abi.macosX64 ? r'lstat$INODE64' : 'lstat';
+
+  static String get _statSymbol =>
+      Abi.current() == Abi.macosX64 ? r'stat$INODE64' : 'stat';
+}
+
+class _SecureAtomicFileCoordinator {
+  Future<void> _tail = Future<void>.value();
+  int _references = 0;
+
+  void retain() => _references += 1;
+
+  bool release() {
+    _references -= 1;
+    return _references == 0;
+  }
+
+  Future<T> schedule<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _tail = _tail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+}

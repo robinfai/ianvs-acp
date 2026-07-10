@@ -70,6 +70,7 @@ class AcpClientApp extends StatefulWidget {
     this.createTaskAgentClient,
     this.agentClientFactoryKey,
     this.taskAgentClientFactoryKey,
+    this.workspaceStateStore,
   });
 
   final ChatController? controller;
@@ -95,6 +96,7 @@ class AcpClientApp extends StatefulWidget {
   /// Change this key when [createTaskAgentClient] changes behavior. Keep it
   /// stable across ordinary widget rebuilds.
   final Object? taskAgentClientFactoryKey;
+  final WorkspaceSidebarStateStore? workspaceStateStore;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -142,7 +144,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   bool _sessionIndexPersistScheduled = false;
   int _sessionIndexHydrationSerial = 0;
   int _sessionCatalogLoadSerial = 0;
-  String? _lastSessionIndexSignature;
+  WorkspaceSessionIndexPersistenceQueue? _sessionIndexPersistence;
 
   @override
   void initState() {
@@ -419,18 +421,17 @@ class _AcpClientAppState extends State<AcpClientApp>
       if (!mounted || serial != _taskInboxInitializationSerial) return;
       repository = TaskInboxSqliteStore(path: repositoryPath);
       final migrationRepository = repository;
-      final pendingMigration = TaskPersistencePendingOperation<
-        TaskMigrationResult
-      >(
-        path: repositoryPath,
-        operationName: 'migrateIfNeeded',
-        watchdog: TaskInboxController.defaultPersistenceWatchdog,
-        operation: () => TaskInboxMigrator(
-          source: TaskInboxStateStore(path: sourcePath),
-          repository: migrationRepository,
-        ).migrateIfNeeded(),
-        closeRepository: migrationRepository.close,
-      );
+      final pendingMigration =
+          TaskPersistencePendingOperation<TaskMigrationResult>(
+            path: repositoryPath,
+            operationName: 'migrateIfNeeded',
+            watchdog: TaskInboxController.defaultPersistenceWatchdog,
+            operation: () => TaskInboxMigrator(
+              source: TaskInboxStateStore(path: sourcePath),
+              repository: migrationRepository,
+            ).migrateIfNeeded(),
+            closeRepository: migrationRepository.close,
+          );
       _taskPersistenceQuarantine.retain(pendingMigration);
       late final TaskMigrationResult migration;
       try {
@@ -1067,10 +1068,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (mounted) setState(() {});
   }
 
-  Future<void> _authenticateTaskAgent(
-    String agentName,
-    String methodId,
-  ) async {
+  Future<void> _authenticateTaskAgent(String agentName, String methodId) async {
     final hasBlockedTask = _taskInboxController?.tasks.any(
       (task) =>
           task.agentName == agentName &&
@@ -1093,7 +1091,9 @@ class _AcpClientAppState extends State<AcpClientApp>
       }
     } on Object catch (error) {
       if (mounted) {
-        _showSnackBar('Could not authenticate the background task agent: $error');
+        _showSnackBar(
+          'Could not authenticate the background task agent: $error',
+        );
       }
     }
   }
@@ -1198,14 +1198,18 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (widget.controller != null) return;
     final serial = ++_sessionIndexHydrationSerial;
     _sessionIndexHydrated = false;
-    _lastSessionIndexSignature = null;
+    _sessionIndexPersistence = null;
 
-    final sessions = await _workspaceStateStore.loadSessionIndex();
+    final workspaceStateStore = _workspaceStateStore;
+    final sessions = await workspaceStateStore.loadSessionIndex();
     if (!mounted ||
         widget.controller != null ||
         serial != _sessionIndexHydrationSerial) {
       return;
     }
+    _sessionIndexPersistence = WorkspaceSessionIndexPersistenceQueue(
+      store: workspaceStateStore,
+    );
 
     _ensureControllersForSelectableAgents(_config);
     for (final session in sessions) {
@@ -1275,11 +1279,12 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   WorkspaceSidebarStateStore get _workspaceStateStore {
-    return WorkspaceSidebarStateStore(
-      path: WorkspaceSidebarStateStore.defaultPath(
-        configPath: _config.configPath,
-      ),
-    );
+    return widget.workspaceStateStore ??
+        WorkspaceSidebarStateStore(
+          path: WorkspaceSidebarStateStore.defaultPath(
+            configPath: _config.configPath,
+          ),
+        );
   }
 
   void _attachSessionIndexPersistence(ChatController controller) {
@@ -1308,9 +1313,10 @@ class _AcpClientAppState extends State<AcpClientApp>
 
       final sessions = _persistableSessionIndex();
       final signature = _sessionIndexSignature(sessions);
-      if (signature == _lastSessionIndexSignature) return;
-      _lastSessionIndexSignature = signature;
-      unawaited(_workspaceStateStore.saveSessionIndex(sessions));
+      _sessionIndexPersistence?.enqueue(
+        sessions: sessions,
+        signature: signature,
+      );
     });
   }
 
