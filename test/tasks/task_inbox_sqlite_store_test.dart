@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
@@ -298,6 +300,703 @@ void main() {
       (await second.loadRepository()).snapshot.tasks.map((task) => task.id),
       containsAll(<String>['task-a', 'task-b']),
     );
+  });
+
+  test('two connections atomically claim one queued task', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final path = '${tempDir.path}/task_inbox_state.sqlite3';
+    final first = TaskInboxSqliteStore(path: path);
+    final second = TaskInboxSqliteStore(path: path);
+    addTearDown(first.close);
+    addTearDown(second.close);
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    final task = TaskRecord(
+      id: 'task-1',
+      title: 'Claim once',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.queued,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+    await first.insertTask(task);
+    final beforeClaim = await first.loadRepository();
+    final revisionBeforeClaim = beforeClaim.revision;
+
+    final claims = await Future.wait([
+      first.claimTask(
+        task,
+        TaskRunRecord(
+          id: 'run-a',
+          taskId: task.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: 'event-a',
+          taskId: task.id,
+          runId: 'run-a',
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+      ),
+      second.claimTask(
+        task,
+        TaskRunRecord(
+          id: 'run-b',
+          taskId: task.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: 'event-b',
+          taskId: task.id,
+          runId: 'run-b',
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+      ),
+    ]);
+
+    final successful = claims.whereType<TaskClaim>().single;
+    final snapshot = (await first.loadRepository()).snapshot;
+    expect(snapshot.runs, hasLength(1));
+    expect(snapshot.runs.single.id, successful.run.id);
+    expect(snapshot.events, hasLength(1));
+    expect(snapshot.events.single.id, successful.dispatchEvent.id);
+    expect(snapshot.events.single.runId, successful.run.id);
+    expect(snapshot.tasks.single.status, TaskStatus.dispatched);
+    expect(snapshot.tasks.single.currentRunId, successful.run.id);
+    expect(await first.revision(), revisionBeforeClaim + 1);
+    final claimTime = createdAt.add(const Duration(minutes: 1));
+    expect(
+      snapshot.updatedAt,
+      beforeClaim.snapshot.updatedAt.isAfter(claimTime)
+          ? beforeClaim.snapshot.updatedAt
+          : claimTime,
+    );
+  });
+
+  test('two isolates atomically claim one queued task', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final path = '${tempDir.path}/task_inbox_state.sqlite3';
+    final store = TaskInboxSqliteStore(path: path);
+    addTearDown(store.close);
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    await store.insertTask(
+      TaskRecord(
+        id: 'task-1',
+        title: 'Claim across isolates',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+        status: TaskStatus.queued,
+        priority: TaskPriority.normal,
+        createdAt: createdAt,
+        updatedAt: createdAt,
+      ),
+    );
+    final revisionBeforeClaim = await store.revision();
+    final messages = ReceivePort();
+    final exits = ReceivePort();
+    final isolates = <Isolate>[];
+    final readyPorts = <SendPort>[];
+    final results = <String?>[];
+    final ready = Completer<void>();
+    final finished = Completer<void>();
+    var exitCount = 0;
+    void failCurrentPhase(Object error) {
+      if (!ready.isCompleted) {
+        ready.completeError(error);
+      } else if (!finished.isCompleted) {
+        finished.completeError(error);
+      }
+    }
+
+    final subscription = messages.listen((message) {
+      if (message is! Map) {
+        failCurrentPhase(StateError('Isolate failed: $message'));
+        return;
+      }
+      if (message['type'] == 'ready') {
+        readyPorts.add(message['port']! as SendPort);
+        if (readyPorts.length == 2 && !ready.isCompleted) ready.complete();
+        return;
+      }
+      if (message['type'] == 'result') {
+        results.add(message['run_id'] as String?);
+        if (results.length == 2 && !finished.isCompleted) finished.complete();
+        return;
+      }
+      if (message['type'] == 'error') {
+        failCurrentPhase(StateError('${message['error']}'));
+      }
+    });
+    final exitSubscription = exits.listen((_) => exitCount += 1);
+    addTearDown(() async {
+      await subscription.cancel();
+      await exitSubscription.cancel();
+      messages.close();
+      exits.close();
+    });
+    addTearDown(() {
+      for (final isolate in isolates) {
+        isolate.kill(priority: Isolate.immediate);
+      }
+    });
+
+    isolates.add(
+      await Isolate.spawn(
+        _claimTaskInIsolate,
+        <Object?>[path, 'run-a', 'event-a', messages.sendPort],
+        onError: messages.sendPort,
+        onExit: exits.sendPort,
+      ),
+    );
+    isolates.add(
+      await Isolate.spawn(
+        _claimTaskInIsolate,
+        <Object?>[path, 'run-b', 'event-b', messages.sendPort],
+        onError: messages.sendPort,
+        onExit: exits.sendPort,
+      ),
+    );
+    await ready.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => throw TimeoutException(
+        'Timed out waiting for isolate readiness ($exitCount exited).',
+      ),
+    );
+    for (final port in readyPorts) {
+      port.send(true);
+    }
+    await finished.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => throw TimeoutException(
+        'Timed out waiting for isolate claims ($exitCount exited).',
+      ),
+    );
+
+    expect(results.whereType<String>(), hasLength(1));
+    final snapshot = (await store.loadRepository()).snapshot;
+    expect(snapshot.runs, hasLength(1));
+    expect(snapshot.events, hasLength(1));
+    expect(snapshot.events.single.runId, snapshot.runs.single.id);
+    expect(snapshot.tasks.single.currentRunId, snapshot.runs.single.id);
+    expect(await store.revision(), revisionBeforeClaim + 1);
+  });
+
+  test('claim conflicts roll back task run event and revision', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final store = TaskInboxSqliteStore(
+      path: '${tempDir.path}/task_inbox_state.sqlite3',
+    );
+    addTearDown(store.close);
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    final historyTask = TaskRecord(
+      id: 'task-history',
+      title: 'History',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.done,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      currentRunId: 'run-shared',
+    );
+    final queuedTask = TaskRecord(
+      id: 'task-queued',
+      title: 'Queued',
+      description: '',
+      workspacePath: '/workspace/other',
+      agentName: 'Codex',
+      status: TaskStatus.queued,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+    final historyRun = TaskRunRecord(
+      id: 'run-shared',
+      taskId: historyTask.id,
+      attempt: 1,
+      status: TaskStatus.done,
+      startedAt: createdAt,
+      endedAt: createdAt,
+    );
+    final historyEvent = TaskEventRecord(
+      id: 'event-shared',
+      taskId: historyTask.id,
+      runId: historyRun.id,
+      kind: TaskEventKind.system,
+      text: 'Done.',
+      createdAt: createdAt,
+    );
+    await store.activateVerifiedSnapshot(
+      TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: [historyTask, queuedTask],
+        runs: [historyRun],
+        events: [historyEvent],
+      ),
+      checksum: 'claim-conflicts',
+    );
+    final before = await store.loadRepository();
+    final startedAt = createdAt.add(const Duration(minutes: 1));
+
+    await expectLater(
+      store.claimTask(
+        queuedTask,
+        TaskRunRecord(
+          id: historyRun.id,
+          taskId: queuedTask.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: startedAt,
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: 'event-new',
+          taskId: queuedTask.id,
+          runId: historyRun.id,
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: startedAt,
+        ),
+      ),
+      throwsA(isA<TaskRepositoryConflict>()),
+    );
+    expect(
+      (await store.loadRepository()).snapshot.toJson(),
+      before.snapshot.toJson(),
+    );
+    expect(await store.revision(), before.revision);
+
+    await expectLater(
+      store.claimTask(
+        queuedTask,
+        TaskRunRecord(
+          id: 'run-new',
+          taskId: queuedTask.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: startedAt,
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: historyEvent.id,
+          taskId: queuedTask.id,
+          runId: 'run-new',
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: startedAt,
+        ),
+      ),
+      throwsA(isA<TaskRepositoryConflict>()),
+    );
+    expect(
+      (await store.loadRepository()).snapshot.toJson(),
+      before.snapshot.toJson(),
+    );
+    expect(await store.revision(), before.revision);
+  });
+
+  test(
+    'repositories validate claim status and calculate the next attempt',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-task-sqlite-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final createdAt = DateTime.utc(2026, 7, 10, 10);
+      final taskUpdatedAt = createdAt.add(const Duration(minutes: 5));
+      final task = TaskRecord(
+        id: 'task-1',
+        title: 'Retry generation',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+        status: TaskStatus.queued,
+        priority: TaskPriority.normal,
+        createdAt: createdAt,
+        updatedAt: taskUpdatedAt,
+      );
+      final snapshot = TaskInboxSnapshot(
+        updatedAt: taskUpdatedAt,
+        tasks: [task],
+        runs: [
+          TaskRunRecord(
+            id: 'run-1',
+            taskId: task.id,
+            attempt: 1,
+            status: TaskStatus.failed,
+            startedAt: createdAt,
+            endedAt: createdAt,
+          ),
+          TaskRunRecord(
+            id: 'run-3',
+            taskId: task.id,
+            attempt: 3,
+            status: TaskStatus.failed,
+            startedAt: createdAt,
+            endedAt: createdAt,
+          ),
+        ],
+      );
+      final sqlite = TaskInboxSqliteStore(
+        path: '${tempDir.path}/task_inbox_state.sqlite3',
+      );
+      await sqlite.activateVerifiedSnapshot(snapshot, checksum: 'attempts');
+      final memory = MemoryTaskRepository(snapshot);
+      addTearDown(sqlite.close);
+      addTearDown(memory.close);
+
+      for (final repository in <TaskRepository>[sqlite, memory]) {
+        final revision = await repository.revision();
+        await expectLater(
+          repository.claimTask(
+            task,
+            TaskRunRecord(
+              id: 'run-invalid',
+              taskId: task.id,
+              attempt: 1,
+              status: TaskStatus.running,
+              startedAt: createdAt,
+            ),
+            dispatchEvent: TaskEventRecord(
+              id: 'event-invalid',
+              taskId: task.id,
+              runId: 'run-invalid',
+              kind: TaskEventKind.system,
+              text: 'Task dispatched.',
+              createdAt: createdAt,
+            ),
+          ),
+          throwsArgumentError,
+        );
+        expect(await repository.revision(), revision);
+
+        final claim = await repository.claimTask(
+          task,
+          TaskRunRecord(
+            id: 'run-next',
+            taskId: task.id,
+            attempt: 1,
+            status: TaskStatus.dispatched,
+            startedAt: createdAt.add(const Duration(minutes: 1)),
+          ),
+          dispatchEvent: TaskEventRecord(
+            id: 'event-next',
+            taskId: task.id,
+            runId: 'run-next',
+            kind: TaskEventKind.system,
+            text: 'Task dispatched.',
+            createdAt: createdAt.add(const Duration(minutes: 2)),
+          ),
+        );
+        expect(claim!.run.attempt, 4);
+        expect(claim.task.updatedAt, taskUpdatedAt);
+        expect(claim.run.startedAt, taskUpdatedAt);
+        expect(claim.dispatchEvent.createdAt, taskUpdatedAt);
+        expect(
+          (await repository.loadRepository()).snapshot.events,
+          hasLength(1),
+        );
+      }
+    },
+  );
+
+  test('repositories reject stale task and resource claim routes', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    const oldResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/old'},
+    );
+    const newResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/new'},
+    );
+    TaskRecord task(String id, {String? resourceId}) => TaskRecord(
+      id: id,
+      title: id,
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'OldAgent',
+      status: TaskStatus.queued,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      resourceId: resourceId,
+    );
+    final staleTask = task('task-stale');
+    final resourceTask = task('task-resource', resourceId: oldResource.id);
+    final initial = TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [staleTask, resourceTask],
+      resources: const [oldResource],
+    );
+    final sqlite = TaskInboxSqliteStore(
+      path: '${tempDir.path}/task_inbox_state.sqlite3',
+    );
+    await sqlite.activateVerifiedSnapshot(initial, checksum: 'claim-routes');
+    final memory = MemoryTaskRepository(initial);
+    addTearDown(sqlite.close);
+    addTearDown(memory.close);
+
+    for (final repository in <TaskRepository>[sqlite, memory]) {
+      await repository.updateTask(
+        staleTask.copyWith(
+          agentName: 'NewAgent',
+          updatedAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+        expected: staleTask,
+      );
+      var revision = await repository.revision();
+      final staleTaskClaim = await repository.claimTask(
+        staleTask,
+        TaskRunRecord(
+          id: 'run-stale',
+          taskId: staleTask.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: createdAt.add(const Duration(minutes: 2)),
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: 'event-stale',
+          taskId: staleTask.id,
+          runId: 'run-stale',
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: createdAt.add(const Duration(minutes: 2)),
+        ),
+      );
+      expect(staleTaskClaim, isNull);
+      expect(await repository.revision(), revision);
+
+      await repository.upsertResource(
+        newResource,
+        expected: oldResource,
+        updatedAt: createdAt.add(const Duration(minutes: 1)),
+      );
+      revision = await repository.revision();
+      final staleResourceClaim = await repository.claimTask(
+        resourceTask,
+        TaskRunRecord(
+          id: 'run-resource',
+          taskId: resourceTask.id,
+          attempt: 1,
+          status: TaskStatus.dispatched,
+          startedAt: createdAt.add(const Duration(minutes: 2)),
+        ),
+        dispatchEvent: TaskEventRecord(
+          id: 'event-resource',
+          taskId: resourceTask.id,
+          runId: 'run-resource',
+          kind: TaskEventKind.system,
+          text: 'Task dispatched.',
+          createdAt: createdAt.add(const Duration(minutes: 2)),
+        ),
+        expectedResource: oldResource,
+      );
+      expect(staleResourceClaim, isNull);
+      expect(await repository.revision(), revision);
+      expect((await repository.loadRepository()).snapshot.runs, isEmpty);
+      expect((await repository.loadRepository()).snapshot.events, isEmpty);
+    }
+  });
+
+  test('repositories use the same claim failure priority', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    const oldResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/old'},
+    );
+    const newResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/new'},
+    );
+    TaskRecord queuedTask(String id, {String? resourceId}) => TaskRecord(
+      id: id,
+      title: id,
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'OldAgent',
+      status: TaskStatus.queued,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      resourceId: resourceId,
+    );
+    final historyTask = TaskRecord(
+      id: 'task-history',
+      title: 'History',
+      description: '',
+      workspacePath: '/workspace/history',
+      agentName: 'Codex',
+      status: TaskStatus.done,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      currentRunId: 'run-existing',
+    );
+    final staleTask = queuedTask('task-stale');
+    final resourceTask = queuedTask(
+      'task-resource',
+      resourceId: oldResource.id,
+    );
+    final existingRun = TaskRunRecord(
+      id: 'run-existing',
+      taskId: historyTask.id,
+      attempt: 1,
+      status: TaskStatus.done,
+      startedAt: createdAt,
+      endedAt: createdAt,
+    );
+    final existingEvent = TaskEventRecord(
+      id: 'event-existing',
+      taskId: historyTask.id,
+      runId: existingRun.id,
+      kind: TaskEventKind.system,
+      text: 'Done.',
+      createdAt: createdAt,
+    );
+    final initial = TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [historyTask, staleTask, resourceTask],
+      runs: [existingRun],
+      events: [existingEvent],
+      resources: const [oldResource],
+    );
+    final sqlite = TaskInboxSqliteStore(
+      path: '${tempDir.path}/task_inbox_state.sqlite3',
+    );
+    await sqlite.activateVerifiedSnapshot(initial, checksum: 'claim-priority');
+    final memory = MemoryTaskRepository(initial);
+    addTearDown(sqlite.close);
+    addTearDown(memory.close);
+
+    for (final repository in <TaskRepository>[sqlite, memory]) {
+      await repository.updateTask(
+        staleTask.copyWith(
+          agentName: 'NewAgent',
+          updatedAt: createdAt.add(const Duration(minutes: 1)),
+        ),
+        expected: staleTask,
+      );
+      await repository.upsertResource(
+        newResource,
+        expected: oldResource,
+        updatedAt: createdAt.add(const Duration(minutes: 1)),
+      );
+
+      Future<void> expectUnchanged(
+        Future<TaskClaim?> Function() operation,
+        Object matcher,
+      ) async {
+        final before = await repository.loadRepository();
+        await expectLater(operation(), matcher);
+        final after = await repository.loadRepository();
+        expect(after.revision, before.revision);
+        expect(after.snapshot.toJson(), before.snapshot.toJson());
+      }
+
+      await expectUnchanged(
+        () => repository.claimTask(
+          staleTask,
+          TaskRunRecord(
+            id: existingRun.id,
+            taskId: staleTask.id,
+            attempt: 1,
+            status: TaskStatus.dispatched,
+            startedAt: createdAt,
+          ),
+          dispatchEvent: TaskEventRecord(
+            id: 'event-stale',
+            taskId: staleTask.id,
+            runId: existingRun.id,
+            kind: TaskEventKind.system,
+            text: 'Task dispatched.',
+            createdAt: createdAt,
+          ),
+        ),
+        completion(isNull),
+      );
+
+      await expectUnchanged(
+        () => repository.claimTask(
+          resourceTask,
+          TaskRunRecord(
+            id: 'run-wrong-owner',
+            taskId: historyTask.id,
+            attempt: 1,
+            status: TaskStatus.dispatched,
+            startedAt: createdAt,
+          ),
+          dispatchEvent: TaskEventRecord(
+            id: 'event-wrong-owner',
+            taskId: resourceTask.id,
+            runId: 'run-wrong-owner',
+            kind: TaskEventKind.system,
+            text: 'Task dispatched.',
+            createdAt: createdAt,
+          ),
+          expectedResource: oldResource,
+        ),
+        throwsArgumentError,
+      );
+
+      await expectUnchanged(
+        () => repository.claimTask(
+          resourceTask,
+          TaskRunRecord(
+            id: existingRun.id,
+            taskId: historyTask.id,
+            attempt: 1,
+            status: TaskStatus.dispatched,
+            startedAt: createdAt,
+          ),
+          dispatchEvent: TaskEventRecord(
+            id: 'event-collision-and-wrong-owner',
+            taskId: resourceTask.id,
+            runId: existingRun.id,
+            kind: TaskEventKind.system,
+            text: 'Task dispatched.',
+            createdAt: createdAt,
+          ),
+          expectedResource: newResource,
+        ),
+        throwsArgumentError,
+      );
+    }
   });
 
   test('row writes do not move repository updatedAt backwards', () async {
@@ -1028,4 +1727,49 @@ void main() {
     expect(metadata.phase, TaskMigrationPhase.inactive);
     expect(metadata.sourceChecksum, 'first-checksum');
   });
+}
+
+Future<void> _claimTaskInIsolate(List<Object?> arguments) async {
+  final path = arguments[0]! as String;
+  final runId = arguments[1]! as String;
+  final eventId = arguments[2]! as String;
+  final resultPort = arguments[3]! as SendPort;
+  final start = ReceivePort();
+  final store = TaskInboxSqliteStore(path: path);
+  try {
+    final expectedTask = (await store.loadRepository()).snapshot.tasks.single;
+    resultPort.send(<String, Object?>{'type': 'ready', 'port': start.sendPort});
+    await start.first;
+    final startedAt = DateTime.utc(2026, 7, 10, 10, 1);
+    final claim = await store.claimTask(
+      expectedTask,
+      TaskRunRecord(
+        id: runId,
+        taskId: 'task-1',
+        attempt: 1,
+        status: TaskStatus.dispatched,
+        startedAt: startedAt,
+      ),
+      dispatchEvent: TaskEventRecord(
+        id: eventId,
+        taskId: 'task-1',
+        runId: runId,
+        kind: TaskEventKind.system,
+        text: 'Task dispatched.',
+        createdAt: startedAt,
+      ),
+    );
+    resultPort.send(<String, Object?>{
+      'type': 'result',
+      'run_id': claim?.run.id,
+    });
+  } on Object catch (error, stackTrace) {
+    resultPort.send(<String, Object?>{
+      'type': 'error',
+      'error': '$error\n$stackTrace',
+    });
+  } finally {
+    start.close();
+    await store.close();
+  }
 }

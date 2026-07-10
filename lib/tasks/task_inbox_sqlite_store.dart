@@ -232,7 +232,7 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
   }
 
   @override
-  Future<TaskClaim> createRun({
+  Future<TaskRunCreation> createRun({
     required TaskRecord expectedTask,
     required TaskRecord task,
     required TaskRunRecord run,
@@ -261,46 +261,96 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
       _validateTaskLinks(database, task);
       _upsertTask(database, task);
     }, updatedAt: task.updatedAt);
-    return TaskClaim(task: task, run: run);
+    return TaskRunCreation(task: task, run: run);
   }
 
   @override
-  Future<TaskClaim?> claimTask(String taskId, TaskRunRecord run) async {
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+  }) async {
+    if (run.status != TaskStatus.dispatched || run.endedAt != null) {
+      throw ArgumentError('Claimed task runs must start dispatched.');
+    }
     await initialize();
     final database = _database!;
     database.execute('BEGIN IMMEDIATE;');
     try {
       final rows = database.select(
         'SELECT payload_json FROM tasks WHERE id = ? AND status = ?;',
-        [taskId.trim(), TaskStatus.queued.jsonValue],
+        [expectedTask.id, TaskStatus.queued.jsonValue],
       );
       if (rows.isEmpty) {
         database.execute('ROLLBACK;');
         return null;
       }
       final task = TaskRecord.fromJson(_decodePayload(rows.first));
-      if (task == null || run.taskId != task.id) {
+      if (task == null) {
+        throw const FormatException('Invalid queued task payload.');
+      }
+      if (!_sameRecord(task, expectedTask)) {
+        database.execute('ROLLBACK;');
+        return null;
+      }
+      if (run.taskId != task.id ||
+          dispatchEvent.taskId != task.id ||
+          dispatchEvent.runId != run.id) {
+        throw ArgumentError('Claim records must belong to the queued task.');
+      }
+      if (!_resourceMatchesExpectation(database, task, expectedResource)) {
         database.execute('ROLLBACK;');
         return null;
       }
       if (_recordExists(database, 'task_runs', run.id)) {
         throw TaskRepositoryConflict('Task run already exists: ${run.id}');
       }
+      if (_recordExists(database, 'task_events', dispatchEvent.id)) {
+        throw TaskRepositoryConflict(
+          'Task event already exists: ${dispatchEvent.id}',
+        );
+      }
+      final attemptRows = database.select(
+        'SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt '
+        'FROM task_runs WHERE task_id = ?;',
+        [task.id],
+      );
+      final nextAttempt = attemptRows.single['next_attempt'];
+      if (nextAttempt is! int || nextAttempt < 1) {
+        throw StateError('Could not calculate the next task run attempt.');
+      }
+      final claimAt = _latestTimestamp(
+        task.updatedAt,
+        run.startedAt,
+        dispatchEvent.createdAt,
+      );
+      final actualRun = run.copyWith(attempt: nextAttempt, startedAt: claimAt);
+      final actualEvent = dispatchEvent.copyWith(createdAt: claimAt);
       final claimedTask = task.copyWith(
         status: TaskStatus.dispatched,
-        currentRunId: run.id,
-        updatedAt: run.startedAt,
+        currentRunId: actualRun.id,
+        updatedAt: claimAt,
       );
-      _upsertRun(database, run);
+      _upsertRun(database, actualRun);
       _validateTaskLinks(database, claimedTask);
-      _upsertTask(database, claimedTask);
+      _updateQueuedTask(database, claimedTask, expectedTask);
+      if (database.updatedRows != 1) {
+        database.execute('ROLLBACK;');
+        return null;
+      }
+      _insertEvent(database, actualEvent);
       database.execute(
         'UPDATE store_meta SET revision = revision + 1, updated_at = ? '
         'WHERE id = 1;',
-        [_monotonicUpdatedAt(database, run.startedAt)],
+        [_monotonicUpdatedAt(database, claimAt)],
       );
       database.execute('COMMIT;');
-      return TaskClaim(task: claimedTask, run: run);
+      return TaskClaim(
+        task: claimedTask,
+        run: actualRun,
+        dispatchEvent: actualEvent,
+      );
     } on SqliteException catch (error) {
       database.execute('ROLLBACK;');
       if (error.resultCode == SqlError.SQLITE_CONSTRAINT) {
@@ -755,6 +805,27 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
     return rows.isNotEmpty;
   }
 
+  static bool _sameRecord(Object left, Object right) {
+    return jsonEncode(_recordToJson(left)) == jsonEncode(_recordToJson(right));
+  }
+
+  static bool _resourceMatchesExpectation(
+    Database database,
+    TaskRecord task,
+    WorkspaceResource? expected,
+  ) {
+    final resourceId = task.resourceId;
+    if (resourceId == null) return expected == null;
+    if (expected == null || expected.id != resourceId) return false;
+    final rows = database.select(
+      'SELECT payload_json FROM workspace_resources WHERE id = ?;',
+      [resourceId],
+    );
+    if (rows.isEmpty) return false;
+    final current = WorkspaceResource.fromJson(_decodePayload(rows.first));
+    return current != null && _sameRecord(current, expected);
+  }
+
   static void _rejectUnsupportedSchema(Database database) {
     final tables = database.select(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' "
@@ -782,6 +853,17 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
       if (current != null && current.isAfter(candidate)) return raw as String;
     }
     return candidate.toIso8601String();
+  }
+
+  static DateTime _latestTimestamp(
+    DateTime first,
+    DateTime second,
+    DateTime third,
+  ) {
+    var latest = first;
+    if (second.isAfter(latest)) latest = second;
+    if (third.isAfter(latest)) latest = third;
+    return latest;
   }
 
   static void _validateTaskLinks(Database database, TaskRecord task) {
@@ -1024,6 +1106,42 @@ class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
         jsonEncode(task.skillIds),
         jsonEncode(task.metadata),
         jsonEncode(task.toJson()),
+      ],
+    );
+  }
+
+  static void _updateQueuedTask(
+    Database database,
+    TaskRecord task,
+    TaskRecord expected,
+  ) {
+    _validateCanonicalRecord(task);
+    database.execute(
+      'UPDATE tasks SET title = ?, description = ?, workspace_path = ?, '
+      'agent_name = ?, status = ?, priority = ?, created_at = ?, '
+      'updated_at = ?, session_id = ?, current_run_id = ?, summary = ?, '
+      'error = ?, resource_id = ?, skill_ids_json = ?, metadata_json = ?, '
+      'payload_json = ? WHERE id = ? AND status = ? AND payload_json = ?;',
+      [
+        task.title,
+        task.description,
+        task.workspacePath,
+        task.agentName,
+        task.status.jsonValue,
+        task.priority.jsonValue,
+        task.createdAt.toUtc().toIso8601String(),
+        task.updatedAt.toUtc().toIso8601String(),
+        task.sessionId,
+        task.currentRunId,
+        task.summary,
+        task.error,
+        task.resourceId,
+        jsonEncode(task.skillIds),
+        jsonEncode(task.metadata),
+        jsonEncode(task.toJson()),
+        task.id,
+        TaskStatus.queued.jsonValue,
+        jsonEncode(expected.toJson()),
       ],
     );
   }

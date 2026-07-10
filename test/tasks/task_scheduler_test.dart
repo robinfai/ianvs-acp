@@ -6,7 +6,10 @@ import 'package:ianvs_acp/tasks/runtime_registry.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:ianvs_acp/tasks/task_scheduler.dart';
+import 'package:ianvs_acp/tasks/workspace_execution_gate.dart';
+import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 import '../support/memory_task_repository.dart';
 
@@ -149,13 +152,15 @@ void main() {
 
   test('TaskScheduler dispatches a run before starting work', () async {
     final ids = _DeterministicIds();
-    final controller = TaskInboxController(
-      repository: _MemoryTaskStore(
-        TaskInboxSnapshot(
-          updatedAt: DateTime(2026, 7, 8, 9),
-          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
-        ),
+    final operations = <String>[];
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: DateTime(2026, 7, 8, 9),
+        tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
       ),
+    )..beforeOperation = (operation) async => operations.add(operation);
+    final controller = TaskInboxController(
+      repository: store,
       clock: () => DateTime(2026, 7, 8, 9, 30),
       idGenerator: ids.next,
     );
@@ -173,6 +178,8 @@ void main() {
     expect(controller.tasks.single.currentRunId, 'run-1');
     expect(controller.events.single.text, 'Task dispatched.');
     expect(controller.events.single.metadata['task_status'], 'dispatched');
+    expect(operations, contains('claimTask'));
+    expect(operations, isNot(contains('createRun')));
   });
 
   test(
@@ -273,6 +280,522 @@ void main() {
     expect(worker.startedTaskIds, ['task-1', 'task-3', 'task-2']);
   });
 
+  test('TaskScheduler skips the workspace gate for serial false', () async {
+    const resource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Parallel workspace',
+      ref: <String, Object?>{'path': '/workspace/app'},
+      serial: false,
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [
+            _task(
+              id: 'task-1',
+              createdAt: DateTime(2026, 7, 8, 9),
+              resourceId: resource.id,
+            ),
+            _task(
+              id: 'task-2',
+              createdAt: DateTime(2026, 7, 8, 9, 1),
+              resourceId: resource.id,
+            ),
+          ],
+          resources: const [resource],
+        ),
+      ),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      maxConcurrentTasks: 2,
+    );
+    addTearDown(scheduler.shutdown);
+    addTearDown(() => worker.complete('task-1'));
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.length == 2);
+
+    expect(worker.startedTaskIds, ['task-1', 'task-2']);
+    worker.complete('task-1');
+    worker.complete('task-2');
+  });
+
+  test('TaskScheduler re-probes when a queued task route changes', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: now,
+        tasks: [
+          _task(
+            id: 'task-1',
+            createdAt: now,
+            agentName: 'OldAgent',
+            workspacePath: '/workspace/old',
+          ),
+        ],
+      ),
+    );
+    final controller = TaskInboxController(
+      repository: store,
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final probeStarted = Completer<void>();
+    final releaseProbe = Completer<void>();
+    final probedAgents = <String>[];
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) async {
+        probedAgents.add(agentName);
+        if (agentName == 'OldAgent' && !probeStarted.isCompleted) {
+          probeStarted.complete();
+          await releaseProbe.future;
+        }
+        return LocalRuntimeStatus.available(
+          agentName: agentName,
+          checkedAt: now,
+        );
+      },
+    );
+    final gate = WorkspaceExecutionGate();
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+      workspaceGate: gate,
+    );
+    addTearDown(scheduler.shutdown);
+    addTearDown(() => worker.complete('task-1'));
+
+    await scheduler.start();
+    await probeStarted.future;
+    await controller.updateTask(
+      'task-1',
+      agentName: 'NewAgent',
+      workspacePath: '/workspace/new',
+    );
+    releaseProbe.complete();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+    expect(probedAgents.first, 'OldAgent');
+    expect(probedAgents, contains('NewAgent'));
+    expect(controller.tasks.single.agentName, 'NewAgent');
+    expect(gate.ownerFor('/workspace/old'), isNull);
+    expect(gate.ownerFor('/workspace/new'), 'task-1');
+
+    worker.complete('task-1');
+    await _waitUntil(() => scheduler.activeCount == 0);
+    expect(gate.ownerFor('/workspace/new'), isNull);
+  });
+
+  test('TaskScheduler re-probes when a queued resource changes', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    const oldResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/old'},
+    );
+    const newResource = WorkspaceResource(
+      id: 'resource-1',
+      type: ResourceType.localDirectory,
+      label: 'Workspace',
+      ref: <String, Object?>{'path': '/workspace/new'},
+    );
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: now,
+        tasks: [
+          _task(id: 'task-1', createdAt: now, resourceId: oldResource.id),
+        ],
+        resources: const [oldResource],
+      ),
+    );
+    final controller = TaskInboxController(
+      repository: store,
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final firstProbeStarted = Completer<void>();
+    final releaseFirstProbe = Completer<void>();
+    var probeCount = 0;
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) async {
+        probeCount += 1;
+        if (probeCount == 1) {
+          firstProbeStarted.complete();
+          await releaseFirstProbe.future;
+        }
+        return LocalRuntimeStatus.available(
+          agentName: agentName,
+          checkedAt: now,
+        );
+      },
+    );
+    final gate = WorkspaceExecutionGate();
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+      workspaceGate: gate,
+    );
+    addTearDown(scheduler.shutdown);
+    addTearDown(() => worker.complete('task-1'));
+
+    await scheduler.start();
+    await firstProbeStarted.future;
+    await store.upsertResource(
+      newResource,
+      expected: oldResource,
+      updatedAt: now.add(const Duration(minutes: 1)),
+    );
+    await controller.refreshIfChanged();
+    releaseFirstProbe.complete();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+    expect(probeCount, greaterThanOrEqualTo(2));
+    expect(gate.ownerFor('/workspace/old'), isNull);
+    expect(gate.ownerFor('/workspace/new'), 'task-1');
+    worker.complete('task-1');
+  });
+
+  test(
+    'TaskScheduler releases the gate key acquired before resource refresh',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      const oldResource = WorkspaceResource(
+        id: 'resource-1',
+        type: ResourceType.localDirectory,
+        label: 'Workspace',
+        ref: <String, Object?>{'path': '/workspace/old'},
+      );
+      const newResource = WorkspaceResource(
+        id: 'resource-1',
+        type: ResourceType.localDirectory,
+        label: 'Workspace',
+        ref: <String, Object?>{'path': '/workspace/new'},
+      );
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(id: 'task-1', createdAt: now, resourceId: oldResource.id),
+          ],
+          resources: const [oldResource],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final gate = WorkspaceExecutionGate();
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        workspaceGate: gate,
+      );
+      addTearDown(scheduler.shutdown);
+      addTearDown(() => worker.complete('task-1'));
+
+      await scheduler.start();
+      await _waitUntil(
+        () => controller.tasks.single.status == TaskStatus.running,
+      );
+      expect(gate.ownerFor('/workspace/old'), 'task-1');
+
+      await store.upsertResource(
+        newResource,
+        expected: oldResource,
+        updatedAt: now.add(const Duration(minutes: 1)),
+      );
+      await controller.refreshIfChanged();
+      worker.complete('task-1');
+      await _waitUntil(() => scheduler.activeCount == 0);
+
+      expect(gate.ownerFor('/workspace/old'), isNull);
+      expect(gate.ownerFor('/workspace/new'), isNull);
+    },
+  );
+
+  test(
+    'TaskScheduler leaves busy runtime tasks queued without a run',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [_task(id: 'task-1', createdAt: now)],
+          ),
+        ),
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final runtimeRegistry = LocalRuntimeRegistry(clock: () => now)
+        ..setStatus(
+          LocalRuntimeStatus.busy(
+            agentName: 'Codex',
+            checkedAt: now,
+            reason: 'The background agent is already in use.',
+          ),
+        );
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        runtimeRegistry: runtimeRegistry,
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+
+      expect(worker.startedTaskIds, isEmpty);
+      expect(controller.tasks.single.status, TaskStatus.queued);
+      expect(controller.runs, isEmpty);
+
+      runtimeRegistry.setStatus(
+        LocalRuntimeStatus.available(agentName: 'Codex', checkedAt: now),
+      );
+      await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+      expect(controller.runs, hasLength(1));
+      worker.complete('task-1');
+    },
+  );
+
+  test('TaskScheduler stop cancels busy runtime wake-ups', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    var probeCount = 0;
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) {
+        probeCount += 1;
+        return LocalRuntimeStatus.busy(agentName: agentName, checkedAt: now);
+      },
+    );
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+    );
+    addTearDown(scheduler.shutdown);
+
+    await scheduler.start();
+    await _waitUntil(() => probeCount > 0);
+    scheduler.stop();
+    final countAtStop = probeCount;
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+
+    expect(probeCount, countAtStop);
+    expect(worker.startedTaskIds, isEmpty);
+    expect(controller.tasks.single.status, TaskStatus.queued);
+    expect(controller.runs, isEmpty);
+  });
+
+  test('TaskScheduler stop prevents a pending probe from claiming', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final probeStarted = Completer<void>();
+    final releaseProbe = Completer<void>();
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) async {
+        probeStarted.complete();
+        await releaseProbe.future;
+        return LocalRuntimeStatus.available(
+          agentName: agentName,
+          checkedAt: now,
+        );
+      },
+    );
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+    );
+
+    await scheduler.start();
+    await probeStarted.future;
+    scheduler.stop();
+    releaseProbe.complete();
+    await scheduler.shutdown();
+
+    expect(worker.startedTaskIds, isEmpty);
+    expect(controller.tasks.single.status, TaskStatus.queued);
+    expect(controller.runs, isEmpty);
+    expect(controller.events, isEmpty);
+  });
+
+  test('TaskScheduler lets available agents pass a busy task', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(
+              id: 'task-busy',
+              createdAt: now,
+              priority: TaskPriority.urgent,
+              agentName: 'BusyAgent',
+            ),
+            _task(
+              id: 'task-ready',
+              createdAt: now.add(const Duration(minutes: 1)),
+              agentName: 'ReadyAgent',
+            ),
+          ],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) => agentName == 'BusyAgent'
+          ? LocalRuntimeStatus.busy(agentName: agentName, checkedAt: now)
+          : LocalRuntimeStatus.available(agentName: agentName, checkedAt: now),
+    );
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+      maxConcurrentTasks: 1,
+    );
+    addTearDown(scheduler.shutdown);
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+    expect(worker.startedTaskIds, ['task-ready']);
+    expect(controller.taskById('task-busy')!.status, TaskStatus.queued);
+    expect(controller.runs.where((run) => run.taskId == 'task-busy'), isEmpty);
+    worker.complete('task-ready');
+  });
+
+  test(
+    'TaskScheduler retries a claim id conflict without failing task',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final store = _ConflictOnceClaimStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(
+              id: 'task-queued',
+              createdAt: now.add(const Duration(minutes: 1)),
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start();
+      await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+      expect(worker.startedTaskIds, ['task-queued']);
+      expect(store.claimCalls, 2);
+      expect(controller.taskById('task-queued')!.status, TaskStatus.running);
+      expect(
+        controller.runs.singleWhere((run) => run.taskId == 'task-queued').id,
+        'run-2',
+      );
+      worker.complete('task-queued');
+    },
+  );
+
+  test(
+    'TaskScheduler retries refresh after another scheduler wins the claim',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final store = _LoseFirstClaimStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [_task(id: 'task-1', createdAt: now)],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        clock: () => now,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start();
+      await _waitUntil(
+        () => controller.taskById('task-1')?.currentRunId == 'run-external',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(store.claimCalls, 1);
+      expect(store.remainingLoadFailures, 0);
+      expect(worker.startedTaskIds, isEmpty);
+      expect(controller.tasks.single.status, TaskStatus.dispatched);
+      expect(controller.runs.single.id, 'run-external');
+      expect(controller.events.single.id, 'event-external');
+    },
+  );
+
   test(
     'TaskScheduler keeps runtime offline tasks queued with an event',
     () async {
@@ -356,7 +879,9 @@ void main() {
     addTearDown(scheduler.dispose);
 
     await scheduler.start();
-    await _waitUntil(() => controller.events.isNotEmpty);
+    await _waitUntil(
+      () => controller.tasks.single.status == TaskStatus.blockedOnUserInput,
+    );
 
     expect(worker.startedTaskIds, isEmpty);
     expect(controller.tasks.single.status, TaskStatus.blockedOnUserInput);
@@ -370,6 +895,125 @@ void main() {
       controller.events.map((event) => event.text),
       contains(contains('Authentication required')),
     );
+
+    runtimeRegistry.setStatus(
+      LocalRuntimeStatus.available(agentName: 'Codex', checkedAt: now),
+    );
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+    expect(worker.startedTaskIds, ['task-1']);
+    expect(controller.runs, hasLength(2));
+    expect(controller.tasks.single.metadata['failure_reason'], isNull);
+    expect(controller.tasks.single.metadata['runtime_availability'], isNull);
+    worker.complete('task-1');
+  });
+
+  test('TaskScheduler only requeues the authenticated agent tasks', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(
+              id: 'task-ready-auth',
+              createdAt: now,
+              status: TaskStatus.blockedOnUserInput,
+              currentRunId: 'run-ready-auth',
+              agentName: 'ReadyAgent',
+              metadata: const <String, Object?>{
+                'failure_reason': 'authRequired',
+                'runtime_availability': 'authRequired',
+              },
+            ),
+            _task(
+              id: 'task-waiting-auth',
+              createdAt: now.add(const Duration(minutes: 1)),
+              status: TaskStatus.blockedOnUserInput,
+              currentRunId: 'run-waiting-auth',
+              agentName: 'WaitingAgent',
+              metadata: const <String, Object?>{
+                'failure_reason': 'authRequired',
+                'runtime_availability': 'authRequired',
+              },
+            ),
+            _task(
+              id: 'task-human-blocked',
+              createdAt: now.add(const Duration(minutes: 2)),
+              status: TaskStatus.blockedOnUserInput,
+              agentName: 'ReadyAgent',
+              metadata: const <String, Object?>{
+                'failure_reason': 'permissionDenied',
+              },
+            ),
+          ],
+          runs: [
+            TaskRunRecord(
+              id: 'run-ready-auth',
+              taskId: 'task-ready-auth',
+              attempt: 1,
+              status: TaskStatus.failed,
+              startedAt: now,
+              endedAt: now,
+            ),
+            TaskRunRecord(
+              id: 'run-waiting-auth',
+              taskId: 'task-waiting-auth',
+              attempt: 1,
+              status: TaskStatus.failed,
+              startedAt: now,
+              endedAt: now,
+            ),
+          ],
+        ),
+      ),
+      clock: () => now,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final registry = LocalRuntimeRegistry(
+      clock: () => now,
+      probe: (agentName) => agentName == 'ReadyAgent'
+          ? LocalRuntimeStatus.available(agentName: agentName, checkedAt: now)
+          : LocalRuntimeStatus.authRequired(
+              agentName: agentName,
+              checkedAt: now,
+            ),
+    );
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      runtimeRegistry: registry,
+    );
+    addTearDown(scheduler.shutdown);
+    addTearDown(() => worker.complete('task-ready-auth'));
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+
+    expect(worker.startedTaskIds, ['task-ready-auth']);
+    expect(
+      controller.taskById('task-ready-auth')!.metadata['failure_reason'],
+      isNull,
+    );
+    expect(
+      controller.taskById('task-waiting-auth')!.status,
+      TaskStatus.blockedOnUserInput,
+    );
+    expect(
+      controller.taskById('task-waiting-auth')!.metadata['failure_reason'],
+      'authRequired',
+    );
+    expect(
+      controller.taskById('task-human-blocked')!.status,
+      TaskStatus.blockedOnUserInput,
+    );
+    expect(
+      controller.taskById('task-human-blocked')!.metadata['failure_reason'],
+      'permissionDenied',
+    );
+    worker.complete('task-ready-auth');
   });
 
   test('TaskScheduler retries retryable failures with a new run', () async {
@@ -550,6 +1194,145 @@ void main() {
     },
   );
 
+  test(
+    'TaskScheduler preserves non-active and auth-blocked tasks on recovery',
+    () async {
+      final createdAt = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              _task(
+                id: 'task-auth',
+                createdAt: createdAt,
+                status: TaskStatus.blockedOnUserInput,
+                currentRunId: 'run-auth',
+                metadata: const <String, Object?>{
+                  'failure_reason': 'authRequired',
+                },
+              ),
+              _task(
+                id: 'task-complete-run',
+                createdAt: createdAt,
+                status: TaskStatus.running,
+                currentRunId: 'run-complete',
+              ),
+            ],
+            runs: [
+              TaskRunRecord(
+                id: 'run-auth',
+                taskId: 'task-auth',
+                attempt: 1,
+                status: TaskStatus.failed,
+                startedAt: createdAt,
+                endedAt: createdAt,
+              ),
+              TaskRunRecord(
+                id: 'run-complete',
+                taskId: 'task-complete-run',
+                attempt: 1,
+                status: TaskStatus.done,
+                startedAt: createdAt,
+                endedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+        clock: () => createdAt.add(const Duration(hours: 1)),
+      );
+      addTearDown(controller.dispose);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: _RecordingTaskWorker(controller),
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start(dispatchQueuedTasks: false);
+
+      expect(
+        controller.taskById('task-auth')!.status,
+        TaskStatus.blockedOnUserInput,
+      );
+      expect(
+        controller.taskById('task-auth')!.metadata['failure_reason'],
+        'authRequired',
+      );
+      expect(
+        controller.taskById('task-complete-run')!.status,
+        TaskStatus.running,
+      );
+      expect(controller.events, isEmpty);
+    },
+  );
+
+  test(
+    'TaskScheduler recovers active permission and artifact phases',
+    () async {
+      final createdAt = DateTime(2026, 7, 8, 9);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: createdAt,
+            tasks: [
+              _task(
+                id: 'task-permission',
+                createdAt: createdAt,
+                status: TaskStatus.blockedOnPermission,
+                currentRunId: 'run-permission',
+              ),
+              _task(
+                id: 'task-artifacts',
+                createdAt: createdAt,
+                status: TaskStatus.collectingArtifacts,
+                currentRunId: 'run-artifacts',
+              ),
+            ],
+            runs: [
+              TaskRunRecord(
+                id: 'run-permission',
+                taskId: 'task-permission',
+                attempt: 1,
+                status: TaskStatus.running,
+                startedAt: createdAt,
+              ),
+              TaskRunRecord(
+                id: 'run-artifacts',
+                taskId: 'task-artifacts',
+                attempt: 1,
+                status: TaskStatus.running,
+                startedAt: createdAt,
+              ),
+            ],
+          ),
+        ),
+        clock: () => createdAt.add(const Duration(hours: 1)),
+      );
+      addTearDown(controller.dispose);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: _RecordingTaskWorker(controller),
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start(dispatchQueuedTasks: false);
+
+      expect(
+        controller.tasks.map((task) => task.status),
+        everyElement(TaskStatus.failed),
+      );
+      expect(
+        controller.runs.map((run) => run.status),
+        everyElement(TaskStatus.failed),
+      );
+      expect(controller.events, hasLength(2));
+      expect(
+        controller.events.map((event) => event.metadata['recovered']),
+        everyElement(isTrue),
+      );
+    },
+  );
+
   test('TaskScheduler shutdown cancels and waits for active work', () async {
     final controller = TaskInboxController(
       repository: _MemoryTaskStore(
@@ -641,7 +1424,9 @@ TaskRecord _task({
   required DateTime createdAt,
   TaskStatus status = TaskStatus.queued,
   String workspacePath = '/workspace/app',
+  String agentName = 'Codex',
   String? currentRunId,
+  String? resourceId,
   Map<String, Object?> metadata = const <String, Object?>{},
 }) {
   return TaskRecord(
@@ -649,12 +1434,13 @@ TaskRecord _task({
     title: id,
     description: '',
     workspacePath: workspacePath,
-    agentName: 'Codex',
+    agentName: agentName,
     status: status,
     priority: priority,
     createdAt: createdAt,
     updatedAt: createdAt,
     currentRunId: currentRunId,
+    resourceId: resourceId,
     metadata: metadata,
   );
 }
@@ -785,7 +1571,7 @@ class _MemoryTaskStore extends MemoryTaskRepository {
 class _BlockingSaveTaskStore extends MemoryTaskRepository {
   _BlockingSaveTaskStore(super.snapshot) {
     beforeOperation = (operation) async {
-      if (operation != 'createRun') return;
+      if (operation != 'claimTask') return;
       if (!saveStarted.isCompleted) saveStarted.complete();
       await _saveRelease.future;
     };
@@ -796,6 +1582,88 @@ class _BlockingSaveTaskStore extends MemoryTaskRepository {
 
   void releaseSave() {
     if (!_saveRelease.isCompleted) _saveRelease.complete();
+  }
+}
+
+class _LoseFirstClaimStore extends MemoryTaskRepository {
+  _LoseFirstClaimStore(super.snapshot);
+
+  int claimCalls = 0;
+  int remainingLoadFailures = 1;
+  bool _externalClaimed = false;
+
+  @override
+  Future<TaskRepositorySnapshot> loadRepository() {
+    if (_externalClaimed && remainingLoadFailures > 0) {
+      remainingLoadFailures -= 1;
+      throw StateError('simulated reload failure');
+    }
+    return super.loadRepository();
+  }
+
+  @override
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+  }) async {
+    claimCalls += 1;
+    if (claimCalls != 1) {
+      return super.claimTask(
+        expectedTask,
+        run,
+        dispatchEvent: dispatchEvent,
+        expectedResource: expectedResource,
+      );
+    }
+    final startedAt = run.startedAt;
+    await super.claimTask(
+      expectedTask,
+      TaskRunRecord(
+        id: 'run-external',
+        taskId: expectedTask.id,
+        attempt: run.attempt,
+        status: TaskStatus.dispatched,
+        startedAt: startedAt,
+      ),
+      dispatchEvent: TaskEventRecord(
+        id: 'event-external',
+        taskId: expectedTask.id,
+        runId: 'run-external',
+        kind: TaskEventKind.system,
+        text: 'Task dispatched.',
+        createdAt: startedAt,
+      ),
+      expectedResource: expectedResource,
+    );
+    _externalClaimed = true;
+    return null;
+  }
+}
+
+class _ConflictOnceClaimStore extends MemoryTaskRepository {
+  _ConflictOnceClaimStore(super.snapshot);
+
+  int claimCalls = 0;
+
+  @override
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+  }) {
+    claimCalls += 1;
+    if (claimCalls == 1) {
+      throw const TaskRepositoryConflict('simulated run id collision');
+    }
+    return super.claimTask(
+      expectedTask,
+      run,
+      dispatchEvent: dispatchEvent,
+      expectedResource: expectedResource,
+    );
   }
 }
 

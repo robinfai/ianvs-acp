@@ -7,6 +7,7 @@ import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
 import 'task_repository.dart';
 import 'task_timeline.dart';
+import 'workspace_resource.dart';
 
 typedef TaskInboxClock = DateTime Function();
 typedef TaskInboxIdGenerator = String Function(String prefix);
@@ -191,6 +192,78 @@ class TaskInboxController extends ChangeNotifier {
       _markRepositoryChanged();
       notifyListeners();
       return created.run;
+    });
+  }
+
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask, {
+    WorkspaceResource? expectedResource,
+  }) async {
+    if (!_loaded) await load();
+    return _withStateTransition(() async {
+      final taskId = expectedTask.id;
+      final taskIndex = _indexOfTask(taskId);
+      if (taskIndex < 0) throw StateError('Task not found: $taskId');
+      if (_snapshot.tasks[taskIndex].status != TaskStatus.queued) return null;
+      final task = expectedTask;
+      if (task.status != TaskStatus.queued) return null;
+      final now = _clock();
+      final run = TaskRunRecord(
+        id: _newId('run'),
+        taskId: task.id,
+        attempt:
+            _snapshot.runs
+                .where((run) => run.taskId == task.id)
+                .fold<int>(
+                  0,
+                  (maximum, run) =>
+                      run.attempt > maximum ? run.attempt : maximum,
+                ) +
+            1,
+        status: TaskStatus.dispatched,
+        startedAt: now,
+      );
+      final dispatchEvent = TaskEventRecord(
+        id: _newId('event'),
+        taskId: task.id,
+        runId: run.id,
+        kind: TaskEventKind.system,
+        text: 'Task dispatched.',
+        createdAt: now,
+        metadata: const <String, Object?>{'task_status': 'dispatched'},
+      );
+      final claim = await repository.claimTask(
+        task,
+        run,
+        dispatchEvent: dispatchEvent,
+        expectedResource: expectedResource,
+      );
+      if (claim == null) {
+        await _reloadRepositoryWithinTransition();
+        return null;
+      }
+      final tasks = [..._snapshot.tasks];
+      final currentIndex = tasks.indexWhere(
+        (candidate) => candidate.id == claim.task.id,
+      );
+      if (currentIndex < 0) {
+        throw StateError('Task disappeared after claim: $taskId');
+      }
+      tasks[currentIndex] = claim.task;
+      _snapshot = _snapshot.copyWith(
+        tasks: _dedupeTasks(tasks),
+        runs: [..._snapshot.runs, claim.run],
+        events: [..._snapshot.events, claim.dispatchEvent],
+        updatedAt: _latestTimestamp(
+          _snapshot.updatedAt,
+          claim.task.updatedAt,
+          claim.run.startedAt,
+          claim.dispatchEvent.createdAt,
+        ),
+      );
+      _markRepositoryChanged();
+      notifyListeners();
+      return claim;
     });
   }
 
@@ -548,19 +621,21 @@ class TaskInboxController extends ChangeNotifier {
       final recovered = <TaskRecord>[];
       final tasks = List<TaskRecord>.of(_snapshot.tasks);
       for (final task in tasks) {
-        if (!_isInterruptedTaskStatus(task.status)) continue;
+        if (!_isInterruptedTaskState(task.status)) continue;
         final runId = _trimmedOrNull(task.currentRunId);
-        if (runId != null) {
-          final run = _runById(runId);
-          if (run != null && _isInterruptedTaskStatus(run.status)) {
-            await _updateRunWithinTransition(
-              run.id,
-              status: TaskStatus.failed,
-              endedAt: _clock(),
-              error: reason,
-            );
-          }
+        if (runId == null) continue;
+        final run = _runById(runId);
+        if (run == null ||
+            run.taskId != task.id ||
+            !_isActiveRunState(run.status)) {
+          continue;
         }
+        await _updateRunWithinTransition(
+          run.id,
+          status: TaskStatus.failed,
+          endedAt: _clock(),
+          error: reason,
+        );
 
         final updated = await _updateTaskWithinTransition(
           task.id,
@@ -570,19 +645,17 @@ class TaskInboxController extends ChangeNotifier {
         );
         recovered.add(updated);
 
-        if (runId != null && _runExists(runId)) {
-          await _appendEventWithinTransition(
-            taskId: task.id,
-            runId: runId,
-            kind: TaskEventKind.system,
-            text: 'Task run recovered as failed: $reason',
-            sessionId: task.sessionId,
-            metadata: <String, Object?>{
-              'recovered': true,
-              'previous_status': task.status.name,
-            },
-          );
-        }
+        await _appendEventWithinTransition(
+          taskId: task.id,
+          runId: runId,
+          kind: TaskEventKind.system,
+          text: 'Task run recovered as failed: $reason',
+          sessionId: task.sessionId,
+          metadata: <String, Object?>{
+            'recovered': true,
+            'previous_status': task.status.name,
+          },
+        );
       }
       return List.unmodifiable(recovered);
     });
@@ -768,6 +841,26 @@ class TaskInboxController extends ChangeNotifier {
     _revision = -1;
   }
 
+  Future<void> _reloadRepositoryWithinTransition() async {
+    final loaded = await repository.loadRepository();
+    _snapshot = loaded.snapshot;
+    _revision = loaded.revision;
+    notifyListeners();
+  }
+
+  DateTime _latestTimestamp(
+    DateTime first,
+    DateTime second,
+    DateTime third,
+    DateTime fourth,
+  ) {
+    var latest = first;
+    for (final candidate in <DateTime>[second, third, fourth]) {
+      if (candidate.isAfter(latest)) latest = candidate;
+    }
+    return latest;
+  }
+
   Future<T> _withStateTransition<T>(Future<T> Function() action) {
     final previous = _stateTransition;
     final result = Completer<T>();
@@ -836,13 +929,19 @@ class TaskInboxController extends ChangeNotifier {
 
   bool _runExists(String runId) => _runById(runId) != null;
 
-  bool _isInterruptedTaskStatus(TaskStatus status) {
+  bool _isInterruptedTaskState(TaskStatus status) {
     return switch (status) {
       TaskStatus.running ||
       TaskStatus.dispatched ||
       TaskStatus.blockedOnPermission ||
-      TaskStatus.blockedOnUserInput ||
       TaskStatus.collectingArtifacts => true,
+      _ => false,
+    };
+  }
+
+  bool _isActiveRunState(TaskStatus status) {
+    return switch (status) {
+      TaskStatus.running || TaskStatus.dispatched => true,
       _ => false,
     };
   }

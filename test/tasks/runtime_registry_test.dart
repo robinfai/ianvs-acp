@@ -54,4 +54,21 @@ void main() {
     expect(status.availability, RuntimeAvailability.authRequired);
     expect(status.unavailableReason, 'Authentication expired.');
   });
+
+  test('LocalRuntimeRegistry records busy without reporting available', () {
+    final registry = LocalRuntimeRegistry();
+
+    registry.setStatus(
+      LocalRuntimeStatus.busy(
+        agentName: 'Codex',
+        checkedAt: DateTime(2026, 7, 8, 9),
+        reason: 'Another task owns the agent.',
+      ),
+    );
+
+    final status = registry.statusForAgent('Codex');
+    expect(status.availability, RuntimeAvailability.busy);
+    expect(status.available, isFalse);
+    expect(status.unavailableReason, 'Another task owns the agent.');
+  });
 }

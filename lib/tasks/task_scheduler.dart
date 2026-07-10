@@ -4,6 +4,7 @@ import 'retry_policy.dart';
 import 'runtime_registry.dart';
 import 'task_inbox_controller.dart';
 import 'task_record.dart';
+import 'task_repository.dart';
 import 'task_worker.dart';
 import 'workspace_execution_gate.dart';
 import 'workspace_resource.dart';
@@ -38,6 +39,7 @@ class TaskScheduler {
   final RetryPolicy retryPolicy;
   final DateTime Function() _clock;
   final Set<String> _activeTaskIds = <String>{};
+  final Map<String, String> _serialKeysByTaskId = <String, String>{};
   final Set<Future<void>> _activeRuns = <Future<void>>{};
   final Set<Future<void>> _activeDrains = <Future<void>>{};
   bool _started = false;
@@ -47,6 +49,7 @@ class TaskScheduler {
   bool _draining = false;
   Timer? _retryWakeTimer;
   Timer? _refreshRetryTimer;
+  Timer? _runtimeWakeTimer;
   DateTime? _retryWakeAt;
   Future<void>? _shutdownFuture;
 
@@ -64,6 +67,7 @@ class TaskScheduler {
     _started = true;
     _dispatchEnabled = dispatchQueuedTasks;
     taskController.addListener(_onTaskControllerChanged);
+    runtimeRegistry?.addListener(_onRuntimeRegistryChanged);
     _scheduleDrain();
   }
 
@@ -84,8 +88,11 @@ class TaskScheduler {
     _retryWakeTimer = null;
     _refreshRetryTimer?.cancel();
     _refreshRetryTimer = null;
+    _runtimeWakeTimer?.cancel();
+    _runtimeWakeTimer = null;
     _retryWakeAt = null;
     taskController.removeListener(_onTaskControllerChanged);
+    runtimeRegistry?.removeListener(_onRuntimeRegistryChanged);
   }
 
   void dispose() {
@@ -140,6 +147,11 @@ class TaskScheduler {
     _scheduleDrain();
   }
 
+  void _onRuntimeRegistryChanged() {
+    if (_draining) return;
+    _scheduleDrain();
+  }
+
   void _scheduleDrain() {
     if (!_started || !_dispatchEnabled || _disposed || _drainScheduled) return;
     _drainScheduled = true;
@@ -168,21 +180,64 @@ class TaskScheduler {
         _scheduleRefreshRetry();
         return;
       }
+      if (!_started || !_dispatchEnabled || _disposed) return;
+      try {
+        await _requeueAuthenticatedTasks();
+      } on Object {
+        _scheduleRefreshRetry();
+        return;
+      }
+      if (!_started || !_dispatchEnabled || _disposed) return;
+      final deferredTaskIds = <String>{};
       while (_started &&
           _dispatchEnabled &&
           !_disposed &&
           _activeTaskIds.length < maxConcurrentTasks) {
-        final task = _nextQueuedTask();
+        final task = _nextQueuedTask(deferredTaskIds);
         if (task == null) return;
-        final serialKey = _serialGateKey(task);
-        if (!workspaceGate.tryAcquire(serialKey, task.id)) {
+        _TaskDispatchRoute route;
+        try {
+          route = _dispatchRouteFor(task);
+        } on Object {
+          deferredTaskIds.add(task.id);
+          _scheduleRefreshRetry();
+          continue;
+        }
+        LocalRuntimeStatus? runtimeStatus;
+        try {
+          runtimeStatus = await _runtimeStatusFor(task);
+        } on Object {
+          deferredTaskIds.add(task.id);
+          _scheduleRuntimeWake();
+          continue;
+        }
+        if (!_started || !_dispatchEnabled || _disposed) return;
+        if (runtimeStatus?.availability == RuntimeAvailability.busy) {
+          deferredTaskIds.add(task.id);
+          _scheduleRuntimeWake();
+          continue;
+        }
+        final serialKey = route.serialKey;
+        if (serialKey.isNotEmpty &&
+            !workspaceGate.tryAcquire(serialKey, task.id)) {
           return;
+        }
+        if (serialKey.isNotEmpty) {
+          _serialKeysByTaskId[task.id] = serialKey;
         }
         _activeTaskIds.add(task.id);
 
         try {
-          final dispatched = await _dispatchTask(task);
-          final runtimeStatus = await _runtimeStatusFor(dispatched);
+          final dispatched = await _dispatchTask(
+            task,
+            expectedResource: route.expectedResource,
+          );
+          if (dispatched == null) {
+            _releaseTask(task);
+            deferredTaskIds.add(task.id);
+            _scheduleRuntimeWake();
+            continue;
+          }
           if (_isRuntimeBlocked(runtimeStatus)) {
             await _handleRuntimeBlocked(dispatched, runtimeStatus!);
             _releaseTask(dispatched);
@@ -202,9 +257,19 @@ class TaskScheduler {
               },
             ),
           );
-        } catch (error) {
+        } on TaskRepositoryConflict {
           _releaseTask(task);
-          await _markTaskFailed(task, error);
+          deferredTaskIds.add(task.id);
+          try {
+            await taskController.refreshIfChanged();
+          } on Object {
+            _scheduleRefreshRetry();
+          }
+          _scheduleRuntimeWake();
+        } catch (_) {
+          _releaseTask(task);
+          deferredTaskIds.add(task.id);
+          _scheduleRefreshRetry();
         }
       }
     } finally {
@@ -222,11 +287,22 @@ class TaskScheduler {
     });
   }
 
-  TaskRecord? _nextQueuedTask() {
+  void _scheduleRuntimeWake() {
+    if (!_started || !_dispatchEnabled || _disposed) return;
+    final existing = _runtimeWakeTimer;
+    if (existing != null && existing.isActive) return;
+    _runtimeWakeTimer = Timer(const Duration(milliseconds: 250), () {
+      _runtimeWakeTimer = null;
+      _scheduleDrain();
+    });
+  }
+
+  TaskRecord? _nextQueuedTask(Set<String> deferredTaskIds) {
     final queued = taskController.tasks
         .where(
           (task) =>
               task.status == TaskStatus.queued &&
+              !deferredTaskIds.contains(task.id) &&
               !_activeTaskIds.contains(task.id) &&
               !workspaceGate.isLocked(_serialGateKey(task)) &&
               _retryReady(task),
@@ -276,19 +352,50 @@ class TaskScheduler {
     });
   }
 
-  Future<TaskRecord> _dispatchTask(TaskRecord task) async {
-    final run = await taskController.createRun(
-      taskId: task.id,
-      status: TaskStatus.dispatched,
+  Future<TaskRecord?> _dispatchTask(
+    TaskRecord task, {
+    required WorkspaceResource? expectedResource,
+  }) async {
+    final claim = await taskController.claimTask(
+      task,
+      expectedResource: expectedResource,
     );
-    await taskController.appendEvent(
-      taskId: task.id,
-      runId: run.id,
-      kind: TaskEventKind.system,
-      text: 'Task dispatched.',
-      metadata: const <String, Object?>{'task_status': 'dispatched'},
-    );
-    return taskController.taskById(task.id) ?? task;
+    return claim?.task;
+  }
+
+  Future<void> _requeueAuthenticatedTasks() async {
+    if (runtimeRegistry == null) return;
+    final blocked = taskController.tasks
+        .where(
+          (task) =>
+              task.status == TaskStatus.blockedOnUserInput &&
+              task.metadata['failure_reason'] ==
+                  TaskFailureReason.authRequired.name,
+        )
+        .toList(growable: false);
+    for (final task in blocked) {
+      LocalRuntimeStatus status;
+      try {
+        status = (await _runtimeStatusFor(task))!;
+      } on Object {
+        _scheduleRuntimeWake();
+        continue;
+      }
+      if (!_started || !_dispatchEnabled || _disposed) return;
+      if (status.availability != RuntimeAvailability.available) {
+        _scheduleRuntimeWake();
+        continue;
+      }
+      await taskController.updateTask(
+        task.id,
+        status: TaskStatus.queued,
+        sessionId: null,
+        currentRunId: null,
+        summary: 'Authentication completed. Queued for retry.',
+        error: null,
+        metadata: _runtimeFailureMetadataCleared(task.metadata),
+      );
+    }
   }
 
   Future<LocalRuntimeStatus?> _runtimeStatusFor(TaskRecord task) async {
@@ -304,6 +411,7 @@ class TaskScheduler {
       RuntimeAvailability.misconfigured => true,
       RuntimeAvailability.unknown ||
       RuntimeAvailability.available ||
+      RuntimeAvailability.busy ||
       null => false,
     };
   }
@@ -353,6 +461,9 @@ class TaskScheduler {
       error: message,
       metadata: _failureMetadata(task.metadata, reason, status: status),
     );
+    if (reason == TaskFailureReason.authRequired) {
+      _scheduleRuntimeWake();
+    }
   }
 
   TaskFailureReason _failureReasonForRuntime(LocalRuntimeStatus status) {
@@ -361,7 +472,8 @@ class TaskScheduler {
       RuntimeAvailability.unavailable ||
       RuntimeAvailability.misconfigured => TaskFailureReason.runtimeOffline,
       RuntimeAvailability.unknown ||
-      RuntimeAvailability.available => TaskFailureReason.agentError,
+      RuntimeAvailability.available ||
+      RuntimeAvailability.busy => TaskFailureReason.agentError,
     };
   }
 
@@ -487,18 +599,6 @@ class TaskScheduler {
     };
   }
 
-  Future<void> _markTaskFailed(TaskRecord task, Object error) async {
-    try {
-      await taskController.updateTask(
-        task.id,
-        status: TaskStatus.failed,
-        error: _messageForError(error),
-      );
-    } catch (_) {
-      // The task may have been deleted while the scheduler was dispatching.
-    }
-  }
-
   TaskRunRecord? _currentRunFor(TaskRecord task) {
     final runId = task.currentRunId?.trim();
     if (runId == null || runId.isEmpty) return null;
@@ -534,13 +634,55 @@ class TaskScheduler {
     };
   }
 
+  Map<String, Object?> _runtimeFailureMetadataCleared(
+    Map<String, Object?> existing,
+  ) {
+    const removed = <String>{
+      'failure_reason',
+      'runtime_availability',
+      'unavailable_reason',
+      'last_failure_message',
+      'next_retry_at',
+    };
+    return <String, Object?>{
+      for (final entry in existing.entries)
+        if (!removed.contains(entry.key)) entry.key: entry.value,
+    };
+  }
+
   void _releaseTask(TaskRecord task) {
     _activeTaskIds.remove(task.id);
-    workspaceGate.release(_serialGateKey(task), task.id);
+    final serialKey = _serialKeysByTaskId.remove(task.id);
+    if (serialKey != null) workspaceGate.release(serialKey, task.id);
   }
 
   String _serialGateKey(TaskRecord task) {
     return serialGateKeyForTask(task, taskController.snapshot.resources);
+  }
+
+  _TaskDispatchRoute _dispatchRouteFor(TaskRecord task) {
+    WorkspaceResource? expectedResource;
+    final resourceId = task.resourceId;
+    if (resourceId != null) {
+      for (final resource in taskController.snapshot.resources) {
+        if (resource.id == resourceId) {
+          expectedResource = resource;
+          break;
+        }
+      }
+      if (expectedResource == null) {
+        throw StateError('Task references missing resource: $resourceId');
+      }
+    }
+    return _TaskDispatchRoute(
+      expectedResource: expectedResource,
+      serialKey: serialGateKeyForTask(
+        task,
+        expectedResource == null
+            ? const <WorkspaceResource>[]
+            : <WorkspaceResource>[expectedResource],
+      ),
+    );
   }
 
   String _messageForError(Object error) {
@@ -554,6 +696,16 @@ class TaskScheduler {
       throw StateError('TaskScheduler has been disposed.');
     }
   }
+}
+
+class _TaskDispatchRoute {
+  const _TaskDispatchRoute({
+    required this.expectedResource,
+    required this.serialKey,
+  });
+
+  final WorkspaceResource? expectedResource;
+  final String serialKey;
 }
 
 Future<void> _ignoreErrors(Future<void> future) async {

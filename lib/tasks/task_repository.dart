@@ -12,11 +12,23 @@ class TaskRepositorySnapshot {
   final TaskInboxSnapshot snapshot;
 }
 
-class TaskClaim {
-  const TaskClaim({required this.task, required this.run});
+class TaskRunCreation {
+  const TaskRunCreation({required this.task, required this.run});
 
   final TaskRecord task;
   final TaskRunRecord run;
+}
+
+class TaskClaim {
+  const TaskClaim({
+    required this.task,
+    required this.run,
+    required this.dispatchEvent,
+  });
+
+  final TaskRecord task;
+  final TaskRunRecord run;
+  final TaskEventRecord dispatchEvent;
 }
 
 class TaskDeleteExpectation {
@@ -156,13 +168,18 @@ abstract class TaskRepository {
     required DateTime updatedAt,
   });
 
-  Future<TaskClaim> createRun({
+  Future<TaskRunCreation> createRun({
     required TaskRecord expectedTask,
     required TaskRecord task,
     required TaskRunRecord run,
   });
 
-  Future<TaskClaim?> claimTask(String taskId, TaskRunRecord run);
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+  });
 
   Future<TaskRunRecord> updateRun(
     TaskRunRecord run, {

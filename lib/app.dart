@@ -897,7 +897,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
 
     if (controller.isStreaming || controller.isSessionOperationRunning) {
-      return LocalRuntimeStatus.unavailable(
+      return LocalRuntimeStatus.busy(
         agentName: controller.agentName,
         checkedAt: checkedAt,
         reason: 'Agent is busy with another session operation.',

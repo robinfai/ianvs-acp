@@ -120,7 +120,7 @@ class MemoryTaskRepository implements TaskRepository {
   }
 
   @override
-  Future<TaskClaim> createRun({
+  Future<TaskRunCreation> createRun({
     required TaskRecord expectedTask,
     required TaskRecord task,
     required TaskRunRecord run,
@@ -152,36 +152,86 @@ class MemoryTaskRepository implements TaskRepository {
       ),
       updatedAt: task.updatedAt,
     );
-    return TaskClaim(task: task, run: run);
+    return TaskRunCreation(task: task, run: run);
   }
 
   @override
-  Future<TaskClaim?> claimTask(String taskId, TaskRunRecord run) async {
+  Future<TaskClaim?> claimTask(
+    TaskRecord expectedTask,
+    TaskRunRecord run, {
+    required TaskEventRecord dispatchEvent,
+    WorkspaceResource? expectedResource,
+  }) async {
+    if (run.status != TaskStatus.dispatched || run.endedAt != null) {
+      throw ArgumentError('Claimed task runs must start dispatched.');
+    }
     await _beforeWrite('claimTask');
     final index = _snapshot.tasks.indexWhere(
-      (task) => task.id == taskId.trim() && task.status == TaskStatus.queued,
+      (task) => task.id == expectedTask.id && task.status == TaskStatus.queued,
     );
     if (index < 0) return null;
+    final existing = _snapshot.tasks[index];
+    if (!_sameRecord(existing, expectedTask)) return null;
+    if (run.taskId != existing.id ||
+        dispatchEvent.taskId != existing.id ||
+        dispatchEvent.runId != run.id) {
+      throw ArgumentError('Claim records must belong to the queued task.');
+    }
+    final resourceId = existing.resourceId;
+    if (resourceId == null) {
+      if (expectedResource != null) return null;
+    } else {
+      final resourceIndex = _snapshot.resources.indexWhere(
+        (resource) => resource.id == resourceId,
+      );
+      if (resourceIndex < 0 ||
+          expectedResource == null ||
+          !_sameRecord(_snapshot.resources[resourceIndex], expectedResource)) {
+        return null;
+      }
+    }
     if (_snapshot.runs.any((candidate) => candidate.id == run.id)) {
       throw TaskRepositoryConflict('Task run already exists: ${run.id}');
     }
-    final existing = _snapshot.tasks[index];
-    if (run.taskId != existing.id) return null;
+    if (_snapshot.events.any((event) => event.id == dispatchEvent.id)) {
+      throw TaskRepositoryConflict(
+        'Task event already exists: ${dispatchEvent.id}',
+      );
+    }
+    final claimAt = _latestTimestamp(
+      existing.updatedAt,
+      run.startedAt,
+      dispatchEvent.createdAt,
+    );
+    final actualRun = run.copyWith(
+      attempt:
+          _snapshot.runs
+              .where((candidate) => candidate.taskId == existing.id)
+              .fold<int>(0, (maximum, candidate) {
+                return candidate.attempt > maximum
+                    ? candidate.attempt
+                    : maximum;
+              }) +
+          1,
+      startedAt: claimAt,
+    );
+    final actualEvent = dispatchEvent.copyWith(createdAt: claimAt);
     final claimed = existing.copyWith(
       status: TaskStatus.dispatched,
-      currentRunId: run.id,
-      updatedAt: run.startedAt,
+      currentRunId: actualRun.id,
+      updatedAt: claimAt,
     );
     final tasks = [..._snapshot.tasks];
     tasks[index] = claimed;
     _commit(
       _snapshot.copyWith(
         tasks: tasks,
-        runs: <TaskRunRecord>[..._snapshot.runs, run],
+        runs: <TaskRunRecord>[..._snapshot.runs, actualRun],
+        events: <TaskEventRecord>[..._snapshot.events, actualEvent],
       ),
-      updatedAt: run.startedAt,
+      updatedAt: claimAt,
     );
-    return TaskClaim(task: claimed, run: run);
+    return TaskClaim(task: claimed, run: actualRun, dispatchEvent: actualEvent);
   }
 
   @override
@@ -471,5 +521,16 @@ class MemoryTaskRepository implements TaskRepository {
       WorkspaceResource value => value.toJson(),
       _ => throw ArgumentError('Unsupported task record: $record'),
     };
+  }
+
+  static DateTime _latestTimestamp(
+    DateTime first,
+    DateTime second,
+    DateTime third,
+  ) {
+    var latest = first;
+    if (second.isAfter(latest)) latest = second;
+    if (third.isAfter(latest)) latest = third;
+    return latest;
   }
 }
