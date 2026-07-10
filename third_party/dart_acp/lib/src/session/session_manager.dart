@@ -482,6 +482,20 @@ class SessionManager {
 
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
+    final terminalProvider = config.terminalProvider;
+    final terminals = _terminals.values.toList(growable: false);
+    _terminals.clear();
+    if (terminalProvider != null) {
+      await Future.wait<void>(
+        terminals.map((handle) async {
+          try {
+            await terminalProvider.release(handle);
+          } on Object catch (error) {
+            _log.warning('terminal release during dispose failed: $error');
+          }
+        }),
+      );
+    }
     await _terminalEvents.close();
     for (final c in _sessionStreams.values) {
       await c.close();
@@ -1132,6 +1146,17 @@ class SessionManager {
       if (envList != null)
         for (final e in envList) (e['name'] as String): (e['value'] as String),
     };
+    final requestedOutputByteLimit = req['outputByteLimit'];
+    final requestedPositiveOutputByteLimit =
+        requestedOutputByteLimit is num &&
+            requestedOutputByteLimit.isFinite &&
+            requestedOutputByteLimit >= 1
+        ? requestedOutputByteLimit.toInt()
+        : DefaultTerminalProvider.defaultOutputByteLimit;
+    final outputByteLimit = requestedPositiveOutputByteLimit.clamp(
+      1,
+      DefaultTerminalProvider.defaultOutputByteLimit,
+    );
     final workspaceRoot = getWorkspaceRoot(sessionId);
     final additionalDirectories = _additionalDirectoriesForSession(sessionId);
     final permissionMetadata = <String, Object?>{
@@ -1190,6 +1215,7 @@ class SessionManager {
       args: args,
       cwd: cwd,
       env: env.isEmpty ? null : env,
+      outputByteLimit: outputByteLimit,
     );
     _terminals[handle.terminalId] = handle;
     _terminalEvents.add(
@@ -1207,12 +1233,12 @@ class SessionManager {
   Future<Json> _onTerminalOutput(Json req) async {
     final provider = config.terminalProvider;
     if (provider == null) {
-      return {'outputmode': '', 'truncated': false, 'exitStatus': null};
+      return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final termId = req['terminalId'] as String;
     final handle = _terminals[termId];
     if (handle == null) {
-      return {'outputmode': '', 'truncated': false, 'exitStatus': null};
+      return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final output = await provider.currentOutput(handle);
     int? exitCode;
@@ -1227,14 +1253,14 @@ class SessionManager {
       TerminalOutputEvent(
         terminalId: termId,
         output: output,
-        truncated: false,
+        truncated: handle.truncated,
         exitCode: exitCode,
       ),
     );
     return {
-      'outputmode': output,
-      'truncated': false,
-      'exitStatus': exitCode == null ? null : {'code': exitCode},
+      'output': output,
+      'truncated': handle.truncated,
+      'exitStatus': exitCode == null ? null : {'exitCode': exitCode},
     };
   }
 
@@ -1242,26 +1268,26 @@ class SessionManager {
     final provider = config.terminalProvider;
     if (provider == null) {
       return {
-        'outputmode': '',
+        'output': '',
         'truncated': false,
-        'exitStatus': {'code': 0},
+        'exitStatus': {'exitCode': 0},
       };
     }
     final termId = req['terminalId'] as String;
     final handle = _terminals[termId];
     if (handle == null) {
       return {
-        'outputmode': '',
+        'output': '',
         'truncated': false,
-        'exitStatus': {'code': 0},
+        'exitStatus': {'exitCode': 0},
       };
     }
     final code = await provider.waitForExit(handle);
     _terminalEvents.add(TerminalExited(terminalId: termId, code: code));
     return {
-      'outputmode': handle.currentOutput(),
-      'truncated': false,
-      'exitStatus': {'code': code},
+      'output': handle.currentOutput(),
+      'truncated': handle.truncated,
+      'exitStatus': {'exitCode': code},
     };
   }
 

@@ -1757,6 +1757,7 @@ Future<void> main() async {
         'sessionId': 'session-term',
         'command': 'printf terminal-output',
         'args': <String>[],
+        'outputByteLimit': 8,
       });
     } else if (message['id'] == 'terminal-create-1') {
       terminalId = (message['result'] as Map<String, dynamic>)['terminalId']
@@ -1826,17 +1827,25 @@ Future<void> main() async {
             .where((event) => event.metadata['terminalEvent'] == 'output')
             .single
             .metadata['output'],
-        'terminal-output',
+        'l-output',
+      );
+      expect(
+        terminalEvents
+            .where((event) => event.metadata['terminalEvent'] == 'output')
+            .single
+            .metadata['truncated'],
+        isTrue,
       );
       expect(events.last.metadata['stopReason'], 'endTurn');
 
       final terminalResponse =
           jsonDecode(await terminalResponseFile.readAsString())
               as Map<String, dynamic>;
-      expect(
-        terminalResponse['result'],
-        containsPair('outputmode', 'terminal-output'),
-      );
+      expect(terminalResponse['result'], <String, Object?>{
+        'output': 'l-output',
+        'truncated': true,
+        'exitStatus': <String, Object?>{'exitCode': 0},
+      });
     } finally {
       await subscription.cancel();
       await client.dispose();
