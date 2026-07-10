@@ -86,7 +86,8 @@ class AcpClientApp extends StatefulWidget {
   State<AcpClientApp> createState() => _AcpClientAppState();
 }
 
-class _AcpClientAppState extends State<AcpClientApp> {
+class _AcpClientAppState extends State<AcpClientApp>
+    with WidgetsBindingObserver {
   static const String _initialResumeSessionId = String.fromEnvironment(
     'ACP_RESUME_SESSION_ID',
   );
@@ -118,6 +119,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
   int _taskInboxInitializationSerial = 0;
   TaskInboxController? _pendingTaskInboxController;
   Future<void>? _taskInboxTransition;
+  Timer? _taskInboxRefreshTimer;
+  Future<void>? _taskInboxRefresh;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
@@ -128,6 +131,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
     _widgetConfigSignature = _configSignature(_config);
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
@@ -238,6 +242,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     final taskCleanup = _stopTaskInboxTransition();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
@@ -253,6 +258,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _ignoreTaskCleanup(taskCleanup);
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _taskInboxController;
+    if (state == AppLifecycleState.resumed) {
+      if (controller != null) _startTaskInboxRefresh(controller);
+      return;
+    }
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
   }
 
   void _configureTaskInboxController({Future<void>? previousCleanup}) {
@@ -346,7 +362,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (migration.status == TaskMigrationStatus.awaitingBackupFinalization) {
         throw StateError('The legacy task backup could not be verified.');
       }
-      controller = TaskInboxController(store: repository);
+      controller = TaskInboxController(repository: repository);
       scheduler = _createTaskScheduler(controller);
       await scheduler.start(dispatchQueuedTasks: false);
       if (!mounted || serial != _taskInboxInitializationSerial) {
@@ -362,6 +378,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _taskInboxController = controller;
       _ownsTaskInboxController = true;
       _taskScheduler = scheduler;
+      _startTaskInboxRefresh(controller);
       scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
@@ -400,6 +417,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       _taskInboxController = controller;
       _ownsTaskInboxController = false;
       _taskScheduler = scheduler;
+      _startTaskInboxRefresh(controller);
       scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
@@ -426,14 +444,59 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final repository = _ownedTaskRepository;
     _ownedTaskRepository = null;
     _ownsTaskInboxController = false;
+    final refreshCleanup = _stopTaskInboxRefresh();
     if (scheduler == null && controller == null && repository == null) {
-      return null;
+      return refreshCleanup;
     }
-    return _finishTaskInboxCleanup(
-      scheduler: scheduler,
-      controller: controller,
-      repository: repository,
-    );
+    if (refreshCleanup == null) {
+      return _finishTaskInboxCleanup(
+        scheduler: scheduler,
+        controller: controller,
+        repository: repository,
+      );
+    }
+    return () async {
+      await refreshCleanup;
+      await _finishTaskInboxCleanup(
+        scheduler: scheduler,
+        controller: controller,
+        repository: repository,
+      );
+    }();
+  }
+
+  void _startTaskInboxRefresh(TaskInboxController controller) {
+    _taskInboxRefreshTimer?.cancel();
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
+      _taskInboxRefreshTimer = null;
+      return;
+    }
+    _taskInboxRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _taskInboxController != controller) return;
+      if (_taskInboxRefresh != null) return;
+      late final Future<void> refresh;
+      refresh = _refreshTaskInbox(controller).whenComplete(() {
+        if (identical(_taskInboxRefresh, refresh)) {
+          _taskInboxRefresh = null;
+        }
+      });
+      _taskInboxRefresh = refresh;
+    });
+  }
+
+  Future<void> _refreshTaskInbox(TaskInboxController controller) async {
+    try {
+      await controller.refreshIfChanged();
+    } on Object {
+      // A transient read failure is retried by the next foreground poll.
+    }
+  }
+
+  Future<void>? _stopTaskInboxRefresh() {
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
+    return _taskInboxRefresh;
   }
 
   Future<void>? _stopTaskInboxTransition() {
@@ -463,8 +526,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
     try {
       await scheduler?.shutdown();
     } finally {
-      controller?.dispose();
-      await repository?.close();
+      try {
+        await controller?.settle();
+      } finally {
+        controller?.dispose();
+        await repository?.close();
+      }
     }
   }
 

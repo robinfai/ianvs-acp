@@ -1,15 +1,307 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
+import 'package:ianvs_acp/tasks/task_repository.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
+  test('TaskInboxController coalesces concurrent loads', () async {
+    final store = _MemoryTaskStore();
+    final controller = TaskInboxController(repository: store);
+    addTearDown(controller.dispose);
+
+    final first = controller.load();
+    final second = controller.load();
+
+    expect(identical(first, second), isTrue);
+    await Future.wait([first, second]);
+    expect(store.loadCount, 1);
+  });
+
+  test('failed repository write does not mutate the local snapshot', () async {
+    final store = _MemoryTaskStore();
+    final controller = TaskInboxController(
+      repository: store,
+      clock: () => DateTime(2026, 7, 7, 8),
+      idGenerator: (_) => 'task-1',
+    );
+    addTearDown(controller.dispose);
+    var notifications = 0;
+    controller.addListener(() => notifications += 1);
+    await controller.load();
+    store.beforeOperation = (operation) async {
+      if (operation == 'insertTask') throw StateError('disk full');
+    };
+
+    await expectLater(
+      controller.createTask(
+        title: 'Must not leak',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      ),
+      throwsStateError,
+    );
+
+    expect(controller.tasks, isEmpty);
+    expect(store.currentSnapshot.tasks, isEmpty);
+    expect(notifications, 1);
+  });
+
+  test(
+    'refresh sees another controller write and stale updates conflict',
+    () async {
+      final createdAt = DateTime(2026, 7, 7, 8);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: [
+            TaskRecord(
+              id: 'task-1',
+              title: 'Initial',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.inbox,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+            ),
+          ],
+        ),
+      );
+      final first = TaskInboxController(
+        repository: store,
+        clock: () => DateTime(2026, 7, 7, 9),
+      );
+      final second = TaskInboxController(
+        repository: store,
+        clock: () => DateTime(2026, 7, 7, 10),
+      );
+      addTearDown(first.dispose);
+      addTearDown(second.dispose);
+      await Future.wait([first.load(), second.load()]);
+
+      await first.updateTask('task-1', priority: TaskPriority.high);
+      await expectLater(
+        second.updateTask('task-1', title: 'Renamed'),
+        throwsA(isA<TaskRepositoryConflict>()),
+      );
+      expect(second.taskById('task-1')?.title, 'Initial');
+
+      expect(await second.refreshIfChanged(), isTrue);
+      final updated = await second.updateTask('task-1', title: 'Renamed');
+      expect(updated.title, 'Renamed');
+      expect(updated.priority, TaskPriority.high);
+    },
+  );
+
+  test('one controller composes concurrent writes in call order', () async {
+    final createdAt = DateTime(2026, 7, 7, 8);
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: [
+          TaskRecord(
+            id: 'task-1',
+            title: 'Initial',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.inbox,
+            priority: TaskPriority.normal,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+          ),
+        ],
+      ),
+    );
+    var now = DateTime(2026, 7, 7, 9);
+    final controller = TaskInboxController(repository: store, clock: () => now);
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    final rename = controller.updateTask('task-1', title: 'Renamed');
+    now = DateTime(2026, 7, 7, 10);
+    final describe = controller.updateTask(
+      'task-1',
+      description: 'Composed change',
+    );
+    await Future.wait([rename, describe]);
+
+    final task = controller.taskById('task-1')!;
+    expect(task.title, 'Renamed');
+    expect(task.description, 'Composed change');
+  });
+
+  test(
+    'listener-scheduled writes remain queued and settle tracks them',
+    () async {
+      final createdAt = DateTime(2026, 7, 7, 8);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: [
+            TaskRecord(
+              id: 'task-1',
+              title: 'Initial',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.inbox,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(repository: store);
+      addTearDown(controller.dispose);
+      await controller.load();
+      final listenerWriteStarted = Completer<void>();
+      final releaseListenerWrite = Completer<void>();
+      var updateCount = 0;
+      store.beforeOperation = (operation) async {
+        if (operation != 'updateTask') return;
+        updateCount += 1;
+        if (updateCount != 3) return;
+        listenerWriteStarted.complete();
+        await releaseListenerWrite.future;
+      };
+      final listenerWrite = Completer<void>();
+      var scheduled = false;
+      controller.addListener(() {
+        if (scheduled || controller.taskById('task-1')?.title != 'Renamed') {
+          return;
+        }
+        scheduled = true;
+        scheduleMicrotask(() async {
+          try {
+            await controller.updateTask(
+              'task-1',
+              description: 'Listener update',
+            );
+            listenerWrite.complete();
+          } on Object catch (error, stackTrace) {
+            listenerWrite.completeError(error, stackTrace);
+          }
+        });
+      });
+
+      final rename = controller.updateTask('task-1', title: 'Renamed');
+      final reprioritize = controller.updateTask(
+        'task-1',
+        priority: TaskPriority.high,
+      );
+      await Future.wait([rename, reprioritize]);
+      await listenerWriteStarted.future;
+      var settled = false;
+      final settling = controller.settle().then((_) => settled = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(settled, isFalse);
+
+      releaseListenerWrite.complete();
+      await Future.wait([listenerWrite.future, settling]);
+      expect(settled, isTrue);
+
+      final task = controller.taskById('task-1')!;
+      expect(task.title, 'Renamed');
+      expect(task.description, 'Listener update');
+      expect(task.priority, TaskPriority.high);
+    },
+  );
+
+  test('settle waits for an in-flight repository write', () async {
+    final createdAt = DateTime(2026, 7, 7, 8);
+    final writeStarted = Completer<void>();
+    final releaseWrite = Completer<void>();
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: [
+          TaskRecord(
+            id: 'task-1',
+            title: 'Initial',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.inbox,
+            priority: TaskPriority.normal,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+          ),
+        ],
+      ),
+    );
+    final controller = TaskInboxController(repository: store);
+    addTearDown(controller.dispose);
+    await controller.load();
+    store.beforeOperation = (operation) async {
+      if (operation != 'updateTask') return;
+      if (!writeStarted.isCompleted) writeStarted.complete();
+      await releaseWrite.future;
+    };
+
+    final update = controller.updateTask('task-1', title: 'Updated');
+    await writeStarted.future;
+    var settled = false;
+    final settling = controller.settle().then((_) => settled = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(settled, isFalse);
+
+    releaseWrite.complete();
+    await Future.wait([update, settling]);
+    expect(settled, isTrue);
+  });
+
+  test('failed atomic run creation leaves task and runs unchanged', () async {
+    final createdAt = DateTime(2026, 7, 7, 8);
+    final store = _MemoryTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: [
+          TaskRecord(
+            id: 'task-1',
+            title: 'Queued',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.queued,
+            priority: TaskPriority.normal,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+          ),
+        ],
+      ),
+    );
+    final controller = TaskInboxController(
+      repository: store,
+      clock: () => DateTime(2026, 7, 7, 9),
+      idGenerator: (_) => 'run-1',
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    store.beforeOperation = (operation) async {
+      if (operation == 'createRun') throw StateError('write failed');
+    };
+
+    await expectLater(controller.createRun(taskId: 'task-1'), throwsStateError);
+
+    expect(controller.taskById('task-1')?.status, TaskStatus.queued);
+    expect(controller.taskById('task-1')?.currentRunId, isNull);
+    expect(controller.runs, isEmpty);
+  });
+
   test('TaskInboxController creates inbox task and persists it', () async {
     var now = DateTime(2026, 7, 7, 8);
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => now,
       idGenerator: (_) => 'task-1',
     );
@@ -80,7 +372,7 @@ void main() {
           ],
         ),
       );
-      final controller = TaskInboxController(store: store);
+      final controller = TaskInboxController(repository: store);
       addTearDown(controller.dispose);
 
       await controller.load();
@@ -99,7 +391,7 @@ void main() {
   test('TaskInboxController notifies listeners on load and changes', () async {
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -141,7 +433,7 @@ void main() {
       ),
     );
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       idGenerator: (_) => 'task-1',
     );
     addTearDown(controller.dispose);
@@ -181,7 +473,7 @@ void main() {
       ),
     );
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 9),
     );
     addTearDown(controller.dispose);
@@ -242,7 +534,7 @@ void main() {
     );
     final store = _MemoryTaskStore(snapshot);
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 9),
     );
     addTearDown(controller.dispose);
@@ -276,7 +568,7 @@ void main() {
   test('TaskInboxController marks review task done locally', () async {
     final store = _MemoryTaskStore(_reviewSnapshot());
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 9),
     );
     addTearDown(controller.dispose);
@@ -295,7 +587,7 @@ void main() {
     () async {
       final store = _MemoryTaskStore(_reviewSnapshot());
       final controller = TaskInboxController(
-        store: store,
+        repository: store,
         clock: () => DateTime(2026, 7, 7, 9),
       );
       addTearDown(controller.dispose);
@@ -379,7 +671,7 @@ void main() {
         ),
       );
       final controller = TaskInboxController(
-        store: store,
+        repository: store,
         clock: () => DateTime(2026, 7, 7, 9),
       );
       addTearDown(controller.dispose);
@@ -452,7 +744,7 @@ void main() {
       ),
     );
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 8, 9),
       idGenerator: ids.next,
     );
@@ -515,7 +807,7 @@ void main() {
       ),
     );
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 8, 9),
       idGenerator: ids.next,
     );
@@ -545,21 +837,8 @@ void main() {
   });
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-  final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-    savedSnapshots.add(snapshot);
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore([super.snapshot]);
 }
 
 TaskInboxSnapshot _reviewSnapshot() {

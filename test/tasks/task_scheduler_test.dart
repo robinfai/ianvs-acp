@@ -7,13 +7,52 @@ import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_scheduler.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
+  test(
+    'TaskScheduler retries a transient repository refresh failure',
+    () async {
+      final createdAt = DateTime(2026, 7, 8, 9);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: [_task(id: 'task-1', createdAt: createdAt)],
+        ),
+      );
+      var failRevisionOnce = true;
+      store.beforeOperation = (operation) async {
+        if (operation == 'revision' && failRevisionOnce) {
+          failRevisionOnce = false;
+          throw StateError('temporary read failure');
+        }
+      };
+      final controller = TaskInboxController(
+        repository: store,
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+      );
+      addTearDown(scheduler.shutdown);
+
+      await scheduler.start();
+      await _waitUntil(() => worker.startedTaskIds.contains('task-1'));
+
+      expect(failRevisionOnce, isFalse);
+      worker.complete('task-1');
+      await _waitUntil(() => scheduler.activeCount == 0);
+    },
+  );
+
   test('TaskScheduler enqueues an inbox task without starting work', () async {
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 8, 9),
       idGenerator: (_) => 'task-1',
     );
@@ -38,7 +77,7 @@ void main() {
 
   test('TaskScheduler runs queued tasks by priority', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [
@@ -86,7 +125,7 @@ void main() {
 
   test('TaskScheduler stop prevents queued task scans', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -111,7 +150,7 @@ void main() {
   test('TaskScheduler dispatches a run before starting work', () async {
     final ids = _DeterministicIds();
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -140,7 +179,7 @@ void main() {
     'TaskScheduler runs different workspaces up to max concurrency',
     () async {
       final controller = TaskInboxController(
-        store: _MemoryTaskStore(
+        repository: _MemoryTaskStore(
           TaskInboxSnapshot(
             updatedAt: DateTime(2026, 7, 8, 9),
             tasks: [
@@ -189,7 +228,7 @@ void main() {
 
   test('TaskScheduler serializes tasks with the same workspace path', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [
@@ -239,7 +278,7 @@ void main() {
     () async {
       final now = DateTime(2026, 7, 8, 9);
       final controller = TaskInboxController(
-        store: _MemoryTaskStore(
+        repository: _MemoryTaskStore(
           TaskInboxSnapshot(
             updatedAt: now,
             tasks: [_task(id: 'task-1', createdAt: now)],
@@ -289,7 +328,7 @@ void main() {
   test('TaskScheduler blocks auth-required runtime without retrying', () async {
     final now = DateTime(2026, 7, 8, 9);
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: now,
           tasks: [_task(id: 'task-1', createdAt: now)],
@@ -336,7 +375,7 @@ void main() {
   test('TaskScheduler retries retryable failures with a new run', () async {
     final ids = _DeterministicIds();
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -376,7 +415,7 @@ void main() {
     () async {
       final now = DateTime.now();
       final controller = TaskInboxController(
-        store: _MemoryTaskStore(
+        repository: _MemoryTaskStore(
           TaskInboxSnapshot(
             updatedAt: now,
             tasks: [
@@ -426,7 +465,7 @@ void main() {
   test('TaskScheduler does not retry non-retryable failures', () async {
     final ids = _DeterministicIds();
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -459,7 +498,7 @@ void main() {
     'TaskScheduler recovers interrupted runs before draining queue',
     () async {
       final controller = TaskInboxController(
-        store: _MemoryTaskStore(
+        repository: _MemoryTaskStore(
           TaskInboxSnapshot(
             updatedAt: DateTime(2026, 7, 8, 9),
             tasks: [
@@ -513,7 +552,7 @@ void main() {
 
   test('TaskScheduler shutdown cancels and waits for active work', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -548,7 +587,7 @@ void main() {
       ),
     );
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       idGenerator: _DeterministicIds().next,
     );
     addTearDown(controller.dispose);
@@ -572,7 +611,7 @@ void main() {
 
   test('TaskScheduler can recover without dispatching queued work', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
           tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
@@ -739,39 +778,21 @@ class _CancellableTaskWorker implements CancellableTaskWorker {
   }
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-  final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-    savedSnapshots.add(snapshot);
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore([super.snapshot]);
 }
 
-class _BlockingSaveTaskStore implements TaskStore {
-  _BlockingSaveTaskStore(this._snapshot);
+class _BlockingSaveTaskStore extends MemoryTaskRepository {
+  _BlockingSaveTaskStore(super.snapshot) {
+    beforeOperation = (operation) async {
+      if (operation != 'createRun') return;
+      if (!saveStarted.isCompleted) saveStarted.complete();
+      await _saveRelease.future;
+    };
+  }
 
-  TaskInboxSnapshot _snapshot;
   final Completer<void> saveStarted = Completer<void>();
   final Completer<void> _saveRelease = Completer<void>();
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    if (!saveStarted.isCompleted) saveStarted.complete();
-    await _saveRelease.future;
-    _snapshot = snapshot;
-  }
 
   void releaseSave() {
     if (!_saveRelease.isCompleted) _saveRelease.complete();

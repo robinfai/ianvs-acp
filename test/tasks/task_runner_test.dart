@@ -9,17 +9,17 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/artifact_collector.dart';
 import 'package:ianvs_acp/tasks/local_skill.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_runner.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   test('TaskRunner launches an ACP session and moves task to review', () async {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -90,7 +90,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -132,7 +132,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -170,7 +170,7 @@ void main() {
 
   test('TaskRunner cancelActive stops and fails an active prompt', () async {
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       idGenerator: _DeterministicIds().next,
     );
     addTearDown(taskController.dispose);
@@ -208,7 +208,7 @@ void main() {
     'TaskRunner cancellation before controller creation prevents ACP work',
     () async {
       final taskController = TaskInboxController(
-        store: _MemoryTaskStore(),
+        repository: _MemoryTaskStore(),
         idGenerator: _DeterministicIds().next,
       );
       addTearDown(taskController.dispose);
@@ -256,7 +256,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -328,7 +328,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -372,7 +372,7 @@ void main() {
       final store = _MemoryTaskStore();
       final ids = _DeterministicIds();
       final taskController = TaskInboxController(
-        store: store,
+        repository: store,
         clock: () => DateTime(2026, 7, 7, 8),
         idGenerator: ids.next,
       );
@@ -459,7 +459,7 @@ void main() {
       final store = _MemoryTaskStore();
       final ids = _DeterministicIds();
       final taskController = TaskInboxController(
-        store: store,
+        repository: store,
         clock: () => DateTime(2026, 7, 7, 8),
         idGenerator: ids.next,
       );
@@ -550,7 +550,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -581,7 +581,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -665,7 +665,7 @@ void main() {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -791,19 +791,4 @@ Future<void> _waitUntil(bool Function() condition, {int attempts = 40}) async {
   fail('Condition was not met before timeout.');
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-  final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-    savedSnapshots.add(snapshot);
-  }
-}
+class _MemoryTaskStore extends MemoryTaskRepository {}

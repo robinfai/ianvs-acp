@@ -171,7 +171,7 @@ class TaskRecord {
     return TaskRecord(
       id: id,
       title: title,
-      description: _stringFromJson(json['description']) ?? '',
+      description: _rawStringFromJson(json['description']) ?? '',
       workspacePath: workspacePath,
       agentName: agentName,
       status: taskStatusFromJson(json['status']),
@@ -373,7 +373,7 @@ class TaskEventRecord {
     final id = _stringFromJson(json['id']);
     final taskId = _stringFromJson(json['task_id'] ?? json['taskId']);
     final runId = _stringFromJson(json['run_id'] ?? json['runId']);
-    final text = _stringFromJson(json['text']) ?? '';
+    final text = _rawStringFromJson(json['text']) ?? '';
     final createdAt = _dateTimeFromJson(
       json['created_at'] ?? json['createdAt'],
     );
@@ -496,8 +496,9 @@ class ArtifactRecord {
       title: title,
       createdAt: createdAt,
       path: _stringFromJson(json['path']),
-      contentPreview: _stringFromJson(
+      contentPreview: _rawStringFromJson(
         json['content_preview'] ?? json['contentPreview'],
+        allowEmpty: false,
       ),
       sha256: _stringFromJson(json['sha256']),
       sizeBytes: _intFromJson(json['size_bytes'] ?? json['sizeBytes']),
@@ -909,6 +910,11 @@ String? _stringFromJson(Object? raw) {
   if (raw is! String) return null;
   final trimmed = raw.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String? _rawStringFromJson(Object? raw, {bool allowEmpty = true}) {
+  if (raw is! String || (!allowEmpty && raw.isEmpty)) return null;
+  return raw;
 }
 
 List<String> _stringListFromJson(Object? raw) {

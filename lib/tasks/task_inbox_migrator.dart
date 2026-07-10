@@ -241,7 +241,7 @@ class TaskInboxMigrator {
   Future<bool> _matchesImportedSnapshot(
     TaskInboxSnapshot sourceSnapshot,
   ) async {
-    final imported = await repository.load();
+    final imported = (await repository.loadRepository()).snapshot;
     final sourceDigest = sha256.convert(
       utf8.encode(canonicalJson(sourceSnapshot.toJson())),
     );

@@ -34,7 +34,10 @@ void main() {
     final result = await migrator.migrateIfNeeded();
 
     expect(result.status, TaskMigrationStatus.migrated);
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
     expect(result.backupPath, contains('task_inbox_state.migrated.'));
     final backup = File(result.backupPath!);
     expect(await backup.exists(), isTrue);
@@ -100,7 +103,10 @@ void main() {
     final metadata = await repository.migrationMetadata();
     expect(metadata.phase, TaskMigrationPhase.inactive);
     expect(metadata.sourceChecksum, isNotNull);
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
   });
 
   test('stages recovery data with owner-only permissions', () async {
@@ -170,7 +176,10 @@ void main() {
     final metadata = await repository.migrationMetadata();
     expect(metadata.phase, TaskMigrationPhase.importing);
     expect(metadata.sourceChecksum, checksum);
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
     final recoveries = temp.listSync().whereType<File>().where(
       (file) => file.path.contains('.restore.$checksum.'),
     );
@@ -231,7 +240,10 @@ void main() {
 
     expect(result.status, TaskMigrationStatus.migrated);
     expect(await repositoryB.isActive(), isTrue);
-    expect((await repositoryB.load()).toJson(), fixture.toJson());
+    expect(
+      (await repositoryB.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
   });
 
   test('activates an empty repository when no legacy file exists', () async {
@@ -250,7 +262,7 @@ void main() {
 
     expect(result.status, TaskMigrationStatus.notNeeded);
     expect(await repository.isActive(), isTrue);
-    expect((await repository.load()).tasks, isEmpty);
+    expect((await repository.loadRepository()).snapshot.tasks, isEmpty);
   });
 
   test('resumes activation after backup rename interrupted startup', () async {
@@ -307,7 +319,10 @@ void main() {
 
     expect(result.status, TaskMigrationStatus.migrated);
     expect(await repository.isActive(), isTrue);
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
   });
 
   test(
@@ -341,7 +356,10 @@ void main() {
       expect(await sourceFile.exists(), isFalse);
       expect(await recovery.exists(), isFalse);
       expect(await repository.isActive(), isTrue);
-      expect((await repository.load()).toJson(), fixture.toJson());
+      expect(
+        (await repository.loadRepository()).snapshot.toJson(),
+        fixture.toJson(),
+      );
     },
   );
 
@@ -473,7 +491,10 @@ void main() {
     final metadata = await repository.migrationMetadata();
     expect(metadata.phase, TaskMigrationPhase.importing);
     expect(metadata.sourceChecksum, checksum);
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
   });
 
   test('rejects a snapshot with a missing record collection', () async {
@@ -524,7 +545,10 @@ void main() {
     final result = await migrator.migrateIfNeeded();
 
     expect(result.status, TaskMigrationStatus.migrated);
-    expect((await repository.load()).toJson(), compatible.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      compatible.toJson(),
+    );
   });
 
   test('preserves historical export records without enabling export', () async {
@@ -571,7 +595,7 @@ void main() {
     ).migrateIfNeeded();
 
     expect(result.status, TaskMigrationStatus.migrated);
-    expect((await repository.load()).toJson(), json);
+    expect((await repository.loadRepository()).snapshot.toJson(), json);
   });
 
   test('rejects unknown top-level fields without touching source', () async {
@@ -705,7 +729,7 @@ void main() {
     final databasePath = '${temp.path}/task_inbox_state.sqlite3';
     final fixture = _fixtureSnapshot();
     final initial = TaskInboxSqliteStore(path: databasePath);
-    await initial.save(fixture);
+    await initial.activateVerifiedSnapshot(fixture, checksum: 'fixture');
     await initial.close();
     final database = sqlite3.open(databasePath);
     database.execute(
@@ -721,7 +745,10 @@ void main() {
 
     await expectLater(migrator.migrateIfNeeded(), throwsStateError);
 
-    expect((await repository.load()).toJson(), fixture.toJson());
+    expect(
+      (await repository.loadRepository()).snapshot.toJson(),
+      fixture.toJson(),
+    );
   });
 }
 
@@ -733,10 +760,22 @@ TaskInboxSnapshot _fixtureSnapshot() {
     label: 'App',
     ref: <String, Object?>{'path': '/workspace/app'},
   );
+  const gitResource = WorkspaceResource(
+    id: 'resource-2',
+    type: ResourceType.gitRepo,
+    label: 'Git app',
+    ref: <String, Object?>{'path': '/workspace/git-app'},
+  );
+  const docsResource = WorkspaceResource(
+    id: 'resource-3',
+    type: ResourceType.docsDirectory,
+    label: 'Docs',
+    ref: <String, Object?>{'path': '/workspace/docs'},
+  );
   final task = TaskRecord(
     id: 'task-1',
     title: 'Migrate me',
-    description: 'Preserve all task state.',
+    description: ' Preserve all task state.\n',
     workspacePath: '/workspace/app',
     agentName: 'Codex',
     status: TaskStatus.needsHumanReview,
@@ -768,7 +807,7 @@ TaskInboxSnapshot _fixtureSnapshot() {
         taskId: task.id,
         runId: run.id,
         kind: TaskEventKind.assistant,
-        text: 'done',
+        text: 'done\n',
         createdAt: createdAt.add(const Duration(minutes: 4)),
       ),
     ],
@@ -780,6 +819,7 @@ TaskInboxSnapshot _fixtureSnapshot() {
         kind: ArtifactKind.gitDiff,
         title: 'Diff',
         createdAt: createdAt.add(const Duration(minutes: 4)),
+        contentPreview: 'diff --git a/file b/file\n',
       ),
     ],
     approvals: [
@@ -792,7 +832,7 @@ TaskInboxSnapshot _fixtureSnapshot() {
         createdAt: createdAt.add(const Duration(minutes: 2)),
       ),
     ],
-    resources: const [resource],
+    resources: const [resource, gitResource, docsResource],
   );
 }
 

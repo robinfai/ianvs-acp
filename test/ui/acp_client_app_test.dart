@@ -20,7 +20,8 @@ import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   Future<void> pumpWithWindowSize(
@@ -136,7 +137,7 @@ void main() {
     tester,
   ) async {
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -437,11 +438,11 @@ void main() {
     expect(await tester.runAsync(repository.isActive), isFalse);
   });
 
-  testWidgets('AcpClientApp waits for injected scheduler startup', (
+  testWidgets('AcpClientApp reuses injected controller startup load', (
     tester,
   ) async {
-    final store = _FailingSecondLoadTaskStore();
-    final taskController = TaskInboxController(store: store);
+    final store = _MemoryTaskStore();
+    final taskController = TaskInboxController(repository: store);
     addTearDown(taskController.dispose);
     await taskController.load();
 
@@ -454,11 +455,60 @@ void main() {
       const Size(1400, 900),
     );
 
+    expect(store.loadCount, 1);
     expect(
       find.textContaining('Could not initialize Task Inbox'),
-      findsOneWidget,
+      findsNothing,
     );
-    expect(find.text('Inbox'), findsNothing);
+    expect(find.text('Inbox'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp refreshes tasks only while in foreground', (
+    tester,
+  ) async {
+    final repository = _MemoryTaskStore();
+    final taskController = TaskInboxController(repository: repository);
+    addTearDown(taskController.dispose);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+      ),
+      const Size(1400, 900),
+    );
+    final createdAt = DateTime(2026, 7, 10, 9);
+    TaskRecord task(String id) => TaskRecord(
+      id: id,
+      title: id,
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.inbox,
+      priority: TaskPriority.normal,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+
+    await repository.insertTask(task('task-foreground'));
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(taskController.taskById('task-foreground'), isNotNull);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await repository.insertTask(task('task-background'));
+    await tester.pump(const Duration(seconds: 2));
+    expect(taskController.taskById('task-background'), isNull);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(taskController.taskById('task-background'), isNotNull);
   });
 
   testWidgets('AcpClientApp drains tasks before replacing configured agents', (
@@ -466,7 +516,7 @@ void main() {
   ) async {
     final createdAt = DateTime(2026, 7, 10, 9);
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: createdAt,
           tasks: [
@@ -538,7 +588,7 @@ void main() {
     tester,
   ) async {
     final store = _BlockingFirstLoadTaskStore();
-    final taskController = TaskInboxController(store: store);
+    final taskController = TaskInboxController(repository: store);
     addTearDown(taskController.dispose);
     AcpClientConfig config(String version) => AcpClientConfig.fromJson({
       'default_agent_server': 'Codex',
@@ -570,7 +620,7 @@ void main() {
     store.releaseFirstLoad();
     await _pumpUntil(
       tester,
-      () => store.loadCount == 2 && find.text('Inbox').evaluate().isNotEmpty,
+      () => store.loadCount == 1 && find.text('Inbox').evaluate().isNotEmpty,
     );
 
     expect(store.maxConcurrentLoads, 1);
@@ -898,7 +948,7 @@ void main() {
     });
 
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 9),
           tasks: [
@@ -1857,62 +1907,33 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
   }
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore([super.snapshot]);
 }
 
-class _FailingSecondLoadTaskStore implements TaskStore {
-  int loadCount = 0;
-
-  @override
-  Future<TaskInboxSnapshot> load() async {
-    loadCount += 1;
-    if (loadCount > 1) throw StateError('scheduler startup failed');
-    return TaskInboxSnapshot.empty();
+class _BlockingFirstLoadTaskStore extends MemoryTaskRepository {
+  _BlockingFirstLoadTaskStore() {
+    beforeOperation = (operation) async {
+      if (operation != 'load') return;
+      activeLoads += 1;
+      if (activeLoads > maxConcurrentLoads) maxConcurrentLoads = activeLoads;
+      try {
+        if (loadCount == 1) {
+          firstLoadStarted.complete();
+          await _firstLoadReleased.future;
+        }
+      } finally {
+        activeLoads -= 1;
+      }
+    };
   }
 
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {}
-}
-
-class _BlockingFirstLoadTaskStore implements TaskStore {
   final Completer<void> firstLoadStarted = Completer<void>();
   final Completer<void> _firstLoadReleased = Completer<void>();
-  int loadCount = 0;
   int activeLoads = 0;
   int maxConcurrentLoads = 0;
-
-  @override
-  Future<TaskInboxSnapshot> load() async {
-    loadCount += 1;
-    activeLoads += 1;
-    if (activeLoads > maxConcurrentLoads) maxConcurrentLoads = activeLoads;
-    try {
-      if (loadCount == 1) {
-        firstLoadStarted.complete();
-        await _firstLoadReleased.future;
-      }
-      return TaskInboxSnapshot.empty();
-    } finally {
-      activeLoads -= 1;
-    }
-  }
 
   void releaseFirstLoad() {
     if (!_firstLoadReleased.isCompleted) _firstLoadReleased.complete();
   }
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {}
 }

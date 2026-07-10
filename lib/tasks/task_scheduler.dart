@@ -46,6 +46,7 @@ class TaskScheduler {
   bool _drainScheduled = false;
   bool _draining = false;
   Timer? _retryWakeTimer;
+  Timer? _refreshRetryTimer;
   DateTime? _retryWakeAt;
   Future<void>? _shutdownFuture;
 
@@ -81,6 +82,8 @@ class TaskScheduler {
     _dispatchEnabled = false;
     _retryWakeTimer?.cancel();
     _retryWakeTimer = null;
+    _refreshRetryTimer?.cancel();
+    _refreshRetryTimer = null;
     _retryWakeAt = null;
     taskController.removeListener(_onTaskControllerChanged);
   }
@@ -159,6 +162,12 @@ class TaskScheduler {
     if (!_started || !_dispatchEnabled || _disposed || _draining) return;
     _draining = true;
     try {
+      try {
+        await taskController.refreshIfChanged();
+      } on Object {
+        _scheduleRefreshRetry();
+        return;
+      }
       while (_started &&
           _dispatchEnabled &&
           !_disposed &&
@@ -201,6 +210,16 @@ class TaskScheduler {
     } finally {
       _draining = false;
     }
+  }
+
+  void _scheduleRefreshRetry() {
+    if (!_started || !_dispatchEnabled || _disposed) return;
+    final existing = _refreshRetryTimer;
+    if (existing != null && existing.isActive) return;
+    _refreshRetryTimer = Timer(const Duration(milliseconds: 250), () {
+      _refreshRetryTimer = null;
+      _scheduleDrain();
+    });
   }
 
   TaskRecord? _nextQueuedTask() {

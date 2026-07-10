@@ -2,17 +2,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_runner.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/tasks/task_worker.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   test('TaskRunnerWorker delegates to TaskRunner.runTask', () async {
     final store = _MemoryTaskStore();
     final taskController = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 9, 9),
       idGenerator: _DeterministicIds().next,
     );
@@ -45,20 +45,7 @@ void main() {
   });
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-  }
-}
+class _MemoryTaskStore extends MemoryTaskRepository {}
 
 class _DeterministicIds {
   final Map<String, int> _counts = <String, int>{};

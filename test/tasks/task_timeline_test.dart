@@ -2,8 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/tasks/task_timeline.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   test('buildTaskTimeline merges task records in chronological order', () {
@@ -43,7 +44,7 @@ void main() {
 
   test('TaskInboxController exposes task timeline projection', () async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_snapshot()),
+      repository: _MemoryTaskStore(_snapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -135,16 +136,6 @@ TaskRecord _task(String id) {
   );
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore(this._snapshot);
-
-  TaskInboxSnapshot _snapshot;
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore(super.snapshot);
 }

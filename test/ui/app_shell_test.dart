@@ -6,14 +6,14 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/status_bar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
+
+import '../support/memory_task_repository.dart';
 
 void _noop() {}
 
@@ -459,7 +459,9 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(store: _EmptyTaskStore());
+    final taskInboxController = TaskInboxController(
+      repository: _EmptyTaskStore(),
+    );
     addTearDown(taskInboxController.dispose);
     await taskInboxController.load();
 
@@ -504,7 +506,9 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(store: _EmptyTaskStore());
+    final taskInboxController = TaskInboxController(
+      repository: _EmptyTaskStore(),
+    );
     addTearDown(taskInboxController.dispose);
     await taskInboxController.load();
 
@@ -599,10 +603,4 @@ void main() {
   });
 }
 
-class _EmptyTaskStore implements TaskStore {
-  @override
-  Future<TaskInboxSnapshot> load() async => TaskInboxSnapshot.empty();
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {}
-}
+class _EmptyTaskStore extends MemoryTaskRepository {}

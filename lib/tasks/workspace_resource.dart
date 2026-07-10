@@ -61,7 +61,14 @@ class WorkspaceResource {
     final type = resourceTypeFromJson(json['type']);
     final label = _stringFromJson(json['label']);
     final ref = _jsonMap(json['ref']);
-    if (id == null || type == null || label == null || ref == null) {
+    final path = ref?['path'];
+    if (id == null ||
+        type == null ||
+        label == null ||
+        ref == null ||
+        path is! String ||
+        path.isEmpty ||
+        path.trim() != path) {
       return null;
     }
     return WorkspaceResource(

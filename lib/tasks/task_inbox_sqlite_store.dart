@@ -6,17 +6,16 @@ import 'package:sqlite3/sqlite3.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
 import 'task_repository.dart';
-import 'task_store.dart';
 import 'workspace_resource.dart';
 
-class TaskInboxSqliteStore
-    implements TaskStore, TaskRepository, TaskMigrationRepository {
+class TaskInboxSqliteStore implements TaskRepository, TaskMigrationRepository {
   TaskInboxSqliteStore({required this.path});
 
   static const String fileName = 'task_inbox_state.sqlite3';
 
   final String? path;
   Database? _database;
+  Future<void>? _initializeFuture;
 
   static String? defaultPath({
     String? configPath,
@@ -42,32 +41,46 @@ class TaskInboxSqliteStore
   }
 
   @override
-  Future<void> initialize() async {
+  Future<void> initialize() {
+    if (_database != null) return Future<void>.value();
+    return _initializeFuture ??= _initializeOnce();
+  }
+
+  Future<void> _initializeOnce() async {
     if (_database != null) return;
     final targetPath = path?.trim();
-    if (targetPath == null || targetPath.isEmpty) {
-      _database = sqlite3.openInMemory();
-    } else {
-      await File(targetPath).parent.create(recursive: true);
-      _database = sqlite3.open(targetPath);
+    try {
+      if (targetPath == null || targetPath.isEmpty) {
+        _database = sqlite3.openInMemory();
+      } else {
+        await File(targetPath).parent.create(recursive: true);
+        _database = sqlite3.open(targetPath);
+      }
+      final database = _database!;
+      database.execute('PRAGMA busy_timeout = 5000;');
+      database.execute('PRAGMA journal_mode = WAL;');
+      database.execute('PRAGMA synchronous = FULL;');
+      database.execute('PRAGMA foreign_keys = ON;');
+      _rejectUnsupportedSchema(database);
+      database.execute(_schemaSql);
+      database.execute(
+        'INSERT OR IGNORE INTO schema_migrations (version, applied_at) '
+        'VALUES (1, ?);',
+        [DateTime.now().toUtc().toIso8601String()],
+      );
+      database.execute(
+        'INSERT OR IGNORE INTO store_meta '
+        '(id, revision, migration_state, source_checksum, updated_at) '
+        "VALUES (1, 0, 'inactive', NULL, ?);",
+        [DateTime.now().toUtc().toIso8601String()],
+      );
+    } on Object {
+      final database = _database;
+      _database = null;
+      database?.close();
+      _initializeFuture = null;
+      rethrow;
     }
-    final database = _database!;
-    database.execute('PRAGMA journal_mode = WAL;');
-    database.execute('PRAGMA synchronous = FULL;');
-    database.execute('PRAGMA foreign_keys = ON;');
-    database.execute('PRAGMA busy_timeout = 5000;');
-    database.execute(_schemaSql);
-    database.execute(
-      'INSERT OR IGNORE INTO schema_migrations (version, applied_at) '
-      'VALUES (1, ?);',
-      [DateTime.now().toUtc().toIso8601String()],
-    );
-    database.execute(
-      'INSERT OR IGNORE INTO store_meta '
-      '(id, revision, migration_state, source_checksum, updated_at) '
-      "VALUES (1, 0, 'inactive', NULL, ?);",
-      [DateTime.now().toUtc().toIso8601String()],
-    );
   }
 
   Future<String> journalMode() async {
@@ -90,10 +103,7 @@ class TaskInboxSqliteStore
     return rows.map((row) => row['name'].toString()).toSet();
   }
 
-  @override
-  Future<TaskInboxSnapshot> load() async {
-    await initialize();
-    final database = _database!;
+  TaskInboxSnapshot _loadSnapshot(Database database) {
     final meta = database.select(
       'SELECT updated_at FROM store_meta WHERE id = 1;',
     );
@@ -101,7 +111,7 @@ class TaskInboxSqliteStore
         ? DateTime.now()
         : DateTime.tryParse(meta.first['updated_at'].toString()) ??
               DateTime.now();
-    return TaskInboxSnapshot(
+    final snapshot = TaskInboxSnapshot(
       updatedAt: updatedAt,
       tasks: _readRecords(database, 'tasks', TaskRecord.fromJson),
       runs: _readRecords(database, 'task_runs', TaskRunRecord.fromJson),
@@ -118,40 +128,141 @@ class TaskInboxSqliteStore
         WorkspaceResource.fromJson,
       ),
     );
+    snapshot.validateReferences();
+    return snapshot;
   }
 
   @override
   Future<TaskRepositorySnapshot> loadRepository() async {
-    final snapshot = await load();
-    return TaskRepositorySnapshot(
-      revision: await revision(),
-      snapshot: snapshot,
-    );
-  }
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
     await initialize();
-    _writeTransaction<void>((database) {
-      _replaceSnapshot(database, snapshot);
-      database.execute(
-        'UPDATE store_meta SET updated_at = ?, migration_state = ?, '
-        'source_checksum = NULL '
-        'WHERE id = 1;',
-        [snapshot.updatedAt.toIso8601String(), 'active'],
+    final database = _database!;
+    database.execute('BEGIN;');
+    try {
+      final rows = database.select(
+        'SELECT revision FROM store_meta WHERE id = 1;',
       );
-    });
+      final loaded = TaskRepositorySnapshot(
+        revision: rows.isEmpty ? 0 : rows.first['revision'] as int,
+        snapshot: _loadSnapshot(database),
+      );
+      database.execute('COMMIT;');
+      return loaded;
+    } on Object {
+      database.execute('ROLLBACK;');
+      rethrow;
+    }
   }
 
   @override
   Future<TaskRecord> insertTask(TaskRecord task) async {
     await initialize();
-    _writeTransaction<void>((database) => _upsertTask(database, task));
+    _writeTransaction<void>((database) {
+      if (_recordExists(database, 'tasks', task.id)) {
+        throw TaskRepositoryConflict('Task already exists: ${task.id}');
+      }
+      _validateTaskLinks(database, task);
+      _upsertTask(database, task);
+    }, updatedAt: task.updatedAt);
     return task;
   }
 
   @override
-  Future<TaskRecord> updateTask(TaskRecord task) => insertTask(task);
+  Future<TaskRecord> updateTask(
+    TaskRecord task, {
+    required TaskRecord expected,
+  }) async {
+    if (task.id != expected.id || task.createdAt != expected.createdAt) {
+      throw ArgumentError('Updated task must keep its identity.');
+    }
+    await initialize();
+    _writeTransaction<void>((database) {
+      _expectPayload(
+        database,
+        table: 'tasks',
+        id: task.id,
+        expected: expected.toJson(),
+        recordLabel: 'Task',
+      );
+      _validateTaskLinks(database, task);
+      _upsertTask(database, task);
+    }, updatedAt: task.updatedAt);
+    return task;
+  }
+
+  @override
+  Future<void> deleteTask(
+    TaskDeleteExpectation expected, {
+    required DateTime updatedAt,
+  }) async {
+    await initialize();
+    _writeTransaction<void>((database) {
+      _expectPayload(
+        database,
+        table: 'tasks',
+        id: expected.task.id,
+        expected: expected.task.toJson(),
+        recordLabel: 'Task',
+      );
+      _expectOwnedRecordSet(
+        database,
+        table: 'task_runs',
+        taskId: expected.task.id,
+        expected: expected.runs,
+      );
+      _expectOwnedRecordSet(
+        database,
+        table: 'task_events',
+        taskId: expected.task.id,
+        expected: expected.events,
+      );
+      _expectOwnedRecordSet(
+        database,
+        table: 'artifacts',
+        taskId: expected.task.id,
+        expected: expected.artifacts,
+      );
+      _expectOwnedRecordSet(
+        database,
+        table: 'approval_requests',
+        taskId: expected.task.id,
+        expected: expected.approvals,
+      );
+      database.execute('DELETE FROM tasks WHERE id = ?;', [expected.task.id]);
+    }, updatedAt: updatedAt);
+  }
+
+  @override
+  Future<TaskClaim> createRun({
+    required TaskRecord expectedTask,
+    required TaskRecord task,
+    required TaskRunRecord run,
+  }) async {
+    if (task.id != expectedTask.id ||
+        task.createdAt != expectedTask.createdAt ||
+        run.taskId != task.id) {
+      throw ArgumentError('Task run must belong to the updated task.');
+    }
+    if (task.currentRunId != run.id) {
+      throw ArgumentError('Updated task must reference the new run.');
+    }
+    await initialize();
+    _writeTransaction<void>((database) {
+      _expectPayload(
+        database,
+        table: 'tasks',
+        id: task.id,
+        expected: expectedTask.toJson(),
+        recordLabel: 'Task',
+      );
+      if (_recordExists(database, 'task_runs', run.id)) {
+        throw TaskRepositoryConflict('Task run already exists: ${run.id}');
+      }
+      _upsertRun(database, run);
+      _validateTaskLinks(database, task);
+      _upsertTask(database, task);
+    }, updatedAt: task.updatedAt);
+    return TaskClaim(task: task, run: run);
+  }
 
   @override
   Future<TaskClaim?> claimTask(String taskId, TaskRunRecord run) async {
@@ -172,18 +283,30 @@ class TaskInboxSqliteStore
         database.execute('ROLLBACK;');
         return null;
       }
+      if (_recordExists(database, 'task_runs', run.id)) {
+        throw TaskRepositoryConflict('Task run already exists: ${run.id}');
+      }
       final claimedTask = task.copyWith(
         status: TaskStatus.dispatched,
         currentRunId: run.id,
         updatedAt: run.startedAt,
       );
-      _upsertTask(database, claimedTask);
       _upsertRun(database, run);
+      _validateTaskLinks(database, claimedTask);
+      _upsertTask(database, claimedTask);
       database.execute(
-        'UPDATE store_meta SET revision = revision + 1 WHERE id = 1;',
+        'UPDATE store_meta SET revision = revision + 1, updated_at = ? '
+        'WHERE id = 1;',
+        [_monotonicUpdatedAt(database, run.startedAt)],
       );
       database.execute('COMMIT;');
       return TaskClaim(task: claimedTask, run: run);
+    } on SqliteException catch (error) {
+      database.execute('ROLLBACK;');
+      if (error.resultCode == SqlError.SQLITE_CONSTRAINT) {
+        throw TaskRepositoryConflict(error.message);
+      }
+      rethrow;
     } on Object {
       database.execute('ROLLBACK;');
       rethrow;
@@ -191,31 +314,69 @@ class TaskInboxSqliteStore
   }
 
   @override
-  Future<TaskRunRecord> updateRun(TaskRunRecord run) async {
+  Future<TaskRunRecord> updateRun(
+    TaskRunRecord run, {
+    required TaskRunRecord expected,
+    required DateTime updatedAt,
+  }) async {
+    if (run.id != expected.id ||
+        run.taskId != expected.taskId ||
+        run.attempt != expected.attempt ||
+        run.startedAt != expected.startedAt) {
+      throw ArgumentError('Updated task run must keep its identity.');
+    }
     await initialize();
-    _writeTransaction<void>((database) => _upsertRun(database, run));
+    _writeTransaction<void>((database) {
+      _expectPayload(
+        database,
+        table: 'task_runs',
+        id: run.id,
+        expected: expected.toJson(),
+        recordLabel: 'Task run',
+      );
+      _upsertRun(database, run);
+    }, updatedAt: updatedAt);
     return run;
   }
 
   @override
-  Future<void> appendEvents(List<TaskEventRecord> events) async {
+  Future<void> appendEvents(
+    List<TaskEventRecord> events, {
+    required DateTime updatedAt,
+  }) async {
     if (events.isEmpty) return;
     await initialize();
     _writeTransaction<void>((database) {
       for (final event in events) {
+        _requireOwnedRun(database, event.taskId, event.runId);
         _insertEvent(database, event);
       }
-    });
+    }, updatedAt: updatedAt);
   }
 
   @override
   Future<void> replaceArtifactsForRun({
     required String taskId,
     required String runId,
+    required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
+    required DateTime updatedAt,
   }) async {
     await initialize();
     _writeTransaction<void>((database) {
+      _requireOwnedRun(database, taskId, runId);
+      _expectArtifactsForRun(
+        database,
+        taskId: taskId,
+        runId: runId,
+        expected: expectedArtifacts,
+      );
+      final replacementIds = artifacts.map((artifact) => artifact.id).toSet();
+      final removedIds = expectedArtifacts
+          .map((artifact) => artifact.id)
+          .where((id) => !replacementIds.contains(id))
+          .toSet();
+      _ensureArtifactsNotReferenced(database, taskId, removedIds);
       database.execute(
         'DELETE FROM artifacts WHERE task_id = ? AND run_id = ?;',
         [taskId, runId],
@@ -226,19 +387,117 @@ class TaskInboxSqliteStore
         }
         _insertArtifact(database, artifact);
       }
-    });
+    }, updatedAt: updatedAt);
   }
 
   @override
-  Future<void> upsertApproval(ApprovalRequestRecord approval) async {
+  Future<void> updateArtifacts({
+    required List<ArtifactRecord> expectedArtifacts,
+    required List<ArtifactRecord> artifacts,
+    required DateTime updatedAt,
+  }) async {
+    if (expectedArtifacts.isEmpty && artifacts.isEmpty) return;
+    if (expectedArtifacts.length != artifacts.length) {
+      throw ArgumentError('Artifact update must keep the same records.');
+    }
+    final expectedById = <String, ArtifactRecord>{
+      for (final artifact in expectedArtifacts) artifact.id: artifact,
+    };
+    final artifactIds = artifacts.map((artifact) => artifact.id).toSet();
+    if (expectedById.length != expectedArtifacts.length ||
+        artifactIds.length != artifacts.length ||
+        artifacts.any((artifact) => !expectedById.containsKey(artifact.id))) {
+      throw ArgumentError('Artifact update must keep unique ids.');
+    }
     await initialize();
-    _writeTransaction<void>((database) => _upsertApproval(database, approval));
+    _writeTransaction<void>((database) {
+      for (final artifact in artifacts) {
+        final expected = expectedById[artifact.id]!;
+        if (artifact.taskId != expected.taskId ||
+            artifact.runId != expected.runId) {
+          throw ArgumentError('Updated artifact must keep its owner.');
+        }
+        _requireOwnedRun(database, artifact.taskId, artifact.runId);
+        _expectPayload(
+          database,
+          table: 'artifacts',
+          id: artifact.id,
+          expected: expected.toJson(),
+          recordLabel: 'Artifact',
+        );
+      }
+      for (final artifact in artifacts) {
+        database.execute('DELETE FROM artifacts WHERE id = ?;', [artifact.id]);
+        _insertArtifact(database, artifact);
+      }
+    }, updatedAt: updatedAt);
   }
 
   @override
-  Future<void> upsertResource(WorkspaceResource resource) async {
+  Future<void> upsertApproval(
+    ApprovalRequestRecord approval, {
+    ApprovalRequestRecord? expected,
+    required DateTime updatedAt,
+  }) async {
     await initialize();
-    _writeTransaction<void>((database) => _upsertResource(database, resource));
+    _writeTransaction<void>((database) {
+      _validateApprovalLinks(database, approval);
+      if (expected == null) {
+        if (_recordExists(database, 'approval_requests', approval.id)) {
+          throw TaskRepositoryConflict(
+            'Approval request already exists: ${approval.id}',
+          );
+        }
+      } else {
+        if (approval.id != expected.id ||
+            approval.taskId != expected.taskId ||
+            approval.runId != expected.runId ||
+            approval.kind != expected.kind ||
+            approval.createdAt != expected.createdAt) {
+          throw ArgumentError(
+            'Updated approval request must keep its identity.',
+          );
+        }
+        _expectPayload(
+          database,
+          table: 'approval_requests',
+          id: approval.id,
+          expected: expected.toJson(),
+          recordLabel: 'Approval request',
+        );
+      }
+      _upsertApproval(database, approval);
+    }, updatedAt: updatedAt);
+  }
+
+  @override
+  Future<void> upsertResource(
+    WorkspaceResource resource, {
+    WorkspaceResource? expected,
+    required DateTime updatedAt,
+  }) async {
+    await initialize();
+    _writeTransaction<void>((database) {
+      if (expected == null) {
+        if (_recordExists(database, 'workspace_resources', resource.id)) {
+          throw TaskRepositoryConflict(
+            'Workspace resource already exists: ${resource.id}',
+          );
+        }
+      } else {
+        if (resource.id != expected.id) {
+          throw ArgumentError('Updated resource must keep its id.');
+        }
+        _expectPayload(
+          database,
+          table: 'workspace_resources',
+          id: resource.id,
+          expected: expected.toJson(),
+          recordLabel: 'Workspace resource',
+        );
+      }
+      _upsertResource(database, resource);
+    }, updatedAt: updatedAt);
   }
 
   @override
@@ -334,21 +593,23 @@ class TaskInboxSqliteStore
   @override
   Future<void> rollbackImport(String checksum) async {
     await initialize();
-    _writeTransaction<void>((database) {
+    _writeTransaction<bool>((database) {
       final rows = database.select(
-        'SELECT source_checksum, migration_state FROM store_meta WHERE id = 1;',
+        'SELECT source_checksum, migration_state FROM store_meta '
+        'WHERE id = 1;',
       );
       if (rows.isEmpty ||
           rows.first['source_checksum'] != checksum ||
           rows.first['migration_state'] != 'importing') {
-        return;
+        return false;
       }
       database.execute(
         'UPDATE store_meta SET migration_state = ? '
         'WHERE id = 1;',
         ['inactive'],
       );
-    });
+      return true;
+    }, changed: (rolledBack) => rolledBack);
   }
 
   @override
@@ -434,24 +695,266 @@ class TaskInboxSqliteStore
 
   @override
   Future<void> close() async {
+    final initializing = _initializeFuture;
+    if (initializing != null) {
+      try {
+        await initializing;
+      } on Object {
+        // Initialization already released a partially opened database.
+      }
+    }
     final database = _database;
     _database = null;
+    _initializeFuture = null;
     database?.close();
   }
 
-  T _writeTransaction<T>(T Function(Database database) action) {
+  T _writeTransaction<T>(
+    T Function(Database database) action, {
+    DateTime? updatedAt,
+    bool Function(T result)? changed,
+  }) {
     final database = _database!;
     database.execute('BEGIN IMMEDIATE;');
     try {
       final result = action(database);
-      database.execute(
-        'UPDATE store_meta SET revision = revision + 1 WHERE id = 1;',
-      );
+      final didChange = changed?.call(result) ?? true;
+      if (!didChange) {
+        database.execute('COMMIT;');
+        return result;
+      }
+      if (updatedAt == null) {
+        database.execute(
+          'UPDATE store_meta SET revision = revision + 1 WHERE id = 1;',
+        );
+      } else {
+        database.execute(
+          'UPDATE store_meta SET revision = revision + 1, updated_at = ? '
+          'WHERE id = 1;',
+          [_monotonicUpdatedAt(database, updatedAt)],
+        );
+      }
       database.execute('COMMIT;');
       return result;
+    } on SqliteException catch (error) {
+      database.execute('ROLLBACK;');
+      if (error.resultCode == SqlError.SQLITE_CONSTRAINT) {
+        throw TaskRepositoryConflict(error.message);
+      }
+      rethrow;
     } on Object {
       database.execute('ROLLBACK;');
       rethrow;
+    }
+  }
+
+  static bool _recordExists(Database database, String table, String id) {
+    final rows = database.select('SELECT 1 FROM $table WHERE id = ? LIMIT 1;', [
+      id,
+    ]);
+    return rows.isNotEmpty;
+  }
+
+  static void _rejectUnsupportedSchema(Database database) {
+    final tables = database.select(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+      "AND name = 'schema_migrations' LIMIT 1;",
+    );
+    if (tables.isEmpty) return;
+    final rows = database.select(
+      'SELECT MAX(version) AS version FROM schema_migrations;',
+    );
+    final version = rows.isEmpty ? null : rows.first['version'];
+    if (version is int && version > 1) {
+      throw StateError(
+        'Task repository schema version $version is newer than supported 1.',
+      );
+    }
+  }
+
+  static String _monotonicUpdatedAt(Database database, DateTime candidate) {
+    final rows = database.select(
+      'SELECT updated_at FROM store_meta WHERE id = 1;',
+    );
+    if (rows.isNotEmpty) {
+      final raw = rows.first['updated_at'];
+      final current = raw is String ? DateTime.tryParse(raw) : null;
+      if (current != null && current.isAfter(candidate)) return raw as String;
+    }
+    return candidate.toIso8601String();
+  }
+
+  static void _validateTaskLinks(Database database, TaskRecord task) {
+    final resourceId = task.resourceId;
+    if (resourceId != null &&
+        !_recordExists(database, 'workspace_resources', resourceId)) {
+      throw StateError(
+        'Task ${task.id} references missing resource $resourceId.',
+      );
+    }
+    final runId = task.currentRunId;
+    if (runId != null) _requireOwnedRun(database, task.id, runId);
+  }
+
+  static TaskRunRecord _requireOwnedRun(
+    Database database,
+    String taskId,
+    String runId,
+  ) {
+    final rows = database.select(
+      'SELECT payload_json FROM task_runs WHERE id = ?;',
+      [runId],
+    );
+    if (rows.isEmpty) {
+      throw StateError('Task run not found: $runId');
+    }
+    final run = TaskRunRecord.fromJson(_decodePayload(rows.first));
+    if (run == null || run.taskId != taskId) {
+      throw StateError('Task run $runId does not belong to task $taskId.');
+    }
+    return run;
+  }
+
+  static void _validateApprovalLinks(
+    Database database,
+    ApprovalRequestRecord approval,
+  ) {
+    if (!_recordExists(database, 'tasks', approval.taskId)) {
+      throw StateError(
+        'Approval ${approval.id} references missing task ${approval.taskId}.',
+      );
+    }
+    final runId = approval.runId;
+    if (runId != null) {
+      _requireOwnedRun(database, approval.taskId, runId);
+    }
+    for (final artifactId in approval.artifactIds) {
+      final rows = database.select(
+        'SELECT payload_json FROM artifacts WHERE id = ?;',
+        [artifactId],
+      );
+      if (rows.isEmpty) {
+        throw StateError(
+          'Approval ${approval.id} references missing artifact $artifactId.',
+        );
+      }
+      final artifact = ArtifactRecord.fromJson(_decodePayload(rows.first));
+      if (artifact == null ||
+          artifact.taskId != approval.taskId ||
+          (runId != null && artifact.runId != runId)) {
+        throw StateError(
+          'Approval ${approval.id} references invalid artifact $artifactId.',
+        );
+      }
+    }
+  }
+
+  static void _ensureArtifactsNotReferenced(
+    Database database,
+    String taskId,
+    Set<String> artifactIds,
+  ) {
+    if (artifactIds.isEmpty) return;
+    final rows = database.select(
+      'SELECT payload_json FROM approval_requests WHERE task_id = ?;',
+      [taskId],
+    );
+    for (final row in rows) {
+      final approval = ApprovalRequestRecord.fromJson(_decodePayload(row));
+      if (approval == null) {
+        throw const FormatException('Invalid approval request payload.');
+      }
+      final referenced = approval.artifactIds.toSet().intersection(artifactIds);
+      if (referenced.isNotEmpty) {
+        throw TaskRepositoryConflict(
+          'Artifacts are still referenced by approval ${approval.id}: '
+          '${referenced.join(', ')}',
+        );
+      }
+    }
+  }
+
+  static void _expectPayload(
+    Database database, {
+    required String table,
+    required String id,
+    required Map<String, Object?> expected,
+    required String recordLabel,
+  }) {
+    final rows = database.select(
+      'SELECT payload_json FROM $table WHERE id = ?;',
+      [id],
+    );
+    if (rows.isEmpty) {
+      throw TaskRepositoryConflict('$recordLabel no longer exists: $id');
+    }
+    if (rows.first['payload_json'] != jsonEncode(expected)) {
+      throw TaskRepositoryConflict('$recordLabel changed concurrently: $id');
+    }
+  }
+
+  static void _expectOwnedRecordSet(
+    Database database, {
+    required String table,
+    required String taskId,
+    required List<Object> expected,
+  }) {
+    final rows = database.select(
+      'SELECT payload_json FROM $table WHERE task_id = ? ORDER BY id;',
+      [taskId],
+    );
+    final expectedPayloads =
+        expected
+            .map((record) => jsonEncode(_recordToJson(record)))
+            .toList(growable: false)
+          ..sort();
+    final actualPayloads =
+        rows
+            .map((row) => jsonEncode(_decodePayload(row)))
+            .toList(growable: false)
+          ..sort();
+    if (actualPayloads.length != expectedPayloads.length) {
+      throw TaskRepositoryConflict(
+        'Task-owned records changed concurrently in $table.',
+      );
+    }
+    for (var index = 0; index < actualPayloads.length; index += 1) {
+      if (actualPayloads[index] != expectedPayloads[index]) {
+        throw TaskRepositoryConflict(
+          'Task-owned records changed concurrently in $table.',
+        );
+      }
+    }
+  }
+
+  static void _expectArtifactsForRun(
+    Database database, {
+    required String taskId,
+    required String runId,
+    required List<ArtifactRecord> expected,
+  }) {
+    final rows = database.select(
+      'SELECT id, payload_json FROM artifacts '
+      'WHERE task_id = ? AND run_id = ? ORDER BY id;',
+      [taskId, runId],
+    );
+    final expectedRows = [...expected]
+      ..sort((left, right) => left.id.compareTo(right.id));
+    if (rows.length != expectedRows.length) {
+      throw TaskRepositoryConflict(
+        'Artifacts changed concurrently for task run: $runId',
+      );
+    }
+    for (var index = 0; index < rows.length; index += 1) {
+      final artifact = expectedRows[index];
+      if (artifact.taskId != taskId ||
+          artifact.runId != runId ||
+          rows[index]['id'] != artifact.id ||
+          rows[index]['payload_json'] != jsonEncode(artifact.toJson())) {
+        throw TaskRepositoryConflict(
+          'Artifacts changed concurrently for task run: $runId',
+        );
+      }
     }
   }
 
@@ -487,6 +990,7 @@ class TaskInboxSqliteStore
   }
 
   static void _upsertTask(Database database, TaskRecord task) {
+    _validateCanonicalRecord(task);
     database.execute(
       'INSERT INTO tasks '
       '(id, title, description, workspace_path, agent_name, status, priority, '
@@ -525,6 +1029,7 @@ class TaskInboxSqliteStore
   }
 
   static void _upsertRun(Database database, TaskRunRecord run) {
+    _validateCanonicalRecord(run);
     database.execute(
       'INSERT INTO task_runs '
       '(id, task_id, attempt, status, started_at, ended_at, session_id, '
@@ -551,8 +1056,9 @@ class TaskInboxSqliteStore
   }
 
   static void _insertEvent(Database database, TaskEventRecord event) {
+    _validateCanonicalRecord(event);
     database.execute(
-      'INSERT OR REPLACE INTO task_events '
+      'INSERT INTO task_events '
       '(id, task_id, run_id, kind, text, created_at, session_id, '
       'metadata_json, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);',
       [
@@ -570,8 +1076,9 @@ class TaskInboxSqliteStore
   }
 
   static void _insertArtifact(Database database, ArtifactRecord artifact) {
+    _validateCanonicalRecord(artifact);
     database.execute(
-      'INSERT OR REPLACE INTO artifacts '
+      'INSERT INTO artifacts '
       '(id, task_id, run_id, kind, status, title, created_at, path, '
       'content_preview, sha256, size_bytes, metadata_json, payload_json) '
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
@@ -597,6 +1104,7 @@ class TaskInboxSqliteStore
     Database database,
     ApprovalRequestRecord approval,
   ) {
+    _validateCanonicalRecord(approval);
     database.execute(
       'INSERT INTO approval_requests '
       '(id, task_id, run_id, kind, status, created_at, resolved_at, rationale, '
@@ -620,6 +1128,7 @@ class TaskInboxSqliteStore
   }
 
   static void _upsertResource(Database database, WorkspaceResource resource) {
+    _validateCanonicalRecord(resource);
     database.execute(
       'INSERT INTO workspace_resources '
       '(id, type, label, ref_json, serial, payload_json) '
@@ -643,17 +1152,151 @@ class TaskInboxSqliteStore
     String table,
     T? Function(Object? raw) reader,
   ) {
-    final rows = database.select(
-      'SELECT payload_json FROM $table ORDER BY rowid;',
-    );
-    return List<T>.unmodifiable(
-      rows.map(_decodePayload).map(reader).whereType<T>(),
-    );
+    final rows = database.select('SELECT * FROM $table ORDER BY rowid;');
+    final records = <T>[];
+    for (final row in rows) {
+      final decoded = _decodePayload(row);
+      final record = reader(decoded);
+      if (record == null) {
+        throw FormatException('Invalid normalized task record in $table.');
+      }
+      if (!taskRepositoryRecordHasCanonicalFields(record as Object)) {
+        throw FormatException('Non-canonical task record in $table.');
+      }
+      if (jsonEncode(_recordToJson(record as Object)) != jsonEncode(decoded)) {
+        throw FormatException('Non-canonical task record in $table.');
+      }
+      _validateNormalizedColumns(table, row, record);
+      records.add(record);
+    }
+    return List<T>.unmodifiable(records);
   }
 
   static Object? _decodePayload(Row row) {
     final payload = row['payload_json'];
-    return payload is String ? jsonDecode(payload) : null;
+    if (payload is! String) {
+      throw const FormatException('Normalized task payload must be text.');
+    }
+    return jsonDecode(payload);
+  }
+
+  static Map<String, Object?> _recordToJson(Object record) {
+    return switch (record) {
+      TaskRecord value => value.toJson(),
+      TaskRunRecord value => value.toJson(),
+      TaskEventRecord value => value.toJson(),
+      ArtifactRecord value => value.toJson(),
+      ApprovalRequestRecord value => value.toJson(),
+      WorkspaceResource value => value.toJson(),
+      _ => throw ArgumentError('Unsupported task record: $record'),
+    };
+  }
+
+  static void _validateCanonicalRecord(Object record) {
+    if (!taskRepositoryRecordHasCanonicalFields(record)) {
+      throw ArgumentError('Task record must use canonical values: $record');
+    }
+    final json = _recordToJson(record);
+    final restored = switch (record) {
+      TaskRecord _ => TaskRecord.fromJson(json),
+      TaskRunRecord _ => TaskRunRecord.fromJson(json),
+      TaskEventRecord _ => TaskEventRecord.fromJson(json),
+      ArtifactRecord _ => ArtifactRecord.fromJson(json),
+      ApprovalRequestRecord _ => ApprovalRequestRecord.fromJson(json),
+      WorkspaceResource _ => WorkspaceResource.fromJson(json),
+      _ => null,
+    };
+    if (restored == null ||
+        jsonEncode(_recordToJson(restored)) != jsonEncode(json)) {
+      throw ArgumentError('Task record must use canonical values: $record');
+    }
+  }
+
+  static void _validateNormalizedColumns(String table, Row row, Object record) {
+    final valid = switch ((table, record)) {
+      ('tasks', TaskRecord value) =>
+        row['id'] == value.id &&
+            row['title'] == value.title &&
+            row['description'] == value.description &&
+            row['workspace_path'] == value.workspacePath &&
+            row['agent_name'] == value.agentName &&
+            row['status'] == value.status.jsonValue &&
+            row['priority'] == value.priority.jsonValue &&
+            _sameDate(row['created_at'], value.createdAt) &&
+            _sameDate(row['updated_at'], value.updatedAt) &&
+            row['session_id'] == value.sessionId &&
+            row['current_run_id'] == value.currentRunId &&
+            row['summary'] == value.summary &&
+            row['error'] == value.error &&
+            row['resource_id'] == value.resourceId &&
+            row['skill_ids_json'] == jsonEncode(value.skillIds) &&
+            row['metadata_json'] == jsonEncode(value.metadata),
+      ('task_runs', TaskRunRecord value) =>
+        row['id'] == value.id &&
+            row['task_id'] == value.taskId &&
+            row['attempt'] == value.attempt &&
+            row['status'] == value.status.jsonValue &&
+            _sameDate(row['started_at'], value.startedAt) &&
+            _sameNullableDate(row['ended_at'], value.endedAt) &&
+            row['session_id'] == value.sessionId &&
+            row['prompt_snapshot'] == value.promptSnapshot &&
+            row['model'] == value.model &&
+            row['error'] == value.error,
+      ('task_events', TaskEventRecord value) =>
+        row['id'] == value.id &&
+            row['task_id'] == value.taskId &&
+            row['run_id'] == value.runId &&
+            row['kind'] == value.kind.jsonValue &&
+            row['text'] == value.text &&
+            _sameDate(row['created_at'], value.createdAt) &&
+            row['session_id'] == value.sessionId &&
+            row['metadata_json'] == jsonEncode(value.metadata),
+      ('artifacts', ArtifactRecord value) =>
+        row['id'] == value.id &&
+            row['task_id'] == value.taskId &&
+            row['run_id'] == value.runId &&
+            row['kind'] == value.kind.jsonValue &&
+            row['status'] == value.status.jsonValue &&
+            row['title'] == value.title &&
+            _sameDate(row['created_at'], value.createdAt) &&
+            row['path'] == value.path &&
+            row['content_preview'] == value.contentPreview &&
+            row['sha256'] == value.sha256 &&
+            row['size_bytes'] == value.sizeBytes &&
+            row['metadata_json'] == jsonEncode(value.metadata),
+      ('approval_requests', ApprovalRequestRecord value) =>
+        row['id'] == value.id &&
+            row['task_id'] == value.taskId &&
+            row['run_id'] == value.runId &&
+            row['kind'] == value.kind.jsonValue &&
+            row['status'] == value.status.jsonValue &&
+            _sameDate(row['created_at'], value.createdAt) &&
+            _sameNullableDate(row['resolved_at'], value.resolvedAt) &&
+            row['rationale'] == value.rationale &&
+            row['metadata_json'] == jsonEncode(value.metadata),
+      ('workspace_resources', WorkspaceResource value) =>
+        row['id'] == value.id &&
+            row['type'] == value.type.jsonValue &&
+            row['label'] == value.label &&
+            row['ref_json'] == jsonEncode(value.ref) &&
+            row['serial'] == (value.serial ? 1 : 0),
+      _ => false,
+    };
+    if (!valid) {
+      throw FormatException(
+        'Normalized columns disagree with payload in $table.',
+      );
+    }
+  }
+
+  static bool _sameDate(Object? raw, DateTime expected) {
+    final parsed = raw is String ? DateTime.tryParse(raw) : null;
+    return parsed != null && parsed.isAtSameMomentAs(expected);
+  }
+
+  static bool _sameNullableDate(Object? raw, DateTime? expected) {
+    if (expected == null) return raw == null;
+    return _sameDate(raw, expected);
   }
 
   static String _joinPath(String directory, String basename) {

@@ -6,10 +6,11 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/ui/components/task_inbox_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   Future<void> pumpSidebar(
@@ -40,7 +41,7 @@ void main() {
   testWidgets('TaskInboxSidebar creates and displays a task', (tester) async {
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -78,7 +79,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 9),
           tasks: [
@@ -109,7 +110,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 9),
           tasks: [
@@ -168,7 +169,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -188,7 +189,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -207,7 +208,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -226,7 +227,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -267,7 +268,7 @@ void main() {
       sessionId: 'session-1',
     );
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
       ),
     );
@@ -322,7 +323,7 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(chat.dispose);
-    final taskController = TaskInboxController(store: _MemoryTaskStore());
+    final taskController = TaskInboxController(repository: _MemoryTaskStore());
     addTearDown(taskController.dispose);
     await taskController.load();
 
@@ -368,7 +369,7 @@ void main() {
     );
     addTearDown(chat.dispose);
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -410,7 +411,7 @@ void main() {
     addTearDown(chat.dispose);
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -482,21 +483,8 @@ class _DeterministicIds {
   }
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-  final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-    savedSnapshots.add(snapshot);
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore([super.snapshot]);
 }
 
 TaskInboxSnapshot _reviewSnapshot() {
