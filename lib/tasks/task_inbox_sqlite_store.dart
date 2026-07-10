@@ -65,7 +65,7 @@ class TaskInboxSqliteStore
     database.execute(
       'INSERT OR IGNORE INTO store_meta '
       '(id, revision, migration_state, source_checksum, updated_at) '
-      "VALUES (1, 0, 'active', NULL, ?);",
+      "VALUES (1, 0, 'inactive', NULL, ?);",
       [DateTime.now().toUtc().toIso8601String()],
     );
   }
@@ -99,7 +99,7 @@ class TaskInboxSqliteStore
     );
     final updatedAt = meta.isEmpty
         ? DateTime.now()
-        : DateTime.tryParse(meta.first['updated_at'].toString())?.toLocal() ??
+        : DateTime.tryParse(meta.first['updated_at'].toString()) ??
               DateTime.now();
     return TaskInboxSnapshot(
       updatedAt: updatedAt,
@@ -133,29 +133,12 @@ class TaskInboxSqliteStore
   Future<void> save(TaskInboxSnapshot snapshot) async {
     await initialize();
     _writeTransaction<void>((database) {
-      _clearRecords(database);
-      for (final resource in snapshot.resources) {
-        _upsertResource(database, resource);
-      }
-      for (final task in snapshot.tasks) {
-        _upsertTask(database, task);
-      }
-      for (final run in snapshot.runs) {
-        _upsertRun(database, run);
-      }
-      for (final event in snapshot.events) {
-        _insertEvent(database, event);
-      }
-      for (final artifact in snapshot.artifacts) {
-        _insertArtifact(database, artifact);
-      }
-      for (final approval in snapshot.approvals) {
-        _upsertApproval(database, approval);
-      }
+      _replaceSnapshot(database, snapshot);
       database.execute(
-        'UPDATE store_meta SET updated_at = ?, migration_state = ? '
+        'UPDATE store_meta SET updated_at = ?, migration_state = ?, '
+        'source_checksum = NULL '
         'WHERE id = 1;',
-        [snapshot.updatedAt.toUtc().toIso8601String(), 'active'],
+        [snapshot.updatedAt.toIso8601String(), 'active'],
       );
     });
   }
@@ -268,27 +251,84 @@ class TaskInboxSqliteStore
   }
 
   @override
-  Future<bool> isActive() async {
+  Future<TaskMigrationMetadata> migrationMetadata() async {
     await initialize();
     final rows = _database!.select(
-      'SELECT migration_state FROM store_meta WHERE id = 1;',
+      'SELECT migration_state, source_checksum FROM store_meta WHERE id = 1;',
     );
-    return rows.isNotEmpty && rows.first['migration_state'] == 'active';
+    if (rows.isEmpty) {
+      return const TaskMigrationMetadata(phase: TaskMigrationPhase.inactive);
+    }
+    final row = rows.first;
+    final phase = switch (row['migration_state']) {
+      'active' => TaskMigrationPhase.active,
+      'importing' => TaskMigrationPhase.importing,
+      'inactive' => TaskMigrationPhase.inactive,
+      final state => throw StateError(
+        'Unsupported task migration state: $state',
+      ),
+    };
+    final checksum = row['source_checksum'];
+    return TaskMigrationMetadata(
+      phase: phase,
+      sourceChecksum: checksum is String ? checksum : null,
+    );
   }
 
   @override
-  Future<void> importSnapshot(
+  Future<bool> isActive() async {
+    return (await migrationMetadata()).phase == TaskMigrationPhase.active;
+  }
+
+  @override
+  Future<TaskImportDisposition> importSnapshot(
     TaskInboxSnapshot snapshot, {
     required String checksum,
   }) async {
-    await save(snapshot);
-    _writeTransaction<void>((database) {
-      database.execute(
-        'UPDATE store_meta SET migration_state = ?, source_checksum = ? '
-        'WHERE id = 1;',
-        ['importing', checksum],
+    snapshot.validateReferences();
+    await initialize();
+    final database = _database!;
+    database.execute('BEGIN IMMEDIATE;');
+    try {
+      final rows = database.select(
+        'SELECT migration_state, source_checksum FROM store_meta WHERE id = 1;',
       );
-    });
+      if (rows.isEmpty) {
+        throw StateError('Task migration metadata is missing.');
+      }
+      final state = rows.first['migration_state'];
+      final existingChecksum = rows.first['source_checksum'];
+      if (state == 'active') {
+        database.execute('COMMIT;');
+        return TaskImportDisposition.alreadyActive;
+      }
+      if (state == 'importing') {
+        if (existingChecksum != checksum) {
+          throw StateError('Another task migration is already in progress.');
+        }
+        database.execute('COMMIT;');
+        return TaskImportDisposition.alreadyImporting;
+      }
+      if (state != 'inactive') {
+        throw StateError('Unsupported task migration state: $state');
+      }
+      if (existingChecksum != null && existingChecksum != checksum) {
+        throw StateError('Another task migration is awaiting recovery.');
+      }
+
+      _replaceSnapshot(database, snapshot);
+      database.execute(
+        'UPDATE store_meta SET updated_at = ?, migration_state = ?, '
+        'source_checksum = ?, revision = revision + 1 '
+        'WHERE id = 1;',
+        [snapshot.updatedAt.toIso8601String(), 'importing', checksum],
+      );
+      database.execute('COMMIT;');
+      return TaskImportDisposition.imported;
+    } on Object {
+      database.execute('ROLLBACK;');
+      rethrow;
+    }
   }
 
   @override
@@ -296,12 +336,15 @@ class TaskInboxSqliteStore
     await initialize();
     _writeTransaction<void>((database) {
       final rows = database.select(
-        'SELECT source_checksum FROM store_meta WHERE id = 1;',
+        'SELECT source_checksum, migration_state FROM store_meta WHERE id = 1;',
       );
-      if (rows.isEmpty || rows.first['source_checksum'] != checksum) return;
-      _clearRecords(database);
+      if (rows.isEmpty ||
+          rows.first['source_checksum'] != checksum ||
+          rows.first['migration_state'] != 'importing') {
+        return;
+      }
       database.execute(
-        'UPDATE store_meta SET migration_state = ?, source_checksum = NULL '
+        'UPDATE store_meta SET migration_state = ? '
         'WHERE id = 1;',
         ['inactive'],
       );
@@ -311,13 +354,82 @@ class TaskInboxSqliteStore
   @override
   Future<void> activateImport(String checksum) async {
     await initialize();
-    _writeTransaction<void>((database) {
+    final database = _database!;
+    database.execute('BEGIN IMMEDIATE;');
+    try {
+      final rows = database.select(
+        'SELECT source_checksum, migration_state FROM store_meta WHERE id = 1;',
+      );
+      if (rows.isEmpty || rows.first['source_checksum'] != checksum) {
+        throw StateError('Task migration cannot be activated.');
+      }
+      if (rows.first['migration_state'] == 'active') {
+        database.execute('COMMIT;');
+        return;
+      }
+      if (rows.first['migration_state'] != 'importing') {
+        throw StateError('Task migration cannot be activated.');
+      }
       database.execute(
-        'UPDATE store_meta SET migration_state = ? '
+        'UPDATE store_meta SET migration_state = ?, revision = revision + 1 '
         'WHERE id = 1 AND source_checksum = ?;',
         ['active', checksum],
       );
-    });
+      database.execute('COMMIT;');
+    } on Object {
+      database.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> activateVerifiedSnapshot(
+    TaskInboxSnapshot snapshot, {
+    required String checksum,
+  }) async {
+    snapshot.validateReferences();
+    await initialize();
+    final database = _database!;
+    database.execute('BEGIN IMMEDIATE;');
+    try {
+      final rows = database.select(
+        'SELECT source_checksum, migration_state FROM store_meta WHERE id = 1;',
+      );
+      if (rows.isEmpty) {
+        throw StateError('Task migration metadata is missing.');
+      }
+      final state = rows.first['migration_state'];
+      final existingChecksum = rows.first['source_checksum'];
+      if (state == 'active') {
+        if (existingChecksum != checksum) {
+          throw StateError('Another task migration is already active.');
+        }
+        database.execute('COMMIT;');
+        return;
+      }
+      if (state != 'inactive' && state != 'importing') {
+        throw StateError('Unsupported task migration state: $state');
+      }
+      if (state == 'importing' && existingChecksum != checksum) {
+        throw StateError('Another task migration is already in progress.');
+      }
+      if (state == 'inactive' &&
+          existingChecksum != null &&
+          existingChecksum != checksum) {
+        throw StateError('Another task migration is awaiting recovery.');
+      }
+
+      _replaceSnapshot(database, snapshot);
+      database.execute(
+        'UPDATE store_meta SET updated_at = ?, migration_state = ?, '
+        'source_checksum = ?, revision = revision + 1 WHERE id = 1;',
+        [snapshot.updatedAt.toIso8601String(), 'active', checksum],
+      );
+      database.execute('COMMIT;');
+    } on Object {
+      database.execute('ROLLBACK;');
+      rethrow;
+    }
   }
 
   @override
@@ -350,6 +462,28 @@ class TaskInboxSqliteStore
     database.execute('DELETE FROM task_runs;');
     database.execute('DELETE FROM tasks;');
     database.execute('DELETE FROM workspace_resources;');
+  }
+
+  static void _replaceSnapshot(Database database, TaskInboxSnapshot snapshot) {
+    _clearRecords(database);
+    for (final resource in snapshot.resources) {
+      _upsertResource(database, resource);
+    }
+    for (final task in snapshot.tasks) {
+      _upsertTask(database, task);
+    }
+    for (final run in snapshot.runs) {
+      _upsertRun(database, run);
+    }
+    for (final event in snapshot.events) {
+      _insertEvent(database, event);
+    }
+    for (final artifact in snapshot.artifacts) {
+      _insertArtifact(database, artifact);
+    }
+    for (final approval in snapshot.approvals) {
+      _upsertApproval(database, approval);
+    }
   }
 
   static void _upsertTask(Database database, TaskRecord task) {

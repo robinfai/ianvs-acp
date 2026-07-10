@@ -19,6 +19,17 @@ class TaskClaim {
   final TaskRunRecord run;
 }
 
+enum TaskMigrationPhase { inactive, importing, active }
+
+enum TaskImportDisposition { imported, alreadyImporting, alreadyActive }
+
+class TaskMigrationMetadata {
+  const TaskMigrationMetadata({required this.phase, this.sourceChecksum});
+
+  final TaskMigrationPhase phase;
+  final String? sourceChecksum;
+}
+
 abstract class TaskRepository {
   Future<void> initialize();
 
@@ -52,9 +63,11 @@ abstract class TaskRepository {
 }
 
 abstract class TaskMigrationRepository {
+  Future<TaskMigrationMetadata> migrationMetadata();
+
   Future<bool> isActive();
 
-  Future<void> importSnapshot(
+  Future<TaskImportDisposition> importSnapshot(
     TaskInboxSnapshot snapshot, {
     required String checksum,
   });
@@ -62,4 +75,9 @@ abstract class TaskMigrationRepository {
   Future<void> rollbackImport(String checksum);
 
   Future<void> activateImport(String checksum);
+
+  Future<void> activateVerifiedSnapshot(
+    TaskInboxSnapshot snapshot, {
+    required String checksum,
+  });
 }

@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,10 +13,12 @@ import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
+import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_store.dart';
 
@@ -317,6 +323,320 @@ void main() {
 
     expect(find.textContaining('bad json'), findsOneWidget);
     expect(find.text('ACP Client'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp migrates legacy tasks before enabling Inbox', (
+    tester,
+  ) async {
+    final temp = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('acp-app-migration-'),
+    ))!;
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final configPath = '${temp.path}/settings.json';
+    final source = File('${temp.path}/task_inbox_state.json');
+    final createdAt = DateTime.utc(2026, 7, 10, 9);
+    final snapshot = TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [
+        TaskRecord(
+          id: 'legacy-task',
+          title: 'Legacy task survived',
+          description: 'Migrate before scheduling.',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+          status: TaskStatus.inbox,
+          priority: TaskPriority.normal,
+          createdAt: createdAt,
+          updatedAt: createdAt,
+        ),
+      ],
+    );
+    await tester.runAsync(
+      () => source.writeAsString(jsonEncode(snapshot.toJson())),
+    );
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: AcpClientConfig(configPath: configPath),
+        autoLoadWorkspaceSessions: false,
+        discoverAgentServers: (_) async => const <AgentServerConfig>[],
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(tester, () => !source.existsSync());
+    await _pumpUntil(tester, () => find.text('Inbox').evaluate().isNotEmpty);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inbox'), findsOneWidget);
+    await tester.tap(find.text('Inbox'));
+    await tester.pumpAndSettle();
+    expect(find.text('Legacy task survived'), findsOneWidget);
+    expect(source.existsSync(), isFalse);
+    expect(
+      temp.listSync().any(
+        (entity) => entity is File && entity.path.contains('.migrated.'),
+      ),
+      isTrue,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+  });
+
+  testWidgets('AcpClientApp keeps Inbox disabled when migration fails', (
+    tester,
+  ) async {
+    final temp = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('acp-app-migration-'),
+    ))!;
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final configPath = '${temp.path}/settings.json';
+    final source = File('${temp.path}/task_inbox_state.json');
+    await tester.runAsync(() => source.writeAsString('{broken'));
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: AcpClientConfig(configPath: configPath),
+        autoLoadWorkspaceSessions: false,
+        discoverAgentServers: (_) async => const <AgentServerConfig>[],
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () => File('${temp.path}/task_inbox_state.sqlite3').existsSync(),
+    );
+    await _pumpUntil(
+      tester,
+      () => find
+          .textContaining('Could not initialize Task Inbox')
+          .evaluate()
+          .isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('Could not initialize Task Inbox'),
+      findsOneWidget,
+    );
+    expect(find.text('Inbox'), findsNothing);
+    expect(source.readAsStringSync(), '{broken');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    final repository = TaskInboxSqliteStore(
+      path: '${temp.path}/task_inbox_state.sqlite3',
+    );
+    addTearDown(repository.close);
+    expect(await tester.runAsync(repository.isActive), isFalse);
+  });
+
+  testWidgets('AcpClientApp waits for injected scheduler startup', (
+    tester,
+  ) async {
+    final store = _FailingSecondLoadTaskStore();
+    final taskController = TaskInboxController(store: store);
+    addTearDown(taskController.dispose);
+    await taskController.load();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+      ),
+      const Size(1400, 900),
+    );
+
+    expect(
+      find.textContaining('Could not initialize Task Inbox'),
+      findsOneWidget,
+    );
+    expect(find.text('Inbox'), findsNothing);
+  });
+
+  testWidgets('AcpClientApp drains tasks before replacing configured agents', (
+    tester,
+  ) async {
+    final createdAt = DateTime(2026, 7, 10, 9);
+    final taskController = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: [
+            TaskRecord(
+              id: 'queued-task',
+              title: 'Long-running task',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.queued,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(taskController.dispose);
+    final clients = <_TrackingHangingAgentClient>[];
+    AcpClientConfig config(String version) => AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex',
+          'args': [version],
+        },
+      },
+    });
+    AcpClientApp app(String version) => AcpClientApp(
+      key: const ValueKey('config-replacement-app'),
+      config: config(version),
+      autoLoadWorkspaceSessions: false,
+      taskInboxController: taskController,
+      createAgentClient: (_) {
+        final client = _TrackingHangingAgentClient();
+        clients.add(client);
+        return client;
+      },
+    );
+
+    await tester.pumpWidget(app('v1'));
+    await _pumpUntil(
+      tester,
+      () => clients.isNotEmpty && clients.first.lastPrompt != null,
+    );
+    final oldClient = clients.single;
+
+    await tester.pumpWidget(app('v2'));
+    await _pumpUntil(
+      tester,
+      () =>
+          oldClient.cancelled &&
+          oldClient.disposed &&
+          taskController.taskById('queued-task')?.status == TaskStatus.failed,
+    );
+
+    expect(oldClient.cancelled, isTrue);
+    expect(oldClient.disposed, isTrue);
+    expect(
+      taskController.taskById('queued-task')?.error,
+      contains('cancelled'),
+    );
+    expect(clients.length, 2);
+  });
+
+  testWidgets('AcpClientApp serializes config changes during task startup', (
+    tester,
+  ) async {
+    final store = _BlockingFirstLoadTaskStore();
+    final taskController = TaskInboxController(store: store);
+    addTearDown(taskController.dispose);
+    AcpClientConfig config(String version) => AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex',
+          'args': [version],
+        },
+      },
+    });
+    AcpClientApp app(String version) => AcpClientApp(
+      key: const ValueKey('serial-config-app'),
+      config: config(version),
+      autoLoadWorkspaceSessions: false,
+      taskInboxController: taskController,
+      createAgentClient: (_) => FakeAgentClient(),
+    );
+
+    await tester.pumpWidget(app('v1'));
+    await store.firstLoadStarted.future;
+    await tester.pumpWidget(app('v2'));
+    await tester.pumpWidget(app('v3'));
+    await tester.pump();
+
+    expect(store.loadCount, 1);
+    expect(store.maxConcurrentLoads, 1);
+
+    store.releaseFirstLoad();
+    await _pumpUntil(
+      tester,
+      () => store.loadCount == 2 && find.text('Inbox').evaluate().isNotEmpty,
+    );
+
+    expect(store.maxConcurrentLoads, 1);
+  });
+
+  testWidgets('AcpClientApp reopens a pending task after migration retry', (
+    tester,
+  ) async {
+    final temp = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('acp-app-migration-retry-'),
+    ))!;
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final configPath = '${temp.path}/settings.json';
+    final source = File('${temp.path}/task_inbox_state.json');
+    await tester.runAsync(() => source.writeAsString('{broken'));
+    AcpClientApp app() => AcpClientApp(
+      key: const ValueKey('migration-retry-app'),
+      config: AcpClientConfig(configPath: configPath),
+      autoLoadWorkspaceSessions: false,
+      initialTaskId: 'legacy-task',
+      discoverAgentServers: (_) async => const <AgentServerConfig>[],
+    );
+
+    await pumpWithWindowSize(tester, app(), const Size(1400, 900));
+    await _pumpUntil(
+      tester,
+      () => find
+          .textContaining('Could not initialize Task Inbox')
+          .evaluate()
+          .isNotEmpty,
+    );
+    final createdAt = DateTime.utc(2026, 7, 10, 9);
+    final snapshot = TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [
+        TaskRecord(
+          id: 'legacy-task',
+          title: 'Retry migration task',
+          description: '',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+          status: TaskStatus.inbox,
+          priority: TaskPriority.normal,
+          createdAt: createdAt,
+          updatedAt: createdAt,
+        ),
+      ],
+    );
+    await tester.runAsync(
+      () => source.writeAsString(jsonEncode(snapshot.toJson())),
+    );
+
+    await tester.pumpWidget(app());
+    await _pumpUntil(tester, () => !source.existsSync());
+    await _pumpUntil(
+      tester,
+      () => find.text('Retry migration task').evaluate().isNotEmpty,
+    );
+
+    expect(find.text('Retry migration task'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
   });
 
   testWidgets('AcpClientApp does not dispose injected controller', (
@@ -1464,6 +1784,23 @@ void main() {
   });
 }
 
+Future<void> _pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Condition was not met within $timeout.');
+    }
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump();
+  }
+}
+
 class _WorkspaceCatalogAgentClient extends FakeAgentClient {
   @override
   Future<List<AcpProjectSessions>> listSessions() async {
@@ -1497,6 +1834,29 @@ class _WorkspaceCatalogAgentClient extends FakeAgentClient {
   }
 }
 
+class _TrackingHangingAgentClient extends FakeAgentClient {
+  final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
+  bool disposed = false;
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    lastAttachments = attachments;
+    return _events.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    if (!_events.isClosed) await _events.close();
+    await super.dispose();
+  }
+}
+
 class _MemoryTaskStore implements TaskStore {
   _MemoryTaskStore([TaskInboxSnapshot? snapshot])
     : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
@@ -1510,4 +1870,49 @@ class _MemoryTaskStore implements TaskStore {
   Future<void> save(TaskInboxSnapshot snapshot) async {
     _snapshot = snapshot;
   }
+}
+
+class _FailingSecondLoadTaskStore implements TaskStore {
+  int loadCount = 0;
+
+  @override
+  Future<TaskInboxSnapshot> load() async {
+    loadCount += 1;
+    if (loadCount > 1) throw StateError('scheduler startup failed');
+    return TaskInboxSnapshot.empty();
+  }
+
+  @override
+  Future<void> save(TaskInboxSnapshot snapshot) async {}
+}
+
+class _BlockingFirstLoadTaskStore implements TaskStore {
+  final Completer<void> firstLoadStarted = Completer<void>();
+  final Completer<void> _firstLoadReleased = Completer<void>();
+  int loadCount = 0;
+  int activeLoads = 0;
+  int maxConcurrentLoads = 0;
+
+  @override
+  Future<TaskInboxSnapshot> load() async {
+    loadCount += 1;
+    activeLoads += 1;
+    if (activeLoads > maxConcurrentLoads) maxConcurrentLoads = activeLoads;
+    try {
+      if (loadCount == 1) {
+        firstLoadStarted.complete();
+        await _firstLoadReleased.future;
+      }
+      return TaskInboxSnapshot.empty();
+    } finally {
+      activeLoads -= 1;
+    }
+  }
+
+  void releaseFirstLoad() {
+    if (!_firstLoadReleased.isCompleted) _firstLoadReleased.complete();
+  }
+
+  @override
+  Future<void> save(TaskInboxSnapshot snapshot) async {}
 }

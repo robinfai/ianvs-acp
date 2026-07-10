@@ -19,6 +19,8 @@ import 'state/chat_controller.dart';
 import 'state/connection_state.dart';
 import 'tasks/runtime_registry.dart';
 import 'tasks/task_inbox_controller.dart';
+import 'tasks/task_inbox_migrator.dart';
+import 'tasks/task_inbox_sqlite_store.dart';
 import 'tasks/task_inbox_state_store.dart';
 import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
@@ -107,10 +109,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
       GlobalKey<ScaffoldMessengerState>();
   TaskInboxController? _taskInboxController;
   TaskScheduler? _taskScheduler;
-  TaskInboxController? _schedulerTaskController;
   String? _selectedTaskId;
   bool _ownsTaskInboxController = false;
   String? _taskInboxStorePath;
+  TaskInboxSqliteStore? _ownedTaskRepository;
+  String? _taskInboxInitializationError;
+  bool _taskInboxInitializationPending = false;
+  int _taskInboxInitializationSerial = 0;
+  TaskInboxController? _pendingTaskInboxController;
+  Future<void>? _taskInboxTransition;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
@@ -161,7 +168,21 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final controllerChanged = oldWidget.controller != widget.controller;
 
     if (controllerChanged) {
-      if (oldWidget.controller == null) _disposeCachedControllers();
+      Future<void>? previousTaskCleanup;
+      if (oldWidget.controller == null) {
+        final cachedControllers = _takeCachedControllers();
+        previousTaskCleanup = _stopTaskInboxTransition();
+        if (previousTaskCleanup == null) {
+          _disposeControllerList(cachedControllers);
+        } else {
+          unawaited(
+            _disposeControllersAfterTaskCleanup(
+              previousTaskCleanup,
+              cachedControllers,
+            ),
+          );
+        }
+      }
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       if (widget.controller == null) {
@@ -171,7 +192,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       } else {
         _controller = widget.controller!;
       }
-      _configureTaskInboxController();
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       return;
     }
 
@@ -181,19 +202,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
-    _config = nextWidgetConfig;
-    _widgetConfigSignature = nextConfigSignature;
     if (widget.controller != null) {
+      _config = nextWidgetConfig;
+      _widgetConfigSignature = nextConfigSignature;
       _controller = widget.controller!;
       _configureTaskInboxController();
       return;
     }
 
-    _reconcileControllerCache(_config);
-    _controller = _cachedControllerFor(_config);
-    _ensureControllersForSelectableAgents(_config);
-    unawaited(_hydrateSessionIndex());
-    _configureTaskInboxController();
+    _widgetConfigSignature = nextConfigSignature;
+    _replaceOwnedControllerConfiguration(nextWidgetConfig, rebuild: false);
   }
 
   StartupOptions get _initialStartupOptions {
@@ -220,92 +238,272 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
-    _disposeTaskScheduler();
+    final taskCleanup = _stopTaskInboxTransition();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
-      _disposeCachedControllers();
+      final cachedControllers = _takeCachedControllers();
+      if (taskCleanup == null) {
+        _disposeControllerList(cachedControllers);
+      } else {
+        unawaited(
+          _disposeControllersAfterTaskCleanup(taskCleanup, cachedControllers),
+        );
+      }
+    } else {
+      _ignoreTaskCleanup(taskCleanup);
     }
-    _disposeOwnedTaskInboxController();
     super.dispose();
   }
 
-  void _configureTaskInboxController() {
+  void _configureTaskInboxController({Future<void>? previousCleanup}) {
     final injected = widget.taskInboxController;
     if (injected != null) {
-      _disposeOwnedTaskInboxController();
-      _taskInboxController = injected;
-      _ownsTaskInboxController = false;
+      if ((_taskInboxController == injected &&
+              !_ownsTaskInboxController &&
+              _taskScheduler != null) ||
+          (_taskInboxInitializationPending &&
+              _pendingTaskInboxController == injected)) {
+        return;
+      }
+      final cleanup = _joinTaskCleanup(
+        previousCleanup,
+        _stopTaskInboxTransition(),
+      );
       _taskInboxStorePath = null;
-      _configureTaskScheduler();
+      _taskInboxInitializationError = null;
+      _taskInboxInitializationPending = true;
+      _pendingTaskInboxController = injected;
+      final serial = ++_taskInboxInitializationSerial;
+      final initialization = _initializeInjectedTaskInbox(
+        serial: serial,
+        controller: injected,
+        previousCleanup: cleanup,
+      );
+      _taskInboxTransition = initialization;
+      unawaited(initialization);
       return;
     }
 
     if (widget.controller != null) {
-      _disposeOwnedTaskInboxController();
-      _taskInboxController = null;
-      _ownsTaskInboxController = false;
+      final cleanup = _joinTaskCleanup(
+        previousCleanup,
+        _stopTaskInboxTransition(),
+      );
+      _taskInboxTransition = cleanup;
+      _ignoreTaskCleanup(cleanup);
       _taskInboxStorePath = null;
-      _configureTaskScheduler();
+      _taskInboxInitializationError = null;
       return;
     }
 
-    final storePath = TaskInboxStateStore.defaultPath(
+    final sourcePath = TaskInboxStateStore.defaultPath(
       configPath: _config.configPath,
     );
-    if (_ownsTaskInboxController &&
-        _taskInboxController != null &&
-        _taskInboxStorePath == storePath) {
-      _configureTaskScheduler();
-      return;
-    }
-
-    _disposeOwnedTaskInboxController();
-    final controller = TaskInboxController(
-      store: TaskInboxStateStore(path: storePath),
+    final repositoryPath = TaskInboxSqliteStore.defaultPath(
+      configPath: _config.configPath,
     );
-    _taskInboxController = controller;
-    _ownsTaskInboxController = true;
-    _taskInboxStorePath = storePath;
-    unawaited(controller.load());
-    _configureTaskScheduler();
+    if (_taskInboxStorePath == repositoryPath &&
+        ((_ownsTaskInboxController && _taskInboxController != null) ||
+            _taskInboxInitializationPending)) {
+      return;
+    }
+
+    final cleanup = _joinTaskCleanup(
+      previousCleanup,
+      _stopTaskInboxTransition(),
+    );
+    _taskInboxStorePath = repositoryPath;
+    _taskInboxInitializationError = null;
+    _taskInboxInitializationPending = true;
+    final serial = ++_taskInboxInitializationSerial;
+    final initialization = _initializeTaskInbox(
+      serial: serial,
+      sourcePath: sourcePath,
+      repositoryPath: repositoryPath,
+      previousCleanup: cleanup,
+    );
+    _taskInboxTransition = initialization;
+    unawaited(initialization);
   }
 
-  void _disposeOwnedTaskInboxController() {
-    if (_ownsTaskInboxController) {
-      _taskInboxController?.dispose();
+  Future<void> _initializeTaskInbox({
+    required int serial,
+    required String? sourcePath,
+    required String? repositoryPath,
+    Future<void>? previousCleanup,
+  }) async {
+    TaskInboxSqliteStore? repository;
+    TaskInboxController? controller;
+    TaskScheduler? scheduler;
+    try {
+      if (previousCleanup != null) await previousCleanup;
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      repository = TaskInboxSqliteStore(path: repositoryPath);
+      final migration = await TaskInboxMigrator(
+        source: TaskInboxStateStore(path: sourcePath),
+        repository: repository,
+      ).migrateIfNeeded();
+      if (migration.status == TaskMigrationStatus.awaitingBackupFinalization) {
+        throw StateError('The legacy task backup could not be verified.');
+      }
+      controller = TaskInboxController(store: repository);
+      scheduler = _createTaskScheduler(controller);
+      await scheduler.start(dispatchQueuedTasks: false);
+      if (!mounted || serial != _taskInboxInitializationSerial) {
+        await scheduler.shutdown();
+        controller.dispose();
+        await repository.close();
+        return;
+      }
+
+      _taskInboxInitializationPending = false;
+      _taskInboxInitializationError = null;
+      _ownedTaskRepository = repository;
+      _taskInboxController = controller;
+      _ownsTaskInboxController = true;
+      _taskScheduler = scheduler;
+      scheduler.startDispatching();
+      setState(() {});
+    } on Object catch (error) {
+      await scheduler?.shutdown();
+      controller?.dispose();
+      await repository?.close();
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxController = null;
+      _ownsTaskInboxController = false;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
     }
+  }
+
+  Future<void> _initializeInjectedTaskInbox({
+    required int serial,
+    required TaskInboxController controller,
+    Future<void>? previousCleanup,
+  }) async {
+    TaskScheduler? scheduler;
+    try {
+      if (previousCleanup != null) await previousCleanup;
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      scheduler = _createTaskScheduler(controller);
+      await scheduler.start(dispatchQueuedTasks: false);
+      if (!mounted || serial != _taskInboxInitializationSerial) {
+        await scheduler.shutdown();
+        return;
+      }
+
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxInitializationError = null;
+      _taskInboxController = controller;
+      _ownsTaskInboxController = false;
+      _taskScheduler = scheduler;
+      scheduler.startDispatching();
+      setState(() {});
+    } on Object catch (error) {
+      await scheduler?.shutdown();
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxController = null;
+      _ownsTaskInboxController = false;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
+    }
+  }
+
+  Future<void>? _disposeOwnedTaskInboxController() {
+    _taskInboxInitializationSerial += 1;
+    _taskInboxInitializationPending = false;
+    _pendingTaskInboxController = null;
+    final scheduler = _taskScheduler;
+    scheduler?.stop();
+    _taskScheduler = null;
+    final controller = _ownsTaskInboxController ? _taskInboxController : null;
+    _taskInboxController = null;
+    final repository = _ownedTaskRepository;
+    _ownedTaskRepository = null;
     _ownsTaskInboxController = false;
+    if (scheduler == null && controller == null && repository == null) {
+      return null;
+    }
+    return _finishTaskInboxCleanup(
+      scheduler: scheduler,
+      controller: controller,
+      repository: repository,
+    );
   }
 
-  void _configureTaskScheduler() {
-    final taskController = _taskInboxController;
-    if (taskController == null) {
-      _disposeTaskScheduler();
-      return;
-    }
-    if (_taskScheduler != null && _schedulerTaskController == taskController) {
-      return;
-    }
+  Future<void>? _stopTaskInboxTransition() {
+    return _joinTaskCleanup(
+      _taskInboxTransition,
+      _disposeOwnedTaskInboxController(),
+    );
+  }
 
-    _disposeTaskScheduler();
+  TaskScheduler _createTaskScheduler(TaskInboxController taskController) {
     final runner = TaskRunner(
       taskController: taskController,
       controllerForAgent: _controllerForTaskAgent,
     );
-    final scheduler = TaskScheduler(
+    return TaskScheduler(
       taskController: taskController,
       worker: TaskRunnerWorker(runner: runner),
       runtimeRegistry: LocalRuntimeRegistry(probe: _probeTaskRuntime),
     );
-    _taskScheduler = scheduler;
-    _schedulerTaskController = taskController;
-    unawaited(scheduler.start());
   }
 
-  void _disposeTaskScheduler() {
-    _taskScheduler?.dispose();
-    _taskScheduler = null;
-    _schedulerTaskController = null;
+  Future<void> _finishTaskInboxCleanup({
+    TaskScheduler? scheduler,
+    TaskInboxController? controller,
+    TaskInboxSqliteStore? repository,
+  }) async {
+    try {
+      await scheduler?.shutdown();
+    } finally {
+      controller?.dispose();
+      await repository?.close();
+    }
+  }
+
+  Future<void>? _joinTaskCleanup(Future<void>? first, Future<void>? second) {
+    if (first == null) return second;
+    if (second == null) return first;
+    return Future.wait(<Future<void>>[first, second]);
+  }
+
+  void _ignoreTaskCleanup(Future<void>? cleanup) {
+    if (cleanup == null) return;
+    unawaited(() async {
+      try {
+        await cleanup;
+      } on Object {
+        // There is no live task UI to report teardown failures to.
+      }
+    }());
+  }
+
+  Future<void> _disposeControllersAfterTaskCleanup(
+    Future<void> cleanup,
+    List<ChatController> controllers,
+  ) async {
+    try {
+      await cleanup;
+    } on Object {
+      // Cached controllers still need disposal after task teardown errors.
+    } finally {
+      _disposeControllerList(controllers);
+    }
+  }
+
+  String _taskInboxErrorMessage(Object error) {
+    if (error is FormatException) {
+      return 'Could not initialize Task Inbox: legacy task data is invalid; '
+          'the original file was not changed.';
+    }
+    return 'Could not initialize Task Inbox: $error';
   }
 
   void _setupDeepLinkHandling() {
@@ -372,6 +570,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final taskId = _trimmedOrNull(options.taskId);
     if (taskId == null || !mounted) return;
     if (_taskInboxController == null) {
+      if (_taskInboxInitializationPending) {
+        _selectedTaskId = taskId;
+        return;
+      }
       _showSnackBar('Task Inbox is unavailable.');
       return;
     }
@@ -455,7 +657,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
-        startupError: widget.startupError,
+        startupError: _combinedStartupError,
         canSwitchAgent: widget.controller == null,
         autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
         sessionControllers: _sessionControllers,
@@ -480,6 +682,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
             : null,
       ),
     );
+  }
+
+  String? get _combinedStartupError {
+    final errors = <String>[
+      if (widget.startupError case final error? when error.trim().isNotEmpty)
+        error.trim(),
+      if (_taskInboxInitializationError case final error?
+          when error.trim().isNotEmpty)
+        error.trim(),
+    ];
+    return errors.isEmpty ? null : errors.join('\n');
   }
 
   Future<void> _maybeDiscoverAgents() async {
@@ -509,8 +722,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           AcpAgentDiscovery.writeSelectedAgentServers;
       final nextConfig = await write(_config, selected);
       if (!mounted) return;
-      _reconcileControllerCache(nextConfig);
-      _activateAgent(nextConfig);
+      _replaceOwnedControllerConfiguration(nextConfig);
       unawaited(_loadAllAgentSessionCatalogs());
       _showSnackBar('Added ${selected.length} discovered ACP agent(s).');
     } catch (error) {
@@ -562,6 +774,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController? _controllerForTaskAgent(String agentName) {
+    if (!mounted) return null;
     final trimmedAgentName = agentName.trim();
     if (trimmedAgentName.isEmpty) return _controller;
     if (widget.controller != null) {
@@ -666,19 +879,25 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (mounted) setState(() {});
   }
 
-  void _reconcileControllerCache(AcpClientConfig config) {
-    for (final entry in _controllersByAgent.entries.toList()) {
-      final nextAgentConfig = _configForAgent(config, entry.key);
-      final nextSignature = nextAgentConfig == null
-          ? null
-          : _controllerSignature(nextAgentConfig);
-      if (nextSignature == _controllerSignaturesByAgent[entry.key]) continue;
-
-      _detachSessionIndexPersistence(entry.value);
-      entry.value.dispose();
-      _controllersByAgent.remove(entry.key);
-      _controllerSignaturesByAgent.remove(entry.key);
+  void _replaceOwnedControllerConfiguration(
+    AcpClientConfig nextConfig, {
+    bool rebuild = true,
+  }) {
+    final taskCleanup = _stopTaskInboxTransition();
+    final staleControllers = _takeCachedControllers();
+    _config = nextConfig;
+    _controller = _cachedControllerFor(nextConfig);
+    _ensureControllersForSelectableAgents(nextConfig);
+    unawaited(_hydrateSessionIndex());
+    if (taskCleanup == null) {
+      _disposeControllerList(staleControllers);
+    } else {
+      unawaited(
+        _disposeControllersAfterTaskCleanup(taskCleanup, staleControllers),
+      );
     }
+    _configureTaskInboxController(previousCleanup: taskCleanup);
+    if (rebuild && mounted) setState(() {});
   }
 
   AcpClientConfig? _configForAgent(AcpClientConfig config, String agentName) {
@@ -698,13 +917,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return configPath != null && configPath.isNotEmpty;
   }
 
-  void _disposeCachedControllers() {
-    for (final controller in _controllersByAgent.values) {
+  List<ChatController> _takeCachedControllers() {
+    final controllers = _controllersByAgent.values.toList(growable: false);
+    for (final controller in controllers) {
       _detachSessionIndexPersistence(controller);
-      controller.dispose();
     }
     _controllersByAgent.clear();
     _controllerSignaturesByAgent.clear();
+    return controllers;
+  }
+
+  void _disposeControllerList(Iterable<ChatController> controllers) {
+    for (final controller in controllers) {
+      controller.dispose();
+    }
   }
 
   Future<void> _hydrateSessionIndex() async {
@@ -888,8 +1114,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         ? await AcpConfigStore.writeConfig(config: config)
         : await write(config);
     if (!mounted) return nextConfig;
-    _reconcileControllerCache(nextConfig);
-    _activateAgent(nextConfig);
+    _replaceOwnedControllerConfiguration(nextConfig);
     unawaited(_loadAllAgentSessionCatalogs());
     _showSnackBar('Saved agent configuration.');
     return nextConfig;

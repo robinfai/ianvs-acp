@@ -11,6 +11,8 @@ class TaskInboxStateStore implements TaskStore {
 
   final String? path;
 
+  File? get file => _fileOrNull();
+
   static String? defaultPath({
     String? configPath,
     Map<String, String>? environment,
@@ -47,6 +49,16 @@ class TaskInboxStateStore implements TaskStore {
     } catch (_) {
       return TaskInboxSnapshot.empty();
     }
+  }
+
+  Future<TaskInboxSnapshot> loadStrict() async {
+    final file = _fileOrNull();
+    if (file == null || !await file.exists()) {
+      return TaskInboxSnapshot.empty();
+    }
+    return TaskInboxSnapshot.fromJsonStrict(
+      jsonDecode(await file.readAsString()),
+    );
   }
 
   @override

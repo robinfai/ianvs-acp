@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 void main() {
@@ -137,5 +138,85 @@ void main() {
     addTearDown(reopened.close);
 
     await expectLater(reopened.load(), throwsFormatException);
+  });
+
+  test('competing import cannot overwrite an active repository', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final path = '${tempDir.path}/task_inbox_state.sqlite3';
+    final first = TaskInboxSqliteStore(path: path);
+    final second = TaskInboxSqliteStore(path: path);
+    addTearDown(first.close);
+    addTearDown(second.close);
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    TaskInboxSnapshot snapshot(String title) => TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [
+        TaskRecord(
+          id: 'task-1',
+          title: title,
+          description: '',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+          status: TaskStatus.inbox,
+          priority: TaskPriority.normal,
+          createdAt: createdAt,
+          updatedAt: createdAt,
+        ),
+      ],
+    );
+
+    await first.importSnapshot(snapshot('first'), checksum: 'first-checksum');
+    await first.activateImport('first-checksum');
+    await second.importSnapshot(
+      snapshot('second'),
+      checksum: 'second-checksum',
+    );
+
+    expect((await second.load()).tasks.single.title, 'first');
+    expect(await second.isActive(), isTrue);
+  });
+
+  test('competing import cannot overwrite a recoverable repository', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-sqlite-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final path = '${tempDir.path}/task_inbox_state.sqlite3';
+    final first = TaskInboxSqliteStore(path: path);
+    final second = TaskInboxSqliteStore(path: path);
+    addTearDown(first.close);
+    addTearDown(second.close);
+    final createdAt = DateTime.utc(2026, 7, 10, 10);
+    TaskInboxSnapshot snapshot(String title) => TaskInboxSnapshot(
+      updatedAt: createdAt,
+      tasks: [
+        TaskRecord(
+          id: 'task-1',
+          title: title,
+          description: '',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+          status: TaskStatus.inbox,
+          priority: TaskPriority.normal,
+          createdAt: createdAt,
+          updatedAt: createdAt,
+        ),
+      ],
+    );
+
+    await first.importSnapshot(snapshot('first'), checksum: 'first-checksum');
+    await first.rollbackImport('first-checksum');
+
+    await expectLater(
+      second.importSnapshot(snapshot('second'), checksum: 'second-checksum'),
+      throwsStateError,
+    );
+    expect((await second.load()).tasks.single.title, 'first');
+    final metadata = await second.migrationMetadata();
+    expect(metadata.phase, TaskMigrationPhase.inactive);
+    expect(metadata.sourceChecksum, 'first-checksum');
   });
 }

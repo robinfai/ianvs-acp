@@ -782,6 +782,11 @@ class _ShellSidebarState extends State<_ShellSidebar> {
       _mode = AppShellSidebarMode.workspaces;
       return;
     }
+    if (oldWidget.taskInboxController == null &&
+        widget.initialMode == AppShellSidebarMode.inbox) {
+      _mode = AppShellSidebarMode.inbox;
+      return;
+    }
     if (widget.initialMode != oldWidget.initialMode) {
       _mode = widget.initialMode;
     }

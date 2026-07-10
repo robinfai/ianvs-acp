@@ -36,24 +36,50 @@ class TaskRunner {
   final LocalSkillRepository skillRepository;
   final Duration promptDeadline;
   final TaskRunnerClock _clock;
+  final Set<_TaskRunCancellation> _activeRuns = <_TaskRunCancellation>{};
 
   static const Duration _promptCancellationTimeout = Duration(seconds: 2);
 
+  Future<void> cancelActive() async {
+    final controllers = <ChatController>{};
+    for (final run in List<_TaskRunCancellation>.of(_activeRuns)) {
+      run.cancelled = true;
+      final controller = run.controller;
+      if (controller != null) controllers.add(controller);
+    }
+    for (final controller in controllers) {
+      try {
+        await controller.stop().timeout(_promptCancellationTimeout);
+      } on Object {
+        // Shutdown still waits for the task run to finish its persistence work.
+      }
+    }
+  }
+
   Future<TaskRecord> runTask(String taskId) async {
+    final cancellation = _TaskRunCancellation();
+    _activeRuns.add(cancellation);
+    try {
+      return await _runTask(taskId, cancellation);
+    } finally {
+      _activeRuns.remove(cancellation);
+    }
+  }
+
+  Future<TaskRecord> _runTask(
+    String taskId,
+    _TaskRunCancellation cancellation,
+  ) async {
     final task = taskController.taskById(taskId);
     if (task == null) throw StateError('Task not found: $taskId');
 
-    final attachedSkills = await _resolveAttachedSkills(task);
-    final prompt = taskExecutionPrompt(
-      task,
-      attachedSkills: attachedSkills.skills,
-    );
     var eventWrites = Future<void>.value();
     var runFinished = false;
     String? activeSessionId;
+    ChatController? activeController;
     VoidCallback? removeAgentObserver;
     VoidCallback? removePermissionObserver;
-    late TaskRunRecord run;
+    TaskRunRecord? run = _dispatchedRunFor(task);
 
     void enqueueEventWrite(Future<void> Function() write) {
       eventWrites = eventWrites.then((_) => write());
@@ -82,7 +108,7 @@ class TaskRunner {
       enqueueEventWrite(
         () => taskController.appendEvent(
           taskId: task.id,
-          runId: run.id,
+          runId: run!.id,
           kind: kind,
           text: text,
           sessionId: session?.id,
@@ -105,7 +131,7 @@ class TaskRunner {
           );
           await taskController.appendEvent(
             taskId: task.id,
-            runId: run.id,
+            runId: run!.id,
             kind: TaskEventKind.permission,
             text: egressMatch == null
                 ? 'Permission requested: ${event.request.displayTitle}'
@@ -121,7 +147,7 @@ class TaskRunner {
       enqueueEventWrite(() async {
         await taskController.appendEvent(
           taskId: task.id,
-          runId: run.id,
+          runId: run!.id,
           kind: TaskEventKind.permission,
           text:
               'Permission ${event.status.displayLabel}: '
@@ -135,46 +161,60 @@ class TaskRunner {
       });
     }
 
-    final dispatchedRun = _dispatchedRunFor(task);
-    if (dispatchedRun == null) {
-      run = await taskController.createRun(
-        taskId: task.id,
-        status: TaskStatus.running,
-        promptSnapshot: prompt,
-      );
-    } else {
-      run = await taskController.updateRun(
-        dispatchedRun.id,
-        status: TaskStatus.running,
-        promptSnapshot: prompt,
-      );
-      await taskController.updateTask(
-        task.id,
-        status: TaskStatus.running,
-        currentRunId: run.id,
-      );
-    }
-    await taskController.appendEvent(
-      taskId: task.id,
-      runId: run.id,
-      kind: TaskEventKind.system,
-      text: 'Task run started.',
-    );
-    await _appendAttachedSkillEvents(task, run, attachedSkills);
-
     try {
+      final attachedSkills = await _resolveAttachedSkills(task);
+      _throwIfCancelled(cancellation);
+      final prompt = taskExecutionPrompt(
+        task,
+        attachedSkills: attachedSkills.skills,
+      );
+
+      final dispatchedRun = run;
+      if (dispatchedRun == null) {
+        run = await taskController.createRun(
+          taskId: task.id,
+          status: TaskStatus.running,
+          promptSnapshot: prompt,
+        );
+      } else {
+        run = await taskController.updateRun(
+          dispatchedRun.id,
+          status: TaskStatus.running,
+          promptSnapshot: prompt,
+        );
+        await taskController.updateTask(
+          task.id,
+          status: TaskStatus.running,
+          currentRunId: run.id,
+        );
+      }
+      final activeRun = run;
+      _throwIfCancelled(cancellation);
+      await taskController.appendEvent(
+        taskId: task.id,
+        runId: activeRun.id,
+        kind: TaskEventKind.system,
+        text: 'Task run started.',
+      );
+      await _appendAttachedSkillEvents(task, activeRun, attachedSkills);
+      _throwIfCancelled(cancellation);
+
       final controller = controllerForAgent(task.agentName);
       if (controller == null) {
         throw StateError(
           'No ACP controller is available for ${task.agentName}.',
         );
       }
+      activeController = controller;
+      cancellation.controller = controller;
+      _throwIfCancelled(cancellation);
       removeAgentObserver = controller.addAgentEventObserver(observeAgentEvent);
       removePermissionObserver = controller.addPermissionEventObserver(
         observePermissionEvent,
       );
 
       await controller.newSession(cwd: task.workspacePath);
+      _throwIfCancelled(cancellation);
       _throwIfControllerFailed(controller, 'Task session setup failed');
       final session = controller.currentSession;
       if (session == null) {
@@ -182,22 +222,24 @@ class TaskRunner {
       }
       activeSessionId = session.id;
 
-      await taskController.updateRun(run.id, sessionId: session.id);
+      await taskController.updateRun(activeRun.id, sessionId: session.id);
       await taskController.updateTask(
         task.id,
         status: TaskStatus.running,
         sessionId: session.id,
-        currentRunId: run.id,
+        currentRunId: activeRun.id,
       );
       await taskController.appendEvent(
         taskId: task.id,
-        runId: run.id,
+        runId: activeRun.id,
         kind: TaskEventKind.system,
         text: 'Linked ACP session ${session.id}.',
         sessionId: session.id,
       );
 
+      _throwIfCancelled(cancellation);
       await controller.sendPrompt(prompt);
+      _throwIfCancelled(cancellation);
       await _waitForPromptTurn(controller).timeout(
         promptDeadline,
         onTimeout: () async {
@@ -213,7 +255,9 @@ class TaskRunner {
           );
         },
       );
+      _throwIfCancelled(cancellation);
       await flushEventWrites();
+      _throwIfCancelled(cancellation);
       _throwIfControllerFailed(controller, 'Task prompt failed');
       runFinished = true;
 
@@ -221,16 +265,18 @@ class TaskRunner {
         task.id,
         TaskStatus.collectingArtifacts,
       );
+      _throwIfCancelled(cancellation);
       final currentTask = taskController.taskById(task.id) ?? task;
-      final artifacts = await artifactCollector.collect(currentTask, run);
+      final artifacts = await artifactCollector.collect(currentTask, activeRun);
+      _throwIfCancelled(cancellation);
       await taskController.replaceArtifactsForRun(
         taskId: task.id,
-        runId: run.id,
+        runId: activeRun.id,
         artifacts: artifacts,
       );
       await taskController.appendEvent(
         taskId: task.id,
-        runId: run.id,
+        runId: activeRun.id,
         kind: TaskEventKind.artifact,
         text: artifacts.isEmpty
             ? 'Artifact collection found no candidate artifacts.'
@@ -242,14 +288,15 @@ class TaskRunner {
             'artifact_ids': artifacts.map((artifact) => artifact.id).toList(),
         },
       );
+      _throwIfCancelled(cancellation);
       await taskController.updateRun(
-        run.id,
+        activeRun.id,
         status: TaskStatus.needsHumanReview,
         endedAt: _clock(),
       );
       await taskController.appendEvent(
         taskId: task.id,
-        runId: run.id,
+        runId: activeRun.id,
         kind: TaskEventKind.system,
         text: 'Task run completed; awaiting human review.',
         sessionId: session.id,
@@ -263,26 +310,35 @@ class TaskRunner {
       runFinished = true;
       await flushEventWrites();
       final message = _messageForError(error);
-      await taskController.updateRun(
-        run.id,
-        status: TaskStatus.failed,
-        endedAt: _clock(),
-        error: message,
-      );
-      await taskController.appendEvent(
-        taskId: task.id,
-        runId: run.id,
-        kind: TaskEventKind.system,
-        text: 'Task run failed: $message',
-      );
+      if (run case final failedRun?) {
+        await taskController.updateRun(
+          failedRun.id,
+          status: TaskStatus.failed,
+          endedAt: _clock(),
+          error: message,
+        );
+        await taskController.appendEvent(
+          taskId: task.id,
+          runId: failedRun.id,
+          kind: TaskEventKind.system,
+          text: 'Task run failed: $message',
+        );
+      }
       return taskController.updateTask(
         task.id,
         status: TaskStatus.failed,
         error: message,
       );
     } finally {
+      if (activeController != null) cancellation.controller = null;
       removeAgentObserver?.call();
       removePermissionObserver?.call();
+    }
+  }
+
+  void _throwIfCancelled(_TaskRunCancellation cancellation) {
+    if (cancellation.cancelled) {
+      throw StateError('Task run cancelled during application shutdown.');
     }
   }
 
@@ -528,6 +584,11 @@ class _AttachedSkillResolution {
 
   final List<LocalSkill> skills;
   final List<String> missingSkillIds;
+}
+
+class _TaskRunCancellation {
+  bool cancelled = false;
+  ChatController? controller;
 }
 
 extension on AcpPermissionAuditStatus {

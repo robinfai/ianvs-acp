@@ -38,18 +38,22 @@ class TaskScheduler {
   final RetryPolicy retryPolicy;
   final DateTime Function() _clock;
   final Set<String> _activeTaskIds = <String>{};
+  final Set<Future<void>> _activeRuns = <Future<void>>{};
+  final Set<Future<void>> _activeDrains = <Future<void>>{};
   bool _started = false;
+  bool _dispatchEnabled = false;
   bool _disposed = false;
   bool _drainScheduled = false;
   bool _draining = false;
   Timer? _retryWakeTimer;
   DateTime? _retryWakeAt;
+  Future<void>? _shutdownFuture;
 
   bool get isStarted => _started;
 
   int get activeCount => _activeTaskIds.length;
 
-  Future<void> start() async {
+  Future<void> start({bool dispatchQueuedTasks = true}) async {
     _ensureNotDisposed();
     if (_started) return;
     await taskController.load();
@@ -57,13 +61,24 @@ class TaskScheduler {
     _ensureNotDisposed();
     if (_started) return;
     _started = true;
+    _dispatchEnabled = dispatchQueuedTasks;
     taskController.addListener(_onTaskControllerChanged);
+    _scheduleDrain();
+  }
+
+  void startDispatching() {
+    _ensureNotDisposed();
+    if (!_started) {
+      throw StateError('TaskScheduler has not started.');
+    }
+    _dispatchEnabled = true;
     _scheduleDrain();
   }
 
   void stop() {
     if (!_started) return;
     _started = false;
+    _dispatchEnabled = false;
     _retryWakeTimer?.cancel();
     _retryWakeTimer = null;
     _retryWakeAt = null;
@@ -71,9 +86,36 @@ class TaskScheduler {
   }
 
   void dispose() {
-    if (_disposed) return;
-    stop();
-    _disposed = true;
+    unawaited(shutdown());
+  }
+
+  Future<void> shutdown() {
+    return _shutdownFuture ??= _shutdown();
+  }
+
+  Future<void> _shutdown() async {
+    if (!_disposed) {
+      stop();
+      _disposed = true;
+    }
+    final cancellableWorker = worker;
+    if (cancellableWorker is CancellableTaskWorker) {
+      try {
+        await cancellableWorker.cancelActive();
+      } on Object {
+        // Active runs are still awaited before their persistence is closed.
+      }
+    }
+    while (_drainScheduled ||
+        _activeDrains.isNotEmpty ||
+        _activeRuns.isNotEmpty) {
+      final active = <Future<void>>[..._activeDrains, ..._activeRuns];
+      if (active.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+        continue;
+      }
+      await Future.wait(active.map(_ignoreErrors));
+    }
   }
 
   Future<TaskRecord> enqueueTask(String taskId) async {
@@ -96,19 +138,29 @@ class TaskScheduler {
   }
 
   void _scheduleDrain() {
-    if (!_started || _disposed || _drainScheduled) return;
+    if (!_started || !_dispatchEnabled || _disposed || _drainScheduled) return;
     _drainScheduled = true;
     scheduleMicrotask(() {
       _drainScheduled = false;
-      unawaited(_drain());
+      final activeDrain = _drain();
+      _activeDrains.add(activeDrain);
+      unawaited(
+        activeDrain.then<void>(
+          (_) => _activeDrains.remove(activeDrain),
+          onError: (Object _, StackTrace _) {
+            _activeDrains.remove(activeDrain);
+          },
+        ),
+      );
     });
   }
 
   Future<void> _drain() async {
-    if (!_started || _disposed || _draining) return;
+    if (!_started || !_dispatchEnabled || _disposed || _draining) return;
     _draining = true;
     try {
       while (_started &&
+          _dispatchEnabled &&
           !_disposed &&
           _activeTaskIds.length < maxConcurrentTasks) {
         final task = _nextQueuedTask();
@@ -127,7 +179,20 @@ class TaskScheduler {
             _releaseTask(dispatched);
             continue;
           }
-          unawaited(_runTask(dispatched));
+          if (!_started || !_dispatchEnabled || _disposed) {
+            _releaseTask(dispatched);
+            return;
+          }
+          final activeRun = _runTask(dispatched);
+          _activeRuns.add(activeRun);
+          unawaited(
+            activeRun.then<void>(
+              (_) => _activeRuns.remove(activeRun),
+              onError: (Object _, StackTrace _) {
+                _activeRuns.remove(activeRun);
+              },
+            ),
+          );
         } catch (error) {
           _releaseTask(task);
           await _markTaskFailed(task, error);
@@ -169,7 +234,7 @@ class TaskScheduler {
   }
 
   void _scheduleRetryWake(DateTime wakeAt) {
-    if (!_started || _disposed) return;
+    if (!_started || !_dispatchEnabled || _disposed) return;
     final delay = wakeAt.difference(_clock());
     if (delay <= Duration.zero) {
       _scheduleDrain();
@@ -392,6 +457,8 @@ class TaskScheduler {
   bool _isCompletedStatus(TaskStatus status) {
     return switch (status) {
       TaskStatus.needsHumanReview ||
+      TaskStatus.approvedForExport ||
+      TaskStatus.exporting ||
       TaskStatus.done ||
       TaskStatus.failed ||
       TaskStatus.cancelled ||
@@ -467,6 +534,14 @@ class TaskScheduler {
     if (_disposed) {
       throw StateError('TaskScheduler has been disposed.');
     }
+  }
+}
+
+Future<void> _ignoreErrors(Future<void> future) async {
+  try {
+    await future;
+  } on Object {
+    // Shutdown is responsible for draining work, not re-reporting run errors.
   }
 }
 

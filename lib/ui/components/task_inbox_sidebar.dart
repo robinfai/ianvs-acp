@@ -521,7 +521,10 @@ class _TaskTile extends StatelessWidget {
         task.sessionId!.trim().isNotEmpty;
   }
 
-  bool get _canReview => task.status == TaskStatus.needsHumanReview;
+  bool get _canReview =>
+      task.status == TaskStatus.needsHumanReview ||
+      task.status == TaskStatus.approvedForExport ||
+      task.status == TaskStatus.exporting;
 }
 
 class _ReviewActionPanel extends StatelessWidget {
@@ -814,7 +817,11 @@ List<_TaskGroup> _groups(List<TaskRecord> tasks) {
   return [
     _TaskGroup(
       title: 'Needs Review',
-      tasks: _tasksWithStatuses(sorted, const {TaskStatus.needsHumanReview}),
+      tasks: _tasksWithStatuses(sorted, const {
+        TaskStatus.needsHumanReview,
+        TaskStatus.approvedForExport,
+        TaskStatus.exporting,
+      }),
     ),
     _TaskGroup(
       title: 'Running',

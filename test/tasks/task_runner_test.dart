@@ -168,6 +168,90 @@ void main() {
     expect(chat.isStreaming, isFalse);
   });
 
+  test('TaskRunner cancelActive stops and fails an active prompt', () async {
+    final taskController = TaskInboxController(
+      store: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Cancelled task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final fake = _HangingPromptAgentClient();
+    final chat = ChatController(
+      client: fake,
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      controllerForAgent: (_) => chat,
+      promptDeadline: const Duration(minutes: 5),
+    );
+
+    final running = runner.runTask(task.id);
+    await _waitUntil(() => chat.isStreaming);
+    await runner.cancelActive();
+    final result = await running.timeout(const Duration(seconds: 2));
+
+    expect(fake.cancelled, isTrue);
+    expect(result.status, TaskStatus.failed);
+    expect(result.error, contains('cancelled'));
+  });
+
+  test(
+    'TaskRunner cancellation before controller creation prevents ACP work',
+    () async {
+      final taskController = TaskInboxController(
+        store: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Cancel during skill resolution',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+        skillIds: const ['slow-skill'],
+      );
+      await taskController.createRun(
+        taskId: task.id,
+        status: TaskStatus.dispatched,
+      );
+      final fake = FakeAgentClient();
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final skills = _BlockingSkillRepository();
+      final runner = TaskRunner(
+        taskController: taskController,
+        controllerForAgent: (_) => chat,
+        skillRepository: skills,
+      );
+
+      final running = runner.runTask(task.id);
+      await skills.started.future;
+      await runner.cancelActive();
+      skills.release();
+      final result = await running.timeout(const Duration(seconds: 2));
+
+      expect(result.status, TaskStatus.failed);
+      expect(result.error, contains('cancelled'));
+      expect(taskController.runs.single.status, TaskStatus.failed);
+      expect(fake.sessionCount, 0);
+      expect(fake.lastPrompt, isNull);
+    },
+  );
+
   test('TaskRunner records assistant tool and status events', () async {
     final store = _MemoryTaskStore();
     final ids = _DeterministicIds();
@@ -657,6 +741,25 @@ class _MemorySkillRepository implements LocalSkillRepository {
     required String workspacePath,
   }) async {
     return skills[skillId.trim()];
+  }
+}
+
+class _BlockingSkillRepository implements LocalSkillRepository {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _released = Completer<void>();
+
+  @override
+  Future<LocalSkill?> findSkill(
+    String skillId, {
+    required String workspacePath,
+  }) async {
+    if (!started.isCompleted) started.complete();
+    await _released.future;
+    return null;
+  }
+
+  void release() {
+    if (!_released.isCompleted) _released.complete();
   }
 }
 

@@ -7,6 +7,9 @@ enum TaskStatus {
   blockedOnUserInput,
   collectingArtifacts,
   needsHumanReview,
+  // Historical states remain readable, but no export action is exposed.
+  approvedForExport,
+  exporting,
   done,
   failed,
   cancelled,
@@ -24,6 +27,8 @@ enum TaskEventKind {
   permission,
   review,
   artifact,
+  // Historical event kind retained for lossless v1 migration.
+  export,
   error,
   system,
 }
@@ -38,11 +43,21 @@ enum ArtifactKind {
   patch,
 }
 
-enum ArtifactStatus { candidate, reviewed, approved, rejected }
+enum ArtifactStatus { candidate, reviewed, approved, rejected, exported }
 
-enum ApprovalKind { toolPermission }
+enum ApprovalKind { toolPermission, export }
 
 enum ApprovalStatus { pending, approved, denied, cancelled }
+
+enum ExportTarget {
+  simulated,
+  gitCommit,
+  gitPush,
+  pullRequest,
+  copyToExternalDirectory,
+  uploadHttp,
+  sendWebhook,
+}
 
 const Object _unchanged = Object();
 
@@ -521,7 +536,11 @@ class ApprovalRequestRecord {
     required this.createdAt,
     this.runId,
     this.resolvedAt,
+    this.target,
+    this.destination,
+    this.riskSummary,
     this.rationale,
+    this.artifactIds = const <String>[],
     this.metadata = const <String, Object?>{},
   });
 
@@ -532,7 +551,11 @@ class ApprovalRequestRecord {
   final ApprovalStatus status;
   final DateTime createdAt;
   final DateTime? resolvedAt;
+  final ExportTarget? target;
+  final String? destination;
+  final String? riskSummary;
   final String? rationale;
+  final List<String> artifactIds;
   final Map<String, Object?> metadata;
 
   ApprovalRequestRecord copyWith({
@@ -543,7 +566,11 @@ class ApprovalRequestRecord {
     ApprovalStatus? status,
     DateTime? createdAt,
     Object? resolvedAt = _unchanged,
+    Object? target = _unchanged,
+    Object? destination = _unchanged,
+    Object? riskSummary = _unchanged,
     Object? rationale = _unchanged,
+    List<String>? artifactIds,
     Map<String, Object?>? metadata,
   }) {
     return ApprovalRequestRecord(
@@ -556,9 +583,19 @@ class ApprovalRequestRecord {
       resolvedAt: identical(resolvedAt, _unchanged)
           ? this.resolvedAt
           : resolvedAt as DateTime?,
+      target: identical(target, _unchanged)
+          ? this.target
+          : target as ExportTarget?,
+      destination: identical(destination, _unchanged)
+          ? this.destination
+          : destination as String?,
+      riskSummary: identical(riskSummary, _unchanged)
+          ? this.riskSummary
+          : riskSummary as String?,
       rationale: identical(rationale, _unchanged)
           ? this.rationale
           : rationale as String?,
+      artifactIds: artifactIds ?? this.artifactIds,
       metadata: metadata ?? this.metadata,
     );
   }
@@ -572,7 +609,6 @@ class ApprovalRequestRecord {
       json['created_at'] ?? json['createdAt'],
     );
     if (id == null || taskId == null || createdAt == null) return null;
-    if (_enumToken(json['kind']) == 'export') return null;
     return ApprovalRequestRecord(
       id: id,
       taskId: taskId,
@@ -581,13 +617,21 @@ class ApprovalRequestRecord {
       status: approvalStatusFromJson(json['status']),
       createdAt: createdAt,
       resolvedAt: _dateTimeFromJson(json['resolved_at'] ?? json['resolvedAt']),
+      target: exportTargetFromJson(json['target']),
+      destination: _stringFromJson(json['destination']),
+      riskSummary: _stringFromJson(json['risk_summary'] ?? json['riskSummary']),
       rationale: _stringFromJson(json['rationale']),
+      artifactIds: _stringListFromJson(
+        json['artifact_ids'] ?? json['artifactIds'],
+      ),
       metadata: _jsonMap(json['metadata']) ?? const <String, Object?>{},
     );
   }
 
   Map<String, Object?> toJson() {
     final runId = this.runId?.trim();
+    final destination = this.destination?.trim();
+    final riskSummary = this.riskSummary?.trim();
     final rationale = this.rationale?.trim();
     return <String, Object?>{
       'id': id,
@@ -597,7 +641,13 @@ class ApprovalRequestRecord {
       'status': status.jsonValue,
       'created_at': createdAt.toIso8601String(),
       if (resolvedAt != null) 'resolved_at': resolvedAt!.toIso8601String(),
+      if (target != null) 'target': target!.jsonValue,
+      if (destination != null && destination.isNotEmpty)
+        'destination': destination,
+      if (riskSummary != null && riskSummary.isNotEmpty)
+        'risk_summary': riskSummary,
       if (rationale != null && rationale.isNotEmpty) 'rationale': rationale,
+      if (artifactIds.isNotEmpty) 'artifact_ids': artifactIds,
       if (metadata.isNotEmpty) 'metadata': metadata,
     };
   }
@@ -614,6 +664,8 @@ extension TaskStatusJson on TaskStatus {
       TaskStatus.blockedOnUserInput => 'blocked_on_user_input',
       TaskStatus.collectingArtifacts => 'collecting_artifacts',
       TaskStatus.needsHumanReview => 'needs_human_review',
+      TaskStatus.approvedForExport => 'approved_for_export',
+      TaskStatus.exporting => 'exporting',
       TaskStatus.done => 'done',
       TaskStatus.failed => 'failed',
       TaskStatus.cancelled => 'cancelled',
@@ -644,6 +696,7 @@ extension TaskEventKindJson on TaskEventKind {
       TaskEventKind.permission => 'permission',
       TaskEventKind.review => 'review',
       TaskEventKind.artifact => 'artifact',
+      TaskEventKind.export => 'export',
       TaskEventKind.error => 'error',
       TaskEventKind.system => 'system',
     };
@@ -671,6 +724,7 @@ extension ArtifactStatusJson on ArtifactStatus {
       ArtifactStatus.reviewed => 'reviewed',
       ArtifactStatus.approved => 'approved',
       ArtifactStatus.rejected => 'rejected',
+      ArtifactStatus.exported => 'exported',
     };
   }
 }
@@ -679,6 +733,21 @@ extension ApprovalKindJson on ApprovalKind {
   String get jsonValue {
     return switch (this) {
       ApprovalKind.toolPermission => 'tool_permission',
+      ApprovalKind.export => 'export',
+    };
+  }
+}
+
+extension ExportTargetJson on ExportTarget {
+  String get jsonValue {
+    return switch (this) {
+      ExportTarget.simulated => 'simulated',
+      ExportTarget.gitCommit => 'git_commit',
+      ExportTarget.gitPush => 'git_push',
+      ExportTarget.pullRequest => 'pull_request',
+      ExportTarget.copyToExternalDirectory => 'copy_to_external_directory',
+      ExportTarget.uploadHttp => 'upload_http',
+      ExportTarget.sendWebhook => 'send_webhook',
     };
   }
 }
@@ -711,8 +780,8 @@ TaskStatus taskStatusFromJson(
     'collectingartifacts' => TaskStatus.collectingArtifacts,
     'needs_human_review' || 'needshumanreview' => TaskStatus.needsHumanReview,
     'approved_for_export' ||
-    'approvedforexport' ||
-    'exporting' => TaskStatus.needsHumanReview,
+    'approvedforexport' => TaskStatus.approvedForExport,
+    'exporting' => TaskStatus.exporting,
     'done' => TaskStatus.done,
     'failed' => TaskStatus.failed,
     'cancelled' || 'canceled' => TaskStatus.cancelled,
@@ -747,7 +816,7 @@ TaskEventKind taskEventKindFromJson(
     'permission' => TaskEventKind.permission,
     'review' => TaskEventKind.review,
     'artifact' => TaskEventKind.artifact,
-    'export' => TaskEventKind.system,
+    'export' => TaskEventKind.export,
     'error' => TaskEventKind.error,
     'system' => TaskEventKind.system,
     _ => fallback,
@@ -779,7 +848,7 @@ ArtifactStatus artifactStatusFromJson(
     'reviewed' => ArtifactStatus.reviewed,
     'approved' => ArtifactStatus.approved,
     'rejected' => ArtifactStatus.rejected,
-    'exported' => ArtifactStatus.approved,
+    'exported' => ArtifactStatus.exported,
     _ => fallback,
   };
 }
@@ -790,6 +859,7 @@ ApprovalKind approvalKindFromJson(
 }) {
   return switch (_enumToken(raw)) {
     'tool_permission' || 'toolpermission' => ApprovalKind.toolPermission,
+    'export' => ApprovalKind.export,
     _ => fallback,
   };
 }
@@ -804,6 +874,20 @@ ApprovalStatus approvalStatusFromJson(
     'denied' => ApprovalStatus.denied,
     'cancelled' || 'canceled' => ApprovalStatus.cancelled,
     _ => fallback,
+  };
+}
+
+ExportTarget? exportTargetFromJson(Object? raw) {
+  return switch (_enumToken(raw)) {
+    'simulated' => ExportTarget.simulated,
+    'git_commit' || 'gitcommit' => ExportTarget.gitCommit,
+    'git_push' || 'gitpush' => ExportTarget.gitPush,
+    'pull_request' || 'pullrequest' => ExportTarget.pullRequest,
+    'copy_to_external_directory' ||
+    'copytoexternaldirectory' => ExportTarget.copyToExternalDirectory,
+    'upload_http' || 'uploadhttp' => ExportTarget.uploadHttp,
+    'send_webhook' || 'sendwebhook' => ExportTarget.sendWebhook,
+    _ => null,
   };
 }
 
@@ -839,7 +923,7 @@ List<String> _stringListFromJson(Object? raw) {
 DateTime? _dateTimeFromJson(Object? raw) {
   final value = _stringFromJson(raw);
   if (value == null) return null;
-  return DateTime.tryParse(value)?.toLocal();
+  return DateTime.tryParse(value);
 }
 
 int? _intFromJson(Object? raw) {

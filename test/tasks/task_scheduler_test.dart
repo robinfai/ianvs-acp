@@ -510,6 +510,90 @@ void main() {
       expect(recoveredRun.endedAt, DateTime(2026, 7, 8, 10));
     },
   );
+
+  test('TaskScheduler shutdown cancels and waits for active work', () async {
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final worker = _CancellableTaskWorker(controller);
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
+
+    await scheduler.start();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+    var shutdownFinished = false;
+    final shutdown = scheduler.shutdown().then((_) => shutdownFinished = true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(worker.cancelCalls, 1);
+    expect(shutdownFinished, isFalse);
+    worker.complete();
+    await shutdown;
+    expect(shutdownFinished, isTrue);
+    expect(scheduler.activeCount, 0);
+  });
+
+  test('TaskScheduler shutdown waits for dispatch persistence', () async {
+    final store = _BlockingSaveTaskStore(
+      TaskInboxSnapshot(
+        updatedAt: DateTime(2026, 7, 8, 9),
+        tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+      ),
+    );
+    final controller = TaskInboxController(
+      store: store,
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: _RecordingTaskWorker(controller),
+    );
+
+    await scheduler.start();
+    await store.saveStarted.future;
+    var shutdownFinished = false;
+    final shutdown = scheduler.shutdown().then((_) => shutdownFinished = true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(shutdownFinished, isFalse);
+    store.releaseSave();
+    await shutdown;
+    expect(shutdownFinished, isTrue);
+    expect(scheduler.activeCount, 0);
+  });
+
+  test('TaskScheduler can recover without dispatching queued work', () async {
+    final controller = TaskInboxController(
+      store: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 8, 9),
+          tasks: [_task(id: 'task-1', createdAt: DateTime(2026, 7, 8, 9))],
+        ),
+      ),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(taskController: controller, worker: worker);
+    addTearDown(scheduler.dispose);
+
+    await scheduler.start(dispatchQueuedTasks: false);
+    await controller.updateTask('task-1', summary: 'Updated before publish.');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(worker.startedTaskIds, isEmpty);
+
+    scheduler.startDispatching();
+    await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
+    expect(worker.startedTaskIds, ['task-1']);
+  });
 }
 
 TaskRecord _task({
@@ -629,6 +713,32 @@ class _NonRetryableFailureTaskWorker implements TaskWorker {
   }
 }
 
+class _CancellableTaskWorker implements CancellableTaskWorker {
+  _CancellableTaskWorker(this.controller);
+
+  final TaskInboxController controller;
+  final Completer<void> _completion = Completer<void>();
+  final List<String> startedTaskIds = <String>[];
+  int cancelCalls = 0;
+
+  @override
+  Future<void> cancelActive() async {
+    cancelCalls += 1;
+  }
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) async {
+    startedTaskIds.add(task.id);
+    await controller.updateTaskStatus(task.id, TaskStatus.running);
+    await _completion.future;
+    return controller.updateTaskStatus(task.id, TaskStatus.cancelled);
+  }
+
+  void complete() {
+    if (!_completion.isCompleted) _completion.complete();
+  }
+}
+
 class _MemoryTaskStore implements TaskStore {
   _MemoryTaskStore([TaskInboxSnapshot? snapshot])
     : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
@@ -643,6 +753,28 @@ class _MemoryTaskStore implements TaskStore {
   Future<void> save(TaskInboxSnapshot snapshot) async {
     _snapshot = snapshot;
     savedSnapshots.add(snapshot);
+  }
+}
+
+class _BlockingSaveTaskStore implements TaskStore {
+  _BlockingSaveTaskStore(this._snapshot);
+
+  TaskInboxSnapshot _snapshot;
+  final Completer<void> saveStarted = Completer<void>();
+  final Completer<void> _saveRelease = Completer<void>();
+
+  @override
+  Future<TaskInboxSnapshot> load() async => _snapshot;
+
+  @override
+  Future<void> save(TaskInboxSnapshot snapshot) async {
+    if (!saveStarted.isCompleted) saveStarted.complete();
+    await _saveRelease.future;
+    _snapshot = snapshot;
+  }
+
+  void releaseSave() {
+    if (!_saveRelease.isCompleted) _saveRelease.complete();
   }
 }
 
