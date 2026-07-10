@@ -4,8 +4,37 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 void main() {
+  test('creates normalized task tables with required pragmas', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-schema-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final db = File('${tempDir.path}/task-inbox.sqlite3');
+    final store = TaskInboxSqliteStore(path: db.path);
+    addTearDown(store.close);
+
+    await store.initialize();
+
+    expect(await store.journalMode(), 'wal');
+    expect(await store.foreignKeysEnabled(), isTrue);
+    expect(
+      await store.tableNames(),
+      containsAll(<String>{
+        'schema_migrations',
+        'store_meta',
+        'workspace_resources',
+        'tasks',
+        'task_runs',
+        'task_events',
+        'artifacts',
+        'approval_requests',
+      }),
+    );
+  });
+
   test('TaskInboxSqliteStore resolves default path near config', () {
     final path = TaskInboxSqliteStore.defaultPath(
       configPath: '/tmp/ianvs-acp/settings.json',
@@ -22,6 +51,7 @@ void main() {
     addTearDown(() async => tempDir.delete(recursive: true));
     final db = File('${tempDir.path}/nested/task_inbox_state.sqlite3');
     final store = TaskInboxSqliteStore(path: db.path);
+    addTearDown(store.close);
     final snapshot = TaskInboxSnapshot(
       updatedAt: DateTime(2026, 7, 9, 8),
       tasks: [
@@ -68,36 +98,44 @@ void main() {
     expect(loaded.tasks.single.priority, TaskPriority.high);
     expect(loaded.runs.single.id, 'run-1');
     expect(loaded.artifacts.single.status, ArtifactStatus.approved);
-
-    final query = await Process.run('sqlite3', [
-      db.path,
-      'SELECT schema, updated_at FROM task_inbox_state WHERE id = 1;',
-    ]);
-    expect(query.exitCode, 0);
-    expect(
-      (query.stdout as String).trim(),
-      'ianvs-acp.task-inbox.v1|2026-07-09T08:00:00.000',
-    );
+    expect(loaded.updatedAt, DateTime(2026, 7, 9, 8));
+    expect(await store.revision(), 1);
   });
 
-  test('TaskInboxSqliteStore loads malformed payload as empty', () async {
+  test('TaskInboxSqliteStore reports malformed normalized payload', () async {
     final tempDir = await Directory.systemTemp.createTemp(
       'ianvs-acp-task-sqlite-',
     );
     addTearDown(() async => tempDir.delete(recursive: true));
     final db = File('${tempDir.path}/task_inbox_state.sqlite3');
-    await Process.run('sqlite3', [
-      db.path,
-      "CREATE TABLE task_inbox_state (id INTEGER PRIMARY KEY, schema TEXT, "
-          "updated_at TEXT, payload TEXT);"
-          "INSERT INTO task_inbox_state VALUES "
-          "(1, 'ianvs-acp.task-inbox.v1', 'bad-date', '{bad json');",
-    ]);
     final store = TaskInboxSqliteStore(path: db.path);
+    await store.initialize();
+    await store.close();
+    final database = sqlite3.open(db.path);
+    database.execute(
+      'INSERT INTO tasks '
+      '(id, title, description, workspace_path, agent_name, status, priority, '
+      'created_at, updated_at, skill_ids_json, metadata_json, payload_json) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+      [
+        'task-broken',
+        'Broken',
+        '',
+        '/workspace',
+        'Codex',
+        'queued',
+        'normal',
+        '2026-07-09T08:00:00Z',
+        '2026-07-09T08:00:00Z',
+        '[]',
+        '{}',
+        '{bad json',
+      ],
+    );
+    database.close();
+    final reopened = TaskInboxSqliteStore(path: db.path);
+    addTearDown(reopened.close);
 
-    final loaded = await store.load();
-
-    expect(loaded.tasks, isEmpty);
-    expect(loaded.runs, isEmpty);
+    await expectLater(reopened.load(), throwsFormatException);
   });
 }
