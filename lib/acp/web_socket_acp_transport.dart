@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:stream_channel/stream_channel.dart';
 
 import 'acp_endpoint_validator.dart';
+
+typedef WebSocketFrameWriter =
+    Future<void> Function(WebSocket socket, String frame);
 
 class WebSocketAcpTransport implements acp.AcpTransport {
   WebSocketAcpTransport({
@@ -13,7 +17,19 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     this.onProtocolOut,
     this.onProtocolIn,
     this.connectTimeout = const Duration(seconds: 10),
-  }) : assert(connectTimeout > Duration.zero) {
+    this.maxFrameBytes = acp.defaultTransportByteLimit,
+    this.maxInboundQueueItems = 128,
+    this.maxInboundQueueBytes = 32 * 1024 * 1024,
+    this.maxOutboundQueueItems = 128,
+    this.maxOutboundQueueBytes = 32 * 1024 * 1024,
+    WebSocketFrameWriter? frameWriter,
+  }) : assert(connectTimeout > Duration.zero),
+       assert(maxFrameBytes > 0),
+       assert(maxInboundQueueItems > 0),
+       assert(maxInboundQueueBytes > 0),
+       assert(maxOutboundQueueItems > 0),
+       assert(maxOutboundQueueBytes > 0),
+       _frameWriter = frameWriter ?? _writeFrame {
     validateAcpEndpoint(endpoint, allowedSchemes: const <String>{'ws', 'wss'});
   }
 
@@ -22,30 +38,53 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   final void Function(String line)? onProtocolOut;
   final void Function(String line)? onProtocolIn;
   final Duration connectTimeout;
+  final int maxFrameBytes;
+  final int maxInboundQueueItems;
+  final int maxInboundQueueBytes;
+  final int maxOutboundQueueItems;
+  final int maxOutboundQueueBytes;
+  final WebSocketFrameWriter _frameWriter;
+
+  final List<_QueuedFrame> _inboundQueue = <_QueuedFrame>[];
+  final List<_QueuedFrame> _outboundQueue = <_QueuedFrame>[];
 
   WebSocket? _socket;
-  StreamChannelController<String>? _controller;
+  StreamChannel<String>? _channel;
+  StreamController<String>? _inboundController;
+  StreamController<String>? _outboundController;
   StreamSubscription<Object?>? _socketSubscription;
   StreamSubscription<String>? _outboundSubscription;
   Completer<WebSocket>? _startCancellation;
+  Completer<void>? _drainCancellation;
   _NoRedirectHttpClient? _handshakeClient;
+  Future<void>? _outboundDrainFuture;
+  Future<void>? _activeWrite;
   int _startSerial = 0;
+  int _inboundQueueBytes = 0;
+  int _outboundQueueBytes = 0;
+  bool _inboundListening = false;
+  bool _inboundPaused = false;
+  bool _outboundDraining = false;
+  bool _stopping = false;
+  bool _failed = false;
+  bool _capacityCloseScheduled = false;
 
   @override
   StreamChannel<String> get channel {
-    final controller = _controller;
-    if (controller == null) {
-      throw StateError('Transport not started');
-    }
-    return controller.foreign;
+    final channel = _channel;
+    if (channel == null) throw StateError('Transport not started');
+    return channel;
   }
 
   @override
   Future<void> start() async {
-    if (_controller != null) return;
+    if (_channel != null) return;
     if (_startCancellation != null) {
       throw StateError('Transport connection is already in progress.');
     }
+    _resetQueues();
+    _stopping = false;
+    _failed = false;
     final serial = ++_startSerial;
     final handshakeClient = _NoRedirectHttpClient();
     _handshakeClient = handshakeClient;
@@ -87,38 +126,298 @@ class WebSocketAcpTransport implements acp.AcpTransport {
       await socket.close(WebSocketStatus.normalClosure);
       throw StateError('Transport was stopped while connecting.');
     }
-    final controller = StreamChannelController<String>();
+
+    final inboundController = StreamController<String>(
+      sync: true,
+      onListen: _handleInboundListen,
+      onPause: _handleInboundPause,
+      onResume: _handleInboundResume,
+      onCancel: _handleInboundCancel,
+    );
+    final outboundController = StreamController<String>(sync: true);
     _socket = socket;
-    _controller = controller;
+    _inboundController = inboundController;
+    _outboundController = outboundController;
+    _channel = StreamChannel<String>(
+      inboundController.stream,
+      outboundController.sink,
+    );
+    _drainCancellation = Completer<void>();
 
     _socketSubscription = socket.listen(
-      (message) {
-        if (message is! String || message.trim().isEmpty) return;
-        _notifyProtocolIn(message);
-        controller.local.sink.add(message);
+      _handleSocketMessage,
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_stopping) inboundController.addError(error, stackTrace);
       },
-      onError: controller.local.sink.addError,
+      onDone: _handleSocketDone,
+    );
+    _outboundSubscription = outboundController.stream.listen(
+      _enqueueOutbound,
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_stopping) inboundController.addError(error, stackTrace);
+      },
       onDone: () {
-        unawaited(controller.local.sink.close());
+        unawaited(_closeAfterOutboundDrain(socket));
       },
     );
-    _outboundSubscription = controller.local.stream.listen(
-      (line) {
-        _notifyProtocolOut(line);
-        socket.add(line);
-      },
-      onError: controller.local.sink.addError,
-      onDone: () {
-        unawaited(socket.close(WebSocketStatus.normalClosure));
-      },
+  }
+
+  void _handleSocketMessage(Object? message) {
+    if (_stopping || _failed) return;
+    if (message is String) {
+      final bytes = utf8.encode(message).length;
+      if (bytes > maxFrameBytes) {
+        _failCapacity(
+          resource: 'WebSocket text frame',
+          limit: maxFrameBytes,
+          observed: bytes,
+        );
+        return;
+      }
+      if (message.trim().isEmpty) return;
+      _enqueueInbound(_QueuedFrame(message, bytes));
+      return;
+    }
+    if (message is List<int> && message.length > maxFrameBytes) {
+      _failCapacity(
+        resource: 'WebSocket binary frame',
+        limit: maxFrameBytes,
+        observed: message.length,
+      );
+    }
+    // Small binary frames remain intentionally ignored.
+  }
+
+  void _enqueueInbound(_QueuedFrame frame) {
+    final observedItems = _inboundQueue.length + 1;
+    final observedBytes = _inboundQueueBytes + frame.bytes;
+    if (observedItems > maxInboundQueueItems) {
+      _failCapacity(
+        resource: 'WebSocket inbound queue items',
+        limit: maxInboundQueueItems,
+        observed: observedItems,
+      );
+      return;
+    }
+    if (observedBytes > maxInboundQueueBytes) {
+      _failCapacity(
+        resource: 'WebSocket inbound queue bytes',
+        limit: maxInboundQueueBytes,
+        observed: observedBytes,
+      );
+      return;
+    }
+    _inboundQueue.add(frame);
+    _inboundQueueBytes = observedBytes;
+    _drainInbound();
+  }
+
+  void _handleInboundListen() {
+    _inboundListening = true;
+    _inboundPaused = false;
+    _drainInbound();
+  }
+
+  void _handleInboundPause() => _inboundPaused = true;
+
+  void _handleInboundResume() {
+    _inboundPaused = false;
+    _drainInbound();
+  }
+
+  void _handleInboundCancel() {
+    _inboundListening = false;
+    _inboundPaused = true;
+  }
+
+  void _drainInbound() {
+    final controller = _inboundController;
+    if (controller == null ||
+        !_inboundListening ||
+        _inboundPaused ||
+        _stopping ||
+        _failed) {
+      return;
+    }
+    while (_inboundQueue.isNotEmpty && !_inboundPaused && !_failed) {
+      final frame = _inboundQueue.removeAt(0);
+      _inboundQueueBytes -= frame.bytes;
+      _notifyProtocolIn(frame.text);
+      controller.add(frame.text);
+    }
+  }
+
+  void _enqueueOutbound(String line) {
+    if (_stopping || _failed) return;
+    final bytes = utf8.encode(line).length;
+    if (bytes > maxFrameBytes) {
+      _failCapacity(
+        resource: 'WebSocket outbound frame',
+        limit: maxFrameBytes,
+        observed: bytes,
+      );
+      return;
+    }
+    final observedItems = _outboundQueue.length + 1;
+    final observedBytes = _outboundQueueBytes + bytes;
+    if (observedItems > maxOutboundQueueItems) {
+      _failCapacity(
+        resource: 'WebSocket outbound queue items',
+        limit: maxOutboundQueueItems,
+        observed: observedItems,
+      );
+      return;
+    }
+    if (observedBytes > maxOutboundQueueBytes) {
+      _failCapacity(
+        resource: 'WebSocket outbound queue bytes',
+        limit: maxOutboundQueueBytes,
+        observed: observedBytes,
+      );
+      return;
+    }
+    _outboundQueue.add(_QueuedFrame(line, bytes));
+    _outboundQueueBytes = observedBytes;
+    _startOutboundDrain();
+  }
+
+  void _startOutboundDrain() {
+    if (_outboundDraining || _outboundQueue.isEmpty) return;
+    _outboundDraining = true;
+    final future = _drainOutbound();
+    _outboundDrainFuture = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(_outboundDrainFuture, future)) {
+          _outboundDrainFuture = null;
+        }
+        _outboundDraining = false;
+        if (!_stopping && !_failed && _outboundQueue.isNotEmpty) {
+          _startOutboundDrain();
+        }
+      }),
     );
+  }
+
+  Future<void> _drainOutbound() async {
+    final socket = _socket;
+    final cancellation = _drainCancellation;
+    if (socket == null || cancellation == null) return;
+    while (_outboundQueue.isNotEmpty && !_stopping && !_failed) {
+      final frame = _outboundQueue.first;
+      _notifyProtocolOut(frame.text);
+      final write = _frameWriter(socket, frame.text);
+      _activeWrite = write;
+      try {
+        await Future.any<void>(<Future<void>>[write, cancellation.future]);
+      } on Object catch (error, stackTrace) {
+        if (!_stopping && !_failed) {
+          _inboundController?.addError(error, stackTrace);
+          _failed = true;
+          _clearQueues();
+        }
+        return;
+      }
+      if (_stopping || _failed || cancellation.isCompleted) {
+        unawaited(
+          write
+              .whenComplete(() {
+                if (identical(_activeWrite, write)) _activeWrite = null;
+              })
+              .catchError((Object _) {}),
+        );
+        return;
+      }
+      if (identical(_activeWrite, write)) _activeWrite = null;
+      if (_outboundQueue.isNotEmpty && identical(_outboundQueue.first, frame)) {
+        _outboundQueue.removeAt(0);
+        _outboundQueueBytes -= frame.bytes;
+      }
+    }
+  }
+
+  Future<void> _closeAfterOutboundDrain(WebSocket socket) async {
+    try {
+      await _outboundDrainFuture;
+    } on Object {
+      // The channel error path reports write failures.
+    }
+    if (!_stopping) await socket.close(WebSocketStatus.normalClosure);
+  }
+
+  void _failCapacity({
+    required String resource,
+    required int limit,
+    required int observed,
+  }) {
+    if (_failed || _stopping) return;
+    _failed = true;
+    final error = acp.TransportByteLimitExceeded(
+      resource: resource,
+      limit: limit,
+      observedAtLeast: observed,
+    );
+    _clearQueues();
+    final cancellation = _drainCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    _inboundController?.addError(error, StackTrace.current);
+    _scheduleCapacityClose();
+  }
+
+  void _scheduleCapacityClose() {
+    if (_capacityCloseScheduled) return;
+    final socket = _socket;
+    if (socket == null) return;
+    _capacityCloseScheduled = true;
+    unawaited(() async {
+      try {
+        await socket.close(
+          WebSocketStatus.messageTooBig,
+          'transport capacity exceeded',
+        );
+        return;
+      } on StateError {
+        // addStream temporarily binds the sink. Retry once that write settles.
+      } on Object {
+        return;
+      }
+      final write = _activeWrite;
+      if (write != null) {
+        try {
+          await write;
+        } on Object {
+          // Closing still owns final cleanup after a failed write.
+        }
+      }
+      try {
+        await socket.close(
+          WebSocketStatus.messageTooBig,
+          'transport capacity exceeded',
+        );
+      } on Object {
+        // stop() forcefully completes local cleanup if the peer is gone.
+      }
+    }());
+  }
+
+  void _handleSocketDone() {
+    _failed = true;
+    _clearQueues();
+    final cancellation = _drainCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    unawaited(_outboundController?.close());
+    unawaited(_inboundController?.close());
   }
 
   void _notifyProtocolIn(String line) {
     try {
       onProtocolIn?.call(line);
     } catch (error, stackTrace) {
-      _controller?.local.sink.addError(error, stackTrace);
+      _inboundController?.addError(error, stackTrace);
     }
   }
 
@@ -126,13 +425,14 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     try {
       onProtocolOut?.call(line);
     } catch (error, stackTrace) {
-      _controller?.local.sink.addError(error, stackTrace);
+      _inboundController?.addError(error, stackTrace);
     }
   }
 
   @override
   Future<void> stop() async {
     _startSerial += 1;
+    _stopping = true;
     final startCancellation = _startCancellation;
     _startCancellation = null;
     _handshakeClient?.close(force: true);
@@ -142,6 +442,12 @@ class WebSocketAcpTransport implements acp.AcpTransport {
         StateError('Transport was stopped while connecting.'),
       );
     }
+    final drainCancellation = _drainCancellation;
+    if (drainCancellation != null && !drainCancellation.isCompleted) {
+      drainCancellation.complete();
+    }
+    _clearQueues();
+
     Object? firstError;
     StackTrace? firstStackTrace;
     Future<void> cleanUp(Future<void> Function() action) async {
@@ -159,13 +465,53 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _socketSubscription = null;
     await cleanUp(() async => _socket?.close(WebSocketStatus.normalClosure));
     _socket = null;
-    await cleanUp(() async => _controller?.local.sink.close());
-    _controller = null;
+    await cleanUp(() async => _outboundDrainFuture);
+    _outboundDrainFuture = null;
+    await cleanUp(() async => _outboundController?.close());
+    _outboundController = null;
+    await cleanUp(() async {
+      final controller = _inboundController;
+      if (controller != null) unawaited(controller.close());
+    });
+    _inboundController = null;
+    _channel = null;
+    _drainCancellation = null;
+    _activeWrite = null;
+    _inboundListening = false;
+    _inboundPaused = false;
+    _failed = false;
+    _capacityCloseScheduled = false;
     final cleanupError = firstError;
     if (cleanupError != null) {
       Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
   }
+
+  void _resetQueues() {
+    _clearQueues();
+    _inboundListening = false;
+    _inboundPaused = false;
+    _outboundDraining = false;
+    _capacityCloseScheduled = false;
+  }
+
+  void _clearQueues() {
+    _inboundQueue.clear();
+    _outboundQueue.clear();
+    _inboundQueueBytes = 0;
+    _outboundQueueBytes = 0;
+  }
+
+  static Future<void> _writeFrame(WebSocket socket, String frame) {
+    return socket.addStream(Stream<Object?>.value(frame));
+  }
+}
+
+class _QueuedFrame {
+  const _QueuedFrame(this.text, this.bytes);
+
+  final String text;
+  final int bytes;
 }
 
 class _NoRedirectHttpClient implements HttpClient {
