@@ -2,10 +2,233 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/streamable_http_acp_transport.dart';
 
 void main() {
+  test('HTTP POST response body is bounded before UTF-8 decoding', () async {
+    const secret = 'acp-secret-payload-must-not-appear';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      final bytes = utf8.encode(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'result': <String, Object?>{
+            'connectionId': 'connection-1',
+            'value': secret,
+          },
+        }),
+      );
+      request.response
+        ..headers.contentType = ContentType.json
+        ..add(bytes);
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      byteBudget: const acp.TransportByteBudget(maxBodyBytes: 24),
+    );
+    await transport.start();
+    final inbound = <String>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      inbound.add,
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, Object?>{},
+        }),
+      );
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(inbound, isEmpty);
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having((value) => value.limit, 'limit', 24)
+            .having(
+              (value) => value.observedAtLeast,
+              'observedAtLeast',
+              greaterThan(24),
+            ),
+      );
+      expect(errors.single.toString(), isNot(contains(secret)));
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test(
+    'HTTP SSE line and event limits do not deliver partial events',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final openResponses = <HttpResponse>[];
+      final connectionStream = Completer<HttpResponse>();
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response.bufferOutput = false;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          openResponses.add(request.response);
+          connectionStream.complete(request.response);
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, Object?>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, Object?>{'connectionId': 'connection-1'},
+            }),
+          );
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        byteBudget: const acp.TransportByteBudget(
+          maxBodyBytes: 512,
+          maxLineBytes: 32,
+          maxSseEventBytes: 256,
+        ),
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        final response = await connectionStream.future;
+        response.write(
+          'data: {"jsonrpc":"2.0",\n'
+          'data: "method":"partial-event-must-not-arrive"}\n\n',
+        );
+        await response.flush();
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(inbound, hasLength(1));
+        expect(
+          errors.last,
+          isA<acp.TransportByteLimitExceeded>().having(
+            (value) => value.resource,
+            'resource',
+            contains('line'),
+          ),
+        );
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'HTTP SSE preserves CRLF multiline comments and final EOF event',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          request.response.write(
+            ': comment\r\n'
+            'event: message\r\n'
+            'data: {"jsonrpc":"2.0",\r\n'
+            'data: "method":"eof-notice"}\r\n',
+          );
+          await request.response.close();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, Object?>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, Object?>{'connectionId': 'connection-1'},
+            }),
+          );
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        byteBudget: const acp.TransportByteBudget(
+          maxBodyBytes: 512,
+          maxLineBytes: 128,
+          maxSseEventBytes: 256,
+        ),
+      );
+      await transport.start();
+      final inbound = <Map<String, Object?>>[];
+      final subscription = transport.channel.stream.listen(
+        (line) => inbound.add(jsonDecode(line) as Map<String, Object?>),
+        onError: (_) {},
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(
+          () => inbound.any((message) => message['method'] == 'eof-notice'),
+        );
+        expect(
+          inbound.where((message) => message['method'] == 'eof-notice'),
+          hasLength(1),
+        );
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
   test('HTTP POST does not follow redirects', () async {
     final redirectTarget = await HttpServer.bind(
       InternetAddress.loopbackIPv4,

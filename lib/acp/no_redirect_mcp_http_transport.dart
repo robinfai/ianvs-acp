@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 import 'acp_endpoint_validator.dart';
@@ -16,6 +17,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     this.headers = const <String, String>{},
     this.requestTimeout = const Duration(seconds: 30),
     this.teardownTimeout = const Duration(seconds: 2),
+    this.byteBudget = const acp.TransportByteBudget(),
   }) : assert(requestTimeout > Duration.zero),
        assert(teardownTimeout > Duration.zero) {
     validateAcpEndpoint(
@@ -28,6 +30,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
   final Map<String, String> headers;
   final Duration requestTimeout;
   final Duration teardownTimeout;
+  final acp.TransportByteBudget byteBudget;
 
   final List<StreamSubscription<String>> _sseSubscriptions =
       <StreamSubscription<String>>[];
@@ -76,7 +79,10 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       _captureSession(response);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        await response.drain<void>();
+        await _drainResponse(
+          response,
+          resource: 'MCP HTTP POST error response body',
+        );
         throw mcp.McpError(
           0,
           'MCP HTTP POST failed with ${response.statusCode}: '
@@ -84,7 +90,10 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         );
       }
       if (response.statusCode == HttpStatus.accepted) {
-        await response.drain<void>();
+        await _drainResponse(
+          response,
+          resource: 'MCP HTTP POST accepted response body',
+        );
       } else {
         _handleResponse(response);
       }
@@ -106,9 +115,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     }
     if (contentType == 'application/json') {
       unawaited(
-        utf8.decoder
-            .bind(response)
-            .join()
+        _readResponseBody(response, resource: 'MCP HTTP JSON response body')
             .then<void>((body) {
               final decoded = jsonDecode(body);
               if (decoded is List) {
@@ -123,7 +130,12 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       );
       return;
     }
-    unawaited(response.drain<void>());
+    unawaited(
+      _drainResponse(
+        response,
+        resource: 'MCP HTTP unsupported response body',
+      ).catchError(_reportAsyncError),
+    );
     throw mcp.McpError(
       0,
       'MCP HTTP response has unsupported content type: '
@@ -151,11 +163,17 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     final response = await request.close().timeout(requestTimeout);
     _captureSession(response);
     if (response.statusCode == HttpStatus.methodNotAllowed) {
-      await response.drain<void>();
+      await _drainResponse(
+        response,
+        resource: 'MCP HTTP SSE method response body',
+      );
       return;
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      await response.drain<void>();
+      await _drainResponse(
+        response,
+        resource: 'MCP HTTP SSE error response body',
+      );
       throw mcp.McpError(
         0,
         'MCP HTTP SSE GET failed with ${response.statusCode}: '
@@ -164,55 +182,37 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     }
     if (response.headers.contentType?.mimeType.toLowerCase() !=
         'text/event-stream') {
-      await response.drain<void>();
+      await _drainResponse(
+        response,
+        resource: 'MCP HTTP SSE non-SSE response body',
+      );
       throw mcp.McpError(0, 'MCP HTTP SSE GET returned a non-SSE response.');
     }
     _listenToSse(response);
   }
 
   void _listenToSse(Stream<List<int>> response) {
-    String? eventName;
-    final dataLines = <String>[];
-
-    void emitEvent() {
-      if (dataLines.isNotEmpty &&
-          (eventName == null || eventName == 'message')) {
-        try {
-          _emitJsonRpc(jsonDecode(dataLines.join('\n')));
-        } catch (error) {
-          _reportError(error);
-        }
-      }
-      eventName = null;
-      dataLines.clear();
-    }
-
     late final StreamSubscription<String> subscription;
-    subscription = response
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
+    subscription = acp
+        .decodeBoundedSse(
+          response,
+          budget: byteBudget,
+          resource: 'MCP HTTP SSE',
+        )
+        .where((event) => event.event == null || event.event == 'message')
+        .map((event) => event.data)
         .listen(
-          (line) {
-            if (line.isEmpty) {
-              emitEvent();
-              return;
-            }
-            if (line.startsWith(':')) return;
-            final separator = line.indexOf(':');
-            final field = separator < 0 ? line : line.substring(0, separator);
-            var value = separator < 0 ? '' : line.substring(separator + 1);
-            if (value.startsWith(' ')) value = value.substring(1);
-            if (field == 'event') {
-              eventName = value;
-            } else if (field == 'data') {
-              dataLines.add(value);
+          (data) {
+            try {
+              _emitJsonRpc(jsonDecode(data));
+            } catch (error) {
+              _reportError(error);
             }
           },
           onError: (Object error, StackTrace stackTrace) {
             _reportError(error);
           },
           onDone: () {
-            emitEvent();
             _sseSubscriptions.remove(subscription);
           },
         );
@@ -265,6 +265,47 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     _reportError(error);
   }
 
+  Future<String> _readResponseBody(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    return acp.readBoundedUtf8Body(
+      response,
+      limit: byteBudget.maxBodyBytes,
+      resource: resource,
+    );
+  }
+
+  Future<void> _drainResponse(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    await acp.drainBoundedBytes(
+      response,
+      limit: byteBudget.maxBodyBytes,
+      resource: resource,
+    );
+  }
+
+  Future<void> _enforceResponseContentLength(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    try {
+      acp.enforceTransportContentLength(
+        contentLength: response.contentLength,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+      );
+    } on acp.TransportByteLimitExceeded {
+      final subscription = response.listen((_) {});
+      await subscription.cancel();
+      rethrow;
+    }
+  }
+
   void _reportError(Object error) {
     onerror?.call(error is Error ? error : mcp.McpError(0, error.toString()));
   }
@@ -313,6 +354,6 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     }
     request.headers.set('Mcp-Session-Id', session);
     final response = await request.close();
-    await response.drain<void>();
+    await _drainResponse(response, resource: 'MCP HTTP DELETE response body');
   }
 }

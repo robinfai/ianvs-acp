@@ -16,6 +16,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.requestTimeout = const Duration(seconds: 30),
     this.firstByteTimeout = const Duration(seconds: 15),
     this.sseIdleTimeout = const Duration(minutes: 5),
+    this.byteBudget = const acp.TransportByteBudget(),
   }) : assert(requestTimeout > Duration.zero),
        assert(firstByteTimeout > Duration.zero),
        assert(sseIdleTimeout > Duration.zero) {
@@ -32,6 +33,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final Duration requestTimeout;
   final Duration firstByteTimeout;
   final Duration sseIdleTimeout;
+  final acp.TransportByteBudget byteBudget;
 
   final Map<String, String> _pendingMethodsById = <String, String>{};
   final Map<String, String> _serverRequestSessionsById = <String, String>{};
@@ -109,10 +111,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final response = await request.close().timeout(firstByteTimeout);
       _storeCookies(response.cookies);
 
-      final body = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(requestTimeout);
+      final body = await _readResponseBody(
+        response,
+        resource: 'ACP HTTP POST response body',
+      ).timeout(requestTimeout);
       if (isInitialize) {
         _handleInitializeResponse(response, body);
         return;
@@ -211,6 +213,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         final response = await request.close().timeout(firstByteTimeout);
         _storeCookies(response.cookies);
         if (response.statusCode < 200 || response.statusCode >= 300) {
+          await _drainResponse(
+            response,
+            resource: 'ACP HTTP SSE error response body',
+          ).timeout(requestTimeout);
           throw HttpException(
             'ACP HTTP SSE stream failed with ${response.statusCode}: ${response.reasonPhrase}',
             uri: endpoint,
@@ -218,29 +224,33 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         }
         var streamFailed = false;
         late final StreamSubscription<String> subscription;
-        subscription = _sseEvents(_withSseIdleTimeout(response)).listen(
-          _handleSseEvent,
-          onError: (Object error, StackTrace stackTrace) {
-            streamFailed = true;
-            if (!_stopping) {
-              _controller?.local.sink.addError(error, stackTrace);
-            }
-          },
-          onDone: () {
-            _streamStartsByKey.remove(key);
-            _streamSubscriptions.remove(subscription);
-            if (!_stopping && !streamFailed) {
-              _controller?.local.sink.addError(
-                StateError(
-                  sessionId == null
-                      ? 'ACP connection SSE stream closed'
-                      : 'ACP session SSE stream closed: $sessionId',
-                ),
-                StackTrace.current,
-              );
-            }
-          },
-        );
+        subscription =
+            _sseEvents(
+              _withSseIdleTimeout(response),
+              resource: 'ACP HTTP SSE',
+            ).listen(
+              _handleSseEvent,
+              onError: (Object error, StackTrace stackTrace) {
+                streamFailed = true;
+                if (!_stopping) {
+                  _controller?.local.sink.addError(error, stackTrace);
+                }
+              },
+              onDone: () {
+                _streamStartsByKey.remove(key);
+                _streamSubscriptions.remove(subscription);
+                if (!_stopping && !streamFailed) {
+                  _controller?.local.sink.addError(
+                    StateError(
+                      sessionId == null
+                          ? 'ACP connection SSE stream closed'
+                          : 'ACP session SSE stream closed: $sessionId',
+                    ),
+                    StackTrace.current,
+                  );
+                }
+              },
+            );
         _streamSubscriptions.add(subscription);
       } catch (error, stackTrace) {
         _streamStartsByKey.remove(key);
@@ -267,24 +277,57 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     );
   }
 
-  Stream<String> _sseEvents(Stream<List<int>> response) async* {
-    final dataLines = <String>[];
-    await for (final line
-        in response.transform(utf8.decoder).transform(const LineSplitter())) {
-      if (line.isEmpty) {
-        if (dataLines.isNotEmpty) {
-          yield dataLines.join('\n');
-          dataLines.clear();
-        }
-        continue;
-      }
-      if (line.startsWith(':')) continue;
-      if (line.startsWith('data:')) {
-        dataLines.add(line.substring(5).trimLeft());
-      }
+  Stream<String> _sseEvents(
+    Stream<List<int>> response, {
+    required String resource,
+  }) async* {
+    await for (final event in acp.decodeBoundedSse(
+      response,
+      budget: byteBudget,
+      resource: resource,
+    )) {
+      yield event.data;
     }
-    if (dataLines.isNotEmpty) {
-      yield dataLines.join('\n');
+  }
+
+  Future<String> _readResponseBody(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    return acp.readBoundedUtf8Body(
+      response,
+      limit: byteBudget.maxBodyBytes,
+      resource: resource,
+    );
+  }
+
+  Future<void> _drainResponse(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    await acp.drainBoundedBytes(
+      response,
+      limit: byteBudget.maxBodyBytes,
+      resource: resource,
+    );
+  }
+
+  Future<void> _enforceResponseContentLength(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    try {
+      acp.enforceTransportContentLength(
+        contentLength: response.contentLength,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+      );
+    } on acp.TransportByteLimitExceeded {
+      final subscription = response.listen((_) {});
+      await subscription.cancel();
+      rethrow;
     }
   }
 
@@ -464,7 +507,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       request.headers.set('Acp-Connection-Id', connectionId);
       final response = await request.close().timeout(_teardownTimeout);
       _storeCookies(response.cookies);
-      await response.drain<void>().timeout(_teardownTimeout);
+      await _drainResponse(
+        response,
+        resource: 'ACP HTTP DELETE response body',
+      ).timeout(_teardownTimeout);
     } on Object {
       // Remote teardown is best effort; local disposal must always finish.
     }

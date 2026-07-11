@@ -16,3 +16,4 @@ export 'src/providers/terminal_provider.dart';
 export 'src/transport/stdin_transport.dart';
 export 'src/transport/stdio_transport.dart';
 export 'src/transport/transport.dart';
+export 'src/transport/byte_budget.dart';
