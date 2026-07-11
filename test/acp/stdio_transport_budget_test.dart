@@ -1,14 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:logging/logging.dart';
 
 void main() {
   test('StdioTransport forwards the configured line byte limit', () async {
     final transport = acp.StdioTransport(
-      logger: Logger('stdio-budget-test'),
+      logger: acp.AcpConfig().logger,
       command: '/bin/sh',
       args: const <String>['-c', "printf '12345\\n'; sleep 1"],
       maxLineBytes: 4,
