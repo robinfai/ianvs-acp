@@ -27,7 +27,7 @@ class AcpPermissionChoice {
   final String name;
   final String? kind;
 
-  AcpPermissionDecision? get decision {
+  AcpPermissionDecision? get explicitDecision {
     final normalized = kind?.trim().toLowerCase() ?? '';
     if (normalized == 'allow' ||
         normalized == 'allow_once' ||
@@ -42,6 +42,12 @@ class AcpPermissionChoice {
         normalized == 'reject_always') {
       return AcpPermissionDecision.deny;
     }
+    return null;
+  }
+
+  AcpPermissionDecision? get decision {
+    final explicit = explicitDecision;
+    if (explicit != null) return explicit;
     final words = name
         .trim()
         .toLowerCase()

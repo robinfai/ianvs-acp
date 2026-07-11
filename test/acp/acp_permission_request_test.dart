@@ -174,6 +174,40 @@ void main() {
     expect(choice.isSingleUse, isFalse);
   });
 
+  test('explicit permission decisions use kind without name fallback', () {
+    const explicitAllow = AcpPermissionChoice(
+      optionId: 'allow-once',
+      name: 'Custom approval',
+      kind: 'allow_once',
+    );
+    const explicitDeny = AcpPermissionChoice(
+      optionId: 'reject-once',
+      name: 'Custom rejection',
+      kind: 'reject_once',
+    );
+    const nameOnly = AcpPermissionChoice(
+      optionId: 'legacy-reject',
+      name: 'Reject',
+    );
+    const nameOnlyAllow = AcpPermissionChoice(
+      optionId: 'legacy-allow',
+      name: 'Allow',
+    );
+    const unknownKind = AcpPermissionChoice(
+      optionId: 'unknown',
+      name: 'Allow',
+      kind: 'ask_later',
+    );
+
+    expect(explicitAllow.explicitDecision, AcpPermissionDecision.allow);
+    expect(explicitDeny.explicitDecision, AcpPermissionDecision.deny);
+    expect(nameOnly.explicitDecision, isNull);
+    expect(nameOnly.decision, AcpPermissionDecision.deny);
+    expect(nameOnlyAllow.explicitDecision, isNull);
+    expect(nameOnlyAllow.decision, AcpPermissionDecision.allow);
+    expect(unknownKind.explicitDecision, isNull);
+  });
+
   test('transient policy context affects binding but is never serialized', () {
     AcpPermissionRequest item(String secret) => AcpPermissionRequest(
       id: 'permission-env',

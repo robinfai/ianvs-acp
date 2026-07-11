@@ -6,6 +6,7 @@ import '../../acp/acp_agent_capabilities.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
+import '../../tasks/egress_policy.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef PromptSendCallback =
@@ -305,8 +306,14 @@ class _PromptPermissionCard extends StatelessWidget {
     return choice.decision == AcpPermissionDecision.deny;
   }
 
-  Widget _structuredChoiceButton(AcpPermissionChoice choice) {
-    final onPressed = onSelectOption == null
+  Widget _structuredChoiceButton(
+    AcpPermissionChoice choice, {
+    required bool contextIsComplete,
+  }) {
+    final canSelect = contextIsComplete
+        ? choice.decision != null
+        : choice.explicitDecision == AcpPermissionDecision.deny;
+    final onPressed = onSelectOption == null || !canSelect
         ? null
         : () => onSelectOption!(choice.optionId);
     if (_isRejectChoice(choice)) {
@@ -351,6 +358,7 @@ class _PromptPermissionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final displayContext = permissionDisplayContextForRequest(request);
     return Container(
       key: const Key('prompt-permission-card'),
       width: double.infinity,
@@ -380,7 +388,8 @@ class _PromptPermissionCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final compact = constraints.maxWidth < 700;
+                final compact =
+                    constraints.maxWidth < 700 || request.choices.length > 3;
                 final details = Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -491,6 +500,13 @@ class _PromptPermissionCard extends StatelessWidget {
                               letterSpacing: 0,
                             ),
                           ),
+                          if (!displayContext.isComplete ||
+                              displayContext.entries.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            _PermissionContextView(
+                              displayContext: displayContext,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -502,7 +518,12 @@ class _PromptPermissionCard extends StatelessWidget {
                   alignment: WrapAlignment.end,
                   children: [
                     if (request.choices.isNotEmpty)
-                      ...request.choices.map(_structuredChoiceButton)
+                      ...request.choices.map(
+                        (choice) => _structuredChoiceButton(
+                          choice,
+                          contextIsComplete: displayContext.isComplete,
+                        ),
+                      )
                     else ...[
                       OutlinedButton.icon(
                         onPressed: onDeny,
@@ -519,7 +540,7 @@ class _PromptPermissionCard extends StatelessWidget {
                         ),
                       ),
                       FilledButton.icon(
-                        onPressed: onAllow,
+                        onPressed: displayContext.isComplete ? onAllow : null,
                         icon: const Icon(Icons.check_rounded, size: 15),
                         label: Text(request.allowActionLabel),
                         style: FilledButton.styleFrom(
@@ -572,6 +593,93 @@ class _PromptPermissionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PermissionContextView extends StatefulWidget {
+  const _PermissionContextView({required this.displayContext});
+
+  final PermissionDisplayContext displayContext;
+
+  @override
+  State<_PermissionContextView> createState() => _PermissionContextViewState();
+}
+
+class _PermissionContextViewState extends State<_PermissionContextView> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      key: const Key('prompt-permission-context'),
+      constraints: const BoxConstraints(maxHeight: 180),
+      child: Scrollbar(
+        controller: _scrollController,
+        child: SingleChildScrollView(
+          key: const Key('prompt-permission-context-scroll'),
+          controller: _scrollController,
+          scrollDirection: Axis.vertical,
+          child: widget.displayContext.isComplete
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final entry in widget.displayContext.entries)
+                      Padding(
+                        key: Key(
+                          'prompt-permission-context-${_permissionContextEntryKey(entry.label)}',
+                        ),
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.label,
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            SelectableText(
+                              entry.value,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                )
+              : Text(
+                  PermissionDisplayContext.incompleteWarning,
+                  key: const Key('prompt-permission-context-warning'),
+                  style: const TextStyle(
+                    color: AppColors.danger,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+String _permissionContextEntryKey(String label) {
+  return switch (label) {
+    'Command' => 'command',
+    'Working directory' => 'cwd',
+    'Path' => 'path',
+    'Target' => 'target',
+    _ => throw StateError('Unsupported permission context label: $label'),
+  };
 }
 
 class _ComposerDivider extends StatelessWidget {

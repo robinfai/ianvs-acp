@@ -451,6 +451,408 @@ void main() {
     expect(allowed, isTrue);
   });
 
+  testWidgets('PromptInput shows complete permission operation context', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-context',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'command': 'git',
+            'args': <String>['push', 'origin', 'main'],
+            'cwd': '/workspace',
+            'path': '/workspace/report.txt',
+            'target': 'origin',
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('Command'), findsOneWidget);
+    expect(find.text('["git","push","origin","main"]'), findsOneWidget);
+    expect(find.text('Working directory'), findsOneWidget);
+    expect(find.text('/workspace'), findsOneWidget);
+    expect(find.text('Path'), findsOneWidget);
+    expect(find.text('/workspace/report.txt'), findsOneWidget);
+    expect(find.text('Target'), findsOneWidget);
+    expect(find.text('origin'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<SelectableText>(
+            find.descendant(
+              of: find.byKey(const Key('prompt-permission-context')),
+              matching: find.byType(SelectableText),
+            ),
+          )
+          .map((widget) => widget.data),
+      <String?>[
+        '["git","push","origin","main"]',
+        '/workspace',
+        '/workspace/report.txt',
+        'origin',
+      ],
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-command')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-cwd')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-path')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-target')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('PromptInput renders only projected nested operation context', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-nested-context',
+          title: 'Run tests',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'toolCall': <String, Object?>{
+              'input': <String, Object?>{
+                'command': 'flutter',
+                'args': <String>['test', 'test/widget_test.dart'],
+                'cwd': '/workspace/app',
+                'path': 'test/widget_test.dart',
+                'target': 'local',
+                'unknownField': 'UNPROJECTED_CANARY',
+              },
+            },
+          },
+        ),
+      ),
+    );
+
+    expect(
+      find.text('["flutter","test","test/widget_test.dart"]'),
+      findsOneWidget,
+    );
+    expect(find.text('/workspace/app'), findsOneWidget);
+    expect(find.text('test/widget_test.dart'), findsOneWidget);
+    expect(find.text('local'), findsOneWidget);
+    expect(find.textContaining('toolCall'), findsNothing);
+    expect(find.textContaining('unknownField'), findsNothing);
+    expect(find.textContaining('UNPROJECTED_CANARY'), findsNothing);
+  });
+
+  testWidgets('PromptInput bounds and scrolls long permission context', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(18, 'very-long-segment').join('/');
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-long-context',
+          title: 'Run long operation',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: <String, Object?>{
+            'command': 'tool',
+            'args': <String>[longSegment],
+            'cwd': '/cwd/$longSegment',
+            'path': '/path/$longSegment',
+            'target': 'final-target',
+          },
+        ),
+      ),
+    );
+
+    final contextFinder = find.byKey(const Key('prompt-permission-context'));
+    final scrollFinder = find.byKey(
+      const Key('prompt-permission-context-scroll'),
+    );
+    expect(tester.getSize(contextFinder).height, lessThanOrEqualTo(180));
+    expect(
+      find.descendant(of: contextFinder, matching: find.byType(Scrollbar)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: contextFinder,
+        matching: find.byType(SingleChildScrollView),
+      ),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+    expect(
+      tester.getBottomRight(find.text('final-target')).dy,
+      greaterThan(tester.getBottomRight(contextFinder).dy),
+    );
+
+    await tester.drag(scrollFinder, const Offset(0, -1000));
+    await tester.pump();
+
+    expect(
+      tester.getBottomRight(find.text('final-target')).dy,
+      lessThanOrEqualTo(tester.getBottomRight(contextFinder).dy),
+    );
+  });
+
+  testWidgets('PromptInput avoids overflow with long context at 320 pixels', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(12, 'narrow-segment').join('/');
+    await tester.pumpWidget(
+      input(
+        width: 320,
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-narrow-context',
+          title: 'Run long operation',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: <String, Object?>{
+            'command': 'tool',
+            'args': <String>[longSegment],
+            'cwd': '/cwd/$longSegment',
+            'path': '/path/$longSegment',
+            'target': 'final-target',
+          },
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getSize(find.byKey(const Key('prompt-permission-context'))).height,
+      lessThanOrEqualTo(180),
+    );
+    expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+  });
+
+  testWidgets('PromptInput fails closed for incomplete ordinary context', (
+    tester,
+  ) async {
+    var allowed = false;
+    var denied = false;
+    var cancelled = false;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-incomplete',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'command': 'git status',
+            'toolCall': <String, Object?>{'command': 'flutter test'},
+            'cwd': '/workspace',
+          },
+        ),
+        onAllowPermission: () => allowed = true,
+        onDenyPermission: () => denied = true,
+        onCancelPermission: () => cancelled = true,
+      ),
+    );
+
+    expect(
+      find.text('Some operation details could not be displayed safely.'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-warning')),
+      findsOneWidget,
+    );
+    expect(find.text('Command'), findsNothing);
+    expect(find.text('Working directory'), findsNothing);
+    final allow = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Allow Once'),
+    );
+    expect(allow.onPressed, isNull);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
+    await tester.tap(find.byTooltip('Cancel permission request'));
+    await tester.pump();
+
+    expect(allowed, isFalse);
+    expect(denied, isTrue);
+    expect(cancelled, isTrue);
+  });
+
+  testWidgets(
+    'PromptInput permits only explicit deny choices when incomplete',
+    (tester) async {
+      String? selectedOptionId;
+      var cancelled = false;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          pendingPermissionRequest: AcpPermissionRequest(
+            id: 'permission-structured-incomplete',
+            title: 'Run command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const [
+              'Allow once',
+              'Deny once',
+              'Reject',
+              'Allow',
+              'Mystery',
+            ],
+            choices: const <AcpPermissionChoice>[
+              AcpPermissionChoice(
+                optionId: 'allow-once',
+                name: 'Allow once',
+                kind: 'allow_once',
+              ),
+              AcpPermissionChoice(
+                optionId: 'deny-once',
+                name: 'Deny once',
+                kind: 'deny_once',
+              ),
+              AcpPermissionChoice(optionId: 'legacy-reject', name: 'Reject'),
+              AcpPermissionChoice(optionId: 'legacy-allow', name: 'Allow'),
+              AcpPermissionChoice(
+                optionId: 'unknown-kind',
+                name: 'Mystery',
+                kind: 'ask_later',
+              ),
+            ],
+            requestedAt: DateTime(2026, 7, 11, 12),
+            metadata: const <String, Object?>{
+              'path': '/one',
+              'input': <String, Object?>{'path': '/two'},
+            },
+          ),
+          onSelectPermissionOption: (value) => selectedOptionId = value,
+          onCancelPermission: () => cancelled = true,
+        ),
+      );
+
+      ButtonStyleButton choice(String id) => tester.widget<ButtonStyleButton>(
+        find.byKey(Key('prompt-permission-option-$id')),
+      );
+
+      expect(choice('allow-once').onPressed, isNull);
+      expect(choice('deny-once').onPressed, isNotNull);
+      expect(choice('legacy-reject').onPressed, isNull);
+      expect(choice('legacy-allow').onPressed, isNull);
+      expect(choice('unknown-kind').onPressed, isNull);
+
+      await tester.tap(
+        find.byKey(const Key('prompt-permission-option-deny-once')),
+      );
+      await tester.tap(find.byTooltip('Cancel permission request'));
+      await tester.pump();
+
+      expect(selectedOptionId, 'deny-once');
+      expect(cancelled, isTrue);
+    },
+  );
+
+  testWidgets('PromptInput keeps legacy empty context allow action enabled', (
+    tester,
+  ) async {
+    var allowed = false;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-legacy',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+        ),
+        onAllowPermission: () => allowed = true,
+      ),
+    );
+
+    expect(find.byKey(const Key('prompt-permission-context')), findsNothing);
+    expect(
+      find.byKey(const Key('prompt-permission-context-warning')),
+      findsNothing,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
+    await tester.pump();
+    expect(allowed, isTrue);
+  });
+
+  testWidgets('PromptInput displays escaped permission values only', (
+    tester,
+  ) async {
+    const rawPath = ' \n\u202eDANGEROUS ';
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-escaped',
+          title: 'Read path',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'path': rawPath,
+            'unprojected': 'UNPROJECTED_CANARY',
+          },
+        ),
+      ),
+    );
+
+    expect(
+      find.text(r'\u{0020}\u{000A}\u{202E}DANGEROUS\u{0020}'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('\n'), findsNothing);
+    expect(find.textContaining('\u202e'), findsNothing);
+    expect(find.textContaining('UNPROJECTED_CANARY'), findsNothing);
+  });
+
   testWidgets('PromptInput keeps permission actions usable in narrow widths', (
     tester,
   ) async {
