@@ -113,6 +113,7 @@ PermissionDisplayContext permissionDisplayContextForRequest(
     return PermissionDisplayContext.incomplete();
   }
 
+  final encoder = _PermissionDisplayEncoder(effectiveLimits.maxUtf8Bytes);
   final entries = <PermissionDisplayEntry>[];
   if (_containersHavePermissionCommandEvidence(projection.containers)) {
     final invocation = _commandFromPermissionDisplayContainers(
@@ -122,12 +123,12 @@ PermissionDisplayContext permissionDisplayContextForRequest(
     if (invocation == null || invocation.ambiguous) {
       return PermissionDisplayContext.incomplete();
     }
-    entries.add(
-      PermissionDisplayEntry(
-        label: 'Command',
-        value: jsonEncode(<String>[invocation.command, ...invocation.args]),
-      ),
-    );
+    final value = encoder.encodeCommand(<String>[
+      invocation.command,
+      ...invocation.args,
+    ]);
+    if (value == null) return PermissionDisplayContext.incomplete();
+    entries.add(PermissionDisplayEntry(label: 'Command', value: value));
   }
 
   for (final field in const <({String key, String label})>[
@@ -137,12 +138,133 @@ PermissionDisplayContext permissionDisplayContextForRequest(
   ]) {
     final candidates = values[field.key]!;
     if (candidates.isNotEmpty) {
-      entries.add(
-        PermissionDisplayEntry(label: field.label, value: candidates.single),
-      );
+      final value = encoder.encodeField(candidates.single);
+      if (value == null) return PermissionDisplayContext.incomplete();
+      entries.add(PermissionDisplayEntry(label: field.label, value: value));
     }
   }
   return PermissionDisplayContext.complete(entries);
+}
+
+class _PermissionDisplayEncoder {
+  _PermissionDisplayEncoder(this.maxUtf8Bytes);
+
+  final int maxUtf8Bytes;
+  var _utf8Bytes = 0;
+  var _failed = false;
+
+  String? encodeCommand(List<String> tokens) {
+    final output = StringBuffer();
+    if (!_write(output, '[')) return null;
+    for (var index = 0; index < tokens.length; index += 1) {
+      if (index > 0 && !_write(output, ',')) return null;
+      if (!_write(output, '"') ||
+          !_writeString(output, tokens[index], escapeBoundarySpaces: false) ||
+          !_write(output, '"')) {
+        return null;
+      }
+    }
+    if (!_write(output, ']')) return null;
+    return output.toString();
+  }
+
+  String? encodeField(String value) {
+    final output = StringBuffer();
+    return _writeString(output, value, escapeBoundarySpaces: true)
+        ? output.toString()
+        : null;
+  }
+
+  bool _writeString(
+    StringBuffer output,
+    String value, {
+    required bool escapeBoundarySpaces,
+  }) {
+    var firstNonSpace = 0;
+    var lastNonSpace = value.length - 1;
+    if (escapeBoundarySpaces) {
+      while (firstNonSpace < value.length &&
+          value.codeUnitAt(firstNonSpace) == 0x20) {
+        firstNonSpace += 1;
+      }
+      while (lastNonSpace >= firstNonSpace &&
+          value.codeUnitAt(lastNonSpace) == 0x20) {
+        lastNonSpace -= 1;
+      }
+    }
+
+    for (var index = 0; index < value.length; index += 1) {
+      final first = value.codeUnitAt(index);
+      if (first >= 0xd800 && first <= 0xdbff) {
+        if (index + 1 < value.length) {
+          final second = value.codeUnitAt(index + 1);
+          if (second >= 0xdc00 && second <= 0xdfff) {
+            final codePoint =
+                0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
+            if (!_writeCodePoint(output, codePoint)) return false;
+            index += 1;
+            continue;
+          }
+        }
+        if (!_writeEscape(output, first)) return false;
+        continue;
+      }
+      if (first >= 0xdc00 && first <= 0xdfff) {
+        if (!_writeEscape(output, first)) return false;
+        continue;
+      }
+      final isBoundarySpace =
+          escapeBoundarySpaces &&
+          first == 0x20 &&
+          (index < firstNonSpace || index > lastNonSpace);
+      if (isBoundarySpace || _isUnsafePermissionDisplayCodePoint(first)) {
+        if (!_writeEscape(output, first)) return false;
+      } else if (!_writeCodePoint(output, first)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _writeCodePoint(StringBuffer output, int codePoint) {
+    if (_isUnsafePermissionDisplayCodePoint(codePoint)) {
+      return _writeEscape(output, codePoint);
+    }
+    if (codePoint == 0x5c) return _write(output, r'\\');
+    if (codePoint == 0x22) return _write(output, r'\"');
+    return _write(output, String.fromCharCode(codePoint));
+  }
+
+  bool _writeEscape(StringBuffer output, int codePoint) {
+    final minimumDigits = codePoint > 0xffff ? 6 : 4;
+    final hex = codePoint
+        .toRadixString(16)
+        .toUpperCase()
+        .padLeft(minimumDigits, '0');
+    return _write(output, '\\u{$hex}');
+  }
+
+  bool _write(StringBuffer output, String chunk) {
+    if (_failed) return false;
+    final length = utf8.encode(chunk).length;
+    if (_utf8Bytes + length > maxUtf8Bytes) {
+      _failed = true;
+      return false;
+    }
+    _utf8Bytes += length;
+    output.write(chunk);
+    return true;
+  }
+}
+
+bool _isUnsafePermissionDisplayCodePoint(int codePoint) {
+  return codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint == 0x061c ||
+      codePoint == 0x200e ||
+      codePoint == 0x200f ||
+      (codePoint >= 0x2028 && codePoint <= 0x202e) ||
+      (codePoint >= 0x2066 && codePoint <= 0x2069);
 }
 
 _PermissionCommand? _commandFromPermissionDisplayContainers(

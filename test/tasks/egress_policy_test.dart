@@ -988,7 +988,7 @@ void main() {
       expect(conflict.isComplete, isFalse);
       expect(conflict.entries, isEmpty);
       expect(single.isComplete, isTrue);
-      expect(single.entries.single.value, '/a ');
+      expect(single.entries.single.value, r'/a\u{0020}');
     });
 
     test('preserves command and argument boundary whitespace', () {
@@ -1004,6 +1004,106 @@ void main() {
       expect(context.isComplete, isTrue);
       expect(context.entries.single.label, 'Command');
       expect(context.entries.single.value, '[" git ",""," x ","plain"]');
+    });
+
+    test('escapes unsafe command characters without losing boundaries', () {
+      final bidi = String.fromCharCodes(const <int>[
+        0x061c,
+        0x200e,
+        0x200f,
+        0x2028,
+        0x2029,
+        0x202a,
+        0x202b,
+        0x202c,
+        0x202d,
+        0x202e,
+        0x2066,
+        0x2067,
+        0x2068,
+        0x2069,
+      ]);
+      final malformedSurrogate = String.fromCharCode(0xd800);
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'command': 'g"it\\',
+            'args': <String>[
+              '',
+              ' edge ',
+              'tab\tcr\rline\n',
+              'controls\x00\x1f\x7f\x80\x9f',
+              '$bidi$malformedSurrogate',
+              'é',
+            ],
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      final value = context.entries.single.value;
+      expect(value, startsWith(r'["g\"it\\",""," edge ",'));
+      for (final escape in const <String>[
+        r'\u{0000}',
+        r'\u{001F}',
+        r'\u{007F}',
+        r'\u{0080}',
+        r'\u{009F}',
+        r'\u{0009}',
+        r'\u{000D}',
+        r'\u{000A}',
+        r'\u{061C}',
+        r'\u{200E}',
+        r'\u{200F}',
+        r'\u{2028}',
+        r'\u{2029}',
+        r'\u{202A}',
+        r'\u{202B}',
+        r'\u{202C}',
+        r'\u{202D}',
+        r'\u{202E}',
+        r'\u{2066}',
+        r'\u{2067}',
+        r'\u{2068}',
+        r'\u{2069}',
+        r'\u{D800}',
+      ]) {
+        expect(value, contains(escape), reason: escape);
+      }
+      expect(value, endsWith(',"é"]'));
+      expect(_containsUnsafePermissionDisplayCodeUnit(value), isFalse);
+    });
+
+    test('escapes field boundary spaces, quotes, and backslashes', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{'path': '  /a b"c\\d  '},
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(
+        context.entries.single.value,
+        r'\u{0020}\u{0020}/a b\"c\\d\u{0020}\u{0020}',
+      );
+    });
+
+    test('enforces escaped output budget atomically at exact and plus one', () {
+      final limits = PermissionDisplayContextLimits(maxUtf8Bytes: 9);
+      final exact = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: const <String, Object?>{'path': 'a\x00'}),
+        limits: limits,
+      );
+      final overflow = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: const <String, Object?>{'path': 'a\x00b'}),
+        limits: limits,
+      );
+
+      expect(exact.isComplete, isTrue);
+      expect(exact.entries.single.value, r'a\u{0000}');
+      expect(overflow.isComplete, isFalse);
+      expect(overflow.entries, isEmpty);
+      expect(overflow.warning, PermissionDisplayContext.incompleteWarning);
     });
 
     test('returns no partial entries for conflicts or malformed fields', () {
@@ -1070,14 +1170,14 @@ void main() {
       () {
         final exact = List<String>.filled(8192, 'é').join();
         final complete = permissionDisplayContextForRequest(
-          _permissionRequest(metadata: <String, Object?>{'command': exact}),
+          _permissionRequest(metadata: <String, Object?>{'path': exact}),
         );
         final incomplete = permissionDisplayContextForRequest(
-          _permissionRequest(metadata: <String, Object?>{'command': '$exact!'}),
+          _permissionRequest(metadata: <String, Object?>{'path': '$exact!'}),
         );
 
         expect(complete.isComplete, isTrue);
-        expect(complete.entries.single.value, jsonEncode(<String>[exact]));
+        expect(complete.entries.single.value, exact);
         expect(incomplete.isComplete, isFalse);
         expect(incomplete.entries, isEmpty);
       },
@@ -1526,4 +1626,20 @@ class _DepthSentinelMap extends MapBase<String, Object?> {
 
   @override
   Object? remove(Object? key) => throw UnsupportedError('');
+}
+
+bool _containsUnsafePermissionDisplayCodeUnit(String value) {
+  for (final codeUnit in value.codeUnits) {
+    if (codeUnit <= 0x1f ||
+        (codeUnit >= 0x7f && codeUnit <= 0x9f) ||
+        (codeUnit >= 0xd800 && codeUnit <= 0xdfff) ||
+        codeUnit == 0x061c ||
+        codeUnit == 0x200e ||
+        codeUnit == 0x200f ||
+        (codeUnit >= 0x2028 && codeUnit <= 0x202e) ||
+        (codeUnit >= 0x2066 && codeUnit <= 0x2069)) {
+      return true;
+    }
+  }
+  return false;
 }
