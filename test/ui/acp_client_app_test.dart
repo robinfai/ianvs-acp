@@ -25,17 +25,50 @@ import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 import '../support/memory_task_repository.dart';
 
 void main() {
+  late TestTaskHarness taskHarness;
+
+  setUp(() async {
+    taskHarness = TestTaskHarness();
+    await taskHarness.initialize();
+  });
+
+  tearDown(() async {
+    await taskHarness.dispose();
+  });
+
+  testWidgets('AcpClientApp uses only the injected task repository', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: const AcpClientConfig(),
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(taskHarness.repository.loadCount, 1);
+    expect(taskHarness.repository.pathsOpened, isEmpty);
+  });
+
   testWidgets('AcpClientApp rejects non-positive task maintenance intervals', (
     tester,
   ) async {
     await tester.pumpWidget(
-      const AcpClientApp(taskInboxMaintenanceInterval: Duration.zero),
+      AcpClientApp(
+        taskInboxController: taskHarness.controller,
+        taskInboxMaintenanceInterval: Duration.zero,
+      ),
     );
     expect(tester.takeException(), isArgumentError);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(
-      const AcpClientApp(taskInboxMaintenanceInterval: Duration(seconds: -1)),
+      AcpClientApp(
+        taskInboxController: taskHarness.controller,
+        taskInboxMaintenanceInterval: const Duration(seconds: -1),
+      ),
     );
     expect(tester.takeException(), isArgumentError);
   });
@@ -73,6 +106,7 @@ void main() {
       AcpClientApp(
         config: const AcpClientConfig(configPath: '/tmp/ianvs-acp.json'),
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         discoverAgentServers: (_) async => const [
           AgentServerConfig(
             name: 'Codex',
@@ -126,6 +160,7 @@ void main() {
             },
           },
         }),
+        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -142,9 +177,10 @@ void main() {
     (tester) async {
       await pumpWithWindowSize(
         tester,
-        const AcpClientApp(
+        AcpClientApp(
           config: AcpClientConfig(),
           autoLoadWorkspaceSessions: false,
+          taskInboxController: taskHarness.controller,
         ),
         const Size(1400, 900),
       );
@@ -218,6 +254,7 @@ void main() {
           },
         }, configPath: '/tmp/ianvs-acp-test-settings.json'),
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         writeConfig: (config) async {
           savedConfig = config;
@@ -278,6 +315,7 @@ void main() {
             },
           },
         }),
+        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -309,6 +347,7 @@ void main() {
             },
           },
         }),
+        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -329,6 +368,7 @@ void main() {
             },
           },
         }),
+        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -346,7 +386,10 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const AcpClientApp(startupError: 'Could not load ACP config: bad json'),
+      AcpClientApp(
+        startupError: 'Could not load ACP config: bad json',
+        taskInboxController: taskHarness.controller,
+      ),
     );
 
     expect(find.textContaining('bad json'), findsOneWidget);
@@ -362,6 +405,7 @@ void main() {
         config: const AcpClientConfig(configPath: '/tmp/broken-settings.json'),
         startupError: 'Could not load ACP config: missing Keychain secret',
         configurationWritable: false,
+        taskInboxController: taskHarness.controller,
         discoverAgentServers: (config) {
           discoveryCalled = true;
           return const <AgentServerConfig>[
@@ -412,6 +456,8 @@ void main() {
       () => source.writeAsString(jsonEncode(snapshot.toJson())),
     );
 
+    // Intentionally omit injection: this verifies the app-owned repository
+    // migrates a legacy file rooted beside a systemTemp config path.
     await pumpWithWindowSize(
       tester,
       AcpClientApp(
@@ -511,6 +557,8 @@ void main() {
         () => source.writeAsString(jsonEncode(snapshot.toJson())),
       );
 
+      // Intentionally omit injection: this verifies app-owned migration and
+      // retention cleanup beside a systemTemp config path.
       await pumpWithWindowSize(
         tester,
         AcpClientApp(
@@ -559,6 +607,8 @@ void main() {
     final source = File('${temp.path}/task_inbox_state.json');
     await tester.runAsync(() => source.writeAsString('{broken'));
 
+    // Intentionally omit injection: this verifies app-owned migration failure
+    // handling beside a systemTemp config path.
     await pumpWithWindowSize(
       tester,
       AcpClientApp(
@@ -916,6 +966,7 @@ void main() {
           key: const ValueKey('foreground-factory-replacement'),
           config: config,
           autoLoadWorkspaceSessions: false,
+          taskInboxController: taskHarness.controller,
           createAgentClient: factory,
           agentClientFactoryKey: factoryKey,
         );
@@ -962,6 +1013,7 @@ void main() {
       key: const ValueKey('secret-only-config-change'),
       config: config,
       autoLoadWorkspaceSessions: false,
+      taskInboxController: taskHarness.controller,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1018,6 +1070,7 @@ void main() {
         key: const ValueKey('inline-reviewer-secret-change'),
         config: value,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: factory,
         agentClientFactoryKey: 'stable-factory',
       );
@@ -1062,6 +1115,7 @@ void main() {
       key: const ValueKey('mutable-secret-change'),
       config: config,
       autoLoadWorkspaceSessions: false,
+      taskInboxController: taskHarness.controller,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1564,6 +1618,8 @@ void main() {
     final configPath = '${temp.path}/settings.json';
     final source = File('${temp.path}/task_inbox_state.json');
     await tester.runAsync(() => source.writeAsString('{broken'));
+    // Intentionally omit injection: this verifies an app-owned repository can
+    // retry migration beside a systemTemp config path.
     AcpClientApp app() => AcpClientApp(
       key: const ValueKey('migration-retry-app'),
       config: AcpClientConfig(configPath: configPath),
@@ -1625,7 +1681,12 @@ void main() {
     await controller.connect();
     expect(fake.connected, isTrue);
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     await tester.pumpWidget(const SizedBox.shrink());
 
     expect(fake.connected, isTrue);
@@ -1638,7 +1699,12 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
@@ -1672,7 +1738,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -1725,7 +1794,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -1750,6 +1822,7 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         controller: controller,
+        taskInboxController: taskHarness.controller,
         initialResumeSessionId: 'session-from-link',
         initialResumeCwd: '/workspace/from-link',
       ),
@@ -1776,6 +1849,7 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           controller: controller,
+          taskInboxController: taskHarness.controller,
           initialResumeSessionId: 'session-from-link',
           initialResumeCwd: '/workspace/from-link',
         ),
@@ -1820,6 +1894,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -1878,6 +1953,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -1920,6 +1996,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -1961,6 +2038,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -1999,6 +2077,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2050,6 +2129,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2086,6 +2166,7 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2247,7 +2328,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2295,7 +2379,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2347,7 +2434,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2410,6 +2500,7 @@ void main() {
       tester,
       AcpClientApp(
         controller: controller,
+        taskInboxController: taskHarness.controller,
         openSessionWindow: (args) async {
           openedArgs = args;
         },
@@ -2452,7 +2543,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2486,7 +2580,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2516,7 +2613,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2542,7 +2642,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2596,7 +2699,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2651,7 +2757,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(1400, 900),
     );
 
@@ -2704,7 +2813,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     final promptField = find.descendant(
       of: find.byKey(const Key('prompt-input-surface')),
       matching: find.byType(TextField),
@@ -2773,7 +2887,10 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
       const Size(390, 844),
     );
 
@@ -2794,7 +2911,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
 
     expect(controller.canListSessions, isFalse);
     expect(controller.canResumeSessions, isFalse);
@@ -2813,7 +2935,12 @@ void main() {
       addTearDown(controller.dispose);
       await controller.connect();
 
-      await tester.pumpWidget(AcpClientApp(controller: controller));
+      await tester.pumpWidget(
+        AcpClientApp(
+          controller: controller,
+          taskInboxController: taskHarness.controller,
+        ),
+      );
 
       expect(controller.canListSessions, isTrue);
       expect(controller.canResumeSessions, isFalse);
@@ -2832,7 +2959,12 @@ void main() {
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
 
-      await tester.pumpWidget(AcpClientApp(controller: controller));
+      await tester.pumpWidget(
+        AcpClientApp(
+          controller: controller,
+          taskInboxController: taskHarness.controller,
+        ),
+      );
 
       expect(controller.canResumeSessions, isTrue);
 
@@ -2860,7 +2992,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
@@ -2879,7 +3016,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
@@ -2922,6 +3064,7 @@ void main() {
             },
           },
         }),
+        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -2943,7 +3086,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
 
     expect(
       controller.toolCallExecutionPolicy,
@@ -2983,7 +3131,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.newSession();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     expect(find.text('GPT-5'), findsOneWidget);
 
     await tester.tap(find.text('GPT-5'));
@@ -3026,7 +3179,12 @@ void main() {
     addTearDown(controller.dispose);
     await controller.newSession();
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     expect(find.text('Medium'), findsOneWidget);
 
     await tester.tap(find.text('Medium'));
@@ -3046,7 +3204,12 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
-    await tester.pumpWidget(AcpClientApp(controller: controller));
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
     fake.emitPermissionRequest(
       AcpPermissionRequest(
         id: 'permission-1',
@@ -3096,6 +3259,7 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           config: config,
+          taskInboxController: taskHarness.controller,
           workspaceStateStore: store,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (_) =>

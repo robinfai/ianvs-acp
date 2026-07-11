@@ -1,11 +1,46 @@
 import 'dart:convert';
 
+import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 typedef MemoryRepositoryHook = Future<void> Function(String operation);
+
+/// An in-memory repository that records every persistence operation.
+///
+/// [pathsOpened] deliberately stays empty: unlike a filesystem repository,
+/// this test double has no path-opening API. Tests assert that the app used
+/// this injected repository rather than constructing an implicit disk store.
+class RecordingTaskRepository extends MemoryTaskRepository {
+  RecordingTaskRepository([super.snapshot]) {
+    beforeOperation = (operation) async {
+      operations.add(operation);
+    };
+  }
+
+  final List<String> operations = <String>[];
+  final List<String> pathsOpened = <String>[];
+}
+
+class TestTaskHarness {
+  TestTaskHarness({RecordingTaskRepository? repository})
+    : repository = repository ?? RecordingTaskRepository();
+
+  final RecordingTaskRepository repository;
+
+  late final TaskInboxController controller = TaskInboxController(
+    repository: repository,
+  );
+
+  Future<void> initialize() => controller.load();
+
+  Future<void> dispose() async {
+    controller.dispose();
+    await repository.close();
+  }
+}
 
 class MemoryTaskRepository
     implements

@@ -169,7 +169,7 @@ Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
 
 ```sh
 flutter analyze
-flutter test
+./tool/flutter_test_isolated.sh
 flutter build macos --release
 ```
 
