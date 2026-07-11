@@ -18,6 +18,12 @@ EgressPolicyMatch? egressPolicyMatchForPermission(
 ) {
   final invocation = _commandFromPermissionRequest(request);
   if (invocation != null) {
+    if (invocation.ambiguous) {
+      return const EgressPolicyMatch(
+        reason: 'ambiguous_command_metadata',
+        commandLine: '<redacted>',
+      );
+    }
     return egressSensitiveCommandMatch(
       invocation.command,
       args: invocation.args,
@@ -300,6 +306,12 @@ EgressPolicyMatch? _classifySegment(
         commandLine: display,
       );
     }
+    if (executable == 'curl' && args.any(_isCurlExpandOption)) {
+      return EgressPolicyMatch(
+        reason: 'unresolved_transfer_expansion',
+        commandLine: display,
+      );
+    }
     if (executable == 'curl') {
       final rewrite = _curlEndpointRewriteDisposition(args);
       if (rewrite == _EndpointRewriteDisposition.external ||
@@ -369,7 +381,12 @@ const Set<String> _posixShellExecutables = {
   'osh',
 };
 
-const Set<String> _powerShellExecutables = {'pwsh', 'powershell'};
+const Set<String> _powerShellExecutables = {
+  'pwsh',
+  'powershell',
+  'pwsh-preview',
+  'powershell-preview',
+};
 const List<String> _scriptInterpreterRoots = <String>[
   'python',
   'pypy',
@@ -399,6 +416,7 @@ bool _isScriptInterpreterExecutable(String executable) {
   // become interpreter launchers.
   for (final root in _scriptInterpreterRoots) {
     if (!executable.startsWith(root)) continue;
+    if (root == 'r') return executable == root;
     final suffix = executable.substring(root.length);
     if (_scriptInterpreterSuffixPattern.hasMatch(suffix)) return true;
   }
@@ -446,6 +464,7 @@ EgressPolicyMatch _manualMatch(String reason, List<String> tokens) {
 String? commandLineFromPermissionRequest(AcpPermissionRequest request) {
   final invocation = _commandFromPermissionRequest(request);
   if (invocation == null) return null;
+  if (invocation.ambiguous) return '<redacted>';
   return _commandLine(invocation.command, invocation.args);
 }
 
@@ -454,6 +473,9 @@ Map<String, Object?> redactedPermissionMetadataForAudit(
 ) {
   final invocation = _commandFromPermissionRequest(request);
   if (invocation == null) return const <String, Object?>{};
+  if (invocation.ambiguous) {
+    return const <String, Object?>{'commandLine': '<redacted>'};
+  }
   final tokenization = _shellWords(invocation.command);
   final tokens = <_ShellToken>[
     ...tokenization.tokens,
@@ -478,6 +500,7 @@ String redactedPermissionRationaleForAudit(AcpPermissionRequest request) {
 String? _permissionCommandDisplayForAudit(AcpPermissionRequest request) {
   final invocation = _commandFromPermissionRequest(request);
   if (invocation == null) return null;
+  if (invocation.ambiguous) return '<redacted>';
   final tokenization = _shellWords(invocation.command);
   return _normalizedDisplay(<String>[
     ..._tokenValues(tokenization.tokens),
@@ -489,65 +512,190 @@ _PermissionCommand? _commandFromPermissionRequest(
   AcpPermissionRequest request,
 ) {
   final metadata = request.metadata;
-  final rawInput = _firstValue(metadata, const [
-    'rawInput',
-    'raw_input',
-    'input',
-    'args',
-    'arguments',
-  ]);
   final nestedToolCall = metadata['toolCall'];
-  final nestedRawInput = nestedToolCall is Map
-      ? _firstValue(nestedToolCall, const [
-          'rawInput',
-          'raw_input',
-          'input',
-          'args',
-          'arguments',
-        ])
-      : null;
-  final commandSource =
-      _decodedJsonObject(rawInput) ??
-      _decodedJsonObject(nestedRawInput) ??
-      metadata;
   final toolCallSource = nestedToolCall is Map ? nestedToolCall : null;
-
-  const commandKeys = <String>[
-    'command',
-    'cmd',
-    'commandLine',
-    'command_line',
-    'shellCommand',
-    'shell_command',
-    'script',
-  ];
-  const argumentKeys = <String>['args', 'argv', 'arguments'];
-  final primaryCommand = _firstString(commandSource, commandKeys);
-  final nestedCommand = _firstString(toolCallSource, commandKeys);
-  final String? command;
-  final List<String> args;
-  if (primaryCommand != null) {
-    command = primaryCommand;
-    args = _firstStringList(commandSource, argumentKeys);
-  } else if (nestedCommand != null) {
-    command = nestedCommand;
-    args = _firstStringList(toolCallSource, argumentKeys);
-  } else {
-    command =
-        _commandLineFromPermissionText(request.title) ??
-        _commandLineFromPermissionText(request.rationale);
-    args = const <String>[];
+  final primary = _resolvePermissionCommandContainer(metadata);
+  final nested = _resolvePermissionCommandContainer(toolCallSource);
+  if (primary.ambiguous || nested.ambiguous) {
+    if (_isCommandPermissionRequest(request, metadata, toolCallSource)) {
+      return const _PermissionCommand.ambiguous();
+    }
+    return null;
   }
+  if (primary.command != null && nested.command != null) {
+    if (primary.command != nested.command ||
+        primary.hasArgs != nested.hasArgs ||
+        !_sameStringList(primary.args, nested.args)) {
+      return const _PermissionCommand.ambiguous();
+    }
+    return _PermissionCommand(primary.command!, primary.args);
+  }
+  final resolved = primary.command != null ? primary : nested;
+  if (resolved.command != null) {
+    return _PermissionCommand(resolved.command!, resolved.args);
+  }
+  final textCommand =
+      _commandLineFromPermissionText(request.title) ??
+      _commandLineFromPermissionText(request.rationale);
+  return textCommand == null ? null : _PermissionCommand(textCommand, const []);
+}
 
-  if (command == null || command.trim().isEmpty) return null;
-  return _PermissionCommand(command.trim(), args);
+bool _isCommandPermissionRequest(
+  AcpPermissionRequest request,
+  Map metadata,
+  Map? toolCall,
+) {
+  final kind = request.toolKind?.trim().toLowerCase();
+  final tool = request.toolName.trim().toLowerCase();
+  if (const {'execute', 'command', 'terminal', 'shell'}.contains(kind) ||
+      const {
+        'execute',
+        'command',
+        'terminal',
+        'shell',
+        'bash',
+      }.contains(tool)) {
+    return true;
+  }
+  return <Map>[metadata, ?toolCall].any(
+    (source) => <String>[
+      ..._permissionCommandKeys,
+      ..._permissionArgumentKeys,
+    ].any(source.containsKey),
+  );
 }
 
 class _PermissionCommand {
-  const _PermissionCommand(this.command, this.args);
+  const _PermissionCommand(this.command, this.args) : ambiguous = false;
+
+  const _PermissionCommand.ambiguous()
+    : command = '<redacted>',
+      args = const <String>[],
+      ambiguous = true;
 
   final String command;
   final List<String> args;
+  final bool ambiguous;
+}
+
+const List<String> _permissionCommandKeys = <String>[
+  'command',
+  'cmd',
+  'commandLine',
+  'command_line',
+  'shellCommand',
+  'shell_command',
+  'script',
+];
+const List<String> _permissionArgumentKeys = <String>[
+  'args',
+  'argv',
+  'arguments',
+];
+const List<String> _permissionRawInputKeys = <String>[
+  'rawInput',
+  'raw_input',
+  'input',
+];
+
+class _PermissionCommandContainer {
+  const _PermissionCommandContainer({
+    required this.command,
+    required this.args,
+    required this.hasArgs,
+    required this.ambiguous,
+  });
+
+  final String? command;
+  final List<String> args;
+  final bool hasArgs;
+  final bool ambiguous;
+}
+
+_PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
+  if (source == null) {
+    return const _PermissionCommandContainer(
+      command: null,
+      args: <String>[],
+      hasArgs: false,
+      ambiguous: false,
+    );
+  }
+  final sources = <Map>[source];
+  var malformed = false;
+  for (final key in <String>[
+    ..._permissionRawInputKeys,
+    ..._permissionArgumentKeys,
+  ]) {
+    if (!source.containsKey(key)) continue;
+    final value = source[key];
+    final isArgumentList =
+        _permissionArgumentKeys.contains(key) && value is List;
+    if (isArgumentList) continue;
+    if (value == null) {
+      malformed = true;
+      continue;
+    }
+    final decoded = _decodedJsonObject(value);
+    if (decoded == null) {
+      if (_permissionRawInputKeys.contains(key) ||
+          _permissionArgumentKeys.contains(key)) {
+        malformed = true;
+      }
+      continue;
+    }
+    sources.add(decoded);
+  }
+
+  final commands = <String>[];
+  final argumentLists = <List<String>>[];
+  for (final candidate in sources) {
+    for (final key in _permissionCommandKeys) {
+      if (!candidate.containsKey(key)) continue;
+      final value = candidate[key];
+      if (value is! String || value.trim().isEmpty) {
+        malformed = true;
+        continue;
+      }
+      final command = value.trim();
+      if (!commands.contains(command)) commands.add(command);
+    }
+    for (final key in _permissionArgumentKeys) {
+      if (!candidate.containsKey(key)) continue;
+      final value = candidate[key];
+      if (identical(candidate, source) && value is! List) continue;
+      if (value is! List || value.any((item) => item is! String)) {
+        malformed = true;
+        continue;
+      }
+      final args = value.cast<String>().toList(growable: false);
+      if (!argumentLists.any((existing) => _sameStringList(existing, args))) {
+        argumentLists.add(args);
+      }
+    }
+  }
+
+  final hasArgs = argumentLists.isNotEmpty;
+  final command = commands.length == 1 ? commands.single : null;
+  final ambiguous =
+      malformed ||
+      commands.length > 1 ||
+      argumentLists.length > 1 ||
+      (command == null && hasArgs);
+  return _PermissionCommandContainer(
+    command: command,
+    args: argumentLists.length == 1 ? argumentLists.single : const <String>[],
+    hasArgs: hasArgs,
+    ambiguous: ambiguous,
+  );
+}
+
+bool _sameStringList(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }
 
 const Set<String> _egressExecutables = {
@@ -781,7 +929,7 @@ String _normalizedDisplayFlat(List<String> tokens) {
       redactNext = false;
       continue;
     }
-    if (_sensitiveDetachedOptions.contains(token)) {
+    if (_isSensitiveDetachedOption(token)) {
       displayed.add(token);
       redactNext = true;
       continue;
@@ -842,7 +990,19 @@ const Set<String> _sensitiveDetachedOptions = {
   '--post-file',
   '--body-data',
   '--body-file',
+  '--variable',
 };
+
+bool _isSensitiveDetachedOption(String option) {
+  if (option.contains('=')) return false;
+  return _sensitiveDetachedOptions.contains(option) ||
+      _isCurlExpandOption(option);
+}
+
+bool _isCurlExpandOption(String option) {
+  final name = option.split('=').first;
+  return name.startsWith('--expand-') && name.length > '--expand-'.length;
+}
 
 const Set<String> _sensitiveShortOptions = {
   '-u',
@@ -859,7 +1019,7 @@ String? _redactedSensitiveAttachedOption(String token) {
     final equalsIndex = token.indexOf('=');
     if (equalsIndex > 2) {
       final name = token.substring(0, equalsIndex);
-      if (_sensitiveDetachedOptions.contains(name)) {
+      if (_isSensitiveDetachedOption(name)) {
         return '$name=<redacted>';
       }
     }
@@ -1593,14 +1753,6 @@ class _ShellTokenBuilder {
       _ShellToken(_value.toString(), _expansionAllowed, _fieldSplittingAllowed);
 }
 
-Object? _firstValue(Map? map, List<String> keys) {
-  if (map == null) return null;
-  for (final key in keys) {
-    if (map.containsKey(key)) return map[key];
-  }
-  return null;
-}
-
 Map<String, Object?>? _decodedJsonObject(Object? value) {
   if (value is Map<String, Object?>) return value;
   if (value is Map) {
@@ -1616,29 +1768,6 @@ Map<String, Object?>? _decodedJsonObject(Object? value) {
     return null;
   }
   return null;
-}
-
-String? _firstString(Map? map, List<String> keys) {
-  if (map == null) return null;
-  for (final key in keys) {
-    final value = map[key];
-    if (value is String && value.trim().isNotEmpty) return value.trim();
-  }
-  return null;
-}
-
-List<String> _firstStringList(Map? map, List<String> keys) {
-  if (map == null) return const <String>[];
-  for (final key in keys) {
-    final values = _stringList(map[key]);
-    if (values.isNotEmpty) return values;
-  }
-  return const <String>[];
-}
-
-List<String> _stringList(Object? value) {
-  if (value is! List) return const <String>[];
-  return value.whereType<String>().toList(growable: false);
 }
 
 String? _commandLineFromPermissionText(String text) {
