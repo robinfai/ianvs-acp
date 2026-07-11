@@ -53,6 +53,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> sendDeepLink(WidgetTester tester, String link) async {
+    const channel = MethodChannel('ianvs_acp/deep_links');
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        MethodCall('openDeepLink', link),
+      ),
+      null,
+    );
+  }
+
   testWidgets('AcpClientApp prompts to add discovered agents on startup', (
     tester,
   ) async {
@@ -1785,62 +1796,319 @@ void main() {
     },
   );
 
-  testWidgets(
-    'AcpClientApp acknowledges runtime session deep links before resume finishes',
-    (tester) async {
-      const deepLinkChannel = MethodChannel('ianvs_acp/deep_links');
-      final fake = FakeAgentClient(
-        resumeDelay: const Duration(milliseconds: 50),
+  testWidgets('AcpClientApp confirms runtime session links before resuming', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/runtime')..createSync();
+    final fake = _CountingResumeAgentClient(
+      resumeDelay: const Duration(milliseconds: 50),
+    );
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    var platformMessageReplied = false;
+    final replyFuture = sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=session-runtime&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+    ).then((_) => platformMessageReplied = true);
+    await tester.pump();
+
+    expect(platformMessageReplied, isTrue);
+    await replyFuture;
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open external session?'), findsOneWidget);
+    expect(find.text('session-runtime'), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
+    expect(find.text(workspace.resolveSymbolicLinksSync()), findsOneWidget);
+    expect(fake.lastResumeCwd, isNull);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pump();
+
+    expect(find.text('Loading session'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastResumeCwd, workspace.resolveSymbolicLinksSync());
+    expect(find.text('Loading session'), findsNothing);
+
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=session-runtime&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsNothing);
+    expect(fake.resumeCalls, 1);
+  });
+
+  testWidgets('AcpClientApp disables confirmation for a dangerous workspace', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=session-root&cwd=%2F&agent=Codex',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open external session?'), findsOneWidget);
+    expect(find.text('Workspace is too broad.'), findsOneWidget);
+    final confirm = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Open Session'),
+    );
+    expect(confirm.onPressed, isNull);
+    expect(fake.lastResumeCwd, isNull);
+  });
+
+  testWidgets('AcpClientApp revalidates the workspace after confirmation', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final workspace = Directory('${temp.path}/removed')..createSync();
+    final fake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final link =
+        'ianvs-acp://session?id=session-removed&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    workspace.deleteSync();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastResumeCwd, isNull);
+    expect(find.textContaining('Workspace does not exist.'), findsOneWidget);
+
+    workspace.createSync();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp allows a cancelled link to be requested again', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/retry')..createSync();
+    final fake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final link =
+        'ianvs-acp://session?id=session-retry&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await sendDeepLink(tester, link);
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(fake.lastResumeCwd, isNull);
+
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+    expect(find.text('session-retry'), findsOneWidget);
+  });
+
+  testWidgets('AcpClientApp serializes distinct session confirmations', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final first = Directory('${temp.path}/first')..createSync();
+    final second = Directory('${temp.path}/second')..createSync();
+    final fake = _CountingResumeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await Future.wait([
+      sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=session-first&cwd=${Uri.encodeQueryComponent(first.path)}&agent=Codex',
+      ),
+      sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=session-second&cwd=${Uri.encodeQueryComponent(second.path)}&agent=Codex',
+      ),
+    ]);
+    await tester.pumpAndSettle();
+
+    expect(find.text('session-first'), findsOneWidget);
+    expect(find.text('session-second'), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('session-second'), findsOneWidget);
+    expect(fake.resumeCalls, 1);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.resumeCalls, 2);
+    expect(fake.lastResumeCwd, second.resolveSymbolicLinksSync());
+  });
+
+  testWidgets('AcpClientApp does not resume a link after app disposal', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/dispose')..createSync();
+    final fake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=session-dispose&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+
+    expect(fake.lastResumeCwd, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('AcpClientApp bounds the external session confirmation queue', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/bounded')..createSync();
+    final fake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var index = 1; index <= 9; index += 1) {
+      await sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=session-$index&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
       );
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-        },
-      });
-      tester.view.physicalSize = const Size(1400, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
+    }
+    await tester.pumpAndSettle();
 
-      await tester.pumpWidget(
-        AcpClientApp(
-          config: config,
-          autoLoadWorkspaceSessions: false,
-          createAgentClient: (_) => fake,
-        ),
-      );
+    for (var index = 1; index <= 8; index += 1) {
+      expect(find.text('session-$index'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       await tester.pumpAndSettle();
+    }
 
-      var platformMessageReplied = false;
-      final replyFuture = tester.binding.defaultBinaryMessenger
-          .handlePlatformMessage(
-            deepLinkChannel.name,
-            const StandardMethodCodec().encodeMethodCall(
-              const MethodCall(
-                'openDeepLink',
-                'ianvs-acp://session?id=session-runtime&cwd=/workspace/runtime',
-              ),
-            ),
-            null,
-          )
-          .then((_) => platformMessageReplied = true);
-      await tester.pump();
-
-      expect(platformMessageReplied, isTrue);
-      await replyFuture;
-      await tester.pump();
-
-      expect(find.text('Loading session'), findsOneWidget);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.pumpAndSettle();
-
-      expect(fake.lastResumeCwd, '/workspace/runtime');
-      expect(find.text('Loading session'), findsNothing);
-    },
-  );
+    expect(find.text('Open external session?'), findsNothing);
+    expect(find.text('session-9'), findsNothing);
+    expect(fake.lastResumeCwd, isNull);
+  });
 
   testWidgets('AcpClientApp opens task review deep links in the Inbox', (
     tester,
@@ -1901,6 +2169,72 @@ void main() {
       find.byKey(const Key('task-mark-done-locally-button')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('AcpClientApp does not retain unique task deep links', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/session')..createSync();
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: DateTime(2026, 7, 11, 9),
+          tasks: [
+            for (final index in [0, 99])
+              TaskRecord(
+                id: 'task-$index',
+                title: 'Task $index',
+                description: '',
+                workspacePath: '/workspace/app',
+                agentName: 'Codex',
+                status: index == 0
+                    ? TaskStatus.needsHumanReview
+                    : TaskStatus.queued,
+                priority: TaskPriority.normal,
+                createdAt: DateTime(2026, 7, 11, 8),
+                updatedAt: DateTime(2026, 7, 11, 9),
+              ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        taskInboxController: taskController,
+        autoLoadWorkspaceSessions: false,
+      ),
+      const Size(1400, 900),
+    );
+
+    for (var index = 0; index < 100; index += 1) {
+      await sendDeepLink(tester, 'ianvs-acp://task?id=task-$index');
+    }
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('task-mark-done-locally-button')),
+      findsNothing,
+    );
+
+    await sendDeepLink(tester, 'ianvs-acp://task?id=task-0');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('task-mark-done-locally-button')),
+      findsOneWidget,
+    );
+
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=session-after-tasks&cwd=${Uri.encodeQueryComponent(workspace.path)}',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+    expect(find.text('session-after-tasks'), findsOneWidget);
   });
 
   testWidgets('AcpClientApp opens workspace worktree dialog from sidebar', (
@@ -2790,6 +3124,26 @@ Future<void> _pumpUntil(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
     );
     await tester.pump();
+  }
+}
+
+class _CountingResumeAgentClient extends FakeAgentClient {
+  _CountingResumeAgentClient({super.resumeDelay});
+
+  int resumeCalls = 0;
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    resumeCalls += 1;
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
   }
 }
 

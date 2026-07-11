@@ -134,6 +134,32 @@ final class KeychainSecretStore {
   }
 }
 
+final class PendingDeepLinkBuffer {
+  static let maxCount = 8
+  static let maxUTF16Length = 8 * 1024
+
+  private var values: [String] = []
+
+  static func accepts(_ value: String) -> Bool {
+    return !value.isEmpty && value.utf16.count <= maxUTF16Length
+  }
+
+  @discardableResult
+  func append(_ value: String) -> Bool {
+    guard Self.accepts(value), values.count < Self.maxCount else {
+      return false
+    }
+    values.append(value)
+    return true
+  }
+
+  func drain() -> [String] {
+    let result = values
+    values.removeAll(keepingCapacity: true)
+    return result
+  }
+}
+
 @main
 class AppDelegate: FlutterAppDelegate {
   private let deepLinkChannelName = "ianvs_acp/deep_links"
@@ -141,7 +167,7 @@ class AppDelegate: FlutterAppDelegate {
   private let keychainStore = KeychainSecretStore()
   private var deepLinkChannel: FlutterMethodChannel?
   private var keychainChannel: FlutterMethodChannel?
-  private var pendingDeepLinks: [String] = []
+  private let pendingDeepLinks = PendingDeepLinkBuffer()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate does not safely implement this optional callback on
@@ -181,9 +207,7 @@ class AppDelegate: FlutterAppDelegate {
         result(FlutterMethodNotImplemented)
         return
       }
-      let links = self?.pendingDeepLinks ?? []
-      self?.pendingDeepLinks.removeAll()
-      result(links)
+      result(self?.pendingDeepLinks.drain() ?? [])
     }
     deepLinkChannel = channel
   }
@@ -295,6 +319,9 @@ class AppDelegate: FlutterAppDelegate {
     }
 
     let value = url.absoluteString
+    guard PendingDeepLinkBuffer.accepts(value) else {
+      return
+    }
     if let channel = deepLinkChannel {
       channel.invokeMethod("openDeepLink", arguments: value)
     } else {

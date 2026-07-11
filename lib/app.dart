@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -19,6 +20,7 @@ import 'config/acp_config_store.dart';
 import 'config/macos_keychain_secret_store.dart';
 import 'config/secret_store.dart';
 import 'platform/file_manager.dart';
+import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
 import 'tasks/task_agent_pool.dart';
@@ -33,6 +35,7 @@ import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
 import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
+import 'ui/components/deep_link_confirmation_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
 import 'ui/shell/app_shell.dart';
@@ -54,6 +57,13 @@ typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
 
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
+
+class _PendingDeepLinkRequest {
+  const _PendingDeepLinkRequest({required this.key, required this.request});
+
+  final String key;
+  final DeepLinkRequest request;
+}
 
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
@@ -124,6 +134,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   static const MethodChannel _deepLinkChannel = MethodChannel(
     'ianvs_acp/deep_links',
   );
+  static const int _maxDeepLinkConfirmations = 8;
 
   late AcpClientConfig _config;
   late String _widgetConfigSignature;
@@ -135,6 +146,9 @@ class _AcpClientAppState extends State<AcpClientApp>
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
   final Set<String> _handledDeepLinks = <String>{};
+  final Queue<_PendingDeepLinkRequest> _pendingDeepLinkRequests =
+      Queue<_PendingDeepLinkRequest>();
+  bool _deepLinkConfirmationActive = false;
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
@@ -855,17 +869,94 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   Future<void> _handleDeepLink(String rawLink) async {
     final normalizedLink = rawLink.trim();
-    if (normalizedLink.isEmpty || !_handledDeepLinks.add(normalizedLink)) {
+    if (normalizedLink.isEmpty) return;
+    final request = StartupOptions.fromDeepLink(normalizedLink);
+    if (request == null) return;
+    if (!request.requiresConfirmation) {
+      if (request.taskId != null) {
+        _openTaskFromStartupOptions(StartupOptions(taskId: request.taskId));
+      }
       return;
     }
-    final options = StartupOptions.fromDeepLink(normalizedLink);
-    if (options == null) return;
-    if (options.hasResumeSession) {
-      await _resumeFromStartupOptions(options);
+
+    final key = _deepLinkRequestKey(request);
+    if (!_handledDeepLinks.add(key)) return;
+
+    final confirmationCount =
+        _pendingDeepLinkRequests.length + (_deepLinkConfirmationActive ? 1 : 0);
+    if (confirmationCount >= _maxDeepLinkConfirmations) {
+      _handledDeepLinks.remove(key);
       return;
     }
-    if (options.hasTaskLink) {
-      _openTaskFromStartupOptions(options);
+    _pendingDeepLinkRequests.add(
+      _PendingDeepLinkRequest(key: key, request: request),
+    );
+    unawaited(_drainDeepLinkConfirmationQueue());
+  }
+
+  String _deepLinkRequestKey(DeepLinkRequest request) {
+    return jsonEncode(
+      switch (request.kind) {
+        DeepLinkRequestKind.session => <String?>[
+          'session',
+          request.sessionId,
+          request.cwd,
+          request.agentName,
+        ],
+        DeepLinkRequestKind.task => <String?>['task', request.taskId],
+      },
+    );
+  }
+
+  Future<void> _drainDeepLinkConfirmationQueue() async {
+    if (_deepLinkConfirmationActive || !mounted) return;
+    if (_navigatorKey.currentContext == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_drainDeepLinkConfirmationQueue());
+      });
+      return;
+    }
+
+    _deepLinkConfirmationActive = true;
+    try {
+      while (mounted && _pendingDeepLinkRequests.isNotEmpty) {
+        final dialogContext = _navigatorKey.currentContext;
+        if (dialogContext == null) return;
+        if (!dialogContext.mounted) return;
+        final pending = _pendingDeepLinkRequests.removeFirst();
+        final confirmed = await showDialog<bool>(
+          context: dialogContext,
+          barrierDismissible: false,
+          builder: (_) => DeepLinkConfirmationDialog(request: pending.request),
+        );
+        if (!mounted) return;
+        if (confirmed != true) {
+          _handledDeepLinks.remove(pending.key);
+          continue;
+        }
+        final request = pending.request;
+        final workspace = validateDeepLinkWorkspace(request.cwd);
+        if (workspace.errors.isNotEmpty) {
+          _handledDeepLinks.remove(pending.key);
+          _showSnackBar(
+            'Could not open external session: ${workspace.errors.join(' ')}',
+          );
+          continue;
+        }
+        try {
+          await _resumeFromStartupOptions(
+            StartupOptions(
+              resumeSessionId: request.sessionId,
+              resumeCwd: workspace.path,
+              resumeAgentName: request.agentName,
+            ),
+          );
+        } on Object catch (error) {
+          if (mounted) _showSnackBar('Could not open external session: $error');
+        }
+      }
+    } finally {
+      _deepLinkConfirmationActive = false;
     }
   }
 

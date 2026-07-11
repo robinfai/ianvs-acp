@@ -162,6 +162,27 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue((response as AnyObject?) === FlutterMethodNotImplemented)
   }
 
+  func testPendingDeepLinkBufferBoundsCountAndLength() {
+    let buffer = PendingDeepLinkBuffer()
+
+    for index in 0..<PendingDeepLinkBuffer.maxCount {
+      XCTAssertTrue(buffer.append("ianvs-acp://session?id=\(index)"))
+    }
+    XCTAssertFalse(buffer.append("ianvs-acp://session?id=overflow"))
+
+    let firstBatch = buffer.drain()
+    XCTAssertEqual(firstBatch.count, PendingDeepLinkBuffer.maxCount)
+    XCTAssertTrue(buffer.drain().isEmpty)
+
+    let oversized = String(
+      repeating: "x",
+      count: PendingDeepLinkBuffer.maxUTF16Length + 1
+    )
+    XCTAssertFalse(PendingDeepLinkBuffer.accepts(oversized))
+    XCTAssertFalse(buffer.append(oversized))
+    XCTAssertTrue(buffer.drain().isEmpty)
+  }
+
   private func account(from reference: String) throws -> String {
     let prefix = "keychain://ianvs-acp/"
     guard reference.hasPrefix(prefix) else {
