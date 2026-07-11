@@ -116,13 +116,13 @@ class StdioTransport implements AcpTransport {
       maxStderrLineBytes: maxStderrLineBytes,
     );
 
-    // Any process exit ends the protocol stream and all pending requests.
+    // stdout EOF owns protocol closure because exitCode may complete before
+    // stdout has reported all buffered output.
     unawaited(
       _exitCodeFuture!.then((code) {
         if (code != 0) {
           logger.warning('Agent process exited with code $code');
         }
-        return _channel?.closeInbound();
       }),
     );
   }

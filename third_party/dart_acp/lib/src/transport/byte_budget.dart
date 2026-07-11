@@ -52,6 +52,16 @@ class TransportProtocolDecodeError extends Error {
   }
 }
 
+/// Payload-free error raised when a transport write fails.
+class TransportWriteError extends Error {
+  TransportWriteError({required this.resource});
+
+  final String resource;
+
+  @override
+  String toString() => 'TransportWriteError(resource: $resource)';
+}
+
 /// Payload-free error raised when a one-shot transport body stops making
 /// progress before it completes.
 class TransportBodyReadTimeout extends Error {

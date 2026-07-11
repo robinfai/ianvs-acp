@@ -63,6 +63,95 @@ void main() {
   });
 
   test(
+    'StdioTransport reports direct-EOF invalid UTF-8 exactly once',
+    () async {
+      final transport = acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/sh',
+        args: const <String>[
+          '-c',
+          "sleep 0.2; (sleep 0.2; printf '\\377') & exit 0",
+        ],
+      );
+      final lines = <String>[];
+      final errors = <Object>[];
+      final done = Completer<void>();
+
+      try {
+        await transport.start();
+        final subscription = transport.channel.stream.listen(
+          lines.add,
+          onError: errors.add,
+          onDone: done.complete,
+        );
+        addTearDown(subscription.cancel);
+        await done.future.timeout(const Duration(seconds: 3));
+
+        expect(lines, isEmpty);
+        expect(errors, hasLength(1));
+        expect(
+          errors.single,
+          isA<acp.TransportProtocolDecodeError>().having(
+            (error) => error.resource,
+            'resource',
+            'stdio stdout line',
+          ),
+        );
+      } finally {
+        await transport.stop();
+      }
+    },
+  );
+
+  test('StdioTransport preserves a valid final line without newline', () async {
+    final transport = acp.StdioTransport(
+      logger: acp.AcpConfig().logger,
+      command: '/bin/sh',
+      args: const <String>[
+        '-c',
+        "sleep 0.2; (sleep 0.2; printf 'last') & exit 0",
+      ],
+    );
+
+    try {
+      await transport.start();
+      final lines = await transport.channel.stream.toList().timeout(
+        const Duration(seconds: 3),
+      );
+
+      expect(lines, hasLength(1));
+      expect(lines.single, 'last');
+    } finally {
+      await transport.stop();
+    }
+  });
+
+  test(
+    'StdioTransport stop completes without a listener after stdin fails',
+    () async {
+      final outboundAttempted = Completer<void>();
+      final transport = acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/sh',
+        args: const <String>['-c', 'exec 0<&-; sleep 5'],
+        onProtocolOut: (_) {
+          if (!outboundAttempted.isCompleted) outboundAttempted.complete();
+        },
+      );
+
+      try {
+        await transport.start();
+        transport.channel.sink.add('secret outbound payload');
+        await outboundAttempted.future.timeout(const Duration(seconds: 1));
+
+        await transport.stop().timeout(const Duration(seconds: 1));
+      } finally {
+        await transport.stop().timeout(const Duration(seconds: 2));
+      }
+    },
+  );
+
+  test(
     'StdioTransport stop completes with paused inbound and flushes queued writes',
     () async {
       final outboundLines = <String>[];

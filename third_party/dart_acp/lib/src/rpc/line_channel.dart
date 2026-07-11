@@ -169,8 +169,13 @@ class LineJsonChannel {
           process.stdin.add(<int>[...bytes, 0x0a]);
           await process.stdin.flush();
         })
-        .catchError((Object error, StackTrace stackTrace) async {
-          await closeInbound(error, stackTrace);
+        .catchError((Object _, StackTrace stackTrace) {
+          unawaited(
+            closeInbound(
+              TransportWriteError(resource: 'stdio stdin write'),
+              stackTrace,
+            ).catchError((Object _) {}),
+          );
         });
   }
 
@@ -222,6 +227,7 @@ class LineJsonChannel {
 
   Future<void> _dispose() async {
     _stdoutFailed = true;
+    await Future<void>.delayed(Duration.zero);
     unawaited(closeInbound().catchError((Object _) {}));
     await _outboundSub.cancel();
     await _stdoutSub.cancel();
