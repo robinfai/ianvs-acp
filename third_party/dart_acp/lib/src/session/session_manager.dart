@@ -930,8 +930,7 @@ class SessionManager {
     final sessionId = _sessionIdFromMap(json);
     final update = json['update'] as Map<String, dynamic>?;
     if (sessionId == null || update == null) return;
-    // Ensure structures exist so we don't drop early updates (e.g., commands
-    // emitted immediately after session/new).
+    if (!_sessionWorkspaceRoots.containsKey(sessionId)) return;
     _sessionStreams.putIfAbsent(
       sessionId,
       StreamController<AcpUpdate>.broadcast,

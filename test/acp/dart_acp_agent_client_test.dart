@@ -2175,6 +2175,78 @@ Future<void> main() async {
   });
 
   test(
+    'session updates drop unknown sessions but accept load-time updates after binding',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final updates = <acp.AcpUpdate>[];
+      final subscription = manager
+          .sessionUpdates('session-route')
+          .listen(updates.add);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/load') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'session-route',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'bound',
+              },
+            },
+          }),
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+
+      try {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'session-route',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'unbound',
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        expect(updates, isEmpty);
+
+        await manager.loadSession(
+          sessionId: 'session-route',
+          workspaceRoot: '/workspace',
+        );
+        await pumpEventQueue();
+
+        expect(
+          updates.whereType<acp.ModeUpdate>().single.currentModeId,
+          'bound',
+        );
+      } finally {
+        await subscription.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
     'fork requires a known or explicit workspace before contacting agent',
     () async {
       final channel = StreamChannelController<String>();
@@ -5490,6 +5562,148 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  for (final scenario
+      in <
+        ({
+          String name,
+          int maxPages,
+          int maxEntries,
+          int maxCursorBytes,
+          String responseMode,
+          AcpSessionListBudgetReason reason,
+        })
+      >[
+        (
+          name: 'rejects a repeated pagination cursor',
+          maxPages: 4,
+          maxEntries: 10,
+          maxCursorBytes: 128,
+          responseMode: 'repeated',
+          reason: AcpSessionListBudgetReason.repeatedCursor,
+        ),
+        (
+          name: 'rejects infinitely many unique pagination cursors',
+          maxPages: 2,
+          maxEntries: 10,
+          maxCursorBytes: 128,
+          responseMode: 'unique',
+          reason: AcpSessionListBudgetReason.pageLimit,
+        ),
+        (
+          name: 'rejects an oversized accumulated session list',
+          maxPages: 4,
+          maxEntries: 1,
+          maxCursorBytes: 128,
+          responseMode: 'entries',
+          reason: AcpSessionListBudgetReason.entryLimit,
+        ),
+        (
+          name: 'measures pagination cursors in UTF-8 bytes',
+          maxPages: 4,
+          maxEntries: 10,
+          maxCursorBytes: 5,
+          responseMode: 'cursor-bytes',
+          reason: AcpSessionListBudgetReason.cursorByteLimit,
+        ),
+      ]) {
+    test('listSessions ${scenario.name}', () async {
+      final error = await _listSessionsBudgetFailure(
+        maxPages: scenario.maxPages,
+        maxEntries: scenario.maxEntries,
+        maxCursorBytes: scenario.maxCursorBytes,
+        responseMode: scenario.responseMode,
+      );
+
+      expect(error, isA<AcpSessionListBudgetException>());
+      final typed = error as AcpSessionListBudgetException;
+      expect(typed.reason, scenario.reason);
+      expect(typed.toString(), isNot(contains('secret-cursor')));
+      expect(typed.toString(), isNot(contains('秘密')));
+    });
+  }
+}
+
+Future<Object> _listSessionsBudgetFailure({
+  required int maxPages,
+  required int maxEntries,
+  required int maxCursorBytes,
+  required String responseMode,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-list-');
+  final agentScript = File('${tempDir.path}/fake_list_budget_agent.dart');
+  final modeLiteral = jsonEncode(responseMode);
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  var page = 0;
+  const mode = $modeLiteral;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'list': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/list') {
+      page += 1;
+      final sessions = mode == 'entries'
+          ? <Map<String, dynamic>>[
+              <String, dynamic>{'sessionId': 'one', 'cwd': '/one'},
+              <String, dynamic>{'sessionId': 'two', 'cwd': '/two'},
+            ]
+          : <Map<String, dynamic>>[
+              <String, dynamic>{'sessionId': 'session-\$page', 'cwd': '/ws'},
+            ];
+      final nextCursor = switch (mode) {
+        'repeated' => 'secret-cursor',
+        'unique' => 'cursor-\$page',
+        'cursor-bytes' => '秘密',
+        _ => null,
+      };
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessions': sessions,
+          if (nextCursor != null) 'nextCursor': nextCursor,
+        },
+      }));
+    }
+  }
+}
+''');
+
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: [agentScript.path],
+    sessionListMaxPages: maxPages,
+    sessionListMaxEntries: maxEntries,
+    sessionListMaxCursorBytes: maxCursorBytes,
+  );
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    try {
+      await client.listSessions().timeout(const Duration(seconds: 5));
+    } catch (error) {
+      return error;
+    }
+    throw StateError('Expected listSessions to reject the response sequence.');
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
 }
 
 Future<Map<String, dynamic>> _capturePromptParamsForAttachment({

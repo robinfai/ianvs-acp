@@ -18,6 +18,30 @@ import 'prompt_attachment.dart';
 import 'streamable_http_acp_transport.dart';
 import 'web_socket_acp_transport.dart';
 
+enum AcpSessionListBudgetReason {
+  repeatedCursor,
+  pageLimit,
+  entryLimit,
+  cursorByteLimit,
+}
+
+class AcpSessionListBudgetException implements Exception {
+  const AcpSessionListBudgetException({
+    required this.reason,
+    required this.limit,
+    required this.observed,
+  });
+
+  final AcpSessionListBudgetReason reason;
+  final int limit;
+  final int observed;
+
+  @override
+  String toString() =>
+      'AcpSessionListBudgetException(reason: ${reason.name}, '
+      'limit: $limit, observed: $observed)';
+}
+
 class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
     String? agentCommand,
@@ -33,6 +57,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.enableFilesystemWriteTextFile = false,
     this.allowFilesystemReadOutsideWorkspace = false,
     this.enableTerminalProvider = false,
+    this.sessionListMaxPages = 100,
+    this.sessionListMaxEntries = 10000,
+    this.sessionListMaxCursorBytes = 8 * 1024,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
@@ -63,6 +90,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     for (final server in this.mcpServers) {
       _validateMcpServerEndpoint(server);
     }
+    if (sessionListMaxPages <= 0 ||
+        sessionListMaxEntries <= 0 ||
+        sessionListMaxCursorBytes <= 0) {
+      throw ArgumentError('Session list budgets must be greater than zero.');
+    }
   }
 
   final String agentCommand;
@@ -78,6 +110,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   final bool enableFilesystemWriteTextFile;
   final bool allowFilesystemReadOutsideWorkspace;
   final bool enableTerminalProvider;
+  final int sessionListMaxPages;
+  final int sessionListMaxEntries;
+  final int sessionListMaxCursorBytes;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -407,8 +442,17 @@ class DartAcpAgentClient implements AcpAgentClient {
     final sessions = <AcpSessionEntry>[];
     final seenCursors = <String>{};
     String? cursor;
+    var pages = 0;
     do {
+      if (pages >= sessionListMaxPages) {
+        throw AcpSessionListBudgetException(
+          reason: AcpSessionListBudgetReason.pageLimit,
+          limit: sessionListMaxPages,
+          observed: pages + 1,
+        );
+      }
       final result = await client.listSessions(cursor: cursor);
+      pages += 1;
       sessions.addAll(
         result.sessions.map((session) {
           return AcpSessionEntry(
@@ -423,9 +467,31 @@ class DartAcpAgentClient implements AcpAgentClient {
           );
         }),
       );
+      if (sessions.length > sessionListMaxEntries) {
+        throw AcpSessionListBudgetException(
+          reason: AcpSessionListBudgetReason.entryLimit,
+          limit: sessionListMaxEntries,
+          observed: sessions.length,
+        );
+      }
 
       final nextCursor = result.nextCursor;
-      if (nextCursor == null || !seenCursors.add(nextCursor)) break;
+      if (nextCursor == null) break;
+      final cursorBytes = utf8.encode(nextCursor).length;
+      if (cursorBytes > sessionListMaxCursorBytes) {
+        throw AcpSessionListBudgetException(
+          reason: AcpSessionListBudgetReason.cursorByteLimit,
+          limit: sessionListMaxCursorBytes,
+          observed: cursorBytes,
+        );
+      }
+      if (!seenCursors.add(nextCursor)) {
+        throw AcpSessionListBudgetException(
+          reason: AcpSessionListBudgetReason.repeatedCursor,
+          limit: sessionListMaxPages,
+          observed: pages,
+        );
+      }
       cursor = nextCursor;
     } while (true);
 
