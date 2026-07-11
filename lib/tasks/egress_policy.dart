@@ -106,8 +106,7 @@ PermissionDisplayContext permissionDisplayContextForRequest(
       if (value is! String || value.trim().isEmpty) {
         return PermissionDisplayContext.incomplete();
       }
-      final normalized = value.trim();
-      if (!values[key]!.contains(normalized)) values[key]!.add(normalized);
+      if (!values[key]!.contains(value)) values[key]!.add(value);
     }
   }
   if (values.values.any((candidates) => candidates.length > 1)) {
@@ -123,11 +122,12 @@ PermissionDisplayContext permissionDisplayContextForRequest(
     if (invocation == null || invocation.ambiguous) {
       return PermissionDisplayContext.incomplete();
     }
-    final commandLine = _commandLine(invocation.command, invocation.args);
-    if (commandLine == null || commandLine == '<redacted>') {
-      return PermissionDisplayContext.incomplete();
-    }
-    entries.add(PermissionDisplayEntry(label: 'Command', value: commandLine));
+    entries.add(
+      PermissionDisplayEntry(
+        label: 'Command',
+        value: jsonEncode(<String>[invocation.command, ...invocation.args]),
+      ),
+    );
   }
 
   for (final field in const <({String key, String label})>[
@@ -238,9 +238,8 @@ class _PermissionDisplayProjectionBuilder {
       if (raw is! String || !_addUtf8(raw, countUtf8: countUtf8)) {
         return _fail();
       }
-      final normalized = raw.trim();
-      if (normalized.isEmpty) return _fail();
-      projected[key] = normalized;
+      if (raw.trim().isEmpty) return _fail();
+      projected[key] = raw;
     }
 
     for (final key in _permissionDisplayContainerKeys) {
@@ -1033,7 +1032,7 @@ _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
         malformed = true;
         continue;
       }
-      final command = value.trim();
+      final command = value;
       if (!commands.contains(command)) commands.add(command);
     }
     for (final key in _permissionArgumentKeys) {

@@ -906,7 +906,7 @@ void main() {
             .map((entry) => (entry.label, entry.value))
             .toList(growable: false),
         const <(String, String)>[
-          ('Command', 'git push origin main'),
+          ('Command', '["git","push","origin","main"]'),
           ('Working directory', '/workspace'),
           ('Path', '/workspace/report.txt'),
           ('Target', 'origin'),
@@ -943,7 +943,7 @@ void main() {
             .map((entry) => (entry.label, entry.value))
             .toList(growable: false),
         const <(String, String)>[
-          ('Command', 'flutter test test/widget_test.dart'),
+          ('Command', '["flutter","test","test/widget_test.dart"]'),
           ('Working directory', '/workspace/app'),
           ('Path', 'test/widget_test.dart'),
           ('Target', 'local'),
@@ -970,6 +970,40 @@ void main() {
         'Command',
         'Working directory',
       ]);
+    });
+
+    test('preserves field whitespace identity atomically', () {
+      final conflict = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'path': '/a',
+            'input': <String, Object?>{'path': '/a '},
+          },
+        ),
+      );
+      final single = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: const <String, Object?>{'path': '/a '}),
+      );
+
+      expect(conflict.isComplete, isFalse);
+      expect(conflict.entries, isEmpty);
+      expect(single.isComplete, isTrue);
+      expect(single.entries.single.value, '/a ');
+    });
+
+    test('preserves command and argument boundary whitespace', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'command': ' git ',
+            'args': <String>['', ' x ', 'plain'],
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries.single.label, 'Command');
+      expect(context.entries.single.value, '[" git ",""," x ","plain"]');
     });
 
     test('returns no partial entries for conflicts or malformed fields', () {
@@ -1043,7 +1077,7 @@ void main() {
         );
 
         expect(complete.isComplete, isTrue);
-        expect(complete.entries.single.value, exact);
+        expect(complete.entries.single.value, jsonEncode(<String>[exact]));
         expect(incomplete.isComplete, isFalse);
         expect(incomplete.entries, isEmpty);
       },
@@ -1111,7 +1145,7 @@ void main() {
         );
 
         expect(context.isComplete, isTrue);
-        expect(context.entries.single.value, 'git status');
+        expect(context.entries.single.value, '["git status"]');
       },
     );
 
@@ -1125,7 +1159,7 @@ void main() {
       );
 
       expect(context.isComplete, isTrue);
-      expect(context.entries.single.value, 'git status');
+      expect(context.entries.single.value, '["git status"]');
     });
 
     test('stops after 16 entries before reading the next recognized value', () {
@@ -1200,9 +1234,9 @@ void main() {
       expect(context.isComplete, isTrue);
       expect(context.entries, hasLength(1));
       expect(context.entries.single.label, 'Command');
-      expect(context.entries.single.value.split(' '), hasLength(126));
-      expect(context.entries.single.value, startsWith('git arg0 '));
-      expect(context.entries.single.value, endsWith(' arg124'));
+      expect(context.entries.single.value, startsWith('["git","arg0",'));
+      expect(context.entries.single.value, endsWith(',"arg124"]'));
+      expect(','.allMatches(context.entries.single.value), hasLength(125));
       expect(args.lengthReads, 1);
       expect(args.itemReads, 125);
     });
