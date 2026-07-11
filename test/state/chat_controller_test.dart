@@ -2649,30 +2649,31 @@ void main() {
       final fake = FakeAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
       controller.setToolCallExecutionPolicy(
         AcpToolCallExecutionPolicy.fullAccess,
       );
 
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-env-egress',
-          title: 'Create terminal',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'terminal',
-          toolKind: 'execute',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 7, 11),
-          metadata: const <String, Object?>{
-            'command': 'curl',
-            'args': [r'$EXFIL_URL'],
-            'envKeys': ['EXFIL_URL'],
-          },
-          transientPolicyContext: const <String, Object?>{
-            'environment': <String, String>{'EXFIL_URL': secret},
-          },
-        ),
+      final request = AcpPermissionRequest(
+        id: 'permission-env-egress',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 11),
+        metadata: const <String, Object?>{
+          'command': 'curl',
+          'args': [r'$EXFIL_URL'],
+          'envKeys': ['EXFIL_URL'],
+        },
+        transientPolicyContext: const <String, Object?>{
+          'environment': <String, String>{'EXFIL_URL': secret},
+        },
       );
+      fake.emitPermissionRequest(request);
       await pumpEventQueue();
 
       expect(controller.pendingPermissionRequest?.id, 'permission-env-egress');
@@ -2682,11 +2683,24 @@ void main() {
         controller.permissionHistory.single.request.transientPolicyContext,
         isEmpty,
       );
+      expect(
+        controller.permissionHistory.single.request.bindingKey,
+        request.bindingKey,
+      );
+      expect(events.single.request.transientPolicyContext, isEmpty);
+      expect(events.single.request.bindingKey, request.bindingKey);
       final historyJson = acpPermissionAuditEntriesToJson(
         controller.permissionHistory,
       );
       expect(historyJson, isNot(contains(secret)));
       expect(historyJson, contains(r'$EXFIL_URL'));
+
+      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      expect(events, hasLength(2));
+      for (final event in events) {
+        expect(event.request.transientPolicyContext, isEmpty);
+        expect(event.request.bindingKey, request.bindingKey);
+      }
     },
   );
 

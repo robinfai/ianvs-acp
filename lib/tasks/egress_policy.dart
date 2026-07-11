@@ -41,7 +41,16 @@ EgressPolicyMatch? egressSensitiveCommandMatch(
   String? cwd,
   Map<String, String> environment = const <String, String>{},
 }) {
-  final commandWords = _shellWords(commandLine);
+  final tokenization = _shellWords(commandLine);
+  if (!tokenization.syntaxComplete) {
+    return _manualMatch(
+      'malformed_shell_syntax',
+      tokenization.tokens.isEmpty
+          ? const <String>['<redacted>']
+          : tokenization.tokens,
+    );
+  }
+  final commandWords = tokenization.tokens;
   final words = args.isEmpty
       ? commandWords
       : <String>[...commandWords, ...args];
@@ -78,6 +87,12 @@ EgressPolicyMatch? _classifySegment(
 
   while (index < tokens.length) {
     final wrapper = _basename(tokens[index]).toLowerCase();
+    if (_uncertainCommandWrappers.contains(wrapper)) {
+      return _manualMatch(
+        'unresolved_wrapper',
+        tokens.skip(index).toList(growable: false),
+      );
+    }
     if (wrapper == 'env') {
       index += 1;
       var optionsEnded = false;
@@ -194,21 +209,17 @@ EgressPolicyMatch? _classifySegment(
   final lowerArgs = args
       .map((arg) => arg.toLowerCase())
       .toList(growable: false);
-  if (lowerArgs.any((arg) => arg.contains('webhook'))) {
-    return EgressPolicyMatch(reason: 'webhook_call', commandLine: display);
-  }
-  if (lowerArgs.any((arg) => arg.contains('upload'))) {
-    return EgressPolicyMatch(reason: 'upload_api', commandLine: display);
-  }
 
   if (executable == 'curl' || executable == 'wget') {
-    if (args.any(_isExternalHttpUrl) || _hasUnclassifiedTransferTarget(args)) {
-      return EgressPolicyMatch(
-        reason: 'external_http_transfer',
-        commandLine: display,
-      );
-    }
-    return null;
+    final externalUrl = _externalHttpTransferUrl(executable, args);
+    if (externalUrl == null) return null;
+    final lowerUrl = externalUrl.toLowerCase();
+    final reason = lowerUrl.contains('webhook')
+        ? 'webhook_call'
+        : lowerUrl.contains('upload')
+        ? 'upload_api'
+        : 'external_http_transfer';
+    return EgressPolicyMatch(reason: reason, commandLine: display);
   }
 
   if (_egressExecutables.contains(executable)) {
@@ -321,6 +332,14 @@ const Set<String> _egressExecutables = {
   'mail',
 };
 
+const Set<String> _uncertainCommandWrappers = {
+  'sudo',
+  'doas',
+  'nice',
+  'timeout',
+  'nohup',
+};
+
 Map<String, String> _transientEnvironment(AcpPermissionRequest request) {
   final raw = request.transientPolicyContext['environment'];
   if (raw is! Map) return const <String, String>{};
@@ -359,7 +378,12 @@ _ResolvedToken _resolveToken(String token, Map<String, String> environment) {
     }
     return value;
   });
+  if (_containsUnsupportedShellExpansion(resolved)) complete = false;
   return _ResolvedToken(resolved, complete);
+}
+
+bool _containsUnsupportedShellExpansion(String value) {
+  return value.contains(r'$') || value.contains('`');
 }
 
 class _ResolvedToken {
@@ -373,7 +397,7 @@ List<List<String>> _commandSegments(List<String> tokens) {
   final result = <List<String>>[];
   var segment = <String>[];
   for (final token in tokens) {
-    if (const {';', '&&', '||', '|'}.contains(token)) {
+    if (const {';', '&', '&&', '||', '|'}.contains(token)) {
       if (segment.isNotEmpty) result.add(segment);
       segment = <String>[];
       continue;
@@ -402,33 +426,133 @@ String _basename(String value) {
   return index == -1 ? normalized : normalized.substring(index + 1);
 }
 
-bool _isExternalHttpUrl(String value) {
-  final uri = Uri.tryParse(value);
-  if (uri == null) return false;
-  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
-  final host = uri.host.toLowerCase();
-  if (host.isEmpty) return false;
-  return host != 'localhost' &&
-      host != '127.0.0.1' &&
-      host != '0.0.0.0' &&
-      host != '::1';
-}
-
-bool _hasUnclassifiedTransferTarget(List<String> args) {
-  for (final arg in args) {
-    if (arg.isEmpty || arg.startsWith('-')) continue;
-    final uri = Uri.tryParse(arg);
-    if (uri != null &&
-        (uri.scheme == 'http' || uri.scheme == 'https') &&
-        !_isExternalHttpUrl(arg)) {
+String? _externalHttpTransferUrl(String executable, List<String> args) {
+  var optionsEnded = false;
+  for (var index = 0; index < args.length; index += 1) {
+    final arg = args[index];
+    if (!optionsEnded && arg == '--') {
+      optionsEnded = true;
       continue;
     }
-    return true;
+    if (!optionsEnded && arg == '--url') {
+      if (index + 1 < args.length) {
+        final target = args[++index];
+        if (!_isLocalTransferTarget(target)) return target;
+      }
+      continue;
+    }
+    if (!optionsEnded && arg.startsWith('--url=')) {
+      final target = arg.substring('--url='.length);
+      if (!_isLocalTransferTarget(target)) return target;
+      continue;
+    }
+    if (!optionsEnded && _optionTakesSeparateValue(executable, arg)) {
+      index += 1;
+      continue;
+    }
+    if (!optionsEnded && _isOptionWithAttachedValue(executable, arg)) {
+      continue;
+    }
+    if (!optionsEnded && arg.startsWith('-')) continue;
+    if (arg != '-' && !_isLocalTransferTarget(arg)) return arg;
   }
-  return false;
+  return null;
 }
 
-List<String> _shellWords(String commandLine) {
+bool _optionTakesSeparateValue(String executable, String option) {
+  if (const {
+    '-o',
+    '--output',
+    '-d',
+    '--data',
+    '--data-ascii',
+    '--data-binary',
+    '--data-raw',
+    '--data-urlencode',
+    '-H',
+    '--header',
+    '-u',
+    '--user',
+    '-X',
+    '--request',
+  }.contains(option)) {
+    return true;
+  }
+  return executable == 'wget' &&
+      const {
+        '-O',
+        '--output-document',
+        '--post-data',
+        '--post-file',
+        '--password',
+      }.contains(option);
+}
+
+bool _isOptionWithAttachedValue(String executable, String option) {
+  if (const {
+    '--output=',
+    '--data=',
+    '--data-ascii=',
+    '--data-binary=',
+    '--data-raw=',
+    '--data-urlencode=',
+    '--header=',
+    '--user=',
+    '--request=',
+  }.any(option.startsWith)) {
+    return true;
+  }
+  if (const {'-o', '-d', '-H', '-u', '-X'}.any(
+    (prefix) => option.startsWith(prefix) && option.length > prefix.length,
+  )) {
+    return true;
+  }
+  return executable == 'wget' &&
+      (const {
+            '--output-document=',
+            '--post-data=',
+            '--post-file=',
+            '--password=',
+          }.any(option.startsWith) ||
+          (option.startsWith('-O') && option.length > 2));
+}
+
+bool _isLocalTransferTarget(String value) {
+  final normalized = value.trim();
+  if (normalized.isEmpty) return true;
+  final lower = normalized.toLowerCase();
+  if (lower.startsWith('file:') || lower.startsWith('data:')) return true;
+
+  if (normalized.contains('://')) {
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || uri.host.isEmpty) return false;
+    return _isLoopbackHost(uri.host);
+  }
+
+  var authority = normalized.split('/').first;
+  final userInfoEnd = authority.lastIndexOf('@');
+  if (userInfoEnd >= 0) authority = authority.substring(userInfoEnd + 1);
+  late final String host;
+  if (authority.startsWith('[')) {
+    final closingBracket = authority.indexOf(']');
+    host = closingBracket > 0
+        ? authority.substring(1, closingBracket)
+        : authority;
+  } else {
+    host = authority.split(':').first;
+  }
+  return _isLoopbackHost(host);
+}
+
+bool _isLoopbackHost(String value) {
+  final host = value.trim().toLowerCase();
+  return host == 'localhost' ||
+      host == '127.0.0.1' ||
+      host == '0.0.0.0' ||
+      host == '::1';
+}
+
+_ShellTokenization _shellWords(String commandLine) {
   final words = <String>[];
   final buffer = StringBuffer();
   var quote = '';
@@ -463,6 +587,11 @@ List<String> _shellWords(String commandLine) {
       quote = char;
       continue;
     }
+    if (char == '\n' || char == '\r') {
+      flush();
+      if (words.isEmpty || words.last != ';') words.add(';');
+      continue;
+    }
     if (char.trim().isEmpty) {
       flush();
       continue;
@@ -477,18 +606,33 @@ List<String> _shellWords(String commandLine) {
       }
       continue;
     }
-    if (char == '&' &&
-        index + 1 < commandLine.length &&
-        commandLine[index + 1] == '&') {
+    if (char == '&') {
       flush();
-      words.add('&&');
-      index += 1;
+      if (index + 1 < commandLine.length && commandLine[index + 1] == '&') {
+        words.add('&&');
+        index += 1;
+      } else {
+        words.add('&');
+      }
       continue;
     }
     buffer.write(char);
   }
   flush();
-  return words;
+  return _ShellTokenization(
+    tokens: words,
+    syntaxComplete: quote.isEmpty && !escaped,
+  );
+}
+
+class _ShellTokenization {
+  const _ShellTokenization({
+    required this.tokens,
+    required this.syntaxComplete,
+  });
+
+  final List<String> tokens;
+  final bool syntaxComplete;
 }
 
 Object? _firstValue(Map? map, List<String> keys) {

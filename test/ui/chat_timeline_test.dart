@@ -211,20 +211,43 @@ void main() {
             '![remote](https://images.example.com/pixel.png)',
             '![local](file:///tmp/private.png)',
             '![inline](data:image/png;base64,AAAA)',
+            '![unknown](custom+image://asset/icon.png)',
           ].join('\n\n'),
         ),
       ]),
     );
 
     expect(find.byType(Image), findsNothing);
-    expect(find.textContaining('Image blocked'), findsNWidgets(3));
+    expect(find.textContaining('Image blocked'), findsNWidgets(4));
     expect(find.textContaining('images.example.com'), findsOneWidget);
     expect(find.textContaining('file'), findsOneWidget);
     expect(find.textContaining('data'), findsOneWidget);
+    expect(find.textContaining('custom+image'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Copy blocked image link').first);
     await tester.pump();
     expect(copiedText, 'https://images.example.com/pixel.png');
+  });
+
+  testWidgets('ChatTimeline keeps ordinary markdown links on the link path', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '[Open docs](https://example.com/docs)',
+        ),
+      ]),
+    );
+
+    expect(find.byType(Image), findsNothing);
+    expect(find.textContaining('Image blocked'), findsNothing);
+    expect(find.text('Open docs'), findsOneWidget);
+
+    await tester.tap(find.text('Open docs'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
