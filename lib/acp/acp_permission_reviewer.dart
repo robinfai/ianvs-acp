@@ -301,6 +301,11 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
 
   mcp.McpClient? _client;
   mcp.Transport? _transport;
+  Future<mcp.McpClient>? _connectingClient;
+  mcp.Transport? _connectingTransport;
+  Future<void>? _resetting;
+  int _connectionGeneration = 0;
+  bool _disposed = false;
 
   @override
   bool get canAutoApprove => true;
@@ -345,20 +350,62 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   }
 
   Future<mcp.McpClient> _ensureClient() async {
+    if (_disposed) {
+      throw StateError('MCP permission reviewer is disposed.');
+    }
+    final resetting = _resetting;
+    if (resetting != null) await resetting;
+    if (_disposed) {
+      throw StateError('MCP permission reviewer is disposed.');
+    }
     final existing = _client;
     if (existing != null) return existing;
+    final connecting = _connectingClient;
+    if (connecting != null) return connecting;
 
+    final generation = _connectionGeneration;
+    late final Future<mcp.McpClient> connectingClient;
+    connectingClient = _connectClient(generation).whenComplete(() {
+      if (identical(_connectingClient, connectingClient)) {
+        _connectingClient = null;
+      }
+    });
+    _connectingClient = connectingClient;
+    return connectingClient;
+  }
+
+  Future<mcp.McpClient> _connectClient(int generation) async {
     final transport = _transportForServer(mcpServer);
+    _connectingTransport = transport;
     final client = mcp.McpClient(
       const mcp.Implementation(
         name: 'ianvs-acp-permission-review',
         version: '1.0.0',
       ),
     );
-    await client.connect(transport);
-    _client = client;
-    _transport = transport;
-    return client;
+    try {
+      await client.connect(transport);
+      if (_disposed ||
+          generation != _connectionGeneration ||
+          !identical(_connectingTransport, transport)) {
+        await transport.close();
+        throw StateError('MCP permission reviewer connection was cancelled.');
+      }
+      _connectingTransport = null;
+      _client = client;
+      _transport = transport;
+      return client;
+    } catch (_) {
+      if (identical(_connectingTransport, transport)) {
+        _connectingTransport = null;
+      }
+      try {
+        await transport.close();
+      } on Object {
+        // The original connection failure remains the useful error.
+      }
+      rethrow;
+    }
   }
 
   mcp.Transport _transportForServer(McpServerConfig server) {
@@ -523,14 +570,32 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     await _resetClient();
   }
 
-  Future<void> _resetClient() async {
+  Future<void> _resetClient() {
+    final existing = _resetting;
+    if (existing != null) return existing;
+    late final Future<void> resetting;
+    resetting = _performReset().whenComplete(() {
+      if (identical(_resetting, resetting)) {
+        _resetting = null;
+      }
+    });
+    _resetting = resetting;
+    return resetting;
+  }
+
+  Future<void> _performReset() async {
+    _connectionGeneration += 1;
     final client = _client;
     final transport = _transport;
+    final connectingTransport = _connectingTransport;
     _client = null;
     _transport = null;
+    _connectingClient = null;
+    _connectingTransport = null;
     try {
       await client?.close();
     } on Object {
@@ -540,6 +605,13 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
       await transport?.close();
     } on Object {
       // Best-effort cleanup; the MCP client normally closes its transport.
+    }
+    if (!identical(connectingTransport, transport)) {
+      try {
+        await connectingTransport?.close();
+      } on Object {
+        // An in-flight initialization must not survive reset or disposal.
+      }
     }
   }
 }

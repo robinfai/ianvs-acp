@@ -79,6 +79,196 @@ void main() {
     }
   });
 
+  test('MCP reviewer timeout closes an in-flight initialization', () async {
+    final initializeStarted = Completer<void>();
+    final clientDisconnected = Completer<void>();
+    final sockets = <Socket>[];
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((socket) {
+      sockets.add(socket);
+      socket.listen(
+        (_) {
+          if (!initializeStarted.isCompleted) initializeStarted.complete();
+          // Deliberately never send an initialize response.
+        },
+        onError: (Object _, StackTrace _) {
+          if (!clientDisconnected.isCompleted) {
+            clientDisconnected.complete();
+          }
+        },
+        onDone: () {
+          if (!clientDisconnected.isCompleted) {
+            clientDisconnected.complete();
+          }
+        },
+      );
+    });
+    final reviewer = _localMcpReviewer(
+      server.port,
+      timeout: const Duration(milliseconds: 500),
+    );
+
+    try {
+      final reviewing = reviewer.review(
+        _reviewRequest('stalled-initialize'),
+        workspaceRoot: '/workspace',
+      );
+      await initializeStarted.future.timeout(const Duration(seconds: 2));
+
+      final result = await reviewing.timeout(const Duration(seconds: 3));
+      expect(result?.risk, 'unknown');
+      await clientDisconnected.future.timeout(const Duration(seconds: 3));
+    } finally {
+      await reviewer.dispose();
+      await serverSubscription.cancel();
+      await server.close();
+      for (final socket in sockets) {
+        socket.destroy();
+      }
+    }
+  });
+
+  test(
+    'MCP reviewer dispose cancels initialization and prevents reconnect',
+    () async {
+      final initializeStarted = Completer<void>();
+      final clientDisconnected = Completer<void>();
+      final sockets = <Socket>[];
+      var acceptedConnections = 0;
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((socket) {
+        acceptedConnections += 1;
+        sockets.add(socket);
+        socket.listen(
+          (_) {
+            if (!initializeStarted.isCompleted) initializeStarted.complete();
+          },
+          onError: (Object _, StackTrace _) {
+            if (!clientDisconnected.isCompleted) {
+              clientDisconnected.complete();
+            }
+          },
+          onDone: () {
+            if (!clientDisconnected.isCompleted) {
+              clientDisconnected.complete();
+            }
+          },
+        );
+      });
+      final reviewer = _localMcpReviewer(
+        server.port,
+        timeout: const Duration(seconds: 5),
+      );
+
+      try {
+        final reviewing = reviewer.review(
+          _reviewRequest('dispose-initialize'),
+          workspaceRoot: '/workspace',
+        );
+        await initializeStarted.future.timeout(const Duration(seconds: 2));
+
+        await Future.wait<void>([
+          reviewer.dispose(),
+          reviewer.dispose(),
+        ]).timeout(const Duration(seconds: 2));
+        await clientDisconnected.future.timeout(const Duration(seconds: 2));
+        final interrupted = await reviewing.timeout(const Duration(seconds: 2));
+        expect(interrupted?.risk, 'unknown');
+        expect(acceptedConnections, 1);
+
+        final afterDispose = await reviewer
+            .review(
+              _reviewRequest('after-dispose'),
+              workspaceRoot: '/workspace',
+            )
+            .timeout(const Duration(seconds: 2));
+        expect(afterDispose?.risk, 'unknown');
+        await _pumpTestEventQueue();
+        expect(acceptedConnections, 1);
+      } finally {
+        await reviewer.dispose();
+        await serverSubscription.cancel();
+        await server.close();
+        for (final socket in sockets) {
+          socket.destroy();
+        }
+      }
+    },
+  );
+
+  test('concurrent MCP reviews share one initialization', () async {
+    final initializeStarted = Completer<void>();
+    final releaseInitialize = Completer<void>();
+    var initializeCalls = 0;
+    var toolCalls = 0;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'GET') {
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'initialize') {
+        initializeCalls += 1;
+        if (!initializeStarted.isCompleted) initializeStarted.complete();
+        await releaseInitialize.future;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Mcp-Session-Id', 'shared-review-session')
+          ..write(jsonEncode(_mcpInitializeResponse(message['id'])));
+      } else if (method == 'notifications/initialized') {
+        request.response.statusCode = HttpStatus.accepted;
+      } else if (method == 'tools/call') {
+        toolCalls += 1;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(_mcpToolResponse(message['id'])));
+      }
+      await request.response.close();
+    });
+    final reviewer = _localMcpReviewer(server.port);
+
+    try {
+      final first = reviewer.review(
+        _reviewRequest('concurrent-1'),
+        workspaceRoot: '/workspace',
+      );
+      final second = reviewer.review(
+        _reviewRequest('concurrent-2'),
+        workspaceRoot: '/workspace',
+      );
+      await initializeStarted.future.timeout(const Duration(seconds: 2));
+      await _pumpTestEventQueue();
+
+      expect(initializeCalls, 1);
+      releaseInitialize.complete();
+      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+        first,
+        second,
+      ]).timeout(const Duration(seconds: 3));
+
+      expect(
+        results.map((result) => result?.decision),
+        everyElement(AcpPermissionDecision.allow),
+      );
+      expect(initializeCalls, 1);
+      expect(toolCalls, 2);
+    } finally {
+      if (!releaseInitialize.isCompleted) releaseInitialize.complete();
+      await reviewer.dispose();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('permission review payload includes command context and model', () {
     final payload = acpPermissionReviewPayload(
       AcpPermissionRequest(
@@ -628,12 +818,12 @@ void main() {
   });
 }
 
-McpPermissionReviewAgent _localMcpReviewer(int port) {
+McpPermissionReviewAgent _localMcpReviewer(
+  int port, {
+  Duration timeout = const Duration(seconds: 2),
+}) {
   return McpPermissionReviewAgent(
-    config: const AcpPermissionReviewAgentConfig(
-      enabled: true,
-      timeout: Duration(seconds: 2),
-    ),
+    config: AcpPermissionReviewAgentConfig(enabled: true, timeout: timeout),
     mcpServer: McpServerConfig(
       raw: <String, dynamic>{
         'name': 'permission-reviewer',
@@ -702,6 +892,12 @@ Future<void> _waitForTest(bool Function() predicate) async {
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
   fail('Timed out waiting for condition.');
+}
+
+Future<void> _pumpTestEventQueue() async {
+  for (var index = 0; index < 20; index += 1) {
+    await Future<void>.delayed(Duration.zero);
+  }
 }
 
 class _ReviewFakeAgentClient extends FakeAgentClient {
