@@ -2,6 +2,7 @@ export 'src/acp_client.dart';
 export 'src/capabilities.dart';
 export 'src/config.dart';
 export 'src/extensions.dart';
+export 'src/input_budget.dart';
 export 'src/models/command_types.dart';
 export 'src/models/content_types.dart';
 export 'src/models/diff_types.dart';
