@@ -132,13 +132,11 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
                 body,
                 resource: 'MCP HTTP POST JSON',
               );
-              if (decoded is List) {
-                for (final item in decoded) {
-                  _emitJsonRpc(item, resource: 'MCP HTTP POST JSON');
-                }
-              } else {
-                _emitJsonRpc(decoded, resource: 'MCP HTTP POST JSON');
-              }
+              final messages = _decodeJsonRpcMessages(
+                decoded,
+                resource: 'MCP HTTP POST JSON',
+              );
+              _deliverJsonRpcMessages(messages);
             })
             .catchError(_reportAsyncError),
       );
@@ -221,16 +219,21 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         .map((event) => event.data)
         .listen(
           (data) {
+            if (_closed) return;
+            final mcp.JsonRpcMessage message;
             try {
-              _emitJsonRpc(
+              message = _decodeJsonRpcMessage(
                 acp.decodeTransportJson(data, resource: 'MCP HTTP SSE JSON'),
                 resource: 'MCP HTTP SSE JSON',
               );
             } catch (error) {
               _reportError(error);
+              return;
             }
+            _deliverJsonRpcMessages(<mcp.JsonRpcMessage>[message]);
           },
           onError: (Object error, StackTrace stackTrace) {
+            if (_closed) return;
             _reportError(error);
           },
           onDone: () {
@@ -240,7 +243,23 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     _sseSubscriptions.add(subscription);
   }
 
-  void _emitJsonRpc(Object? decoded, {required String resource}) {
+  List<mcp.JsonRpcMessage> _decodeJsonRpcMessages(
+    Object? decoded, {
+    required String resource,
+  }) {
+    final values = decoded is List ? decoded : <Object?>[decoded];
+    if (values.isEmpty) {
+      throw acp.TransportProtocolDecodeError(resource: resource);
+    }
+    return values
+        .map((value) => _decodeJsonRpcMessage(value, resource: resource))
+        .toList(growable: false);
+  }
+
+  mcp.JsonRpcMessage _decodeJsonRpcMessage(
+    Object? decoded, {
+    required String resource,
+  }) {
     final mcp.JsonRpcMessage message;
     try {
       if (decoded is! Map) {
@@ -251,7 +270,18 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     } on Object {
       throw acp.TransportProtocolDecodeError(resource: resource);
     }
-    onmessage?.call(message);
+    return message;
+  }
+
+  void _deliverJsonRpcMessages(Iterable<mcp.JsonRpcMessage> messages) {
+    for (final message in messages) {
+      if (_closed) return;
+      try {
+        onmessage?.call(message);
+      } catch (error) {
+        if (!_closed) _reportError(error);
+      }
+    }
   }
 
   void _captureSession(HttpClientResponse response) {
@@ -369,18 +399,14 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    final sseCancellations = _cancelSseSubscriptions();
     await _cancelPendingBodyReads();
-    final subscriptions = List<StreamSubscription<String>>.of(
-      _sseSubscriptions,
-    );
-    _sseSubscriptions.clear();
     final client = _client;
     _client = null;
     final session = _sessionId;
     _sessionId = null;
     try {
       await _closeNetworkResources(
-        subscriptions: subscriptions,
         client: client,
         session: session,
       ).timeout(teardownTimeout);
@@ -389,19 +415,27 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     } finally {
       await _cancelPendingBodyReads();
       client?.close(force: true);
+      await Future.wait<void>(sseCancellations);
+      await Future.wait<void>(_cancelSseSubscriptions());
       onclose?.call();
     }
   }
 
+  List<Future<void>> _cancelSseSubscriptions() {
+    final subscriptions = List<StreamSubscription<String>>.of(
+      _sseSubscriptions,
+    );
+    _sseSubscriptions.clear();
+    return <Future<void>>[
+      for (final subscription in subscriptions)
+        subscription.cancel().catchError((Object _) {}),
+    ];
+  }
+
   Future<void> _closeNetworkResources({
-    required List<StreamSubscription<String>> subscriptions,
     required HttpClient? client,
     required String? session,
   }) async {
-    await Future.wait<void>([
-      for (final subscription in subscriptions)
-        subscription.cancel().catchError((Object _) {}),
-    ]);
     if (client == null || session == null) return;
 
     final request = await client.deleteUrl(endpoint);

@@ -242,10 +242,9 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
             ).listen(
               _handleSseEvent,
               onError: (Object error, StackTrace stackTrace) {
+                if (_stopping) return;
                 streamFailed = true;
-                if (!_stopping) {
-                  _controller?.local.sink.addError(error, stackTrace);
-                }
+                _controller?.local.sink.addError(error, stackTrace);
               },
               onDone: () {
                 _streamStartsByKey.remove(key);
@@ -370,6 +369,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   }
 
   void _handleSseEvent(String event) {
+    if (_stopping) return;
     if (event.trim().isEmpty) return;
     try {
       _addInboundLine(event, resource: 'ACP HTTP SSE JSON');
@@ -519,6 +519,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   @override
   Future<void> stop() async {
     _stopping = true;
+    final sseCancellations = _cancelSseSubscriptions();
     await _outboundSubscription?.cancel();
     _outboundSubscription = null;
     await _cancelPendingBodyReads();
@@ -526,19 +527,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     await _cancelPendingBodyReads();
     _client?.close(force: true);
     _client = null;
-    final streamSubscriptions = List<StreamSubscription<String>>.of(
-      _streamSubscriptions,
-    );
-    for (final subscription in streamSubscriptions) {
-      try {
-        await subscription.cancel();
-      } catch (error, stackTrace) {
-        if (!_stopping) {
-          Error.throwWithStackTrace(error, stackTrace);
-        }
-      }
-    }
-    _streamSubscriptions.clear();
+    await Future.wait<void>(sseCancellations);
+    await Future.wait<void>(_cancelSseSubscriptions());
     await _controller?.local.sink.close();
     _controller = null;
     _connectionId = null;
@@ -546,6 +536,17 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     _serverRequestSessionsById.clear();
     _streamStartsByKey.clear();
     _cookiesByName.clear();
+  }
+
+  List<Future<void>> _cancelSseSubscriptions() {
+    final subscriptions = List<StreamSubscription<String>>.of(
+      _streamSubscriptions,
+    );
+    _streamSubscriptions.clear();
+    return <Future<void>>[
+      for (final subscription in subscriptions)
+        subscription.cancel().catchError((Object _) {}),
+    ];
   }
 
   Future<void> _terminateConnection() async {

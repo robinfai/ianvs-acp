@@ -371,6 +371,236 @@ void main() {
   );
 
   test(
+    'HTTP SSE invalid UTF-8 reports a payload-free protocol error',
+    () async {
+      const secret = 'acp-sse-invalid-utf8-secret';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          request.response.add(<int>[
+            ...utf8.encode('data: {"jsonrpc":"2.0","method":"$secret'),
+            0xff,
+            ...utf8.encode('"}\n\n'),
+          ]);
+          await request.response.close();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, Object?>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, Object?>{'connectionId': 'connection-1'},
+            }),
+          );
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(errors.single, isA<acp.TransportProtocolDecodeError>());
+        expect(errors.single.toString(), isNot(contains(secret)));
+        expect(inbound, hasLength(1));
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test('HTTP SSE error drain timeout clears its read', () async {
+    final responseStarted = Completer<void>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response
+          ..bufferOutput = false
+          ..statusCode = HttpStatus.internalServerError
+          ..write('pending');
+        openResponses.add(request.response);
+        await request.response.flush();
+        if (!responseStarted.isCompleted) responseStarted.complete();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, Object?>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-1')
+        ..write(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, Object?>{'connectionId': 'connection-1'},
+          }),
+        );
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      requestTimeout: const Duration(milliseconds: 50),
+    );
+    await transport.start();
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await responseStarted.future.timeout(const Duration(seconds: 1));
+      await _waitFor(
+        () => errors.any((error) => error is acp.TransportBodyReadTimeout),
+      );
+
+      expect(
+        errors.whereType<acp.TransportBodyReadTimeout>().single.resource,
+        contains('SSE error response body'),
+      );
+      expect(transport.activeBodyReadCount, 0);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The timed-out client read may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('stop suppresses queued SSE data and errors', () async {
+    final sseResponse = Completer<HttpResponse>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response.bufferOutput = false;
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        openResponses.add(request.response);
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        sseResponse.complete(request.response);
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, Object?>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-1')
+        ..write(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, Object?>{'connectionId': 'connection-1'},
+          }),
+        );
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+    await transport.start();
+    final inbound = <Map<String, Object?>>[];
+    final errors = <Object>[];
+    Future<void>? stopFuture;
+    final subscription = transport.channel.stream.listen((line) {
+      final message = jsonDecode(line) as Map<String, Object?>;
+      inbound.add(message);
+      if (message['method'] == 'test/first') {
+        stopFuture ??= transport.stop();
+      }
+    }, onError: errors.add);
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.any((message) => message['id'] == 1));
+      final response = await sseResponse.future.timeout(
+        const Duration(seconds: 1),
+      );
+      response.write(
+        'data: {"jsonrpc":"2.0","method":"test/first"}\n\n'
+        'data: {"jsonrpc":"2.0","method":"test/after-stop"}\n\n',
+      );
+      await response.flush();
+      await _waitFor(() => stopFuture != null);
+      await stopFuture!.timeout(const Duration(seconds: 1));
+
+      expect(
+        inbound
+            .where((message) => message['method'] != null)
+            .map((message) => message['method']),
+        ['test/first'],
+      );
+      expect(errors, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The stopped client may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test(
     'HTTP SSE line and event limits do not deliver partial events',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

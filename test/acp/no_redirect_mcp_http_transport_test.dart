@@ -226,6 +226,131 @@ void main() {
     },
   );
 
+  test('MCP JSON batch validates every item before delivery', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode(<Object?>[
+            <String, Object?>{
+              'jsonrpc': '2.0',
+              'method': 'test/valid-before-invalid',
+            },
+            42,
+          ]),
+        );
+      await request.response.close();
+    });
+    final transport = NoRedirectMcpHttpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+    );
+    final messages = <mcp.JsonRpcMessage>[];
+    final errors = <Error>[];
+    transport
+      ..onmessage = messages.add
+      ..onerror = errors.add;
+
+    try {
+      await transport.start();
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/batch-validation'),
+      );
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(errors.single, isA<acp.TransportProtocolDecodeError>());
+      expect(messages, isEmpty);
+    } finally {
+      await transport.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('MCP JSON rejects an empty batch', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write('[]');
+      await request.response.close();
+    });
+    final transport = NoRedirectMcpHttpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+    );
+    final messages = <mcp.JsonRpcMessage>[];
+    final errors = <Error>[];
+    transport
+      ..onmessage = messages.add
+      ..onerror = errors.add;
+
+    try {
+      await transport.start();
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/empty-batch'),
+      );
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(errors.single, isA<acp.TransportProtocolDecodeError>());
+      expect(messages, isEmpty);
+    } finally {
+      await transport.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test(
+    'MCP JSON batch continues after an onmessage callback failure',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        await request.drain<void>();
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(
+            jsonEncode(<Object?>[
+              <String, Object?>{'jsonrpc': '2.0', 'method': 'test/first'},
+              <String, Object?>{'jsonrpc': '2.0', 'method': 'test/second'},
+            ]),
+          );
+        await request.response.close();
+      });
+      final transport = NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+      );
+      final callbackMethods = <String>[];
+      final errors = <Error>[];
+      transport
+        ..onmessage = (message) {
+          final notification = message as mcp.JsonRpcNotification;
+          callbackMethods.add(notification.method);
+          if (notification.method == 'test/first') {
+            throw StateError('test callback failure');
+          }
+        }
+        ..onerror = errors.add;
+
+      try {
+        await transport.start();
+        await transport.send(
+          const mcp.JsonRpcNotification(method: 'test/callback-isolation'),
+        );
+        await _waitFor(() => errors.isNotEmpty);
+        await _waitFor(() => callbackMethods.contains('test/second'));
+
+        expect(callbackMethods, ['test/first', 'test/second']);
+        expect(errors.single, isA<StateError>());
+      } finally {
+        await transport.close();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
   test('MCP JSON body timeout cancels the remote response read', () async {
     final responseStarted = Completer<void>();
     final openResponses = <HttpResponse>[];
@@ -317,6 +442,45 @@ void main() {
       }
     },
   );
+
+  test('MCP SSE invalid UTF-8 reports a payload-free protocol error', () async {
+    const secret = 'mcp-sse-invalid-utf8-secret';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response.headers.contentType = ContentType(
+        'text',
+        'event-stream',
+        charset: 'utf-8',
+      );
+      request.response.add(<int>[
+        ...utf8.encode('data: {"jsonrpc":"2.0","method":"$secret'),
+        0xff,
+        ...utf8.encode('"}\n\n'),
+      ]);
+      await request.response.close();
+    });
+    final transport = NoRedirectMcpHttpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+    );
+    final errors = <Error>[];
+    transport.onerror = errors.add;
+
+    try {
+      await transport.start();
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/invalid-utf8-sse'),
+      );
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(errors.single, isA<acp.TransportProtocolDecodeError>());
+      expect(errors.single.toString(), isNot(contains(secret)));
+    } finally {
+      await transport.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
 
   test('MCP accepted and failed response drains are bounded', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -420,6 +584,170 @@ void main() {
       },
     );
   }
+
+  for (final testCase in <({String name, int status, String? contentType})>[
+    (
+      name: 'method-not-allowed',
+      status: HttpStatus.methodNotAllowed,
+      contentType: null,
+    ),
+    (name: 'error', status: HttpStatus.internalServerError, contentType: null),
+    (name: 'non-SSE', status: HttpStatus.ok, contentType: 'text/plain'),
+  ]) {
+    test(
+      'MCP GET SSE ${testCase.name} drain timeout clears its read',
+      () async {
+        final responseStarted = Completer<void>();
+        final openResponses = <HttpResponse>[];
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final serverSubscription = server.listen((request) async {
+          await request.drain<void>();
+          if (request.method != 'GET') {
+            request.response.statusCode = HttpStatus.accepted;
+            await request.response.close();
+            return;
+          }
+          request.response
+            ..bufferOutput = false
+            ..statusCode = testCase.status;
+          if (testCase.contentType != null) {
+            request.response.headers.set(
+              HttpHeaders.contentTypeHeader,
+              testCase.contentType!,
+            );
+          }
+          request.response.write('pending');
+          openResponses.add(request.response);
+          await request.response.flush();
+          if (!responseStarted.isCompleted) responseStarted.complete();
+        });
+        final transport = NoRedirectMcpHttpTransport(
+          endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+          requestTimeout: const Duration(milliseconds: 50),
+        );
+        final errors = <Error>[];
+        transport.onerror = errors.add;
+
+        try {
+          await transport.start();
+          await transport.send(
+            const mcp.JsonRpcNotification(
+              method: mcp.Method.notificationsInitialized,
+            ),
+          );
+          await responseStarted.future.timeout(const Duration(seconds: 1));
+          await _waitFor(
+            () => errors.any((error) => error is acp.TransportBodyReadTimeout),
+          );
+
+          expect(
+            errors.whereType<acp.TransportBodyReadTimeout>().single.resource,
+            contains('SSE'),
+          );
+          expect(transport.activeBodyReadCount, 0);
+        } finally {
+          await transport.close();
+          for (final response in openResponses) {
+            try {
+              await response.close();
+            } on Object {
+              // The timed-out client read may already own the response sink.
+            }
+          }
+          await serverSubscription.cancel();
+          await server.close(force: true);
+        }
+      },
+    );
+  }
+
+  test('MCP close suppresses queued SSE data and errors', () async {
+    const secret = 'mcp-close-sse-race-secret';
+    final sseResponse = Completer<HttpResponse>();
+    final pendingBodyStarted = Completer<void>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, Object?>;
+      if (message['method'] == 'test/open-sse') {
+        request.response.bufferOutput = false;
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        openResponses.add(request.response);
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        sseResponse.complete(request.response);
+        return;
+      }
+      request.response
+        ..bufferOutput = false
+        ..headers.contentType = ContentType.json
+        ..write('{"jsonrpc":');
+      openResponses.add(request.response);
+      await request.response.flush();
+      pendingBodyStarted.complete();
+    });
+    final transport = NoRedirectMcpHttpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+      requestTimeout: const Duration(seconds: 10),
+    );
+    final methods = <String>[];
+    final errors = <Error>[];
+    Future<void>? closeFuture;
+    transport
+      ..onmessage = (message) {
+        final method = (message as mcp.JsonRpcNotification).method;
+        methods.add(method);
+        closeFuture ??= transport.close();
+        throw StateError('callback failed during close');
+      }
+      ..onerror = errors.add;
+
+    try {
+      await transport.start();
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/open-sse'),
+      );
+      final response = await sseResponse.future.timeout(
+        const Duration(seconds: 1),
+      );
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/pending-body'),
+      );
+      await pendingBodyStarted.future.timeout(const Duration(seconds: 1));
+      await _waitFor(() => transport.activeBodyReadCount == 1);
+
+      response.add(<int>[
+        ...utf8.encode(
+          'data: {"jsonrpc":"2.0","method":"test/first"}\n\n'
+          'data: {"jsonrpc":"2.0","method":"$secret',
+        ),
+        0xff,
+        ...utf8.encode('"}\n\n'),
+      ]);
+      await response.flush();
+      await _waitFor(() => closeFuture != null);
+      await closeFuture!.timeout(const Duration(seconds: 1));
+
+      expect(methods, ['test/first']);
+      expect(errors, isEmpty);
+    } finally {
+      await transport.close();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The closed client may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
 
   test(
     'MCP close cancels a pending JSON body without reporting an error',

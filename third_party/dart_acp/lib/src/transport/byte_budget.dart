@@ -371,8 +371,14 @@ class _SseDecodeState {
   }
 
   TransportSseEvent? _finishLine() {
-    final line = utf8.decode(_lineBytes);
-    _lineBytes.clear();
+    final String line;
+    try {
+      line = utf8.decode(_lineBytes);
+    } on FormatException {
+      throw TransportProtocolDecodeError(resource: resource);
+    } finally {
+      _lineBytes.clear();
+    }
     if (line.isEmpty) return _finishEvent();
     if (line.startsWith(':')) return null;
     final separator = line.indexOf(':');
