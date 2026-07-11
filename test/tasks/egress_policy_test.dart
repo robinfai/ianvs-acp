@@ -360,6 +360,51 @@ void main() {
       }
     });
 
+    test(
+      'classifies effective external proxy environments without exposure',
+      () {
+        const secretProxy =
+            'https://alice:proxy-secret@proxy.example:8443/private';
+        final matches = <EgressPolicyMatch?>[
+          egressSensitiveCommandMatch(
+            'curl http://localhost/health',
+            environment: const <String, String>{'https_proxy': secretProxy},
+          ),
+          egressSensitiveCommandMatch(
+            'HTTPS_PROXY=$secretProxy curl http://localhost/health',
+          ),
+          egressSensitiveCommandMatch(
+            'env ALL_PROXY=$secretProxy wget http://127.0.0.1/archive',
+          ),
+        ];
+
+        for (final match in matches) {
+          expect(match?.reason, 'external_proxy_environment');
+          expect(match?.commandLine, isNot(contains('proxy-secret')));
+        }
+        expect(
+          egressSensitiveCommandMatch(
+            'curl http://localhost/health',
+            environment: const <String, String>{
+              'HTTP_PROXY': 'http://127.0.0.1:8080',
+              'NO_PROXY': '*',
+            },
+          ),
+          isNull,
+        );
+        expect(
+          egressSensitiveCommandMatch(
+            'curl http://localhost/health',
+            environment: const <String, String>{
+              'HTTPS_PROXY': secretProxy,
+              'NO_PROXY': 'localhost,127.0.0.1',
+            },
+          ),
+          isNotNull,
+        );
+      },
+    );
+
     test('holds subshell controls and unwraps exec commands', () {
       expect(
         egressSensitiveCommandMatch('(curl https://example.com/private)'),
@@ -394,11 +439,36 @@ void main() {
       expect(egressSensitiveCommandMatch('find . -name README.md'), isNull);
     });
 
+    test('redacts nested commands held by uncertain wrappers', () {
+      const secret = 'wrapper-display-secret';
+      for (final command in const <String>[
+        "sudo bash -c 'curl -u alice:$secret https://example.com/upload'",
+        "timeout 5 bash -c 'curl -u alice:$secret https://example.com/upload'",
+        "xargs sh -c 'curl -u alice:$secret https://example.com/upload'",
+      ]) {
+        final match = egressSensitiveCommandMatch(command);
+        expect(match, isNotNull, reason: command);
+        expect(match?.commandLine, isNot(contains(secret)), reason: command);
+      }
+    });
+
     test('recurses through shell short option combinations containing c', () {
       for (final command in const <String>[
         "bash -ec 'curl https://example.com/private'",
         "sh -xc 'curl https://example.com/private'",
         "zsh -euxc 'curl https://example.com/private'",
+        "dash -ec 'curl https://example.com/private'",
+        "ksh -c 'curl https://example.com/private'",
+        "mksh -c 'curl https://example.com/private'",
+        "fish -c 'curl https://example.com/private'",
+        "csh -fc 'curl https://example.com/private'",
+        "tcsh -fc 'curl https://example.com/private'",
+        "nu -c 'curl https://example.com/private'",
+        "pwsh -Command 'curl https://example.com/private'",
+        "powershell -c 'curl https://example.com/private'",
+        "powershell.exe -Command 'curl https://example.com/private'",
+        "busybox sh -c 'curl https://example.com/private'",
+        "toybox sh -c 'curl https://example.com/private'",
         "bash -e -c 'curl https://example.com/private'",
         "bash -o errexit -c 'curl https://example.com/private'",
       ]) {
@@ -416,6 +486,49 @@ void main() {
       expect(egressSensitiveCommandMatch('bash -ec'), isNotNull);
       expect(egressSensitiveCommandMatch('bash script.sh'), isNotNull);
       expect(egressSensitiveCommandMatch('sh'), isNotNull);
+    });
+
+    test(
+      'holds script interpreters while preserving unrelated safe commands',
+      () {
+        for (final command in const <String>[
+          'python script.py',
+          'python3 -c "print(1)"',
+          'python3.12 --version',
+          'python --version',
+          'node -e "console.log(1)"',
+          'node --help',
+          'ruby -e "puts 1"',
+          'ruby -v',
+          'perl -e "print 1"',
+          'php -r "echo 1;"',
+          'php8.3 --version',
+          'osascript -e "display dialog secret"',
+        ]) {
+          expect(
+            egressSensitiveCommandMatch(command),
+            isNotNull,
+            reason: command,
+          );
+        }
+        expect(egressSensitiveCommandMatch('echo safe'), isNull);
+      },
+    );
+
+    test('redacts bare transfer targets and wget request bodies', () {
+      const secret = 'direct-display-secret';
+      for (final command in const <String>[
+        'curl intranet/upload?token=$secret',
+        'wget --post-data token=$secret https://example.com/upload',
+        'wget --post-file /tmp/$secret https://example.com/upload',
+        'wget --post-data=token=$secret https://example.com/upload',
+        'wget --body-data token=$secret https://example.com/upload',
+        'wget --body-file=/tmp/$secret https://example.com/upload',
+      ]) {
+        final match = egressSensitiveCommandMatch(command);
+        expect(match, isNotNull, reason: command);
+        expect(match?.commandLine, isNot(contains(secret)), reason: command);
+      }
     });
 
     test(

@@ -95,7 +95,7 @@ EgressPolicyMatch? _classifySegment(
   if (index >= tokens.length) return null;
 
   while (index < tokens.length) {
-    final wrapper = _basename(tokens[index].value).toLowerCase();
+    final wrapper = _executableName(tokens[index].value);
     if (_uncertainCommandWrappers.contains(wrapper)) {
       return _manualMatch(
         'unresolved_wrapper',
@@ -216,7 +216,7 @@ EgressPolicyMatch? _classifySegment(
     return _manualMatch('unresolved_executable', _tokenValues(finalTokens));
   }
 
-  final executable = _basename(resolvedTokens.first).toLowerCase();
+  final executable = _executableName(resolvedTokens.first);
   final args = resolvedTokens.skip(1).toList(growable: false);
   final display = _normalizedDisplay(_tokenValues(finalTokens));
 
@@ -234,47 +234,52 @@ EgressPolicyMatch? _classifySegment(
     );
   }
 
-  if (const {'sh', 'bash', 'zsh'}.contains(executable)) {
-    for (var argIndex = 0; argIndex < args.length; argIndex += 1) {
-      final option = args[argIndex];
-      if (option == '-o' || option == '+o') {
-        if (argIndex + 1 >= args.length) {
-          return EgressPolicyMatch(
-            reason: 'unresolved_wrapper',
-            commandLine: display,
-          );
-        }
-        argIndex += 1;
-        continue;
-      }
-      if (option.startsWith('--')) {
-        return EgressPolicyMatch(
-          reason: 'unresolved_wrapper',
-          commandLine: display,
-        );
-      }
-      if (!option.startsWith('-')) break;
-      if (!_shellShortOptionPattern.hasMatch(option)) {
-        return EgressPolicyMatch(
-          reason: 'unresolved_wrapper',
-          commandLine: display,
-        );
-      }
-      if (option.substring(1).contains('c')) {
-        if (argIndex + 1 >= args.length) {
-          return EgressPolicyMatch(
-            reason: 'unresolved_wrapper',
-            commandLine: display,
-          );
-        }
-        return egressSensitiveCommandMatch(
-          args[argIndex + 1],
-          environment: environment,
-        );
-      }
+  if (_posixShellExecutables.contains(executable)) {
+    final commandIndex = _posixShellCommandIndex(args);
+    if (commandIndex != null) {
+      return egressSensitiveCommandMatch(
+        args[commandIndex],
+        environment: environment,
+      );
     }
     return EgressPolicyMatch(
       reason: 'unresolved_wrapper',
+      commandLine: display,
+    );
+  }
+
+  if (_powerShellExecutables.contains(executable)) {
+    final commandIndex = _powerShellCommandIndex(args);
+    if (commandIndex != null) {
+      return egressSensitiveCommandMatch(
+        args[commandIndex],
+        args: args.skip(commandIndex + 1).toList(growable: false),
+        environment: environment,
+      );
+    }
+    return EgressPolicyMatch(
+      reason: 'unresolved_wrapper',
+      commandLine: display,
+    );
+  }
+
+  if (_multiCallExecutables.contains(executable)) {
+    if (args.isNotEmpty && _executableName(args.first) == 'sh') {
+      return egressSensitiveCommandMatch(
+        args.first,
+        args: args.skip(1).toList(growable: false),
+        environment: environment,
+      );
+    }
+    return EgressPolicyMatch(
+      reason: 'unresolved_wrapper',
+      commandLine: display,
+    );
+  }
+
+  if (_isScriptInterpreterExecutable(executable)) {
+    return EgressPolicyMatch(
+      reason: 'script_interpreter',
       commandLine: display,
     );
   }
@@ -284,6 +289,12 @@ EgressPolicyMatch? _classifySegment(
       .toList(growable: false);
 
   if (executable == 'curl' || executable == 'wget') {
+    if (_hasExternalProxyEnvironment(environment)) {
+      return EgressPolicyMatch(
+        reason: 'external_proxy_environment',
+        commandLine: display,
+      );
+    }
     if (executable == 'curl' && _hasCurlTransferConfig(args)) {
       return EgressPolicyMatch(
         reason: 'unresolved_transfer_config',
@@ -342,6 +353,69 @@ final RegExp _shellShortOptionPattern = RegExp(
   r'^-[abcefihklmnprstuvxBCDEHOPT]+$',
 );
 
+const Set<String> _posixShellExecutables = {
+  'sh',
+  'bash',
+  'zsh',
+  'dash',
+  'ksh',
+  'mksh',
+  'fish',
+  'csh',
+  'tcsh',
+  'nu',
+};
+
+const Set<String> _powerShellExecutables = {'pwsh', 'powershell'};
+const Set<String> _multiCallExecutables = {'busybox', 'toybox'};
+const Set<String> _scriptInterpreterExecutables = {
+  'python',
+  'python3',
+  'pypy',
+  'pypy3',
+  'node',
+  'ruby',
+  'perl',
+  'php',
+  'osascript',
+};
+
+final RegExp _versionedScriptInterpreterPattern = RegExp(
+  r'^(?:python|pypy|node|ruby|perl|php)\d+(?:\.\d+)*$',
+);
+
+bool _isScriptInterpreterExecutable(String executable) {
+  return _scriptInterpreterExecutables.contains(executable) ||
+      _versionedScriptInterpreterPattern.hasMatch(executable);
+}
+
+int? _posixShellCommandIndex(List<String> args) {
+  for (var index = 0; index < args.length; index += 1) {
+    final option = args[index];
+    if (option == '-o' || option == '+o') {
+      if (index + 1 >= args.length) return null;
+      index += 1;
+      continue;
+    }
+    if (option.startsWith('--') || !option.startsWith('-')) return null;
+    if (!_shellShortOptionPattern.hasMatch(option)) return null;
+    if (option.substring(1).contains('c')) {
+      return index + 1 < args.length ? index + 1 : null;
+    }
+  }
+  return null;
+}
+
+int? _powerShellCommandIndex(List<String> args) {
+  for (var index = 0; index < args.length; index += 1) {
+    final option = args[index].toLowerCase();
+    if (const {'-command', '-c', '/command'}.contains(option)) {
+      return index + 1 < args.length ? index + 1 : null;
+    }
+  }
+  return null;
+}
+
 EgressPolicyMatch _manualMatch(String reason, List<String> tokens) {
   return EgressPolicyMatch(
     reason: reason,
@@ -359,49 +433,36 @@ Map<String, Object?> redactedPermissionMetadataForAudit(
   AcpPermissionRequest request,
 ) {
   final invocation = _commandFromPermissionRequest(request);
-  if (invocation == null) return request.metadata;
+  if (invocation == null) return const <String, Object?>{};
   final tokenization = _shellWords(invocation.command);
   final tokens = <_ShellToken>[
     ...tokenization.tokens,
     ...invocation.args.map(_ShellToken.expanding),
   ];
-  final redacted = Map<String, Object?>.of(request.metadata);
-  for (final key in const <String>[
-    'rawInput',
-    'raw_input',
-    'input',
-    'args',
-    'arguments',
-    'command',
-    'cmd',
-    'command_line',
-    'shellCommand',
-    'shell_command',
-    'script',
-    'toolCall',
-  ]) {
-    redacted.remove(key);
-  }
-  redacted['commandLine'] = _normalizedDisplay(_tokenValues(tokens));
-  return redacted;
+  return <String, Object?>{
+    'commandLine': _normalizedDisplay(_tokenValues(tokens)),
+  };
 }
 
 String redactedPermissionTitleForAudit(AcpPermissionRequest request) {
-  return _redactedPermissionTextForAudit(request.title, prefix: 'Command: ');
+  final display = _permissionCommandDisplayForAudit(request);
+  return display == null ? request.title : 'Command: $display';
 }
 
 String redactedPermissionRationaleForAudit(AcpPermissionRequest request) {
-  return _redactedPermissionTextForAudit(
-    request.rationale,
-    prefix: 'Command details: ',
-  );
+  return _commandFromPermissionRequest(request) == null
+      ? request.rationale
+      : 'Command details withheld from audit.';
 }
 
-String _redactedPermissionTextForAudit(String text, {required String prefix}) {
-  final command = _commandLineFromPermissionText(text);
-  if (command == null) return text;
-  final tokenization = _shellWords(command);
-  return '$prefix${_normalizedDisplay(_tokenValues(tokenization.tokens))}';
+String? _permissionCommandDisplayForAudit(AcpPermissionRequest request) {
+  final invocation = _commandFromPermissionRequest(request);
+  if (invocation == null) return null;
+  final tokenization = _shellWords(invocation.command);
+  return _normalizedDisplay(<String>[
+    ..._tokenValues(tokenization.tokens),
+    ...invocation.args,
+  ]);
 }
 
 _PermissionCommand? _commandFromPermissionRequest(
@@ -510,6 +571,23 @@ Map<String, String> _transientEnvironment(AcpPermissionRequest request) {
   };
 }
 
+bool _hasExternalProxyEnvironment(Map<String, String> environment) {
+  for (final entry in environment.entries) {
+    final name = entry.key.toLowerCase();
+    if (!const {
+      'http_proxy',
+      'https_proxy',
+      'ftp_proxy',
+      'all_proxy',
+    }.contains(name)) {
+      continue;
+    }
+    final proxy = entry.value.trim();
+    if (proxy.isNotEmpty && !_isLocalTransferTarget(proxy)) return true;
+  }
+  return false;
+}
+
 String? _permissionCwd(AcpPermissionRequest request) {
   final cwd = request.metadata['cwd'];
   return cwd is String && cwd.trim().isNotEmpty ? cwd.trim() : null;
@@ -594,7 +672,95 @@ List<String> _tokenValues(Iterable<_ShellToken> tokens) {
   return tokens.map((token) => token.value).toList(growable: false);
 }
 
-String _normalizedDisplay(List<String> tokens) {
+String _normalizedDisplay(List<String> tokens, {int depth = 0}) {
+  if (tokens.isEmpty) return '<redacted>';
+  if (depth >= 4) {
+    return '${_shellDisplayArg(tokens.first)} <redacted>';
+  }
+  final executable = _executableName(tokens.first);
+  final args = tokens.skip(1).toList(growable: false);
+
+  if (_isScriptInterpreterExecutable(executable)) {
+    return args.isEmpty
+        ? _shellDisplayArg(tokens.first)
+        : '${_shellDisplayArg(tokens.first)} <redacted>';
+  }
+
+  if (_multiCallExecutables.contains(executable)) {
+    if (args.isNotEmpty && _executableName(args.first) == 'sh') {
+      final nested = _normalizedDisplay(args, depth: depth + 1);
+      return '${_shellDisplayArg(tokens.first)} ${_shellDisplayArg(nested)}';
+    }
+    return args.isEmpty
+        ? _shellDisplayArg(tokens.first)
+        : '${_shellDisplayArg(tokens.first)} <redacted>';
+  }
+
+  if (_posixShellExecutables.contains(executable)) {
+    final commandIndex = _posixShellCommandIndex(args);
+    if (commandIndex == null) {
+      return args.isEmpty
+          ? _shellDisplayArg(tokens.first)
+          : '${_shellDisplayArg(tokens.first)} <redacted>';
+    }
+    final absoluteIndex = commandIndex + 1;
+    final nestedTokens = _nestedCommandTokens(tokens[absoluteIndex]);
+    final prefix = _normalizedDisplayFlat(tokens.sublist(0, absoluteIndex));
+    final nested = nestedTokens.isEmpty
+        ? '<redacted>'
+        : _normalizedDisplay(nestedTokens, depth: depth + 1);
+    return '$prefix ${_shellDisplayArg(nested)}'
+        '${absoluteIndex + 1 < tokens.length ? ' <redacted>' : ''}';
+  }
+
+  if (_powerShellExecutables.contains(executable)) {
+    final commandIndex = _powerShellCommandIndex(args);
+    if (commandIndex == null) {
+      return args.isEmpty
+          ? _shellDisplayArg(tokens.first)
+          : '${_shellDisplayArg(tokens.first)} <redacted>';
+    }
+    final absoluteIndex = commandIndex + 1;
+    final nestedTokens = <String>[
+      ..._nestedCommandTokens(tokens[absoluteIndex]),
+      ...tokens.skip(absoluteIndex + 1),
+    ];
+    final prefix = _normalizedDisplayFlat(tokens.sublist(0, absoluteIndex));
+    final nested = nestedTokens.isEmpty
+        ? '<redacted>'
+        : _normalizedDisplay(nestedTokens, depth: depth + 1);
+    return '$prefix ${_shellDisplayArg(nested)}';
+  }
+
+  if (executable == 'eval') {
+    if (args.isEmpty) return _shellDisplayArg(tokens.first);
+    final nestedTokens = <String>[
+      ..._nestedCommandTokens(args.first),
+      ...args.skip(1),
+    ];
+    final nested = nestedTokens.isEmpty
+        ? '<redacted>'
+        : _normalizedDisplay(nestedTokens, depth: depth + 1);
+    return '${_shellDisplayArg(tokens.first)} ${_shellDisplayArg(nested)}';
+  }
+
+  if (_uncertainCommandWrappers.contains(executable)) {
+    return args.isEmpty
+        ? _shellDisplayArg(tokens.first)
+        : '${_shellDisplayArg(tokens.first)} <redacted>';
+  }
+
+  return _normalizedDisplayFlat(tokens);
+}
+
+List<String> _nestedCommandTokens(String command) {
+  final tokenization = _shellWords(command);
+  return tokenization.syntaxComplete
+      ? _tokenValues(tokenization.tokens)
+      : const <String>[];
+}
+
+String _normalizedDisplayFlat(List<String> tokens) {
   if (tokens.isEmpty) return '<redacted>';
   final displayed = <String>[];
   var redactNext = false;
@@ -667,6 +833,10 @@ const Set<String> _sensitiveDetachedOptions = {
   '--http-password',
   '--ftp-password',
   '--proxy-password',
+  '--post-data',
+  '--post-file',
+  '--body-data',
+  '--body-file',
 };
 
 const Set<String> _sensitiveShortOptions = {
@@ -740,6 +910,13 @@ String _basename(String value) {
   final normalized = value.replaceAll('\\', '/');
   final index = normalized.lastIndexOf('/');
   return index == -1 ? normalized : normalized.substring(index + 1);
+}
+
+String _executableName(String value) {
+  final basename = _basename(value).toLowerCase();
+  return basename.endsWith('.exe')
+      ? basename.substring(0, basename.length - 4)
+      : basename;
 }
 
 String? _externalHttpTransferUrl(String executable, List<String> args) {
@@ -931,7 +1108,8 @@ bool _looksLikeNetworkTarget(String value) {
   final host = authority.split(':').first;
   return host == 'localhost' ||
       RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host) ||
-      host.contains('.');
+      host.contains('.') ||
+      (host.isNotEmpty && normalized.contains(RegExp(r'[/#?]')));
 }
 
 bool _hasCurlTransferConfig(List<String> args) {
@@ -1152,6 +1330,8 @@ const Set<String> _wgetOptionsTakingValue = {
   '--output-document',
   '--post-data',
   '--post-file',
+  '--body-data',
+  '--body-file',
   '--header',
   '--user',
   '--password',

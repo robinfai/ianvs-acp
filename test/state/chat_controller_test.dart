@@ -2706,6 +2706,61 @@ void main() {
     },
   );
 
+  test(
+    'external proxy environment keeps local transfers manual without audit leaks',
+    () async {
+      const secretProxy =
+          'https://alice:proxy-controller-secret@proxy.example:8443/private';
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-proxy-egress',
+          title: 'Create terminal',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11),
+          metadata: const <String, Object?>{
+            'command': 'curl',
+            'args': ['http://localhost/health'],
+          },
+          transientPolicyContext: const <String, Object?>{
+            'environment': <String, String>{'HTTPS_PROXY': secretProxy},
+          },
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(
+        controller.pendingPermissionRequest?.id,
+        'permission-proxy-egress',
+      );
+      expect(fake.lastPermissionDecision, isNull);
+      expect(
+        controller.permissionHistory.single.reviewResult?.details,
+        containsPair('egressReason', 'external_proxy_environment'),
+      );
+      expect(
+        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        isNot(contains('proxy-controller-secret')),
+      );
+      expect(
+        events.single.request.toJson().toString(),
+        isNot(contains('proxy-controller-secret')),
+      );
+    },
+  );
+
   test('wrapped egress bypasses auto review approval', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
@@ -2825,10 +2880,10 @@ void main() {
         AcpPermissionRequest(
           id: 'permission-text-secret',
           title:
-              'Run: curl --tlspassword=$secret '
-              'example.com/upload?token=$secret',
+              "Run: bash -c 'curl --tlspassword=$secret "
+              "example.com/upload?token=$secret'",
           rationale:
-              'Executing: curl --cert client.pem:$secret '
+              'Executing: eval curl --cert client.pem:$secret '
               'https://example.com/private?token=$secret',
           sessionId: 'session-1',
           toolName: 'terminal',
@@ -2851,6 +2906,118 @@ void main() {
       expect(events.last.request.toJson().toString(), isNot(contains(secret)));
     },
   );
+
+  test(
+    'permission audit allowlists command metadata and preserves active binding',
+    () async {
+      const secret = 'comprehensive-audit-secret';
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
+
+      final request = AcpPermissionRequest(
+        id: 'permission-comprehensive-secret',
+        title: 'Upload to https://alice:$secret@collector.example/private',
+        rationale: 'Archive destination intranet/upload?token=$secret',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 11),
+        metadata: const <String, Object?>{
+          'command': 'bash',
+          'argv': <String>[
+            '-c',
+            'curl -u alice:$secret '
+                'https://example.com/upload?token=$secret',
+          ],
+          'cwd': '/workspace',
+          'futureCommandAlias': <String, Object?>{'credential': secret},
+        },
+      );
+      fake.emitPermissionRequest(request);
+      await pumpEventQueue();
+
+      expect(
+        controller.pendingPermissionRequest?.id,
+        'permission-comprehensive-secret',
+      );
+      final activeBindingKey = controller.pendingPermissionRequest!.bindingKey;
+      expect(activeBindingKey, isNot(request.bindingKey));
+      expect(fake.lastPermissionDecision, isNull);
+      expect(events, hasLength(1));
+      expect(events.single.type, ChatPermissionEventType.requested);
+      expect(events.single.request.bindingKey, activeBindingKey);
+      expect(
+        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        isNot(contains(secret)),
+      );
+      expect(
+        events.single.request.toJson().toString(),
+        isNot(contains(secret)),
+      );
+
+      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+
+      expect(events, hasLength(2));
+      expect(events.last.type, ChatPermissionEventType.resolved);
+      for (final event in events) {
+        expect(event.request.bindingKey, activeBindingKey);
+        expect(event.request.toJson().toString(), isNot(contains(secret)));
+      }
+      expect(
+        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        isNot(contains(secret)),
+      );
+    },
+  );
+
+  test('permission audit drops unknown non-command metadata', () async {
+    const secret = 'non-command-metadata-secret';
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    final events = <ChatPermissionEvent>[];
+    controller.addPermissionEventObserver(events.add);
+
+    final request = AcpPermissionRequest(
+      id: 'permission-non-command-secret',
+      title: 'Read file',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'read_text_file',
+      toolKind: 'read',
+      options: const ['Allow', 'Deny'],
+      requestedAt: DateTime(2026, 7, 11),
+      metadata: const <String, Object?>{
+        'unknownRemoteField': <String, Object?>{'token': secret},
+      },
+    );
+    fake.emitPermissionRequest(request);
+    await pumpEventQueue();
+
+    final activeBindingKey = controller.pendingPermissionRequest!.bindingKey;
+    expect(activeBindingKey, isNot(request.bindingKey));
+    expect(events.single.request.bindingKey, activeBindingKey);
+    expect(events.single.request.metadata, isEmpty);
+    expect(
+      acpPermissionAuditEntriesToJson(controller.permissionHistory),
+      isNot(contains(secret)),
+    );
+
+    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+
+    expect(events, hasLength(2));
+    for (final event in events) {
+      expect(event.request.bindingKey, activeBindingKey);
+      expect(event.request.toJson().toString(), isNot(contains(secret)));
+    }
+  });
 
   test(
     'switching to full access resolves the current pending request',
