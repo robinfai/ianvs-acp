@@ -288,11 +288,25 @@ class _PermissionDisplayProjectionBuilder {
     required bool countUtf8,
   }) {
     if (raw is! List || depth > limits.maxDepth) return null;
+    final remainingNodes = limits.maxNodes - _nodes;
+    if (remainingNodes <= 0) return null;
+    late final int length;
+    try {
+      length = raw.length;
+    } on Object {
+      return null;
+    }
+    if (length < 0 || length > remainingNodes) return null;
+
     final result = <String>[];
-    var index = 0;
-    while (index < raw.length) {
+    for (var index = 0; index < length; index += 1) {
       if (!_takeNode()) return null;
-      final item = raw[index++];
+      late final Object? item;
+      try {
+        item = raw[index];
+      } on Object {
+        return null;
+      }
       if (item is! String || !_addUtf8(item, countUtf8: countUtf8)) {
         return null;
       }

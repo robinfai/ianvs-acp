@@ -1188,6 +1188,42 @@ void main() {
       expect(overflow.entries, isEmpty);
     });
 
+    test('reads list length once before rejecting node overflow', () {
+      const canary = 'permission-list-length-canary';
+      final args = _LengthReadSentinelList(canary);
+
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{'command': 'git', 'args': args},
+        ),
+      );
+
+      expect(context.isComplete, isFalse);
+      expect(context.entries, isEmpty);
+      expect(context.warning, PermissionDisplayContext.incompleteWarning);
+      expect(context.warning, isNot(contains(canary)));
+      expect(args.lengthReads, 1);
+      expect(args.itemReads, 0);
+    });
+
+    test('fails closed when the list length getter throws', () {
+      const canary = 'permission-list-getter-canary';
+
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'command': 'git',
+            'args': _ThrowingLengthList(canary),
+          },
+        ),
+      );
+
+      expect(context.isComplete, isFalse);
+      expect(context.entries, isEmpty);
+      expect(context.warning, PermissionDisplayContext.incompleteWarning);
+      expect(context.warning, isNot(contains(canary)));
+    });
+
     test('uses a payload-free warning without invoking remote toString', () {
       const canary = 'permission-display-secret-canary';
       final context = permissionDisplayContextForRequest(
@@ -1343,6 +1379,51 @@ class _DefaultNodeLimitSentinelList extends ListBase<String> {
     if (index < 125) return 'arg$index';
     throw StateError('129th node value was read');
   }
+
+  @override
+  void operator []=(int index, String value) => throw UnsupportedError('');
+}
+
+class _LengthReadSentinelList extends ListBase<String> {
+  _LengthReadSentinelList(this.canary);
+
+  final String canary;
+  int lengthReads = 0;
+  int itemReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    if (lengthReads > 1) throw StateError(canary);
+    return 126;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('');
+
+  @override
+  String operator [](int index) {
+    itemReads += 1;
+    return 'arg$index';
+  }
+
+  @override
+  void operator []=(int index, String value) => throw UnsupportedError('');
+}
+
+class _ThrowingLengthList extends ListBase<String> {
+  _ThrowingLengthList(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => throw StateError(canary);
+
+  @override
+  set length(int value) => throw UnsupportedError('');
+
+  @override
+  String operator [](int index) => throw StateError(canary);
 
   @override
   void operator []=(int index, String value) => throw UnsupportedError('');
