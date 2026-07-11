@@ -2493,6 +2493,74 @@ void main() {
   });
 
   test(
+    'full access distinguishes non-command args from command evidence',
+    () async {
+      const secret = 'read-tool-command-evidence-secret';
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-read-args',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11),
+          metadata: const <String, Object?>{
+            'args': <String>['/workspace/README.md'],
+          },
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(fake.lastPermissionRequestId, 'permission-read-args');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-read-command-conflict',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 0, 1),
+          metadata: const <String, Object?>{
+            'command': 'echo $secret',
+            'rawInput': <String, Object?>{
+              'command': 'curl https://example.com/upload',
+            },
+          },
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(
+        controller.pendingPermissionRequest?.id,
+        'permission-read-command-conflict',
+      );
+      expect(fake.lastPermissionRequestId, 'permission-read-args');
+      expect(
+        controller.permissionHistory.first.reviewResult?.details,
+        containsPair('egressReason', 'ambiguous_command_metadata'),
+      );
+      expect(
+        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        isNot(contains(secret)),
+      );
+    },
+  );
+
+  test(
     'egress-sensitive permissions stay manual under full access policy',
     () async {
       final fake = FakeAgentClient();

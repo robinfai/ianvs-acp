@@ -171,10 +171,35 @@ void main() {
       }
     });
 
-    test('does not treat non-command raw input as command ambiguity', () {
+    test('does not treat non-command input or args as command evidence', () {
+      for (final metadata in const <Map<String, Object?>>[
+        <String, Object?>{'input': '/workspace/README.md'},
+        <String, Object?>{
+          'args': <String>['/workspace/README.md'],
+        },
+      ]) {
+        final match = egressPolicyMatchForPermission(
+          AcpPermissionRequest(
+            id: 'permission-read-input',
+            title: 'Read file',
+            rationale: 'Requested by agent.',
+            sessionId: 'session-1',
+            toolName: 'read_text_file',
+            toolKind: 'read',
+            options: const ['allow', 'deny'],
+            requestedAt: DateTime(2026, 7, 7, 8),
+            metadata: metadata,
+          ),
+        );
+
+        expect(match, isNull, reason: metadata.toString());
+      }
+    });
+
+    test('holds command evidence even on a non-command tool', () {
       final match = egressPolicyMatchForPermission(
         AcpPermissionRequest(
-          id: 'permission-read-input',
+          id: 'permission-read-conflict',
           title: 'Read file',
           rationale: 'Requested by agent.',
           sessionId: 'session-1',
@@ -182,11 +207,39 @@ void main() {
           toolKind: 'read',
           options: const ['allow', 'deny'],
           requestedAt: DateTime(2026, 7, 7, 8),
-          metadata: const <String, Object?>{'input': '/workspace/README.md'},
+          metadata: const <String, Object?>{
+            'command': 'echo safe',
+            'rawInput': <String, Object?>{
+              'command': 'curl https://example.com/upload',
+            },
+          },
         ),
       );
 
-      expect(match, isNull);
+      expect(match?.reason, 'ambiguous_command_metadata');
+      expect(match?.commandLine, '<redacted>');
+    });
+
+    test('holds args-only ambiguity for explicit command tools', () {
+      for (final toolName in const <String>['command', 'bash']) {
+        final match = egressPolicyMatchForPermission(
+          AcpPermissionRequest(
+            id: 'permission-explicit-args',
+            title: 'Run tool',
+            rationale: 'Requested by agent.',
+            sessionId: 'session-1',
+            toolName: toolName,
+            options: const ['allow', 'deny'],
+            requestedAt: DateTime(2026, 7, 7, 8),
+            metadata: const <String, Object?>{
+              'args': <String>['-c', 'curl https://example.com/upload'],
+            },
+          ),
+        );
+
+        expect(match?.reason, 'ambiguous_command_metadata', reason: toolName);
+        expect(match?.commandLine, '<redacted>');
+      }
     });
 
     test('detects commands encoded in raw tool input', () {

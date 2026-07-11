@@ -517,7 +517,11 @@ _PermissionCommand? _commandFromPermissionRequest(
   final primary = _resolvePermissionCommandContainer(metadata);
   final nested = _resolvePermissionCommandContainer(toolCallSource);
   if (primary.ambiguous || nested.ambiguous) {
-    if (_isCommandPermissionRequest(request, metadata, toolCallSource)) {
+    final sawCommandEvidence =
+        primary.sawCommandEvidence || nested.sawCommandEvidence;
+    final sawArgsEvidence = primary.sawArgsEvidence || nested.sawArgsEvidence;
+    if (sawCommandEvidence ||
+        (sawArgsEvidence && _isExplicitCommandPermission(request))) {
       return const _PermissionCommand.ambiguous();
     }
     return null;
@@ -540,29 +544,11 @@ _PermissionCommand? _commandFromPermissionRequest(
   return textCommand == null ? null : _PermissionCommand(textCommand, const []);
 }
 
-bool _isCommandPermissionRequest(
-  AcpPermissionRequest request,
-  Map metadata,
-  Map? toolCall,
-) {
+bool _isExplicitCommandPermission(AcpPermissionRequest request) {
   final kind = request.toolKind?.trim().toLowerCase();
   final tool = request.toolName.trim().toLowerCase();
-  if (const {'execute', 'command', 'terminal', 'shell'}.contains(kind) ||
-      const {
-        'execute',
-        'command',
-        'terminal',
-        'shell',
-        'bash',
-      }.contains(tool)) {
-    return true;
-  }
-  return <Map>[metadata, ?toolCall].any(
-    (source) => <String>[
-      ..._permissionCommandKeys,
-      ..._permissionArgumentKeys,
-    ].any(source.containsKey),
-  );
+  return const {'execute', 'command', 'terminal', 'shell'}.contains(kind) ||
+      const {'execute', 'command', 'terminal', 'shell', 'bash'}.contains(tool);
 }
 
 class _PermissionCommand {
@@ -604,12 +590,16 @@ class _PermissionCommandContainer {
     required this.args,
     required this.hasArgs,
     required this.ambiguous,
+    required this.sawCommandEvidence,
+    required this.sawArgsEvidence,
   });
 
   final String? command;
   final List<String> args;
   final bool hasArgs;
   final bool ambiguous;
+  final bool sawCommandEvidence;
+  final bool sawArgsEvidence;
 }
 
 _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
@@ -619,6 +609,8 @@ _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
       args: <String>[],
       hasArgs: false,
       ambiguous: false,
+      sawCommandEvidence: false,
+      sawArgsEvidence: false,
     );
   }
   final sources = <Map>[source];
@@ -649,9 +641,12 @@ _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
 
   final commands = <String>[];
   final argumentLists = <List<String>>[];
+  var sawCommandEvidence = false;
+  var sawArgsEvidence = false;
   for (final candidate in sources) {
     for (final key in _permissionCommandKeys) {
       if (!candidate.containsKey(key)) continue;
+      sawCommandEvidence = true;
       final value = candidate[key];
       if (value is! String || value.trim().isEmpty) {
         malformed = true;
@@ -662,6 +657,7 @@ _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
     }
     for (final key in _permissionArgumentKeys) {
       if (!candidate.containsKey(key)) continue;
+      sawArgsEvidence = true;
       final value = candidate[key];
       if (identical(candidate, source) && value is! List) continue;
       if (value is! List || value.any((item) => item is! String)) {
@@ -687,6 +683,8 @@ _PermissionCommandContainer _resolvePermissionCommandContainer(Map? source) {
     args: argumentLists.length == 1 ? argumentLists.single : const <String>[],
     hasArgs: hasArgs,
     ambiguous: ambiguous,
+    sawCommandEvidence: sawCommandEvidence,
+    sawArgsEvidence: sawArgsEvidence,
   );
 }
 
