@@ -86,6 +86,22 @@ class TaskRepositoryConflict implements Exception {
   String toString() => 'TaskRepositoryConflict: $message';
 }
 
+class RawPayloadPurgeResult {
+  const RawPayloadPurgeResult({
+    this.skipped = false,
+    this.eventsPurged = 0,
+    this.runsPurged = 0,
+    this.artifactsPurged = 0,
+  });
+
+  final bool skipped;
+  final int eventsPurged;
+  final int runsPurged;
+  final int artifactsPurged;
+
+  int get totalPurged => eventsPurged + runsPurged + artifactsPurged;
+}
+
 bool taskRepositoryRecordHasCanonicalFields(Object record) {
   bool requiredText(String value) => value.isNotEmpty && value.trim() == value;
   bool optionalText(String? value) =>
@@ -230,6 +246,14 @@ abstract interface class AtomicTaskClaimMetadataRepository {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
     required Map<String, Object?> claimedMetadata,
+  });
+}
+
+abstract interface class RawPayloadMaintenanceRepository {
+  Future<RawPayloadPurgeResult> purgeRawPayloads({
+    required DateTime now,
+    Duration retention = const Duration(days: 30),
+    bool force = false,
   });
 }
 

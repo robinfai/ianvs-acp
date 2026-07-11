@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:sqlite3/sqlite3.dart';
 
+import '../platform/secure_atomic_file.dart';
+import 'task_data_sanitizer.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
 import 'task_repository.dart';
@@ -12,7 +14,8 @@ class TaskInboxSqliteStore
     implements
         TaskRepository,
         TaskMigrationRepository,
-        AtomicTaskClaimMetadataRepository {
+        AtomicTaskClaimMetadataRepository,
+        RawPayloadMaintenanceRepository {
   TaskInboxSqliteStore({required this.path});
 
   static const String fileName = 'task_inbox_state.sqlite3';
@@ -27,7 +30,11 @@ class TaskInboxSqliteStore
   }) {
     final config = configPath?.trim();
     if (config != null && config.isNotEmpty) {
-      return _joinPath(File(config).parent.path, fileName);
+      final configDirectory = File(config).parent;
+      final stateDirectory = _isAppOwnedStateDirectory(configDirectory)
+          ? configDirectory.path
+          : _joinPath(configDirectory.path, '.ianvs-acp');
+      return _joinPath(stateDirectory, fileName);
     }
 
     final env = environment ?? Platform.environment;
@@ -57,27 +64,58 @@ class TaskInboxSqliteStore
       if (targetPath == null || targetPath.isEmpty) {
         _database = sqlite3.openInMemory();
       } else {
-        await File(targetPath).parent.create(recursive: true);
-        _database = sqlite3.open(targetPath);
+        final requestedFile = File(targetPath);
+        final requestedType = await FileSystemEntity.type(
+          requestedFile.path,
+          followLinks: false,
+        );
+        if (requestedType == FileSystemEntityType.link) {
+          throw FileSystemException(
+            'Task repository database must not be a symbolic link.',
+            requestedFile.path,
+          );
+        }
+        final parentExisted = await requestedFile.parent.exists();
+        await requestedFile.parent.create(recursive: true);
+        final resolvedParent = Directory(
+          await requestedFile.parent.resolveSymbolicLinks(),
+        );
+        if (!parentExisted || _isAppOwnedStateDirectory(resolvedParent)) {
+          await SecureAtomicFile.protectPrivateDirectory(resolvedParent);
+        }
+        final databaseFile = File(
+          _joinPath(resolvedParent.path, requestedFile.uri.pathSegments.last),
+        );
+        await _protectSqliteFiles(databaseFile, createDatabase: true);
+        _database = sqlite3.open(databaseFile.path);
       }
       final database = _database!;
       database.execute('PRAGMA busy_timeout = 5000;');
       database.execute('PRAGMA journal_mode = WAL;');
       database.execute('PRAGMA synchronous = FULL;');
       database.execute('PRAGMA foreign_keys = ON;');
+      database.execute('PRAGMA secure_delete = ON;');
       _rejectUnsupportedSchema(database);
       database.execute(_schemaSql);
-      database.execute(
-        'INSERT OR IGNORE INTO schema_migrations (version, applied_at) '
-        'VALUES (1, ?);',
-        [DateTime.now().toUtc().toIso8601String()],
-      );
+      _applySchemaMigrations(database);
       database.execute(
         'INSERT OR IGNORE INTO store_meta '
-        '(id, revision, migration_state, source_checksum, updated_at) '
-        "VALUES (1, 0, 'inactive', NULL, ?);",
+        '(id, revision, migration_state, source_checksum, updated_at, '
+        'last_raw_payload_purge_at) '
+        "VALUES (1, 0, 'inactive', NULL, ?, NULL);",
         [DateTime.now().toUtc().toIso8601String()],
       );
+      if (targetPath != null && targetPath.isNotEmpty) {
+        final requestedFile = File(targetPath);
+        final resolvedParent = Directory(
+          await requestedFile.parent.resolveSymbolicLinks(),
+        );
+        await _protectSqliteFiles(
+          File(
+            _joinPath(resolvedParent.path, requestedFile.uri.pathSegments.last),
+          ),
+        );
+      }
     } on Object {
       final database = _database;
       _database = null;
@@ -85,6 +123,24 @@ class TaskInboxSqliteStore
       _initializeFuture = null;
       rethrow;
     }
+  }
+
+  static Future<void> _protectSqliteFiles(
+    File databaseFile, {
+    bool createDatabase = false,
+  }) async {
+    await SecureAtomicFile.protectPrivateFile(
+      databaseFile,
+      create: createDatabase,
+    );
+    await SecureAtomicFile.protectPrivateFile(
+      File('${databaseFile.path}-wal'),
+      create: false,
+    );
+    await SecureAtomicFile.protectPrivateFile(
+      File('${databaseFile.path}-shm'),
+      create: false,
+    );
   }
 
   Future<String> journalMode() async {
@@ -107,7 +163,7 @@ class TaskInboxSqliteStore
     return rows.map((row) => row['name'].toString()).toSet();
   }
 
-  TaskInboxSnapshot _loadSnapshot(Database database) {
+  static TaskInboxSnapshot _loadSnapshot(Database database) {
     final meta = database.select(
       'SELECT updated_at FROM store_meta WHERE id = 1;',
     );
@@ -597,6 +653,101 @@ class TaskInboxSqliteStore
   }
 
   @override
+  Future<RawPayloadPurgeResult> purgeRawPayloads({
+    required DateTime now,
+    Duration retention = const Duration(days: 30),
+    bool force = false,
+  }) async {
+    if (retention <= Duration.zero) {
+      throw ArgumentError.value(retention, 'retention', 'Must be positive.');
+    }
+    await initialize();
+    final database = _database!;
+    final utcNow = now.toUtc();
+    var transactionOpen = true;
+    database.execute('BEGIN IMMEDIATE;');
+    try {
+      if (!force) {
+        final rows = database.select(
+          'SELECT last_raw_payload_purge_at FROM store_meta WHERE id = 1;',
+        );
+        final rawLastPurge = rows.isEmpty
+            ? null
+            : rows.single['last_raw_payload_purge_at'];
+        final lastPurge = rawLastPurge is String
+            ? DateTime.tryParse(rawLastPurge)?.toUtc()
+            : null;
+        if (lastPurge != null &&
+            !lastPurge.isAfter(utcNow) &&
+            utcNow.difference(lastPurge) < const Duration(days: 1)) {
+          database.execute('COMMIT;');
+          transactionOpen = false;
+          _truncateWalAfterRawPayloadPurge(database);
+          return const RawPayloadPurgeResult(skipped: true);
+        }
+      }
+
+      final cutoff = utcNow.subtract(retention);
+      final runsPurged = _purgeRunPrompts(
+        database,
+        cutoff: cutoff,
+        force: force,
+      );
+      final eventsPurged = _purgeEventMetadata(
+        database,
+        cutoff: cutoff,
+        force: force,
+      );
+      final artifactsPurged = _purgeArtifactPayloads(
+        database,
+        cutoff: cutoff,
+        force: force,
+      );
+      final totalPurged = runsPurged + eventsPurged + artifactsPurged;
+      if (totalPurged == 0) {
+        database.execute(
+          'UPDATE store_meta SET last_raw_payload_purge_at = ? WHERE id = 1;',
+          <Object?>[utcNow.toIso8601String()],
+        );
+      } else {
+        database.execute(
+          'UPDATE store_meta SET last_raw_payload_purge_at = ?, '
+          'revision = revision + 1, updated_at = ? WHERE id = 1;',
+          <Object?>[
+            utcNow.toIso8601String(),
+            _monotonicUpdatedAt(database, utcNow),
+          ],
+        );
+      }
+      database.execute('COMMIT;');
+      transactionOpen = false;
+      _truncateWalAfterRawPayloadPurge(database);
+      return RawPayloadPurgeResult(
+        eventsPurged: eventsPurged,
+        runsPurged: runsPurged,
+        artifactsPurged: artifactsPurged,
+      );
+    } on Object {
+      if (transactionOpen) database.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  static void _truncateWalAfterRawPayloadPurge(Database database) {
+    try {
+      final rows = database.select('PRAGMA wal_checkpoint(TRUNCATE);');
+      final busy = rows.isEmpty ? 0 : rows.single.values.first;
+      if (busy is int && busy == 0) return;
+      throw StateError('SQLite WAL checkpoint remained busy ($busy).');
+    } on Object catch (error) {
+      throw StateError(
+        'Raw payload cleanup committed, but secure WAL truncation failed: '
+        '$error',
+      );
+    }
+  }
+
+  @override
   Future<TaskMigrationMetadata> migrationMetadata() async {
     await initialize();
     final rows = _database!.select(
@@ -796,6 +947,84 @@ class TaskInboxSqliteStore
     database?.close();
   }
 
+  static int _purgeRunPrompts(
+    Database database, {
+    required DateTime cutoff,
+    required bool force,
+  }) {
+    final rows = database.select(
+      'SELECT payload_json FROM task_runs WHERE prompt_snapshot IS NOT NULL;',
+    );
+    var purgedCount = 0;
+    for (final row in rows) {
+      final run = TaskRunRecord.fromJson(_decodePayload(row));
+      if (run == null) throw const FormatException('Invalid task run payload.');
+      if (!force && !run.startedAt.toUtc().isBefore(cutoff)) continue;
+      final purged = run.copyWith(promptSnapshot: null);
+      database.execute(
+        'UPDATE task_runs SET prompt_snapshot = NULL, payload_json = ? '
+        'WHERE id = ?;',
+        <Object?>[jsonEncode(purged.toJson()), run.id],
+      );
+      purgedCount += 1;
+    }
+    return purgedCount;
+  }
+
+  static int _purgeEventMetadata(
+    Database database, {
+    required DateTime cutoff,
+    required bool force,
+  }) {
+    final rows = database.select(
+      "SELECT payload_json FROM task_events WHERE metadata_json != '{}';",
+    );
+    var purgedCount = 0;
+    for (final row in rows) {
+      final event = TaskEventRecord.fromJson(_decodePayload(row));
+      if (event == null) {
+        throw const FormatException('Invalid task event payload.');
+      }
+      if (!force && !event.createdAt.toUtc().isBefore(cutoff)) continue;
+      final purged = event.copyWith(metadata: const <String, Object?>{});
+      database.execute(
+        "UPDATE task_events SET metadata_json = '{}', payload_json = ? "
+        'WHERE id = ?;',
+        <Object?>[jsonEncode(purged.toJson()), event.id],
+      );
+      purgedCount += 1;
+    }
+    return purgedCount;
+  }
+
+  static int _purgeArtifactPayloads(
+    Database database, {
+    required DateTime cutoff,
+    required bool force,
+  }) {
+    final rows = database.select('SELECT payload_json FROM artifacts;');
+    var purgedCount = 0;
+    for (final row in rows) {
+      final artifact = ArtifactRecord.fromJson(_decodePayload(row));
+      if (artifact == null) {
+        throw const FormatException('Invalid artifact payload.');
+      }
+      if (artifact.metadata['raw_payload'] != true) continue;
+      if (!force && !artifact.createdAt.toUtc().isBefore(cutoff)) continue;
+      final purged = artifact.copyWith(
+        contentPreview: null,
+        metadata: const <String, Object?>{},
+      );
+      database.execute(
+        "UPDATE artifacts SET content_preview = NULL, metadata_json = '{}', "
+        'payload_json = ? WHERE id = ?;',
+        <Object?>[jsonEncode(purged.toJson()), artifact.id],
+      );
+      purgedCount += 1;
+    }
+    return purgedCount;
+  }
+
   T _writeTransaction<T>(
     T Function(Database database) action, {
     DateTime? updatedAt,
@@ -873,11 +1102,125 @@ class TaskInboxSqliteStore
       'SELECT MAX(version) AS version FROM schema_migrations;',
     );
     final version = rows.isEmpty ? null : rows.first['version'];
-    if (version is int && version > 1) {
+    if (version is int && version > 2) {
       throw StateError(
-        'Task repository schema version $version is newer than supported 1.',
+        'Task repository schema version $version is newer than supported 2.',
       );
     }
+  }
+
+  static void _applySchemaMigrations(Database database) {
+    database.execute('BEGIN IMMEDIATE;');
+    try {
+      final versionRows = database.select(
+        'SELECT MAX(version) AS version FROM schema_migrations;',
+      );
+      final version = versionRows.isEmpty
+          ? null
+          : versionRows.single['version'];
+      final columns = database
+          .select('PRAGMA table_info(store_meta);')
+          .map((row) => row['name'])
+          .whereType<String>()
+          .toSet();
+      final hasPurgeTimestamp = columns.contains('last_raw_payload_purge_at');
+      if (version is int && version >= 2 && !hasPurgeTimestamp) {
+        throw const FormatException(
+          'Task repository schema v2 is missing raw payload maintenance state.',
+        );
+      }
+      if (!hasPurgeTimestamp) {
+        database.execute(
+          'ALTER TABLE store_meta ADD COLUMN last_raw_payload_purge_at TEXT;',
+        );
+      }
+      if (version == 1) {
+        final sanitized = _sanitizePersistedSnapshot(_loadSnapshot(database));
+        sanitized.validateReferences();
+        _replaceSnapshot(database, sanitized);
+      }
+      final appliedAt = DateTime.now().toUtc().toIso8601String();
+      database.execute(
+        'INSERT OR IGNORE INTO schema_migrations (version, applied_at) '
+        'VALUES (1, ?);',
+        <Object?>[appliedAt],
+      );
+      database.execute(
+        'INSERT OR IGNORE INTO schema_migrations (version, applied_at) '
+        'VALUES (2, ?);',
+        <Object?>[appliedAt],
+      );
+      database.execute('COMMIT;');
+    } on Object {
+      database.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  static TaskInboxSnapshot _sanitizePersistedSnapshot(
+    TaskInboxSnapshot snapshot,
+  ) {
+    const sanitizer = TaskDataSanitizer();
+    String? safe(String? value) =>
+        value == null ? null : sanitizer.sanitizeText(value);
+    bool isFullDiffCommand(Object? value) {
+      return value is List &&
+          value.length == 2 &&
+          value[0] == 'git' &&
+          value[1] == 'diff';
+    }
+
+    return snapshot.copyWith(
+      tasks: <TaskRecord>[
+        for (final task in snapshot.tasks)
+          task.copyWith(
+            title: sanitizer.sanitizeText(task.title),
+            description: sanitizer.sanitizeText(task.description),
+            summary: safe(task.summary),
+            error: safe(task.error),
+            metadata: sanitizer.sanitize(task.metadata),
+          ),
+      ],
+      runs: <TaskRunRecord>[
+        for (final run in snapshot.runs)
+          run.copyWith(
+            promptSnapshot: safe(run.promptSnapshot),
+            error: safe(run.error),
+          ),
+      ],
+      events: <TaskEventRecord>[
+        for (final event in snapshot.events)
+          event.copyWith(
+            text: sanitizer.sanitizeText(event.text),
+            metadata: sanitizer.sanitize(event.metadata),
+          ),
+      ],
+      artifacts: <ArtifactRecord>[
+        for (final artifact in snapshot.artifacts)
+          artifact.copyWith(
+            title: sanitizer.sanitizeText(artifact.title),
+            path: safe(artifact.path),
+            contentPreview: safe(artifact.contentPreview),
+            metadata: sanitizer.sanitize(<String, Object?>{
+              ...artifact.metadata,
+              if (artifact.metadata['raw_payload'] == true ||
+                  artifact.kind == ArtifactKind.outboxFile ||
+                  artifact.title == 'Git diff preview' ||
+                  isFullDiffCommand(artifact.metadata['command']))
+                'raw_payload': true,
+            }),
+          ),
+      ],
+      approvals: <ApprovalRequestRecord>[
+        for (final approval in snapshot.approvals)
+          approval.copyWith(
+            destination: safe(approval.destination),
+            riskSummary: safe(approval.riskSummary),
+            rationale: safe(approval.rationale),
+            metadata: sanitizer.sanitize(approval.metadata),
+          ),
+      ],
+    );
   }
 
   static String _monotonicUpdatedAt(Database database, DateTime candidate) {
@@ -1496,6 +1839,15 @@ class TaskInboxSqliteStore
     }
     return '$directory${Platform.pathSeparator}$basename';
   }
+
+  static bool _isAppOwnedStateDirectory(Directory directory) {
+    final segments = directory.uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    if (segments.isEmpty) return false;
+    final name = segments.last.toLowerCase();
+    return name == 'ianvs-acp' || name == '.ianvs-acp';
+  }
 }
 
 const String _schemaSql = '''
@@ -1508,7 +1860,8 @@ CREATE TABLE IF NOT EXISTS store_meta (
   revision INTEGER NOT NULL,
   migration_state TEXT NOT NULL,
   source_checksum TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  last_raw_payload_purge_at TEXT
 );
 CREATE TABLE IF NOT EXISTS workspace_resources (
   id TEXT PRIMARY KEY,

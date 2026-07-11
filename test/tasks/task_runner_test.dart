@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
@@ -12,6 +13,7 @@ import 'package:ianvs_acp/tasks/artifact_collector.dart';
 import 'package:ianvs_acp/tasks/local_skill.dart';
 import 'package:ianvs_acp/tasks/runtime_registry.dart';
 import 'package:ianvs_acp/tasks/task_agent_pool.dart';
+import 'package:ianvs_acp/tasks/task_data_sanitizer.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_runner.dart';
@@ -1143,6 +1145,423 @@ void main() {
     expect(statuses, contains('Assistant turn completed.'));
   });
 
+  test('TaskRunner redacts retained tool metadata and event text', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Sensitive event task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: FakeAgentClient(
+        promptEvents: const [
+          AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'Bearer visible-in-text',
+            metadata: <String, Object?>{
+              'Authorization': 'Bearer visible-in-metadata',
+              'env': <String, Object?>{'TOKEN': 'sk-visible'},
+              'rawInput': '{"password":"plain","safe":"kept"}',
+            },
+          ),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: 'Bearer '),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: 'split-secret'),
+          AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+        ],
+      ),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+    );
+
+    await runner.runTask(task.id);
+
+    final tool = taskController.events.singleWhere(
+      (event) => event.kind == TaskEventKind.tool,
+    );
+    expect(tool.text, '<redacted>');
+    expect(tool.metadata['Authorization'], '<redacted>');
+    expect(tool.metadata['env'], <String, Object?>{'TOKEN': '<redacted>'});
+    expect(jsonDecode(tool.metadata['rawInput']! as String), {
+      'password': '<redacted>',
+      'safe': 'kept',
+    });
+    final assistant = taskController.events.singleWhere(
+      (event) => event.kind == TaskEventKind.assistant,
+    );
+    expect(assistant.text, '<redacted>');
+    final retained = jsonEncode(taskController.snapshot.toJson());
+    expect(retained, isNot(contains('visible-in-text')));
+    expect(retained, isNot(contains('visible-in-metadata')));
+    expect(retained, isNot(contains('sk-visible')));
+    expect(retained, isNot(contains('split-secret')));
+    expect(retained, isNot(contains('"plain"')));
+  });
+
+  test(
+    'TaskRunner redacts a bearer secret split across automatic flushes',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Split secret task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: FakeAgentClient(
+          chunkDelay: const Duration(milliseconds: 10),
+          promptEvents: const <AgentEvent>[
+            AgentEvent(type: AgentEventType.agentTextDelta, text: 'Bearer '),
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: 'split-secret',
+            ),
+            AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+          ],
+        ),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      await runner.runTask(task.id);
+
+      final retained = jsonEncode(taskController.snapshot.toJson());
+      expect(retained, contains('<redacted>'));
+      expect(retained, isNot(contains('split-secret')));
+      final assistantText = taskController.events
+          .where((event) => event.kind == TaskEventKind.assistant)
+          .map((event) => event.text)
+          .join();
+      expect(assistantText, isNot(contains('Bearer split-secret')));
+    },
+  );
+
+  test(
+    'TaskRunner redacts other known secrets split across automatic flushes',
+    () async {
+      const cases = <({String first, String second})>[
+        (first: 'sk-', second: 'abcd'),
+        (first: 'ghp_', second: '12345678901234567890'),
+        (first: 'github_pat_', second: '12345678901234567890'),
+        (first: '-----BEGIN RSA PRIVATE ', second: 'KEY-----\nmaterial'),
+      ];
+
+      for (final testCase in cases) {
+        final taskController = TaskInboxController(
+          repository: _MemoryTaskStore(),
+          idGenerator: _DeterministicIds().next,
+        );
+        addTearDown(taskController.dispose);
+        await taskController.load();
+        final task = await taskController.createTask(
+          title: 'Split known secret task',
+          description: '',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+        );
+        final chat = ChatController(
+          client: FakeAgentClient(
+            chunkDelay: const Duration(milliseconds: 10),
+            promptEvents: <AgentEvent>[
+              AgentEvent(
+                type: AgentEventType.agentTextDelta,
+                text: testCase.first,
+              ),
+              AgentEvent(
+                type: AgentEventType.agentTextDelta,
+                text: testCase.second,
+              ),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace/default',
+          agentName: 'Codex',
+        );
+        addTearDown(chat.dispose);
+        final runner = TaskRunner(
+          taskController: taskController,
+          agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+          eventBufferFlushInterval: const Duration(milliseconds: 1),
+        );
+
+        await runner.runTask(task.id);
+
+        final retained = jsonEncode(taskController.snapshot.toJson());
+        expect(retained, contains('<redacted>'), reason: testCase.first);
+        expect(
+          retained,
+          isNot(contains(testCase.second)),
+          reason: testCase.first,
+        );
+      }
+    },
+  );
+
+  test(
+    'TaskRunner protects split secrets across tool and status boundaries',
+    () async {
+      const cases = <({String first, String second, AgentEventType boundary})>[
+        (first: 'sk-', second: 'abcd', boundary: AgentEventType.toolCall),
+        (
+          first: 'ghp_',
+          second: '12345678901234567890',
+          boundary: AgentEventType.status,
+        ),
+        (
+          first: '-----BEGIN RSA PRIVATE ',
+          second: 'KEY-----\nmaterial',
+          boundary: AgentEventType.toolCall,
+        ),
+      ];
+
+      for (final testCase in cases) {
+        final taskController = TaskInboxController(
+          repository: _MemoryTaskStore(),
+          idGenerator: _DeterministicIds().next,
+        );
+        addTearDown(taskController.dispose);
+        await taskController.load();
+        final task = await taskController.createTask(
+          title: 'Boundary split secret task',
+          description: '',
+          workspacePath: '/workspace/app',
+          agentName: 'Codex',
+        );
+        final chat = ChatController(
+          client: FakeAgentClient(
+            chunkDelay: const Duration(milliseconds: 10),
+            promptEvents: <AgentEvent>[
+              AgentEvent(
+                type: AgentEventType.agentTextDelta,
+                text: testCase.first,
+              ),
+              AgentEvent(type: testCase.boundary, text: 'boundary'),
+              AgentEvent(
+                type: AgentEventType.agentTextDelta,
+                text: testCase.second,
+              ),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace/default',
+          agentName: 'Codex',
+        );
+        addTearDown(chat.dispose);
+        final runner = TaskRunner(
+          taskController: taskController,
+          agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+          eventBufferFlushInterval: const Duration(milliseconds: 1),
+        );
+
+        await runner.runTask(task.id);
+
+        final streamed = taskController.events
+            .where(
+              (event) =>
+                  event.kind == TaskEventKind.assistant ||
+                  event.text == 'boundary',
+            )
+            .toList(growable: false);
+        expect(streamed.take(2).map((event) => event.text), <String>[
+          testCase.first,
+          'boundary',
+        ], reason: testCase.first);
+        expect(
+          streamed.skip(2).map((event) => event.text),
+          isNotEmpty,
+          reason: testCase.first,
+        );
+        expect(
+          streamed.skip(2).map((event) => event.text),
+          everyElement('<redacted>'),
+          reason: testCase.first,
+        );
+        expect(
+          streamed
+              .where((event) => event.kind == TaskEventKind.assistant)
+              .map((event) => event.text)
+              .join(),
+          isNot(contains('${testCase.first}${testCase.second}')),
+          reason: testCase.first,
+        );
+      }
+    },
+  );
+
+  test('TaskRunner detects credentials split inside their prefixes', () async {
+    const cases = <({String first, String prefixRest, String secretRest})>[
+      (first: 'B', prefixRest: 'earer ', secretRest: 'actual-token'),
+      (first: 's', prefixRest: 'k-', secretRest: 'abcd'),
+      (first: 'g', prefixRest: 'hp_', secretRest: '12345678901234567890'),
+      (
+        first: 'g',
+        prefixRest: 'ithub_pat_',
+        secretRest: '12345678901234567890',
+      ),
+      (
+        first: '-',
+        prefixRest: '----BEGIN RSA PRIVATE ',
+        secretRest: 'KEY-----\nmaterial',
+      ),
+    ];
+
+    for (final testCase in cases) {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Arbitrarily split secret task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: FakeAgentClient(
+          chunkDelay: const Duration(milliseconds: 10),
+          promptEvents: <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: testCase.first,
+            ),
+            const AgentEvent(type: AgentEventType.toolCall, text: 'boundary'),
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: testCase.prefixRest,
+            ),
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: testCase.secretRest,
+            ),
+            const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+          ],
+        ),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      await runner.runTask(task.id);
+
+      final retained = jsonEncode(taskController.snapshot.toJson());
+      expect(retained, contains(taskDataRedactedValue));
+      expect(
+        retained,
+        isNot(contains(testCase.secretRest)),
+        reason: testCase.first,
+      );
+    }
+  });
+
+  test(
+    'TaskRunner preserves ordinary short prefixes across boundaries',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Ordinary stream task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final chat = ChatController(
+        client: FakeAgentClient(
+          chunkDelay: const Duration(milliseconds: 10),
+          promptEvents: const <AgentEvent>[
+            AgentEvent(type: AgentEventType.agentTextDelta, text: 'Option B'),
+            AgentEvent(type: AgentEventType.toolCall, text: 'boundary'),
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: ' remains visible ---',
+            ),
+            AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+          ],
+        ),
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      await runner.runTask(task.id);
+
+      final assistantText = taskController.events
+          .where((event) => event.kind == TaskEventKind.assistant)
+          .map((event) => event.text)
+          .join();
+      expect(assistantText, 'Option B remains visible ---');
+      expect(assistantText, isNot(contains(taskDataRedactedValue)));
+    },
+  );
+
+  test('TaskRunner redacts known secrets from persisted failures', () async {
+    final taskController = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(taskController.dispose);
+    await taskController.load();
+    final task = await taskController.createTask(
+      title: 'Sensitive failure task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final chat = ChatController(
+      client: _ThrowingSecretPromptAgentClient(),
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(chat.dispose);
+    final runner = TaskRunner(
+      taskController: taskController,
+      agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+    );
+
+    await runner.runTask(task.id);
+
+    final retained = jsonEncode(taskController.snapshot.toJson());
+    expect(retained, contains('<redacted>'));
+    expect(retained, isNot(contains('failure-secret')));
+  });
+
   test(
     'TaskRunner batches ten thousand assistant deltas into one event',
     () async {
@@ -1428,6 +1847,91 @@ void main() {
         contains(TaskStatus.running),
       );
       expect(taskController.tasks.single.status, TaskStatus.needsHumanReview);
+    },
+  );
+
+  test(
+    'TaskRunner protects a split bearer secret across permission boundaries',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Permission split secret task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final fake = FakeAgentClient(
+        chunkDelay: const Duration(milliseconds: 25),
+        promptEvents: const <AgentEvent>[
+          AgentEvent(type: AgentEventType.agentTextDelta, text: 'Bearer '),
+          AgentEvent(type: AgentEventType.agentTextDelta, text: ' '),
+          AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'permission-secret',
+          ),
+          AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+        ],
+      );
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+        eventBufferFlushInterval: const Duration(milliseconds: 1),
+      );
+
+      final pending = runner.runTask(task.id);
+      await _waitUntil(
+        () => chat.messages.any((message) => message.text.contains('Bearer ')),
+      );
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'boundary-permission-1',
+          title: 'Boundary permission',
+          rationale: 'Exercise event ordering.',
+          sessionId: 'fake-session-1',
+          toolName: 'terminal',
+          toolKind: 'command',
+          options: const ['allow', 'deny'],
+          requestedAt: DateTime(2026, 7, 11),
+        ),
+      );
+      await _waitUntil(
+        () =>
+            taskController.tasks.single.status ==
+            TaskStatus.blockedOnPermission,
+      );
+      await _waitUntil(
+        () => chat.messages.any(
+          (message) => message.text.contains('permission-secret'),
+        ),
+      );
+      await chat.resolvePermissionRequest(AcpPermissionDecision.allow);
+      await pending;
+
+      final assistantText = taskController.events
+          .where((event) => event.kind == TaskEventKind.assistant)
+          .map((event) => event.text)
+          .join();
+      expect(assistantText, isNot(contains('Bearer permission-secret')));
+      expect(assistantText, contains('<redacted>'));
+      expect(
+        jsonEncode(taskController.snapshot.toJson()),
+        isNot(contains('permission-secret')),
+      );
+      expect(
+        taskController.events.map((event) => event.kind),
+        contains(TaskEventKind.permission),
+      );
     },
   );
 
@@ -2057,6 +2561,17 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('prompt setup failed');
+  }
+}
+
+class _ThrowingSecretPromptAgentClient extends FakeAgentClient {
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    throw StateError('Bearer failure-secret');
   }
 }
 

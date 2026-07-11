@@ -123,4 +123,114 @@ void main() {
       'second': <String, Object?>{'value': 1},
     });
   });
+
+  test('TaskDataSanitizer redacts sensitive keys recursively', () {
+    const sanitizer = TaskDataSanitizer();
+
+    expect(
+      sanitizer.sanitize(const <String, Object?>{
+        'Authorization': 'Bearer abc',
+        'headers': <String, Object?>{
+          'Cookie': 'session=secret',
+          'X-Request-Id': 'safe',
+        },
+        'env': <String, Object?>{
+          'OPENAI_API_KEY': 'sk-test',
+          'SAFE_VALUE': 'must-still-redact-inside-env',
+        },
+        'nested': <String, Object?>{
+          'accessToken': 'github_pat_secret',
+          'db_password': 'password',
+          'client_secret': 'secret',
+        },
+        'command': 'echo safe',
+      }),
+      const <String, Object?>{
+        'Authorization': '<redacted>',
+        'command': 'echo safe',
+        'env': <String, Object?>{
+          'OPENAI_API_KEY': '<redacted>',
+          'SAFE_VALUE': '<redacted>',
+        },
+        'headers': <String, Object?>{
+          'Cookie': '<redacted>',
+          'X-Request-Id': 'safe',
+        },
+        'nested': <String, Object?>{
+          'accessToken': '<redacted>',
+          'client_secret': '<redacted>',
+          'db_password': '<redacted>',
+        },
+      },
+    );
+  });
+
+  test('TaskDataSanitizer redacts known secret-shaped string values', () {
+    const sanitizer = TaskDataSanitizer();
+
+    expect(
+      sanitizer.sanitize(const <String, Object?>{
+        'bearer': 'Bearer abc.def.ghi',
+        'header': 'Authorization:Bearer colon-secret',
+        'argument': '--header=Authorization:Bearer argument-secret',
+        'json': '{"Authorization":"Bearer json-secret"}',
+        'github': 'ghp_123456789012345678901234567890123456',
+        'githubFineGrained': 'github_pat_1234567890abcdefghijklmnop',
+        'openai': 'sk-test-secret-value',
+        'pem': '-----BEGIN PRIVATE KEY-----\nabc',
+        'safe': 'ordinary text',
+      }),
+      const <String, Object?>{
+        'bearer': '<redacted>',
+        'header': '<redacted>',
+        'argument': '<redacted>',
+        'json': '<redacted>',
+        'github': '<redacted>',
+        'githubFineGrained': '<redacted>',
+        'openai': '<redacted>',
+        'pem': '<redacted>',
+        'safe': 'ordinary text',
+      },
+    );
+  });
+
+  test('TaskDataSanitizer bounds streaming credential grammar', () {
+    const sanitizer = TaskDataSanitizer();
+
+    expect(
+      sanitizer.sanitizeText('Bearer ${' ' * 63}bounded-token'),
+      taskDataRedactedValue,
+    );
+    expect(
+      sanitizer.sanitizeText('Bearer ${' ' * 64}out-of-grammar-token'),
+      isNot(taskDataRedactedValue),
+    );
+    expect(
+      sanitizer.sanitizeText('-----BEGIN RSA PRIVATE KEY-----'),
+      taskDataRedactedValue,
+    );
+    expect(
+      sanitizer.sanitizeText('-----BEGIN ${'A' * 33} PRIVATE KEY-----'),
+      isNot(taskDataRedactedValue),
+    );
+  });
+
+  test('TaskDataSanitizer sanitizes JSON encoded raw tool payloads', () {
+    const sanitizer = TaskDataSanitizer();
+
+    final sanitized = sanitizer.sanitize(const <String, Object?>{
+      'rawInput': '{"password":"plain","command":"echo safe"}',
+      'raw_output': '[{"Authorization":"Bearer hidden"}]',
+      'rawOutput': 'password=unstructured-secret',
+    });
+
+    expect(jsonDecode(sanitized['rawInput']! as String), {
+      'command': 'echo safe',
+      'password': '<redacted>',
+    });
+    expect(jsonDecode(sanitized['raw_output']! as String), [
+      {'Authorization': '<redacted>'},
+    ]);
+    expect(sanitized['rawOutput'], '<redacted>');
+  });
 }

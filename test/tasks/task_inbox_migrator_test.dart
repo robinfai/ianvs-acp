@@ -14,7 +14,7 @@ import 'package:ianvs_acp/tasks/workspace_resource.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 void main() {
-  test('imports every record and preserves a checksummed backup', () async {
+  test('imports every record and preserves a sanitized backup', () async {
     final temp = await Directory.systemTemp.createTemp('task-migrator-');
     addTearDown(() => temp.delete(recursive: true));
     final sourceFile = File('${temp.path}/task_inbox_state.json');
@@ -51,6 +51,120 @@ void main() {
       isEmpty,
     );
   });
+
+  test(
+    'sanitizes retained legacy task data before database activation',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'task-migrator-secret-',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final sourceFile = File('${temp.path}/task_inbox_state.json');
+      final source = _fixtureSnapshot();
+      final sensitive = source.copyWith(
+        tasks: <TaskRecord>[
+          source.tasks.single.copyWith(
+            title: 'Authorization:Bearer title-secret',
+            description: '--header=Authorization:Bearer description-secret',
+            metadata: const <String, Object?>{
+              'Authorization': 'Bearer task-secret',
+            },
+          ),
+        ],
+        runs: <TaskRunRecord>[
+          source.runs.single.copyWith(promptSnapshot: 'Bearer prompt-secret'),
+        ],
+        events: <TaskEventRecord>[
+          source.events.single.copyWith(
+            text: 'Bearer event-secret',
+            metadata: const <String, Object?>{
+              'rawInput': '{"password":"legacy-secret","safe":"kept"}',
+            },
+          ),
+        ],
+        artifacts: <ArtifactRecord>[
+          source.artifacts.single.copyWith(
+            title: 'Git diff preview',
+            path: 'Authorization:Bearer artifact-path-secret',
+            contentPreview: 'sk-artifact-secret',
+            metadata: const <String, Object?>{
+              'command': <String>['git', 'diff'],
+            },
+          ),
+        ],
+        approvals: <ApprovalRequestRecord>[
+          source.approvals.single.copyWith(
+            destination: 'Authorization:Bearer destination-secret',
+            riskSummary: 'Bearer risk-secret',
+            rationale: 'Bearer rationale-secret',
+            metadata: const <String, Object?>{
+              'access_token': 'approval-secret',
+            },
+          ),
+        ],
+      );
+      await sourceFile.writeAsString(jsonEncode(sensitive.toJson()));
+      final repository = TaskInboxSqliteStore(
+        path: '${temp.path}/task_inbox_state.sqlite3',
+      );
+      addTearDown(repository.close);
+
+      await TaskInboxMigrator(
+        source: TaskInboxStateStore(path: sourceFile.path),
+        repository: repository,
+        clock: () => DateTime.utc(2026, 7, 10, 8),
+      ).migrateIfNeeded();
+
+      final imported = (await repository.loadRepository()).snapshot;
+      final retained = jsonEncode(imported.toJson());
+      expect(retained, isNot(contains('task-secret')));
+      expect(retained, isNot(contains('title-secret')));
+      expect(retained, isNot(contains('description-secret')));
+      expect(retained, isNot(contains('prompt-secret')));
+      expect(retained, isNot(contains('event-secret')));
+      expect(retained, isNot(contains('legacy-secret')));
+      expect(retained, isNot(contains('artifact-secret')));
+      expect(retained, isNot(contains('artifact-path-secret')));
+      expect(retained, isNot(contains('approval-secret')));
+      expect(retained, isNot(contains('destination-secret')));
+      expect(retained, isNot(contains('risk-secret')));
+      expect(retained, isNot(contains('rationale-secret')));
+      expect(imported.tasks.single.title, '<redacted>');
+      expect(imported.tasks.single.description, '<redacted>');
+      expect(imported.events.single.text, '<redacted>');
+      expect(imported.artifacts.single.contentPreview, '<redacted>');
+      expect(imported.artifacts.single.path, '<redacted>');
+      expect(imported.artifacts.single.metadata['raw_payload'], isTrue);
+      expect(
+        jsonDecode(imported.events.single.metadata['rawInput']! as String),
+        {'password': '<redacted>', 'safe': 'kept'},
+      );
+      final migration = await repository.migrationMetadata();
+      final backups = temp
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.contains('.migrated.'))
+          .toList(growable: false);
+      expect(backups, hasLength(1));
+      final backupContents = await backups.single.readAsString();
+      expect(backupContents, isNot(contains('title-secret')));
+      expect(backupContents, isNot(contains('description-secret')));
+      expect(backupContents, isNot(contains('prompt-secret')));
+      expect(backupContents, isNot(contains('event-secret')));
+      expect(backupContents, isNot(contains('artifact-secret')));
+      expect(backupContents, isNot(contains('artifact-path-secret')));
+      expect(backupContents, isNot(contains('approval-secret')));
+      final backupSnapshot = TaskInboxSnapshot.fromJsonStrict(
+        jsonDecode(backupContents),
+      );
+      expect(backupSnapshot.runs.single.promptSnapshot, isNull);
+      expect(backupSnapshot.events.single.metadata, isEmpty);
+      expect(backupSnapshot.artifacts.single.contentPreview, isNull);
+      expect(backupSnapshot.artifacts.single.metadata, isEmpty);
+      expect((await backups.single.stat()).mode & 0x1ff, 0x100);
+      expect(migration.phase, TaskMigrationPhase.active);
+    },
+  );
 
   test(
     'malformed JSON leaves source untouched and repository inactive',
@@ -289,9 +403,10 @@ void main() {
     final result = await migrator.migrateIfNeeded();
 
     expect(result.status, TaskMigrationStatus.migrated);
-    expect(result.backupPath, backup.path);
+    expect(result.backupPath, startsWith('${backup.path}.sanitized.'));
+    expect(await backup.exists(), isFalse);
     expect(await repository.isActive(), isTrue);
-    expect((await backup.stat()).mode & 0x1ff, 0x100);
+    expect((await File(result.backupPath!).stat()).mode & 0x1ff, 0x100);
   });
 
   test('recovers an inactive staged import from its verified backup', () async {
@@ -387,6 +502,62 @@ void main() {
     expect(result.status, TaskMigrationStatus.notNeeded);
     expect(await partial.exists(), isFalse);
     expect(await repository.isActive(), isTrue);
+  });
+
+  test('active migration replaces a raw crash backup', () async {
+    final temp = await Directory.systemTemp.createTemp('task-migrator-');
+    addTearDown(() => temp.delete(recursive: true));
+    final sourceFile = File('${temp.path}/task_inbox_state.json');
+    final fixture = _fixtureSnapshot();
+    final rawSnapshot = fixture.copyWith(
+      tasks: <TaskRecord>[
+        fixture.tasks.single.copyWith(
+          metadata: const <String, Object?>{
+            'Authorization': 'Bearer crash-backup-secret',
+          },
+        ),
+      ],
+    );
+    final rawBytes = utf8.encode(jsonEncode(rawSnapshot.toJson()));
+    final checksum = sha256.convert(rawBytes).toString();
+    final sanitizedSnapshot = fixture.copyWith(
+      tasks: <TaskRecord>[
+        fixture.tasks.single.copyWith(
+          metadata: const <String, Object?>{'Authorization': '<redacted>'},
+        ),
+      ],
+    );
+    final repository = TaskInboxSqliteStore(
+      path: '${temp.path}/task_inbox_state.sqlite3',
+    );
+    addTearDown(repository.close);
+    await repository.activateVerifiedSnapshot(
+      sanitizedSnapshot,
+      checksum: checksum,
+    );
+    final rawBackup = File(
+      '${temp.path}/task_inbox_state.migrated.crash.$checksum.json.bak',
+    );
+    await rawBackup.writeAsBytes(rawBytes, flush: true);
+
+    final result = await TaskInboxMigrator(
+      source: TaskInboxStateStore(path: sourceFile.path),
+      repository: repository,
+    ).migrateIfNeeded();
+
+    expect(result.status, TaskMigrationStatus.notNeeded);
+    expect(await rawBackup.exists(), isFalse);
+    final backups = temp
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.contains('.migrated.'))
+        .toList(growable: false);
+    expect(backups, hasLength(1));
+    expect(
+      await backups.single.readAsString(),
+      isNot(contains('backup-secret')),
+    );
+    expect((await backups.single.stat()).mode & 0x1ff, 0x100);
   });
 
   test('rejects dangling task references without touching source', () async {

@@ -27,45 +27,88 @@ void main() {
     },
   );
 
-  test('ArtifactCollector records git status and diff artifacts', () async {
-    final workspace = await Directory.systemTemp.createTemp(
-      'ianvs-artifacts-git-',
-    );
-    addTearDown(() => workspace.delete(recursive: true));
-    await _initGitRepo(workspace);
-    final file = File('${workspace.path}/note.txt');
-    await file.writeAsString('before\n');
-    await _git(workspace, ['add', 'note.txt']);
-    await _git(workspace, ['commit', '-m', 'initial']);
-    await file.writeAsString('after\n');
+  test(
+    'ArtifactCollector records git status and diff stat by default',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'ianvs-artifacts-git-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      await _initGitRepo(workspace);
+      final file = File('${workspace.path}/note.txt');
+      await file.writeAsString('before\n');
+      await _git(workspace, ['add', 'note.txt']);
+      await _git(workspace, ['commit', '-m', 'initial']);
+      await file.writeAsString('after\n');
 
-    final collector = ArtifactCollector(
-      clock: () => DateTime(2026, 7, 7, 8),
-      idGenerator: _ids().next,
-    );
+      final collector = ArtifactCollector(
+        clock: () => DateTime(2026, 7, 7, 8),
+        idGenerator: _ids().next,
+      );
 
-    final artifacts = await collector.collect(_task(workspace.path), _run());
+      final artifacts = await collector.collect(_task(workspace.path), _run());
 
-    final status = artifacts.singleWhere(
-      (artifact) => artifact.kind == ArtifactKind.gitStatus,
-    );
-    expect(status.title, 'Git status');
-    expect(status.contentPreview, contains('M note.txt'));
-    expect(status.metadata['command'], ['git', 'status', '--porcelain']);
+      final status = artifacts.singleWhere(
+        (artifact) => artifact.kind == ArtifactKind.gitStatus,
+      );
+      expect(status.title, 'Git status');
+      expect(status.contentPreview, contains('M note.txt'));
+      expect(status.metadata['command'], ['git', 'status', '--porcelain']);
 
-    final diffStat = artifacts.singleWhere(
-      (artifact) => artifact.title == 'Git diff stat',
-    );
-    expect(diffStat.kind, ArtifactKind.gitDiff);
-    expect(diffStat.contentPreview, contains('note.txt'));
+      final diffStat = artifacts.singleWhere(
+        (artifact) => artifact.title == 'Git diff stat',
+      );
+      expect(diffStat.kind, ArtifactKind.gitDiff);
+      expect(diffStat.contentPreview, contains('note.txt'));
 
-    final diff = artifacts.singleWhere(
-      (artifact) => artifact.title == 'Git diff preview',
-    );
-    expect(diff.kind, ArtifactKind.gitDiff);
-    expect(diff.contentPreview, contains('-before'));
-    expect(diff.contentPreview, contains('+after'));
-  });
+      expect(artifacts, hasLength(2));
+      expect(
+        artifacts.where((artifact) => artifact.title == 'Git diff preview'),
+        isEmpty,
+      );
+      expect(
+        artifacts.map((artifact) => artifact.contentPreview).join('\n'),
+        isNot(contains('-before')),
+      );
+      expect(
+        artifacts.map((artifact) => artifact.contentPreview).join('\n'),
+        isNot(contains('+after')),
+      );
+    },
+  );
+
+  test(
+    'ArtifactCollector retains full diff only when explicitly enabled',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'ianvs-artifacts-full-diff-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      await _initGitRepo(workspace);
+      final file = File('${workspace.path}/note.txt');
+      await file.writeAsString('before\n');
+      await _git(workspace, ['add', 'note.txt']);
+      await _git(workspace, ['commit', '-m', 'initial']);
+      await file.writeAsString('after\n');
+
+      final artifacts = await ArtifactCollector(idGenerator: _ids().next)
+          .collect(
+            _task(
+              workspace.path,
+              metadata: const <String, Object?>{'retain_full_diff': true},
+            ),
+            _run(),
+          );
+
+      final diff = artifacts.singleWhere(
+        (artifact) => artifact.title == 'Git diff preview',
+      );
+      expect(diff.kind, ArtifactKind.gitDiff);
+      expect(diff.contentPreview, contains('-before'));
+      expect(diff.contentPreview, contains('+after'));
+      expect(diff.metadata['raw_payload'], isTrue);
+    },
+  );
 
   test('ArtifactCollector records outbox file hash size and preview', () async {
     final workspace = await Directory.systemTemp.createTemp(
@@ -95,7 +138,33 @@ void main() {
     expect(outboxArtifact.contentPreview, content);
     expect(outboxArtifact.metadata['truncated'], isFalse);
     expect(outboxArtifact.metadata['binary'], isFalse);
+    expect(outboxArtifact.metadata['raw_payload'], isTrue);
   });
+
+  test(
+    'ArtifactCollector redacts secrets from outbox names and paths',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'ianvs-artifacts-outbox-secret-name-',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
+      await outbox.create(recursive: true);
+      await File(
+        '${outbox.path}/Authorization:Bearer file-token.md',
+      ).writeAsString('safe content');
+
+      final artifacts = await ArtifactCollector().collect(
+        _task(workspace.path),
+        _run(),
+      );
+
+      final artifact = artifacts.single;
+      expect(artifact.title, taskDataRedactedValue);
+      expect(artifact.path, taskDataRedactedValue);
+      expect(artifact.metadata['relative_path'], taskDataRedactedValue);
+    },
+  );
 
   test(
     'ArtifactCollector rejects an outbox symlink outside workspace',
@@ -158,7 +227,7 @@ void main() {
     },
   );
 
-  test('ArtifactCollector truncates large diff and outbox previews', () async {
+  test('ArtifactCollector truncates large outbox previews', () async {
     final workspace = await Directory.systemTemp.createTemp(
       'ianvs-artifacts-large-',
     );
@@ -184,17 +253,44 @@ void main() {
 
     final artifacts = await collector.collect(_task(workspace.path), _run());
 
-    final diff = artifacts.singleWhere(
-      (artifact) => artifact.title == 'Git diff preview',
-    );
-    expect(utf8.encode(diff.contentPreview!).length, lessThanOrEqualTo(24));
-    expect(diff.metadata['truncated'], isTrue);
-
     final file = artifacts.singleWhere(
       (artifact) => artifact.kind == ArtifactKind.outboxFile,
     );
     expect(utf8.encode(file.contentPreview!).length, lessThanOrEqualTo(24));
     expect(file.metadata['truncated'], isTrue);
+  });
+
+  test('ArtifactCollector caps retained full diff at one MiB', () async {
+    final workspace = await Directory.systemTemp.createTemp(
+      'ianvs-artifacts-full-diff-limit-',
+    );
+    addTearDown(() => workspace.delete(recursive: true));
+    await _initGitRepo(workspace);
+    final tracked = File('${workspace.path}/large.txt');
+    await tracked.writeAsString('before\n');
+    await _git(workspace, ['add', 'large.txt']);
+    await _git(workspace, ['commit', '-m', 'initial']);
+    await tracked.writeAsString(
+      '${List.filled(140000, 'changed').join('\n')}\n',
+    );
+
+    final artifacts = await ArtifactCollector(idGenerator: _ids().next).collect(
+      _task(
+        workspace.path,
+        metadata: const <String, Object?>{'retain_full_diff': true},
+      ),
+      _run(),
+    );
+
+    final diff = artifacts.singleWhere(
+      (artifact) => artifact.title == 'Git diff preview',
+    );
+    expect(
+      utf8.encode(diff.contentPreview!).length,
+      lessThanOrEqualTo(1024 * 1024),
+    );
+    expect(diff.metadata['truncated'], isTrue);
+    expect(diff.metadata['raw_payload'], isTrue);
   });
 
   test(
@@ -424,7 +520,10 @@ void main() {
   });
 }
 
-TaskRecord _task(String workspacePath) {
+TaskRecord _task(
+  String workspacePath, {
+  Map<String, Object?> metadata = const <String, Object?>{},
+}) {
   return TaskRecord(
     id: 'task-1',
     title: 'Collect artifacts',
@@ -436,6 +535,7 @@ TaskRecord _task(String workspacePath) {
     createdAt: DateTime(2026, 7, 7, 8),
     updatedAt: DateTime(2026, 7, 7, 8),
     currentRunId: 'run-1',
+    metadata: metadata,
   );
 }
 

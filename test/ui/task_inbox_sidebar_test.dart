@@ -107,6 +107,163 @@ void main() {
     expect(controller.tasks.single.workspacePath, '/workspace/app');
   });
 
+  testWidgets(
+    'TaskInboxSidebar confirms raw data purge and keeps durable task data',
+    (tester) async {
+      final createdAt = DateTime.utc(2030, 1, 2);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: <TaskRecord>[
+            TaskRecord(
+              id: 'task-1',
+              title: 'Keep task title',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.needsHumanReview,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+              currentRunId: 'run-1',
+              summary: 'Keep summary',
+            ),
+          ],
+          runs: <TaskRunRecord>[
+            TaskRunRecord(
+              id: 'run-1',
+              taskId: 'task-1',
+              attempt: 1,
+              status: TaskStatus.needsHumanReview,
+              startedAt: createdAt,
+              promptSnapshot: 'raw prompt',
+            ),
+          ],
+          events: <TaskEventRecord>[
+            TaskEventRecord(
+              id: 'event-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: TaskEventKind.tool,
+              text: 'Keep event text',
+              createdAt: createdAt,
+              metadata: const <String, Object?>{'raw': 'secret'},
+            ),
+          ],
+          artifacts: <ArtifactRecord>[
+            ArtifactRecord(
+              id: 'artifact-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.gitDiff,
+              title: 'src/main.dart',
+              createdAt: createdAt,
+              path: 'src/main.dart',
+              contentPreview: 'raw diff secret',
+              metadata: const <String, Object?>{'raw_payload': true},
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(repository: store);
+      addTearDown(controller.dispose);
+      await controller.load();
+      await pumpSidebar(tester, controller, selectedTaskId: 'task-1');
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await _pumpFrames(tester);
+      expect(store.rawPayloadPurgeCount, 0);
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      await tester.tap(
+        find.byKey(const Key('task-clear-raw-data-confirm-button')),
+      );
+      await _pumpFrames(tester);
+
+      expect(store.rawPayloadPurgeCount, 1);
+      expect(controller.tasks.single.title, 'Keep task title');
+      expect(controller.tasks.single.summary, 'Keep summary');
+      expect(controller.events.single.text, 'Keep event text');
+      expect(controller.events.single.metadata, isEmpty);
+      expect(controller.artifacts.single.title, 'src/main.dart');
+      expect(controller.artifacts.single.path, 'src/main.dart');
+      expect(controller.artifacts.single.contentPreview, isNull);
+      expect(find.text('src/main.dart'), findsOneWidget);
+      expect(find.textContaining('raw diff secret'), findsNothing);
+      expect(find.textContaining('Cleared 3 raw data records'), findsOneWidget);
+    },
+  );
+
+  testWidgets('TaskInboxSidebar reports raw data purge failure', (
+    tester,
+  ) async {
+    final store = _MemoryTaskStore();
+    final controller = TaskInboxController(repository: store);
+    addTearDown(controller.dispose);
+    await controller.load();
+    store.beforeOperation = (operation) async {
+      if (operation == 'purgeRawPayloads') throw StateError('disk locked');
+    };
+    await pumpSidebar(tester, controller);
+
+    await tester.tap(find.byTooltip('Task data actions'));
+    await _pumpFrames(tester);
+    await tester.tap(find.text('Clear raw tool data'));
+    await _pumpFrames(tester);
+    await tester.tap(
+      find.byKey(const Key('task-clear-raw-data-confirm-button')),
+    );
+    await _pumpFrames(tester);
+
+    expect(
+      find.textContaining('Could not clear raw tool data'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('disk locked'), findsOneWidget);
+  });
+
+  testWidgets(
+    'TaskInboxSidebar abandons confirmation after controller replacement',
+    (tester) async {
+      final oldStore = _MemoryTaskStore();
+      final newStore = _MemoryTaskStore();
+      final oldController = TaskInboxController(repository: oldStore);
+      final newController = TaskInboxController(repository: newStore);
+      addTearDown(oldController.dispose);
+      addTearDown(newController.dispose);
+      await oldController.load();
+      await newController.load();
+      await pumpSidebar(tester, oldController);
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+
+      await pumpSidebar(tester, newController);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await pumpSidebar(tester, oldController);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('task-clear-raw-data-confirm-button')),
+      );
+      await _pumpFrames(tester);
+
+      expect(oldStore.rawPayloadPurgeCount, 0);
+      expect(newStore.rawPayloadPurgeCount, 0);
+      expect(find.textContaining('Cleared '), findsNothing);
+    },
+  );
+
   testWidgets('TaskInboxSidebar shows artifact previews for selected task', (
     tester,
   ) async {

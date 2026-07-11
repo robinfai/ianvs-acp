@@ -177,8 +177,8 @@ class TaskInboxController extends ChangeNotifier {
       final now = _clock();
       final task = TaskRecord(
         id: _newId('task'),
-        title: _requiredText(title, 'title'),
-        description: description.trim(),
+        title: dataSanitizer.sanitizeText(_requiredText(title, 'title')),
+        description: dataSanitizer.sanitizeText(description.trim()),
         workspacePath: _requiredPath(workspacePath),
         agentName: _requiredText(agentName, 'agentName'),
         status: TaskStatus.inbox,
@@ -226,7 +226,7 @@ class TaskInboxController extends ChangeNotifier {
         status: status,
         startedAt: now,
         sessionId: _trimmedOrNull(sessionId),
-        promptSnapshot: _trimmedOrNull(promptSnapshot),
+        promptSnapshot: _sanitizedTrimmedOrNull(promptSnapshot),
         model: _trimmedOrNull(model),
       );
       final existingTask = _snapshot.tasks[taskIndex];
@@ -816,7 +816,9 @@ class TaskInboxController extends ChangeNotifier {
       final resolved = existing.copyWith(
         status: status,
         resolvedAt: now,
-        rationale: _trimmedOrNull(rationale) ?? existing.rationale,
+        destination: _sanitizedTrimmedOrNull(existing.destination),
+        riskSummary: _sanitizedTrimmedOrNull(existing.riskSummary),
+        rationale: _sanitizedTrimmedOrNull(rationale ?? existing.rationale),
         metadata: dataSanitizer.sanitize(existing.metadata),
       );
       await _awaitRepository(
@@ -945,6 +947,32 @@ class TaskInboxController extends ChangeNotifier {
       );
       _markRepositoryChanged();
       notifyListeners();
+    });
+  }
+
+  Future<RawPayloadPurgeResult> purgeRawPayloads({
+    Duration retention = const Duration(days: 30),
+    bool force = false,
+  }) async {
+    if (!_loaded) await load();
+    return _withStateTransition(() async {
+      final target = repository;
+      if (target is! RawPayloadMaintenanceRepository) {
+        throw UnsupportedError(
+          'This task repository does not support raw payload maintenance.',
+        );
+      }
+      final maintenanceRepository = target as RawPayloadMaintenanceRepository;
+      final result = await _awaitRepository(
+        'purgeRawPayloads',
+        () => maintenanceRepository.purgeRawPayloads(
+          now: _clock(),
+          retention: retention,
+          force: force,
+        ),
+      );
+      await _reloadRepositoryWithinTransition();
+      return result;
     });
   }
 
@@ -1154,6 +1182,13 @@ class TaskInboxController extends ChangeNotifier {
 
   ArtifactRecord _sanitizeArtifact(ArtifactRecord artifact) {
     return artifact.copyWith(
+      title: dataSanitizer.sanitizeText(artifact.title),
+      path: artifact.path == null
+          ? null
+          : dataSanitizer.sanitizeText(artifact.path!),
+      contentPreview: artifact.contentPreview == null
+          ? null
+          : dataSanitizer.sanitizeText(artifact.contentPreview!),
       metadata: dataSanitizer.sanitize(
         Map<String, Object?>.of(artifact.metadata),
       ),
@@ -1178,13 +1213,15 @@ class TaskInboxController extends ChangeNotifier {
       status: status,
       endedAt: endedAt ?? existing.endedAt,
       sessionId: sessionId ?? existing.sessionId,
-      promptSnapshot: identical(promptSnapshot, _unchanged)
-          ? existing.promptSnapshot
-          : _trimmedOrNull(promptSnapshot as String?),
+      promptSnapshot: _sanitizedTrimmedOrNull(
+        identical(promptSnapshot, _unchanged)
+            ? existing.promptSnapshot
+            : promptSnapshot as String?,
+      ),
       model: identical(model, _unchanged)
           ? existing.model
           : _trimmedOrNull(model as String?),
-      error: error ?? existing.error,
+      error: _sanitizedTrimmedOrNull(error ?? existing.error),
     );
     final persisted = await _awaitRepository(
       'updateRun',
@@ -1225,8 +1262,12 @@ class TaskInboxController extends ChangeNotifier {
     final existing = _snapshot.tasks[index];
     final now = _clock();
     final updated = existing.copyWith(
-      title: title == null ? null : _requiredText(title, 'title'),
-      description: description?.trim(),
+      title: title == null
+          ? null
+          : dataSanitizer.sanitizeText(_requiredText(title, 'title')),
+      description: description == null
+          ? null
+          : dataSanitizer.sanitizeText(description.trim()),
       workspacePath: workspacePath == null
           ? null
           : _requiredPath(workspacePath),
@@ -1242,12 +1283,12 @@ class TaskInboxController extends ChangeNotifier {
       currentRunId: identical(currentRunId, _unchanged)
           ? existing.currentRunId
           : _trimmedOrNull(currentRunId as String?),
-      summary: identical(summary, _unchanged)
-          ? existing.summary
-          : _trimmedOrNull(summary as String?),
-      error: identical(error, _unchanged)
-          ? existing.error
-          : _trimmedOrNull(error as String?),
+      summary: _sanitizedTrimmedOrNull(
+        identical(summary, _unchanged) ? existing.summary : summary as String?,
+      ),
+      error: _sanitizedTrimmedOrNull(
+        identical(error, _unchanged) ? existing.error : error as String?,
+      ),
       resourceId: identical(resourceId, _unchanged)
           ? existing.resourceId
           : _trimmedOrNull(resourceId as String?),
@@ -1290,7 +1331,9 @@ class TaskInboxController extends ChangeNotifier {
       taskId: task.id,
       runId: run.id,
       kind: kind,
-      text: kind == TaskEventKind.assistant ? text : text.trim(),
+      text: dataSanitizer.sanitizeText(
+        kind == TaskEventKind.assistant ? text : text.trim(),
+      ),
       createdAt: now,
       sessionId: _trimmedOrNull(sessionId),
       metadata: dataSanitizer.sanitize(metadata),
@@ -1359,6 +1402,11 @@ class TaskInboxController extends ChangeNotifier {
   String? _trimmedOrNull(String? value) {
     final trimmed = value?.trim();
     return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  String? _sanitizedTrimmedOrNull(String? value) {
+    final trimmed = _trimmedOrNull(value);
+    return trimmed == null ? null : dataSanitizer.sanitizeText(trimmed);
   }
 
   List<String> _cleanStringList(Iterable<String> values) {

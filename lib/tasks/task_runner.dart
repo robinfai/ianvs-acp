@@ -11,6 +11,7 @@ import 'artifact_collector.dart';
 import 'egress_policy.dart';
 import 'local_skill.dart';
 import 'task_agent_pool.dart';
+import 'task_data_sanitizer.dart';
 import 'task_event_buffer.dart';
 import 'task_identifier.dart';
 import 'task_inbox_controller.dart';
@@ -31,8 +32,10 @@ class TaskRunner {
     this.promptCancellationTimeout = const Duration(seconds: 2),
     this.eventBufferFlushInterval = const Duration(milliseconds: 200),
     this.eventBufferScheduler,
+    TaskDataSanitizer? dataSanitizer,
   }) : artifactCollector = artifactCollector ?? ArtifactCollector(),
        skillRepository = skillRepository ?? LocalSkillRegistry(),
+       dataSanitizer = dataSanitizer ?? const TaskDataSanitizer(),
        _clock = clock ?? DateTime.now,
        assert(taskDeadline > Duration.zero),
        assert(sessionSetupDeadline > Duration.zero),
@@ -44,6 +47,7 @@ class TaskRunner {
   final TaskAgentPool agentPool;
   final ArtifactCollector artifactCollector;
   final LocalSkillRepository skillRepository;
+  final TaskDataSanitizer dataSanitizer;
   final Duration taskDeadline;
   final Duration sessionSetupDeadline;
   final Duration promptDeadline;
@@ -203,6 +207,7 @@ class TaskRunner {
     VoidCallback? removeAgentObserver;
     VoidCallback? removePermissionObserver;
     TaskRunRecord? run = _dispatchedRunFor(task);
+    final assistantStreamRedactor = _AssistantStreamRedactor(dataSanitizer);
 
     void detachObservers() {
       removeAgentObserver?.call();
@@ -283,7 +288,9 @@ class TaskRunner {
       final buffer = eventBuffer;
       if (buffer == null) return;
       final kind = _eventKindForAgentEvent(event.type);
-      final text = _textForAgentEvent(event);
+      final text = event.type == AgentEventType.agentTextDelta
+          ? assistantStreamRedactor.sanitize(event.text)
+          : _textForAgentEvent(event);
       if (text.isEmpty && event.type != AgentEventType.agentTextDone) return;
       if (event.type == AgentEventType.agentTextDelta) {
         buffer.addAssistantDelta(
@@ -325,10 +332,12 @@ class TaskRunner {
                 taskId: task.id,
                 runId: run!.id,
                 kind: TaskEventKind.permission,
-                text: egressMatch == null
-                    ? 'Permission requested: ${event.request.displayTitle}'
-                    : 'Export-sensitive permission requested: '
-                          '${event.request.displayTitle}',
+                text: dataSanitizer.sanitizeText(
+                  egressMatch == null
+                      ? 'Permission requested: ${event.request.displayTitle}'
+                      : 'Export-sensitive permission requested: '
+                            '${event.request.displayTitle}',
+                ),
                 sessionId: event.request.sessionId,
                 metadata: _metadataForPermissionEvent(event),
               ),
@@ -345,9 +354,10 @@ class TaskRunner {
               taskId: task.id,
               runId: run!.id,
               kind: TaskEventKind.permission,
-              text:
-                  'Permission ${event.status.displayLabel}: '
-                  '${event.request.displayTitle}',
+              text: dataSanitizer.sanitizeText(
+                'Permission ${event.status.displayLabel}: '
+                '${event.request.displayTitle}',
+              ),
               sessionId: event.request.sessionId,
               metadata: _metadataForPermissionEvent(event),
             ),
@@ -855,9 +865,12 @@ When done, summarize:
   }
 
   String _messageForError(Object error) {
-    if (error is StateError) return error.message;
-    if (error is Exception) return error.toString();
-    return '$error';
+    final message = switch (error) {
+      StateError value => value.message,
+      Exception value => value.toString(),
+      _ => '$error',
+    };
+    return dataSanitizer.sanitizeText(message);
   }
 
   TaskEventKind _eventKindForAgentEvent(AgentEventType type) {
@@ -872,13 +885,16 @@ When done, summarize:
   }
 
   String _textForAgentEvent(AgentEvent event) {
-    if (event.type == AgentEventType.agentTextDelta) return event.text;
+    if (event.type == AgentEventType.agentTextDelta) {
+      return dataSanitizer.sanitizeText(event.text);
+    }
     final text = event.text.trim();
-    if (text.isNotEmpty) return text;
-    return switch (event.type) {
+    if (text.isNotEmpty) return dataSanitizer.sanitizeText(text);
+    final fallback = switch (event.type) {
       AgentEventType.agentTextDone => 'Assistant turn completed.',
       _ => '',
     };
+    return dataSanitizer.sanitizeText(fallback);
   }
 
   Map<String, Object?> _metadataForAgentEvent(AgentEvent event) {
@@ -910,6 +926,31 @@ When done, summarize:
       if (event.request.metadata.isNotEmpty)
         'permission_request_metadata': event.request.metadata,
     };
+  }
+}
+
+class _AssistantStreamRedactor {
+  _AssistantStreamRedactor(this.sanitizer);
+
+  static const int _lookbehindLimit = 256;
+
+  final TaskDataSanitizer sanitizer;
+  String _lookbehind = '';
+  bool _secretObserved = false;
+
+  String sanitize(String chunk) {
+    if (chunk.isEmpty) return chunk;
+    if (_secretObserved) return taskDataRedactedValue;
+    final candidate = '$_lookbehind$chunk';
+    if (sanitizer.sanitizeText(candidate) == taskDataRedactedValue) {
+      _secretObserved = true;
+      _lookbehind = '';
+      return taskDataRedactedValue;
+    }
+    _lookbehind = candidate.length <= _lookbehindLimit
+        ? candidate
+        : candidate.substring(candidate.length - _lookbehindLimit);
+    return chunk;
   }
 }
 

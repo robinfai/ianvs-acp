@@ -3,9 +3,12 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
+import '../platform/secure_atomic_file.dart';
+import 'task_data_sanitizer.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_inbox_sqlite_store.dart';
 import 'task_inbox_state_store.dart';
+import 'task_record.dart';
 import 'task_repository.dart';
 
 enum TaskMigrationStatus { notNeeded, migrated, awaitingBackupFinalization }
@@ -65,8 +68,8 @@ class TaskInboxMigrator {
 
     final sourceBytes = await sourceFile.readAsBytes();
     final checksum = sha256.convert(sourceBytes).toString();
-    final snapshot = TaskInboxSnapshot.fromJsonStrict(
-      jsonDecode(utf8.decode(sourceBytes)),
+    final snapshot = _sanitizeImportedSnapshot(
+      TaskInboxSnapshot.fromJsonStrict(jsonDecode(utf8.decode(sourceBytes))),
     );
 
     final disposition = await repository.importSnapshot(
@@ -114,6 +117,12 @@ class TaskInboxMigrator {
       await _verifyReadOnly(backup);
       backupVerified = true;
       await repository.activateVerifiedSnapshot(snapshot, checksum: checksum);
+      final sanitizedBackup = await _replaceRawBackupWithSanitizedSnapshot(
+        backup,
+        rawChecksum: checksum,
+        snapshot: snapshot,
+      );
+      backupPath = sanitizedBackup.path;
       await _deleteRecoveryFiles(sourceFile, checksum);
       return TaskMigrationResult(
         status: TaskMigrationStatus.migrated,
@@ -181,6 +190,15 @@ class TaskInboxMigrator {
     if (metadata.phase == TaskMigrationPhase.active) {
       final checksum = metadata.sourceChecksum;
       if (sourceFile != null && checksum != null) {
+        final rawBackup = await _findVerifiedBackup(sourceFile, checksum);
+        if (rawBackup != null) {
+          final snapshot = (await repository.loadRepository()).snapshot;
+          await _replaceRawBackupWithSanitizedSnapshot(
+            rawBackup,
+            rawChecksum: checksum,
+            snapshot: _sanitizeImportedSnapshot(snapshot),
+          );
+        }
         await _deleteRecoveryFiles(sourceFile, checksum);
       }
       return const TaskMigrationResult(status: TaskMigrationStatus.notNeeded);
@@ -197,14 +215,21 @@ class TaskInboxMigrator {
       }
       final backup = await _findVerifiedBackup(sourceFile, checksum);
       if (backup != null) {
-        final snapshot = await _readVerifiedSnapshot(backup, checksum);
+        final snapshot = _sanitizeImportedSnapshot(
+          await _readVerifiedSnapshot(backup, checksum),
+        );
         await _makeReadOnly(backup);
         await _verifyReadOnly(backup);
         await repository.activateVerifiedSnapshot(snapshot, checksum: checksum);
+        final sanitizedBackup = await _replaceRawBackupWithSanitizedSnapshot(
+          backup,
+          rawChecksum: checksum,
+          snapshot: snapshot,
+        );
         await _deleteRecoveryFiles(sourceFile, checksum);
         return TaskMigrationResult(
           status: TaskMigrationStatus.migrated,
-          backupPath: backup.path,
+          backupPath: sanitizedBackup.path,
           checksum: checksum,
         );
       }
@@ -310,6 +335,140 @@ class TaskInboxMigrator {
       }
     }
   }
+
+  Future<File> _replaceRawBackupWithSanitizedSnapshot(
+    File rawBackup, {
+    required String rawChecksum,
+    required TaskInboxSnapshot snapshot,
+  }) async {
+    await _verifyRegularFile(rawBackup, rawChecksum);
+    final backupSnapshot = _withoutRawPayloads(
+      _sanitizeImportedSnapshot(snapshot),
+    );
+    final contents = canonicalJson(backupSnapshot.toJson());
+    final sanitizedChecksum = sha256.convert(utf8.encode(contents)).toString();
+    final sanitizedBackup = File(
+      '${rawBackup.path}.sanitized.$sanitizedChecksum',
+    );
+    final existingType = await FileSystemEntity.type(
+      sanitizedBackup.path,
+      followLinks: false,
+    );
+    if (existingType == FileSystemEntityType.notFound) {
+      await SecureAtomicFile.writeString(
+        sanitizedBackup,
+        contents,
+        protectExistingParent: true,
+      );
+    } else if (existingType != FileSystemEntityType.file) {
+      throw FileSystemException(
+        'Sanitized task backup must be a regular file.',
+        sanitizedBackup.path,
+      );
+    }
+    await _verifyRegularFile(sanitizedBackup, sanitizedChecksum);
+    final verified = await _readVerifiedSnapshot(
+      sanitizedBackup,
+      sanitizedChecksum,
+    );
+    if (canonicalJson(verified.toJson()) != contents) {
+      throw FileSystemException(
+        'Sanitized task backup verification failed.',
+        sanitizedBackup.path,
+      );
+    }
+    await _makeReadOnly(sanitizedBackup);
+    await _verifyReadOnly(sanitizedBackup);
+    await _verifyRegularFile(rawBackup, rawChecksum);
+    await rawBackup.delete();
+    return sanitizedBackup;
+  }
+}
+
+TaskInboxSnapshot _sanitizeImportedSnapshot(TaskInboxSnapshot snapshot) {
+  const sanitizer = TaskDataSanitizer();
+  String? safe(String? value) =>
+      value == null ? null : sanitizer.sanitizeText(value);
+  bool isFullDiffCommand(Object? raw) {
+    return raw is List &&
+        raw.length == 2 &&
+        raw[0] == 'git' &&
+        raw[1] == 'diff';
+  }
+
+  return snapshot.copyWith(
+    tasks: <TaskRecord>[
+      for (final task in snapshot.tasks)
+        task.copyWith(
+          title: sanitizer.sanitizeText(task.title),
+          description: sanitizer.sanitizeText(task.description),
+          summary: safe(task.summary),
+          error: safe(task.error),
+          metadata: sanitizer.sanitize(task.metadata),
+        ),
+    ],
+    runs: <TaskRunRecord>[
+      for (final run in snapshot.runs)
+        run.copyWith(
+          promptSnapshot: safe(run.promptSnapshot),
+          error: safe(run.error),
+        ),
+    ],
+    events: <TaskEventRecord>[
+      for (final event in snapshot.events)
+        event.copyWith(
+          text: sanitizer.sanitizeText(event.text),
+          metadata: sanitizer.sanitize(event.metadata),
+        ),
+    ],
+    artifacts: <ArtifactRecord>[
+      for (final artifact in snapshot.artifacts)
+        artifact.copyWith(
+          title: sanitizer.sanitizeText(artifact.title),
+          path: safe(artifact.path),
+          contentPreview: safe(artifact.contentPreview),
+          metadata: sanitizer.sanitize(<String, Object?>{
+            ...artifact.metadata,
+            if (artifact.metadata['raw_payload'] == true ||
+                artifact.kind == ArtifactKind.outboxFile ||
+                artifact.title == 'Git diff preview' ||
+                isFullDiffCommand(artifact.metadata['command']))
+              'raw_payload': true,
+          }),
+        ),
+    ],
+    approvals: <ApprovalRequestRecord>[
+      for (final approval in snapshot.approvals)
+        approval.copyWith(
+          destination: safe(approval.destination),
+          riskSummary: safe(approval.riskSummary),
+          rationale: safe(approval.rationale),
+          metadata: sanitizer.sanitize(approval.metadata),
+        ),
+    ],
+  );
+}
+
+TaskInboxSnapshot _withoutRawPayloads(TaskInboxSnapshot snapshot) {
+  return snapshot.copyWith(
+    runs: <TaskRunRecord>[
+      for (final run in snapshot.runs) run.copyWith(promptSnapshot: null),
+    ],
+    events: <TaskEventRecord>[
+      for (final event in snapshot.events)
+        event.copyWith(metadata: const <String, Object?>{}),
+    ],
+    artifacts: <ArtifactRecord>[
+      for (final artifact in snapshot.artifacts)
+        if (artifact.metadata['raw_payload'] == true)
+          artifact.copyWith(
+            contentPreview: null,
+            metadata: const <String, Object?>{},
+          )
+        else
+          artifact,
+    ],
+  );
 }
 
 String canonicalJson(Object? value) => jsonEncode(_canonicalize(value));

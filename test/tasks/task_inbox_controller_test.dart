@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/task_data_sanitizer.dart';
@@ -22,6 +23,88 @@ void main() {
     await Future.wait([first, second]);
     expect(store.loadCount, 1);
   });
+
+  test(
+    'force raw payload purge is serialized and reloads the snapshot',
+    () async {
+      final createdAt = DateTime.utc(2030, 1, 2);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: <TaskRecord>[
+            TaskRecord(
+              id: 'task-1',
+              title: 'Keep task',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.running,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+              currentRunId: 'run-1',
+              summary: 'Keep summary',
+              metadata: const <String, Object?>{'keep': true},
+            ),
+          ],
+          runs: <TaskRunRecord>[
+            TaskRunRecord(
+              id: 'run-1',
+              taskId: 'task-1',
+              attempt: 1,
+              status: TaskStatus.running,
+              startedAt: createdAt,
+              promptSnapshot: 'raw prompt',
+            ),
+          ],
+          events: <TaskEventRecord>[
+            TaskEventRecord(
+              id: 'event-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: TaskEventKind.tool,
+              text: 'Keep event text',
+              createdAt: createdAt,
+              metadata: const <String, Object?>{'raw': 'secret'},
+            ),
+          ],
+          artifacts: <ArtifactRecord>[
+            ArtifactRecord(
+              id: 'artifact-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.gitDiff,
+              title: 'src/main.dart',
+              createdAt: createdAt,
+              path: 'src/main.dart',
+              contentPreview: 'raw diff',
+              metadata: const <String, Object?>{'raw_payload': true},
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(
+        repository: store,
+        clock: () => DateTime.utc(2026, 7, 11),
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+
+      final result = await controller.purgeRawPayloads(force: true);
+
+      expect(result.totalPurged, 3);
+      expect(store.rawPayloadPurgeCount, 1);
+      expect(controller.tasks.single.summary, 'Keep summary');
+      expect(controller.tasks.single.metadata, {'keep': true});
+      expect(controller.runs.single.promptSnapshot, isNull);
+      expect(controller.events.single.text, 'Keep event text');
+      expect(controller.events.single.metadata, isEmpty);
+      expect(controller.artifacts.single.title, 'src/main.dart');
+      expect(controller.artifacts.single.path, 'src/main.dart');
+      expect(controller.artifacts.single.contentPreview, isNull);
+      expect(controller.artifacts.single.metadata, isEmpty);
+    },
+  );
 
   test('failed repository write does not mutate the local snapshot', () async {
     final store = _MemoryTaskStore();
@@ -525,13 +608,16 @@ void main() {
             taskId: created.id,
             runId: run.id,
             kind: ArtifactKind.file,
-            title: 'external.txt',
+            title: 'Authorization:Bearer artifact-title-secret',
+            path: 'Authorization:Bearer artifact-path-secret',
             createdAt: DateTime(2026, 7, 11, 8),
             metadata: externalMetadata,
           ),
         ],
       );
       expect(artifacts.single.metadata, isNot(same(externalMetadata)));
+      expect(artifacts.single.title, taskDataRedactedValue);
+      expect(artifacts.single.path, taskDataRedactedValue);
       expect(artifacts.single.metadata['truncated'], isTrue);
       expect(artifacts.single.metadata['sha256'], hasLength(64));
       expect(
@@ -541,6 +627,67 @@ void main() {
       expect(controller.artifacts.single.metadata, artifacts.single.metadata);
     },
   );
+
+  test('TaskInboxController sanitizes all persisted free text', () async {
+    final store = _MemoryTaskStore();
+    final controller = TaskInboxController(
+      repository: store,
+      idGenerator: (_) => 'task-1',
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    final created = await controller.createTask(
+      title: 'Authorization:Bearer title-secret',
+      description: '--header=Authorization:Bearer description-secret',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+    );
+    expect(created.title, taskDataRedactedValue);
+    expect(created.description, taskDataRedactedValue);
+
+    final updated = await controller.updateTask(
+      created.id,
+      title: 'Bearer updated-title-secret',
+      description: 'Authorization:Bearer updated-description-secret',
+    );
+    expect(updated.title, taskDataRedactedValue);
+    expect(updated.description, taskDataRedactedValue);
+
+    final review = _reviewSnapshot().copyWith(
+      approvals: <ApprovalRequestRecord>[
+        ApprovalRequestRecord(
+          id: 'approval-1',
+          taskId: 'task-1',
+          runId: 'run-1',
+          kind: ApprovalKind.export,
+          status: ApprovalStatus.pending,
+          createdAt: DateTime(2026, 7, 7, 8),
+          destination: 'Authorization:Bearer destination-secret',
+          riskSummary: 'Bearer risk-secret',
+          rationale: 'Bearer old-rationale-secret',
+        ),
+      ],
+    );
+    final approvalStore = _MemoryTaskStore(review);
+    final approvalController = TaskInboxController(repository: approvalStore);
+    addTearDown(approvalController.dispose);
+    await approvalController.load();
+
+    final resolved = await approvalController.resolveApproval(
+      'approval-1',
+      ApprovalStatus.approved,
+      rationale: 'Authorization:Bearer new-rationale-secret',
+    );
+    expect(resolved.destination, taskDataRedactedValue);
+    expect(resolved.riskSummary, taskDataRedactedValue);
+    expect(resolved.rationale, taskDataRedactedValue);
+
+    final persisted = jsonEncode(approvalStore.currentSnapshot.toJson());
+    expect(persisted, isNot(contains('destination-secret')));
+    expect(persisted, isNot(contains('risk-secret')));
+    expect(persisted, isNot(contains('rationale-secret')));
+  });
 
   test('claimTask caps metadata loaded from an older repository', () async {
     final createdAt = DateTime.utc(2026, 7, 11, 8);

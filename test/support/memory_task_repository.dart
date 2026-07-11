@@ -8,7 +8,10 @@ import 'package:ianvs_acp/tasks/workspace_resource.dart';
 typedef MemoryRepositoryHook = Future<void> Function(String operation);
 
 class MemoryTaskRepository
-    implements TaskRepository, AtomicTaskClaimMetadataRepository {
+    implements
+        TaskRepository,
+        AtomicTaskClaimMetadataRepository,
+        RawPayloadMaintenanceRepository {
   MemoryTaskRepository([TaskInboxSnapshot? snapshot, this.beforeOperation])
     : _snapshot =
           snapshot ??
@@ -21,6 +24,8 @@ class MemoryTaskRepository
   bool _closed = false;
   int initializeCount = 0;
   int loadCount = 0;
+  int rawPayloadPurgeCount = 0;
+  DateTime? _lastRawPayloadPurgeAt;
   final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
   MemoryRepositoryHook? beforeOperation;
 
@@ -39,6 +44,74 @@ class MemoryTaskRepository
     loadCount += 1;
     await beforeOperation?.call('load');
     return TaskRepositorySnapshot(revision: _revision, snapshot: _snapshot);
+  }
+
+  @override
+  Future<RawPayloadPurgeResult> purgeRawPayloads({
+    required DateTime now,
+    Duration retention = const Duration(days: 30),
+    bool force = false,
+  }) async {
+    await _beforeWrite('purgeRawPayloads');
+    final utcNow = now.toUtc();
+    final lastPurge = _lastRawPayloadPurgeAt;
+    if (!force &&
+        lastPurge != null &&
+        !lastPurge.isAfter(utcNow) &&
+        utcNow.difference(lastPurge) < const Duration(days: 1)) {
+      return const RawPayloadPurgeResult(skipped: true);
+    }
+    rawPayloadPurgeCount += 1;
+    _lastRawPayloadPurgeAt = utcNow;
+    final cutoff = utcNow.subtract(retention);
+    var runsPurged = 0;
+    var eventsPurged = 0;
+    var artifactsPurged = 0;
+    final runs = _snapshot.runs
+        .map((run) {
+          if (run.promptSnapshot == null ||
+              (!force && !run.startedAt.toUtc().isBefore(cutoff))) {
+            return run;
+          }
+          runsPurged += 1;
+          return run.copyWith(promptSnapshot: null);
+        })
+        .toList(growable: false);
+    final events = _snapshot.events
+        .map((event) {
+          if (event.metadata.isEmpty ||
+              (!force && !event.createdAt.toUtc().isBefore(cutoff))) {
+            return event;
+          }
+          eventsPurged += 1;
+          return event.copyWith(metadata: const <String, Object?>{});
+        })
+        .toList(growable: false);
+    final artifacts = _snapshot.artifacts
+        .map((artifact) {
+          if (artifact.metadata['raw_payload'] != true ||
+              (!force && !artifact.createdAt.toUtc().isBefore(cutoff))) {
+            return artifact;
+          }
+          artifactsPurged += 1;
+          return artifact.copyWith(
+            contentPreview: null,
+            metadata: const <String, Object?>{},
+          );
+        })
+        .toList(growable: false);
+    final result = RawPayloadPurgeResult(
+      runsPurged: runsPurged,
+      eventsPurged: eventsPurged,
+      artifactsPurged: artifactsPurged,
+    );
+    if (result.totalPurged > 0) {
+      _commit(
+        _snapshot.copyWith(runs: runs, events: events, artifacts: artifacts),
+        updatedAt: utcNow,
+      );
+    }
+    return result;
   }
 
   @override

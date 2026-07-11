@@ -156,6 +156,54 @@ class SecureAtomicFile {
     }
   }
 
+  /// Restricts an existing directory to its owner and rejects a final-path
+  /// symbolic link. Callers should resolve trusted parent aliases first.
+  static Future<void> protectPrivateDirectory(
+    Directory directory, {
+    SecureAtomicProcessRunner? processRunner,
+  }) async {
+    final type = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (type != FileSystemEntityType.directory) {
+      throw FileSystemException(
+        'Private state parent must be a real directory.',
+        directory.path,
+      );
+    }
+    await _chmod(processRunner, mode: '0700', path: directory.path);
+  }
+
+  /// Creates or protects a regular private file without following a symbolic
+  /// link. Returns false only when [create] is false and the file is absent.
+  static Future<bool> protectPrivateFile(
+    File file, {
+    bool create = true,
+  }) async {
+    final type = await FileSystemEntity.type(file.path, followLinks: false);
+    if (type == FileSystemEntityType.notFound && !create) return false;
+    if (type != FileSystemEntityType.notFound &&
+        type != FileSystemEntityType.file) {
+      throw FileSystemException(
+        'Private state file must be a regular file.',
+        file.path,
+      );
+    }
+    final fileDescriptor = _NativeFilePermissions.openLock(file.path, 0x180);
+    try {
+      if (!_NativeFilePermissions.matchesPath(fileDescriptor, file.path)) {
+        throw FileSystemException(
+          'Private state file changed while permissions were applied.',
+          file.path,
+        );
+      }
+      return true;
+    } finally {
+      _NativeFilePermissions.close(fileDescriptor);
+    }
+  }
+
   static void _ensureTemporaryIdentity(int fileDescriptor, File temporary) {
     if (!_NativeFilePermissions.matchesPath(fileDescriptor, temporary.path)) {
       throw FileSystemException(

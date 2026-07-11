@@ -14,6 +14,7 @@ typedef ArtifactCollectorBeforeSecureRead =
     FutureOr<void> Function(String relativePath);
 
 const int defaultArtifactPreviewLimit = 64 * 1024;
+const int defaultFullDiffPreviewLimit = 1024 * 1024;
 
 class ArtifactCollector {
   ArtifactCollector({
@@ -84,21 +85,30 @@ class ArtifactCollector {
         );
       }
 
-      final diff = await _runGit(workspace.path, const ['diff']);
-      if (diff != null && diff.stdout.trim().isNotEmpty) {
-        artifacts.add(
-          _artifact(
-            task: task,
-            run: run,
-            kind: ArtifactKind.gitDiff,
-            title: 'Git diff preview',
-            contentPreview: _previewForText(diff.stdout),
-            metadata: _metadataForGitCommand(const [
-              'git',
-              'diff',
-            ], diff.stdout),
-          ),
-        );
+      if (task.metadata['retain_full_diff'] == true) {
+        final diff = await _runGit(workspace.path, const ['diff']);
+        if (diff != null && diff.stdout.trim().isNotEmpty) {
+          artifacts.add(
+            _artifact(
+              task: task,
+              run: run,
+              kind: ArtifactKind.gitDiff,
+              title: 'Git diff preview',
+              contentPreview: _previewForText(
+                diff.stdout,
+                limit: defaultFullDiffPreviewLimit,
+              ),
+              metadata: <String, Object?>{
+                ..._metadataForGitCommand(
+                  const ['git', 'diff'],
+                  diff.stdout,
+                  previewLimit: defaultFullDiffPreviewLimit,
+                ),
+                'raw_payload': true,
+              },
+            ),
+          );
+        }
       }
     }
 
@@ -227,6 +237,7 @@ class ArtifactCollector {
         'preview_limit_bytes': previewLimit,
         'truncated': read.sizeBytes > previewLimit,
         'binary': binary,
+        'raw_payload': true,
       },
     );
   }
@@ -247,9 +258,9 @@ class ArtifactCollector {
       taskId: task.id,
       runId: run.id,
       kind: kind,
-      title: title,
+      title: dataSanitizer.sanitizeText(title),
       createdAt: _clock(),
-      path: path,
+      path: path == null ? null : dataSanitizer.sanitizeText(path),
       contentPreview: contentPreview,
       sha256: sha256,
       sizeBytes: sizeBytes,
@@ -283,24 +294,36 @@ class ArtifactCollector {
 
   Map<String, Object?> _metadataForGitCommand(
     List<String> command,
-    String stdout,
-  ) {
+    String stdout, {
+    int? previewLimit,
+  }) {
+    final effectivePreviewLimit = previewLimit ?? this.previewLimit;
     return <String, Object?>{
       'source': 'git',
       'command': command,
-      'preview_limit_bytes': previewLimit,
-      'truncated': _isTextTruncated(stdout),
+      'preview_limit_bytes': effectivePreviewLimit,
+      'truncated': _isTextTruncated(stdout, limit: effectivePreviewLimit),
     };
   }
 
-  String _previewForText(String value) {
+  String _previewForText(String value, {int? limit}) {
+    final effectiveLimit = limit ?? previewLimit;
     final bytes = utf8.encode(value);
-    if (bytes.length <= previewLimit) return value;
-    return utf8.decode(bytes.take(previewLimit).toList(), allowMalformed: true);
+    if (bytes.length <= effectiveLimit) return value;
+    var byteLimit = effectiveLimit;
+    while (byteLimit > 0) {
+      final decoded = utf8.decode(
+        bytes.take(byteLimit).toList(),
+        allowMalformed: true,
+      );
+      if (utf8.encode(decoded).length <= effectiveLimit) return decoded;
+      byteLimit -= 1;
+    }
+    return '';
   }
 
-  bool _isTextTruncated(String value) {
-    return utf8.encode(value).length > previewLimit;
+  bool _isTextTruncated(String value, {int? limit}) {
+    return utf8.encode(value).length > (limit ?? previewLimit);
   }
 }
 

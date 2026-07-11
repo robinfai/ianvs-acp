@@ -72,6 +72,7 @@ class AcpClientApp extends StatefulWidget {
     this.openSessionWindow,
     this.autoLoadWorkspaceSessions = true,
     this.taskInboxController,
+    this.taskInboxMaintenanceInterval = const Duration(hours: 1),
     this.createAgentClient,
     this.createTaskAgentClient,
     this.agentClientFactoryKey,
@@ -94,6 +95,10 @@ class AcpClientApp extends StatefulWidget {
   final SessionWindowOpener? openSessionWindow;
   final bool autoLoadWorkspaceSessions;
   final TaskInboxController? taskInboxController;
+
+  /// Foreground check cadence. The repository persists a 24-hour throttle,
+  /// so checking more often cannot purge more than once per day.
+  final Duration taskInboxMaintenanceInterval;
   final AcpAgentClientFactory? createAgentClient;
   final AcpAgentClientFactory? createTaskAgentClient;
 
@@ -145,6 +150,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   Future<void>? _taskInboxTransition;
   Timer? _taskInboxRefreshTimer;
   Future<void>? _taskInboxRefresh;
+  Timer? _taskInboxMaintenanceTimer;
+  Future<void>? _taskInboxMaintenance;
   TaskPersistenceQuarantineRegistry get _taskPersistenceQuarantine =>
       TaskPersistenceQuarantineRegistry.shared;
   bool _agentDiscoveryStarted = false;
@@ -157,6 +164,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void initState() {
     super.initState();
+    _validateTaskInboxMaintenanceInterval();
     WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
     _widgetConfigSignature = _configSignature(_config);
@@ -191,6 +199,14 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void didUpdateWidget(covariant AcpClientApp oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _validateTaskInboxMaintenanceInterval();
+    if (oldWidget.taskInboxMaintenanceInterval !=
+        widget.taskInboxMaintenanceInterval) {
+      _taskInboxMaintenanceTimer?.cancel();
+      _taskInboxMaintenanceTimer = null;
+      final controller = _taskInboxController;
+      if (controller != null) _startTaskInboxMaintenance(controller);
+    }
 
     final nextWidgetConfig = _configWithInitialAgent(widget.config);
     final nextConfigSignature = _configSignature(nextWidgetConfig);
@@ -299,6 +315,17 @@ class _AcpClientAppState extends State<AcpClientApp>
     );
   }
 
+  void _validateTaskInboxMaintenanceInterval() {
+    final interval = widget.taskInboxMaintenanceInterval;
+    if (interval <= Duration.zero) {
+      throw ArgumentError.value(
+        interval,
+        'taskInboxMaintenanceInterval',
+        'Must be positive.',
+      );
+    }
+  }
+
   AcpClientConfig _configWithInitialAgent(AcpClientConfig config) {
     final agentName = widget.initialResumeAgentName?.trim();
     if (agentName == null || agentName.isEmpty) return config;
@@ -333,11 +360,16 @@ class _AcpClientAppState extends State<AcpClientApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _taskInboxController;
     if (state == AppLifecycleState.resumed) {
-      if (controller != null) _startTaskInboxRefresh(controller);
+      if (controller != null) {
+        _startTaskInboxRefresh(controller);
+        _startTaskInboxMaintenance(controller, runImmediately: true);
+      }
       return;
     }
     _taskInboxRefreshTimer?.cancel();
     _taskInboxRefreshTimer = null;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
   }
 
   void _configureTaskInboxController({Future<void>? previousCleanup}) {
@@ -467,6 +499,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       }
       pendingMigration.transfer();
       _taskPersistenceQuarantine.release(pendingMigration);
+      await migrationRepository.purgeRawPayloads(now: DateTime.now());
       controller = TaskInboxController(repository: migrationRepository);
       scheduler = _createTaskScheduler(controller);
       await scheduler.start(dispatchQueuedTasks: false);
@@ -490,6 +523,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       _ownsTaskInboxController = true;
       _taskScheduler = scheduler;
       _startTaskInboxRefresh(controller);
+      _startTaskInboxMaintenance(controller);
       scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
@@ -544,6 +578,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       _ownsTaskInboxController = false;
       _taskScheduler = scheduler;
       _startTaskInboxRefresh(controller);
+      _startTaskInboxMaintenance(controller);
       scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
@@ -597,7 +632,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
     _taskInboxRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _taskInboxController != controller) return;
-      if (_taskInboxRefresh != null) return;
+      if (_taskInboxRefresh != null || _taskInboxMaintenance != null) return;
       late final Future<void> refresh;
       refresh = _refreshTaskInbox(controller).whenComplete(() {
         if (identical(_taskInboxRefresh, refresh)) {
@@ -606,6 +641,58 @@ class _AcpClientAppState extends State<AcpClientApp>
       });
       _taskInboxRefresh = refresh;
     });
+  }
+
+  void _startTaskInboxMaintenance(
+    TaskInboxController controller, {
+    bool runImmediately = false,
+  }) {
+    _taskInboxMaintenanceTimer?.cancel();
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
+      _taskInboxMaintenanceTimer = null;
+      return;
+    }
+    if (runImmediately) _scheduleTaskInboxMaintenance(controller);
+    _taskInboxMaintenanceTimer = Timer.periodic(
+      widget.taskInboxMaintenanceInterval,
+      (_) => _scheduleTaskInboxMaintenance(controller),
+    );
+  }
+
+  void _scheduleTaskInboxMaintenance(TaskInboxController controller) {
+    if (!mounted || _taskInboxController != controller) return;
+    if (_taskInboxMaintenance != null) return;
+    late final Future<void> maintenance;
+    maintenance = _maintainTaskInbox(controller).whenComplete(() {
+      if (identical(_taskInboxMaintenance, maintenance)) {
+        _taskInboxMaintenance = null;
+      }
+    });
+    _taskInboxMaintenance = maintenance;
+  }
+
+  Future<void> _maintainTaskInbox(TaskInboxController controller) async {
+    try {
+      final refresh = _taskInboxRefresh;
+      if (refresh != null) await refresh;
+      if (!mounted || _taskInboxController != controller) return;
+      await controller.purgeRawPayloads(force: false);
+    } on TaskPersistenceStalledException catch (error) {
+      _taskInboxMaintenanceTimer?.cancel();
+      _taskInboxMaintenanceTimer = null;
+      final scheduler = _taskScheduler;
+      if (scheduler != null) {
+        scheduler.handlePersistenceFault(error);
+        return;
+      }
+      if (!mounted || _taskInboxController != controller) return;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
+    } on Object {
+      // A transient maintenance failure is retried on the next foreground
+      // interval or when the app resumes.
+    }
   }
 
   Future<void> _refreshTaskInbox(TaskInboxController controller) async {
@@ -630,7 +717,9 @@ class _AcpClientAppState extends State<AcpClientApp>
   Future<void>? _stopTaskInboxRefresh() {
     _taskInboxRefreshTimer?.cancel();
     _taskInboxRefreshTimer = null;
-    return _taskInboxRefresh;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
+    return _joinTaskCleanup(_taskInboxRefresh, _taskInboxMaintenance);
   }
 
   Future<void>? _stopTaskInboxTransition() {
@@ -665,6 +754,8 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (!mounted || !identical(_taskScheduler, scheduler)) return;
     _taskInboxRefreshTimer?.cancel();
     _taskInboxRefreshTimer = null;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
     _taskInboxInitializationError = _taskInboxErrorMessage(error);
     setState(() {});
   }

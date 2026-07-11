@@ -25,6 +25,21 @@ import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 import '../support/memory_task_repository.dart';
 
 void main() {
+  testWidgets('AcpClientApp rejects non-positive task maintenance intervals', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const AcpClientApp(taskInboxMaintenanceInterval: Duration.zero),
+    );
+    expect(tester.takeException(), isArgumentError);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      const AcpClientApp(taskInboxMaintenanceInterval: Duration(seconds: -1)),
+    );
+    expect(tester.takeException(), isArgumentError);
+  });
+
   Future<void> pumpWithWindowSize(
     WidgetTester tester,
     Widget widget,
@@ -416,6 +431,110 @@ void main() {
     );
   });
 
+  testWidgets(
+    'AcpClientApp purges expired legacy raw payloads before enabling Inbox',
+    (tester) async {
+      final temp = (await tester.runAsync(
+        () => Directory.systemTemp.createTemp('acp-app-raw-purge-'),
+      ))!;
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      final configPath = '${temp.path}/settings.json';
+      final source = File('${temp.path}/task_inbox_state.json');
+      final createdAt = DateTime.utc(2000, 1, 1);
+      final snapshot = TaskInboxSnapshot(
+        updatedAt: createdAt,
+        tasks: <TaskRecord>[
+          TaskRecord(
+            id: 'legacy-task',
+            title: 'Legacy raw task',
+            description: '',
+            workspacePath: '/workspace/app',
+            agentName: 'Codex',
+            status: TaskStatus.done,
+            priority: TaskPriority.normal,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+            currentRunId: 'legacy-run',
+            summary: 'Keep summary',
+          ),
+        ],
+        runs: <TaskRunRecord>[
+          TaskRunRecord(
+            id: 'legacy-run',
+            taskId: 'legacy-task',
+            attempt: 1,
+            status: TaskStatus.done,
+            startedAt: createdAt,
+            endedAt: createdAt,
+            promptSnapshot: 'expired prompt',
+          ),
+        ],
+        events: <TaskEventRecord>[
+          TaskEventRecord(
+            id: 'legacy-event',
+            taskId: 'legacy-task',
+            runId: 'legacy-run',
+            kind: TaskEventKind.tool,
+            text: 'Keep event text',
+            createdAt: createdAt,
+            metadata: const <String, Object?>{'raw': 'expired'},
+          ),
+        ],
+        artifacts: <ArtifactRecord>[
+          ArtifactRecord(
+            id: 'legacy-artifact',
+            taskId: 'legacy-task',
+            runId: 'legacy-run',
+            kind: ArtifactKind.gitDiff,
+            title: 'src/main.dart',
+            createdAt: createdAt,
+            path: 'src/main.dart',
+            contentPreview: 'expired diff',
+            metadata: const <String, Object?>{'raw_payload': true},
+          ),
+        ],
+      );
+      await tester.runAsync(
+        () => source.writeAsString(jsonEncode(snapshot.toJson())),
+      );
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: AcpClientConfig(configPath: configPath),
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) async => const <AgentServerConfig>[],
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(tester, () => !source.existsSync());
+      await _pumpUntil(tester, () => find.text('Inbox').evaluate().isNotEmpty);
+
+      final repository = TaskInboxSqliteStore(
+        path: TaskInboxSqliteStore.defaultPath(configPath: configPath),
+      );
+      addTearDown(repository.close);
+      final persisted = (await tester.runAsync(
+        repository.loadRepository,
+      ))!.snapshot;
+      expect(persisted.tasks.single.summary, 'Keep summary');
+      expect(persisted.runs.single.promptSnapshot, isNull);
+      expect(persisted.events.single.text, 'Keep event text');
+      expect(persisted.events.single.metadata, isEmpty);
+      expect(persisted.artifacts.single.title, 'src/main.dart');
+      expect(persisted.artifacts.single.path, 'src/main.dart');
+      expect(persisted.artifacts.single.contentPreview, isNull);
+      expect(persisted.artifacts.single.metadata, isEmpty);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+    },
+  );
+
   testWidgets('AcpClientApp keeps Inbox disabled when migration fails', (
     tester,
   ) async {
@@ -440,7 +559,9 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => File('${temp.path}/task_inbox_state.sqlite3').existsSync(),
+      () => File(
+        TaskInboxSqliteStore.defaultPath(configPath: configPath)!,
+      ).existsSync(),
     );
     await _pumpUntil(
       tester,
@@ -460,7 +581,7 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     final repository = TaskInboxSqliteStore(
-      path: '${temp.path}/task_inbox_state.sqlite3',
+      path: TaskInboxSqliteStore.defaultPath(configPath: configPath),
     );
     addTearDown(repository.close);
     expect(await tester.runAsync(repository.isActive), isFalse);
@@ -1232,6 +1353,66 @@ void main() {
     await tester.pump();
     expect(taskController.taskById('task-background'), isNotNull);
   });
+
+  testWidgets(
+    'AcpClientApp schedules raw payload maintenance only in foreground',
+    (tester) async {
+      final repository = _MemoryTaskStore();
+      var purgeAttempts = 0;
+      repository.beforeOperation = (operation) async {
+        if (operation == 'purgeRawPayloads') purgeAttempts += 1;
+      };
+      final taskController = TaskInboxController(repository: repository);
+      addTearDown(taskController.dispose);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          autoLoadWorkspaceSessions: false,
+          taskInboxController: taskController,
+          taskInboxMaintenanceInterval: const Duration(seconds: 1),
+        ),
+        const Size(1400, 900),
+      );
+
+      expect(purgeAttempts, 0);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+      expect(purgeAttempts, 1);
+      expect(repository.rawPayloadPurgeCount, 1);
+
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+      expect(purgeAttempts, 2);
+      expect(repository.rawPayloadPurgeCount, 1);
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          autoLoadWorkspaceSessions: false,
+          taskInboxController: taskController,
+          taskInboxMaintenanceInterval: const Duration(seconds: 10),
+        ),
+        const Size(1400, 900),
+      );
+      await tester.pump(const Duration(seconds: 2));
+      expect(purgeAttempts, 2);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(seconds: 2));
+      expect(purgeAttempts, 2);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(purgeAttempts, 3);
+      expect(repository.rawPayloadPurgeCount, 1);
+    },
+  );
 
   testWidgets('AcpClientApp drains tasks before replacing configured agents', (
     tester,
