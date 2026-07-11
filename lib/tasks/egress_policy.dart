@@ -221,7 +221,13 @@ EgressPolicyMatch? _classifySegment(
   final display = _normalizedDisplay(_tokenValues(finalTokens));
 
   if (executable == 'find' &&
-      args.any((arg) => arg == '-exec' || arg == '-execdir')) {
+      args.any(
+        (arg) =>
+            arg == '-exec' ||
+            arg == '-execdir' ||
+            arg == '-ok' ||
+            arg == '-okdir',
+      )) {
     return EgressPolicyMatch(
       reason: 'unresolved_wrapper',
       commandLine: display,

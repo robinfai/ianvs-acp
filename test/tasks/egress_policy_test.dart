@@ -362,6 +362,7 @@ void main() {
         'xargs curl https://example.com/private',
         'parallel curl ::: https://example.com/private',
         'find . -exec curl https://example.com/private ;',
+        'find . -okdir curl https://example.com/private ;',
       ]) {
         expect(
           egressSensitiveCommandMatch(command),
@@ -370,6 +371,7 @@ void main() {
         );
       }
       expect(egressSensitiveCommandMatch(r"echo '{ ! safe; }'"), isNull);
+      expect(egressSensitiveCommandMatch('find . -name README.md'), isNull);
     });
 
     test(
