@@ -69,3 +69,43 @@ class AgentSession {
     );
   }
 }
+
+bool sameSessionWorkspaceIdentity(AgentSession left, AgentSession right) {
+  return sessionWorkspaceIdentityMatches(
+    left,
+    sessionId: right.id,
+    cwd: right.cwd,
+    additionalDirectories: right.additionalDirectories,
+  );
+}
+
+bool sessionWorkspaceIdentityMatches(
+  AgentSession session, {
+  required String sessionId,
+  required String cwd,
+  required Iterable<String> additionalDirectories,
+}) {
+  if (session.id.trim() != sessionId.trim() ||
+      session.cwd.trim() != cwd.trim()) {
+    return false;
+  }
+  final existingDirectories = _normalizedWorkspaceDirectories(
+    session.additionalDirectories,
+  );
+  final requestedDirectories = _normalizedWorkspaceDirectories(
+    additionalDirectories,
+  );
+  return existingDirectories.length == requestedDirectories.length &&
+      existingDirectories.containsAll(requestedDirectories);
+}
+
+String sessionWorkspaceConflictMessage(String sessionId) {
+  return 'Session ${sessionId.trim()} is already bound to a different workspace.';
+}
+
+Set<String> _normalizedWorkspaceDirectories(Iterable<String> directories) {
+  return {
+    for (final directory in directories)
+      if (directory.trim().isNotEmpty) directory.trim(),
+  };
+}

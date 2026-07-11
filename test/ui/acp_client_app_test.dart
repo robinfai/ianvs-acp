@@ -2646,6 +2646,42 @@ void main() {
     },
   );
 
+  testWidgets(
+    'AcpClientApp rejects changed roots for the active remote session id',
+    (tester) async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      await controller.resumeSession(
+        'session-a',
+        cwd: '/workspace/current',
+        additionalDirectories: const ['/workspace/current-extra'],
+      );
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          controller: controller,
+          taskInboxController: taskHarness.controller,
+        ),
+        const Size(1400, 900),
+      );
+
+      await tester.tap(find.text('Resume'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.textContaining('different workspace'), findsOneWidget);
+      expect(fake.lastResumeCwd, '/workspace/current');
+      expect(controller.currentSession?.cwd, '/workspace/current');
+      expect(controller.currentSession?.additionalDirectories, [
+        '/workspace/current-extra',
+      ]);
+    },
+  );
+
   testWidgets('AcpClientApp forks sessions from the session menu', (
     tester,
   ) async {

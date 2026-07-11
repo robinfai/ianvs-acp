@@ -672,6 +672,49 @@ void main() {
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
   });
 
+  test(
+    'resume session rejects changed roots for the active session id',
+    () async {
+      final fake = _ResourceNotFoundForSessionAgentClient('never-missing');
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.resumeSession(
+        'bound-session',
+        cwd: '/workspace/current',
+        additionalDirectories: const ['/workspace/a', '/workspace/b'],
+      );
+
+      await controller.resumeSession(
+        ' bound-session ',
+        cwd: ' /workspace/current ',
+        additionalDirectories: const [
+          '/workspace/b',
+          '',
+          ' /workspace/a ',
+          '/workspace/a',
+        ],
+      );
+
+      expect(fake.resumedSessionIds, ['bound-session']);
+      expect(controller.lastError, isNull);
+
+      await controller.resumeSession(
+        'bound-session',
+        cwd: '/workspace/changed',
+        additionalDirectories: const ['/workspace/a', '/workspace/b'],
+      );
+
+      expect(fake.resumedSessionIds, ['bound-session']);
+      expect(controller.currentSession?.cwd, '/workspace/current');
+      expect(controller.currentSession?.additionalDirectories, [
+        '/workspace/a',
+        '/workspace/b',
+      ]);
+      expect(controller.lastError, contains('different workspace'));
+    },
+  );
+
   test('resume session makes archived local session visible again', () async {
     final controller = ChatController(
       client: FakeAgentClient(),

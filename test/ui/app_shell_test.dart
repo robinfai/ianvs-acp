@@ -648,6 +648,36 @@ void main() {
 
     expect(client.lastResumeCwd, '/workspace/project-a');
   });
+
+  testWidgets('AppShell rejects changed roots for the active session id', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(client: client, cwd: '/workspace/app');
+    addTearDown(controller.dispose);
+    await controller.resumeSession('session-a', cwd: '/workspace/current');
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Review Session Workspace'), findsNothing);
+    expect(find.textContaining('different workspace'), findsOneWidget);
+    expect(client.lastResumeCwd, '/workspace/current');
+    expect(controller.currentSession?.cwd, '/workspace/current');
+  });
 }
 
 class _EmptyTaskStore extends MemoryTaskRepository {}

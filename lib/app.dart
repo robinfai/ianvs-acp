@@ -1664,7 +1664,19 @@ class _AcpClientAppState extends State<AcpClientApp>
       return;
     }
 
-    if (_hasExactSessionIdentity(_controller, session)) return;
+    final currentSession = _controller.currentSession;
+    final selectedAgentName = session.agentName?.trim();
+    final belongsToActiveAgent =
+        selectedAgentName == null ||
+        selectedAgentName.isEmpty ||
+        selectedAgentName == _controller.agentName.trim();
+    if (belongsToActiveAgent &&
+        currentSession != null &&
+        currentSession.id.trim() == session.id.trim()) {
+      if (sameSessionWorkspaceIdentity(currentSession, session)) return;
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
+    }
 
     final approved = await showSessionWorkspaceReviewDialog(context, session);
     if (!approved || !mounted) return;
@@ -1694,33 +1706,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       updatedAt: session.updatedAt,
     );
     if (mounted) setState(() {});
-  }
-
-  bool _hasExactSessionIdentity(
-    ChatController controller,
-    AgentSession selected,
-  ) {
-    final current = controller.currentSession;
-    if (current == null ||
-        current.id != selected.id ||
-        current.cwd != selected.cwd ||
-        current.additionalDirectories.length !=
-            selected.additionalDirectories.length) {
-      return false;
-    }
-    final selectedAgentName = selected.agentName?.trim();
-    if (selectedAgentName != null &&
-        selectedAgentName.isNotEmpty &&
-        selectedAgentName != controller.agentName) {
-      return false;
-    }
-    for (var index = 0; index < current.additionalDirectories.length; index++) {
-      if (current.additionalDirectories[index] !=
-          selected.additionalDirectories[index]) {
-        return false;
-      }
-    }
-    return true;
   }
 
   bool _canForkSession(AgentSession session) {

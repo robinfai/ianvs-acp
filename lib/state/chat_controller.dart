@@ -352,8 +352,25 @@ class ChatController extends ChangeNotifier {
     if (trimmedSessionId.isEmpty || isStreaming || isSessionOperationRunning) {
       return;
     }
-    if (currentSession?.id == trimmedSessionId) return;
     final explicitCwd = cwd?.trim();
+    final activeSession = currentSession;
+    if (activeSession != null && activeSession.id.trim() == trimmedSessionId) {
+      final requestedCwd = explicitCwd == null || explicitCwd.isEmpty
+          ? activeSession.cwd
+          : explicitCwd;
+      final requestedDirectories =
+          additionalDirectories ?? activeSession.additionalDirectories;
+      if (sessionWorkspaceIdentityMatches(
+        activeSession,
+        sessionId: trimmedSessionId,
+        cwd: requestedCwd,
+        additionalDirectories: requestedDirectories,
+      )) {
+        return;
+      }
+      _setError(StateError(sessionWorkspaceConflictMessage(trimmedSessionId)));
+      return;
+    }
     final workspaceCwd = explicitCwd == null || explicitCwd.isEmpty
         ? this.cwd
         : explicitCwd;

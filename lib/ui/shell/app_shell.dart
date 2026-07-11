@@ -737,18 +737,32 @@ class AppShell extends StatelessWidget {
       return;
     }
 
+    final targetController =
+        _controllerForAgentName(
+          sessionControllerList,
+          selectedSession.agentName,
+        ) ??
+        controller;
+    final activeSession = targetController.currentSession;
+    if (activeSession != null &&
+        activeSession.id.trim() == selectedSession.id.trim()) {
+      if (sameSessionWorkspaceIdentity(activeSession, selectedSession)) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(sessionWorkspaceConflictMessage(selectedSession.id)),
+        ),
+      );
+      return;
+    }
+
     final approved = await showSessionWorkspaceReviewDialog(
       context,
       selectedSession,
     );
     if (!approved || !context.mounted) return;
 
-    final targetController = _controllerForAgentName(
-      sessionControllerList,
-      selectedSession.agentName,
-    );
     unawaited(
-      (targetController ?? controller).resumeSession(
+      targetController.resumeSession(
         selectedSession.id,
         cwd: selectedSession.cwd,
         additionalDirectories: selectedSession.additionalDirectories,
