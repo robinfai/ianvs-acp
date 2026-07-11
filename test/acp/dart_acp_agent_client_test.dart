@@ -1995,6 +1995,161 @@ Future<void> main() async {
     },
   );
 
+  for (final operation in const <String>['new', 'fork']) {
+    test(
+      '$operation registration waits for a failed resume rollback',
+      () => _expectGeneratedSessionRegistrationAfterFailedResume(operation),
+    );
+  }
+
+  test('failed retry preserves updates owned by an existing session', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File(
+      '${tempDir.path}/fake_existing_session_retry_agent.dart',
+    );
+    await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) => stdout.writeln(jsonEncode(message));
+
+Future<void> main() async {
+  var resumeCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'resume': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/resume') {
+      resumeCount += 1;
+      if (resumeCount == 1) {
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{},
+        });
+      } else {
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'method': 'session/update',
+          'params': <String, dynamic>{
+            'sessionId': 'existing-session',
+            'update': <String, dynamic>{
+              'sessionUpdate': 'current_mode_update',
+              'currentModeId': 'retry-mode',
+            },
+          },
+        });
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'method': 'session/update',
+          'params': <String, dynamic>{
+            'sessionId': 'existing-session',
+            'update': <String, dynamic>{
+              'sessionUpdate': 'tool_call',
+              'toolCallId': 'retry-call',
+              'status': 'in_progress',
+              'title': 'Preserved tool',
+              'kind': 'execute',
+            },
+          },
+        });
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'error': <String, dynamic>{
+            'code': -32000,
+            'message': 'retry failed',
+          },
+        });
+      }
+    } else if (message['method'] == 'session/prompt') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'existing-session',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'tool_call_update',
+            'toolCallId': 'retry-call',
+            'status': 'completed',
+            'rawOutput': 'done',
+          },
+        },
+      });
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+    final client = await acp.AcpClient.start(
+      config: acp.AcpConfig(
+        agentCommand: _dartExecutable(),
+        agentArgs: [agentScript.path],
+      ),
+    );
+
+    try {
+      await client.initialize().timeout(const Duration(seconds: 5));
+      await client.resumeSession(
+        sessionId: 'existing-session',
+        workspaceRoot: '/workspace/existing',
+      );
+
+      await expectLater(
+        client.resumeSession(
+          sessionId: 'existing-session',
+          workspaceRoot: '/workspace/existing',
+        ),
+        throwsA(anything),
+      );
+      await pumpEventQueue();
+
+      expect(
+        client.sessionModes('existing-session')?.currentModeId,
+        'retry-mode',
+      );
+      final replay = await client
+          .sessionUpdates('existing-session')
+          .take(2)
+          .toList()
+          .timeout(const Duration(seconds: 5));
+      expect(replay.whereType<acp.ModeUpdate>(), hasLength(1));
+      expect(
+        replay.whereType<acp.ToolCallUpdate>().single.toolCall.title,
+        'Preserved tool',
+      );
+
+      final promptToolUpdate = await client
+          .prompt(sessionId: 'existing-session', content: 'finish tool')
+          .where((update) => update is acp.ToolCallUpdate)
+          .cast<acp.ToolCallUpdate>()
+          .single
+          .timeout(const Duration(seconds: 5));
+      expect(promptToolUpdate.toolCall.title, 'Preserved tool');
+      expect(promptToolUpdate.toolCall.rawOutput, 'done');
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('session manager prompt requires a workspace binding', () async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
@@ -5601,6 +5756,141 @@ const _tinyWavBytes = <int>[
 ];
 
 const _binaryBytes = <int>[0x00, 0xff, 0x10, 0x80, 0x42, 0x24];
+
+Future<void> _expectGeneratedSessionRegistrationAfterFailedResume(
+  String operation,
+) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final agentScript = File('${tempDir.path}/fake_${operation}_race_agent.dart');
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) => stdout.writeln(jsonEncode(message));
+
+Future<void> main() async {
+  Object? pendingResumeId;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'resume': true,
+              'fork': true,
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/resume') {
+      pendingResumeId = message['id'];
+    } else if (message['method'] == 'session/$operation') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'shared-session',
+          'registrationMarker': '$operation',
+        },
+      });
+    } else if (message['method'] == 'test/release') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': pendingResumeId,
+        'error': <String, dynamic>{
+          'code': -32000,
+          'message': 'resume failed',
+        },
+      });
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      });
+    } else if (message['method'] == 'session/prompt') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+  final registrationResponse = Completer<void>();
+  final client = await acp.AcpClient.start(
+    config: acp.AcpConfig(
+      agentCommand: _dartExecutable(),
+      agentArgs: [agentScript.path],
+      onProtocolIn: (line) {
+        if (line.contains('"registrationMarker":"$operation"') &&
+            !registrationResponse.isCompleted) {
+          registrationResponse.complete();
+        }
+      },
+    ),
+  );
+
+  try {
+    await client.initialize().timeout(const Duration(seconds: 5));
+    final resume = client.resumeSession(
+      sessionId: 'shared-session',
+      workspaceRoot: '/workspace/provisional',
+    );
+    final resumeFailure = expectLater(resume, throwsA(anything));
+    await pumpEventQueue();
+
+    final Future<String> generated = operation == 'new'
+        ? client.newSession('/workspace/generated')
+        : client
+              .forkSession(
+                sessionId: 'source-session',
+                workspaceRoot: '/workspace/generated',
+              )
+              .then((result) => result.sessionId);
+    var registrationCompleted = false;
+    Object? registrationError;
+    final trackedRegistration = generated.then(
+      (sessionId) {
+        registrationCompleted = true;
+        return sessionId;
+      },
+      onError: (Object error) {
+        registrationCompleted = true;
+        registrationError = error;
+        return 'registration-failed';
+      },
+    );
+
+    await registrationResponse.future.timeout(const Duration(seconds: 5));
+    await pumpEventQueue(times: 2);
+    final completedBeforeRollback = registrationCompleted;
+
+    await client
+        .sendRaw('test/release', const <String, dynamic>{})
+        .timeout(const Duration(seconds: 5));
+    await resumeFailure;
+
+    expect(completedBeforeRollback, isFalse);
+    expect(registrationError, isNull);
+    expect(await trackedRegistration, 'shared-session');
+    await client
+        .prompt(sessionId: 'shared-session', content: 'still valid')
+        .drain<void>()
+        .timeout(const Duration(seconds: 5));
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
 
 Future<
   ({

@@ -871,6 +871,130 @@ void main() {
     expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
   });
 
+  test(
+    'snapshot activation cancels stale permission without waiting',
+    () async {
+      final fake = _NeverRespondingPermissionAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+
+      await controller.newSession(cwd: '/workspace/local');
+      final snapshotSession = controller.currentSession!;
+      await controller.resumeSession(
+        'remote-session',
+        cwd: '/workspace/remote',
+      );
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'snapshot-stale-permission',
+          title: 'Run remote command',
+          rationale: 'Requested by the previous session',
+          sessionId: 'remote-session',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 13),
+        ),
+      );
+      await pumpEventQueue();
+
+      var activationCompleted = false;
+      final activation = controller
+          .resumeSession(snapshotSession.id)
+          .whenComplete(() => activationCompleted = true);
+      await pumpEventQueue(times: 3);
+
+      expect(activationCompleted, isTrue);
+      expect(controller.currentSession?.id, snapshotSession.id);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(fake.permissionResponseStarted.isCompleted, isTrue);
+      expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+      expect(
+        events
+            .where(
+              (event) =>
+                  event.type == ChatPermissionEventType.resolved &&
+                  event.request.id == 'snapshot-stale-permission',
+            )
+            .length,
+        1,
+      );
+      await activation;
+    },
+  );
+
+  test(
+    'local unstarted activation cancels stale permission without waiting',
+    () async {
+      final fake = _NeverRespondingPermissionAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+
+      await controller.newSession(cwd: '/workspace/local-target');
+      final localSession = controller.currentSession!;
+      await controller.newSession(cwd: '/workspace/previous');
+      final previousSession = controller.currentSession!;
+      final archived = controller.archiveSessionLocally(localSession.id)!;
+      controller.restoreArchivedSessionLocally(archived);
+      expect(controller.currentSession?.id, previousSession.id);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'local-stale-permission',
+          title: 'Run previous command',
+          rationale: 'Requested by the previous session',
+          sessionId: previousSession.id,
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 13, 1),
+        ),
+      );
+      await pumpEventQueue();
+
+      var activationCompleted = false;
+      final activation = controller
+          .resumeSession(localSession.id)
+          .whenComplete(() => activationCompleted = true);
+      await pumpEventQueue(times: 3);
+
+      expect(activationCompleted, isTrue);
+      expect(controller.currentSession?.id, localSession.id);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(fake.permissionResponseStarted.isCompleted, isTrue);
+      expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+      expect(
+        events
+            .where(
+              (event) =>
+                  event.type == ChatPermissionEventType.resolved &&
+                  event.request.id == 'local-stale-permission',
+            )
+            .length,
+        1,
+      );
+      await activation;
+    },
+  );
+
   test('resume session keeps ACP session title metadata', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -3609,6 +3733,9 @@ class _NeverRespondingPermissionAgentClient extends FakeAgentClient {
   _NeverRespondingPermissionAgentClient({super.chunkDelay});
 
   final Completer<void> _response = Completer<void>();
+  final Completer<void> permissionResponseStarted = Completer<void>();
+  final List<AcpPermissionDecision> permissionDecisions =
+      <AcpPermissionDecision>[];
 
   @override
   Future<void> respondToPermissionRequest({
@@ -3616,6 +3743,10 @@ class _NeverRespondingPermissionAgentClient extends FakeAgentClient {
     required AcpPermissionDecision decision,
     String? selectedOptionId,
   }) {
+    permissionDecisions.add(decision);
+    if (!permissionResponseStarted.isCompleted) {
+      permissionResponseStarted.complete();
+    }
     return _response.future;
   }
 

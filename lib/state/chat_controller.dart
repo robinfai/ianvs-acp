@@ -677,6 +677,7 @@ class ChatController extends ChangeNotifier {
     _retiredSessionIds.remove(session.id);
     currentSession = session;
     _upsertSession(session);
+    _cancelPendingPermissionOutsideSession(session.id);
     messages
       ..clear()
       ..addAll(snapshot.messages);
@@ -724,6 +725,7 @@ class ChatController extends ChangeNotifier {
     _retiredSessionIds.remove(session.id);
     currentSession = session;
     _upsertSession(session);
+    _cancelPendingPermissionOutsideSession(session.id);
     messages.clear();
     availableCommands = const <Map<String, Object?>>[];
     lastLatency = null;

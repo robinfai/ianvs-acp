@@ -551,15 +551,12 @@ class SessionManager {
       }, additionalDirectories),
     );
     final id = _sessionIdFromResult(resp, method: 'session/new');
-    _sessionStreams.putIfAbsent(id, StreamController<AcpUpdate>.broadcast);
-    _replayBuffers.putIfAbsent(id, () => <AcpUpdate>[]);
-    _setSessionWorkspace(
-      id,
-      workspaceRoot,
+    await _registerGeneratedSession(
+      sessionId: id,
+      workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
+      modes: _sessionModeInfoFromRaw(resp['modes']),
     );
-    final modes = _sessionModeInfoFromRaw(resp['modes']);
-    if (modes != null) _sessionModes[id] = modes;
     return id;
   }
 
@@ -647,11 +644,11 @@ class SessionManager {
       }, directories),
     );
     final newId = _sessionIdFromResult(resp, method: 'session/fork');
-    _sessionStreams.putIfAbsent(newId, StreamController<AcpUpdate>.broadcast);
-    _replayBuffers.putIfAbsent(newId, () => <AcpUpdate>[]);
-    if (root != null) {
-      _setSessionWorkspace(newId, root, additionalDirectories: directories);
-    }
+    await _registerGeneratedSession(
+      sessionId: newId,
+      workspaceRoot: root,
+      additionalDirectories: directories,
+    );
     return SessionResult.fromJson(resp);
   }
 
@@ -803,14 +800,8 @@ class SessionManager {
     required String workspaceRoot,
     required List<String> additionalDirectories,
     required Future<T> Function() action,
-  }) async {
-    final previousSetup = _sessionSetupTails[sessionId];
-    final completion = Completer<void>();
-    final tail = completion.future;
-    _sessionSetupTails[sessionId] = tail;
-    if (previousSetup != null) await previousSetup;
-
-    try {
+  }) {
+    return _runSerializedSessionMutation(sessionId, () async {
       final hadStream = _sessionStreams.containsKey(sessionId);
       final hadReplay = _replayBuffers.containsKey(sessionId);
       final hadBinding = _sessionWorkspaceRoots.containsKey(sessionId);
@@ -832,22 +823,61 @@ class SessionManager {
         if (!hadBinding) {
           _sessionWorkspaceRoots.remove(sessionId);
           _sessionAdditionalDirectories.remove(sessionId);
-        }
-        if (!hadReplay) {
-          _replayBuffers.remove(sessionId);
-        }
-        if (!hadModes) {
-          _sessionModes.remove(sessionId);
-        }
-        if (!hadToolCalls) {
-          _toolCalls.remove(sessionId);
-        }
-        if (!hadStream) {
-          final controller = _sessionStreams.remove(sessionId);
-          await controller?.close();
+          if (!hadReplay) {
+            _replayBuffers.remove(sessionId);
+          }
+          if (!hadModes) {
+            _sessionModes.remove(sessionId);
+          }
+          if (!hadToolCalls) {
+            _toolCalls.remove(sessionId);
+          }
+          if (!hadStream) {
+            final controller = _sessionStreams.remove(sessionId);
+            await controller?.close();
+          }
         }
         rethrow;
       }
+    });
+  }
+
+  Future<void> _registerGeneratedSession({
+    required String sessionId,
+    required String? workspaceRoot,
+    required List<String> additionalDirectories,
+    ({String? currentModeId, List<({String id, String name})> availableModes})?
+    modes,
+  }) {
+    return _runSerializedSessionMutation(sessionId, () async {
+      _sessionStreams.putIfAbsent(
+        sessionId,
+        StreamController<AcpUpdate>.broadcast,
+      );
+      _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
+      if (workspaceRoot != null) {
+        _setSessionWorkspace(
+          sessionId,
+          workspaceRoot,
+          additionalDirectories: additionalDirectories,
+        );
+      }
+      if (modes != null) _sessionModes[sessionId] = modes;
+    });
+  }
+
+  Future<T> _runSerializedSessionMutation<T>(
+    String sessionId,
+    Future<T> Function() action,
+  ) async {
+    final previousSetup = _sessionSetupTails[sessionId];
+    final completion = Completer<void>();
+    final tail = completion.future;
+    _sessionSetupTails[sessionId] = tail;
+    if (previousSetup != null) await previousSetup;
+
+    try {
+      return await action();
     } finally {
       completion.complete();
       if (identical(_sessionSetupTails[sessionId], tail)) {
