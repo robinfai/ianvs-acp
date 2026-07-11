@@ -1413,7 +1413,7 @@ class ChatController extends ChangeNotifier {
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
     _notifyPermissionEventObservers(
-      ChatPermissionEvent.requested(request.forAudit()),
+      ChatPermissionEvent.requested(_permissionRequestForAudit(request)),
     );
     _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
@@ -1691,12 +1691,20 @@ class ChatController extends ChangeNotifier {
 
   void _recordPermissionRequest(AcpPermissionRequest request) {
     final entry = AcpPermissionAuditEntry(
-      request: request.forAudit(),
+      request: _permissionRequestForAudit(request),
       status: AcpPermissionAuditStatus.pending,
       recordedAt: request.requestedAt,
     );
     _permissionHistory.insert(0, entry);
     _trimPermissionHistory();
+  }
+
+  AcpPermissionRequest _permissionRequestForAudit(
+    AcpPermissionRequest request,
+  ) {
+    return request.forAudit(
+      metadata: redactedPermissionMetadataForAudit(request),
+    );
   }
 
   void _trimPermissionHistory() {

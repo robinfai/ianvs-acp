@@ -127,7 +127,24 @@ class AcpPermissionRequest {
     this.metadata = const <String, Object?>{},
     this.transientPolicyContext = const <String, Object?>{},
     this.generation = 0,
-    this._transientPolicyContextHash,
+  }) : _transientPolicyContextHash = null,
+       _contentFingerprintOverride = null;
+
+  const AcpPermissionRequest._retained({
+    required this.id,
+    required this.title,
+    required this.rationale,
+    required this.sessionId,
+    required this.toolName,
+    required this.options,
+    required this.requestedAt,
+    required this.choices,
+    required this.toolKind,
+    required this.metadata,
+    required this.transientPolicyContext,
+    required this.generation,
+    required this._transientPolicyContextHash,
+    required this._contentFingerprintOverride,
   });
 
   final String id;
@@ -143,6 +160,7 @@ class AcpPermissionRequest {
   final Map<String, Object?> transientPolicyContext;
   final int generation;
   final String? _transientPolicyContextHash;
+  final String? _contentFingerprintOverride;
 
   String get transientPolicyContextFingerprint {
     final retainedHash = _transientPolicyContextHash;
@@ -153,6 +171,10 @@ class AcpPermissionRequest {
   }
 
   String get contentFingerprint {
+    final retainedFingerprint = _contentFingerprintOverride;
+    if (retainedFingerprint != null && retainedFingerprint.isNotEmpty) {
+      return retainedFingerprint;
+    }
     final content = <String, Object?>{
       'title': title.trim(),
       'rationale': rationale.trim(),
@@ -180,7 +202,7 @@ class AcpPermissionRequest {
   String get bindingKey => '$id:$contentFingerprint:$generation';
 
   AcpPermissionRequest withGeneration(int value) {
-    return AcpPermissionRequest(
+    return AcpPermissionRequest._retained(
       id: id,
       title: title,
       rationale: rationale,
@@ -194,11 +216,12 @@ class AcpPermissionRequest {
       transientPolicyContext: transientPolicyContext,
       generation: value,
       transientPolicyContextHash: transientPolicyContextFingerprint,
+      contentFingerprintOverride: contentFingerprint,
     );
   }
 
-  AcpPermissionRequest forAudit() {
-    return AcpPermissionRequest(
+  AcpPermissionRequest forAudit({Map<String, Object?>? metadata}) {
+    return AcpPermissionRequest._retained(
       id: id,
       title: title,
       rationale: rationale,
@@ -208,9 +231,11 @@ class AcpPermissionRequest {
       requestedAt: requestedAt,
       choices: choices,
       toolKind: toolKind,
-      metadata: metadata,
+      metadata: metadata ?? this.metadata,
+      transientPolicyContext: const <String, Object?>{},
       generation: generation,
       transientPolicyContextHash: transientPolicyContextFingerprint,
+      contentFingerprintOverride: contentFingerprint,
     );
   }
 

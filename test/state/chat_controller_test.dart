@@ -2753,6 +2753,65 @@ void main() {
   });
 
   test(
+    'permission history redacts direct command credentials and URL tokens',
+    () async {
+      const secret = 'controller-history-secret';
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-direct-secret',
+          title: 'Create terminal',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11),
+          metadata: const <String, Object?>{
+            'command': 'curl',
+            'args': <String>[
+              '--user',
+              'alice:$secret',
+              'https://alice:pw@example.com/upload?token=$secret',
+            ],
+          },
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(
+        controller.pendingPermissionRequest?.id,
+        'permission-direct-secret',
+      );
+      final historyJson = acpPermissionAuditEntriesToJson(
+        controller.permissionHistory,
+      );
+      expect(historyJson, isNot(contains(secret)));
+      expect(historyJson, isNot(contains('alice:pw')));
+      expect(historyJson, contains('<redacted>'));
+      expect(
+        events.single.request.metadata.toString(),
+        isNot(contains(secret)),
+      );
+
+      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      expect(events, hasLength(2));
+      for (final event in events) {
+        expect(event.request.metadata.toString(), isNot(contains(secret)));
+        expect(event.request.metadata.toString(), isNot(contains('alice:pw')));
+      }
+    },
+  );
+
+  test(
     'switching to full access resolves the current pending request',
     () async {
       final fake = FakeAgentClient();

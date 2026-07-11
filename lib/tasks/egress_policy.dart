@@ -50,6 +50,12 @@ EgressPolicyMatch? egressSensitiveCommandMatch(
           : _tokenValues(tokenization.tokens),
     );
   }
+  if (tokenization.tokens.any((token) => token.hasShellControl)) {
+    return _manualMatch(
+      'unresolved_shell_control',
+      _tokenValues(tokenization.tokens),
+    );
+  }
   final commandWords = tokenization.tokens;
   final words = args.isEmpty
       ? commandWords
@@ -177,6 +183,20 @@ EgressPolicyMatch? _classifySegment(
       }
       continue;
     }
+    if (wrapper == 'exec') {
+      index += 1;
+      if (index < tokens.length && tokens[index].value == '--') index += 1;
+      if (index >= tokens.length) {
+        return _manualMatch('unresolved_executable', const <String>['exec']);
+      }
+      if (tokens[index].value.startsWith('-')) {
+        return _manualMatch(
+          'unresolved_wrapper',
+          _tokenValues(tokens.skip(index - 1)),
+        );
+      }
+      continue;
+    }
     break;
   }
 
@@ -199,6 +219,14 @@ EgressPolicyMatch? _classifySegment(
   final executable = _basename(resolvedTokens.first).toLowerCase();
   final args = resolvedTokens.skip(1).toList(growable: false);
   final display = _normalizedDisplay(_tokenValues(finalTokens));
+
+  if (executable == 'find' &&
+      args.any((arg) => arg == '-exec' || arg == '-execdir')) {
+    return EgressPolicyMatch(
+      reason: 'unresolved_wrapper',
+      commandLine: display,
+    );
+  }
 
   if (const {'sh', 'bash', 'zsh'}.contains(executable)) {
     for (var argIndex = 0; argIndex < args.length - 1; argIndex += 1) {
@@ -269,6 +297,37 @@ String? commandLineFromPermissionRequest(AcpPermissionRequest request) {
   final invocation = _commandFromPermissionRequest(request);
   if (invocation == null) return null;
   return _commandLine(invocation.command, invocation.args);
+}
+
+Map<String, Object?> redactedPermissionMetadataForAudit(
+  AcpPermissionRequest request,
+) {
+  final invocation = _commandFromPermissionRequest(request);
+  if (invocation == null) return request.metadata;
+  final tokenization = _shellWords(invocation.command);
+  final tokens = <_ShellToken>[
+    ...tokenization.tokens,
+    ...invocation.args.map(_ShellToken.expanding),
+  ];
+  final redacted = Map<String, Object?>.of(request.metadata);
+  for (final key in const <String>[
+    'rawInput',
+    'raw_input',
+    'input',
+    'args',
+    'arguments',
+    'command',
+    'cmd',
+    'command_line',
+    'shellCommand',
+    'shell_command',
+    'script',
+    'toolCall',
+  ]) {
+    redacted.remove(key);
+  }
+  redacted['commandLine'] = _normalizedDisplay(_tokenValues(tokens));
+  return redacted;
 }
 
 _PermissionCommand? _commandFromPermissionRequest(
@@ -349,6 +408,22 @@ const Set<String> _uncertainCommandWrappers = {
   'nice',
   'timeout',
   'nohup',
+  'xargs',
+  'parallel',
+  'eval',
+  'source',
+  '.',
+  'time',
+  'if',
+  'for',
+  'while',
+  'until',
+  'case',
+  'select',
+  'function',
+  'then',
+  'do',
+  'coproc',
 };
 
 Map<String, String> _transientEnvironment(AcpPermissionRequest request) {
@@ -402,6 +477,10 @@ _ResolvedToken _resolveToken(
       complete = false;
       return match.group(0)!;
     }
+    if (token.allowsFieldSplittingAt(match.start) &&
+        value.contains(RegExp(r'[\s*?\[\]{}();&|<>]'))) {
+      complete = false;
+    }
     return value;
   });
   for (var index = 0; index < token.value.length; index += 1) {
@@ -443,14 +522,111 @@ List<String> _tokenValues(Iterable<_ShellToken> tokens) {
 
 String _normalizedDisplay(List<String> tokens) {
   if (tokens.isEmpty) return '<redacted>';
-  return tokens.map(_safeDisplayToken).join(' ').trim();
+  final displayed = <String>[];
+  var redactNext = false;
+  for (final token in tokens) {
+    final assignment = _assignmentPattern.firstMatch(token);
+    if (assignment != null) {
+      displayed.add('${assignment.group(1)}=<redacted>');
+      redactNext = false;
+      continue;
+    }
+    if (redactNext) {
+      displayed.add('<redacted>');
+      redactNext = false;
+      continue;
+    }
+    if (_sensitiveDetachedOptions.contains(token)) {
+      displayed.add(token);
+      redactNext = true;
+      continue;
+    }
+    final sensitiveAttached = _redactedSensitiveAttachedOption(token);
+    if (sensitiveAttached != null) {
+      displayed.add(sensitiveAttached);
+      continue;
+    }
+    final equalsIndex = token.startsWith('--') ? token.indexOf('=') : -1;
+    if (equalsIndex > 2) {
+      final name = token.substring(0, equalsIndex);
+      final value = token.substring(equalsIndex + 1);
+      displayed.add('$name=${_sanitizeAuditValue(value)}');
+      continue;
+    }
+    displayed.add(_sanitizeAuditValue(token));
+  }
+  return displayed.map(_shellDisplayArg).join(' ').trim();
 }
 
-String _safeDisplayToken(String token) {
-  final assignment = _assignmentPattern.firstMatch(token);
-  if (assignment != null) return '${assignment.group(1)}=<redacted>';
-  if (!token.contains(RegExp(r'\s'))) return token;
-  return "'${token.replaceAll("'", r"'\''")}'";
+const Set<String> _sensitiveDetachedOptions = {
+  '-u',
+  '--user',
+  '-U',
+  '--proxy-user',
+  '-H',
+  '--header',
+  '--proxy-header',
+  '-b',
+  '--cookie',
+  '-d',
+  '--data',
+  '--data-ascii',
+  '--data-binary',
+  '--data-raw',
+  '--data-urlencode',
+  '-F',
+  '--form',
+  '--form-string',
+  '--json',
+  '--oauth2-bearer',
+  '--pass',
+  '--proxy-pass',
+  '--url-query',
+};
+
+const Set<String> _sensitiveShortOptions = {'-u', '-U', '-H', '-b', '-d', '-F'};
+
+String? _redactedSensitiveAttachedOption(String token) {
+  if (token.startsWith('--')) {
+    final equalsIndex = token.indexOf('=');
+    if (equalsIndex > 2) {
+      final name = token.substring(0, equalsIndex);
+      if (_sensitiveDetachedOptions.contains(name)) {
+        return '$name=<redacted>';
+      }
+    }
+    return null;
+  }
+  for (final option in _sensitiveShortOptions) {
+    if (token.startsWith(option) && token.length > option.length) {
+      return '$option<redacted>';
+    }
+  }
+  return null;
+}
+
+String _sanitizeAuditValue(String value) {
+  if (_isPureShellReference(value)) return value;
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      (uri.scheme != 'http' && uri.scheme != 'https') ||
+      uri.host.isEmpty) {
+    return value;
+  }
+  final host = uri.host.contains(':') ? '[${uri.host}]' : uri.host;
+  final origin = '${uri.scheme}://$host${uri.hasPort ? ':${uri.port}' : ''}';
+  final hasSensitiveSuffix =
+      uri.userInfo.isNotEmpty ||
+      (uri.path.isNotEmpty && uri.path != '/') ||
+      uri.hasQuery ||
+      uri.hasFragment;
+  return hasSensitiveSuffix ? '$origin/<redacted>' : origin;
+}
+
+bool _isPureShellReference(String value) {
+  return RegExp(
+    r'^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[0-9@*#?!$-]+)$',
+  ).hasMatch(value);
 }
 
 String _basename(String value) {
@@ -474,6 +650,20 @@ String? _externalHttpTransferUrl(String executable, List<String> args) {
       }
       continue;
     }
+    if (!optionsEnded && _networkEndpointOptions.contains(arg)) {
+      if (index + 1 < args.length) {
+        final target = args[++index];
+        if (!_isLocalTransferTarget(target)) return target;
+      }
+      continue;
+    }
+    if (!optionsEnded) {
+      final endpointValue = _attachedNetworkEndpointValue(arg);
+      if (endpointValue != null) {
+        if (!_isLocalTransferTarget(endpointValue)) return endpointValue;
+        continue;
+      }
+    }
     if (!optionsEnded && arg.startsWith('--url=')) {
       final target = arg.substring('--url='.length);
       if (!_isLocalTransferTarget(target)) return target;
@@ -486,10 +676,59 @@ String? _externalHttpTransferUrl(String executable, List<String> args) {
     if (!optionsEnded && _isOptionWithAttachedValue(executable, arg)) {
       continue;
     }
+    if (!optionsEnded && arg.startsWith('--')) {
+      final equalsIndex = arg.indexOf('=');
+      if (equalsIndex > 2) {
+        final value = arg.substring(equalsIndex + 1);
+        if (_looksLikeNetworkTarget(value) && !_isLocalTransferTarget(value)) {
+          return value;
+        }
+      }
+    }
     if (!optionsEnded && arg.startsWith('-')) continue;
     if (arg != '-' && !_isLocalTransferTarget(arg)) return arg;
   }
   return null;
+}
+
+const Set<String> _networkEndpointOptions = {
+  '-x',
+  '--proxy',
+  '--preproxy',
+  '--doh-url',
+  '--ipfs-gateway',
+  '--proxy1.0',
+  '--socks4',
+  '--socks4a',
+  '--socks5',
+  '--socks5-hostname',
+};
+
+String? _attachedNetworkEndpointValue(String option) {
+  if (option.startsWith('--')) {
+    final equalsIndex = option.indexOf('=');
+    if (equalsIndex <= 2) return null;
+    final name = option.substring(0, equalsIndex);
+    return _networkEndpointOptions.contains(name)
+        ? option.substring(equalsIndex + 1)
+        : null;
+  }
+  if (option.startsWith('-x') && option.length > 2) {
+    return option.substring(2);
+  }
+  return null;
+}
+
+bool _looksLikeNetworkTarget(String value) {
+  final normalized = value.trim();
+  if (normalized.isEmpty) return false;
+  if (normalized.contains('://')) return true;
+  if (normalized.startsWith('[')) return true;
+  final authority = normalized.split('/').first.split('@').last;
+  final host = authority.split(':').first;
+  return host == 'localhost' ||
+      RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host) ||
+      host.contains('.');
 }
 
 bool _hasCurlTransferConfig(List<String> args) {
@@ -757,6 +996,8 @@ _ShellTokenization _shellWords(String commandLine) {
   var buffer = _ShellTokenBuilder();
   var quote = '';
   var escaped = false;
+  var commandSubstitutionDepth = 0;
+  var parameterExpansionDepth = 0;
 
   void flush() {
     if (buffer.isEmpty) return;
@@ -770,12 +1011,12 @@ _ShellTokenization _shellWords(String commandLine) {
       if (char == quote) {
         quote = '';
       } else {
-        buffer.write(char, allowsExpansion: false);
+        buffer.write(char, allowsExpansion: false, allowsFieldSplitting: false);
       }
       continue;
     }
     if (escaped) {
-      buffer.write(char, allowsExpansion: false);
+      buffer.write(char, allowsExpansion: false, allowsFieldSplitting: false);
       escaped = false;
       continue;
     }
@@ -787,12 +1028,37 @@ _ShellTokenization _shellWords(String commandLine) {
       if (char == quote) {
         quote = '';
       } else {
-        buffer.write(char, allowsExpansion: true);
+        buffer.write(char, allowsExpansion: true, allowsFieldSplitting: false);
       }
       continue;
     }
     if (char == '"' || char == "'") {
       quote = char;
+      continue;
+    }
+    if (char == '(' && buffer.endsWithExpandableDollar) {
+      buffer.write(char, allowsExpansion: true, allowsFieldSplitting: true);
+      commandSubstitutionDepth += 1;
+      continue;
+    }
+    if (char == '{' && buffer.endsWithExpandableDollar) {
+      buffer.write(char, allowsExpansion: true, allowsFieldSplitting: true);
+      parameterExpansionDepth += 1;
+      continue;
+    }
+    if (parameterExpansionDepth > 0 && (char == '{' || char == '}')) {
+      buffer.write(char, allowsExpansion: true, allowsFieldSplitting: true);
+      parameterExpansionDepth += char == '{' ? 1 : -1;
+      continue;
+    }
+    if (commandSubstitutionDepth > 0 && (char == '(' || char == ')')) {
+      buffer.write(char, allowsExpansion: true, allowsFieldSplitting: true);
+      commandSubstitutionDepth += char == '(' ? 1 : -1;
+      continue;
+    }
+    if (const {'(', ')', '{', '}', '<', '>', '!'}.contains(char)) {
+      flush();
+      words.add(_ShellToken.control(char));
       continue;
     }
     if (char == '\n' || char == '\r') {
@@ -826,7 +1092,7 @@ _ShellTokenization _shellWords(String commandLine) {
       }
       continue;
     }
-    buffer.write(char, allowsExpansion: true);
+    buffer.write(char, allowsExpansion: true, allowsFieldSplitting: true);
   }
   flush();
   return _ShellTokenization(
@@ -846,12 +1112,18 @@ class _ShellTokenization {
 }
 
 class _ShellToken {
-  const _ShellToken(this.value, this._expansionAllowed);
+  const _ShellToken(
+    this.value,
+    this._expansionAllowed,
+    this._fieldSplittingAllowed, {
+    this.hasShellControl = false,
+  });
 
   factory _ShellToken.expanding(String value) {
     return _ShellToken(
       value,
       List<bool>.filled(value.length, true, growable: false),
+      List<bool>.filled(value.length, false, growable: false),
     );
   }
 
@@ -859,13 +1131,27 @@ class _ShellToken {
     return _ShellToken(
       value,
       List<bool>.filled(value.length, false, growable: false),
+      List<bool>.filled(value.length, false, growable: false),
+    );
+  }
+
+  factory _ShellToken.control(String value) {
+    return _ShellToken(
+      value,
+      List<bool>.filled(value.length, false, growable: false),
+      List<bool>.filled(value.length, false, growable: false),
+      hasShellControl: true,
     );
   }
 
   final String value;
   final List<bool> _expansionAllowed;
+  final List<bool> _fieldSplittingAllowed;
+  final bool hasShellControl;
 
   bool allowsExpansionAt(int index) => _expansionAllowed[index];
+
+  bool allowsFieldSplittingAt(int index) => _fieldSplittingAllowed[index];
 
   bool allowsExpansionRange(int start, int end) {
     for (var index = start; index < end; index += 1) {
@@ -878,6 +1164,8 @@ class _ShellToken {
     return _ShellToken(
       value.substring(start),
       _expansionAllowed.sublist(start),
+      _fieldSplittingAllowed.sublist(start),
+      hasShellControl: hasShellControl,
     );
   }
 }
@@ -885,17 +1173,33 @@ class _ShellToken {
 class _ShellTokenBuilder {
   final StringBuffer _value = StringBuffer();
   final List<bool> _expansionAllowed = <bool>[];
+  final List<bool> _fieldSplittingAllowed = <bool>[];
 
   bool get isEmpty => _value.isEmpty;
 
-  void write(String value, {required bool allowsExpansion}) {
+  bool get endsWithExpandableDollar {
+    final value = _value.toString();
+    return value.endsWith(r'$') &&
+        _expansionAllowed.isNotEmpty &&
+        _expansionAllowed.last;
+  }
+
+  void write(
+    String value, {
+    required bool allowsExpansion,
+    required bool allowsFieldSplitting,
+  }) {
     _value.write(value);
     _expansionAllowed.addAll(
       List<bool>.filled(value.length, allowsExpansion, growable: false),
     );
+    _fieldSplittingAllowed.addAll(
+      List<bool>.filled(value.length, allowsFieldSplitting, growable: false),
+    );
   }
 
-  _ShellToken build() => _ShellToken(_value.toString(), _expansionAllowed);
+  _ShellToken build() =>
+      _ShellToken(_value.toString(), _expansionAllowed, _fieldSplittingAllowed);
 }
 
 Object? _firstValue(Map? map, List<String> keys) {

