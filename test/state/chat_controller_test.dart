@@ -2812,6 +2812,47 @@ void main() {
   );
 
   test(
+    'permission audit redacts commands extracted from title and rationale',
+    () async {
+      const secret = 'title-rationale-secret';
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-text-secret',
+          title:
+              'Run: curl --tlspassword=$secret '
+              'example.com/upload?token=$secret',
+          rationale:
+              'Executing: curl --cert client.pem:$secret '
+              'https://example.com/private?token=$secret',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11),
+        ),
+      );
+      await pumpEventQueue();
+
+      final historyJson = acpPermissionAuditEntriesToJson(
+        controller.permissionHistory,
+      );
+      expect(historyJson, isNot(contains(secret)));
+      expect(events.single.request.title, isNot(contains(secret)));
+      expect(events.single.request.rationale, isNot(contains(secret)));
+
+      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      expect(events, hasLength(2));
+      expect(events.last.request.toJson().toString(), isNot(contains(secret)));
+    },
+  );
+
+  test(
     'switching to full access resolves the current pending request',
     () async {
       final fake = FakeAgentClient();

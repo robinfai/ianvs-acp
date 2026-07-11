@@ -1704,6 +1704,8 @@ class ChatController extends ChangeNotifier {
   ) {
     return request.forAudit(
       metadata: redactedPermissionMetadataForAudit(request),
+      title: redactedPermissionTitleForAudit(request),
+      rationale: redactedPermissionRationaleForAudit(request),
     );
   }
 

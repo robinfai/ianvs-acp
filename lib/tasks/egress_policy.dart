@@ -235,14 +235,48 @@ EgressPolicyMatch? _classifySegment(
   }
 
   if (const {'sh', 'bash', 'zsh'}.contains(executable)) {
-    for (var argIndex = 0; argIndex < args.length - 1; argIndex += 1) {
-      if (const {'-c', '-lc', '-ilc'}.contains(args[argIndex])) {
+    for (var argIndex = 0; argIndex < args.length; argIndex += 1) {
+      final option = args[argIndex];
+      if (option == '-o' || option == '+o') {
+        if (argIndex + 1 >= args.length) {
+          return EgressPolicyMatch(
+            reason: 'unresolved_wrapper',
+            commandLine: display,
+          );
+        }
+        argIndex += 1;
+        continue;
+      }
+      if (option.startsWith('--')) {
+        return EgressPolicyMatch(
+          reason: 'unresolved_wrapper',
+          commandLine: display,
+        );
+      }
+      if (!option.startsWith('-')) break;
+      if (!_shellShortOptionPattern.hasMatch(option)) {
+        return EgressPolicyMatch(
+          reason: 'unresolved_wrapper',
+          commandLine: display,
+        );
+      }
+      if (option.substring(1).contains('c')) {
+        if (argIndex + 1 >= args.length) {
+          return EgressPolicyMatch(
+            reason: 'unresolved_wrapper',
+            commandLine: display,
+          );
+        }
         return egressSensitiveCommandMatch(
           args[argIndex + 1],
           environment: environment,
         );
       }
     }
+    return EgressPolicyMatch(
+      reason: 'unresolved_wrapper',
+      commandLine: display,
+    );
   }
 
   final lowerArgs = args
@@ -255,6 +289,18 @@ EgressPolicyMatch? _classifySegment(
         reason: 'unresolved_transfer_config',
         commandLine: display,
       );
+    }
+    if (executable == 'curl') {
+      final rewrite = _curlEndpointRewriteDisposition(args);
+      if (rewrite == _EndpointRewriteDisposition.external ||
+          rewrite == _EndpointRewriteDisposition.unresolved) {
+        return EgressPolicyMatch(
+          reason: rewrite == _EndpointRewriteDisposition.external
+              ? 'external_endpoint_rewrite'
+              : 'unresolved_endpoint_rewrite',
+          commandLine: display,
+        );
+      }
     }
     final externalUrl = _externalHttpTransferUrl(executable, args);
     if (externalUrl == null) return null;
@@ -291,6 +337,10 @@ EgressPolicyMatch? _classifySegment(
 
   return null;
 }
+
+final RegExp _shellShortOptionPattern = RegExp(
+  r'^-[abcefihklmnprstuvxBCDEHOPT]+$',
+);
 
 EgressPolicyMatch _manualMatch(String reason, List<String> tokens) {
   return EgressPolicyMatch(
@@ -334,6 +384,24 @@ Map<String, Object?> redactedPermissionMetadataForAudit(
   }
   redacted['commandLine'] = _normalizedDisplay(_tokenValues(tokens));
   return redacted;
+}
+
+String redactedPermissionTitleForAudit(AcpPermissionRequest request) {
+  return _redactedPermissionTextForAudit(request.title, prefix: 'Command: ');
+}
+
+String redactedPermissionRationaleForAudit(AcpPermissionRequest request) {
+  return _redactedPermissionTextForAudit(
+    request.rationale,
+    prefix: 'Command details: ',
+  );
+}
+
+String _redactedPermissionTextForAudit(String text, {required String prefix}) {
+  final command = _commandLineFromPermissionText(text);
+  if (command == null) return text;
+  final tokenization = _shellWords(command);
+  return '$prefix${_normalizedDisplay(_tokenValues(tokenization.tokens))}';
 }
 
 _PermissionCommand? _commandFromPermissionRequest(
@@ -588,9 +656,28 @@ const Set<String> _sensitiveDetachedOptions = {
   '--pass',
   '--proxy-pass',
   '--url-query',
+  '--tlspassword',
+  '--proxy-tlspassword',
+  '-E',
+  '--cert',
+  '--proxy-cert',
+  '--key',
+  '--proxy-key',
+  '--password',
+  '--http-password',
+  '--ftp-password',
+  '--proxy-password',
 };
 
-const Set<String> _sensitiveShortOptions = {'-u', '-U', '-H', '-b', '-d', '-F'};
+const Set<String> _sensitiveShortOptions = {
+  '-u',
+  '-U',
+  '-H',
+  '-b',
+  '-d',
+  '-F',
+  '-E',
+};
 
 String? _redactedSensitiveAttachedOption(String token) {
   if (token.startsWith('--')) {
@@ -614,10 +701,8 @@ String? _redactedSensitiveAttachedOption(String token) {
 String _sanitizeAuditValue(String value) {
   if (_isPureShellReference(value)) return value;
   final uri = Uri.tryParse(value);
-  if (uri == null ||
-      (uri.scheme != 'http' && uri.scheme != 'https') ||
-      uri.host.isEmpty) {
-    return value;
+  if (uri == null || uri.scheme.isEmpty || uri.host.isEmpty) {
+    return _sanitizeBareAuditTarget(value);
   }
   final host = uri.host.contains(':') ? '[${uri.host}]' : uri.host;
   final origin = '${uri.scheme}://$host${uri.hasPort ? ':${uri.port}' : ''}';
@@ -627,6 +712,22 @@ String _sanitizeAuditValue(String value) {
       uri.hasQuery ||
       uri.hasFragment;
   return hasSensitiveSuffix ? '$origin/<redacted>' : origin;
+}
+
+String _sanitizeBareAuditTarget(String value) {
+  if (!_looksLikeNetworkTarget(value)) return value;
+  final separatorIndexes = <int>[
+    for (final separator in const ['/', '?', '#'])
+      if (value.contains(separator)) value.indexOf(separator),
+  ];
+  final suffixStart = separatorIndexes.isEmpty
+      ? value.length
+      : (separatorIndexes..sort()).first;
+  final authority = value.substring(0, suffixStart);
+  final safeAuthority = authority.split('@').last;
+  final hasSensitiveSuffix =
+      authority.contains('@') || suffixStart < value.length;
+  return hasSensitiveSuffix ? '$safeAuthority/<redacted>' : safeAuthority;
 }
 
 bool _isPureShellReference(String value) {
@@ -654,6 +755,14 @@ String? _externalHttpTransferUrl(String executable, List<String> args) {
         final target = args[++index];
         if (!_isLocalTransferTarget(target)) return target;
       }
+      continue;
+    }
+    if (!optionsEnded && (arg == '--resolve' || arg == '--connect-to')) {
+      index += 1;
+      continue;
+    }
+    if (!optionsEnded &&
+        (arg.startsWith('--resolve=') || arg.startsWith('--connect-to='))) {
       continue;
     }
     if (!optionsEnded && _networkEndpointOptions.contains(arg)) {
@@ -695,6 +804,94 @@ String? _externalHttpTransferUrl(String executable, List<String> args) {
     if (arg != '-' && !_isLocalTransferTarget(arg)) return arg;
   }
   return null;
+}
+
+enum _EndpointRewriteDisposition { safe, external, unresolved }
+
+_EndpointRewriteDisposition _curlEndpointRewriteDisposition(List<String> args) {
+  var disposition = _EndpointRewriteDisposition.safe;
+  for (var index = 0; index < args.length; index += 1) {
+    final option = args[index];
+    String? value;
+    var isResolve = false;
+    if (option == '--resolve' || option == '--connect-to') {
+      if (index + 1 >= args.length) {
+        return _EndpointRewriteDisposition.unresolved;
+      }
+      value = args[++index];
+      isResolve = option == '--resolve';
+    } else if (option.startsWith('--resolve=')) {
+      value = option.substring('--resolve='.length);
+      isResolve = true;
+    } else if (option.startsWith('--connect-to=')) {
+      value = option.substring('--connect-to='.length);
+    } else {
+      continue;
+    }
+
+    final current = isResolve
+        ? _resolveDisposition(value)
+        : _connectToDisposition(value);
+    if (current == _EndpointRewriteDisposition.external ||
+        current == _EndpointRewriteDisposition.unresolved) {
+      return current;
+    }
+    disposition = current;
+  }
+  return disposition;
+}
+
+_EndpointRewriteDisposition _resolveDisposition(String value) {
+  final fields = _splitCurlColonFields(
+    value.startsWith('+') ? value.substring(1) : value,
+  );
+  if (fields.length != 3 || fields[2].trim().isEmpty) {
+    return _EndpointRewriteDisposition.unresolved;
+  }
+  final destinations = fields[2].split(',');
+  for (final destination in destinations) {
+    final host = _withoutIpv6Brackets(destination.trim());
+    if (host.isEmpty) return _EndpointRewriteDisposition.unresolved;
+    if (!_isLoopbackHost(host)) return _EndpointRewriteDisposition.external;
+  }
+  return _EndpointRewriteDisposition.safe;
+}
+
+_EndpointRewriteDisposition _connectToDisposition(String value) {
+  final fields = _splitCurlColonFields(value);
+  if (fields.length != 4 || fields[2].trim().isEmpty) {
+    return _EndpointRewriteDisposition.unresolved;
+  }
+  return _isLoopbackHost(_withoutIpv6Brackets(fields[2].trim()))
+      ? _EndpointRewriteDisposition.safe
+      : _EndpointRewriteDisposition.external;
+}
+
+List<String> _splitCurlColonFields(String value) {
+  final fields = <String>[];
+  final buffer = StringBuffer();
+  var bracketDepth = 0;
+  for (var index = 0; index < value.length; index += 1) {
+    final character = value[index];
+    if (character == '[') bracketDepth += 1;
+    if (character == ']') bracketDepth -= 1;
+    if (character == ':' && bracketDepth == 0) {
+      fields.add(buffer.toString());
+      buffer.clear();
+    } else {
+      buffer.write(character);
+    }
+    if (bracketDepth < 0) return const <String>[];
+  }
+  if (bracketDepth != 0) return const <String>[];
+  fields.add(buffer.toString());
+  return fields;
+}
+
+String _withoutIpv6Brackets(String value) {
+  return value.startsWith('[') && value.endsWith(']') && value.length > 2
+      ? value.substring(1, value.length - 1)
+      : value;
 }
 
 const Set<String> _networkEndpointOptions = {
@@ -958,6 +1155,9 @@ const Set<String> _wgetOptionsTakingValue = {
   '--header',
   '--user',
   '--password',
+  '--http-password',
+  '--ftp-password',
+  '--proxy-password',
 };
 
 const Set<String> _wgetShortOptionsAllowingAttachedValue = {'-O'};

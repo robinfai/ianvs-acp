@@ -220,11 +220,15 @@ class AcpPermissionRequest {
     );
   }
 
-  AcpPermissionRequest forAudit({Map<String, Object?>? metadata}) {
+  AcpPermissionRequest forAudit({
+    Map<String, Object?>? metadata,
+    String? title,
+    String? rationale,
+  }) {
     return AcpPermissionRequest._retained(
       id: id,
-      title: title,
-      rationale: rationale,
+      title: title ?? this.title,
+      rationale: rationale ?? this.rationale,
       sessionId: sessionId,
       toolName: toolName,
       options: options,
