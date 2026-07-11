@@ -14,7 +14,10 @@ export 'src/providers/fs_provider.dart';
 export 'src/providers/permission_provider.dart';
 export 'src/providers/terminal_provider.dart';
 export 'src/session/session_manager.dart'
-    show SessionCloseCleanupException, SessionToolStateLimitException;
+    show
+        minimumSessionReplayBytes,
+        SessionCloseCleanupException,
+        SessionToolStateLimitException;
 export 'src/transport/stdin_transport.dart';
 export 'src/transport/stdio_transport.dart';
 export 'src/transport/transport.dart';

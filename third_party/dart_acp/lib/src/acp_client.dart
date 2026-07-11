@@ -31,10 +31,13 @@ class AcpClient {
     int maxToolCallBytes = 8 * 1024 * 1024,
   }) async {
     if (maxReplayItems <= 0 ||
-        maxReplayBytes <= 0 ||
+        maxReplayBytes < minimumSessionReplayBytes ||
         maxToolCallItems <= 0 ||
         maxToolCallBytes <= 0) {
-      throw ArgumentError('Session state budgets must be greater than zero.');
+      throw ArgumentError(
+        'Session state budgets are invalid; maxReplayBytes must be at least '
+        '$minimumSessionReplayBytes.',
+      );
     }
     final actualTransport =
         transport ??

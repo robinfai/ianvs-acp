@@ -2323,7 +2323,7 @@ Future<void> main() async {
       config: acp.AcpConfig(),
       peer: peer,
       maxReplayItems: 10,
-      maxReplayBytes: 160,
+      maxReplayBytes: 64,
     );
     final server = channel.local.stream.listen((line) {
       final request = jsonDecode(line) as Map<String, dynamic>;
@@ -2376,9 +2376,9 @@ Future<void> main() async {
       final peer = JsonRpcPeer(channel.foreign);
       final manager = SessionManager(
         config: acp.AcpConfig(),
-      peer: peer,
-      maxToolCallItems: 2,
-      maxToolCallBytes: 150,
+        peer: peer,
+        maxToolCallItems: 2,
+        maxToolCallBytes: 150,
       );
       final errors = <Object>[];
       final subscription = manager
@@ -2604,6 +2604,375 @@ Future<void> main() async {
       }
     },
   );
+
+  test(
+    'paused session listener does not block close cleanup or leak provider errors',
+    () async {
+      const providerSecret = 'terminal-release-provider-secret';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final provider = _RecordingTerminalProvider(
+        failReleaseIds: const <String>{'terminal-1'},
+        releaseErrorMessage: providerSecret,
+      );
+      final config = acp.AcpConfig(
+        terminalProvider: provider,
+        permissionProvider: acp.DefaultPermissionProvider(
+          onRequest: (_) async => const acp.PermissionDecision.allow(),
+        ),
+      );
+      final logs = <String>[];
+      final logSubscription = config.logger.onRecord.listen(
+        (record) => logs.add(record.message),
+      );
+      final manager = SessionManager(config: config, peer: peer);
+      final terminalCreated = Completer<void>();
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        final method = message['method'];
+        if (method == 'session/resume' || method == 'session/close') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+        } else if (message['id'] == 'paused-terminal') {
+          terminalCreated.complete();
+        }
+      });
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'paused-close',
+          workspaceRoot: '/workspace',
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'paused-close',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'seeded-mode',
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        expect(
+          manager.sessionModes('paused-close')?.currentModeId,
+          'seeded-mode',
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 'paused-terminal',
+            'method': 'terminal/create',
+            'params': <String, dynamic>{
+              'sessionId': 'paused-close',
+              'command': 'unused',
+              'args': <String>[],
+            },
+          }),
+        );
+        await terminalCreated.future.timeout(const Duration(seconds: 5));
+        final updates = manager.sessionUpdates('paused-close').listen((_) {});
+        updates.pause();
+
+        await expectLater(
+          manager
+              .closeSession(sessionId: 'paused-close')
+              .timeout(const Duration(seconds: 1)),
+          throwsA(isA<acp.SessionCloseCleanupException>()),
+        );
+
+        expect(provider.releaseAttempts, ['terminal-1']);
+        expect(
+          () => manager.getWorkspaceRoot('paused-close'),
+          throwsStateError,
+        );
+        expect(manager.sessionModes('paused-close'), isNull);
+        expect(logs.join('\n'), contains('terminals'));
+        expect(logs.join('\n'), isNot(contains(providerSecret)));
+        await updates.cancel();
+      } finally {
+        await manager.dispose();
+        await logSubscription.cancel();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'late terminal create is released and never registered after close',
+    () async {
+      const providerSecret = 'late-terminal-release-secret';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final createBarrier = Completer<void>();
+      final createStarted = Completer<void>();
+      final provider = _RecordingTerminalProvider(
+        failReleaseIds: const <String>{'terminal-1'},
+        releaseErrorMessage: providerSecret,
+        createBarrier: createBarrier,
+        createStarted: createStarted,
+      );
+      final manager = SessionManager(
+        config: acp.AcpConfig(
+          terminalProvider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+        ),
+        peer: peer,
+      );
+      final terminalResponse = Completer<Map<String, dynamic>>();
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        final method = message['method'];
+        if (method == 'session/resume' || method == 'session/close') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+        } else if (message['id'] == 'late-terminal' &&
+            !terminalResponse.isCompleted) {
+          terminalResponse.complete(message);
+        }
+      });
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'terminal-race',
+          workspaceRoot: '/workspace',
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 'late-terminal',
+            'method': 'terminal/create',
+            'params': <String, dynamic>{
+              'sessionId': 'terminal-race',
+              'command': 'unused',
+              'args': <String>[],
+            },
+          }),
+        );
+        await createStarted.future.timeout(const Duration(seconds: 5));
+
+        await manager.closeSession(sessionId: 'terminal-race');
+        createBarrier.complete();
+        final response = await terminalResponse.future.timeout(
+          const Duration(seconds: 5),
+        );
+
+        expect(response, contains('error'));
+        expect(response.toString(), contains('closing or closed'));
+        expect(response.toString(), isNot(contains(providerSecret)));
+        expect(provider.releaseAttempts, ['terminal-1']);
+        expect(await manager.readTerminalOutput('terminal-1'), isEmpty);
+      } finally {
+        if (!createBarrier.isCompleted) createBarrier.complete();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'concurrent close owners reject queued setup and late registration',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final closeRequestIds = <Object?>[];
+      final closeRequestsReady = Completer<void>();
+      final newRequestId = Completer<Object?>();
+      var resumeRequests = 0;
+      var loadRequests = 0;
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        switch (message['method']) {
+          case 'session/resume':
+            resumeRequests += 1;
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': message['id'],
+                'result': <String, dynamic>{},
+              }),
+            );
+            break;
+          case 'session/load':
+            loadRequests += 1;
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': message['id'],
+                'result': <String, dynamic>{},
+              }),
+            );
+            break;
+          case 'session/new':
+            if (!newRequestId.isCompleted) newRequestId.complete(message['id']);
+            break;
+          case 'session/close':
+            closeRequestIds.add(message['id']);
+            if (closeRequestIds.length == 2 &&
+                !closeRequestsReady.isCompleted) {
+              closeRequestsReady.complete();
+            }
+            break;
+        }
+      });
+
+      void respond(Object? id, Map<String, dynamic> result) {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'result': result,
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'shared-close',
+          workspaceRoot: '/workspace',
+        );
+        final lateRegistration = manager.newSession(
+          workspaceRoot: '/workspace',
+        );
+        final lateRegistrationFailure = expectLater(
+          lateRegistration,
+          throwsStateError,
+        );
+        final pendingNewId = await newRequestId.future.timeout(
+          const Duration(seconds: 5),
+        );
+
+        final closeOne = manager.closeSession(sessionId: 'shared-close');
+        final closeTwo = manager.closeSession(sessionId: 'shared-close');
+        await closeRequestsReady.future.timeout(const Duration(seconds: 5));
+
+        final queuedResumeFailure = expectLater(
+          manager.resumeSession(
+            sessionId: 'shared-close',
+            workspaceRoot: '/workspace',
+          ),
+          throwsStateError,
+        );
+        final queuedLoadFailure = expectLater(
+          manager.loadSession(
+            sessionId: 'shared-close',
+            workspaceRoot: '/workspace',
+          ),
+          throwsStateError,
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'shared-close',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'must-drop-during-close',
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        expect(manager.sessionModes('shared-close'), isNull);
+
+        respond(closeRequestIds.first, const <String, dynamic>{});
+        await closeOne;
+        respond(pendingNewId, const <String, dynamic>{
+          'sessionId': 'shared-close',
+        });
+        await lateRegistrationFailure;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'shared-close',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'must-drop-late-registration',
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        expect(manager.sessionModes('shared-close'), isNull);
+
+        respond(closeRequestIds.last, const <String, dynamic>{});
+        await closeTwo;
+        await queuedResumeFailure;
+        await queuedLoadFailure;
+        expect(resumeRequests, 1, reason: 'queued resume must not reach peer');
+        expect(loadRequests, 0, reason: 'queued load must not reach peer');
+
+        await manager.resumeSession(
+          sessionId: 'shared-close',
+          workspaceRoot: '/workspace',
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'shared-close',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'accepted-after-close',
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        expect(
+          manager.sessionModes('shared-close')?.currentModeId,
+          'accepted-after-close',
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test('session replay rejects every byte budget below its marker size', () {
+    for (var maxBytes = 1; maxBytes < 64; maxBytes += 1) {
+      expect(
+        () => DartAcpAgentClient(
+          agentCommand: 'unused',
+          maxSessionReplayBytes: maxBytes,
+        ),
+        throwsArgumentError,
+        reason: 'maxSessionReplayBytes=$maxBytes',
+      );
+    }
+    expect(
+      () =>
+          DartAcpAgentClient(agentCommand: 'unused', maxSessionReplayBytes: 64),
+      returnsNormally,
+    );
+  });
 
   test(
     'fork requires a known or explicit workspace before contacting agent',
@@ -6684,9 +7053,17 @@ Future<void> _waitForFile(File file) async {
 }
 
 class _RecordingTerminalProvider implements acp.TerminalProvider {
-  _RecordingTerminalProvider({this.failReleaseIds = const <String>{}});
+  _RecordingTerminalProvider({
+    this.failReleaseIds = const <String>{},
+    this.releaseErrorMessage = 'injected terminal release failure',
+    this.createBarrier,
+    this.createStarted,
+  });
 
   final Set<String> failReleaseIds;
+  final String releaseErrorMessage;
+  final Completer<void>? createBarrier;
+  final Completer<void>? createStarted;
   final List<String> releaseAttempts = <String>[];
   var _nextId = 0;
 
@@ -6700,6 +7077,9 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
     int outputByteLimit = acp.defaultTerminalOutputByteLimit,
   }) async {
     _nextId += 1;
+    final started = createStarted;
+    if (started != null && !started.isCompleted) started.complete();
+    await createBarrier?.future;
     final process = await Process.start('/bin/sh', const <String>[
       '-c',
       'sleep 30',
@@ -6723,7 +7103,7 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
     releaseAttempts.add(handle.terminalId);
     await handle.release();
     if (failReleaseIds.contains(handle.terminalId)) {
-      throw StateError('injected terminal release failure');
+      throw StateError(releaseErrorMessage);
     }
   }
 

@@ -100,10 +100,13 @@ class DartAcpAgentClient implements AcpAgentClient {
       throw ArgumentError('Session list budgets must be greater than zero.');
     }
     if (maxSessionReplayItems <= 0 ||
-        maxSessionReplayBytes <= 0 ||
+        maxSessionReplayBytes < acp.minimumSessionReplayBytes ||
         maxSessionToolCallItems <= 0 ||
         maxSessionToolCallBytes <= 0) {
-      throw ArgumentError('Session state budgets must be greater than zero.');
+      throw ArgumentError(
+        'Session state budgets are invalid; maxSessionReplayBytes must be at '
+        'least ${acp.minimumSessionReplayBytes}.',
+      );
     }
   }
 

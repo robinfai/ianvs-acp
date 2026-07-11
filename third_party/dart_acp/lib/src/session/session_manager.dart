@@ -20,6 +20,9 @@ import '../security/workspace_jail.dart';
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
 
+/// Smallest replay byte budget that can retain the truncation marker.
+const int minimumSessionReplayBytes = 64;
+
 class SessionToolStateLimitException implements Exception {
   const SessionToolStateLimitException({
     required this.maxItems,
@@ -55,7 +58,7 @@ class _ReplayBuffer {
   final List<int> _sizes = <int>[];
   var _bytes = 0;
 
-  static const _markerSize = 64;
+  static const _markerSize = minimumSessionReplayBytes;
   static const _marker = UnknownUpdate(<String, dynamic>{
     'sessionUpdate': 'replay_truncated',
     'truncated': true,
@@ -531,6 +534,13 @@ class SessionManager {
        assert(maxToolCallItems > 0),
        assert(maxToolCallBytes > 0),
        _log = config.logger {
+    if (maxReplayBytes < minimumSessionReplayBytes) {
+      throw ArgumentError.value(
+        maxReplayBytes,
+        'maxReplayBytes',
+        'must be at least $minimumSessionReplayBytes bytes',
+      );
+    }
     // Wire client-side handlers
     peer.onReadTextFile = _onReadTextFile;
     peer.onWriteTextFile = _onWriteTextFile;
@@ -570,7 +580,8 @@ class SessionManager {
   final Map<String, String> _sessionWorkspaceRoots = {};
   final Map<String, List<String>> _sessionAdditionalDirectories = {};
   final Map<String, Future<void>> _sessionSetupTails = {};
-  final Set<String> _closedSessions = <String>{};
+  final Map<String, Set<Object>> _sessionClosingOwners =
+      <String, Set<Object>>{};
 
   _ReplayBuffer _newReplayBuffer() =>
       _ReplayBuffer(maxItems: maxReplayItems, maxBytes: maxReplayBytes);
@@ -608,7 +619,7 @@ class SessionManager {
     _sessionAdditionalDirectories.clear();
     _sessionModes.clear();
     _sessionSetupTails.clear();
-    _closedSessions.clear();
+    _sessionClosingOwners.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -696,11 +707,11 @@ class SessionManager {
 
   /// Close a remote session, then release all state owned by that session.
   Future<void> closeSession({required String sessionId}) async {
-    await peer.sendRaw('session/close', <String, dynamic>{
-      'sessionId': sessionId,
-    });
-    _closedSessions.add(sessionId);
+    final closingOwner = _beginSessionClose(sessionId);
     try {
+      await peer.sendRaw('session/close', <String, dynamic>{
+        'sessionId': sessionId,
+      });
       await _runSerializedSessionMutation(sessionId, () async {
         final failedStages = <String>[];
 
@@ -710,15 +721,17 @@ class SessionManager {
         ) async {
           try {
             await action();
-          } on Object catch (error) {
+          } on Object {
             failedStages.add(stage);
-            _log.warning('session close cleanup stage $stage failed: $error');
+            _log.warning('session close cleanup stage $stage failed');
           }
         }
 
-        await cleanup('stream', () async {
+        await cleanup('stream', () {
           final stream = _sessionStreams.remove(sessionId);
-          await stream?.close();
+          if (stream != null) {
+            unawaited(stream.close().catchError((Object _) {}));
+          }
         });
         await cleanup('replay', () => _replayBuffers.remove(sessionId));
         await cleanup(
@@ -744,9 +757,25 @@ class SessionManager {
         }
       });
     } finally {
-      _closedSessions.remove(sessionId);
+      _endSessionClose(sessionId, closingOwner);
     }
   }
+
+  Object _beginSessionClose(String sessionId) {
+    final owner = Object();
+    _sessionClosingOwners.putIfAbsent(sessionId, () => <Object>{}).add(owner);
+    return owner;
+  }
+
+  void _endSessionClose(String sessionId, Object owner) {
+    final owners = _sessionClosingOwners[sessionId];
+    if (owners == null) return;
+    owners.remove(owner);
+    if (owners.isEmpty) _sessionClosingOwners.remove(sessionId);
+  }
+
+  bool _isSessionClosing(String sessionId) =>
+      _sessionClosingOwners[sessionId]?.isNotEmpty ?? false;
 
   /// Resume a session without loading history (simpler than loadSession).
   ///
@@ -959,13 +988,18 @@ class SessionManager {
     required List<String> additionalDirectories,
     required Future<T> Function() action,
   }) {
+    if (_isSessionClosing(sessionId)) {
+      return Future<T>.error(StateError('Session is closing or closed.'));
+    }
     return _runSerializedSessionMutation(sessionId, () async {
+      if (_isSessionClosing(sessionId)) {
+        throw StateError('Session is closing or closed.');
+      }
       final hadStream = _sessionStreams.containsKey(sessionId);
       final hadReplay = _replayBuffers.containsKey(sessionId);
       final hadBinding = _sessionWorkspaceRoots.containsKey(sessionId);
       final hadModes = _sessionModes.containsKey(sessionId);
       final hadToolCalls = _toolCalls.containsKey(sessionId);
-      final wasClosed = _closedSessions.contains(sessionId);
       _sessionStreams.putIfAbsent(
         sessionId,
         StreamController<AcpUpdate>.broadcast,
@@ -977,7 +1011,6 @@ class SessionManager {
           workspaceRoot,
           additionalDirectories: additionalDirectories,
         );
-        _closedSessions.remove(sessionId);
         return await action();
       } catch (_) {
         if (!hadBinding) {
@@ -997,7 +1030,6 @@ class SessionManager {
             await controller?.close();
           }
         }
-        if (wasClosed) _closedSessions.add(sessionId);
         rethrow;
       }
     });
@@ -1011,6 +1043,9 @@ class SessionManager {
     modes,
   }) {
     return _runSerializedSessionMutation(sessionId, () async {
+      if (_isSessionClosing(sessionId)) {
+        throw StateError('Session is closing or closed.');
+      }
       _sessionStreams.putIfAbsent(
         sessionId,
         StreamController<AcpUpdate>.broadcast,
@@ -1021,7 +1056,6 @@ class SessionManager {
         workspaceRoot,
         additionalDirectories: additionalDirectories,
       );
-      _closedSessions.remove(sessionId);
       if (modes != null) _sessionModes[sessionId] = modes;
     });
   }
@@ -1160,7 +1194,7 @@ class SessionManager {
     final sessionId = _sessionIdFromMap(json);
     final update = json['update'] as Map<String, dynamic>?;
     if (sessionId == null || update == null) return;
-    if (_closedSessions.contains(sessionId) ||
+    if (_isSessionClosing(sessionId) ||
         !_sessionWorkspaceRoots.containsKey(sessionId)) {
       return;
     }
@@ -1461,7 +1495,8 @@ class SessionManager {
     if (sessionId == null) {
       throw StateError('A non-empty sessionId is required');
     }
-    if (!_sessionWorkspaceRoots.containsKey(sessionId)) {
+    if (_isSessionClosing(sessionId) ||
+        !_sessionWorkspaceRoots.containsKey(sessionId)) {
       throw StateError('Unknown or closed session: $sessionId');
     }
     return sessionId;
@@ -1475,7 +1510,7 @@ class SessionManager {
     if (provider == null) {
       throw Exception('Terminal not supported');
     }
-    final sessionId = _sessionIdFromMap(req) ?? '';
+    final sessionId = _requireKnownSessionId(req);
     final cmd = req['command'] as String;
     final args = (req['args'] as List?)?.cast<String>() ?? const [];
     final requestedCwd = req['cwd'] as String?;
@@ -1559,18 +1594,29 @@ class SessionManager {
       env: env.isEmpty ? null : env,
       outputByteLimit: outputByteLimit,
     );
-    _terminals[handle.terminalId] = handle;
-    _terminalSessions[handle.terminalId] = sessionId;
-    _terminalEvents.add(
-      TerminalCreated(
-        terminalId: handle.terminalId,
-        sessionId: sessionId,
-        command: cmd,
-        args: args,
-        cwd: cwd,
-      ),
-    );
-    return {'terminalId': handle.terminalId};
+    return _runSerializedSessionMutation(sessionId, () async {
+      if (_isSessionClosing(sessionId) ||
+          !_sessionWorkspaceRoots.containsKey(sessionId)) {
+        try {
+          await provider.release(handle);
+        } on Object {
+          // Rejected handles must never become managed terminal state.
+        }
+        throw StateError('Terminal session is closing or closed.');
+      }
+      _terminals[handle.terminalId] = handle;
+      _terminalSessions[handle.terminalId] = sessionId;
+      _terminalEvents.add(
+        TerminalCreated(
+          terminalId: handle.terminalId,
+          sessionId: sessionId,
+          command: cmd,
+          args: args,
+          cwd: cwd,
+        ),
+      );
+      return {'terminalId': handle.terminalId};
+    });
   }
 
   Future<Json> _onTerminalOutput(Json req) async {
