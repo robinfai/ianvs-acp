@@ -5,6 +5,7 @@ import 'runtime_registry.dart';
 import 'task_inbox_controller.dart';
 import 'task_record.dart';
 import 'task_repository.dart';
+import 'task_wake_timer.dart';
 import 'task_worker.dart';
 import 'workspace_execution_gate.dart';
 import 'workspace_resource.dart';
@@ -21,8 +22,10 @@ class TaskScheduler {
     this.retryPolicy = const RetryPolicy(),
     this.onPersistenceFault,
     DateTime Function()? clock,
+    TaskWakeTimerFactory? wakeTimerFactory,
   }) : workspaceGate = workspaceGate ?? WorkspaceExecutionGate(),
-       _clock = clock ?? DateTime.now {
+       _clock = clock ?? DateTime.now,
+       _wakeTimerFactory = wakeTimerFactory ?? DartTaskWakeTimer.new {
     if (maxConcurrentTasks < 1) {
       throw ArgumentError.value(
         maxConcurrentTasks,
@@ -39,8 +42,9 @@ class TaskScheduler {
   final LocalRuntimeRegistry? runtimeRegistry;
   final RetryPolicy retryPolicy;
   final void Function(TaskPersistenceStalledException error)?
-      onPersistenceFault;
+  onPersistenceFault;
   final DateTime Function() _clock;
+  final TaskWakeTimerFactory _wakeTimerFactory;
   final Set<String> _activeTaskIds = <String>{};
   final Map<String, String> _serialKeysByTaskId = <String, String>{};
   final Set<Future<void>> _activeRuns = <Future<void>>{};
@@ -50,9 +54,9 @@ class TaskScheduler {
   bool _disposed = false;
   bool _drainScheduled = false;
   bool _draining = false;
-  Timer? _retryWakeTimer;
-  Timer? _refreshRetryTimer;
-  Timer? _runtimeWakeTimer;
+  TaskWakeTimer? _retryWakeTimer;
+  TaskWakeTimer? _refreshRetryTimer;
+  TaskWakeTimer? _runtimeWakeTimer;
   DateTime? _retryWakeAt;
   Future<void>? _shutdownFuture;
   Future<void>? _faultCancellation;
@@ -388,20 +392,26 @@ class TaskScheduler {
     if (!_started || !_dispatchEnabled || _disposed) return;
     final existing = _refreshRetryTimer;
     if (existing != null && existing.isActive) return;
-    _refreshRetryTimer = Timer(const Duration(milliseconds: 250), () {
-      _refreshRetryTimer = null;
-      _scheduleDrain();
-    });
+    _refreshRetryTimer = _wakeTimerFactory(
+      const Duration(milliseconds: 250),
+      () {
+        _refreshRetryTimer = null;
+        _scheduleDrain();
+      },
+    );
   }
 
   void _scheduleRuntimeWake() {
     if (!_started || !_dispatchEnabled || _disposed) return;
     final existing = _runtimeWakeTimer;
     if (existing != null && existing.isActive) return;
-    _runtimeWakeTimer = Timer(const Duration(milliseconds: 250), () {
-      _runtimeWakeTimer = null;
-      _scheduleDrain();
-    });
+    _runtimeWakeTimer = _wakeTimerFactory(
+      const Duration(milliseconds: 250),
+      () {
+        _runtimeWakeTimer = null;
+        _scheduleDrain();
+      },
+    );
   }
 
   TaskRecord? _nextQueuedTask(Set<String> deferredTaskIds) {
@@ -452,7 +462,7 @@ class TaskScheduler {
     }
     existing?.cancel();
     _retryWakeAt = wakeAt;
-    _retryWakeTimer = Timer(delay, () {
+    _retryWakeTimer = _wakeTimerFactory(delay, () {
       _retryWakeTimer = null;
       _retryWakeAt = null;
       _scheduleDrain();
@@ -584,10 +594,7 @@ class TaskScheduler {
     };
   }
 
-  Future<void> _runTask(
-    TaskRecord task,
-    TaskWorkerLease? workerLease,
-  ) async {
+  Future<void> _runTask(TaskRecord task, TaskWorkerLease? workerLease) async {
     try {
       final currentTask = taskController.taskById(task.id) ?? task;
       final result = workerLease == null

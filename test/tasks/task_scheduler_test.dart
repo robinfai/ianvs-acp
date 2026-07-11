@@ -8,6 +8,7 @@ import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:ianvs_acp/tasks/task_scheduler.dart';
+import 'package:ianvs_acp/tasks/task_wake_timer.dart';
 import 'package:ianvs_acp/tasks/workspace_execution_gate.dart';
 import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
@@ -37,16 +38,25 @@ void main() {
       );
       addTearDown(controller.dispose);
       final worker = _RecordingTaskWorker(controller);
+      final clock = _MutableClock(createdAt);
+      final timers = _FakeTaskWakeTimerFactory(clock);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
       );
       addTearDown(scheduler.shutdown);
 
       await scheduler.start();
-      await _waitUntil(() => worker.startedTaskIds.contains('task-1'));
+      await _pumpEventQueue();
+      expect(worker.startedTaskIds, isEmpty);
+
+      timers.elapse(const Duration(milliseconds: 250));
+      await _pumpEventQueue();
 
       expect(failRevisionOnce, isFalse);
+      expect(worker.startedTaskIds, ['task-1']);
       worker.complete('task-1');
       await _waitUntil(() => scheduler.activeCount == 0);
     },
@@ -558,15 +568,21 @@ void main() {
           ),
         );
       final worker = _RecordingTaskWorker(controller);
+      final clock = _MutableClock(now);
+      final timers = _FakeTaskWakeTimerFactory(clock);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
         runtimeRegistry: runtimeRegistry,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
       );
       addTearDown(scheduler.shutdown);
 
       await scheduler.start();
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await _pumpEventQueue();
+      timers.elapse(const Duration(milliseconds: 250));
+      await _pumpEventQueue();
 
       expect(worker.startedTaskIds, isEmpty);
       expect(controller.tasks.single.status, TaskStatus.queued);
@@ -603,18 +619,24 @@ void main() {
       },
     );
     final worker = _RecordingTaskWorker(controller);
+    final clock = _MutableClock(now);
+    final timers = _FakeTaskWakeTimerFactory(clock);
     final scheduler = TaskScheduler(
       taskController: controller,
       worker: worker,
       runtimeRegistry: registry,
+      clock: clock.now,
+      wakeTimerFactory: timers.call,
     );
     addTearDown(scheduler.shutdown);
 
     await scheduler.start();
-    await _waitUntil(() => probeCount > 0);
+    await _pumpEventQueue();
+    expect(probeCount, greaterThan(0));
     scheduler.stop();
     final countAtStop = probeCount;
-    await Future<void>.delayed(const Duration(milliseconds: 350));
+    timers.elapse(const Duration(milliseconds: 250));
+    await _pumpEventQueue();
 
     expect(probeCount, countAtStop);
     expect(worker.startedTaskIds, isEmpty);
@@ -1280,7 +1302,9 @@ void main() {
   test(
     'TaskScheduler moves retry wake earlier for newly queued task',
     () async {
-      final now = DateTime.now();
+      final clock = _MutableClock(DateTime(2026, 7, 8, 9));
+      final timers = _FakeTaskWakeTimerFactory(clock);
+      final now = clock.now();
       final controller = TaskInboxController(
         repository: _MemoryTaskStore(
           TaskInboxSnapshot(
@@ -1316,18 +1340,115 @@ void main() {
         taskController: controller,
         worker: worker,
         maxConcurrentTasks: 1,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
       );
       addTearDown(scheduler.dispose);
 
       await scheduler.start();
-      await _waitUntil(
-        () => worker.startedTaskIds.contains('task-early'),
-        attempts: 20,
-      );
+      await _pumpEventQueue();
+      expect(worker.startedTaskIds, isEmpty);
+      expect(timers.activeCount, 1);
+      expect(timers.cancelledCount, 1);
+
+      timers.elapse(const Duration(milliseconds: 50));
+      await _pumpEventQueue();
 
       expect(worker.startedTaskIds, ['task-early']);
+      expect(timers.callbackCount, 1);
     },
   );
+
+  test(
+    'TaskScheduler dispatches an immediately due retry without a timer',
+    () async {
+      final now = DateTime(2026, 7, 8, 9);
+      final clock = _MutableClock(now);
+      final timers = _FakeTaskWakeTimerFactory(clock);
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(
+            updatedAt: now,
+            tasks: [
+              _task(
+                id: 'task-due',
+                createdAt: now,
+                metadata: <String, Object?>{
+                  'next_retry_at': now.toIso8601String(),
+                },
+              ),
+            ],
+          ),
+        ),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(controller.dispose);
+      final worker = _RecordingTaskWorker(controller);
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: worker,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
+      );
+      addTearDown(scheduler.shutdown);
+      addTearDown(() => worker.complete('task-due'));
+
+      await scheduler.start();
+      await _pumpEventQueue();
+
+      expect(worker.startedTaskIds, ['task-due']);
+      expect(timers.createdCount, 0);
+      worker.complete('task-due');
+    },
+  );
+
+  test('TaskScheduler dispose cancels retry wake without a callback', () async {
+    final now = DateTime(2026, 7, 8, 9);
+    final clock = _MutableClock(now);
+    final timers = _FakeTaskWakeTimerFactory(clock);
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: now,
+          tasks: [
+            _task(
+              id: 'task-later',
+              createdAt: now,
+              metadata: <String, Object?>{
+                'next_retry_at': now
+                    .add(const Duration(minutes: 1))
+                    .toIso8601String(),
+              },
+            ),
+          ],
+        ),
+      ),
+      idGenerator: _DeterministicIds().next,
+    );
+    addTearDown(controller.dispose);
+    final worker = _RecordingTaskWorker(controller);
+    final scheduler = TaskScheduler(
+      taskController: controller,
+      worker: worker,
+      clock: clock.now,
+      wakeTimerFactory: timers.call,
+    );
+
+    await scheduler.start();
+    await _pumpEventQueue();
+    expect(timers.activeCount, 1);
+
+    scheduler.dispose();
+    await _pumpEventQueue();
+    timers.elapse(const Duration(minutes: 1));
+    await _pumpEventQueue();
+
+    expect(timers.activeCount, 0);
+    expect(timers.cancelledCount, 1);
+    expect(timers.callbackCount, 0);
+    expect(worker.startedTaskIds, isEmpty);
+    await scheduler.shutdown();
+  });
 
   test('TaskScheduler does not retry non-retryable failures', () async {
     final ids = _DeterministicIds();
@@ -2381,6 +2502,89 @@ class _DeterministicIds {
     final count = (_counts[prefix] ?? 0) + 1;
     _counts[prefix] = count;
     return '$prefix-$count';
+  }
+}
+
+class _MutableClock {
+  _MutableClock(this.current);
+
+  DateTime current;
+
+  DateTime now() => current;
+}
+
+class _FakeTaskWakeTimerFactory {
+  _FakeTaskWakeTimerFactory(this.clock);
+
+  final _MutableClock clock;
+  final List<_FakeTaskWakeTimer> _timers = <_FakeTaskWakeTimer>[];
+  int callbackCount = 0;
+
+  int get createdCount => _timers.length;
+  int get activeCount => _timers.where((timer) => timer.isActive).length;
+  int get cancelledCount => _timers.where((timer) => timer.wasCancelled).length;
+
+  _FakeTaskWakeTimer call(Duration delay, void Function() callback) {
+    final timer = _FakeTaskWakeTimer(
+      deadline: clock.current.add(delay),
+      callback: () {
+        callbackCount += 1;
+        callback();
+      },
+    );
+    _timers.add(timer);
+    return timer;
+  }
+
+  void elapse(Duration duration) {
+    final target = clock.current.add(duration);
+    while (true) {
+      final due =
+          _timers
+              .where(
+                (timer) => timer.isActive && !timer.deadline.isAfter(target),
+              )
+              .toList(growable: false)
+            ..sort((left, right) => left.deadline.compareTo(right.deadline));
+      if (due.isEmpty) break;
+      final next = due.first;
+      if (next.deadline.isAfter(clock.current)) {
+        clock.current = next.deadline;
+      }
+      next.fire();
+    }
+    clock.current = target;
+  }
+}
+
+class _FakeTaskWakeTimer implements TaskWakeTimer {
+  _FakeTaskWakeTimer({required this.deadline, required this.callback});
+
+  final DateTime deadline;
+  final void Function() callback;
+  bool _active = true;
+  bool wasCancelled = false;
+
+  @override
+  bool get isActive => _active;
+
+  @override
+  void cancel() {
+    if (!_active) return;
+    _active = false;
+    wasCancelled = true;
+  }
+
+  void fire() {
+    if (!_active) return;
+    _active = false;
+    callback();
+  }
+}
+
+Future<void> _pumpEventQueue() async {
+  for (var index = 0; index < 20; index += 1) {
+    await Future<void>.delayed(Duration.zero);
   }
 }
 
