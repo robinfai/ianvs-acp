@@ -1,0 +1,90 @@
+name: macOS verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      FLUTTER_ARCHIVE_URL: >-
+        https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.44.0-stable.zip
+      FLUTTER_ARCHIVE_SHA256: 0d4d1d3f379d18aff392291be6871d63bf090a9e81078d4c4bc84e6208603dca
+      FLUTTER_FRAMEWORK_REVISION: 559ffa3f75e7402d65a8def9c28389a9b2e6fe42
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install Flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/flutter_macos_arm64_3.44.0-stable.zip"
+          sdk_parent="$RUNNER_TEMP/flutter-sdk"
+          curl --fail --proto '=https' --tlsv1.2 --location \
+            --retry 5 --retry-all-errors \
+            --output "$archive" "$FLUTTER_ARCHIVE_URL"
+          printf '%s  %s\n' "$FLUTTER_ARCHIVE_SHA256" "$archive" \
+            | shasum -a 256 -c -
+          mkdir -p "$sdk_parent"
+          /usr/bin/unzip -q "$archive" -d "$sdk_parent"
+          flutter_root="$sdk_parent/flutter"
+          printf 'FLUTTER_ROOT=%s\n' "$flutter_root" >>"$GITHUB_ENV"
+          printf '%s\n' "$flutter_root/bin" >>"$GITHUB_PATH"
+
+      - name: Verify Flutter toolchain identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_json=$(flutter --version --machine)
+          test "$(printf '%s' "$version_json" | jq -r .frameworkVersion)" = '3.44.0'
+          test "$(printf '%s' "$version_json" | jq -r .frameworkRevision)" \
+            = "$FLUTTER_FRAMEWORK_REVISION"
+
+      - name: Resolve Dart dependencies
+        run: flutter pub get
+
+      - name: Prepare generated macOS build inputs
+        run: flutter build macos --config-only --no-pub
+
+      - name: Install locked CocoaPods dependencies
+        run: pod install --deployment --project-directory=macos
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+
+      - name: Test release script safety contracts
+        run: ./tool/release_scripts_test.sh
+
+      - name: Test Flutter code with isolated HOME
+        run: ./tool/flutter_test_isolated.sh
+
+      - name: Test native macOS host
+        run: >-
+          xcodebuild test -quiet
+          -workspace macos/Runner.xcworkspace
+          -scheme Runner
+          -configuration Debug
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Build local ad-hoc release
+        run: flutter build macos --release --no-pub
+
+      - name: Verify local release bundle
+        run: >-
+          ./tool/verify_macos_bundle.sh
+          'build/macos/Build/Products/Release/ACP Client.app'

@@ -170,8 +170,31 @@ Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
 ```sh
 flutter analyze
 ./tool/flutter_test_isolated.sh
-flutter build macos --release
 ```
+
+Build and verify a local ad-hoc macOS release:
+
+```sh
+flutter build macos --release
+./tool/verify_macos_bundle.sh 'build/macos/Build/Products/Release/ACP Client.app'
+```
+
+Local ad-hoc builds are for development and verification only. They are not
+external release artifacts.
+
+Formal distribution requires `IANVS_DEVELOPER_ID` to identify a Developer ID
+Application certificate and `IANVS_NOTARY_PROFILE` to name a configured
+`notarytool` Keychain profile. After both are supplied by a protected release
+environment, run:
+
+```sh
+./tool/package_macos_release.sh
+```
+
+The release script fails when either credential is missing. It signs nested
+code from the inside out, verifies the Developer ID signature and secure
+timestamp, submits the archive for notarization, staples and validates the
+ticket, runs Gatekeeper assessment, and produces `build/ACP-Client.zip`.
 
 The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
 use `FakeAgentClient` instead of launching a real agent.
