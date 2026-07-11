@@ -19,9 +19,13 @@ class StdioTransport implements AcpTransport {
     this.cwd,
     this.onProtocolOut,
     this.onProtocolIn,
-    this.maxLineBytes = defaultTransportByteLimit,
+    int maxLineBytes = defaultTransportByteLimit,
     int? maxStderrLineBytes,
-  }) : maxStderrLineBytes = maxStderrLineBytes ?? maxLineBytes;
+  }) : maxLineBytes = _positiveByteLimit(maxLineBytes, 'maxLineBytes'),
+       maxStderrLineBytes = _positiveByteLimit(
+         maxStderrLineBytes ?? maxLineBytes,
+         'maxStderrLineBytes',
+       );
 
   /// Agent executable name/path.
   final String? command;
@@ -143,4 +147,11 @@ class StdioTransport implements AcpTransport {
       await exitCode?.timeout(const Duration(milliseconds: 500));
     }
   }
+}
+
+int _positiveByteLimit(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
 }

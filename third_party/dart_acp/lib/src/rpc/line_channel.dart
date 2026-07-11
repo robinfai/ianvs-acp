@@ -72,8 +72,10 @@ class LineJsonChannel {
   late final StreamSubscription<String> _outboundSub;
   Future<void>? _closeInboundFuture;
   Future<void>? _disposeFuture;
+  Future<void>? _outboundBatchBarrier;
   Future<void> _outboundWrites = Future<void>.value();
   var _stdoutFailed = false;
+  var _outboundFailed = false;
 
   /// Callback invoked for raw inbound lines.
   final void Function(String line)? onInboundLine;
@@ -137,8 +139,11 @@ class LineJsonChannel {
   }
 
   void _enqueueOutbound(String line) {
+    if (_outboundFailed) return;
     final bytes = utf8.encode(line);
     if (bytes.length > maxLineBytes) {
+      _outboundFailed = true;
+      unawaited(_outboundSub.cancel());
       unawaited(
         closeInbound(
           TransportByteLimitExceeded(
@@ -151,8 +156,11 @@ class LineJsonChannel {
       );
       return;
     }
+    final batchBarrier = _getOutboundBatchBarrier();
     _outboundWrites = _outboundWrites
         .then((_) async {
+          await batchBarrier;
+          if (_outboundFailed) return;
           try {
             onOutboundLine?.call(line);
           } on Object catch (error, stackTrace) {
@@ -164,6 +172,21 @@ class LineJsonChannel {
         .catchError((Object error, StackTrace stackTrace) async {
           await closeInbound(error, stackTrace);
         });
+  }
+
+  Future<void> _getOutboundBatchBarrier() {
+    final existing = _outboundBatchBarrier;
+    if (existing != null) return existing;
+    final barrier = Future<void>.delayed(Duration.zero);
+    _outboundBatchBarrier = barrier;
+    unawaited(
+      barrier.whenComplete(() {
+        if (identical(_outboundBatchBarrier, barrier)) {
+          _outboundBatchBarrier = null;
+        }
+      }),
+    );
+    return barrier;
   }
 
   /// Close the protocol input seen by the JSON-RPC peer.
@@ -198,6 +221,7 @@ class LineJsonChannel {
   }
 
   Future<void> _dispose() async {
+    _stdoutFailed = true;
     await closeInbound();
     await _outboundSub.cancel();
     await _stdoutSub.cancel();

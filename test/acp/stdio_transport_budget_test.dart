@@ -4,6 +4,33 @@ import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('StdioTransport rejects non-positive budgets at construction', () {
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxLineBytes: 0,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxLineBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxStderrLineBytes: -1,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxStderrLineBytes')
+            .having((error) => error.invalidValue, 'invalidValue', -1),
+      ),
+    );
+  });
+
   test('StdioTransport forwards the configured line byte limit', () async {
     final transport = acp.StdioTransport(
       logger: acp.AcpConfig().logger,
