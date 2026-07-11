@@ -340,13 +340,17 @@ class _PermissionDisplayProjectionBuilder {
 
     for (final key in _permissionDisplayScalarKeys) {
       if (_failed) return null;
-      if (!source.containsKey(key)) continue;
+      final contains = _mapContainsKey(source, key);
+      if (contains == null) return null;
+      if (!contains) continue;
       if (!_takeEntry()) return _fail();
       if (_permissionArgumentKeys.contains(key) && depth >= limits.maxDepth) {
         return _fail();
       }
       if (!_takeNode()) return _fail();
-      final raw = source[key];
+      final read = _mapValue(source, key);
+      if (!read.succeeded) return null;
+      final raw = read.value;
       if (_permissionArgumentKeys.contains(key)) {
         final args = _projectStringList(
           raw,
@@ -366,10 +370,14 @@ class _PermissionDisplayProjectionBuilder {
 
     for (final key in _permissionDisplayContainerKeys) {
       if (_failed) return null;
-      if (!source.containsKey(key)) continue;
+      final contains = _mapContainsKey(source, key);
+      if (contains == null) return null;
+      if (!contains) continue;
       if (!_takeEntry()) return _fail();
       if (depth >= limits.maxDepth || !_takeNode()) return _fail();
-      final raw = source[key];
+      final read = _mapValue(source, key);
+      if (!read.succeeded) return null;
+      final raw = read.value;
       Map? nested;
       var nestedCountsUtf8 = countUtf8;
       if (raw is Map) {
@@ -401,6 +409,24 @@ class _PermissionDisplayProjectionBuilder {
     final immutable = Map<String, Object?>.unmodifiable(projected);
     _containers.add(immutable);
     return immutable;
+  }
+
+  bool? _mapContainsKey(Map source, String key) {
+    try {
+      return source.containsKey(key);
+    } on Object {
+      _failed = true;
+      return null;
+    }
+  }
+
+  ({bool succeeded, Object? value}) _mapValue(Map source, String key) {
+    try {
+      return (succeeded: true, value: source[key]);
+    } on Object {
+      _failed = true;
+      return (succeeded: false, value: null);
+    }
   }
 
   List<String>? _projectStringList(

@@ -1262,6 +1262,44 @@ void main() {
       expect(context.entries.single.value, '["git status"]');
     });
 
+    test('fails closed when root containsKey throws', () {
+      _expectPermissionMapGetterFailure(
+        _ThrowingPermissionMap(
+          getter: _ThrowingMapGetter.containsKey,
+          canary: 'root-contains-canary',
+        ),
+        'root-contains-canary',
+      );
+    });
+
+    test('fails closed when root index getter throws', () {
+      _expectPermissionMapGetterFailure(
+        _ThrowingPermissionMap(
+          getter: _ThrowingMapGetter.valueAt,
+          canary: 'root-index-canary',
+        ),
+        'root-index-canary',
+      );
+    });
+
+    test('fails closed when nested containsKey throws', () {
+      _expectPermissionMapGetterFailure(<String, Object?>{
+        'input': _ThrowingPermissionMap(
+          getter: _ThrowingMapGetter.containsKey,
+          canary: 'nested-contains-canary',
+        ),
+      }, 'nested-contains-canary');
+    });
+
+    test('fails closed when nested index getter throws', () {
+      _expectPermissionMapGetterFailure(<String, Object?>{
+        'input': _ThrowingPermissionMap(
+          getter: _ThrowingMapGetter.valueAt,
+          canary: 'nested-index-canary',
+        ),
+      }, 'nested-index-canary');
+    });
+
     test('stops after 16 entries before reading the next recognized value', () {
       final overflow = permissionDisplayContextForRequest(
         _permissionRequest(metadata: _DefaultEntryLimitSentinelMap()),
@@ -1452,6 +1490,55 @@ class _ThrowingToString {
 
   @override
   String toString() => throw StateError(canary);
+}
+
+void _expectPermissionMapGetterFailure(
+  Map<String, Object?> metadata,
+  String canary,
+) {
+  final context = permissionDisplayContextForRequest(
+    _permissionRequest(metadata: metadata),
+  );
+
+  expect(context.isComplete, isFalse);
+  expect(context.entries, isEmpty);
+  expect(context.warning, PermissionDisplayContext.incompleteWarning);
+  expect(context.warning, isNot(contains(canary)));
+}
+
+enum _ThrowingMapGetter { containsKey, valueAt }
+
+class _ThrowingPermissionMap extends MapBase<String, Object?> {
+  _ThrowingPermissionMap({required this.getter, required this.canary});
+
+  final _ThrowingMapGetter getter;
+  final String canary;
+
+  @override
+  Object? operator [](Object? key) {
+    if (getter == _ThrowingMapGetter.valueAt && key == 'command') {
+      throw StateError(canary);
+    }
+    return key == 'command' ? 'git status' : null;
+  }
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  bool containsKey(Object? key) {
+    if (getter == _ThrowingMapGetter.containsKey) throw StateError(canary);
+    return key == 'command';
+  }
+
+  @override
+  Iterable<String> get keys => const <String>['command'];
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
 }
 
 class _DirectLookupOnlyMap extends MapBase<String, Object?> {
