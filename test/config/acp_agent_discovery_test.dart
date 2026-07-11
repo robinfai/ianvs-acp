@@ -205,9 +205,19 @@ final class _MemorySecretStore implements SecretStore {
     required String key,
     required String value,
   }) async {
-    final reference =
-        'keychain://ianvs-acp/${_values.length.toString().padLeft(64, '0')}';
+    final reference = referenceFor(namespace: namespace, key: key);
     _values[reference] = value;
     return reference;
   }
+
+  @override
+  String referenceFor({required String namespace, required String key}) =>
+      keychainReferenceFor(namespace: namespace, key: key);
+
+  @override
+  bool referenceMatches(
+    String reference, {
+    required String namespace,
+    required String key,
+  }) => reference == referenceFor(namespace: namespace, key: key);
 }

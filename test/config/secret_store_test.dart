@@ -1,13 +1,14 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/macos_keychain_secret_store.dart';
+import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const channel = MethodChannel('ianvs_acp/keychain.test');
   const account =
-      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      '0db74c4ad37fe192df1fd286fafe9403f2b00d2318f3098e41f033d16bb0fab1';
   const reference = 'keychain://ianvs-acp/$account';
   late MacosKeychainSecretStore store;
   late List<MethodCall> calls;
@@ -24,7 +25,10 @@ void main() {
           switch (call.method) {
             case 'put':
               storedValue = arguments['value'] as String;
-              return reference;
+              return keychainReferenceFor(
+                namespace: arguments['namespace'] as String,
+                key: arguments['key'] as String,
+              );
             case 'get':
               return storedValue;
             case 'delete':
@@ -71,6 +75,53 @@ void main() {
       'value': 'secret-value',
     });
     expect(calls[2].arguments, <String, Object?>{'account': account});
+  });
+
+  test('derives and verifies references with the Swift identity algorithm', () {
+    const expected =
+        'keychain://ianvs-acp/0db74c4ad37fe192df1fd286fafe9403f2b00d2318f3098e41f033d16bb0fab1';
+
+    expect(
+      store.referenceFor(namespace: 'agent/Codex/env', key: 'OPENAI_API_KEY'),
+      expected,
+    );
+    expect(
+      store.referenceMatches(
+        expected,
+        namespace: 'agent/Codex/env',
+        key: 'OPENAI_API_KEY',
+      ),
+      isTrue,
+    );
+    expect(
+      store.referenceMatches(
+        expected,
+        namespace: 'agent/Other/env',
+        key: 'OPENAI_API_KEY',
+      ),
+      isFalse,
+    );
+    expect(
+      store.referenceMatches(
+        expected,
+        namespace: 'agent/Codex/env',
+        key: 'OTHER_KEY',
+      ),
+      isFalse,
+    );
+  });
+
+  test('SecretOwner derives target-bound and legacy namespaces', () {
+    const owner = SecretOwner(
+      configIdentity: 'config/abc',
+      targetKind: 'agent/Codex',
+      targetIdentity: 'target-sha',
+      fieldName: 'env',
+      key: 'TOKEN',
+    );
+
+    expect(owner.namespace, 'config/abc/agent/Codex/target/target-sha/env');
+    expect(owner.legacyNamespace, 'config/abc/agent/Codex/env');
   });
 
   test('rejects references outside the strict keychain format', () async {

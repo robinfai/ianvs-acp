@@ -25,15 +25,16 @@ final class MacosKeychainSecretStore implements SecretStore {
     if (key.isEmpty) {
       throw ArgumentError.value(key, 'key', 'Must not be empty.');
     }
+    final expectedReference = referenceFor(namespace: namespace, key: key);
     final response = await _channel.invokeMethod<Object?>('put', {
       'namespace': namespace,
       'key': key,
       'value': value,
     });
-    if (response is! String || _referencePattern.firstMatch(response) == null) {
+    if (response != expectedReference) {
       throw StateError('Keychain returned an invalid secret reference.');
     }
-    return response;
+    return expectedReference;
   }
 
   @override
@@ -61,4 +62,15 @@ final class MacosKeychainSecretStore implements SecretStore {
     }
     return match.group(1)!;
   }
+
+  @override
+  String referenceFor({required String namespace, required String key}) =>
+      keychainReferenceFor(namespace: namespace, key: key);
+
+  @override
+  bool referenceMatches(
+    String reference, {
+    required String namespace,
+    required String key,
+  }) => reference == referenceFor(namespace: namespace, key: key);
 }

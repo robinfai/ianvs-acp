@@ -15,7 +15,7 @@ final class AcpConfigSecretMigrator {
 
   Future<PreparedAcpConfigSecrets> prepare(AcpClientConfig config) async {
     validateUniqueSecretReferences(config);
-    final configIdentity = await _configIdentity(config.configPath);
+    final configIdentity = await configSecretIdentity(config.configPath);
     final rollbacks = <Future<void> Function()>[];
     try {
       final agents = <AgentServerConfig>[];
@@ -40,7 +40,8 @@ final class AcpConfigSecretMigrator {
         mcp.add(
           await _prepareMcp(
             server,
-            namespace: '$configIdentity/mcp/${server.name}',
+            configIdentity: configIdentity,
+            targetKind: 'mcp/${server.name}',
             ownerLabel: 'MCP server "${server.name}"',
             rollbacks: rollbacks,
           ),
@@ -84,9 +85,13 @@ final class AcpConfigSecretMigrator {
     String configIdentity,
     List<Future<void> Function()> rollbacks,
   ) async {
+    final targetKind = 'agent/${server.name}';
+    final targetIdentity = agentSecretTargetIdentity(server);
     final env = await _prepareMap(
       ownerLabel: 'Agent server "${server.name}"',
-      namespace: '$configIdentity/agent/${server.name}/env',
+      configIdentity: configIdentity,
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
       fieldName: 'env',
       values: server.env,
       refs: server.envRefs,
@@ -95,7 +100,9 @@ final class AcpConfigSecretMigrator {
     );
     final headers = await _prepareMap(
       ownerLabel: 'Agent server "${server.name}"',
-      namespace: '$configIdentity/agent/${server.name}/headers',
+      configIdentity: configIdentity,
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
       fieldName: 'headers',
       values: server.headers,
       refs: server.headerRefs,
@@ -104,7 +111,8 @@ final class AcpConfigSecretMigrator {
     );
     final reviewAgent = await _prepareReviewAgent(
       server.permissionReviewAgent,
-      namespace: '$configIdentity/review/agent/${server.name}',
+      configIdentity: configIdentity,
+      targetKind: 'review/agent/${server.name}',
       ownerLabel: 'Agent server "${server.name}" review agent',
       rollbacks: rollbacks,
     );
@@ -119,13 +127,17 @@ final class AcpConfigSecretMigrator {
 
   Future<McpServerConfig> _prepareMcp(
     McpServerConfig server, {
-    required String namespace,
+    required String configIdentity,
+    required String targetKind,
     required String ownerLabel,
     required List<Future<void> Function()> rollbacks,
   }) async {
+    final targetIdentity = mcpSecretTargetIdentity(server);
     final env = await _prepareMap(
       ownerLabel: ownerLabel,
-      namespace: '$namespace/env',
+      configIdentity: configIdentity,
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
       fieldName: 'env',
       values: server.env,
       refs: server.envRefs,
@@ -134,7 +146,9 @@ final class AcpConfigSecretMigrator {
     );
     final headers = await _prepareMap(
       ownerLabel: ownerLabel,
-      namespace: '$namespace/headers',
+      configIdentity: configIdentity,
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
       fieldName: 'headers',
       values: server.headers,
       refs: server.headerRefs,
@@ -161,7 +175,8 @@ final class AcpConfigSecretMigrator {
         trustRules: providers.permissions.trustRules,
         reviewAgent: await _prepareReviewAgent(
           providers.permissions.reviewAgent,
-          namespace: '$configIdentity/review/global',
+          configIdentity: configIdentity,
+          targetKind: 'review/global',
           ownerLabel: 'Global review agent',
           rollbacks: rollbacks,
         ),
@@ -171,7 +186,8 @@ final class AcpConfigSecretMigrator {
 
   Future<AcpPermissionReviewAgentConfig> _prepareReviewAgent(
     AcpPermissionReviewAgentConfig config, {
-    required String namespace,
+    required String configIdentity,
+    required String targetKind,
     required String ownerLabel,
     required List<Future<void> Function()> rollbacks,
   }) async {
@@ -182,7 +198,8 @@ final class AcpConfigSecretMigrator {
           ? null
           : await _prepareMcp(
               server,
-              namespace: '$namespace/${server.name}',
+              configIdentity: configIdentity,
+              targetKind: '$targetKind/${server.name}',
               ownerLabel: '$ownerLabel MCP server "${server.name}"',
               rollbacks: rollbacks,
             ),
@@ -195,7 +212,9 @@ final class AcpConfigSecretMigrator {
 
   Future<_PreparedSecretMap> _prepareMap({
     required String ownerLabel,
-    required String namespace,
+    required String configIdentity,
+    required String targetKind,
+    required String targetIdentity,
     required String fieldName,
     required Map<String, String> values,
     required Map<String, String> refs,
@@ -205,6 +224,47 @@ final class AcpConfigSecretMigrator {
     final resolved = <String, String>{};
     final desiredRefs = <String, String>{};
     final existingValues = <String, String>{};
+    final referenceKinds = <String, _OwnedReferenceKind>{};
+    final newlyCreatedReferences = <String>{};
+
+    SecretOwner ownerFor(String key) => SecretOwner(
+      configIdentity: configIdentity,
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
+      fieldName: fieldName,
+      key: key,
+    );
+
+    Future<String> putOwned(SecretOwner owner, String value) async {
+      final reference = await _store.put(
+        namespace: owner.namespace,
+        key: owner.key,
+        value: value,
+      );
+      if (!_store.referenceMatches(
+        reference,
+        namespace: owner.namespace,
+        key: owner.key,
+      )) {
+        throw StateError(
+          '$ownerLabel $fieldName "${owner.key}" returned a reference outside its owner.',
+        );
+      }
+      return reference;
+    }
+
+    void addNewReferenceRollback(SecretOwner owner, String reference) {
+      if (!newlyCreatedReferences.add(reference)) return;
+      rollbacks.add(() async {
+        if (_store.referenceMatches(
+          reference,
+          namespace: owner.namespace,
+          key: owner.key,
+        )) {
+          await _store.delete(reference);
+        }
+      });
+    }
 
     if (!refsResolved) {
       final mixedKeys = values.keys.where(refs.containsKey).toList();
@@ -214,12 +274,13 @@ final class AcpConfigSecretMigrator {
         );
       }
       for (final entry in refs.entries) {
-        final value = await _readSecret(
+        final owner = ownerFor(entry.key);
+        final read = await _readSecret(
           entry.value,
+          owner: owner,
           ownerLabel: ownerLabel,
-          fieldName: fieldName,
-          key: entry.key,
         );
+        final value = read.value;
         if (value == null) {
           throw FormatException(
             '$ownerLabel $fieldName "${entry.key}" references a missing secret.',
@@ -227,61 +288,57 @@ final class AcpConfigSecretMigrator {
         }
         resolved[entry.key] = value;
         existingValues[entry.key] = value;
-        desiredRefs[entry.key] = entry.value;
+        referenceKinds[entry.key] = read.kind;
+        if (read.kind == _OwnedReferenceKind.legacy) {
+          final migrated = await putOwned(owner, value);
+          desiredRefs[entry.key] = migrated;
+          addNewReferenceRollback(owner, migrated);
+        } else {
+          desiredRefs[entry.key] = entry.value;
+        }
       }
     }
     resolved.addAll(values);
 
     for (final entry in resolved.entries) {
+      final owner = ownerFor(entry.key);
       final oldRef = refs[entry.key];
       if (oldRef != null) {
-        final oldValue =
-            existingValues[entry.key] ??
-            await _readSecret(
-              oldRef,
-              ownerLabel: ownerLabel,
-              fieldName: fieldName,
-              key: entry.key,
-            );
+        final existingRead = existingValues.containsKey(entry.key)
+            ? null
+            : await _readSecret(oldRef, owner: owner, ownerLabel: ownerLabel);
+        final oldValue = existingValues[entry.key] ?? existingRead?.value;
         if (oldValue == null) {
           throw FormatException(
             '$ownerLabel $fieldName "${entry.key}" references a missing secret.',
           );
         }
-        if (oldValue != entry.value) {
-          final nextRef = await _store.put(
-            namespace: namespace,
-            key: entry.key,
-            value: entry.value,
-          );
-          if (nextRef != oldRef) {
-            final mismatch = StateError(
-              '$ownerLabel $fieldName "${entry.key}" changed its stable secret reference.',
-            );
-            try {
-              await _store.delete(nextRef);
-            } catch (cleanupError) {
-              throw AcpSecretRollbackException(mismatch, [cleanupError]);
-            }
-            throw mismatch;
-          }
-          rollbacks.add(
-            () => _store.put(
-              namespace: namespace,
-              key: entry.key,
-              value: oldValue,
-            ),
-          );
+        final referenceKind = referenceKinds[entry.key] ?? existingRead!.kind;
+        var desiredReference = desiredRefs[entry.key];
+        if (referenceKind == _OwnedReferenceKind.legacy &&
+            desiredReference == null) {
+          desiredReference = await putOwned(owner, oldValue);
+          addNewReferenceRollback(owner, desiredReference);
         }
-        desiredRefs[entry.key] = oldRef;
+        if (oldValue != entry.value) {
+          final nextRef = await putOwned(owner, entry.value);
+          desiredReference = nextRef;
+          if (referenceKind == _OwnedReferenceKind.current) {
+            rollbacks.add(() async {
+              final restored = await putOwned(owner, oldValue);
+              if (restored != oldRef) {
+                throw StateError(
+                  '$ownerLabel $fieldName "${entry.key}" could not restore its stable reference.',
+                );
+              }
+            });
+          }
+        }
+        desiredRefs[entry.key] = desiredReference ?? oldRef;
       } else {
-        final reference = await _store.put(
-          namespace: namespace,
-          key: entry.key,
-          value: entry.value,
-        );
+        final reference = await putOwned(owner, entry.value);
         desiredRefs[entry.key] = reference;
-        rollbacks.add(() => _store.delete(reference));
+        addNewReferenceRollback(owner, reference);
       }
     }
     return _PreparedSecretMap(
@@ -290,20 +347,47 @@ final class AcpConfigSecretMigrator {
     );
   }
 
-  Future<String?> _readSecret(
+  Future<_OwnedSecretRead> _readSecret(
     String reference, {
+    required SecretOwner owner,
     required String ownerLabel,
-    required String fieldName,
-    required String key,
   }) async {
+    final kind =
+        _store.referenceMatches(
+          reference,
+          namespace: owner.namespace,
+          key: owner.key,
+        )
+        ? _OwnedReferenceKind.current
+        : _store.referenceMatches(
+            reference,
+            namespace: owner.legacyNamespace,
+            key: owner.key,
+          )
+        ? _OwnedReferenceKind.legacy
+        : null;
+    if (kind == null) {
+      throw FormatException(
+        '$ownerLabel ${owner.fieldName} "${owner.key}" references a secret outside its owner.',
+      );
+    }
     try {
-      return await _store.get(reference);
+      return _OwnedSecretRead(await _store.get(reference), kind);
     } catch (error) {
       throw FormatException(
-        '$ownerLabel $fieldName "$key" could not resolve its Keychain secret (${error.runtimeType}).',
+        '$ownerLabel ${owner.fieldName} "${owner.key}" could not resolve its Keychain secret (${error.runtimeType}).',
       );
     }
   }
+}
+
+enum _OwnedReferenceKind { current, legacy }
+
+final class _OwnedSecretRead {
+  const _OwnedSecretRead(this.value, this.kind);
+
+  final String? value;
+  final _OwnedReferenceKind kind;
 }
 
 final class PreparedAcpConfigSecrets {
@@ -335,10 +419,12 @@ final class PreparedAcpConfigSecrets {
   }
 
   Future<Map<String, Object>> deleteReferences(
-    Iterable<String> references,
+    Iterable<SecretCleanupIntent> intents,
   ) async {
     final errors = <String, Object>{};
-    for (final reference in references) {
+    for (final intent in intents) {
+      final reference = intent.reference;
+      if (!secretStoreOwnsIntent(_store, intent, allowLegacy: true)) continue;
       try {
         await _store.delete(reference);
       } catch (error) {
@@ -363,6 +449,100 @@ final class AcpSecretRollbackException implements Exception {
 
 Set<String> collectSecretReferences(AcpClientConfig config) {
   return _secretReferencePaths(config).keys.toSet();
+}
+
+Future<Map<String, SecretOwner>> collectSecretReferenceOwners(
+  AcpClientConfig config,
+) async {
+  final configIdentity = await configSecretIdentity(config.configPath);
+  final owners = <String, SecretOwner>{};
+
+  void addMap({
+    required String targetKind,
+    required String targetIdentity,
+    required String fieldName,
+    required Map<String, String> refs,
+  }) {
+    for (final entry in refs.entries) {
+      owners[entry.value] = SecretOwner(
+        configIdentity: configIdentity,
+        targetKind: targetKind,
+        targetIdentity: targetIdentity,
+        fieldName: fieldName,
+        key: entry.key,
+      );
+    }
+  }
+
+  void addMcp(String targetKind, McpServerConfig server) {
+    final targetIdentity = mcpSecretTargetIdentity(server);
+    addMap(
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
+      fieldName: 'env',
+      refs: server.envRefs,
+    );
+    addMap(
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
+      fieldName: 'headers',
+      refs: server.headerRefs,
+    );
+  }
+
+  void addReview(String targetKind, AcpPermissionReviewAgentConfig review) {
+    final server = review.mcpServer;
+    if (server != null) addMcp('$targetKind/${server.name}', server);
+  }
+
+  final agents = config.agentServers.isNotEmpty
+      ? config.agentServers
+      : config.activeAgentServer == null
+      ? const <AgentServerConfig>[]
+      : <AgentServerConfig>[config.activeAgentServer!];
+  for (final server in agents) {
+    final targetKind = 'agent/${server.name}';
+    final targetIdentity = agentSecretTargetIdentity(server);
+    addMap(
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
+      fieldName: 'env',
+      refs: server.envRefs,
+    );
+    addMap(
+      targetKind: targetKind,
+      targetIdentity: targetIdentity,
+      fieldName: 'headers',
+      refs: server.headerRefs,
+    );
+    addReview('review/agent/${server.name}', server.permissionReviewAgent);
+  }
+  for (final server in config.mcpServers) {
+    addMcp('mcp/${server.name}', server);
+  }
+  addReview('review/global', config.clientProviders.permissions.reviewAgent);
+  return Map.unmodifiable(owners);
+}
+
+bool secretStoreOwnsIntent(
+  SecretStore store,
+  SecretCleanupIntent intent, {
+  bool allowLegacy = false,
+}) {
+  final owner = intent.owner;
+  if (store.referenceMatches(
+    intent.reference,
+    namespace: owner.namespace,
+    key: owner.key,
+  )) {
+    return true;
+  }
+  return allowLegacy &&
+      store.referenceMatches(
+        intent.reference,
+        namespace: owner.legacyNamespace,
+        key: owner.key,
+      );
 }
 
 void validateUniqueSecretReferences(AcpClientConfig config) {
@@ -448,7 +628,47 @@ Future<List<Object>> _runRollbacks(
   return errors;
 }
 
-Future<String> _configIdentity(String? path) async {
+String agentSecretTargetIdentity(AgentServerConfig server) {
+  return _targetFingerprint(<String, Object?>{
+    'type': server.type,
+    'command': server.command,
+    'url': server.url,
+    'cwd': server.cwd,
+    'args': server.args,
+  });
+}
+
+String mcpSecretTargetIdentity(McpServerConfig server) {
+  final raw = server.raw;
+  return _targetFingerprint(<String, Object?>{
+    'type': server.type,
+    'command': server.command,
+    'url': server.url,
+    'id': server.id,
+    'args': raw['args'] is List ? raw['args'] : const <Object?>[],
+    'cwd': raw['cwd'] ?? raw['working_directory'] ?? raw['workingDirectory'],
+  });
+}
+
+String _targetFingerprint(Map<String, Object?> target) {
+  final canonical = _canonicalJsonValue(target);
+  return sha256.convert(utf8.encode(jsonEncode(canonical))).toString();
+}
+
+Object? _canonicalJsonValue(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.map((key) => key.toString()).toList()..sort();
+    return <String, Object?>{
+      for (final key in keys) key: _canonicalJsonValue(value[key]),
+    };
+  }
+  if (value is List) {
+    return value.map(_canonicalJsonValue).toList(growable: false);
+  }
+  return value;
+}
+
+Future<String> configSecretIdentity(String? path) async {
   final trimmed = path?.trim();
   if (trimmed == null || trimmed.isEmpty) {
     throw const FormatException(

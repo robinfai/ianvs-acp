@@ -30,7 +30,9 @@ class AcpConfigStore {
       final raw = await _readExistingJson(file);
       final previous = AcpClientConfig.fromJson(raw, configPath: path);
       validateUniqueSecretReferences(previous);
-      final oldReferences = collectSecretReferences(previous);
+      final oldOwners = await collectSecretReferenceOwners(previous);
+      final oldReferences = oldOwners.keys.toSet();
+      final configIdentity = await configSecretIdentity(path);
       final proposal = _inheritCurrentSecretReferences(
         _withConfigPath(config, path),
         previous,
@@ -40,6 +42,7 @@ class AcpConfigStore {
         await _retryPendingSecretCleanup(
           file,
           secretStore,
+          configIdentity: configIdentity,
           protectedReferences: oldReferences.union(
             collectSecretReferences(proposal),
           ),
@@ -79,10 +82,20 @@ class AcpConfigStore {
         collectSecretReferences(resolved),
       );
       if (prepared != null && retired.isNotEmpty) {
-        final cleanupErrors = await prepared.deleteReferences(retired);
+        final intents = <SecretCleanupIntent>[
+          for (final reference in retired)
+            if (oldOwners[reference] case final owner?)
+              SecretCleanupIntent(owner: owner, reference: reference),
+        ];
+        final cleanupErrors = await prepared.deleteReferences(intents);
         if (cleanupErrors.isNotEmpty) {
           try {
-            await _persistPendingSecretCleanup(file, cleanupErrors.keys);
+            await _persistPendingSecretCleanup(
+              file,
+              intents.where(
+                (intent) => cleanupErrors.containsKey(intent.reference),
+              ),
+            );
           } catch (queueError) {
             cleanupErrors['<cleanup-queue>'] = queueError;
           }
@@ -110,9 +123,11 @@ class AcpConfigStore {
       final raw = await _readExistingJson(file);
       final parsed = AcpClientConfig.fromJson(raw, configPath: path);
       validateUniqueSecretReferences(parsed);
+      final configIdentity = await configSecretIdentity(path);
       await _retryPendingSecretCleanup(
         file,
         secretStore,
+        configIdentity: configIdentity,
         protectedReferences: collectSecretReferences(parsed),
       );
       final prepared = await AcpConfigSecretMigrator(
@@ -216,26 +231,29 @@ final class AcpConfigPostCommitCleanupException implements Exception {
 Future<void> _retryPendingSecretCleanup(
   File configFile,
   SecretStore secretStore, {
+  required String configIdentity,
   required Set<String> protectedReferences,
 }) async {
   final queue = await _secretCleanupQueueFile(configFile);
   if (!await queue.exists()) return;
-  final decoded = jsonDecode(await queue.readAsString());
-  if (decoded is! List || decoded.any((value) => value is! String)) {
-    throw const FormatException(
-      'ACP secret cleanup queue must be a JSON string array.',
-    );
-  }
-  final remaining = <String>[];
-  for (final reference in decoded.cast<String>().toSet()) {
+  final intents = await _readSecretCleanupQueue(queue);
+  final remaining = <SecretCleanupIntent>[];
+  final seen = <String>{};
+  for (final intent in intents) {
+    final reference = intent.reference;
+    if (!seen.add(reference)) continue;
+    if (intent.owner.configIdentity != configIdentity ||
+        !secretStoreOwnsIntent(secretStore, intent, allowLegacy: true)) {
+      continue;
+    }
     if (protectedReferences.contains(reference)) {
-      remaining.add(reference);
+      remaining.add(intent);
       continue;
     }
     try {
       await secretStore.delete(reference);
     } catch (_) {
-      remaining.add(reference);
+      remaining.add(intent);
     }
   }
   await _writeSecretCleanupQueue(queue, remaining);
@@ -243,20 +261,18 @@ Future<void> _retryPendingSecretCleanup(
 
 Future<void> _persistPendingSecretCleanup(
   File configFile,
-  Iterable<String> references,
+  Iterable<SecretCleanupIntent> intents,
 ) async {
   final queue = await _secretCleanupQueueFile(configFile);
-  final pending = <String>{...references};
+  final pending = <String, SecretCleanupIntent>{
+    for (final intent in intents) intent.reference: intent,
+  };
   if (await queue.exists()) {
-    final decoded = jsonDecode(await queue.readAsString());
-    if (decoded is! List || decoded.any((value) => value is! String)) {
-      throw const FormatException(
-        'ACP secret cleanup queue must be a JSON string array.',
-      );
+    for (final intent in await _readSecretCleanupQueue(queue)) {
+      pending.putIfAbsent(intent.reference, () => intent);
     }
-    pending.addAll(decoded.cast<String>());
   }
-  await _writeSecretCleanupQueue(queue, pending.toList(growable: false));
+  await _writeSecretCleanupQueue(queue, pending.values.toList(growable: false));
 }
 
 Future<File> _secretCleanupQueueFile(File configFile) async {
@@ -269,11 +285,39 @@ Future<File> _secretCleanupQueueFile(File configFile) async {
   );
 }
 
-Future<void> _writeSecretCleanupQueue(File queue, List<String> references) {
-  references.sort();
+Future<List<SecretCleanupIntent>> _readSecretCleanupQueue(File queue) async {
+  final decoded = jsonDecode(await queue.readAsString());
+  if (decoded is List) {
+    await _writeSecretCleanupQueue(queue, const <SecretCleanupIntent>[]);
+    return const <SecretCleanupIntent>[];
+  }
+  if (decoded is! Map ||
+      decoded['version'] != 1 ||
+      decoded['intents'] is! List) {
+    throw const FormatException('Invalid ACP secret cleanup queue.');
+  }
+  final intents = <SecretCleanupIntent>[];
+  for (final rawIntent in decoded['intents'] as List) {
+    if (rawIntent is! Map) continue;
+    try {
+      intents.add(
+        SecretCleanupIntent.fromJson(Map<String, dynamic>.from(rawIntent)),
+      );
+    } on FormatException {
+      // Invalid intents are untrusted and are discarded without deletion.
+    }
+  }
+  return intents;
+}
+
+Future<void> _writeSecretCleanupQueue(
+  File queue,
+  List<SecretCleanupIntent> intents,
+) {
+  intents.sort((a, b) => a.reference.compareTo(b.reference));
   return SecureAtomicFile.writeString(
     queue,
-    '${jsonEncode(references)}\n',
+    '${jsonEncode(<String, Object?>{'version': 1, 'intents': intents.map((intent) => intent.toJson()).toList()})}\n',
     protectExistingParent: false,
   );
 }
@@ -826,11 +870,25 @@ AgentServerConfig _inheritAgentReferences(
   AgentServerConfig? current,
 ) {
   if (!proposal.secretRefsResolved) return proposal;
+  final targetChanged =
+      current != null &&
+      agentSecretTargetIdentity(proposal) != agentSecretTargetIdentity(current);
   return proposal.withSecrets(
-    env: proposal.env,
-    headers: proposal.headers,
-    envRefs: _refsForCurrentKeys(proposal.env, current?.envRefs),
-    headerRefs: _refsForCurrentKeys(proposal.headers, current?.headerRefs),
+    env: targetChanged
+        ? _withoutPreviouslyProtectedValues(proposal.env, current.envRefs)
+        : proposal.env,
+    headers: targetChanged
+        ? _withoutPreviouslyProtectedValues(
+            proposal.headers,
+            current.headerRefs,
+          )
+        : proposal.headers,
+    envRefs: targetChanged
+        ? const <String, String>{}
+        : _refsForCurrentKeys(proposal.env, current?.envRefs),
+    headerRefs: targetChanged
+        ? const <String, String>{}
+        : _refsForCurrentKeys(proposal.headers, current?.headerRefs),
     permissionReviewAgent: _inheritReviewReferences(
       proposal.permissionReviewAgent,
       current?.permissionReviewAgent,
@@ -843,12 +901,36 @@ McpServerConfig _inheritMcpReferences(
   McpServerConfig? current,
 ) {
   if (!proposal.secretRefsResolved) return proposal;
+  final targetChanged =
+      current != null &&
+      mcpSecretTargetIdentity(proposal) != mcpSecretTargetIdentity(current);
   return proposal.withSecrets(
-    env: proposal.env,
-    headers: proposal.headers,
-    envRefs: _refsForCurrentKeys(proposal.env, current?.envRefs),
-    headerRefs: _refsForCurrentKeys(proposal.headers, current?.headerRefs),
+    env: targetChanged
+        ? _withoutPreviouslyProtectedValues(proposal.env, current.envRefs)
+        : proposal.env,
+    headers: targetChanged
+        ? _withoutPreviouslyProtectedValues(
+            proposal.headers,
+            current.headerRefs,
+          )
+        : proposal.headers,
+    envRefs: targetChanged
+        ? const <String, String>{}
+        : _refsForCurrentKeys(proposal.env, current?.envRefs),
+    headerRefs: targetChanged
+        ? const <String, String>{}
+        : _refsForCurrentKeys(proposal.headers, current?.headerRefs),
   );
+}
+
+Map<String, String> _withoutPreviouslyProtectedValues(
+  Map<String, String> values,
+  Map<String, String> currentRefs,
+) {
+  return Map.unmodifiable(<String, String>{
+    for (final entry in values.entries)
+      if (!currentRefs.containsKey(entry.key)) entry.key: entry.value,
+  });
 }
 
 AcpPermissionReviewAgentConfig _inheritReviewReferences(

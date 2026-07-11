@@ -459,8 +459,7 @@ final class _MemorySecretStore implements SecretStore {
     final identity = '$namespace\u0000$key';
     final reference = _references.putIfAbsent(
       identity,
-      () =>
-          'keychain://ianvs-acp/${_references.length.toString().padLeft(64, '0')}',
+      () => referenceFor(namespace: namespace, key: key),
     );
     _values[reference] = value;
     return reference;
@@ -473,4 +472,15 @@ final class _MemorySecretStore implements SecretStore {
   Future<void> delete(String reference) async {
     _values.remove(reference);
   }
+
+  @override
+  String referenceFor({required String namespace, required String key}) =>
+      keychainReferenceFor(namespace: namespace, key: key);
+
+  @override
+  bool referenceMatches(
+    String reference, {
+    required String namespace,
+    required String key,
+  }) => reference == referenceFor(namespace: namespace, key: key);
 }
