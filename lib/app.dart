@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,6 +15,8 @@ import 'acp/unavailable_acp_agent_client.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'config/macos_keychain_secret_store.dart';
+import 'config/secret_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
@@ -59,6 +63,8 @@ class AcpClientApp extends StatefulWidget {
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
+    this.secretStore = const MacosKeychainSecretStore(),
+    this.configurationWritable = true,
     this.initialResumeSessionId,
     this.initialResumeCwd,
     this.initialResumeAgentName,
@@ -79,6 +85,8 @@ class AcpClientApp extends StatefulWidget {
   final AgentServerDiscoverer? discoverAgentServers;
   final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
   final AcpConfigWriter? writeConfig;
+  final SecretStore secretStore;
+  final bool configurationWritable;
   final String? initialResumeSessionId;
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
@@ -900,7 +908,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
-        onSaveConfig: widget.controller == null
+        onSaveConfig: widget.controller == null && widget.configurationWritable
             ? (config) => _saveConfig(config)
             : null,
       ),
@@ -919,7 +927,11 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   Future<void> _maybeDiscoverAgents() async {
-    if (_agentDiscoveryStarted || widget.controller != null) return;
+    if (_agentDiscoveryStarted ||
+        widget.controller != null ||
+        !widget.configurationWritable) {
+      return;
+    }
     if (_config.configPath == null || _config.configPath!.trim().isEmpty) {
       return;
     }
@@ -940,10 +952,14 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (selected == null || selected.isEmpty || !mounted) return;
 
     try {
-      final write =
-          widget.writeDiscoveredAgentServers ??
-          AcpAgentDiscovery.writeSelectedAgentServers;
-      final nextConfig = await write(_config, selected);
+      final injectedWrite = widget.writeDiscoveredAgentServers;
+      final nextConfig = injectedWrite == null
+          ? await AcpAgentDiscovery.writeSelectedAgentServers(
+              _config,
+              selected,
+              secretStore: widget.secretStore,
+            )
+          : await injectedWrite(_config, selected);
       if (!mounted) return;
       _replaceOwnedControllerConfiguration(nextConfig);
       unawaited(_loadAllAgentSessionCatalogs());
@@ -1376,14 +1392,33 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   Future<AcpClientConfig> _saveConfig(AcpClientConfig config) async {
+    if (!widget.configurationWritable) {
+      throw StateError(
+        'ACP configuration is read-only because startup loading failed.',
+      );
+    }
     final write = widget.writeConfig;
-    final nextConfig = write == null
-        ? await AcpConfigStore.writeConfig(config: config)
-        : await write(config);
+    late final AcpClientConfig nextConfig;
+    var cleanupWarning = false;
+    try {
+      nextConfig = write == null
+          ? await AcpConfigStore.writeConfig(
+              config: config,
+              secretStore: widget.secretStore,
+            )
+          : await write(config);
+    } on AcpConfigPostCommitCleanupException catch (error) {
+      nextConfig = error.committedConfig;
+      cleanupWarning = true;
+    }
     if (!mounted) return nextConfig;
     _replaceOwnedControllerConfiguration(nextConfig);
     unawaited(_loadAllAgentSessionCatalogs());
-    _showSnackBar('Saved agent configuration.');
+    _showSnackBar(
+      cleanupWarning
+          ? 'Saved agent configuration, but some retired Keychain entries could not be removed.'
+          : 'Saved agent configuration.',
+    );
     return nextConfig;
   }
 
@@ -1936,7 +1971,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   AcpAgentClient _defaultAgentClient(AcpClientConfig config) {
     final server = config.activeAgentServer;
     final mcpServers = config.mcpServers
-        .map((server) => server.toJson())
+        .map((server) => server.toRuntimeJson())
         .toList();
     if (server == null) {
       return const UnavailableAcpAgentClient(
@@ -2063,12 +2098,13 @@ class _AcpClientAppState extends State<AcpClientApp>
           .map(_agentServerSignature)
           .toList(growable: false),
       'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
+          .map(_mcpServerSignature)
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
+      'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
 
@@ -2077,16 +2113,37 @@ class _AcpClientAppState extends State<AcpClientApp>
       'agentName': config.agentName,
       'activeAgentServer': _agentServerSignature(config.activeAgentServer),
       'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
+          .map(_mcpServerSignature)
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
 
   Map<String, Object?>? _agentServerSignature(AgentServerConfig? server) {
     if (server == null) return null;
-    return <String, Object?>{'name': server.name, ...server.toJson()};
+    return <String, Object?>{
+      'name': server.name,
+      ...server.toJson(),
+      'runtimeSecretSignature': <String>[
+        _runtimeSecretSignature(server.env),
+        _runtimeSecretSignature(server.headers),
+      ],
+      'permissionReviewAgent': _reviewAgentSignature(
+        server.permissionReviewAgent,
+      ),
+    };
+  }
+
+  Map<String, Object?> _mcpServerSignature(McpServerConfig server) {
+    return <String, Object?>{
+      ...server.toJson(),
+      'runtimeSecretSignature': <String>[
+        _runtimeSecretSignature(server.env),
+        _runtimeSecretSignature(server.headers),
+      ],
+    };
   }
 
   Map<String, Object?> _clientProvidersSignature(
@@ -2120,11 +2177,28 @@ class _AcpClientAppState extends State<AcpClientApp>
   ) {
     return <String, Object?>{
       'enabled': config.enabled,
-      'mcpServer': config.mcpServer?.toJson(),
+      'mcpServer': config.mcpServer == null
+          ? null
+          : _mcpServerSignature(config.mcpServer!),
       'mcpServerName': config.mcpServerName,
       'toolName': config.toolName,
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,
     };
   }
+}
+
+final List<int> _runtimeSecretSignatureKey = List<int>.unmodifiable(
+  List<int>.generate(32, (_) => math.Random.secure().nextInt(256)),
+);
+
+String _runtimeSecretSignature(Map<String, String> values) {
+  final keys = values.keys.toList()..sort();
+  final canonical = <List<String>>[
+    for (final key in keys) <String>[key, values[key]!],
+  ];
+  return Hmac(
+    sha256,
+    _runtimeSecretSignatureKey,
+  ).convert(utf8.encode(jsonEncode(canonical))).toString();
 }

@@ -205,10 +205,12 @@ void main() {
     expect(config.mcpServers.first.command, '/usr/local/bin/mcp-filesystem');
     expect(config.mcpServers.last.type, 'http');
     expect(config.mcpServers.last.url, 'https://api.example.com/mcp');
-    expect(config.mcpServers.first.toJson()['env'], [
+    expect(config.mcpServers.first.toJson(), isNot(contains('env')));
+    expect(config.mcpServers.first.toRuntimeJson()['env'], [
       {'name': 'ROOT', 'value': '/workspace'},
     ]);
-    expect(config.mcpServers.last.toJson()['headers'], [
+    expect(config.mcpServers.last.toJson(), isNot(contains('headers')));
+    expect(config.mcpServers.last.toRuntimeJson()['headers'], [
       {'name': 'Authorization', 'value': 'Bearer test-token'},
     ]);
 
@@ -612,9 +614,19 @@ void main() {
       'name': 'stdio-tools',
       'command': '/usr/local/bin/mcp-tools',
       'args': <String>[],
-      'env': <Map<String, String>>[],
     });
     expect(config.mcpServers.last.toJson(), {
+      'name': 'api-tools',
+      'type': 'http',
+      'url': 'https://api.example.com/mcp',
+    });
+    expect(config.mcpServers.first.toRuntimeJson(), {
+      'name': 'stdio-tools',
+      'command': '/usr/local/bin/mcp-tools',
+      'args': <String>[],
+      'env': <Map<String, String>>[],
+    });
+    expect(config.mcpServers.last.toRuntimeJson(), {
       'name': 'api-tools',
       'type': 'http',
       'url': 'https://api.example.com/mcp',
@@ -821,6 +833,32 @@ void main() {
     );
   });
 
+  test('rejects duplicate snake and camel secret reference fields', () {
+    const first =
+        'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const second =
+        'keychain://ianvs-acp/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'tools',
+            'command': '/usr/local/bin/tools',
+            'env_refs': {'TOKEN': first},
+            'envRefs': {'TOKEN': second},
+          },
+        ],
+      }),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('must not define both env_refs'),
+        ),
+      ),
+    );
+  });
+
   test('rejects invalid websocket agent server config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -862,18 +900,16 @@ void main() {
       throwsA(isA<FormatException>()),
     );
 
-    expect(
-      () => AcpClientConfig.fromJson({
-        'agent_servers': {
-          'Remote Agent': {
-            'type': 'websocket',
-            'url': 'ws://127.0.0.1/acp',
-            'headers': {'Authorization': ''},
-          },
+    final emptySecret = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Remote Agent': {
+          'type': 'websocket',
+          'url': 'ws://127.0.0.1/acp',
+          'headers': {'Authorization': ''},
         },
-      }),
-      throwsA(isA<FormatException>()),
-    );
+      },
+    });
+    expect(emptySecret.agentServers.single.headers['Authorization'], '');
   });
 
   test('rejects invalid stdio agent cwd config', () {
@@ -958,6 +994,40 @@ void main() {
             ],
           },
         },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects duplicate MCP env and case-insensitive header names', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'stdio-tools',
+            'command': 'tools',
+            'env': [
+              {'name': 'TOKEN', 'value': 'first'},
+              {'name': 'TOKEN', 'value': 'second'},
+            ],
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'http-tools',
+            'type': 'http',
+            'url': 'https://tools.example/mcp',
+            'headers': [
+              {'name': 'Authorization', 'value': 'first'},
+              {'name': 'authorization', 'value': 'second'},
+            ],
+          },
+        ],
       }),
       throwsA(isA<FormatException>()),
     );

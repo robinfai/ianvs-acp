@@ -353,6 +353,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   }
 
   mcp.Transport _transportForServer(McpServerConfig server) {
+    final runtime = server.toRuntimeJson();
     if (server.type == 'http' || server.type == 'sse') {
       return mcp.StreamableHttpClientTransport(
         Uri.parse(server.url),
@@ -361,7 +362,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
             if (server.headerKeys.isNotEmpty)
               'headers': <String, String>{
                 for (final key in server.headerKeys)
-                  key: _headerValue(server.raw['headers'], key) ?? '',
+                  key: _headerValue(runtime['headers'], key) ?? '',
               },
           },
         ),
@@ -375,10 +376,10 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     return mcp.StdioClientTransport(
       mcp.StdioServerParameters(
         command: server.command,
-        args: server.raw['args'] is List
-            ? (server.raw['args'] as List).whereType<String>().toList()
+        args: runtime['args'] is List
+            ? (runtime['args'] as List).whereType<String>().toList()
             : const <String>[],
-        environment: _envMap(server.raw['env']),
+        environment: _envMap(runtime['env']),
         stderrMode: ProcessStartMode.normal,
       ),
     );

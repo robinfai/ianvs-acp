@@ -327,6 +327,33 @@ void main() {
     expect(find.text('ACP Client'), findsOneWidget);
   });
 
+  testWidgets('startup config failure keeps discovery and writes disabled', (
+    tester,
+  ) async {
+    var discoveryCalled = false;
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: const AcpClientConfig(configPath: '/tmp/broken-settings.json'),
+        startupError: 'Could not load ACP config: missing Keychain secret',
+        configurationWritable: false,
+        discoverAgentServers: (config) {
+          discoveryCalled = true;
+          return const <AgentServerConfig>[
+            AgentServerConfig(
+              name: 'Codex',
+              type: 'custom',
+              command: '/usr/local/bin/codex-acp',
+            ),
+          ];
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(discoveryCalled, isFalse);
+    expect(find.textContaining('missing Keychain secret'), findsOneWidget);
+  });
+
   testWidgets('AcpClientApp migrates legacy tasks before enabling Inbox', (
     tester,
   ) async {
@@ -770,6 +797,151 @@ void main() {
 
     expect(oldClient.disposed, isTrue);
     expect(newClients.single.disposed, isFalse);
+  });
+
+  testWidgets('AcpClientApp replaces owned client when only secret changes', (
+    tester,
+  ) async {
+    const ref =
+        'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    AcpClientConfig config(String value) {
+      final server = AgentServerConfig(
+        name: 'Codex',
+        type: 'custom',
+        command: '/usr/local/bin/codex-acp',
+        env: <String, String>{'TOKEN': value},
+        envRefs: const <String, String>{'TOKEN': ref},
+      );
+      return AcpClientConfig(
+        activeAgentServer: server,
+        agentServers: <AgentServerConfig>[server],
+        defaultAgentServerName: 'Codex',
+      );
+    }
+
+    final clients = <_TrackingHangingAgentClient>[];
+    _TrackingHangingAgentClient factory(AcpClientConfig _) {
+      final client = _TrackingHangingAgentClient();
+      clients.add(client);
+      return client;
+    }
+
+    AcpClientApp app(AcpClientConfig config) => AcpClientApp(
+      key: const ValueKey('secret-only-config-change'),
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: factory,
+      agentClientFactoryKey: 'stable-factory',
+    );
+
+    await tester.pumpWidget(app(config('first')));
+    final oldClient = clients.first;
+    await tester.pumpWidget(app(config('second')));
+    await _pumpUntil(tester, () => oldClient.disposed && clients.length >= 2);
+
+    expect(oldClient.disposed, isTrue);
+    expect(clients.last.disposed, isFalse);
+  });
+
+  testWidgets(
+    'AcpClientApp replaces owned client when inline reviewer secret changes',
+    (tester) async {
+      const ref =
+          'keychain://ianvs-acp/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      AcpClientConfig config(String value) {
+        final reviewer = McpServerConfig(
+          raw: <String, dynamic>{
+            'name': 'inline-reviewer',
+            'command': 'reviewer',
+            'env': <Map<String, String>>[
+              <String, String>{'name': 'TOKEN', 'value': value},
+            ],
+          },
+          envRefs: const <String, String>{'TOKEN': ref},
+        );
+        final server = AgentServerConfig(
+          name: 'Codex',
+          type: 'custom',
+          command: '/usr/local/bin/codex-acp',
+          permissionReviewAgent: AcpPermissionReviewAgentConfig(
+            enabled: true,
+            mcpServer: reviewer,
+          ),
+        );
+        return AcpClientConfig(
+          activeAgentServer: server,
+          agentServers: <AgentServerConfig>[server],
+          defaultAgentServerName: 'Codex',
+        );
+      }
+
+      final clients = <_TrackingHangingAgentClient>[];
+      _TrackingHangingAgentClient factory(AcpClientConfig _) {
+        final client = _TrackingHangingAgentClient();
+        clients.add(client);
+        return client;
+      }
+
+      AcpClientApp app(AcpClientConfig value) => AcpClientApp(
+        key: const ValueKey('inline-reviewer-secret-change'),
+        config: value,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: factory,
+        agentClientFactoryKey: 'stable-factory',
+      );
+
+      await tester.pumpWidget(app(config('first')));
+      final oldClient = clients.first;
+      await tester.pumpWidget(app(config('second')));
+      await _pumpUntil(tester, () => oldClient.disposed && clients.length >= 2);
+
+      expect(oldClient.disposed, isTrue);
+      expect(clients.last.disposed, isFalse);
+    },
+  );
+
+  testWidgets('AcpClientApp detects in-place runtime secret changes', (
+    tester,
+  ) async {
+    final env = <String, String>{'TOKEN': 'first'};
+    final server = AgentServerConfig(
+      name: 'Codex',
+      type: 'custom',
+      command: '/usr/local/bin/codex-acp',
+      env: env,
+      envRefs: const <String, String>{
+        'TOKEN':
+            'keychain://ianvs-acp/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      },
+    );
+    final config = AcpClientConfig(
+      activeAgentServer: server,
+      agentServers: <AgentServerConfig>[server],
+      defaultAgentServerName: 'Codex',
+    );
+    final clients = <_TrackingHangingAgentClient>[];
+    _TrackingHangingAgentClient factory(AcpClientConfig _) {
+      final client = _TrackingHangingAgentClient();
+      clients.add(client);
+      return client;
+    }
+
+    AcpClientApp app() => AcpClientApp(
+      key: const ValueKey('mutable-secret-change'),
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: factory,
+      agentClientFactoryKey: 'stable-factory',
+    );
+
+    await tester.pumpWidget(app());
+    final oldClient = clients.first;
+    env['TOKEN'] = 'second';
+    await tester.pumpWidget(app());
+    await _pumpUntil(tester, () => oldClient.disposed && clients.length >= 2);
+
+    expect(oldClient.disposed, isTrue);
+    expect(clients.last.disposed, isFalse);
   });
 
   testWidgets('AcpClientApp replaces only the keyed task agent factory', (

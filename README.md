@@ -28,6 +28,14 @@ agent. The app persists those GUI choices to:
 ~/.config/ianvs-acp/settings.json
 ```
 
+On macOS, Agent and MCP `env`/`headers` values entered in Agent Configuration
+are stored in the login Keychain. The JSON file stores only opaque
+`env_refs`/`header_refs`; do not edit or copy those references between config
+files. Existing plaintext values are migrated to Keychain before the JSON is
+atomically replaced. If a referenced Keychain item is missing, startup reports
+the exact field and keeps configuration editing disabled until the credential
+is restored or re-entered.
+
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
 `npx` command running `@zed-industries/codex-acp`, and pi ACP through `npx -y
@@ -65,8 +73,7 @@ Saved shape example for automation and debugging:
         "-y",
         "@modelcontextprotocol/server-filesystem",
         "/Users/example/project"
-      ],
-      "env": []
+      ]
     }
   ],
   "client_providers": {
@@ -75,8 +82,7 @@ Saved shape example for automation and debugging:
         "mcp_server": {
           "name": "permission-reviewer",
           "command": "/opt/homebrew/bin/npx",
-          "args": ["-y", "@example/permission-reviewer-mcp"],
-          "env": []
+          "args": ["-y", "@example/permission-reviewer-mcp"]
         },
         "tool_name": "review_permission",
         "model": "gpt-5-mini"
@@ -87,7 +93,8 @@ Saved shape example for automation and debugging:
 ```
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; headers may be either an object or a `name`/`value` list. ACP
+`headers`; enter secret header values through Agent Configuration so they are
+stored in Keychain rather than plaintext JSON. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
 

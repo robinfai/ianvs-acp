@@ -3,6 +3,9 @@ import 'dart:io';
 
 import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
+import 'acp_config_secret_migrator.dart';
+import 'acp_config_store.dart';
+import 'secret_store.dart';
 
 typedef FileExists = bool Function(String path);
 
@@ -77,56 +80,84 @@ class AcpAgentDiscovery {
 
   static Future<AcpClientConfig> writeSelectedAgentServers(
     AcpClientConfig config,
-    List<AgentServerConfig> servers,
-  ) async {
+    List<AgentServerConfig> servers, {
+    SecretStore? secretStore,
+  }) async {
     if (servers.isEmpty) return config;
+    if (secretStore == null &&
+        AcpConfigStore.hasUnreferencedSecrets(
+          AcpClientConfig(agentServers: servers),
+        )) {
+      throw StateError(
+        'A SecretStore is required to persist discovered ACP env or header values.',
+      );
+    }
 
     final configPath = config.configPath?.trim();
     if (configPath == null || configPath.isEmpty) {
       throw const FormatException('ACP config path is not available.');
     }
 
-    final file = File(configPath);
-    return SecureAtomicFile.synchronized(file, () async {
-      Map<String, dynamic> raw;
-      if (await file.exists()) {
-        final decoded = jsonDecode(await file.readAsString());
-        if (decoded is! Map<String, dynamic>) {
-          throw const FormatException('ACP config root must be a JSON object.');
+    final requestedFile = File(configPath);
+    final written = await SecureAtomicFile.synchronizedAcrossProcesses(
+      requestedFile,
+      (file) async {
+        Map<String, dynamic> raw;
+        if (await file.exists()) {
+          final decoded = jsonDecode(await file.readAsString());
+          if (decoded is! Map<String, dynamic>) {
+            throw const FormatException(
+              'ACP config root must be a JSON object.',
+            );
+          }
+          raw = Map<String, dynamic>.from(decoded);
+        } else {
+          raw = <String, dynamic>{};
         }
-        raw = Map<String, dynamic>.from(decoded);
-      } else {
-        raw = <String, dynamic>{};
-      }
 
-      final serversKey =
-          raw.containsKey('agentServers') && !raw.containsKey('agent_servers')
-          ? 'agentServers'
-          : 'agent_servers';
-      final existingServers = _agentServersJson(raw[serversKey]);
-      final hadConfiguredAgents = existingServers.isNotEmpty;
+        final serversKey =
+            raw.containsKey('agentServers') && !raw.containsKey('agent_servers')
+            ? 'agentServers'
+            : 'agent_servers';
+        final existingServers = _agentServersJson(raw[serversKey]);
+        final hadConfiguredAgents = existingServers.isNotEmpty;
 
-      for (final server in servers) {
-        if (existingServers.containsKey(server.name)) continue;
-        existingServers[server.name] = server.toJson();
-      }
-      raw[serversKey] = existingServers;
+        for (final server in servers) {
+          if (existingServers.containsKey(server.name)) continue;
+          existingServers[server.name] = server.toRuntimeJson();
+        }
+        raw[serversKey] = existingServers;
 
-      if (!hadConfiguredAgents &&
-          !raw.containsKey('default_agent_server') &&
-          !raw.containsKey('defaultAgentServer')) {
-        raw['default_agent_server'] = servers.first.name;
-      }
+        if (!hadConfiguredAgents &&
+            !raw.containsKey('default_agent_server') &&
+            !raw.containsKey('defaultAgentServer')) {
+          raw['default_agent_server'] = servers.first.name;
+        }
 
-      const encoder = JsonEncoder.withIndent('  ');
-      await SecureAtomicFile.writeString(
-        file,
-        '${encoder.convert(raw)}\n',
-        protectExistingParent: false,
-      );
-
-      return AcpClientConfig.fromJson(raw, configPath: configPath);
-    });
+        final parsed = AcpClientConfig.fromJson(raw, configPath: configPath);
+        final prepared = secretStore == null
+            ? null
+            : await AcpConfigSecretMigrator(secretStore).prepare(parsed);
+        final resolved = prepared?.resolved ?? parsed;
+        final persisted = prepared == null
+            ? raw
+            : AcpConfigStore.persistResolvedSecretReferences(raw, resolved);
+        const encoder = JsonEncoder.withIndent('  ');
+        try {
+          await SecureAtomicFile.writeString(
+            file,
+            '${encoder.convert(persisted)}\n',
+            protectExistingParent: false,
+          );
+        } catch (error, stackTrace) {
+          if (prepared != null) await prepared.rollback(cause: error);
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        prepared?.commit();
+        return resolved;
+      },
+    );
+    return written;
   }
 
   static Map<String, dynamic> _agentServersJson(Object? raw) {

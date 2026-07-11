@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
   test('discovers Codex ACP through npx on PATH', () {
@@ -118,4 +120,84 @@ void main() {
       contains('default_agent_server'),
     );
   });
+
+  test(
+    'rejects discovered agent secrets when SecretStore is omitted',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+
+      await expectLater(
+        AcpAgentDiscovery.writeSelectedAgentServers(
+          AcpClientConfig(configPath: configPath),
+          const [
+            AgentServerConfig(
+              name: 'Private',
+              type: 'custom',
+              command: '/usr/local/bin/private-agent',
+              env: {'TOKEN': 'private-secret'},
+            ),
+          ],
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(await File(configPath).exists(), isFalse);
+    },
+  );
+
+  test(
+    'migrates discovered agent secrets when SecretStore is provided',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+      final store = _MemorySecretStore();
+
+      final resolved = await AcpAgentDiscovery.writeSelectedAgentServers(
+        AcpClientConfig(configPath: configPath),
+        const [
+          AgentServerConfig(
+            name: 'Private',
+            type: 'custom',
+            command: '/usr/local/bin/private-agent',
+            env: {'TOKEN': 'private-secret'},
+          ),
+        ],
+        secretStore: store,
+      );
+
+      final contents = await File(configPath).readAsString();
+      final raw = jsonDecode(contents) as Map<String, dynamic>;
+      final reference =
+          raw['agent_servers']['Private']['env_refs']['TOKEN'] as String;
+      expect(contents, isNot(contains('private-secret')));
+      expect(await store.get(reference), 'private-secret');
+      expect(resolved.agentServers.single.env['TOKEN'], 'private-secret');
+    },
+  );
+}
+
+final class _MemorySecretStore implements SecretStore {
+  final Map<String, String> _values = <String, String>{};
+
+  @override
+  Future<void> delete(String reference) async {
+    _values.remove(reference);
+  }
+
+  @override
+  Future<String?> get(String reference) async => _values[reference];
+
+  @override
+  Future<String> put({
+    required String namespace,
+    required String key,
+    required String value,
+  }) async {
+    final reference =
+        'keychain://ianvs-acp/${_values.length.toString().padLeft(64, '0')}';
+    _values[reference] = value;
+    return reference;
+  }
 }

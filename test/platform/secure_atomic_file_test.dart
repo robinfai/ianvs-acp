@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -109,6 +110,43 @@ void main() {
       () async => 'later-work-ran',
     );
     expect(result, 'later-work-ran');
+  });
+
+  test('cross-process lock serializes real and symlink paths', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-secure-lock-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final target = File('${temp.path}/settings.json');
+    await target.writeAsString('{}\n');
+    final alias = File('${temp.path}/alias.json');
+    await Link(alias.path).create(target.path);
+    final firstEntered = Completer<void>();
+    final releaseFirst = Completer<void>();
+    var secondEntered = false;
+
+    final first = SecureAtomicFile.synchronizedAcrossProcesses<void>(target, (
+      _,
+    ) async {
+      firstEntered.complete();
+      await releaseFirst.future;
+    });
+    await firstEntered.future;
+    final second = SecureAtomicFile.synchronizedAcrossProcesses<void>(alias, (
+      _,
+    ) async {
+      secondEntered = true;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(secondEntered, isFalse);
+
+    releaseFirst.complete();
+    await Future.wait([first, second]);
+    expect(secondEntered, isTrue);
+    final lockFile = File('${temp.path}/.settings.json.lock');
+    expect(await lockFile.exists(), isTrue);
+    expect((await lockFile.stat()).mode & 0x1ff, 0x180);
   });
 
   test('a replaced temporary path cannot redirect private contents', () async {

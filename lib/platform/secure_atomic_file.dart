@@ -32,6 +32,61 @@ class SecureAtomicFile {
     });
   }
 
+  /// Serializes an operation both within this isolate and across processes.
+  ///
+  /// The persistent sidecar is intentionally retained: deleting a lock file
+  /// while another process is waiting on its inode would split the lock.
+  static Future<T> synchronizedAcrossProcesses<T>(
+    File target,
+    Future<T> Function(File resolvedTarget) operation,
+  ) {
+    return synchronized(target, () async {
+      final parentExisted = await target.parent.exists();
+      await target.parent.create(recursive: true);
+      if (!parentExisted) {
+        await _chmod(null, mode: '0700', path: target.parent.path);
+      }
+      final parentMode = (await target.parent.stat()).mode;
+      final isWritableByOtherPrincipals = parentMode & 0x12 != 0;
+      final hasStickyBit = parentMode & 0x200 != 0;
+      final hasTrustedStickyOwner =
+          hasStickyBit &&
+          _NativeFilePermissions.isOwnedByEffectiveUserOrRoot(
+            target.parent.path,
+          );
+      if (isWritableByOtherPrincipals && !hasTrustedStickyOwner) {
+        throw FileSystemException(
+          'Secure file parent must not be group- or world-writable.',
+          target.parent.path,
+        );
+      }
+      final targetType = await FileSystemEntity.type(
+        target.path,
+        followLinks: false,
+      );
+      final resolvedTarget = targetType == FileSystemEntityType.notFound
+          ? '${await target.parent.resolveSymbolicLinks()}/${target.uri.pathSegments.last}'
+          : await target.resolveSymbolicLinks();
+      final resolvedFile = File(resolvedTarget);
+      final parentPath = resolvedFile.parent.path;
+      final basename = resolvedFile.uri.pathSegments.last;
+      final lockPath = '$parentPath/.$basename.lock';
+      final fileDescriptor = _NativeFilePermissions.openLock(lockPath, 0x180);
+      var locked = false;
+      try {
+        await _NativeFilePermissions.lockExclusive(fileDescriptor, lockPath);
+        locked = true;
+        return await operation(resolvedFile);
+      } finally {
+        try {
+          if (locked) _NativeFilePermissions.unlock(fileDescriptor, lockPath);
+        } finally {
+          _NativeFilePermissions.close(fileDescriptor);
+        }
+      }
+    });
+  }
+
   static Future<void> writeString(
     File target,
     String value, {
@@ -176,6 +231,10 @@ class _NativeFilePermissions {
       .lookupFunction<Int32 Function(Int32), int Function(int)>('fsync');
   static final int Function(int) _close = _libc
       .lookupFunction<Int32 Function(Int32), int Function(int)>('close');
+  static final int Function(int, int) _flock = _libc
+      .lookupFunction<Int32 Function(Int32, Int32), int Function(int, int)>(
+        'flock',
+      );
   static final int Function(int, Pointer<Void>) _fstat = _libc
       .lookupFunction<
         Int32 Function(Int32, Pointer<Void>),
@@ -230,6 +289,60 @@ class _NativeFilePermissions {
         OSError('open failed', error),
       );
     });
+  }
+
+  static int openLock(String path, int mode) {
+    _requireSupportedPlatform();
+    return _withNativePath(path, (nativePath) {
+      final flags = Platform.isMacOS
+          ? 0x00000002 | 0x00000200 | 0x00000100 | 0x01000000
+          : 0x00000002 | 0x00000040 | 0x00020000 | 0x00080000;
+      final fileDescriptor = _open(nativePath, flags, mode);
+      if (fileDescriptor < 0) {
+        final error = _errno;
+        throw FileSystemException(
+          'Could not open secure transaction lock.',
+          path,
+          OSError('open failed', error),
+        );
+      }
+      try {
+        fchmod(fileDescriptor, mode, path);
+        return fileDescriptor;
+      } catch (_) {
+        close(fileDescriptor);
+        rethrow;
+      }
+    });
+  }
+
+  static Future<void> lockExclusive(int fileDescriptor, String path) async {
+    const lockExclusiveNonBlocking = 0x02 | 0x04;
+    while (true) {
+      if (_flock(fileDescriptor, lockExclusiveNonBlocking) == 0) return;
+      final error = _errno;
+      final wouldBlock = Platform.isMacOS ? error == 35 : error == 11;
+      final interrupted = error == 4;
+      if (interrupted) continue;
+      if (!wouldBlock) {
+        throw FileSystemException(
+          'Could not acquire secure transaction lock.',
+          path,
+          OSError('flock failed', error),
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
+  static void unlock(int fileDescriptor, String path) {
+    if (_flock(fileDescriptor, 0x08) == 0) return;
+    final error = _errno;
+    throw FileSystemException(
+      'Could not release secure transaction lock.',
+      path,
+      OSError('flock failed', error),
+    );
   }
 
   static void fchmod(int fileDescriptor, int mode, String path) {
