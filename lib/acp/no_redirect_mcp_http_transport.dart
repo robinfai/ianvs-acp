@@ -34,6 +34,8 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
 
   final List<StreamSubscription<String>> _sseSubscriptions =
       <StreamSubscription<String>>[];
+  final Set<acp.TransportBodyReadOperation<Object?>> _pendingBodyReads =
+      <acp.TransportBodyReadOperation<Object?>>{};
 
   HttpClient? _client;
   Future<void>? _sseStart;
@@ -51,6 +53,9 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
 
   @override
   String? get sessionId => _sessionId;
+
+  /// Number of one-shot response bodies currently being read.
+  int get activeBodyReadCount => _pendingBodyReads.length;
 
   @override
   Future<void> start() async {
@@ -82,6 +87,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         await _drainResponse(
           response,
           resource: 'MCP HTTP POST error response body',
+          timeout: requestTimeout,
         );
         throw mcp.McpError(
           0,
@@ -93,6 +99,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         await _drainResponse(
           response,
           resource: 'MCP HTTP POST accepted response body',
+          timeout: requestTimeout,
         );
       } else {
         _handleResponse(response);
@@ -102,7 +109,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         unawaited(_ensureSseStream().catchError(_reportAsyncError));
       }
     } catch (error) {
-      _reportError(error);
+      if (!_closed) _reportError(error);
       rethrow;
     }
   }
@@ -115,15 +122,22 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     }
     if (contentType == 'application/json') {
       unawaited(
-        _readResponseBody(response, resource: 'MCP HTTP JSON response body')
+        _readResponseBody(
+              response,
+              resource: 'MCP HTTP JSON response body',
+              timeout: requestTimeout,
+            )
             .then<void>((body) {
-              final decoded = jsonDecode(body);
+              final decoded = acp.decodeTransportJson(
+                body,
+                resource: 'MCP HTTP POST JSON',
+              );
               if (decoded is List) {
                 for (final item in decoded) {
-                  _emitJsonRpc(item);
+                  _emitJsonRpc(item, resource: 'MCP HTTP POST JSON');
                 }
               } else {
-                _emitJsonRpc(decoded);
+                _emitJsonRpc(decoded, resource: 'MCP HTTP POST JSON');
               }
             })
             .catchError(_reportAsyncError),
@@ -134,6 +148,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       _drainResponse(
         response,
         resource: 'MCP HTTP unsupported response body',
+        timeout: requestTimeout,
       ).catchError(_reportAsyncError),
     );
     throw mcp.McpError(
@@ -166,6 +181,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       await _drainResponse(
         response,
         resource: 'MCP HTTP SSE method response body',
+        timeout: requestTimeout,
       );
       return;
     }
@@ -173,6 +189,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       await _drainResponse(
         response,
         resource: 'MCP HTTP SSE error response body',
+        timeout: requestTimeout,
       );
       throw mcp.McpError(
         0,
@@ -185,6 +202,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       await _drainResponse(
         response,
         resource: 'MCP HTTP SSE non-SSE response body',
+        timeout: requestTimeout,
       );
       throw mcp.McpError(0, 'MCP HTTP SSE GET returned a non-SSE response.');
     }
@@ -204,7 +222,10 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
         .listen(
           (data) {
             try {
-              _emitJsonRpc(jsonDecode(data));
+              _emitJsonRpc(
+                acp.decodeTransportJson(data, resource: 'MCP HTTP SSE JSON'),
+                resource: 'MCP HTTP SSE JSON',
+              );
             } catch (error) {
               _reportError(error);
             }
@@ -219,12 +240,18 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     _sseSubscriptions.add(subscription);
   }
 
-  void _emitJsonRpc(Object? decoded) {
-    if (decoded is! Map) {
-      throw const FormatException('MCP HTTP response must be a JSON object.');
+  void _emitJsonRpc(Object? decoded, {required String resource}) {
+    final mcp.JsonRpcMessage message;
+    try {
+      if (decoded is! Map) {
+        throw StateError('Remote JSON-RPC value is not an object.');
+      }
+      final json = decoded.map((key, value) => MapEntry(key.toString(), value));
+      message = mcp.JsonRpcMessage.fromJson(json);
+    } on Object {
+      throw acp.TransportProtocolDecodeError(resource: resource);
     }
-    final json = decoded.map((key, value) => MapEntry(key.toString(), value));
-    onmessage?.call(mcp.JsonRpcMessage.fromJson(json));
+    onmessage?.call(message);
   }
 
   void _captureSession(HttpClientResponse response) {
@@ -262,31 +289,59 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
   }
 
   FutureOr<void> _reportAsyncError(Object error) {
+    if (_closed) return null;
     _reportError(error);
   }
 
   Future<String> _readResponseBody(
     HttpClientResponse response, {
     required String resource,
+    required Duration timeout,
   }) async {
     await _enforceResponseContentLength(response, resource: resource);
-    return acp.readBoundedUtf8Body(
-      response,
-      limit: byteBudget.maxBodyBytes,
-      resource: resource,
+    return _runBodyRead(
+      acp.startBoundedUtf8BodyRead(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
     );
   }
 
   Future<void> _drainResponse(
     HttpClientResponse response, {
     required String resource,
+    required Duration timeout,
   }) async {
     await _enforceResponseContentLength(response, resource: resource);
-    await acp.drainBoundedBytes(
-      response,
-      limit: byteBudget.maxBodyBytes,
-      resource: resource,
+    await _runBodyRead(
+      acp.startBoundedByteDrain(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
     );
+  }
+
+  Future<T> _runBodyRead<T>(acp.TransportBodyReadOperation<T> operation) async {
+    _pendingBodyReads.add(operation);
+    try {
+      return await operation.future;
+    } finally {
+      _pendingBodyReads.remove(operation);
+    }
+  }
+
+  Future<void> _cancelPendingBodyReads() async {
+    final pending = List<acp.TransportBodyReadOperation<Object?>>.of(
+      _pendingBodyReads,
+    );
+    await Future.wait<void>([
+      for (final operation in pending)
+        operation.cancel().catchError((Object _) {}),
+    ]);
   }
 
   Future<void> _enforceResponseContentLength(
@@ -314,6 +369,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    await _cancelPendingBodyReads();
     final subscriptions = List<StreamSubscription<String>>.of(
       _sseSubscriptions,
     );
@@ -331,6 +387,7 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     } on Object {
       // Remote teardown is best effort; local resources still close.
     } finally {
+      await _cancelPendingBodyReads();
       client?.close(force: true);
       onclose?.call();
     }
@@ -354,6 +411,10 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
     }
     request.headers.set('Mcp-Session-Id', session);
     final response = await request.close();
-    await _drainResponse(response, resource: 'MCP HTTP DELETE response body');
+    await _drainResponse(
+      response,
+      resource: 'MCP HTTP DELETE response body',
+      timeout: teardownTimeout,
+    );
   }
 }

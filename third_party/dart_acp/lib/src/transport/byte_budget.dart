@@ -40,6 +40,42 @@ class TransportByteLimitExceeded extends Error {
   }
 }
 
+/// Payload-free error raised when a remote transport payload is not valid JSON.
+class TransportProtocolDecodeError extends Error {
+  TransportProtocolDecodeError({required this.resource});
+
+  final String resource;
+
+  @override
+  String toString() {
+    return 'TransportProtocolDecodeError(resource: $resource)';
+  }
+}
+
+/// Payload-free error raised when a one-shot transport body stops making
+/// progress before it completes.
+class TransportBodyReadTimeout extends Error {
+  TransportBodyReadTimeout({required this.resource, required this.timeout});
+
+  final String resource;
+  final Duration timeout;
+
+  @override
+  String toString() {
+    return 'TransportBodyReadTimeout('
+        'resource: $resource, timeoutMs: ${timeout.inMilliseconds})';
+  }
+}
+
+/// Decode remote JSON without retaining its source or original parse error.
+Object? decodeTransportJson(String source, {required String resource}) {
+  try {
+    return jsonDecode(source);
+  } on Object {
+    throw TransportProtocolDecodeError(resource: resource);
+  }
+}
+
 void enforceTransportContentLength({
   required int contentLength,
   required int limit,
@@ -53,43 +89,208 @@ void enforceTransportContentLength({
   );
 }
 
+abstract interface class TransportBodyReadOperation<T> {
+  Future<T> get future;
+
+  Future<void> cancel();
+}
+
+TransportBodyReadOperation<String> startBoundedUtf8BodyRead(
+  Stream<List<int>> stream, {
+  required int limit,
+  required String resource,
+  Duration? timeout,
+}) {
+  return _TransportBodyReadOperation<String>(
+    stream: stream,
+    limit: limit,
+    resource: resource,
+    timeout: timeout,
+    collectBytes: true,
+    completeValue: (bytes) {
+      try {
+        return utf8.decode(bytes.takeBytes());
+      } on FormatException {
+        throw TransportProtocolDecodeError(resource: resource);
+      }
+    },
+  );
+}
+
+TransportBodyReadOperation<void> startBoundedByteDrain(
+  Stream<List<int>> stream, {
+  required int limit,
+  required String resource,
+  Duration? timeout,
+}) {
+  return _TransportBodyReadOperation<void>(
+    stream: stream,
+    limit: limit,
+    resource: resource,
+    timeout: timeout,
+    collectBytes: false,
+    completeValue: (_) {},
+  );
+}
+
 Future<String> readBoundedUtf8Body(
   Stream<List<int>> stream, {
   required int limit,
   required String resource,
-}) async {
-  final bytes = BytesBuilder();
-  var observed = 0;
-  await for (final chunk in stream) {
-    observed += chunk.length;
-    if (observed > limit) {
-      throw TransportByteLimitExceeded(
-        resource: resource,
-        limit: limit,
-        observedAtLeast: observed,
-      );
-    }
-    bytes.add(chunk);
-  }
-  return utf8.decode(bytes.takeBytes());
+  Duration? timeout,
+}) {
+  return startBoundedUtf8BodyRead(
+    stream,
+    limit: limit,
+    resource: resource,
+    timeout: timeout,
+  ).future;
 }
 
 Future<void> drainBoundedBytes(
   Stream<List<int>> stream, {
   required int limit,
   required String resource,
-}) async {
-  var observed = 0;
-  await for (final chunk in stream) {
-    observed += chunk.length;
-    if (observed > limit) {
-      throw TransportByteLimitExceeded(
-        resource: resource,
-        limit: limit,
-        observedAtLeast: observed,
+  Duration? timeout,
+}) {
+  return startBoundedByteDrain(
+    stream,
+    limit: limit,
+    resource: resource,
+    timeout: timeout,
+  ).future;
+}
+
+class _TransportBodyReadOperation<T> implements TransportBodyReadOperation<T> {
+  _TransportBodyReadOperation({
+    required Stream<List<int>> stream,
+    required this.limit,
+    required this.resource,
+    required Duration? timeout,
+    required bool collectBytes,
+    required T Function(BytesBuilder bytes) completeValue,
+  }) : _bytes = BytesBuilder(),
+       _collectBytes = collectBytes,
+       _completeValue = completeValue {
+    if (timeout != null) {
+      _timer = Timer(
+        timeout,
+        () => _fail(
+          TransportBodyReadTimeout(resource: resource, timeout: timeout),
+          StackTrace.current,
+        ),
       );
     }
+    final subscription = stream.listen(
+      _onData,
+      onError: _onError,
+      onDone: _onDone,
+      cancelOnError: false,
+    );
+    _subscription = subscription;
+    final pendingFailure = _pendingFailure;
+    if (pendingFailure != null) {
+      _pendingFailure = null;
+      _startCancellation(subscription, pendingFailure);
+    }
   }
+
+  final int limit;
+  final String resource;
+  final BytesBuilder _bytes;
+  final bool _collectBytes;
+  final T Function(BytesBuilder bytes) _completeValue;
+  final Completer<T> _completer = Completer<T>();
+
+  StreamSubscription<List<int>>? _subscription;
+  Timer? _timer;
+  _TransportReadFailure? _pendingFailure;
+  Future<void>? _cancellation;
+  var _observed = 0;
+  var _settling = false;
+
+  @override
+  Future<T> get future => _completer.future;
+
+  void _onData(List<int> chunk) {
+    if (_settling) return;
+    _observed += chunk.length;
+    if (_observed > limit) {
+      _fail(
+        TransportByteLimitExceeded(
+          resource: resource,
+          limit: limit,
+          observedAtLeast: _observed,
+        ),
+        StackTrace.current,
+      );
+      return;
+    }
+    if (_collectBytes) _bytes.add(chunk);
+  }
+
+  void _onError(Object error, StackTrace stackTrace) {
+    _fail(error, stackTrace);
+  }
+
+  void _onDone() {
+    if (_settling) return;
+    _settling = true;
+    _timer?.cancel();
+    try {
+      _completer.complete(_completeValue(_bytes));
+    } on Object catch (error, stackTrace) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
+
+  void _fail(Object error, StackTrace stackTrace) {
+    if (_settling) return;
+    _settling = true;
+    _timer?.cancel();
+    final failure = _TransportReadFailure(error, stackTrace);
+    final subscription = _subscription;
+    if (subscription == null) {
+      _pendingFailure = failure;
+      return;
+    }
+    _startCancellation(subscription, failure);
+  }
+
+  void _startCancellation(
+    StreamSubscription<List<int>> subscription,
+    _TransportReadFailure failure,
+  ) {
+    _cancellation ??= () async {
+      try {
+        await subscription.cancel();
+      } on Object {
+        // Preserve the original bounded-read failure.
+      }
+      if (!_completer.isCompleted) {
+        _completer.completeError(failure.error, failure.stackTrace);
+      }
+    }();
+  }
+
+  @override
+  Future<void> cancel() async {
+    if (!_settling) {
+      _fail(
+        StateError('Transport body read was cancelled.'),
+        StackTrace.current,
+      );
+    }
+    final cancellation = _cancellation;
+    if (cancellation != null) await cancellation;
+  }
+}
+
+class _TransportReadFailure {
+  const _TransportReadFailure(this.error, this.stackTrace);
+
+  final Object error;
+  final StackTrace stackTrace;
 }
 
 class TransportSseEvent {

@@ -41,6 +41,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final Map<String, Cookie> _cookiesByName = <String, Cookie>{};
   final List<StreamSubscription<String>> _streamSubscriptions =
       <StreamSubscription<String>>[];
+  final Set<acp.TransportBodyReadOperation<Object?>> _pendingBodyReads =
+      <acp.TransportBodyReadOperation<Object?>>{};
 
   static const Duration _teardownTimeout = Duration(seconds: 2);
   static const String _protocolVersionHeader = 'Acp-Protocol-Version';
@@ -59,6 +61,9 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     }
     return controller.foreign;
   }
+
+  /// Number of one-shot response bodies currently being read.
+  int get activeBodyReadCount => _pendingBodyReads.length;
 
   @override
   Future<void> start() async {
@@ -114,7 +119,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final body = await _readResponseBody(
         response,
         resource: 'ACP HTTP POST response body',
-      ).timeout(requestTimeout);
+        timeout: requestTimeout,
+      );
       if (isInitialize) {
         _handleInitializeResponse(response, body);
         return;
@@ -123,7 +129,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         return;
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        _addInboundLine(body);
+        _addInboundLine(body, resource: 'ACP HTTP POST JSON');
         return;
       }
       throw HttpException(
@@ -161,10 +167,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         uri: endpoint,
       );
     }
-    final decoded = jsonDecode(body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('ACP HTTP initialize returned invalid JSON.');
-    }
+    final decoded = _decodeRemoteJsonObject(
+      body,
+      resource: 'ACP HTTP initialize JSON',
+    );
     final connectionId =
         response.headers.value('Acp-Connection-Id') ??
         _stringFromPath(decoded, const ['result', 'connectionId']) ??
@@ -176,7 +182,11 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     }
     _connectionId = connectionId.trim();
     _startInboundStream(null);
-    _addInboundLine(body);
+    _addInboundLine(
+      body,
+      resource: 'ACP HTTP initialize JSON',
+      decoded: decoded,
+    );
   }
 
   void _startInboundStream(String? sessionId) {
@@ -216,7 +226,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
           await _drainResponse(
             response,
             resource: 'ACP HTTP SSE error response body',
-          ).timeout(requestTimeout);
+            timeout: requestTimeout,
+          );
           throw HttpException(
             'ACP HTTP SSE stream failed with ${response.statusCode}: ${response.reasonPhrase}',
             uri: endpoint,
@@ -293,25 +304,52 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   Future<String> _readResponseBody(
     HttpClientResponse response, {
     required String resource,
+    required Duration timeout,
   }) async {
     await _enforceResponseContentLength(response, resource: resource);
-    return acp.readBoundedUtf8Body(
-      response,
-      limit: byteBudget.maxBodyBytes,
-      resource: resource,
+    return _runBodyRead(
+      acp.startBoundedUtf8BodyRead(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
     );
   }
 
   Future<void> _drainResponse(
     HttpClientResponse response, {
     required String resource,
+    required Duration timeout,
   }) async {
     await _enforceResponseContentLength(response, resource: resource);
-    await acp.drainBoundedBytes(
-      response,
-      limit: byteBudget.maxBodyBytes,
-      resource: resource,
+    await _runBodyRead(
+      acp.startBoundedByteDrain(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
     );
+  }
+
+  Future<T> _runBodyRead<T>(acp.TransportBodyReadOperation<T> operation) async {
+    _pendingBodyReads.add(operation);
+    try {
+      return await operation.future;
+    } finally {
+      _pendingBodyReads.remove(operation);
+    }
+  }
+
+  Future<void> _cancelPendingBodyReads() async {
+    final pending = List<acp.TransportBodyReadOperation<Object?>>.of(
+      _pendingBodyReads,
+    );
+    await Future.wait<void>([
+      for (final operation in pending)
+        operation.cancel().catchError((Object _) {}),
+    ]);
   }
 
   Future<void> _enforceResponseContentLength(
@@ -334,7 +372,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   void _handleSseEvent(String event) {
     if (event.trim().isEmpty) return;
     try {
-      _addInboundLine(event);
+      _addInboundLine(event, resource: 'ACP HTTP SSE JSON');
     } catch (error, stackTrace) {
       if (!_stopping) {
         _controller?.local.sink.addError(error, stackTrace);
@@ -342,11 +380,28 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     }
   }
 
-  void _addInboundLine(String line) {
+  void _addInboundLine(
+    String line, {
+    required String resource,
+    Map<String, dynamic>? decoded,
+  }) {
     if (line.trim().isEmpty) return;
-    _captureInboundMetadata(line);
+    final message =
+        decoded ?? _decodeRemoteJsonObject(line, resource: resource);
+    _captureInboundMetadata(message);
     _notifyProtocolIn(line);
     _controller?.local.sink.add(line);
+  }
+
+  Map<String, dynamic> _decodeRemoteJsonObject(
+    String source, {
+    required String resource,
+  }) {
+    final decoded = acp.decodeTransportJson(source, resource: resource);
+    if (decoded is! Map) {
+      throw acp.TransportProtocolDecodeError(resource: resource);
+    }
+    return decoded.map((key, value) => MapEntry(key.toString(), value));
   }
 
   void _notifyProtocolOut(String line) {
@@ -369,9 +424,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     }
   }
 
-  void _captureInboundMetadata(String line) {
-    final decoded = jsonDecode(line);
-    if (decoded is! Map<String, dynamic>) return;
+  void _captureInboundMetadata(Map<String, dynamic> decoded) {
     final idKey = _idKey(decoded['id']);
     final isResponse =
         decoded.containsKey('result') || decoded.containsKey('error');
@@ -468,7 +521,9 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     _stopping = true;
     await _outboundSubscription?.cancel();
     _outboundSubscription = null;
+    await _cancelPendingBodyReads();
     await _terminateConnection();
+    await _cancelPendingBodyReads();
     _client?.close(force: true);
     _client = null;
     final streamSubscriptions = List<StreamSubscription<String>>.of(
@@ -510,7 +565,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       await _drainResponse(
         response,
         resource: 'ACP HTTP DELETE response body',
-      ).timeout(_teardownTimeout);
+        timeout: _teardownTimeout,
+      );
     } on Object {
       // Remote teardown is best effort; local disposal must always finish.
     }

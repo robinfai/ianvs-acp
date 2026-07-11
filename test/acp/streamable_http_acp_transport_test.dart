@@ -71,6 +71,306 @@ void main() {
   });
 
   test(
+    'HTTP POST malformed JSON reports a payload-free protocol error',
+    () async {
+      const secret = 'acp-post-malformed-secret';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        await request.drain<void>();
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write('{"jsonrpc":"2.0","id":1,"result":"$secret"');
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(inbound, isEmpty);
+        expect(errors.single, isA<acp.TransportProtocolDecodeError>());
+        expect(errors.single.toString(), isNot(contains(secret)));
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test('HTTP POST body timeout cancels the remote response read', () async {
+    final responseStarted = Completer<void>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response
+        ..bufferOutput = false
+        ..headers.contentType = ContentType.json
+        ..write('{"jsonrpc":');
+      openResponses.add(request.response);
+      await request.response.flush();
+      if (!responseStarted.isCompleted) responseStarted.complete();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      requestTimeout: const Duration(milliseconds: 50),
+    );
+    await transport.start();
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await responseStarted.future.timeout(const Duration(seconds: 1));
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(errors.single, isA<acp.TransportBodyReadTimeout>());
+      expect(transport.activeBodyReadCount, 0);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The client cancellation can already own/close the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('stop cancels a pending POST body without reporting an error', () async {
+    final responseStarted = Completer<void>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response
+        ..bufferOutput = false
+        ..headers.contentType = ContentType.json
+        ..write('{"jsonrpc":');
+      openResponses.add(request.response);
+      await request.response.flush();
+      if (!responseStarted.isCompleted) responseStarted.complete();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      requestTimeout: const Duration(seconds: 10),
+    );
+    await transport.start();
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await responseStarted.future.timeout(const Duration(seconds: 1));
+      await _waitFor(() => transport.activeBodyReadCount == 1);
+
+      await transport.stop().timeout(const Duration(seconds: 1));
+
+      expect(transport.activeBodyReadCount, 0);
+      expect(errors, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The stopped client may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('DELETE body timeout does not delay stop', () async {
+    final deleteStarted = Completer<void>();
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.drain<void>();
+        request.response
+          ..bufferOutput = false
+          ..statusCode = HttpStatus.accepted
+          ..write('pending');
+        openResponses.add(request.response);
+        await request.response.flush();
+        if (!deleteStarted.isCompleted) deleteStarted.complete();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          )
+          ..write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-1')
+        ..write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{
+              'connectionId': 'connection-1',
+              'protocolVersion': 1,
+              'agentCapabilities': <String, dynamic>{},
+              'authMethods': <Map<String, dynamic>>[],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+    );
+    await transport.start();
+    final inbound = <Map<String, dynamic>>[];
+    final subscription = transport.channel.stream.listen((line) {
+      inbound.add(jsonDecode(line) as Map<String, dynamic>);
+    });
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.any((message) => message['id'] == 1));
+
+      await transport.stop().timeout(const Duration(seconds: 3));
+
+      await deleteStarted.future.timeout(const Duration(seconds: 1));
+      expect(transport.activeBodyReadCount, 0);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The timed-out client read may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test(
+    'HTTP SSE malformed JSON reports a payload-free protocol error',
+    () async {
+      const secret = 'acp-sse-malformed-secret';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final openResponses = <HttpResponse>[];
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response.bufferOutput = false;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          openResponses.add(request.response);
+          request.response.write(
+            'data: {"jsonrpc":"2.0","method":"$secret"\n\n',
+          );
+          await request.response.flush();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, Object?>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, Object?>{'connectionId': 'connection-1'},
+            }),
+          );
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        await _waitFor(
+          () =>
+              errors.any((error) => error is acp.TransportProtocolDecodeError),
+        );
+
+        final error = errors
+            .whereType<acp.TransportProtocolDecodeError>()
+            .single;
+        expect(error.toString(), isNot(contains(secret)));
+        expect(inbound, hasLength(1));
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
     'HTTP SSE line and event limits do not deliver partial events',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -988,7 +1288,8 @@ void main() {
         () => inboundMessages.any((message) => message['id'] == 1),
       );
 
-      await sendSseData('not json');
+      const malformedSecret = 'invalid-sse-history-secret';
+      await sendSseData('{"secret":"$malformedSecret"');
       await _waitFor(() => transportErrors.isNotEmpty);
 
       await sendSseData(
@@ -1004,7 +1305,11 @@ void main() {
         ),
       );
 
-      expect(transportErrors.single, isA<FormatException>());
+      expect(transportErrors.single, isA<acp.TransportProtocolDecodeError>());
+      expect(
+        transportErrors.single.toString(),
+        isNot(contains(malformedSecret)),
+      );
 
       await transport.stop().timeout(const Duration(seconds: 5));
       disposed = true;
