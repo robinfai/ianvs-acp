@@ -1664,18 +1664,17 @@ class _AcpClientAppState extends State<AcpClientApp>
       return;
     }
 
-    final currentSession = _controller.currentSession;
-    final selectedAgentName = session.agentName?.trim();
-    final belongsToActiveAgent =
-        selectedAgentName == null ||
-        selectedAgentName.isEmpty ||
-        selectedAgentName == _controller.agentName.trim();
-    if (belongsToActiveAgent &&
-        currentSession != null &&
-        currentSession.id.trim() == session.id.trim()) {
-      if (sameSessionWorkspaceIdentity(currentSession, session)) return;
-      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
-      return;
+    final existingTargetController = _existingControllerForAgentName(
+      session.agentName,
+    );
+    final existingTargetSession = existingTargetController?.currentSession;
+    if (existingTargetSession != null &&
+        existingTargetSession.id.trim() == session.id.trim()) {
+      if (!sameSessionWorkspaceIdentity(existingTargetSession, session)) {
+        _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+        return;
+      }
+      if (identical(existingTargetController, _controller)) return;
     }
 
     final approved = await showSessionWorkspaceReviewDialog(context, session);
@@ -1706,6 +1705,16 @@ class _AcpClientAppState extends State<AcpClientApp>
       updatedAt: session.updatedAt,
     );
     if (mounted) setState(() {});
+  }
+
+  ChatController? _existingControllerForAgentName(String? agentName) {
+    final trimmed = agentName?.trim();
+    if (trimmed == null ||
+        trimmed.isEmpty ||
+        trimmed == _controller.agentName.trim()) {
+      return _controller;
+    }
+    return _controllersByAgent[trimmed];
   }
 
   bool _canForkSession(AgentSession session) {

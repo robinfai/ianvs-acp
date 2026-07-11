@@ -2682,6 +2682,77 @@ void main() {
     },
   );
 
+  testWidgets(
+    'AcpClientApp preflights changed roots on an inactive cached agent',
+    (tester) async {
+      final clients = <String, _RemoteWorkspaceSessionClient>{};
+      final factoryCalls = <String, int>{};
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
+        },
+      });
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          initialResumeSessionId: 'remote-pi-session',
+          initialResumeCwd: '/workspace/pi-active',
+          initialResumeAgentName: 'pi ACP',
+          taskInboxController: taskHarness.controller,
+          createAgentClient: (agentConfig) {
+            factoryCalls.update(
+              agentConfig.agentName,
+              (count) => count + 1,
+              ifAbsent: () => 1,
+            );
+            return clients.putIfAbsent(
+              agentConfig.agentName,
+              () => _RemoteWorkspaceSessionClient(agentConfig.agentName),
+            );
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName ==
+                'pi ACP' &&
+            clients['pi ACP']?.resumeCalls == 1,
+      );
+      expect(clients['pi ACP']?.lastResumeWorkspace, '/workspace/pi-active');
+      clients['pi ACP']!.resetResumeTracking();
+
+      await tester.tap(find.byTooltip('Agents'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Codex').last);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName,
+        'Codex',
+      );
+      final piFactoryCallsBeforeSelection = factoryCalls['pi ACP'] ?? 0;
+
+      await tester.tap(find.text('Resume'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.textContaining('different workspace'), findsOneWidget);
+      expect(
+        tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName,
+        'Codex',
+      );
+      expect(clients['pi ACP']?.resumeCalls, 0);
+      expect(factoryCalls['pi ACP'] ?? 0, piFactoryCallsBeforeSelection);
+    },
+  );
+
   testWidgets('AcpClientApp forks sessions from the session menu', (
     tester,
   ) async {
@@ -3451,6 +3522,13 @@ class _RemoteWorkspaceSessionClient extends FakeAgentClient {
       cwd: cwd,
       additionalDirectories: additionalDirectories,
     );
+  }
+
+  void resetResumeTracking() {
+    resumeCalls = 0;
+    lastResumeSessionId = null;
+    lastResumeWorkspace = null;
+    lastResumeAdditionalDirectories = null;
   }
 }
 
