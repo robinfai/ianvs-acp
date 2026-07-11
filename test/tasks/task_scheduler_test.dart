@@ -14,7 +14,28 @@ import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 import '../support/memory_task_repository.dart';
 
+const _testPersistenceWatchdog = Duration(seconds: 1);
+
 void main() {
+  test('fake wake timers pump microtasks between equal deadlines', () async {
+    final clock = _MutableClock(DateTime(2026, 7, 8, 9));
+    final timers = _FakeTaskWakeTimerFactory(clock);
+    final callbacks = <String>[];
+    late TaskWakeTimer second;
+    timers.call(const Duration(minutes: 1), () {
+      callbacks.add('first');
+      scheduleMicrotask(second.cancel);
+    });
+    second = timers.call(const Duration(minutes: 1), () {
+      callbacks.add('second');
+    });
+
+    await timers.elapse(const Duration(minutes: 1));
+
+    expect(callbacks, ['first']);
+    expect(second.isActive, isFalse);
+  });
+
   test(
     'TaskScheduler retries a transient repository refresh failure',
     () async {
@@ -52,7 +73,7 @@ void main() {
       await _pumpEventQueue();
       expect(worker.startedTaskIds, isEmpty);
 
-      timers.elapse(const Duration(milliseconds: 250));
+      await timers.elapse(const Duration(milliseconds: 250));
       await _pumpEventQueue();
 
       expect(failRevisionOnce, isFalse);
@@ -153,7 +174,7 @@ void main() {
 
     await scheduler.start();
     scheduler.stop();
-    await Future<void>.delayed(const Duration(milliseconds: 25));
+    await _pumpEventQueue();
 
     expect(scheduler.isStarted, isFalse);
     expect(worker.startedTaskIds, isEmpty);
@@ -234,7 +255,7 @@ void main() {
       expect(worker.startedTaskIds, ['task-1', 'task-2']);
       expect(scheduler.activeCount, 2);
 
-      await Future<void>.delayed(const Duration(milliseconds: 25));
+      await _pumpEventQueue();
       expect(worker.startedTaskIds, ['task-1', 'task-2']);
 
       worker.complete('task-1');
@@ -282,7 +303,7 @@ void main() {
     await _waitUntil(() => worker.startedTaskIds.length == 2);
     expect(worker.startedTaskIds, ['task-1', 'task-3']);
 
-    await Future<void>.delayed(const Duration(milliseconds: 25));
+    await _pumpEventQueue();
     expect(worker.startedTaskIds, ['task-1', 'task-3']);
 
     worker.complete('task-1');
@@ -378,11 +399,15 @@ void main() {
     );
     final gate = WorkspaceExecutionGate();
     final worker = _RecordingTaskWorker(controller);
+    final clock = _MutableClock(now);
+    final timers = _FakeTaskWakeTimerFactory(clock);
     final scheduler = TaskScheduler(
       taskController: controller,
       worker: worker,
       runtimeRegistry: registry,
       workspaceGate: gate,
+      clock: clock.now,
+      wakeTimerFactory: timers.call,
     );
     addTearDown(scheduler.shutdown);
     addTearDown(() => worker.complete('task-1'));
@@ -395,6 +420,8 @@ void main() {
       workspacePath: '/workspace/new',
     );
     releaseProbe.complete();
+    await _pumpEventQueue();
+    await timers.elapse(const Duration(milliseconds: 250));
     await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
 
     expect(probedAgents.first, 'OldAgent');
@@ -457,11 +484,15 @@ void main() {
     );
     final gate = WorkspaceExecutionGate();
     final worker = _RecordingTaskWorker(controller);
+    final clock = _MutableClock(now);
+    final timers = _FakeTaskWakeTimerFactory(clock);
     final scheduler = TaskScheduler(
       taskController: controller,
       worker: worker,
       runtimeRegistry: registry,
       workspaceGate: gate,
+      clock: clock.now,
+      wakeTimerFactory: timers.call,
     );
     addTearDown(scheduler.shutdown);
     addTearDown(() => worker.complete('task-1'));
@@ -475,6 +506,8 @@ void main() {
     );
     await controller.refreshIfChanged();
     releaseFirstProbe.complete();
+    await _pumpEventQueue();
+    await timers.elapse(const Duration(milliseconds: 250));
     await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
 
     expect(probeCount, greaterThanOrEqualTo(2));
@@ -581,7 +614,7 @@ void main() {
 
       await scheduler.start();
       await _pumpEventQueue();
-      timers.elapse(const Duration(milliseconds: 250));
+      await timers.elapse(const Duration(milliseconds: 250));
       await _pumpEventQueue();
 
       expect(worker.startedTaskIds, isEmpty);
@@ -635,7 +668,7 @@ void main() {
     expect(probeCount, greaterThan(0));
     scheduler.stop();
     final countAtStop = probeCount;
-    timers.elapse(const Duration(milliseconds: 250));
+    await timers.elapse(const Duration(milliseconds: 250));
     await _pumpEventQueue();
 
     expect(probeCount, countAtStop);
@@ -826,13 +859,19 @@ void main() {
       );
       addTearDown(controller.dispose);
       final worker = _ReservableRecordingTaskWorker(controller);
+      final clock = _MutableClock(now);
+      final timers = _FakeTaskWakeTimerFactory(clock);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
       );
       addTearDown(scheduler.shutdown);
 
       await scheduler.start();
+      await _pumpEventQueue();
+      await timers.elapse(const Duration(milliseconds: 250));
       await _waitUntil(() => worker.startedTaskIds.isNotEmpty);
 
       expect(worker.startedTaskIds, ['task-queued']);
@@ -894,17 +933,23 @@ void main() {
       );
       addTearDown(controller.dispose);
       final worker = _ReservableRecordingTaskWorker(controller);
+      final clock = _MutableClock(now);
+      final timers = _FakeTaskWakeTimerFactory(clock);
       final scheduler = TaskScheduler(
         taskController: controller,
         worker: worker,
+        clock: clock.now,
+        wakeTimerFactory: timers.call,
       );
       addTearDown(scheduler.shutdown);
 
       await scheduler.start();
+      await _pumpEventQueue();
+      await timers.elapse(const Duration(milliseconds: 250));
       await _waitUntil(
         () => controller.taskById('task-1')?.currentRunId == 'run-external',
       );
-      await Future<void>.delayed(const Duration(milliseconds: 25));
+      await _pumpEventQueue();
 
       expect(store.claimCalls, 1);
       expect(store.remainingLoadFailures, 0);
@@ -1351,7 +1396,7 @@ void main() {
       expect(timers.activeCount, 1);
       expect(timers.cancelledCount, 1);
 
-      timers.elapse(const Duration(milliseconds: 50));
+      await timers.elapse(const Duration(milliseconds: 50));
       await _pumpEventQueue();
 
       expect(worker.startedTaskIds, ['task-early']);
@@ -1440,7 +1485,7 @@ void main() {
 
     scheduler.dispose();
     await _pumpEventQueue();
-    timers.elapse(const Duration(minutes: 1));
+    await timers.elapse(const Duration(minutes: 1));
     await _pumpEventQueue();
 
     expect(timers.activeCount, 0);
@@ -1473,8 +1518,7 @@ void main() {
     addTearDown(scheduler.dispose);
 
     await scheduler.start();
-    await _waitUntil(() => worker.startedTaskIds.length == 1);
-    await Future<void>.delayed(const Duration(milliseconds: 25));
+    await _waitUntil(() => controller.tasks.single.status == TaskStatus.failed);
 
     expect(worker.startedTaskIds, ['task-1']);
     expect(controller.runs, hasLength(1));
@@ -1735,9 +1779,9 @@ void main() {
     expect(worker.lifecycle, ['release', 'dispose']);
   });
 
-  test(
+  testWidgets(
     'TaskScheduler stops dispatch and shuts down after stalled revision',
-    () async {
+    (tester) async {
       final store = _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
@@ -1756,7 +1800,7 @@ void main() {
       final controller = TaskInboxController(
         repository: store,
         idGenerator: _DeterministicIds().next,
-        persistenceWatchdog: const Duration(milliseconds: 20),
+        persistenceWatchdog: _testPersistenceWatchdog,
       );
       addTearDown(controller.dispose);
       await controller.load();
@@ -1776,8 +1820,9 @@ void main() {
       );
 
       await scheduler.start();
-      await revisionStarted.future;
-      await _waitUntil(() => scheduler.persistenceFault != null);
+      await _pumpWidgetUntil(tester, () => revisionStarted.isCompleted);
+      await tester.pump(_testPersistenceWatchdog);
+      await _pumpWidgetUntil(tester, () => scheduler.persistenceFault != null);
 
       expect(scheduler.isStarted, isFalse);
       await expectLater(
@@ -1790,7 +1835,7 @@ void main() {
       );
       expect(worker.resetAgentNames, isEmpty);
       expect(worker.authenticateCalls, 0);
-      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      await scheduler.shutdown();
 
       expect(
         scheduler.persistenceFault,
@@ -1801,15 +1846,16 @@ void main() {
       expect(revisionCalls, 1);
 
       releaseRevision.complete();
+      await tester.pump();
       await controller.whenPersistenceQuiesced;
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await tester.pump();
       expect(revisionCalls, 1);
     },
   );
 
-  test(
+  testWidgets(
     'TaskScheduler releases lease and workspace gate after stalled claim',
-    () async {
+    (tester) async {
       final store = _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 8, 9),
@@ -1819,7 +1865,7 @@ void main() {
       final controller = TaskInboxController(
         repository: store,
         idGenerator: _DeterministicIds().next,
-        persistenceWatchdog: const Duration(milliseconds: 20),
+        persistenceWatchdog: _testPersistenceWatchdog,
       );
       addTearDown(controller.dispose);
       await controller.load();
@@ -1841,10 +1887,11 @@ void main() {
       );
 
       await scheduler.start();
-      await claimStarted.future;
+      await _pumpWidgetUntil(tester, () => claimStarted.isCompleted);
       expect(gate.ownerFor('/workspace/app'), 'task-1');
-      await _waitUntil(() => scheduler.persistenceFault != null);
-      await _waitUntil(
+      await tester.pump(_testPersistenceWatchdog);
+      await _pumpWidgetUntil(
+        tester,
         () =>
             scheduler.activeCount == 0 &&
             worker.releaseCalls == 1 &&
@@ -1861,19 +1908,20 @@ void main() {
       expect(worker.releaseCalls, 1);
       expect(worker.lifecycle, ['release']);
       expect(claimCalls, 1);
-      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      await scheduler.shutdown();
       expect(worker.lifecycle, ['release', 'dispose']);
 
       releaseClaim.complete();
+      await tester.pump();
       await controller.whenPersistenceQuiesced;
       expect(controller.runs, isEmpty);
       expect(controller.taskById('task-1')?.status, TaskStatus.queued);
     },
   );
 
-  test(
+  testWidgets(
     'persistence fault cancels other active runs and releases all capacity',
-    () async {
+    (tester) async {
       final now = DateTime(2026, 7, 8, 9);
       final store = _StallTaskAUpdateStore(
         TaskInboxSnapshot(
@@ -1887,7 +1935,7 @@ void main() {
       final controller = TaskInboxController(
         repository: store,
         idGenerator: _DeterministicIds().next,
-        persistenceWatchdog: const Duration(milliseconds: 20),
+        persistenceWatchdog: _testPersistenceWatchdog,
       );
       addTearDown(controller.dispose);
       final worker = _ConcurrentFaultWorker(controller);
@@ -1902,10 +1950,11 @@ void main() {
       );
 
       await scheduler.start();
-      await worker.bothRunsStarted.future;
-      await store.updateStarted.future;
-      await _waitUntil(() => scheduler.persistenceFault != null);
-      await _waitUntil(
+      await _pumpWidgetUntil(tester, () => worker.bothRunsStarted.isCompleted);
+      await _pumpWidgetUntil(tester, () => store.updateStarted.isCompleted);
+      await tester.pump(_testPersistenceWatchdog);
+      await _pumpWidgetUntil(
+        tester,
         () =>
             scheduler.activeCount == 0 &&
             worker.releaseCalls == 2 &&
@@ -1919,16 +1968,17 @@ void main() {
       expect(scheduler.activeCount, 0);
       expect(gate.isLocked('/workspace/a'), isFalse);
       expect(gate.isLocked('/workspace/b'), isFalse);
-      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      await scheduler.shutdown();
 
       store.releaseUpdate();
+      await tester.pump();
       await controller.whenPersistenceQuiesced;
     },
   );
 
-  test(
+  testWidgets(
     'externally observed refresh fault cancels an active scheduler run',
-    () async {
+    (tester) async {
       final now = DateTime(2026, 7, 8, 9);
       final store = _MemoryTaskStore(
         TaskInboxSnapshot(
@@ -1941,7 +1991,7 @@ void main() {
       final controller = TaskInboxController(
         repository: store,
         idGenerator: _DeterministicIds().next,
-        persistenceWatchdog: const Duration(milliseconds: 20),
+        persistenceWatchdog: _testPersistenceWatchdog,
       );
       addTearDown(controller.dispose);
       final worker = _ConcurrentFaultWorker(controller);
@@ -1950,7 +2000,7 @@ void main() {
         worker: worker,
       );
       await scheduler.start();
-      await worker.firstRunStarted.future;
+      await _pumpWidgetUntil(tester, () => worker.firstRunStarted.isCompleted);
       final revisionStarted = Completer<void>();
       final releaseRevision = Completer<void>();
       store.beforeOperation = (operation) async {
@@ -1959,22 +2009,28 @@ void main() {
         await releaseRevision.future;
       };
 
-      final refresh = controller.refreshIfChanged();
-      await revisionStarted.future;
-      try {
-        await refresh;
-        fail('Refresh should have entered persistence quarantine.');
-      } on TaskPersistenceStalledException catch (error) {
-        scheduler.handlePersistenceFault(error);
-      }
-      await _waitUntil(
+      final refreshResult = controller.refreshIfChanged().then<Object?>(
+        (_) => null,
+        onError: (Object error, StackTrace _) => error,
+      );
+      await _pumpWidgetUntil(tester, () => revisionStarted.isCompleted);
+      await tester.pump(_testPersistenceWatchdog);
+      await tester.pump();
+      final refreshError = await refreshResult;
+      expect(refreshError, isA<TaskPersistenceStalledException>());
+      scheduler.handlePersistenceFault(
+        refreshError! as TaskPersistenceStalledException,
+      );
+      await _pumpWidgetUntil(
+        tester,
         () => scheduler.activeCount == 0 && worker.releaseCalls == 1,
       );
 
       expect(worker.cancelCalls, 1);
       expect(scheduler.persistenceFault, isNotNull);
-      await scheduler.shutdown().timeout(const Duration(seconds: 1));
+      await scheduler.shutdown();
       releaseRevision.complete();
+      await tester.pump();
       await controller.whenPersistenceQuiesced;
     },
   );
@@ -1996,7 +2052,7 @@ void main() {
 
     await scheduler.start(dispatchQueuedTasks: false);
     await controller.updateTask('task-1', summary: 'Updated before publish.');
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await _pumpEventQueue();
     expect(worker.startedTaskIds, isEmpty);
 
     scheduler.startDispatching();
@@ -2519,6 +2575,7 @@ class _FakeTaskWakeTimerFactory {
   final _MutableClock clock;
   final List<_FakeTaskWakeTimer> _timers = <_FakeTaskWakeTimer>[];
   int callbackCount = 0;
+  int _nextSequence = 0;
 
   int get createdCount => _timers.length;
   int get activeCount => _timers.where((timer) => timer.isActive).length;
@@ -2527,6 +2584,7 @@ class _FakeTaskWakeTimerFactory {
   _FakeTaskWakeTimer call(Duration delay, void Function() callback) {
     final timer = _FakeTaskWakeTimer(
       deadline: clock.current.add(delay),
+      sequence: _nextSequence++,
       callback: () {
         callbackCount += 1;
         callback();
@@ -2536,7 +2594,7 @@ class _FakeTaskWakeTimerFactory {
     return timer;
   }
 
-  void elapse(Duration duration) {
+  Future<void> elapse(Duration duration) async {
     final target = clock.current.add(duration);
     while (true) {
       final due =
@@ -2545,22 +2603,33 @@ class _FakeTaskWakeTimerFactory {
                 (timer) => timer.isActive && !timer.deadline.isAfter(target),
               )
               .toList(growable: false)
-            ..sort((left, right) => left.deadline.compareTo(right.deadline));
+            ..sort((left, right) {
+              final deadline = left.deadline.compareTo(right.deadline);
+              return deadline != 0
+                  ? deadline
+                  : left.sequence.compareTo(right.sequence);
+            });
       if (due.isEmpty) break;
       final next = due.first;
       if (next.deadline.isAfter(clock.current)) {
         clock.current = next.deadline;
       }
       next.fire();
+      await _pumpEventQueue();
     }
     clock.current = target;
   }
 }
 
 class _FakeTaskWakeTimer implements TaskWakeTimer {
-  _FakeTaskWakeTimer({required this.deadline, required this.callback});
+  _FakeTaskWakeTimer({
+    required this.deadline,
+    required this.sequence,
+    required this.callback,
+  });
 
   final DateTime deadline;
+  final int sequence;
   final void Function() callback;
   bool _active = true;
   bool wasCancelled = false;
@@ -2588,10 +2657,22 @@ Future<void> _pumpEventQueue() async {
   }
 }
 
-Future<void> _waitUntil(bool Function() condition, {int attempts = 40}) async {
+Future<void> _pumpWidgetUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  int attempts = 200,
+}) async {
   for (var attempt = 0; attempt < attempts; attempt += 1) {
     if (condition()) return;
-    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await tester.pump();
+  }
+  fail('Widget condition was not met before timeout.');
+}
+
+Future<void> _waitUntil(bool Function() condition, {int attempts = 400}) async {
+  for (var attempt = 0; attempt < attempts; attempt += 1) {
+    if (condition()) return;
+    await Future<void>.delayed(Duration.zero);
   }
   fail('Condition was not met before timeout.');
 }
