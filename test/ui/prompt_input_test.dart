@@ -623,6 +623,88 @@ void main() {
     );
   });
 
+  testWidgets('PromptInput resets context scroll for a new request instance', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(
+      18,
+      'scroll-state-segment',
+    ).join('/');
+    AcpPermissionRequest request({
+      required String id,
+      required int generation,
+      required String command,
+    }) {
+      return AcpPermissionRequest(
+        id: id,
+        title: 'Run operation',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 11, 12),
+        generation: generation,
+        metadata: <String, Object?>{
+          'command': command,
+          'cwd': '/cwd/$longSegment',
+          'path': '/path/$longSegment',
+          'target': 'final-target',
+        },
+      );
+    }
+
+    final firstRequest = request(
+      id: 'permission-scroll-a',
+      generation: 1,
+      command: 'old-command-at-top',
+    );
+    final secondRequest = request(
+      id: 'permission-scroll-b',
+      generation: 2,
+      command: 'new-command-at-top',
+    );
+    final scrollFinder = find.byKey(
+      const Key('prompt-permission-context-scroll'),
+    );
+
+    ScrollPosition position() {
+      final scrollView = tester.widget<SingleChildScrollView>(scrollFinder);
+      return scrollView.controller!.position;
+    }
+
+    Widget prompt(AcpPermissionRequest pendingRequest) => input(
+      isSending: false,
+      onSend: (_, _) {},
+      pendingPermissionRequest: pendingRequest,
+    );
+
+    await tester.pumpWidget(prompt(firstRequest));
+    position().jumpTo(position().maxScrollExtent);
+    await tester.pump();
+    final scrolledPixels = position().pixels;
+    expect(scrolledPixels, greaterThan(0));
+
+    await tester.pumpWidget(prompt(firstRequest));
+    await tester.pumpAndSettle();
+    expect(position().pixels, closeTo(scrolledPixels, 0.01));
+
+    await tester.pumpWidget(prompt(secondRequest));
+    await tester.pumpAndSettle();
+
+    expect(position().pixels, 0);
+    final contextFinder = find.byKey(const Key('prompt-permission-context'));
+    final commandFinder = find.text('["new-command-at-top"]');
+    expect(
+      tester.getTopLeft(commandFinder).dy,
+      greaterThanOrEqualTo(tester.getTopLeft(contextFinder).dy),
+    );
+    expect(
+      tester.getBottomRight(commandFinder).dy,
+      lessThanOrEqualTo(tester.getBottomRight(contextFinder).dy),
+    );
+  });
+
   testWidgets('PromptInput avoids overflow with long context at 320 pixels', (
     tester,
   ) async {

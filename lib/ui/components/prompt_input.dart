@@ -504,6 +504,7 @@ class _PromptPermissionCard extends StatelessWidget {
                               displayContext.entries.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             _PermissionContextView(
+                              key: ObjectKey(request),
                               displayContext: displayContext,
                             ),
                           ],
@@ -596,7 +597,7 @@ class _PromptPermissionCard extends StatelessWidget {
 }
 
 class _PermissionContextView extends StatefulWidget {
-  const _PermissionContextView({required this.displayContext});
+  const _PermissionContextView({super.key, required this.displayContext});
 
   final PermissionDisplayContext displayContext;
 
