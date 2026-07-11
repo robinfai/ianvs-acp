@@ -700,48 +700,52 @@ class SessionManager {
       'sessionId': sessionId,
     });
     _closedSessions.add(sessionId);
-    await _runSerializedSessionMutation(sessionId, () async {
-      final failedStages = <String>[];
+    try {
+      await _runSerializedSessionMutation(sessionId, () async {
+        final failedStages = <String>[];
 
-      Future<void> cleanup(
-        String stage,
-        FutureOr<void> Function() action,
-      ) async {
-        try {
-          await action();
-        } on Object catch (error) {
-          failedStages.add(stage);
-          _log.warning('session close cleanup stage $stage failed: $error');
+        Future<void> cleanup(
+          String stage,
+          FutureOr<void> Function() action,
+        ) async {
+          try {
+            await action();
+          } on Object catch (error) {
+            failedStages.add(stage);
+            _log.warning('session close cleanup stage $stage failed: $error');
+          }
         }
-      }
 
-      await cleanup('stream', () async {
-        final stream = _sessionStreams.remove(sessionId);
-        await stream?.close();
-      });
-      await cleanup('replay', () => _replayBuffers.remove(sessionId));
-      await cleanup(
-        'workspace',
-        () => _sessionWorkspaceRoots.remove(sessionId),
-      );
-      await cleanup(
-        'additionalDirectories',
-        () => _sessionAdditionalDirectories.remove(sessionId),
-      );
-      await cleanup('modes', () => _sessionModes.remove(sessionId));
-      await cleanup('toolCalls', () => _removeToolCalls(sessionId));
-      await cleanup('prompt', () {
-        _activePromptSessions.remove(sessionId);
-        _cancelledPromptSessions.remove(sessionId);
-      });
-      await cleanup('terminals', () => _releaseSessionTerminals(sessionId));
-
-      if (failedStages.isNotEmpty) {
-        throw SessionCloseCleanupException(
-          List<String>.unmodifiable(failedStages),
+        await cleanup('stream', () async {
+          final stream = _sessionStreams.remove(sessionId);
+          await stream?.close();
+        });
+        await cleanup('replay', () => _replayBuffers.remove(sessionId));
+        await cleanup(
+          'workspace',
+          () => _sessionWorkspaceRoots.remove(sessionId),
         );
-      }
-    });
+        await cleanup(
+          'additionalDirectories',
+          () => _sessionAdditionalDirectories.remove(sessionId),
+        );
+        await cleanup('modes', () => _sessionModes.remove(sessionId));
+        await cleanup('toolCalls', () => _removeToolCalls(sessionId));
+        await cleanup('prompt', () {
+          _activePromptSessions.remove(sessionId);
+          _cancelledPromptSessions.remove(sessionId);
+        });
+        await cleanup('terminals', () => _releaseSessionTerminals(sessionId));
+
+        if (failedStages.isNotEmpty) {
+          throw SessionCloseCleanupException(
+            List<String>.unmodifiable(failedStages),
+          );
+        }
+      });
+    } finally {
+      _closedSessions.remove(sessionId);
+    }
   }
 
   /// Resume a session without loading history (simpler than loadSession).
