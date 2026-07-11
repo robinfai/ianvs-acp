@@ -1,12 +1,15 @@
 // ignore_for_file: implementation_imports
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart';
+import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
 import 'package:dart_acp/src/session/session_manager.dart'
-    show InitializeResult;
+    show InitializeResult, SessionManager;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:stream_channel/stream_channel.dart';
 
 void main() {
   test('initialize result treats capability objects as supported', () {
@@ -31,6 +34,87 @@ void main() {
     expect(result.supportsForkSession, isTrue);
     expect(result.sessionCapabilities.configOptions, isTrue);
     expect(result.supportsAdditionalDirectories, isTrue);
+  });
+
+  test(
+    'session manager initialize enforces shared UTF-8 byte budget',
+    () async {
+      const secret = '秘密';
+      final atBoundary = await _initializeSessionManagerWithInput(
+        result: <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{'token': secret},
+          'authMethods': <Object?>[],
+          'agentInfo': <String, dynamic>{},
+        },
+        inputBudget: const AcpInputBudget(maxCapabilityBytes: 11),
+      );
+      expect(atBoundary.agentCapabilities?['token'], secret);
+
+      await expectLater(
+        _initializeSessionManagerWithInput(
+          result: <String, dynamic>{
+            'protocolVersion': 1,
+            'agentCapabilities': <String, dynamic>{'token': secret},
+            'authMethods': <Object?>[],
+            'agentInfo': <String, dynamic>{},
+          },
+          inputBudget: const AcpInputBudget(maxCapabilityBytes: 10),
+        ),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 10)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 11)
+              .having(
+                (error) => error.toString(),
+                'payload-free',
+                isNot(contains(secret)),
+              ),
+        ),
+      );
+    },
+  );
+
+  test('session manager initialize prechecks auth method count', () async {
+    final atBoundary = await _initializeSessionManagerWithInput(
+      result: <String, dynamic>{
+        'protocolVersion': 1,
+        'agentCapabilities': <String, dynamic>{},
+        'authMethods': <Object?>[
+          <String, dynamic>{'id': 'one'},
+          <String, dynamic>{'id': 'two'},
+        ],
+        'agentInfo': <String, dynamic>{},
+      },
+      inputBudget: const AcpInputBudget(maxAuthMethods: 2),
+    );
+    expect(atBoundary.authMethods, hasLength(2));
+
+    await expectLater(
+      _initializeSessionManagerWithInput(
+        result: <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Object?>[
+            <String, dynamic>{'id': 'one'},
+            <String, dynamic>{'id': 'two'},
+            <String, dynamic>{'id': 'auth-secret'},
+          ],
+          'agentInfo': <String, dynamic>{},
+        },
+        inputBudget: const AcpInputBudget(maxAuthMethods: 2),
+      ),
+      throwsA(
+        isA<AcpInputLimitExceeded>()
+            .having((error) => error.limit, 'limit', 2)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
+            .having(
+              (error) => error.toString(),
+              'payload-free',
+              isNot(contains('auth-secret')),
+            ),
+      ),
+    );
   });
 
   test('session capabilities do not treat false or null as supported', () {
@@ -700,6 +784,39 @@ Future<void> main() async {
     expect(autoApply.options.map((choice) => choice.value), ['true', 'false']);
     expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
   });
+}
+
+Future<InitializeResult> _initializeSessionManagerWithInput({
+  required Map<String, dynamic> result,
+  required AcpInputBudget inputBudget,
+}) async {
+  final channel = StreamChannelController<String>();
+  final peer = JsonRpcPeer(channel.foreign);
+  final manager = SessionManager(
+    config: AcpConfig(),
+    peer: peer,
+    inputBudget: inputBudget,
+  );
+  final server = channel.local.stream.listen((line) {
+    final request = jsonDecode(line) as Map<String, dynamic>;
+    if (request['method'] != 'initialize') return;
+    channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': request['id'],
+        'result': result,
+      }),
+    );
+  });
+
+  try {
+    return await manager.initialize().timeout(const Duration(seconds: 5));
+  } finally {
+    await manager.dispose();
+    await peer.close();
+    await server.cancel();
+    await channel.local.sink.close();
+  }
 }
 
 String _dartExecutable() {

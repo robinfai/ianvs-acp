@@ -6,6 +6,7 @@ import 'package:logging/logging.dart';
 import '../capabilities.dart';
 import '../config.dart';
 import '../extensions.dart';
+import '../input_budget.dart';
 import '../models/session_types.dart';
 import '../models/terminal_events.dart';
 import '../models/tool_types.dart';
@@ -396,6 +397,7 @@ class InitializeResult {
     required this.protocolVersion,
     required this.agentCapabilities,
     required this.authMethods,
+    this.agentInfo = const <String, dynamic>{},
   });
 
   /// Negotiated protocol version.
@@ -406,6 +408,8 @@ class InitializeResult {
 
   /// Supported auth methods (if any).
   final List<Map<String, dynamic>>? authMethods;
+
+  final Map<String, dynamic> agentInfo;
 
   /// Get extension capabilities from the agent (`_meta` field).
   ///
@@ -529,6 +533,7 @@ class SessionManager {
     this.maxReplayBytes = 16 * 1024 * 1024,
     this.maxToolCallItems = 512,
     this.maxToolCallBytes = 8 * 1024 * 1024,
+    this.inputBudget = const AcpInputBudget(),
   }) : assert(maxReplayItems > 0),
        assert(maxReplayBytes > 0),
        assert(maxToolCallItems > 0),
@@ -564,6 +569,7 @@ class SessionManager {
   final int maxReplayBytes;
   final int maxToolCallItems;
   final int maxToolCallBytes;
+  final AcpInputBudget inputBudget;
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
   final Map<String, _ReplayBuffer> _replayBuffers = {};
@@ -652,6 +658,12 @@ class SessionManager {
     }
     final payload = {'protocolVersion': 1, 'clientCapabilities': clientCaps};
     final resp = await peer.initialize(payload);
+    final copied = copyBoundedInitializeInput(
+      agentCapabilities: resp['agentCapabilities'],
+      authMethods: resp['authMethods'],
+      agentInfo: resp['agentInfo'],
+      budget: inputBudget,
+    );
     final negotiated = (resp['protocolVersion'] as num?)?.toInt() ?? 0;
     if (negotiated < AcpConfig.minimumProtocolVersion) {
       throw StateError(
@@ -661,8 +673,11 @@ class SessionManager {
     }
     return InitializeResult(
       protocolVersion: (resp['protocolVersion'] as num?)?.toInt() ?? 1,
-      agentCapabilities: resp['agentCapabilities'] as Map<String, dynamic>?,
-      authMethods: (resp['authMethods'] as List?)?.cast<Map<String, dynamic>>(),
+      agentCapabilities: resp['agentCapabilities'] == null
+          ? null
+          : copied.agentCapabilities,
+      authMethods: resp['authMethods'] == null ? null : copied.authMethods,
+      agentInfo: copied.agentInfo,
     );
   }
 

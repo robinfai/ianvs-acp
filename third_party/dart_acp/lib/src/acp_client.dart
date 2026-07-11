@@ -4,6 +4,7 @@ import 'capabilities.dart';
 import 'config.dart';
 import 'content/content_builder.dart';
 import 'extensions.dart';
+import 'input_budget.dart';
 import 'models/session_types.dart';
 import 'models/terminal_events.dart';
 import 'models/updates.dart';
@@ -29,6 +30,7 @@ class AcpClient {
     int maxReplayBytes = 16 * 1024 * 1024,
     int maxToolCallItems = 512,
     int maxToolCallBytes = 8 * 1024 * 1024,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) async {
     if (maxReplayItems <= 0 ||
         maxReplayBytes < minimumSessionReplayBytes ||
@@ -61,6 +63,7 @@ class AcpClient {
       maxReplayBytes: maxReplayBytes,
       maxToolCallItems: maxToolCallItems,
       maxToolCallBytes: maxToolCallBytes,
+      inputBudget: inputBudget,
     );
 
     return client;

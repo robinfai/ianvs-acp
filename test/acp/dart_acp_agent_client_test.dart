@@ -6,6 +6,7 @@ import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
 import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
@@ -825,6 +826,70 @@ Future<void> main() async {
       await client.dispose();
       await tempDir.delete(recursive: true);
     }
+  });
+
+  test('raw stdio initialize enforces the effective depth boundary', () async {
+    final atBoundary = await _runRawInitializeInput(
+      agentCapabilities: <String, dynamic>{
+        'nested': <String, dynamic>{'leaf': true},
+      },
+      inputBudget: const acp.AcpInputBudget(maxJsonDepth: 2),
+    );
+    expect(atBoundary.rawAgentCapabilities['nested'], isA<Map>());
+
+    const secret = 'raw-depth-secret';
+    await expectLater(
+      _runRawInitializeInput(
+        agentCapabilities: <String, dynamic>{
+          'nested': <String, dynamic>{
+            'tooDeep': <String, dynamic>{'value': secret},
+          },
+        },
+        inputBudget: const acp.AcpInputBudget(maxJsonDepth: 2),
+      ),
+      throwsA(
+        isA<acp.AcpInputLimitExceeded>()
+            .having((error) => error.limit, 'limit', 2)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
+            .having(
+              (error) => error.toString(),
+              'payload-free',
+              isNot(contains(secret)),
+            ),
+      ),
+    );
+  });
+
+  test('raw stdio initialize prechecks auth method count', () async {
+    final atBoundary = await _runRawInitializeInput(
+      authMethods: <Object?>[
+        <String, dynamic>{'id': 'one'},
+        <String, dynamic>{'id': 'two'},
+      ],
+      inputBudget: const acp.AcpInputBudget(maxAuthMethods: 2),
+    );
+    expect(atBoundary.authMethods, hasLength(2));
+
+    await expectLater(
+      _runRawInitializeInput(
+        authMethods: <Object?>[
+          <String, dynamic>{'id': 'one'},
+          <String, dynamic>{'id': 'two'},
+          <String, dynamic>{'id': 'raw-auth-secret'},
+        ],
+        inputBudget: const acp.AcpInputBudget(maxAuthMethods: 2),
+      ),
+      throwsA(
+        isA<acp.AcpInputLimitExceeded>()
+            .having((error) => error.limit, 'limit', 2)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
+            .having(
+              (error) => error.toString(),
+              'payload-free',
+              isNot(contains('raw-auth-secret')),
+            ),
+      ),
+    );
   });
 
   test('connects to websocket ACP agent servers', () async {
@@ -6594,6 +6659,56 @@ Future<void> main() async {
       return error;
     }
     throw StateError('Expected listSessions to reject the response sequence.');
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
+
+Future<AcpAgentCapabilities> _runRawInitializeInput({
+  Object? agentCapabilities = const <String, dynamic>{},
+  Object? authMethods = const <Object?>[],
+  Object? agentInfo = const <String, dynamic>{},
+  required acp.AcpInputBudget inputBudget,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-input-');
+  final agentScript = File('${tempDir.path}/fake_initialize_input_agent.dart');
+  final resultLiteral = jsonEncode(
+    jsonEncode(<String, dynamic>{
+      'protocolVersion': 1,
+      'agentCapabilities': agentCapabilities,
+      'authMethods': authMethods,
+      'agentInfo': agentInfo,
+    }),
+  );
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  final result = jsonDecode($resultLiteral) as Map<String, dynamic>;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] != 'initialize') continue;
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': message['id'],
+      'result': result,
+    }));
+  }
+}
+''');
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: <String>[agentScript.path],
+    inputBudget: inputBudget,
+  );
+
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    return client.capabilities!;
   } finally {
     await client.dispose();
     await tempDir.delete(recursive: true);

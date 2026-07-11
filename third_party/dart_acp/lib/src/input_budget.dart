@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 /// Host-controlled limits for untrusted ACP input.
 class AcpInputBudget {
@@ -51,6 +52,45 @@ class AcpInputLimitExceeded implements Exception {
   String toString() =>
       'AcpInputLimitExceeded(resource: $resource, limit: $limit, '
       'observedAtLeast: $observedAtLeast)';
+}
+
+({
+  Map<String, dynamic> agentCapabilities,
+  List<Map<String, dynamic>> authMethods,
+  Map<String, dynamic> agentInfo,
+})
+copyBoundedInitializeInput({
+  required Object? agentCapabilities,
+  required Object? authMethods,
+  Object? agentInfo,
+  AcpInputBudget budget = const AcpInputBudget(),
+}) {
+  final rawAuthMethods = authMethods is List ? authMethods : const <Object?>[];
+  if (rawAuthMethods.length > budget.maxAuthMethods) {
+    throw AcpInputLimitExceeded(
+      resource: 'ACP initialize auth methods',
+      limit: budget.maxAuthMethods,
+      observedAtLeast: rawAuthMethods.length,
+    );
+  }
+  final guard = AcpJsonInputGuard(
+    resource: 'ACP initialize input',
+    maxDepth: math.min(budget.maxJsonDepth, budget.maxCapabilityDepth),
+    maxNodes: budget.maxCapabilityNodes,
+    maxBytes: budget.maxCapabilityBytes,
+  );
+  final copiedAgentCapabilities = guard.copyMap(agentCapabilities);
+  final copiedAuthValues = guard.copyList(rawAuthMethods);
+  final copiedAgentInfo = guard.copyMap(agentInfo);
+  final copiedAuthMethods = <Map<String, dynamic>>[];
+  for (final value in copiedAuthValues) {
+    if (value is Map<String, dynamic>) copiedAuthMethods.add(value);
+  }
+  return (
+    agentCapabilities: copiedAgentCapabilities,
+    authMethods: copiedAuthMethods,
+    agentInfo: copiedAgentInfo,
+  );
 }
 
 /// Iteratively creates bounded defensive copies of JSON-compatible values.

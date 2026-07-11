@@ -251,6 +251,22 @@ void main() {
     });
     expect(capabilities.rawAgentCapabilities, isNot(contains('late')));
   });
+
+  test('bounded initialize input defensively copies nested agent info', () {
+    final nested = <String, Object?>{'version': '1.0.0'};
+    final agentInfo = <String, Object?>{'details': nested};
+
+    final copied = acp.copyBoundedInitializeInput(
+      agentCapabilities: const <String, Object?>{},
+      authMethods: const <Object?>[],
+      agentInfo: agentInfo,
+    );
+    nested['version'] = 'mutated';
+    agentInfo['late'] = 'mutation';
+
+    expect(copied.agentInfo['details'], <String, Object?>{'version': '1.0.0'});
+    expect(copied.agentInfo, isNot(contains('late')));
+  });
 }
 
 AcpAgentCapabilities _parseCapabilities(

@@ -64,6 +64,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.maxSessionReplayBytes = 16 * 1024 * 1024,
     this.maxSessionToolCallItems = 512,
     this.maxSessionToolCallBytes = 8 * 1024 * 1024,
+    this.inputBudget = const acp.AcpInputBudget(),
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
@@ -130,6 +131,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final int maxSessionReplayBytes;
   final int maxSessionToolCallItems;
   final int maxSessionToolCallBytes;
+  final acp.AcpInputBudget inputBudget;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -247,6 +249,7 @@ class DartAcpAgentClient implements AcpAgentClient {
           maxReplayBytes: maxSessionReplayBytes,
           maxToolCallItems: maxSessionToolCallItems,
           maxToolCallBytes: maxSessionToolCallBytes,
+          inputBudget: inputBudget,
         );
       } on Object {
         if (identical(_connectingTransport, transport)) {
@@ -286,16 +289,15 @@ class DartAcpAgentClient implements AcpAgentClient {
         }
         final capabilities = AcpAgentCapabilities.fromInitialize(
           protocolVersion: protocolVersion,
-          agentCapabilities: _dynamicMap(
-            initializeResult['agentCapabilities'],
-          ),
-          agentInfo: _dynamicMap(initializeResult['agentInfo']),
-          authMethods: _dynamicMapList(initializeResult['authMethods']),
+          agentCapabilities: initializeResult['agentCapabilities'],
+          agentInfo: initializeResult['agentInfo'],
+          authMethods: initializeResult['authMethods'],
           clientInfo: _clientInfo,
           clientCapabilities: clientCapabilities,
           hasFsProvider: config.fsProvider != null,
           hasTerminalProvider: config.terminalProvider != null,
           allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
+          inputBudget: inputBudget,
         );
         final compatibleMcpServers = _mcpServersForCapabilities(
           configuredMcpServers,
@@ -1566,16 +1568,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     return raw.map((key, value) => MapEntry(key.toString(), value));
   }
 
-  List<Map<String, dynamic>>? _dynamicMapList(Object? raw) {
-    if (raw is! List) return null;
-    return raw
-        .whereType<Map>()
-        .map(
-          (item) => item.map((key, value) => MapEntry(key.toString(), value)),
-        )
-        .toList();
-  }
-
   AcpConfigOption? _configOptionFromAcp(acp.ConfigOption option) {
     final type = _configOptionType(option.type);
     if (type == null) return null;
@@ -2127,10 +2119,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final connectingTransport = _connectingTransport;
     _connectingClient = null;
     _connectingTransport = null;
-    return _disposeFuture = _disposeAll(
-      connectingClient,
-      connectingTransport,
-    );
+    return _disposeFuture = _disposeAll(connectingClient, connectingTransport);
   }
 
   Future<void> _disposeAll(

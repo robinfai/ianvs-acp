@@ -1,7 +1,5 @@
-import 'dart:math' as math;
-
 import 'package:dart_acp/dart_acp.dart'
-    show AcpInputBudget, AcpInputLimitExceeded, AcpJsonInputGuard;
+    show AcpInputBudget, copyBoundedInitializeInput;
 
 class AcpAgentCapabilities {
   const AcpAgentCapabilities({
@@ -30,28 +28,13 @@ class AcpAgentCapabilities {
     Map<String, dynamic>? clientInfo,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
-    final guard = AcpJsonInputGuard(
-      resource: 'ACP initialize capabilities',
-      maxDepth: math.min(
-        inputBudget.maxJsonDepth,
-        inputBudget.maxCapabilityDepth,
-      ),
-      maxNodes: inputBudget.maxCapabilityNodes,
-      maxBytes: inputBudget.maxCapabilityBytes,
+    final copied = copyBoundedInitializeInput(
+      agentCapabilities: agentCapabilities,
+      authMethods: authMethods,
+      agentInfo: agentInfo,
+      budget: inputBudget,
     );
-    final rawAgent = guard.copyMap(agentCapabilities);
-    final rawAuthMethods = authMethods is List
-        ? authMethods
-        : const <Object?>[];
-    if (rawAuthMethods.length > inputBudget.maxAuthMethods) {
-      throw AcpInputLimitExceeded(
-        resource: 'ACP initialize auth methods',
-        limit: inputBudget.maxAuthMethods,
-        observedAtLeast: rawAuthMethods.length,
-      );
-    }
-    final copiedAuthMethods = guard.copyList(rawAuthMethods);
-    final copiedAgentInfo = guard.copyMap(agentInfo);
+    final rawAgent = copied.agentCapabilities;
     return AcpAgentCapabilities(
       protocolVersion: protocolVersion,
       loadSession: _capabilityAdvertised(rawAgent['loadSession']),
@@ -66,11 +49,8 @@ class AcpAgentCapabilities {
         allowReadOutsideWorkspace: allowReadOutsideWorkspace,
       ),
       rawAgentCapabilities: rawAgent,
-      authMethods: copiedAuthMethods
-          .whereType<Map>()
-          .map(_objectMap)
-          .toList(growable: false),
-      agentInfo: copiedAgentInfo,
+      authMethods: copied.authMethods,
+      agentInfo: copied.agentInfo,
       clientInfo: _objectMap(clientInfo),
     );
   }
