@@ -191,6 +191,7 @@ class ChatController extends ChangeNotifier {
   bool isSessionReplayLoading = false;
   bool _isDisposed = false;
   Future<void>? _disposalFuture;
+  int _nextPermissionRequestGeneration = 0;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -1348,13 +1349,23 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  void _handlePermissionRequest(AcpPermissionRequest request) {
-    if (_hasDeliveredPermissionDecision(request.id)) return;
+  void _handlePermissionRequest(AcpPermissionRequest incomingRequest) {
+    if (_hasDeliveredPermissionDecision(incomingRequest)) return;
+    final existingPending = pendingPermissionRequest;
+    if (existingPending != null &&
+        existingPending.id == incomingRequest.id &&
+        existingPending.contentFingerprint ==
+            incomingRequest.contentFingerprint) {
+      return;
+    }
+    final request = incomingRequest.withGeneration(
+      ++_nextPermissionRequestGeneration,
+    );
 
     if (!_isPermissionRequestForActiveSession(request)) {
       _recordPermissionRequest(request);
       _recordPermissionDecision(
-        request.id,
+        request,
         AcpPermissionDecision.cancel,
         source: AcpPermissionDecisionSource.system,
       );
@@ -1370,19 +1381,21 @@ class ChatController extends ChangeNotifier {
     }
 
     final previous = pendingPermissionRequest;
-    if (previous != null && previous.id != request.id) {
+    if (previous != null) {
       _recordPermissionDecision(
-        previous.id,
+        previous,
         AcpPermissionDecision.cancel,
         source: AcpPermissionDecisionSource.system,
       );
-      unawaited(
-        _sendPermissionDecision(
-          id: previous.id,
-          decision: AcpPermissionDecision.cancel,
-          reportErrors: false,
-        ),
-      );
+      if (previous.id != request.id) {
+        unawaited(
+          _sendPermissionDecision(
+            id: previous.id,
+            decision: AcpPermissionDecision.cancel,
+            reportErrors: false,
+          ),
+        );
+      }
     }
     pendingPermissionRequest = request;
     _recordPermissionRequest(request);
@@ -1391,9 +1404,11 @@ class ChatController extends ChangeNotifier {
     _notifyListeners();
   }
 
-  bool _hasDeliveredPermissionDecision(String requestId) {
+  bool _hasDeliveredPermissionDecision(AcpPermissionRequest request) {
     final index = _permissionHistory.indexWhere(
-      (entry) => entry.request.id == requestId,
+      (entry) =>
+          entry.request.id == request.id &&
+          entry.request.contentFingerprint == request.contentFingerprint,
     );
     if (index == -1) return false;
 
@@ -1408,9 +1423,13 @@ class ChatController extends ChangeNotifier {
     };
   }
 
+  bool _isCurrentPermissionRequest(AcpPermissionRequest request) {
+    return pendingPermissionRequest?.bindingKey == request.bindingKey;
+  }
+
   bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {
     final requestSessionId = request.sessionId.trim();
-    if (requestSessionId.isEmpty) return true;
+    if (requestSessionId.isEmpty) return false;
     if (_retiredSessionIds.contains(requestSessionId)) return false;
     final session = currentSession;
     if (session == null) return true;
@@ -1423,7 +1442,7 @@ class ChatController extends ChangeNotifier {
     if (request == null) return;
     pendingPermissionRequest = null;
     _recordPermissionDecision(
-      request.id,
+      request,
       AcpPermissionDecision.cancel,
       source: AcpPermissionDecisionSource.system,
     );
@@ -1476,7 +1495,7 @@ class ChatController extends ChangeNotifier {
     if (match == null) return false;
 
     _recordPermissionReview(
-      request.id,
+      request,
       AcpPermissionReviewResult(
         risk: 'egress',
         rationale: 'Export-sensitive command requires manual approval.',
@@ -1499,8 +1518,10 @@ class ChatController extends ChangeNotifier {
     String? selectedOptionId,
   }) async {
     if (_isDisposed) return;
-    if (_hasDeliveredPermissionDecision(request.id)) return;
-    if (!_resolvingPermissionRequestIds.add(request.id)) return;
+    if (!_isCurrentPermissionRequest(request)) return;
+    if (_hasDeliveredPermissionDecision(request)) return;
+    final bindingKey = request.bindingKey;
+    if (!_resolvingPermissionRequestIds.add(bindingKey)) return;
     try {
       final resolvedOptionId =
           selectedOptionId ?? request.singleUseChoiceFor(decision)?.optionId;
@@ -1509,17 +1530,18 @@ class ChatController extends ChangeNotifier {
           resolvedOptionId == null) {
         return;
       }
+      if (!_isCurrentPermissionRequest(request)) return;
       final didSend = await _sendPermissionDecision(
         id: request.id,
         decision: decision,
         selectedOptionId: resolvedOptionId,
       );
       if (_isDisposed || !didSend) return;
-      if (pendingPermissionRequest?.id == request.id) {
+      if (_isCurrentPermissionRequest(request)) {
         pendingPermissionRequest = null;
       }
       _recordPermissionDecision(
-        request.id,
+        request,
         decision,
         source: source,
         reviewResult: reviewResult,
@@ -1527,7 +1549,7 @@ class ChatController extends ChangeNotifier {
       );
       _notifyListeners();
     } finally {
-      _resolvingPermissionRequestIds.remove(request.id);
+      _resolvingPermissionRequestIds.remove(bindingKey);
     }
   }
 
@@ -1535,7 +1557,8 @@ class ChatController extends ChangeNotifier {
     if (_isDisposed) return;
     final reviewer = permissionReviewer;
     if (reviewer == null) return;
-    if (!_reviewingPermissionRequestIds.add(request.id)) return;
+    final bindingKey = request.bindingKey;
+    if (!_reviewingPermissionRequestIds.add(bindingKey)) return;
     unawaited(() async {
       try {
         final reviewSession = currentSession;
@@ -1554,7 +1577,7 @@ class ChatController extends ChangeNotifier {
         );
         if (_isDisposed) return;
         if (result == null) return;
-        _recordPermissionReview(request.id, result);
+        _recordPermissionReview(request, result);
         final decision = result.decision;
         if (decision == null) {
           _notifyListeners();
@@ -1566,8 +1589,8 @@ class ChatController extends ChangeNotifier {
           _notifyListeners();
           return;
         }
-        if (pendingPermissionRequest?.id != request.id) return;
-        if (_hasDeliveredPermissionDecision(request.id)) return;
+        if (!_isCurrentPermissionRequest(request)) return;
+        if (_hasDeliveredPermissionDecision(request)) return;
         await _resolvePermissionRequest(
           request,
           decision,
@@ -1575,11 +1598,11 @@ class ChatController extends ChangeNotifier {
           reviewResult: result,
         );
       } catch (error) {
-        if (!_isDisposed && pendingPermissionRequest?.id == request.id) {
+        if (!_isDisposed && _isCurrentPermissionRequest(request)) {
           _setActionError(error);
         }
       } finally {
-        _reviewingPermissionRequestIds.remove(request.id);
+        _reviewingPermissionRequestIds.remove(bindingKey);
       }
     }());
   }
@@ -1612,7 +1635,7 @@ class ChatController extends ChangeNotifier {
     if (request == null) return null;
     pendingPermissionRequest = null;
     _recordPermissionDecision(
-      request.id,
+      request,
       AcpPermissionDecision.cancel,
       source: AcpPermissionDecisionSource.system,
     );
@@ -1633,7 +1656,7 @@ class ChatController extends ChangeNotifier {
     if (request == null) return;
     pendingPermissionRequest = null;
     _recordPermissionDecision(
-      request.id,
+      request,
       AcpPermissionDecision.cancel,
       source: AcpPermissionDecisionSource.system,
     );
@@ -1647,20 +1670,13 @@ class ChatController extends ChangeNotifier {
   }
 
   void _recordPermissionRequest(AcpPermissionRequest request) {
-    final index = _permissionHistory.indexWhere(
-      (entry) => entry.request.id == request.id,
-    );
     final entry = AcpPermissionAuditEntry(
       request: request,
       status: AcpPermissionAuditStatus.pending,
       recordedAt: request.requestedAt,
     );
-    if (index == -1) {
-      _permissionHistory.insert(0, entry);
-      _trimPermissionHistory();
-    } else {
-      _permissionHistory[index] = entry;
-    }
+    _permissionHistory.insert(0, entry);
+    _trimPermissionHistory();
   }
 
   void _trimPermissionHistory() {
@@ -1672,17 +1688,17 @@ class ChatController extends ChangeNotifier {
   }
 
   void _recordPermissionDecision(
-    String requestId,
+    AcpPermissionRequest request,
     AcpPermissionDecision decision, {
     AcpPermissionDecisionSource source = AcpPermissionDecisionSource.manual,
     AcpPermissionReviewResult? reviewResult,
     String? selectedOptionId,
   }) {
     final index = _permissionHistory.indexWhere(
-      (entry) => entry.request.id == requestId,
+      (entry) => entry.request.bindingKey == request.bindingKey,
     );
     if (index == -1) return;
-    final request = _permissionHistory[index].request;
+    final recordedRequest = _permissionHistory[index].request;
     final status = _permissionAuditStatus(decision);
     _permissionHistory[index] = _permissionHistory[index].copyWith(
       status: _permissionAuditStatus(decision),
@@ -1693,7 +1709,7 @@ class ChatController extends ChangeNotifier {
     );
     _notifyPermissionEventObservers(
       ChatPermissionEvent.resolved(
-        request,
+        recordedRequest,
         decision: decision,
         decisionSource: source,
         status: status,
@@ -1702,11 +1718,11 @@ class ChatController extends ChangeNotifier {
   }
 
   void _recordPermissionReview(
-    String requestId,
+    AcpPermissionRequest request,
     AcpPermissionReviewResult reviewResult,
   ) {
     final index = _permissionHistory.indexWhere(
-      (entry) => entry.request.id == requestId,
+      (entry) => entry.request.bindingKey == request.bindingKey,
     );
     if (index == -1) return;
     _permissionHistory[index] = _permissionHistory[index].copyWith(

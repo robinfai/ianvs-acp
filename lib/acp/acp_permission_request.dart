@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 enum AcpPermissionDecision { allow, deny, cancel }
 
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
@@ -123,6 +125,7 @@ class AcpPermissionRequest {
     this.choices = const <AcpPermissionChoice>[],
     this.toolKind,
     this.metadata = const <String, Object?>{},
+    this.generation = 0,
   });
 
   final String id;
@@ -135,6 +138,48 @@ class AcpPermissionRequest {
   final List<AcpPermissionChoice> choices;
   final DateTime requestedAt;
   final Map<String, Object?> metadata;
+  final int generation;
+
+  String get contentFingerprint {
+    final content = <String, Object?>{
+      'title': title.trim(),
+      'rationale': rationale.trim(),
+      'sessionId': sessionId.trim(),
+      'toolName': toolName.trim(),
+      if (toolKind?.trim().isNotEmpty == true) 'toolKind': toolKind!.trim(),
+      'options': options.map((option) => option.trim()).toList(growable: false),
+      'choices': choices
+          .map(
+            (choice) => <String, Object?>{
+              'optionId': choice.optionId.trim(),
+              'name': choice.name.trim(),
+              if (choice.kind?.trim().isNotEmpty == true)
+                'kind': choice.kind!.trim(),
+            },
+          )
+          .toList(growable: false),
+      'metadata': _canonicalPermissionValue(metadata),
+    };
+    return sha256.convert(utf8.encode(jsonEncode(content))).toString();
+  }
+
+  String get bindingKey => '$id:$contentFingerprint:$generation';
+
+  AcpPermissionRequest withGeneration(int value) {
+    return AcpPermissionRequest(
+      id: id,
+      title: title,
+      rationale: rationale,
+      sessionId: sessionId,
+      toolName: toolName,
+      options: options,
+      requestedAt: requestedAt,
+      choices: choices,
+      toolKind: toolKind,
+      metadata: metadata,
+      generation: value,
+    );
+  }
 
   String get displayTitle {
     final trimmed = title.trim();
@@ -215,8 +260,30 @@ class AcpPermissionRequest {
         'choices': choices.map((choice) => choice.toJson()).toList(),
       'requestedAt': requestedAt.toUtc().toIso8601String(),
       if (metadata.isNotEmpty) 'metadata': metadata,
+      if (generation > 0) 'generation': generation,
+      if (generation > 0) 'contentFingerprint': contentFingerprint,
     };
   }
+}
+
+Object? _canonicalPermissionValue(Object? value) {
+  if (value == null || value is bool || value is num) return value;
+  if (value is String) return value.trim();
+  if (value is List) {
+    return value.map(_canonicalPermissionValue).toList(growable: false);
+  }
+  if (value is Map) {
+    final entries =
+        value.entries
+            .map((entry) => MapEntry(entry.key.toString(), entry.value))
+            .toList(growable: false)
+          ..sort((a, b) => a.key.compareTo(b.key));
+    return <String, Object?>{
+      for (final entry in entries)
+        entry.key: _canonicalPermissionValue(entry.value),
+    };
+  }
+  return value.toString();
 }
 
 class AcpPermissionReviewResult {

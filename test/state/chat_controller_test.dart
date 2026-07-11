@@ -1389,6 +1389,51 @@ void main() {
   );
 
   test(
+    'permission requests without a session id are cancelled before review',
+    () async {
+      final fake = FakeAgentClient();
+      final reviewer = _FakePermissionReviewer(
+        const AcpPermissionReviewResult(
+          decision: AcpPermissionDecision.allow,
+          risk: 'low',
+        ),
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionReviewer: reviewer,
+      );
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-empty-session',
+          title: 'Run command',
+          rationale: 'Missing session context',
+          sessionId: '  ',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue(times: 2);
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(reviewer.requests, isEmpty);
+      expect(fake.lastPermissionRequestId, 'permission-empty-session');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+    },
+  );
+
+  test(
     'permission requests for closed sessions are cancelled without active session',
     () async {
       final fake = FakeAgentClient();
@@ -2019,6 +2064,79 @@ void main() {
     expect(fake.lastPermissionRequestId, isNull);
     expect(fake.lastPermissionDecision, isNull);
   });
+
+  test(
+    'late review cannot approve a different request that reuses the same id',
+    () async {
+      final fake = FakeAgentClient();
+      final reviewer = _SequencedPermissionReviewer();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionReviewer: reviewer,
+      );
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-reused',
+          title: 'Read file',
+          rationale: 'Read a workspace file',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          toolKind: 'read',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+          metadata: const {'path': '/workspace/README.md'},
+        ),
+      );
+      await pumpEventQueue();
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-reused',
+          title: 'Create terminal',
+          rationale: 'Run a command outside the workspace',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12, 1),
+          metadata: const {'command': 'open /Users'},
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(reviewer.requests, hasLength(2));
+      expect(reviewer.requests.first.generation, 1);
+      expect(controller.pendingPermissionRequest?.generation, 2);
+      expect(
+        controller.pendingPermissionRequest?.contentFingerprint,
+        isNot(reviewer.requests.first.contentFingerprint),
+      );
+
+      reviewer.complete(
+        0,
+        const AcpPermissionReviewResult(
+          decision: AcpPermissionDecision.allow,
+          risk: 'low',
+          rationale: 'The original read is low risk.',
+        ),
+      );
+      await pumpEventQueue(times: 3);
+
+      expect(fake.lastPermissionDecision, isNull);
+      expect(fake.lastPermissionRequestId, isNull);
+      expect(controller.pendingPermissionRequest?.toolName, 'terminal');
+      expect(
+        controller.permissionHistory.first.status,
+        AcpPermissionAuditStatus.pending,
+      );
+    },
+  );
 
   test(
     'default permission policy keeps matching trust rule requests manual',
@@ -3564,6 +3682,32 @@ class _DelayedPermissionReviewer extends AcpPermissionReviewer {
   }) {
     requests.add(request);
     return _result.future;
+  }
+}
+
+class _SequencedPermissionReviewer extends AcpPermissionReviewer {
+  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
+  final List<Completer<AcpPermissionReviewResult?>> _results =
+      <Completer<AcpPermissionReviewResult?>>[];
+
+  @override
+  bool get canAutoApprove => true;
+
+  void complete(int index, AcpPermissionReviewResult? result) {
+    _results[index].complete(result);
+  }
+
+  @override
+  Future<AcpPermissionReviewResult?> review(
+    AcpPermissionRequest request, {
+    required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
+    String? model,
+  }) {
+    requests.add(request);
+    final result = Completer<AcpPermissionReviewResult?>();
+    _results.add(result);
+    return result.future;
   }
 }
 

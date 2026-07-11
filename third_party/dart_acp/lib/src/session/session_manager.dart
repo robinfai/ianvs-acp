@@ -778,10 +778,29 @@ class SessionManager {
     String workspaceRoot, {
     List<String> additionalDirectories = const <String>[],
   }) {
-    _sessionWorkspaceRoots[sessionId] = workspaceRoot;
-    _sessionAdditionalDirectories[sessionId] = _normalizedDirectories(
-      additionalDirectories,
-    );
+    final normalizedRoot = workspaceRoot.trim();
+    final normalizedDirectories = _normalizedDirectories(additionalDirectories);
+    final existingRoot = _sessionWorkspaceRoots[sessionId];
+    final existingDirectories = _sessionAdditionalDirectories[sessionId];
+    if (existingRoot != null) {
+      if (existingRoot != normalizedRoot ||
+          !_sameDirectories(existingDirectories, normalizedDirectories)) {
+        throw StateError(
+          'Session $sessionId is already bound to a different workspace',
+        );
+      }
+      return;
+    }
+    _sessionWorkspaceRoots[sessionId] = normalizedRoot;
+    _sessionAdditionalDirectories[sessionId] = normalizedDirectories;
+  }
+
+  bool _sameDirectories(List<String>? left, List<String> right) {
+    if (left == null || left.length != right.length) return false;
+    for (var index = 0; index < left.length; index += 1) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
   }
 
   Json _sessionSetupParams(Json params, List<String> additionalDirectories) {
@@ -948,20 +967,13 @@ class SessionManager {
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
     }
-    final sessionId = _sessionIdFromMap(req);
-    final workspaceRoot = sessionId != null
-        ? _sessionWorkspaceRoots[sessionId]
-        : _sessionWorkspaceRoots.values.firstOrNull;
-    if (workspaceRoot == null) {
-      throw Exception('No workspace root available for filesystem operation');
-    }
+    final sessionId = _requireKnownSessionId(req);
+    final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
 
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(
-        sessionId ?? '',
-      ),
+      additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
@@ -970,15 +982,13 @@ class SessionManager {
     // policy mode). Agents may or may not request permission explicitly;
     // we gate here to ensure policy is always respected.
     try {
-      final additionalDirectories = _additionalDirectoriesForSession(
-        sessionId ?? '',
-      );
+      final additionalDirectories = _additionalDirectoriesForSession(sessionId);
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Read file',
           rationale: 'Agent requested to read a file',
           options: const ['allow', 'deny'],
-          sessionId: sessionId ?? '',
+          sessionId: sessionId,
           toolName: 'read_text_file',
           toolKind: 'read',
           metadata: <String, Object?>{
@@ -1019,35 +1029,26 @@ class SessionManager {
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
     }
-    final sessionId = _sessionIdFromMap(req);
-    final workspaceRoot = sessionId != null
-        ? _sessionWorkspaceRoots[sessionId]
-        : _sessionWorkspaceRoots.values.firstOrNull;
-    if (workspaceRoot == null) {
-      throw Exception('No workspace root available for filesystem operation');
-    }
+    final sessionId = _requireKnownSessionId(req);
+    final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
 
     // Create a session-specific provider honoring configured access policy
     final provider = DefaultFsProvider(
       workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(
-        sessionId ?? '',
-      ),
+      additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
       allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
       // yolo does NOT allow writes outside workspace
     );
 
     // Enforce permission policy for writes when provided.
     try {
-      final additionalDirectories = _additionalDirectoriesForSession(
-        sessionId ?? '',
-      );
+      final additionalDirectories = _additionalDirectoriesForSession(sessionId);
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
           title: 'Write file',
           rationale: 'Agent requested to write a file',
           options: const ['allow', 'deny'],
-          sessionId: sessionId ?? '',
+          sessionId: sessionId,
           toolName: 'write_text_file',
           toolKind: 'edit',
           metadata: <String, Object?>{
@@ -1080,7 +1081,7 @@ class SessionManager {
   }
 
   Future<Json> _onRequestPermission(Json req) async {
-    final reqSessionId = _sessionIdFromMap(req) ?? '';
+    final reqSessionId = _requireKnownSessionId(req);
     if (_cancelledPromptSessions.contains(reqSessionId)) {
       return {
         'outcome': {'outcome': 'cancelled'},
@@ -1128,6 +1129,17 @@ class SessionManager {
     return {
       'outcome': {'outcome': 'selected', 'optionId': optionId},
     };
+  }
+
+  String _requireKnownSessionId(Json req) {
+    final sessionId = _sessionIdFromMap(req);
+    if (sessionId == null) {
+      throw StateError('A non-empty sessionId is required');
+    }
+    if (!_sessionWorkspaceRoots.containsKey(sessionId)) {
+      throw StateError('Unknown or closed session: $sessionId');
+    }
+    return sessionId;
   }
 
   final Map<String, TerminalProcessHandle> _terminals = {};

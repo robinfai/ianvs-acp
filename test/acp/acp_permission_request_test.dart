@@ -74,6 +74,43 @@ void main() {
     ]);
   });
 
+  test('permission content fingerprints normalize map order and whitespace', () {
+    final first = AcpPermissionRequest(
+      id: 'permission-a',
+      title: ' Run command ',
+      rationale: ' Requested by agent ',
+      sessionId: ' session-1 ',
+      toolName: ' terminal ',
+      toolKind: ' execute ',
+      options: const [' Allow ', ' Deny '],
+      requestedAt: DateTime(2026, 5, 31, 12),
+      metadata: const {
+        'z': ' value ',
+        'nested': {'b': 2, 'a': ' one '},
+      },
+    );
+    final second = AcpPermissionRequest(
+      id: 'permission-b',
+      title: 'Run command',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'terminal',
+      toolKind: 'execute',
+      options: const ['Allow', 'Deny'],
+      requestedAt: DateTime(2026, 6, 1, 12),
+      metadata: const {
+        'nested': {'a': 'one', 'b': 2},
+        'z': 'value',
+      },
+    );
+
+    expect(first.contentFingerprint, second.contentFingerprint);
+    expect(
+      first.withGeneration(1).bindingKey,
+      isNot(first.withGeneration(2).bindingKey),
+    );
+  });
+
   test('legacy persistent choices are not treated as single use', () {
     const choice = AcpPermissionChoice(
       optionId: 'allow-always',
