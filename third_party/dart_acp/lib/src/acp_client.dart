@@ -25,7 +25,17 @@ class AcpClient {
   static Future<AcpClient> start({
     required AcpConfig config,
     AcpTransport? transport,
+    int maxReplayItems = 2048,
+    int maxReplayBytes = 16 * 1024 * 1024,
+    int maxToolCallItems = 512,
+    int maxToolCallBytes = 8 * 1024 * 1024,
   }) async {
+    if (maxReplayItems <= 0 ||
+        maxReplayBytes <= 0 ||
+        maxToolCallItems <= 0 ||
+        maxToolCallBytes <= 0) {
+      throw ArgumentError('Session state budgets must be greater than zero.');
+    }
     final actualTransport =
         transport ??
         StdioTransport(
@@ -41,7 +51,14 @@ class AcpClient {
 
     final client = AcpClient._(config: config, transport: actualTransport);
     client._peer = JsonRpcPeer(actualTransport.channel);
-    client._sessionManager = SessionManager(config: config, peer: client._peer);
+    client._sessionManager = SessionManager(
+      config: config,
+      peer: client._peer,
+      maxReplayItems: maxReplayItems,
+      maxReplayBytes: maxReplayBytes,
+      maxToolCallItems: maxToolCallItems,
+      maxToolCallBytes: maxToolCallBytes,
+    );
 
     return client;
   }
@@ -172,6 +189,10 @@ class AcpClient {
   /// Check [InitializeResult.supportsListSessions] before calling.
   Future<SessionListResult> listSessions({String? cwd, String? cursor}) async =>
       _sessionManager.listSessions(cwd: cwd, cursor: cursor);
+
+  /// Close a session and release all local resources owned by it.
+  Future<void> closeSession({required String sessionId}) =>
+      _sessionManager.closeSession(sessionId: sessionId);
 
   /// Resume a session without loading history (simpler than [loadSession]).
   ///

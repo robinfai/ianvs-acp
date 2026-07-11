@@ -60,6 +60,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.sessionListMaxPages = 100,
     this.sessionListMaxEntries = 10000,
     this.sessionListMaxCursorBytes = 8 * 1024,
+    this.maxSessionReplayItems = 2048,
+    this.maxSessionReplayBytes = 16 * 1024 * 1024,
+    this.maxSessionToolCallItems = 512,
+    this.maxSessionToolCallBytes = 8 * 1024 * 1024,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
@@ -95,6 +99,12 @@ class DartAcpAgentClient implements AcpAgentClient {
         sessionListMaxCursorBytes <= 0) {
       throw ArgumentError('Session list budgets must be greater than zero.');
     }
+    if (maxSessionReplayItems <= 0 ||
+        maxSessionReplayBytes <= 0 ||
+        maxSessionToolCallItems <= 0 ||
+        maxSessionToolCallBytes <= 0) {
+      throw ArgumentError('Session state budgets must be greater than zero.');
+    }
   }
 
   final String agentCommand;
@@ -113,6 +123,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   final int sessionListMaxPages;
   final int sessionListMaxEntries;
   final int sessionListMaxCursorBytes;
+  final int maxSessionReplayItems;
+  final int maxSessionReplayBytes;
+  final int maxSessionToolCallItems;
+  final int maxSessionToolCallBytes;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -226,6 +240,10 @@ class DartAcpAgentClient implements AcpAgentClient {
         client = await acp.AcpClient.start(
           config: config,
           transport: transport,
+          maxReplayItems: maxSessionReplayItems,
+          maxReplayBytes: maxSessionReplayBytes,
+          maxToolCallItems: maxSessionToolCallItems,
+          maxToolCallBytes: maxSessionToolCallBytes,
         );
       } on Object {
         if (identical(_connectingTransport, transport)) {
@@ -637,9 +655,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.session.close != true) {
       throw StateError('ACP agent does not support session/close.');
     }
-    await client.sendRaw('session/close', <String, dynamic>{
-      'sessionId': sessionId,
-    });
+    try {
+      await client.closeSession(sessionId: sessionId);
+    } on acp.SessionCloseCleanupException {
+      _clearSessionState(sessionId);
+      rethrow;
+    }
+    _clearSessionState(sessionId);
+  }
+
+  void _clearSessionState(String sessionId) {
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
@@ -649,6 +674,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
     _modelConfigOptionsFromModelsBySession.remove(sessionId);
+    _rawSessionResultsBySession.remove(sessionId);
     _rawToolCallEventsBySession.remove(sessionId);
     _rawToolCallStatesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);

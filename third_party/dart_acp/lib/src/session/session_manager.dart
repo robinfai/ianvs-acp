@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:logging/logging.dart';
 
@@ -18,6 +19,78 @@ import '../security/workspace_jail.dart';
 
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
+
+class SessionToolStateLimitException implements Exception {
+  const SessionToolStateLimitException({
+    required this.maxItems,
+    required this.maxBytes,
+  });
+
+  final int maxItems;
+  final int maxBytes;
+
+  @override
+  String toString() =>
+      'Session tool state limit exceeded; manual intervention required '
+      '(maxItems: $maxItems, maxBytes: $maxBytes)';
+}
+
+class SessionCloseCleanupException implements Exception {
+  const SessionCloseCleanupException(this.failedStages);
+
+  final List<String> failedStages;
+
+  @override
+  String toString() =>
+      'Session close cleanup failed in ${failedStages.length} stage(s): '
+      '${failedStages.join(', ')}';
+}
+
+class _ReplayBuffer {
+  _ReplayBuffer({required this.maxItems, required this.maxBytes});
+
+  final int maxItems;
+  final int maxBytes;
+  final List<AcpUpdate> _updates = <AcpUpdate>[];
+  final List<int> _sizes = <int>[];
+  var _bytes = 0;
+
+  static const _markerSize = 64;
+  static const _marker = UnknownUpdate(<String, dynamic>{
+    'sessionUpdate': 'replay_truncated',
+    'truncated': true,
+  });
+
+  List<AcpUpdate> get updates => List<AcpUpdate>.unmodifiable(_updates);
+
+  void add(AcpUpdate update, {int? sizeBytes}) {
+    final size = sizeBytes ?? utf8.encode(update.text).length + 32;
+    _updates.add(update);
+    _sizes.add(size);
+    _bytes += size;
+    var truncated = false;
+    while (_updates.length > maxItems || _bytes > maxBytes) {
+      final index = _updates.isNotEmpty && identical(_updates.first, _marker)
+          ? 1
+          : 0;
+      if (index >= _updates.length) break;
+      _bytes -= _sizes.removeAt(index);
+      _updates.removeAt(index);
+      truncated = true;
+    }
+    if (truncated &&
+        (_updates.isEmpty || !identical(_updates.first, _marker))) {
+      _updates.insert(0, _marker);
+      _sizes.insert(0, _markerSize);
+      _bytes += _markerSize;
+    }
+    while (_updates.length > maxItems || _bytes > maxBytes) {
+      if (_updates.length <= 1) break;
+      _bytes -= _sizes.removeAt(1);
+      _updates.removeAt(1);
+    }
+  }
+}
 
 class _PermissionChoice {
   const _PermissionChoice({
@@ -446,8 +519,18 @@ Json? _availableCommandFromRaw(Object? raw) {
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager {
   /// Create a [SessionManager] with [config] and [peer].
-  SessionManager({required this.config, required this.peer})
-    : _log = config.logger {
+  SessionManager({
+    required this.config,
+    required this.peer,
+    this.maxReplayItems = 2048,
+    this.maxReplayBytes = 16 * 1024 * 1024,
+    this.maxToolCallItems = 512,
+    this.maxToolCallBytes = 8 * 1024 * 1024,
+  }) : assert(maxReplayItems > 0),
+       assert(maxReplayBytes > 0),
+       assert(maxToolCallItems > 0),
+       assert(maxToolCallBytes > 0),
+       _log = config.logger {
     // Wire client-side handlers
     peer.onReadTextFile = _onReadTextFile;
     peer.onWriteTextFile = _onWriteTextFile;
@@ -467,25 +550,37 @@ class SessionManager {
   /// JSON-RPC peer used for requests and client callbacks.
   final JsonRpcPeer peer;
   final Logger _log;
+  final int maxReplayItems;
+  final int maxReplayBytes;
+  final int maxToolCallItems;
+  final int maxToolCallBytes;
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
-  final Map<String, List<AcpUpdate>> _replayBuffers = {};
+  final Map<String, _ReplayBuffer> _replayBuffers = {};
   final Set<String> _activePromptSessions = <String>{};
   final Set<String> _cancelledPromptSessions = <String>{};
   final StreamController<TerminalEvent> _terminalEvents =
       StreamController<TerminalEvent>.broadcast();
   // Track tool calls by session and tool call ID for proper merging
   final Map<String, Map<String, ToolCall>> _toolCalls = {};
+  final Map<String, Map<String, int>> _toolCallSizes = {};
+  var _toolCallItemCount = 0;
+  var _toolCallByteCount = 0;
   // Track workspace roots per session for filesystem operations
   final Map<String, String> _sessionWorkspaceRoots = {};
   final Map<String, List<String>> _sessionAdditionalDirectories = {};
   final Map<String, Future<void>> _sessionSetupTails = {};
+  final Set<String> _closedSessions = <String>{};
+
+  _ReplayBuffer _newReplayBuffer() =>
+      _ReplayBuffer(maxItems: maxReplayItems, maxBytes: maxReplayBytes);
 
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     final terminalProvider = config.terminalProvider;
     final terminals = _terminals.values.toList(growable: false);
     _terminals.clear();
+    _terminalSessions.clear();
     if (terminalProvider != null) {
       await Future.wait<void>(
         terminals.map((handle) async {
@@ -504,12 +599,16 @@ class SessionManager {
     _sessionStreams.clear();
     _replayBuffers.clear();
     _toolCalls.clear();
+    _toolCallSizes.clear();
+    _toolCallItemCount = 0;
+    _toolCallByteCount = 0;
     _activePromptSessions.clear();
     _cancelledPromptSessions.clear();
     _sessionWorkspaceRoots.clear();
     _sessionAdditionalDirectories.clear();
     _sessionModes.clear();
     _sessionSetupTails.clear();
+    _closedSessions.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -593,6 +692,56 @@ class SessionManager {
     if (cursor != null) params['cursor'] = cursor;
     final resp = await peer.sendRaw('session/list', params);
     return SessionListResult.fromJson(resp);
+  }
+
+  /// Close a remote session, then release all state owned by that session.
+  Future<void> closeSession({required String sessionId}) async {
+    await peer.sendRaw('session/close', <String, dynamic>{
+      'sessionId': sessionId,
+    });
+    _closedSessions.add(sessionId);
+    await _runSerializedSessionMutation(sessionId, () async {
+      final failedStages = <String>[];
+
+      Future<void> cleanup(
+        String stage,
+        FutureOr<void> Function() action,
+      ) async {
+        try {
+          await action();
+        } on Object catch (error) {
+          failedStages.add(stage);
+          _log.warning('session close cleanup stage $stage failed: $error');
+        }
+      }
+
+      await cleanup('stream', () async {
+        final stream = _sessionStreams.remove(sessionId);
+        await stream?.close();
+      });
+      await cleanup('replay', () => _replayBuffers.remove(sessionId));
+      await cleanup(
+        'workspace',
+        () => _sessionWorkspaceRoots.remove(sessionId),
+      );
+      await cleanup(
+        'additionalDirectories',
+        () => _sessionAdditionalDirectories.remove(sessionId),
+      );
+      await cleanup('modes', () => _sessionModes.remove(sessionId));
+      await cleanup('toolCalls', () => _removeToolCalls(sessionId));
+      await cleanup('prompt', () {
+        _activePromptSessions.remove(sessionId);
+        _cancelledPromptSessions.remove(sessionId);
+      });
+      await cleanup('terminals', () => _releaseSessionTerminals(sessionId));
+
+      if (failedStages.isNotEmpty) {
+        throw SessionCloseCleanupException(
+          List<String>.unmodifiable(failedStages),
+        );
+      }
+    });
   }
 
   /// Resume a session without loading history (simpler than loadSession).
@@ -812,17 +961,19 @@ class SessionManager {
       final hadBinding = _sessionWorkspaceRoots.containsKey(sessionId);
       final hadModes = _sessionModes.containsKey(sessionId);
       final hadToolCalls = _toolCalls.containsKey(sessionId);
+      final wasClosed = _closedSessions.contains(sessionId);
       _sessionStreams.putIfAbsent(
         sessionId,
         StreamController<AcpUpdate>.broadcast,
       );
-      _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
+      _replayBuffers.putIfAbsent(sessionId, _newReplayBuffer);
       try {
         _setSessionWorkspace(
           sessionId,
           workspaceRoot,
           additionalDirectories: additionalDirectories,
         );
+        _closedSessions.remove(sessionId);
         return await action();
       } catch (_) {
         if (!hadBinding) {
@@ -835,13 +986,14 @@ class SessionManager {
             _sessionModes.remove(sessionId);
           }
           if (!hadToolCalls) {
-            _toolCalls.remove(sessionId);
+            _removeToolCalls(sessionId);
           }
           if (!hadStream) {
             final controller = _sessionStreams.remove(sessionId);
             await controller?.close();
           }
         }
+        if (wasClosed) _closedSessions.add(sessionId);
         rethrow;
       }
     });
@@ -859,12 +1011,13 @@ class SessionManager {
         sessionId,
         StreamController<AcpUpdate>.broadcast,
       );
-      _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
+      _replayBuffers.putIfAbsent(sessionId, _newReplayBuffer);
       _setSessionWorkspace(
         sessionId,
         workspaceRoot,
         additionalDirectories: additionalDirectories,
       );
+      _closedSessions.remove(sessionId);
       if (modes != null) _sessionModes[sessionId] = modes;
     });
   }
@@ -917,7 +1070,7 @@ class SessionManager {
   // session/load and updates across multiple prompts)
   /// Persistent session update stream, including replay.
   Stream<AcpUpdate> sessionUpdates(String sessionId) async* {
-    final buffer = List<AcpUpdate>.from(_replayBuffers[sessionId] ?? const []);
+    final buffer = _replayBuffers[sessionId]?.updates ?? const <AcpUpdate>[];
     for (final u in buffer) {
       yield u;
     }
@@ -926,26 +1079,102 @@ class SessionManager {
         .stream;
   }
 
+  void _recordReplay(String sessionId, AcpUpdate update, {Object? raw}) {
+    final sizeBytes = raw == null ? null : utf8.encode(jsonEncode(raw)).length;
+    _replayBuffers[sessionId]?.add(update, sizeBytes: sizeBytes);
+  }
+
+  bool _storeToolCall(String sessionId, String toolCallId, ToolCall toolCall) {
+    final calls = _toolCalls.putIfAbsent(sessionId, () => {});
+    final sizes = _toolCallSizes.putIfAbsent(sessionId, () => {});
+    final previous = calls.remove(toolCallId);
+    final previousSize = sizes.remove(toolCallId);
+    if (previous != null && previousSize != null) {
+      _toolCallItemCount -= 1;
+      _toolCallByteCount -= previousSize;
+    }
+    final size = utf8.encode(jsonEncode(toolCall.toJson())).length;
+
+    while (_toolCallItemCount + 1 > maxToolCallItems ||
+        _toolCallByteCount + size > maxToolCallBytes) {
+      if (!_evictOneCompletedToolCall()) break;
+    }
+    if (_toolCallItemCount + 1 > maxToolCallItems ||
+        _toolCallByteCount + size > maxToolCallBytes) {
+      if (toolCall.status != ToolCallStatus.completed &&
+          previous != null &&
+          previousSize != null) {
+        calls[toolCallId] = previous;
+        sizes[toolCallId] = previousSize;
+        _toolCallItemCount += 1;
+        _toolCallByteCount += previousSize;
+      }
+      return toolCall.status == ToolCallStatus.completed;
+    }
+    calls[toolCallId] = toolCall;
+    sizes[toolCallId] = size;
+    _toolCallItemCount += 1;
+    _toolCallByteCount += size;
+    return true;
+  }
+
+  bool _evictOneCompletedToolCall() {
+    String? completedSessionId;
+    String? completedToolCallId;
+    for (final sessionEntry in _toolCalls.entries) {
+      for (final callEntry in sessionEntry.value.entries) {
+        if (callEntry.value.status != ToolCallStatus.completed) continue;
+        completedSessionId = sessionEntry.key;
+        completedToolCallId = callEntry.key;
+        break;
+      }
+      if (completedSessionId != null) break;
+    }
+    if (completedSessionId == null || completedToolCallId == null) return false;
+    final size =
+        _toolCallSizes[completedSessionId]?.remove(completedToolCallId) ?? 0;
+    _toolCalls[completedSessionId]?.remove(completedToolCallId);
+    _toolCallItemCount -= 1;
+    _toolCallByteCount -= size;
+    return true;
+  }
+
+  void _removeToolCalls(String sessionId) {
+    final calls = _toolCalls.remove(sessionId);
+    final sizes = _toolCallSizes.remove(sessionId);
+    if (calls == null) return;
+    _toolCallItemCount -= calls.length;
+    if (sizes != null) {
+      _toolCallByteCount -= sizes.values.fold<int>(
+        0,
+        (sum, size) => sum + size,
+      );
+    }
+  }
+
   void _routeSessionUpdate(Json json) {
     final sessionId = _sessionIdFromMap(json);
     final update = json['update'] as Map<String, dynamic>?;
     if (sessionId == null || update == null) return;
-    if (!_sessionWorkspaceRoots.containsKey(sessionId)) return;
+    if (_closedSessions.contains(sessionId) ||
+        !_sessionWorkspaceRoots.containsKey(sessionId)) {
+      return;
+    }
     _sessionStreams.putIfAbsent(
       sessionId,
       StreamController<AcpUpdate>.broadcast,
     );
-    _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
+    _replayBuffers.putIfAbsent(sessionId, _newReplayBuffer);
 
     final kind = update['sessionUpdate'];
     if (kind == 'available_commands_update') {
       final cmds = _availableCommandsFromRaw(update['availableCommands']);
       final u = AvailableCommandsUpdate.fromRaw(cmds);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'plan') {
       final u = PlanUpdate.fromJson(update);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'tool_call' || kind == 'tool_call_update') {
       // Get tool call ID from the update
@@ -958,23 +1187,30 @@ class SessionManager {
       if (kind == 'tool_call') {
         // New tool call - create and store it
         toolCall = ToolCall.fromJson(update);
-        _toolCalls[sessionId]![toolCallId] = toolCall;
       } else {
         // tool_call_update - merge with existing
         final existing = _toolCalls[sessionId]![toolCallId];
         if (existing != null) {
           // Merge update fields into existing tool call
           toolCall = existing.merge(update);
-          _toolCalls[sessionId]![toolCallId] = toolCall;
         } else {
           // No existing tool call found, create new one from update
           toolCall = ToolCall.fromJson(update);
-          _toolCalls[sessionId]![toolCallId] = toolCall;
         }
       }
 
+      if (!_storeToolCall(sessionId, toolCallId, toolCall)) {
+        _sessionStreams[sessionId]!.addError(
+          SessionToolStateLimitException(
+            maxItems: maxToolCallItems,
+            maxBytes: maxToolCallBytes,
+          ),
+        );
+        return;
+      }
+
       final u = ToolCallUpdate(toolCall);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'user_message_chunk' ||
         kind == 'agent_message_chunk' ||
@@ -986,11 +1222,11 @@ class SessionManager {
         rawContent: blocks,
         isThought: kind == 'agent_thought_chunk',
       );
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'diff') {
       final u = DiffUpdate.fromJson(update);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'current_mode_update') {
       final currentModeId = _modeIdFromRaw(update);
@@ -1009,15 +1245,15 @@ class SessionManager {
         }
       }
       final u = ModeUpdate(currentModeId ?? '');
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'usage_update') {
       final u = UsageUpdate.fromJson(update);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     } else {
       final u = UnknownUpdate(json);
-      _replayBuffers[sessionId]!.add(u);
+      _recordReplay(sessionId, u, raw: json);
       _sessionStreams[sessionId]!.add(u);
     }
   }
@@ -1228,6 +1464,7 @@ class SessionManager {
   }
 
   final Map<String, TerminalProcessHandle> _terminals = {};
+  final Map<String, String> _terminalSessions = {};
 
   Future<Json> _onTerminalCreate(Json req) async {
     final provider = config.terminalProvider;
@@ -1319,6 +1556,7 @@ class SessionManager {
       outputByteLimit: outputByteLimit,
     );
     _terminals[handle.terminalId] = handle;
+    _terminalSessions[handle.terminalId] = sessionId;
     _terminalEvents.add(
       TerminalCreated(
         terminalId: handle.terminalId,
@@ -1406,6 +1644,7 @@ class SessionManager {
     final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
     final handle = _terminals.remove(termId);
+    _terminalSessions.remove(termId);
     if (provider != null && handle != null) {
       await provider.release(handle);
     }
@@ -1445,8 +1684,31 @@ class SessionManager {
   Future<void> releaseTerminal(String terminalId) async {
     final provider = config.terminalProvider;
     final handle = _terminals.remove(terminalId);
+    _terminalSessions.remove(terminalId);
     if (provider != null && handle != null) {
       await provider.release(handle);
+    }
+  }
+
+  Future<void> _releaseSessionTerminals(String sessionId) async {
+    final terminalIds = _terminalSessions.entries
+        .where((entry) => entry.value == sessionId)
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    final provider = config.terminalProvider;
+    final failures = <Object>[];
+    for (final terminalId in terminalIds) {
+      final handle = _terminals.remove(terminalId);
+      _terminalSessions.remove(terminalId);
+      if (provider == null || handle == null) continue;
+      try {
+        await provider.release(handle);
+      } on Object catch (error) {
+        failures.add(error);
+      }
+    }
+    if (failures.isNotEmpty) {
+      throw StateError('${failures.length} terminal release(s) failed');
     }
   }
 }
