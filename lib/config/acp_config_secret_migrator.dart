@@ -17,10 +17,11 @@ final class AcpConfigSecretMigrator {
     validateUniqueSecretReferences(config);
     final configIdentity = await configSecretIdentity(config.configPath);
     final rollbacks = <Future<void> Function()>[];
+    final writes = _OwnedSecretWrites(_store, rollbacks);
     try {
       final agents = <AgentServerConfig>[];
       for (final server in config.agentServers) {
-        agents.add(await _prepareAgent(server, configIdentity, rollbacks));
+        agents.add(await _prepareAgent(server, configIdentity, writes));
       }
       final activeName = config.activeAgentServer?.name;
       AgentServerConfig? active;
@@ -31,7 +32,7 @@ final class AcpConfigSecretMigrator {
         active ??= await _prepareAgent(
           config.activeAgentServer!,
           configIdentity,
-          rollbacks,
+          writes,
         );
       }
 
@@ -43,14 +44,14 @@ final class AcpConfigSecretMigrator {
             configIdentity: configIdentity,
             targetKind: 'mcp/${server.name}',
             ownerLabel: 'MCP server "${server.name}"',
-            rollbacks: rollbacks,
+            writes: writes,
           ),
         );
       }
       final clientProviders = await _prepareClientProviders(
         config.clientProviders,
         configIdentity,
-        rollbacks,
+        writes,
       );
       final prepared = PreparedAcpConfigSecrets._(
         AcpClientConfig(
@@ -83,7 +84,7 @@ final class AcpConfigSecretMigrator {
   Future<AgentServerConfig> _prepareAgent(
     AgentServerConfig server,
     String configIdentity,
-    List<Future<void> Function()> rollbacks,
+    _OwnedSecretWrites writes,
   ) async {
     final targetKind = 'agent/${server.name}';
     final targetIdentity = agentSecretTargetIdentity(server);
@@ -96,7 +97,7 @@ final class AcpConfigSecretMigrator {
       values: server.env,
       refs: server.envRefs,
       refsResolved: server.secretRefsResolved,
-      rollbacks: rollbacks,
+      writes: writes,
     );
     final headers = await _prepareMap(
       ownerLabel: 'Agent server "${server.name}"',
@@ -107,14 +108,14 @@ final class AcpConfigSecretMigrator {
       values: server.headers,
       refs: server.headerRefs,
       refsResolved: server.secretRefsResolved,
-      rollbacks: rollbacks,
+      writes: writes,
     );
     final reviewAgent = await _prepareReviewAgent(
       server.permissionReviewAgent,
       configIdentity: configIdentity,
       targetKind: 'review/agent/${server.name}',
       ownerLabel: 'Agent server "${server.name}" review agent',
-      rollbacks: rollbacks,
+      writes: writes,
     );
     return server.withSecrets(
       env: env.values,
@@ -130,7 +131,7 @@ final class AcpConfigSecretMigrator {
     required String configIdentity,
     required String targetKind,
     required String ownerLabel,
-    required List<Future<void> Function()> rollbacks,
+    required _OwnedSecretWrites writes,
   }) async {
     final targetIdentity = mcpSecretTargetIdentity(server);
     final env = await _prepareMap(
@@ -142,7 +143,7 @@ final class AcpConfigSecretMigrator {
       values: server.env,
       refs: server.envRefs,
       refsResolved: server.secretRefsResolved,
-      rollbacks: rollbacks,
+      writes: writes,
     );
     final headers = await _prepareMap(
       ownerLabel: ownerLabel,
@@ -153,7 +154,7 @@ final class AcpConfigSecretMigrator {
       values: server.headers,
       refs: server.headerRefs,
       refsResolved: server.secretRefsResolved,
-      rollbacks: rollbacks,
+      writes: writes,
     );
     return server.withSecrets(
       env: env.values,
@@ -166,7 +167,7 @@ final class AcpConfigSecretMigrator {
   Future<AcpClientProviderConfig> _prepareClientProviders(
     AcpClientProviderConfig providers,
     String configIdentity,
-    List<Future<void> Function()> rollbacks,
+    _OwnedSecretWrites writes,
   ) async {
     return AcpClientProviderConfig(
       filesystem: providers.filesystem,
@@ -178,7 +179,7 @@ final class AcpConfigSecretMigrator {
           configIdentity: configIdentity,
           targetKind: 'review/global',
           ownerLabel: 'Global review agent',
-          rollbacks: rollbacks,
+          writes: writes,
         ),
       ),
     );
@@ -189,7 +190,7 @@ final class AcpConfigSecretMigrator {
     required String configIdentity,
     required String targetKind,
     required String ownerLabel,
-    required List<Future<void> Function()> rollbacks,
+    required _OwnedSecretWrites writes,
   }) async {
     final server = config.mcpServer;
     return AcpPermissionReviewAgentConfig(
@@ -201,7 +202,7 @@ final class AcpConfigSecretMigrator {
               configIdentity: configIdentity,
               targetKind: '$targetKind/${server.name}',
               ownerLabel: '$ownerLabel MCP server "${server.name}"',
-              rollbacks: rollbacks,
+              writes: writes,
             ),
       mcpServerName: config.mcpServerName,
       toolName: config.toolName,
@@ -219,13 +220,12 @@ final class AcpConfigSecretMigrator {
     required Map<String, String> values,
     required Map<String, String> refs,
     required bool refsResolved,
-    required List<Future<void> Function()> rollbacks,
+    required _OwnedSecretWrites writes,
   }) async {
     final resolved = <String, String>{};
     final desiredRefs = <String, String>{};
     final existingValues = <String, String>{};
     final referenceKinds = <String, _OwnedReferenceKind>{};
-    final newlyCreatedReferences = <String>{};
 
     SecretOwner ownerFor(String key) => SecretOwner(
       configIdentity: configIdentity,
@@ -234,37 +234,6 @@ final class AcpConfigSecretMigrator {
       fieldName: fieldName,
       key: key,
     );
-
-    Future<String> putOwned(SecretOwner owner, String value) async {
-      final reference = await _store.put(
-        namespace: owner.namespace,
-        key: owner.key,
-        value: value,
-      );
-      if (!_store.referenceMatches(
-        reference,
-        namespace: owner.namespace,
-        key: owner.key,
-      )) {
-        throw StateError(
-          '$ownerLabel $fieldName "${owner.key}" returned a reference outside its owner.',
-        );
-      }
-      return reference;
-    }
-
-    void addNewReferenceRollback(SecretOwner owner, String reference) {
-      if (!newlyCreatedReferences.add(reference)) return;
-      rollbacks.add(() async {
-        if (_store.referenceMatches(
-          reference,
-          namespace: owner.namespace,
-          key: owner.key,
-        )) {
-          await _store.delete(reference);
-        }
-      });
-    }
 
     if (!refsResolved) {
       final mixedKeys = values.keys.where(refs.containsKey).toList();
@@ -290,9 +259,12 @@ final class AcpConfigSecretMigrator {
         existingValues[entry.key] = value;
         referenceKinds[entry.key] = read.kind;
         if (read.kind == _OwnedReferenceKind.legacy) {
-          final migrated = await putOwned(owner, value);
+          final migrated = await writes.put(
+            owner,
+            value,
+            ownerLabel: ownerLabel,
+          );
           desiredRefs[entry.key] = migrated;
-          addNewReferenceRollback(owner, migrated);
         } else {
           desiredRefs[entry.key] = entry.value;
         }
@@ -317,28 +289,28 @@ final class AcpConfigSecretMigrator {
         var desiredReference = desiredRefs[entry.key];
         if (referenceKind == _OwnedReferenceKind.legacy &&
             desiredReference == null) {
-          desiredReference = await putOwned(owner, oldValue);
-          addNewReferenceRollback(owner, desiredReference);
+          desiredReference = await writes.put(
+            owner,
+            oldValue,
+            ownerLabel: ownerLabel,
+          );
         }
         if (oldValue != entry.value) {
-          final nextRef = await putOwned(owner, entry.value);
+          final nextRef = await writes.put(
+            owner,
+            entry.value,
+            ownerLabel: ownerLabel,
+          );
           desiredReference = nextRef;
-          if (referenceKind == _OwnedReferenceKind.current) {
-            rollbacks.add(() async {
-              final restored = await putOwned(owner, oldValue);
-              if (restored != oldRef) {
-                throw StateError(
-                  '$ownerLabel $fieldName "${entry.key}" could not restore its stable reference.',
-                );
-              }
-            });
-          }
         }
         desiredRefs[entry.key] = desiredReference ?? oldRef;
       } else {
-        final reference = await putOwned(owner, entry.value);
+        final reference = await writes.put(
+          owner,
+          entry.value,
+          ownerLabel: ownerLabel,
+        );
         desiredRefs[entry.key] = reference;
-        addNewReferenceRollback(owner, reference);
       }
     }
     return _PreparedSecretMap(
@@ -379,6 +351,125 @@ final class AcpConfigSecretMigrator {
       );
     }
   }
+}
+
+final class _OwnedSecretWrites {
+  _OwnedSecretWrites(this._store, this._rollbacks);
+
+  final SecretStore _store;
+  final List<Future<void> Function()> _rollbacks;
+  final Map<String, _OwnedSecretSnapshot> _snapshots =
+      <String, _OwnedSecretSnapshot>{};
+
+  Future<String> put(
+    SecretOwner owner,
+    String value, {
+    required String ownerLabel,
+  }) async {
+    final expected = _store.referenceFor(
+      namespace: owner.namespace,
+      key: owner.key,
+    );
+    if (!_store.referenceMatches(
+      expected,
+      namespace: owner.namespace,
+      key: owner.key,
+    )) {
+      throw StateError(
+        '$ownerLabel ${owner.fieldName} "${owner.key}" has an invalid deterministic reference.',
+      );
+    }
+
+    final existingSnapshot = _snapshots[expected];
+    if (existingSnapshot == null) {
+      String? previousValue;
+      try {
+        previousValue = await _store.get(expected);
+      } catch (error) {
+        throw FormatException(
+          '$ownerLabel ${owner.fieldName} "${owner.key}" could not snapshot its Keychain secret (${error.runtimeType}).',
+        );
+      }
+      final snapshot = _OwnedSecretSnapshot(
+        owner: owner,
+        reference: expected,
+        previousValue: previousValue,
+        ownerLabel: ownerLabel,
+      );
+      _snapshots[expected] = snapshot;
+      _rollbacks.add(() => _restore(snapshot));
+    } else if (existingSnapshot.owner.namespace != owner.namespace ||
+        existingSnapshot.owner.key != owner.key) {
+      throw StateError(
+        '$ownerLabel ${owner.fieldName} "${owner.key}" collides with another secret owner.',
+      );
+    }
+
+    final reference = await _store.put(
+      namespace: owner.namespace,
+      key: owner.key,
+      value: value,
+    );
+    if (reference != expected ||
+        !_store.referenceMatches(
+          reference,
+          namespace: owner.namespace,
+          key: owner.key,
+        )) {
+      throw StateError(
+        '$ownerLabel ${owner.fieldName} "${owner.key}" returned a reference outside its owner.',
+      );
+    }
+    return reference;
+  }
+
+  Future<void> _restore(_OwnedSecretSnapshot snapshot) async {
+    final owner = snapshot.owner;
+    final reference = snapshot.reference;
+    if (!_store.referenceMatches(
+      reference,
+      namespace: owner.namespace,
+      key: owner.key,
+    )) {
+      throw StateError(
+        '${snapshot.ownerLabel} ${owner.fieldName} "${owner.key}" cannot safely roll back its reference.',
+      );
+    }
+    final previousValue = snapshot.previousValue;
+    if (previousValue == null) {
+      await _store.delete(reference);
+      return;
+    }
+    final restored = await _store.put(
+      namespace: owner.namespace,
+      key: owner.key,
+      value: previousValue,
+    );
+    if (restored != reference ||
+        !_store.referenceMatches(
+          restored,
+          namespace: owner.namespace,
+          key: owner.key,
+        )) {
+      throw StateError(
+        '${snapshot.ownerLabel} ${owner.fieldName} "${owner.key}" could not restore its stable reference.',
+      );
+    }
+  }
+}
+
+final class _OwnedSecretSnapshot {
+  const _OwnedSecretSnapshot({
+    required this.owner,
+    required this.reference,
+    required this.previousValue,
+    required this.ownerLabel,
+  });
+
+  final SecretOwner owner;
+  final String reference;
+  final String? previousValue;
+  final String ownerLabel;
 }
 
 enum _OwnedReferenceKind { current, legacy }
@@ -641,10 +732,10 @@ String agentSecretTargetIdentity(AgentServerConfig server) {
 String mcpSecretTargetIdentity(McpServerConfig server) {
   final raw = server.raw;
   return _targetFingerprint(<String, Object?>{
-    'type': server.type,
-    'command': server.command,
-    'url': server.url,
-    'id': server.id,
+    'type': raw['type'] is String ? raw['type'] : server.type,
+    'command': raw['command'] is String ? raw['command'] : server.command,
+    'url': raw['url'] is String ? raw['url'] : server.url,
+    'id': raw['id'] is String ? raw['id'] : server.id,
     'args': raw['args'] is List ? raw['args'] : const <Object?>[],
     'cwd': raw['cwd'] ?? raw['working_directory'] ?? raw['workingDirectory'],
   });

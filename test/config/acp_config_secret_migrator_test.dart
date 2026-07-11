@@ -64,7 +64,7 @@ void main() {
 
     expect(await file.readAsString(), original);
     expect(store.values, {foreign: 'foreign-secret'});
-    expect(store.deleted, hasLength(1));
+    expect(store.deleted, hasLength(2));
     expect(store.deleted, isNot(contains(foreign)));
   });
 
@@ -127,6 +127,121 @@ void main() {
     expect(await file.readAsString(), original);
     expect(await store.get(ref), 'old-value');
   });
+
+  test(
+    'atomic write failure restores a preexisting owned orphan for plaintext',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_secret_owned_orphan',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      await file.writeAsString('{}');
+      final store = FakeSecretStore();
+      const server = AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent',
+        env: {'TOKEN': 'new-value'},
+      );
+      final owner = SecretOwner(
+        configIdentity: await configSecretIdentity(file.path),
+        targetKind: 'agent/Local',
+        targetIdentity: agentSecretTargetIdentity(server),
+        fieldName: 'env',
+        key: 'TOKEN',
+      );
+      final reference = await store.put(
+        namespace: owner.namespace,
+        key: owner.key,
+        value: 'orphan-old',
+      );
+
+      await expectLater(
+        AcpConfigStore.writeConfig(
+          config: AcpClientConfig(
+            configPath: file.path,
+            agentServers: const [server],
+          ),
+          secretStore: store,
+          atomicWriter: (_, _) async => throw StateError('rename failed'),
+        ),
+        throwsStateError,
+      );
+
+      expect(await store.get(reference), 'orphan-old');
+      expect(store.deleted, isNot(contains(reference)));
+    },
+  );
+
+  test(
+    'failed legacy migration restores a preexisting current-owner orphan',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_secret_legacy_owned_orphan',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      final store = FakeSecretStore();
+      const server = AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent',
+      );
+      final owner = SecretOwner(
+        configIdentity: await configSecretIdentity(file.path),
+        targetKind: 'agent/Local',
+        targetIdentity: agentSecretTargetIdentity(server),
+        fieldName: 'env',
+        key: 'TOKEN',
+      );
+      final legacyReference = await store.put(
+        namespace: owner.legacyNamespace,
+        key: owner.key,
+        value: 'legacy-secret',
+      );
+      final currentReference = await store.put(
+        namespace: owner.namespace,
+        key: owner.key,
+        value: 'orphan-old',
+      );
+      await file.writeAsString(
+        jsonEncode({
+          'agent_servers': {
+            'Local': {
+              'type': 'custom',
+              'command': 'agent',
+              'env_refs': {'TOKEN': legacyReference},
+            },
+          },
+        }),
+      );
+
+      await expectLater(
+        AcpConfigStore.writeConfig(
+          config: AcpClientConfig(
+            configPath: file.path,
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Local',
+                type: 'custom',
+                command: 'agent',
+                env: {'TOKEN': 'new-value'},
+              ),
+            ],
+          ),
+          secretStore: store,
+          atomicWriter: (_, _) async => throw StateError('rename failed'),
+        ),
+        throwsStateError,
+      );
+
+      expect(store.getCount, 2);
+      expect(store.putCount, 5);
+      expect(await store.get(currentReference), 'orphan-old');
+      expect(store.deleted, isNot(contains(currentReference)));
+    },
+  );
 
   test(
     'atomic write failure restores existing secret when proposal lost refs',
@@ -773,6 +888,123 @@ void main() {
     },
   );
 
+  test('agent target fingerprint covers every target field', () {
+    const base = AgentServerConfig(
+      name: 'Local',
+      type: 'custom',
+      command: 'agent',
+      url: 'https://agent.example/acp',
+      cwd: '/workspace',
+      args: ['one', 'two'],
+    );
+    final baseline = agentSecretTargetIdentity(base);
+    final variants = <String, AgentServerConfig>{
+      'type': const AgentServerConfig(
+        name: 'Local',
+        type: 'http',
+        command: 'agent',
+        url: 'https://agent.example/acp',
+        cwd: '/workspace',
+        args: ['one', 'two'],
+      ),
+      'command whitespace': const AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent ',
+        url: 'https://agent.example/acp',
+        cwd: '/workspace',
+        args: ['one', 'two'],
+      ),
+      'url': const AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent',
+        url: 'https://other.example/acp',
+        cwd: '/workspace',
+        args: ['one', 'two'],
+      ),
+      'cwd': const AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent',
+        url: 'https://agent.example/acp',
+        cwd: '/other',
+        args: ['one', 'two'],
+      ),
+      'args order': const AgentServerConfig(
+        name: 'Local',
+        type: 'custom',
+        command: 'agent',
+        url: 'https://agent.example/acp',
+        cwd: '/workspace',
+        args: ['two', 'one'],
+      ),
+    };
+
+    for (final entry in variants.entries) {
+      expect(
+        agentSecretTargetIdentity(entry.value),
+        isNot(baseline),
+        reason: entry.key,
+      );
+    }
+  });
+
+  test('MCP target fingerprint is canonical and covers every target field', () {
+    const baseRaw = <String, dynamic>{
+      'name': 'tools',
+      'type': 'custom',
+      'command': 'tool',
+      'url': 'https://mcp.example',
+      'id': 'tools-id',
+      'args': ['one', 'two'],
+      'cwd': '/workspace',
+    };
+    const base = McpServerConfig(raw: baseRaw);
+    final baseline = mcpSecretTargetIdentity(base);
+    final variants = <String, Object?>{
+      'type': 'http',
+      'command whitespace': 'tool ',
+      'url': 'https://other.example',
+      'id': 'other-id',
+      'args': const ['two', 'one'],
+      'cwd': '/other',
+    };
+    final variantFields = <String, String>{
+      'type': 'type',
+      'command whitespace': 'command',
+      'url': 'url',
+      'id': 'id',
+      'args': 'args',
+      'cwd': 'cwd',
+    };
+
+    for (final entry in variants.entries) {
+      final raw = <String, dynamic>{
+        ...baseRaw,
+        variantFields[entry.key]!: entry.value,
+      };
+      expect(
+        mcpSecretTargetIdentity(McpServerConfig(raw: raw)),
+        isNot(baseline),
+        reason: entry.key,
+      );
+    }
+
+    const reordered = McpServerConfig(
+      raw: {
+        'cwd': '/workspace',
+        'args': ['one', 'two'],
+        'id': 'tools-id',
+        'url': 'https://mcp.example',
+        'command': 'tool',
+        'type': 'custom',
+        'name': 'tools',
+      },
+    );
+    expect(mcpSecretTargetIdentity(reordered), baseline);
+  });
+
   test(
     'rejects cross-config references before reading every secret location',
     () async {
@@ -792,6 +1024,24 @@ void main() {
           ],
         },
       );
+      const topMcp = McpServerConfig(
+        raw: {
+          'name': 'tools',
+          'command': 'tool',
+          'env': [
+            {'name': 'TOP_TOKEN', 'value': 'top-secret'},
+          ],
+        },
+      );
+      const globalReviewMcp = McpServerConfig(
+        raw: {
+          'name': 'global-review',
+          'command': 'global-review-tool',
+          'env': [
+            {'name': 'GLOBAL_TOKEN', 'value': 'global-secret'},
+          ],
+        },
+      );
       final source = await AcpConfigStore.writeConfig(
         config: AcpClientConfig(
           configPath: sourceFile.path,
@@ -808,10 +1058,22 @@ void main() {
               ),
             ),
           ],
+          mcpServers: const [topMcp],
+          clientProviders: const AcpClientProviderConfig(
+            permissions: AcpPermissionProviderConfig(
+              reviewAgent: AcpPermissionReviewAgentConfig(
+                enabled: true,
+                mcpServer: globalReviewMcp,
+              ),
+            ),
+          ),
         ),
         secretStore: store,
       );
       final sourceAgent = source.agentServers.single;
+      final sourceTopMcp = source.mcpServers.single;
+      final sourceGlobalReview =
+          source.clientProviders.permissions.reviewAgent.mcpServer!;
       final cases = <Map<String, dynamic>>[
         {
           'agent_servers': {
@@ -850,6 +1112,31 @@ void main() {
                           .mcpServer!
                           .envRefs['REVIEW_TOKEN'],
                     },
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          'mcp_servers': [
+            {
+              'name': 'tools',
+              'command': 'tool',
+              'env_refs': {'TOP_TOKEN': sourceTopMcp.envRefs['TOP_TOKEN']},
+            },
+          ],
+        },
+        {
+          'client_providers': {
+            'permissions': {
+              'review_agent': {
+                'enabled': true,
+                'mcp_server': {
+                  'name': 'global-review',
+                  'command': 'global-review-tool',
+                  'env_refs': {
+                    'GLOBAL_TOKEN': sourceGlobalReview.envRefs['GLOBAL_TOKEN'],
                   },
                 },
               },
