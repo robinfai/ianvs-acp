@@ -881,4 +881,298 @@ void main() {
       }
     });
   });
+
+  group('permission display context', () {
+    test('shows normalized root operation fields in a fixed order', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'command': 'git',
+            'args': <String>['push', 'origin', 'main'],
+            'cwd': '/workspace',
+            'path': '/workspace/report.txt',
+            'target': 'origin',
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.warning, isNull);
+      expect(
+        context.entries
+            .map((entry) => (entry.label, entry.value))
+            .toList(growable: false),
+        const <(String, String)>[
+          ('Command', 'git push origin main'),
+          ('Working directory', '/workspace'),
+          ('Path', '/workspace/report.txt'),
+          ('Target', 'origin'),
+        ],
+      );
+      expect(
+        () => context.entries.add(
+          const PermissionDisplayEntry(label: 'Other', value: 'value'),
+        ),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('reads operation fields from nested toolCall input', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'toolCall': <String, Object?>{
+              'input': <String, Object?>{
+                'command': 'flutter',
+                'args': <String>['test', 'test/widget_test.dart'],
+                'cwd': '/workspace/app',
+                'path': 'test/widget_test.dart',
+                'target': 'local',
+              },
+            },
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(
+        context.entries
+            .map((entry) => (entry.label, entry.value))
+            .toList(growable: false),
+        const <(String, String)>[
+          ('Command', 'flutter test test/widget_test.dart'),
+          ('Working directory', '/workspace/app'),
+          ('Path', 'test/widget_test.dart'),
+          ('Target', 'local'),
+        ],
+      );
+    });
+
+    test('deduplicates equal fields across structured containers', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'command': 'git status',
+            'cwd': '/workspace',
+            'toolCall': <String, Object?>{
+              'command': 'git status',
+              'cwd': '/workspace',
+            },
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries.map((entry) => entry.label), <String>[
+        'Command',
+        'Working directory',
+      ]);
+    });
+
+    test('returns no partial entries for conflicts or malformed fields', () {
+      for (final metadata in <Map<String, Object?>>[
+        const <String, Object?>{
+          'command': 'git status',
+          'toolCall': <String, Object?>{'command': 'flutter test'},
+          'cwd': '/workspace',
+        },
+        const <String, Object?>{
+          'command': 'git status',
+          'path': <String>['not', 'a', 'string'],
+        },
+        const <String, Object?>{
+          'command': 'git',
+          'args': <Object?>['status', 1],
+        },
+      ]) {
+        final context = permissionDisplayContextForRequest(
+          _permissionRequest(metadata: metadata),
+        );
+
+        expect(context.isComplete, isFalse);
+        expect(context.entries, isEmpty);
+        expect(context.warning, PermissionDisplayContext.incompleteWarning);
+      }
+    });
+
+    test(
+      'accepts exactly 16 KiB of multibyte text and rejects one byte more',
+      () {
+        final exact = List<String>.filled(8192, 'é').join();
+        final complete = permissionDisplayContextForRequest(
+          _permissionRequest(metadata: <String, Object?>{'command': exact}),
+        );
+        final incomplete = permissionDisplayContextForRequest(
+          _permissionRequest(metadata: <String, Object?>{'command': '$exact!'}),
+        );
+
+        expect(complete.isComplete, isTrue);
+        expect(complete.entries.single.value, exact);
+        expect(incomplete.isComplete, isFalse);
+        expect(incomplete.entries, isEmpty);
+      },
+    );
+
+    test('preflights raw JSON at the 16 KiB UTF-8 boundary', () {
+      final payload = '${List<String>.filled(8186, 'é').join()}a';
+      final exact = '{"path":"$payload"}';
+      final complete = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: <String, Object?>{'rawInput': exact}),
+      );
+      final incomplete = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: <String, Object?>{'rawInput': '$exact '}),
+      );
+
+      expect(complete.isComplete, isTrue);
+      expect(complete.entries.single.value, payload);
+      expect(incomplete.isComplete, isFalse);
+      expect(incomplete.entries, isEmpty);
+    });
+
+    test('enforces map entry boundary at 16', () {
+      Map<String, Object?> metadataWithEntries(int count) => <String, Object?>{
+        'command': 'git status',
+        for (var index = 1; index < count; index += 1)
+          'extra$index': 'value$index',
+      };
+
+      expect(
+        permissionDisplayContextForRequest(
+          _permissionRequest(metadata: metadataWithEntries(16)),
+        ).isComplete,
+        isTrue,
+      );
+      final overflow = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: metadataWithEntries(17)),
+      );
+      expect(overflow.isComplete, isFalse);
+      expect(overflow.entries, isEmpty);
+    });
+
+    test('enforces structured depth boundary at four', () {
+      Object nested(int depth) {
+        Object value = const <String, Object?>{'note': 'leaf'};
+        for (var index = 0; index < depth; index += 1) {
+          value = <String, Object?>{'child': value};
+        }
+        return value;
+      }
+
+      final exact = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'path': '/workspace/file',
+            'details': nested(3),
+          },
+        ),
+      );
+      final overflow = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'path': '/workspace/file',
+            'details': nested(4),
+          },
+        ),
+      );
+
+      expect(exact.isComplete, isTrue);
+      expect(overflow.isComplete, isFalse);
+      expect(overflow.entries, isEmpty);
+    });
+
+    test('enforces structured node boundary at 128', () {
+      Map<String, Object?> metadataWithNodes(int leafCount) =>
+          <String, Object?>{
+            'path': '/workspace/file',
+            'details': List<String>.filled(leafCount, 'x'),
+          };
+
+      expect(
+        permissionDisplayContextForRequest(
+          _permissionRequest(metadata: metadataWithNodes(125)),
+        ).isComplete,
+        isTrue,
+      );
+      final overflow = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: metadataWithNodes(126)),
+      );
+      expect(overflow.isComplete, isFalse);
+      expect(overflow.entries, isEmpty);
+    });
+
+    test('uses a payload-free warning without invoking remote toString', () {
+      const canary = 'permission-display-secret-canary';
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'command': _ThrowingToString(canary),
+            'cwd': '/workspace',
+          },
+        ),
+      );
+
+      expect(context.isComplete, isFalse);
+      expect(context.entries, isEmpty);
+      expect(context.warning, isNot(contains(canary)));
+      expect(context.warning, PermissionDisplayContext.incompleteWarning);
+    });
+
+    test('keeps legacy requests without structured context complete', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'legacy': _ThrowingToString('legacy-canary'),
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries, isEmpty);
+      expect(context.warning, isNull);
+    });
+
+    test('validates injected limits at runtime', () {
+      expect(
+        () => PermissionDisplayContextLimits(maxUtf8Bytes: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => PermissionDisplayContextLimits(maxEntries: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => PermissionDisplayContextLimits(maxDepth: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => PermissionDisplayContextLimits(maxNodes: 0),
+        throwsArgumentError,
+      );
+    });
+  });
+}
+
+AcpPermissionRequest _permissionRequest({
+  Map<String, Object?> metadata = const <String, Object?>{},
+}) {
+  return AcpPermissionRequest(
+    id: 'permission-display',
+    title: 'Permission requested',
+    rationale: 'Requested by agent.',
+    sessionId: 'session-1',
+    toolName: 'terminal',
+    toolKind: 'execute',
+    options: const <String>['allow', 'deny'],
+    requestedAt: DateTime(2026, 7, 11, 12),
+    metadata: metadata,
+  );
+}
+
+class _ThrowingToString {
+  const _ThrowingToString(this.canary);
+
+  final String canary;
+
+  @override
+  String toString() => throw StateError(canary);
 }

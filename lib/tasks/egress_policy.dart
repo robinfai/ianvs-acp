@@ -9,6 +9,301 @@ class EgressPolicyMatch {
   final String commandLine;
 }
 
+class PermissionDisplayEntry {
+  const PermissionDisplayEntry({required this.label, required this.value});
+
+  final String label;
+  final String value;
+}
+
+class PermissionDisplayContext {
+  PermissionDisplayContext._({
+    required List<PermissionDisplayEntry> entries,
+    required this.isComplete,
+    required this.warning,
+  }) : entries = List<PermissionDisplayEntry>.unmodifiable(entries);
+
+  static const String incompleteWarning =
+      'Some operation details could not be displayed safely.';
+
+  factory PermissionDisplayContext.complete(
+    List<PermissionDisplayEntry> entries,
+  ) {
+    return PermissionDisplayContext._(
+      entries: entries,
+      isComplete: true,
+      warning: null,
+    );
+  }
+
+  factory PermissionDisplayContext.incomplete() {
+    return PermissionDisplayContext._(
+      entries: const <PermissionDisplayEntry>[],
+      isComplete: false,
+      warning: incompleteWarning,
+    );
+  }
+
+  final List<PermissionDisplayEntry> entries;
+  final bool isComplete;
+  final String? warning;
+}
+
+class PermissionDisplayContextLimits {
+  PermissionDisplayContextLimits({
+    this.maxUtf8Bytes = 16 * 1024,
+    this.maxEntries = 16,
+    this.maxDepth = 4,
+    this.maxNodes = 128,
+  }) {
+    if (maxUtf8Bytes <= 0) {
+      throw ArgumentError.value(maxUtf8Bytes, 'maxUtf8Bytes');
+    }
+    if (maxEntries <= 0) {
+      throw ArgumentError.value(maxEntries, 'maxEntries');
+    }
+    if (maxDepth <= 0) {
+      throw ArgumentError.value(maxDepth, 'maxDepth');
+    }
+    if (maxNodes <= 0) {
+      throw ArgumentError.value(maxNodes, 'maxNodes');
+    }
+  }
+
+  final int maxUtf8Bytes;
+  final int maxEntries;
+  final int maxDepth;
+  final int maxNodes;
+}
+
+final PermissionDisplayContextLimits _defaultPermissionDisplayContextLimits =
+    PermissionDisplayContextLimits();
+
+PermissionDisplayContext permissionDisplayContextForRequest(
+  AcpPermissionRequest request, {
+  PermissionDisplayContextLimits? limits,
+}) {
+  final metadata = request.metadata;
+  if (!_hasPermissionDisplayEvidence(metadata)) {
+    return PermissionDisplayContext.complete(const <PermissionDisplayEntry>[]);
+  }
+
+  final effectiveLimits = limits ?? _defaultPermissionDisplayContextLimits;
+  final preflight = _PermissionDisplayPreflight(effectiveLimits);
+  if (!preflight.validate(metadata)) {
+    return PermissionDisplayContext.incomplete();
+  }
+
+  final containers = _permissionDisplayContainers(metadata);
+  if (containers == null) return PermissionDisplayContext.incomplete();
+
+  final values = <String, List<String>>{
+    'cwd': <String>[],
+    'path': <String>[],
+    'target': <String>[],
+  };
+  for (final container in containers) {
+    for (final key in values.keys) {
+      if (!container.containsKey(key)) continue;
+      final value = container[key];
+      if (value is! String || value.trim().isEmpty) {
+        return PermissionDisplayContext.incomplete();
+      }
+      final normalized = value.trim();
+      if (!values[key]!.contains(normalized)) values[key]!.add(normalized);
+    }
+  }
+  if (values.values.any((candidates) => candidates.length > 1)) {
+    return PermissionDisplayContext.incomplete();
+  }
+
+  final entries = <PermissionDisplayEntry>[];
+  if (_containersHavePermissionCommandEvidence(containers)) {
+    final invocation = _commandFromPermissionRequest(request);
+    if (invocation == null || invocation.ambiguous) {
+      return PermissionDisplayContext.incomplete();
+    }
+    final commandLine = commandLineFromPermissionRequest(request);
+    if (commandLine == null || commandLine == '<redacted>') {
+      return PermissionDisplayContext.incomplete();
+    }
+    entries.add(PermissionDisplayEntry(label: 'Command', value: commandLine));
+  }
+
+  for (final field in const <({String key, String label})>[
+    (key: 'cwd', label: 'Working directory'),
+    (key: 'path', label: 'Path'),
+    (key: 'target', label: 'Target'),
+  ]) {
+    final candidates = values[field.key]!;
+    if (candidates.isNotEmpty) {
+      entries.add(
+        PermissionDisplayEntry(label: field.label, value: candidates.single),
+      );
+    }
+  }
+  return PermissionDisplayContext.complete(entries);
+}
+
+const Set<String> _permissionDisplayValueKeys = <String>{
+  'cwd',
+  'path',
+  'target',
+};
+
+bool _hasPermissionDisplayEvidence(Map<String, Object?> metadata) {
+  for (final entry in metadata.entries) {
+    final key = entry.key;
+    if (_permissionCommandKeys.contains(key) ||
+        _permissionArgumentKeys.contains(key) ||
+        _permissionDisplayValueKeys.contains(key) ||
+        key == 'toolCall' ||
+        key == 'rawInput' ||
+        key == 'raw_input') {
+      return true;
+    }
+    if (key == 'input') {
+      final value = entry.value;
+      if (value is Map ||
+          (value is String && value.trimLeft().startsWith('{')) ||
+          (value is! String && value != null)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+class _PermissionDisplayPreflight {
+  _PermissionDisplayPreflight(this.limits);
+
+  final PermissionDisplayContextLimits limits;
+  var _utf8Bytes = 0;
+  var _entries = 0;
+  var _nodes = 0;
+
+  bool validate(Map<String, Object?> metadata) {
+    try {
+      return _visit(metadata, depth: 0, countUtf8: true);
+    } on FormatException {
+      return false;
+    }
+  }
+
+  bool _visit(Object? value, {required int depth, required bool countUtf8}) {
+    if (++_nodes > limits.maxNodes) return false;
+    if (value is String) {
+      return !countUtf8 || _addUtf8(value);
+    }
+    if (value is List) {
+      if (depth > limits.maxDepth) return false;
+      if (value.any((item) => item is! String)) return false;
+      for (final item in value) {
+        if (!_visit(item, depth: depth + 1, countUtf8: countUtf8)) return false;
+      }
+      return true;
+    }
+    if (value is! Map) return false;
+    if (depth > limits.maxDepth) return false;
+    if (value.keys.any((key) => key is! String)) return false;
+    _entries += value.length;
+    if (_entries > limits.maxEntries) return false;
+    for (final entry in value.entries) {
+      final key = entry.key as String;
+      final item = entry.value;
+      if (key == 'toolCall') {
+        if (item is! Map ||
+            !_visit(item, depth: depth + 1, countUtf8: countUtf8)) {
+          return false;
+        }
+        continue;
+      }
+      if (_permissionRawInputKeys.contains(key) && item is String) {
+        if (!_addRawJsonUtf8(item)) return false;
+        final decoded = jsonDecode(item);
+        if (decoded is! Map ||
+            !_visit(decoded, depth: depth + 1, countUtf8: false)) {
+          return false;
+        }
+        continue;
+      }
+      if (!_visit(item, depth: depth + 1, countUtf8: countUtf8)) return false;
+    }
+    return true;
+  }
+
+  bool _addRawJsonUtf8(String value) {
+    final remaining = limits.maxUtf8Bytes - _utf8Bytes;
+    if (value.length > remaining) return false;
+    return _addUtf8(value);
+  }
+
+  bool _addUtf8(String value) {
+    final remaining = limits.maxUtf8Bytes - _utf8Bytes;
+    if (value.length > remaining) return false;
+    final length = utf8.encode(value).length;
+    if (length > remaining) return false;
+    _utf8Bytes += length;
+    return true;
+  }
+}
+
+List<Map<String, Object?>>? _permissionDisplayContainers(
+  Map<String, Object?> metadata,
+) {
+  final result = <Map<String, Object?>>[];
+
+  bool collect(Map source) {
+    if (source.keys.any((key) => key is! String)) return false;
+    final typed = <String, Object?>{
+      for (final entry in source.entries) entry.key as String: entry.value,
+    };
+    result.add(typed);
+    for (final key in const <String>[
+      'toolCall',
+      'rawInput',
+      'raw_input',
+      'input',
+    ]) {
+      if (!typed.containsKey(key)) continue;
+      final value = typed[key];
+      if (key == 'input' &&
+          value is String &&
+          !value.trimLeft().startsWith('{')) {
+        continue;
+      }
+      final nested = _permissionDisplayMap(value);
+      if (nested == null || !collect(nested)) return false;
+    }
+    return true;
+  }
+
+  return collect(metadata) ? result : null;
+}
+
+Map? _permissionDisplayMap(Object? value) {
+  if (value is Map) return value;
+  if (value is! String) return null;
+  try {
+    final decoded = jsonDecode(value);
+    return decoded is Map ? decoded : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+bool _containersHavePermissionCommandEvidence(
+  List<Map<String, Object?>> containers,
+) {
+  for (final container in containers) {
+    if (_permissionCommandKeys.any(container.containsKey) ||
+        _permissionArgumentKeys.any(container.containsKey)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool isEgressSensitiveCommand(String commandLine) {
   return egressSensitiveCommandMatch(commandLine) != null;
 }
