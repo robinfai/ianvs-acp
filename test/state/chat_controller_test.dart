@@ -1201,7 +1201,7 @@ void main() {
   );
 
   test(
-    'resolved duplicate permission requests do not become pending again',
+    'repeated permission events receive a new generation',
     () async {
       final fake = _CountingPermissionResponseAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
@@ -1232,14 +1232,18 @@ void main() {
       await pumpEventQueue();
 
       expect(fake.permissionResponseCount, 1);
-      expect(controller.pendingPermissionRequest, isNull);
-      expect(controller.permissionHistory, hasLength(1));
+      expect(controller.pendingPermissionRequest?.generation, 2);
+      expect(controller.permissionHistory, hasLength(2));
       expect(
-        controller.permissionHistory.single.status,
+        controller.permissionHistory.first.status,
+        AcpPermissionAuditStatus.pending,
+      );
+      expect(
+        controller.permissionHistory.last.status,
         AcpPermissionAuditStatus.allowed,
       );
       expect(
-        controller.permissionHistory.single.decisionSource,
+        controller.permissionHistory.last.decisionSource,
         AcpPermissionDecisionSource.manual,
       );
     },
@@ -2066,7 +2070,7 @@ void main() {
   });
 
   test(
-    'late review cannot approve a different request that reuses the same id',
+    'late review cannot approve a same-id request with metadata whitespace changes',
     () async {
       final fake = FakeAgentClient();
       final reviewer = _SequencedPermissionReviewer();
@@ -2083,14 +2087,17 @@ void main() {
       fake.emitPermissionRequest(
         AcpPermissionRequest(
           id: 'permission-reused',
-          title: 'Read file',
-          rationale: 'Read a workspace file',
+          title: 'Read report',
+          rationale: 'Read the generated report',
           sessionId: 'session-1',
           toolName: 'read_text_file',
           toolKind: 'read',
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime(2026, 5, 31, 12),
-          metadata: const {'path': '/workspace/README.md'},
+          metadata: const {
+            'path': '/workspace/report',
+            'note': 'value',
+          },
         ),
       );
       await pumpEventQueue();
@@ -2098,14 +2105,17 @@ void main() {
       fake.emitPermissionRequest(
         AcpPermissionRequest(
           id: 'permission-reused',
-          title: 'Create terminal',
-          rationale: 'Run a command outside the workspace',
+          title: 'Read report',
+          rationale: 'Read the generated report',
           sessionId: 'session-1',
-          toolName: 'terminal',
-          toolKind: 'execute',
+          toolName: 'read_text_file',
+          toolKind: 'read',
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime(2026, 5, 31, 12, 1),
-          metadata: const {'command': 'open /Users'},
+          metadata: const {
+            'path': '/workspace/report ',
+            'note': ' value',
+          },
         ),
       );
       await pumpEventQueue();
@@ -2116,6 +2126,11 @@ void main() {
       expect(
         controller.pendingPermissionRequest?.contentFingerprint,
         isNot(reviewer.requests.first.contentFingerprint),
+      );
+      expect(controller.permissionHistory, hasLength(2));
+      expect(
+        controller.permissionHistory.map((entry) => entry.status),
+        [AcpPermissionAuditStatus.pending, AcpPermissionAuditStatus.cancelled],
       );
 
       reviewer.complete(
@@ -2130,10 +2145,15 @@ void main() {
 
       expect(fake.lastPermissionDecision, isNull);
       expect(fake.lastPermissionRequestId, isNull);
-      expect(controller.pendingPermissionRequest?.toolName, 'terminal');
+      expect(controller.pendingPermissionRequest?.generation, 2);
       expect(
         controller.permissionHistory.first.status,
         AcpPermissionAuditStatus.pending,
+      );
+      expect(controller.permissionHistory.first.reviewResult, isNull);
+      expect(
+        controller.permissionHistory.last.reviewResult?.rationale,
+        'The original read is low risk.',
       );
     },
   );

@@ -1741,6 +1741,46 @@ Future<void> main() async {
     }
   });
 
+  for (final scenario in const [
+    (
+      name: 'filesystem read with unknown session',
+      method: 'fs/read_text_file',
+      sessionId: 'unknown-session',
+    ),
+    (
+      name: 'filesystem write without session',
+      method: 'fs/write_text_file',
+      sessionId: null,
+    ),
+    (
+      name: 'filesystem write with unknown session',
+      method: 'fs/write_text_file',
+      sessionId: 'unknown-session',
+    ),
+    (
+      name: 'permission without session',
+      method: 'session/request_permission',
+      sessionId: null,
+    ),
+    (
+      name: 'permission with unknown session',
+      method: 'session/request_permission',
+      sessionId: 'unknown-session',
+    ),
+  ]) {
+    test('rejects ${scenario.name}', () async {
+      final result = await _runInvalidSessionRequest(
+        method: scenario.method,
+        sessionId: scenario.sessionId,
+      );
+
+      expect(result.response, contains('error'));
+      expect(result.response, isNot(contains('result')));
+      expect(result.permissionRequestCount, 0);
+      expect(result.writeTargetExists, isFalse);
+    });
+  }
+
   test(
     'rejects reusing a session id with a different workspace root',
     () async {
@@ -1761,7 +1801,11 @@ Future<void> main() async {
         'id': message['id'],
         'result': <String, dynamic>{
           'protocolVersion': 1,
-          'agentCapabilities': <String, dynamic>{},
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'additionalDirectories': true,
+            },
+          },
           'authMethods': <Map<String, dynamic>>[],
         },
       }));
@@ -1783,7 +1827,23 @@ Future<void> main() async {
 
       try {
         await client.connect().timeout(const Duration(seconds: 5));
-        await client.createSession(cwd: '/workspace/first');
+        await client.createSession(
+          cwd: '/workspace/first',
+          additionalDirectories: const ['/workspace/a', '/workspace/b'],
+        );
+
+        await client.createSession(
+          cwd: '/workspace/first',
+          additionalDirectories: const ['/workspace/b', '/workspace/a'],
+        );
+
+        await expectLater(
+          client.createSession(
+            cwd: '/workspace/first',
+            additionalDirectories: const ['/workspace/a', '/workspace/c'],
+          ),
+          throwsA(isA<StateError>()),
+        );
 
         await expectLater(
           client.createSession(cwd: '/workspace/second'),
@@ -5384,6 +5444,115 @@ const _tinyWavBytes = <int>[
 ];
 
 const _binaryBytes = <int>[0x00, 0xff, 0x10, 0x80, 0x42, 0x24];
+
+Future<({
+  Map<String, dynamic> response,
+  int permissionRequestCount,
+  bool writeTargetExists,
+})> _runInvalidSessionRequest({
+  required String method,
+  required String? sessionId,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final workspace = Directory('${tempDir.path}/workspace');
+  await workspace.create();
+  await File('${workspace.path}/fixture.txt').writeAsString('fixture');
+  final writeTarget = File('${workspace.path}/should-not-exist.txt');
+  final responseFile = File('${tempDir.path}/invalid_session_response.json');
+  final agentScript = File('${tempDir.path}/fake_invalid_session_agent.dart');
+  final params = <String, Object?>{
+    'sessionId': ?sessionId,
+    if (method == 'fs/read_text_file') 'path': 'fixture.txt',
+    if (method == 'fs/write_text_file') ...{
+      'path': writeTarget.path,
+      'content': 'must not be written',
+    },
+    if (method == 'session/request_permission') ...{
+      'toolCall': <String, Object?>{
+        'title': 'Run command',
+        'kind': 'execute',
+      },
+      'options': <Map<String, Object?>>[
+        {'optionId': 'allow', 'kind': 'allow_once', 'name': 'Allow'},
+        {'optionId': 'deny', 'kind': 'reject_once', 'name': 'Deny'},
+      ],
+    },
+  };
+  final methodLiteral = jsonEncode(method);
+  final paramsLiteral = jsonEncode(params);
+  final responsePath = jsonEncode(responseFile.path);
+  await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'invalid-session-request',
+        'method': $methodLiteral,
+        'params': $paramsLiteral,
+      }));
+    } else if (message['id'] == 'invalid-session-request') {
+      await File($responsePath).writeAsString(jsonEncode(message));
+    }
+  }
+}
+''');
+
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: [agentScript.path],
+    enableFilesystemReadTextFile: method == 'fs/read_text_file',
+    enableFilesystemWriteTextFile: method == 'fs/write_text_file',
+  );
+  var permissionRequestCount = 0;
+  final subscription = client.permissionRequests.listen((request) {
+    permissionRequestCount += 1;
+    unawaited(
+      client.respondToPermissionRequest(
+        id: request.id,
+        decision: AcpPermissionDecision.deny,
+      ),
+    );
+  });
+
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    await client.createSession(cwd: workspace.path);
+    await _waitForFile(responseFile);
+    final response =
+        jsonDecode(await responseFile.readAsString()) as Map<String, dynamic>;
+    return (
+      response: response,
+      permissionRequestCount: permissionRequestCount,
+      writeTargetExists: await writeTarget.exists(),
+    );
+  } finally {
+    await subscription.cancel();
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
 
 String _dartExecutable() {
   final executable = Platform.resolvedExecutable;

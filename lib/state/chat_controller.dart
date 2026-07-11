@@ -1350,17 +1350,10 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handlePermissionRequest(AcpPermissionRequest incomingRequest) {
-    if (_hasDeliveredPermissionDecision(incomingRequest)) return;
-    final existingPending = pendingPermissionRequest;
-    if (existingPending != null &&
-        existingPending.id == incomingRequest.id &&
-        existingPending.contentFingerprint ==
-            incomingRequest.contentFingerprint) {
-      return;
-    }
     final request = incomingRequest.withGeneration(
       ++_nextPermissionRequestGeneration,
     );
+    if (_hasDeliveredPermissionDecision(request)) return;
 
     if (!_isPermissionRequestForActiveSession(request)) {
       _recordPermissionRequest(request);
@@ -1406,9 +1399,7 @@ class ChatController extends ChangeNotifier {
 
   bool _hasDeliveredPermissionDecision(AcpPermissionRequest request) {
     final index = _permissionHistory.indexWhere(
-      (entry) =>
-          entry.request.id == request.id &&
-          entry.request.contentFingerprint == request.contentFingerprint,
+      (entry) => entry.request.bindingKey == request.bindingKey,
     );
     if (index == -1) return false;
 

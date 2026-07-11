@@ -74,7 +74,7 @@ void main() {
     ]);
   });
 
-  test('permission content fingerprints normalize map order and whitespace', () {
+  test('permission fingerprints sort maps but preserve metadata strings', () {
     final first = AcpPermissionRequest(
       id: 'permission-a',
       title: ' Run command ',
@@ -85,8 +85,8 @@ void main() {
       options: const [' Allow ', ' Deny '],
       requestedAt: DateTime(2026, 5, 31, 12),
       metadata: const {
-        'z': ' value ',
-        'nested': {'b': 2, 'a': ' one '},
+        'z': 'value',
+        'nested': {'b': 2, 'a': 'one'},
       },
     );
     final second = AcpPermissionRequest(
@@ -105,6 +105,59 @@ void main() {
     );
 
     expect(first.contentFingerprint, second.contentFingerprint);
+    final trailingPath = AcpPermissionRequest(
+      id: first.id,
+      title: first.title,
+      rationale: first.rationale,
+      sessionId: first.sessionId,
+      toolName: first.toolName,
+      toolKind: first.toolKind,
+      options: first.options,
+      requestedAt: first.requestedAt,
+      metadata: const {'path': '/workspace/report '},
+    );
+    final exactPath = AcpPermissionRequest(
+      id: first.id,
+      title: first.title,
+      rationale: first.rationale,
+      sessionId: first.sessionId,
+      toolName: first.toolName,
+      toolKind: first.toolKind,
+      options: first.options,
+      requestedAt: first.requestedAt,
+      metadata: const {'path': '/workspace/report'},
+    );
+    final leadingValue = AcpPermissionRequest(
+      id: first.id,
+      title: first.title,
+      rationale: first.rationale,
+      sessionId: first.sessionId,
+      toolName: first.toolName,
+      toolKind: first.toolKind,
+      options: first.options,
+      requestedAt: first.requestedAt,
+      metadata: const {'key': ' value'},
+    );
+    final exactValue = AcpPermissionRequest(
+      id: first.id,
+      title: first.title,
+      rationale: first.rationale,
+      sessionId: first.sessionId,
+      toolName: first.toolName,
+      toolKind: first.toolKind,
+      options: first.options,
+      requestedAt: first.requestedAt,
+      metadata: const {'key': 'value'},
+    );
+
+    expect(
+      trailingPath.contentFingerprint,
+      isNot(exactPath.contentFingerprint),
+    );
+    expect(
+      leadingValue.contentFingerprint,
+      isNot(exactValue.contentFingerprint),
+    );
     expect(
       first.withGeneration(1).bindingKey,
       isNot(first.withGeneration(2).bindingKey),

@@ -797,10 +797,7 @@ class SessionManager {
 
   bool _sameDirectories(List<String>? left, List<String> right) {
     if (left == null || left.length != right.length) return false;
-    for (var index = 0; index < left.length; index += 1) {
-      if (left[index] != right[index]) return false;
-    }
-    return true;
+    return left.toSet().containsAll(right);
   }
 
   Json _sessionSetupParams(Json params, List<String> additionalDirectories) {

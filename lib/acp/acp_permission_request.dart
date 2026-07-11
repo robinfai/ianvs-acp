@@ -268,7 +268,7 @@ class AcpPermissionRequest {
 
 Object? _canonicalPermissionValue(Object? value) {
   if (value == null || value is bool || value is num) return value;
-  if (value is String) return value.trim();
+  if (value is String) return value;
   if (value is List) {
     return value.map(_canonicalPermissionValue).toList(growable: false);
   }
