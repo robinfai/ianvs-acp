@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 import '../rpc/line_channel.dart';
+import 'byte_budget.dart';
 import '../transport/transport.dart';
 
 /// Stdio-based transport that spawns the agent process.
@@ -18,7 +19,9 @@ class StdioTransport implements AcpTransport {
     this.cwd,
     this.onProtocolOut,
     this.onProtocolIn,
-  });
+    this.maxLineBytes = defaultTransportByteLimit,
+    int? maxStderrLineBytes,
+  }) : maxStderrLineBytes = maxStderrLineBytes ?? maxLineBytes;
 
   /// Agent executable name/path.
   final String? command;
@@ -40,6 +43,12 @@ class StdioTransport implements AcpTransport {
 
   /// Optional callback for inbound frames.
   final void Function(String line)? onProtocolIn;
+
+  /// Maximum raw UTF-8 bytes in one stdin/stdout protocol line.
+  final int maxLineBytes;
+
+  /// Maximum raw bytes retained for one stderr diagnostic line.
+  final int maxStderrLineBytes;
 
   Process? _process;
   LineJsonChannel? _channel;
@@ -99,6 +108,8 @@ class StdioTransport implements AcpTransport {
       onStderr: (s) => logger.finer('[agent stderr] $s'),
       onInboundLine: onProtocolIn,
       onOutboundLine: onProtocolOut,
+      maxLineBytes: maxLineBytes,
+      maxStderrLineBytes: maxStderrLineBytes,
     );
 
     // Any process exit ends the protocol stream and all pending requests.
