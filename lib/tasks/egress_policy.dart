@@ -47,18 +47,18 @@ EgressPolicyMatch? egressSensitiveCommandMatch(
       'malformed_shell_syntax',
       tokenization.tokens.isEmpty
           ? const <String>['<redacted>']
-          : tokenization.tokens,
+          : _tokenValues(tokenization.tokens),
     );
   }
   final commandWords = tokenization.tokens;
   final words = args.isEmpty
       ? commandWords
-      : <String>[...commandWords, ...args];
+      : <_ShellToken>[...commandWords, ...args.map(_ShellToken.expanding)];
   if (words.isEmpty) return null;
 
   final segments = args.isEmpty
       ? _commandSegments(words)
-      : <List<String>>[words];
+      : <List<_ShellToken>>[words];
   for (final segment in segments) {
     final match = _classifySegment(segment, environment);
     if (match != null) return match;
@@ -67,18 +67,21 @@ EgressPolicyMatch? egressSensitiveCommandMatch(
 }
 
 EgressPolicyMatch? _classifySegment(
-  List<String> sourceTokens,
+  List<_ShellToken> sourceTokens,
   Map<String, String> inheritedEnvironment,
 ) {
   final environment = Map<String, String>.of(inheritedEnvironment);
-  final tokens = List<String>.of(sourceTokens);
+  final tokens = List<_ShellToken>.of(sourceTokens);
   var index = 0;
 
-  while (index < tokens.length && _isAssignment(tokens[index])) {
+  while (index < tokens.length && _isAssignment(tokens[index].value)) {
     final assignment = _assignment(tokens[index]);
     final resolved = _resolveToken(assignment.value, environment);
     if (!resolved.complete) {
-      return _manualMatch('unresolved_variable', tokens.skip(index).toList());
+      return _manualMatch(
+        'unresolved_variable',
+        _tokenValues(tokens.skip(index)),
+      );
     }
     environment[assignment.name] = resolved.value;
     index += 1;
@@ -86,11 +89,11 @@ EgressPolicyMatch? _classifySegment(
   if (index >= tokens.length) return null;
 
   while (index < tokens.length) {
-    final wrapper = _basename(tokens[index]).toLowerCase();
+    final wrapper = _basename(tokens[index].value).toLowerCase();
     if (_uncertainCommandWrappers.contains(wrapper)) {
       return _manualMatch(
         'unresolved_wrapper',
-        tokens.skip(index).toList(growable: false),
+        _tokenValues(tokens.skip(index)),
       );
     }
     if (wrapper == 'env') {
@@ -98,46 +101,47 @@ EgressPolicyMatch? _classifySegment(
       var optionsEnded = false;
       while (index < tokens.length) {
         final token = tokens[index];
-        if (!optionsEnded && token == '--') {
+        final value = token.value;
+        if (!optionsEnded && value == '--') {
           optionsEnded = true;
           index += 1;
           continue;
         }
         if (!optionsEnded &&
-            (token == '-i' || token == '--ignore-environment')) {
+            (value == '-i' || value == '--ignore-environment')) {
           environment.clear();
           index += 1;
           continue;
         }
-        if (!optionsEnded && token == '-u') {
+        if (!optionsEnded && value == '-u') {
           if (index + 1 >= tokens.length) {
             return _manualMatch(
               'unresolved_wrapper',
-              tokens.skip(index - 1).toList(),
+              _tokenValues(tokens.skip(index - 1)),
             );
           }
-          environment.remove(tokens[index + 1]);
+          environment.remove(tokens[index + 1].value);
           index += 2;
           continue;
         }
-        if (!optionsEnded && token.startsWith('--unset=')) {
-          environment.remove(token.substring('--unset='.length));
+        if (!optionsEnded && value.startsWith('--unset=')) {
+          environment.remove(value.substring('--unset='.length));
           index += 1;
           continue;
         }
-        if (!optionsEnded && token.startsWith('-')) {
+        if (!optionsEnded && value.startsWith('-')) {
           return _manualMatch(
             'unresolved_wrapper',
-            tokens.skip(index - 1).toList(),
+            _tokenValues(tokens.skip(index - 1)),
           );
         }
-        if (_isAssignment(token)) {
+        if (_isAssignment(value)) {
           final assignment = _assignment(token);
           final resolved = _resolveToken(assignment.value, environment);
           if (!resolved.complete) {
             return _manualMatch(
               'unresolved_variable',
-              tokens.skip(index).toList(),
+              _tokenValues(tokens.skip(index)),
             );
           }
           environment[assignment.name] = resolved.value;
@@ -154,15 +158,16 @@ EgressPolicyMatch? _classifySegment(
       index += 1;
       while (index < tokens.length) {
         final token = tokens[index];
-        if (token == '--' || token == '-p') {
+        final value = token.value;
+        if (value == '--' || value == '-p') {
           index += 1;
           continue;
         }
-        if (token == '-v' || token == '-V') return null;
-        if (token.startsWith('-')) {
+        if (value == '-v' || value == '-V') return null;
+        if (value.startsWith('-')) {
           return _manualMatch(
             'unresolved_wrapper',
-            tokens.skip(index - 1).toList(),
+            _tokenValues(tokens.skip(index - 1)),
           );
         }
         break;
@@ -183,17 +188,17 @@ EgressPolicyMatch? _classifySegment(
   for (final token in finalTokens) {
     final resolved = _resolveToken(token, environment);
     if (!resolved.complete) {
-      return _manualMatch('unresolved_variable', finalTokens);
+      return _manualMatch('unresolved_variable', _tokenValues(finalTokens));
     }
     resolvedTokens.add(resolved.value);
   }
   if (resolvedTokens.first.trim().isEmpty) {
-    return _manualMatch('unresolved_executable', finalTokens);
+    return _manualMatch('unresolved_executable', _tokenValues(finalTokens));
   }
 
   final executable = _basename(resolvedTokens.first).toLowerCase();
   final args = resolvedTokens.skip(1).toList(growable: false);
-  final display = _normalizedDisplay(finalTokens);
+  final display = _normalizedDisplay(_tokenValues(finalTokens));
 
   if (const {'sh', 'bash', 'zsh'}.contains(executable)) {
     for (var argIndex = 0; argIndex < args.length - 1; argIndex += 1) {
@@ -211,6 +216,12 @@ EgressPolicyMatch? _classifySegment(
       .toList(growable: false);
 
   if (executable == 'curl' || executable == 'wget') {
+    if (executable == 'curl' && _hasCurlTransferConfig(args)) {
+      return EgressPolicyMatch(
+        reason: 'unresolved_transfer_config',
+        commandLine: display,
+      );
+    }
     final externalUrl = _externalHttpTransferUrl(executable, args);
     if (externalUrl == null) return null;
     final lowerUrl = externalUrl.toLowerCase();
@@ -362,14 +373,29 @@ final RegExp _variablePattern = RegExp(
 
 bool _isAssignment(String value) => _assignmentPattern.hasMatch(value);
 
-({String name, String value}) _assignment(String value) {
-  final match = _assignmentPattern.firstMatch(value)!;
-  return (name: match.group(1)!, value: match.group(2)!);
+({String name, _ShellToken value}) _assignment(_ShellToken token) {
+  final match = _assignmentPattern.firstMatch(token.value)!;
+  return (
+    name: match.group(1)!,
+    value: token.substring(match.start + match.group(1)!.length + 1),
+  );
 }
 
-_ResolvedToken _resolveToken(String token, Map<String, String> environment) {
+_ResolvedToken _resolveToken(
+  _ShellToken token,
+  Map<String, String> environment,
+) {
   var complete = true;
-  final resolved = token.replaceAllMapped(_variablePattern, (match) {
+  final supportedExpansionIndexes = <int>{};
+  final resolved = token.value.replaceAllMapped(_variablePattern, (match) {
+    final expansionAllowed = token.allowsExpansionRange(match.start, match.end);
+    if (!expansionAllowed) return match.group(0)!;
+    supportedExpansionIndexes.addAll(
+      Iterable<int>.generate(
+        match.end - match.start,
+        (index) => match.start + index,
+      ),
+    );
     final name = match.group(1) ?? match.group(2)!;
     final value = environment[name];
     if (value == null) {
@@ -378,12 +404,15 @@ _ResolvedToken _resolveToken(String token, Map<String, String> environment) {
     }
     return value;
   });
-  if (_containsUnsupportedShellExpansion(resolved)) complete = false;
+  for (var index = 0; index < token.value.length; index += 1) {
+    if (!token.allowsExpansionAt(index)) continue;
+    final character = token.value[index];
+    if (character == '`' ||
+        (character == r'$' && !supportedExpansionIndexes.contains(index))) {
+      complete = false;
+    }
+  }
   return _ResolvedToken(resolved, complete);
-}
-
-bool _containsUnsupportedShellExpansion(String value) {
-  return value.contains(r'$') || value.contains('`');
 }
 
 class _ResolvedToken {
@@ -393,19 +422,23 @@ class _ResolvedToken {
   final bool complete;
 }
 
-List<List<String>> _commandSegments(List<String> tokens) {
-  final result = <List<String>>[];
-  var segment = <String>[];
+List<List<_ShellToken>> _commandSegments(List<_ShellToken> tokens) {
+  final result = <List<_ShellToken>>[];
+  var segment = <_ShellToken>[];
   for (final token in tokens) {
-    if (const {';', '&', '&&', '||', '|'}.contains(token)) {
+    if (const {';', '&', '&&', '||', '|'}.contains(token.value)) {
       if (segment.isNotEmpty) result.add(segment);
-      segment = <String>[];
+      segment = <_ShellToken>[];
       continue;
     }
     segment.add(token);
   }
   if (segment.isNotEmpty) result.add(segment);
   return result;
+}
+
+List<String> _tokenValues(Iterable<_ShellToken> tokens) {
+  return tokens.map((token) => token.value).toList(growable: false);
 }
 
 String _normalizedDisplay(List<String> tokens) {
@@ -459,63 +492,230 @@ String? _externalHttpTransferUrl(String executable, List<String> args) {
   return null;
 }
 
+bool _hasCurlTransferConfig(List<String> args) {
+  return args.any(
+    (arg) =>
+        arg == '-K' ||
+        arg == '--config' ||
+        arg.startsWith('--config=') ||
+        (arg.startsWith('-K') && arg.length > 2),
+  );
+}
+
 bool _optionTakesSeparateValue(String executable, String option) {
-  if (const {
-    '-o',
-    '--output',
-    '-d',
-    '--data',
-    '--data-ascii',
-    '--data-binary',
-    '--data-raw',
-    '--data-urlencode',
-    '-H',
-    '--header',
-    '-u',
-    '--user',
-    '-X',
-    '--request',
-  }.contains(option)) {
-    return true;
-  }
-  return executable == 'wget' &&
-      const {
-        '-O',
-        '--output-document',
-        '--post-data',
-        '--post-file',
-        '--password',
-      }.contains(option);
+  final options = executable == 'wget'
+      ? _wgetOptionsTakingValue
+      : _curlOptionsTakingValue;
+  return options.contains(option);
 }
 
 bool _isOptionWithAttachedValue(String executable, String option) {
-  if (const {
-    '--output=',
-    '--data=',
-    '--data-ascii=',
-    '--data-binary=',
-    '--data-raw=',
-    '--data-urlencode=',
-    '--header=',
-    '--user=',
-    '--request=',
-  }.any(option.startsWith)) {
-    return true;
+  final options = executable == 'wget'
+      ? _wgetOptionsTakingValue
+      : _curlOptionsTakingValue;
+  if (option.startsWith('--')) {
+    final equalsIndex = option.indexOf('=');
+    return equalsIndex > 2 &&
+        options.contains(option.substring(0, equalsIndex));
   }
-  if (const {'-o', '-d', '-H', '-u', '-X'}.any(
+  final shortOptions = executable == 'wget'
+      ? _wgetShortOptionsAllowingAttachedValue
+      : _curlShortOptionsAllowingAttachedValue;
+  return shortOptions.any(
     (prefix) => option.startsWith(prefix) && option.length > prefix.length,
-  )) {
-    return true;
-  }
-  return executable == 'wget' &&
-      (const {
-            '--output-document=',
-            '--post-data=',
-            '--post-file=',
-            '--password=',
-          }.any(option.startsWith) ||
-          (option.startsWith('-O') && option.length > 2));
+  );
 }
+
+// Kept in option-name form so detached and --option=value parsing share one
+// source of truth. Network endpoint options (for example --proxy and
+// --doh-url) are intentionally omitted so they remain conservatively visible
+// to the egress classifier.
+const Set<String> _curlOptionsTakingValue = {
+  '--abstract-unix-socket',
+  '--alt-svc',
+  '--aws-sigv4',
+  '--cacert',
+  '--capath',
+  '-E',
+  '--cert',
+  '--cert-type',
+  '--ciphers',
+  '--connect-timeout',
+  '-C',
+  '--continue-at',
+  '-b',
+  '--cookie',
+  '-c',
+  '--cookie-jar',
+  '--create-file-mode',
+  '--crlfile',
+  '--curves',
+  '-d',
+  '--data',
+  '--data-ascii',
+  '--data-binary',
+  '--data-raw',
+  '--data-urlencode',
+  '--delegation',
+  '--dns-interface',
+  '--dns-ipv4-addr',
+  '--dns-ipv6-addr',
+  '--dns-servers',
+  '-D',
+  '--dump-header',
+  '--engine',
+  '--etag-compare',
+  '--etag-save',
+  '--expect100-timeout',
+  '-F',
+  '--form',
+  '--form-string',
+  '--ftp-account',
+  '--ftp-alternative-to-user',
+  '--ftp-method',
+  '--ftp-ssl-ccc-mode',
+  '--happy-eyeballs-timeout-ms',
+  '--haproxy-clientip',
+  '-H',
+  '--header',
+  '-h',
+  '--help',
+  '--hostpubmd5',
+  '--hostpubsha256',
+  '--hsts',
+  '--interface',
+  '--json',
+  '--keepalive-time',
+  '--key',
+  '--key-type',
+  '--krb',
+  '--libcurl',
+  '--limit-rate',
+  '--local-port',
+  '--login-options',
+  '--mail-auth',
+  '--mail-from',
+  '--mail-rcpt',
+  '--max-filesize',
+  '--max-redirs',
+  '-m',
+  '--max-time',
+  '--netrc-file',
+  '--noproxy',
+  '--oauth2-bearer',
+  '-o',
+  '--output',
+  '--output-dir',
+  '--parallel-max',
+  '--pass',
+  '--pinnedpubkey',
+  '--proto',
+  '--proto-default',
+  '--proto-redir',
+  '--proxy-cacert',
+  '--proxy-capath',
+  '--proxy-cert',
+  '--proxy-cert-type',
+  '--proxy-ciphers',
+  '--proxy-crlfile',
+  '--proxy-header',
+  '--proxy-key',
+  '--proxy-key-type',
+  '--proxy-pass',
+  '--proxy-pinnedpubkey',
+  '--proxy-service-name',
+  '--proxy-tls13-ciphers',
+  '--proxy-tlsauthtype',
+  '--proxy-tlspassword',
+  '--proxy-tlsuser',
+  '-U',
+  '--proxy-user',
+  '--pubkey',
+  '-Q',
+  '--quote',
+  '--random-file',
+  '-r',
+  '--range',
+  '--rate',
+  '-e',
+  '--referer',
+  '-X',
+  '--request',
+  '--request-target',
+  '--retry',
+  '--retry-delay',
+  '--retry-max-time',
+  '--sasl-authzid',
+  '--service-name',
+  '-Y',
+  '--speed-limit',
+  '-y',
+  '--speed-time',
+  '--stderr',
+  '-t',
+  '--telnet-option',
+  '--tftp-blksize',
+  '-z',
+  '--time-cond',
+  '--tls-max',
+  '--tls13-ciphers',
+  '--tlsauthtype',
+  '--tlspassword',
+  '--tlsuser',
+  '--trace',
+  '--trace-ascii',
+  '--trace-config',
+  '--unix-socket',
+  '-T',
+  '--upload-file',
+  '--url-query',
+  '-u',
+  '--user',
+  '-A',
+  '--user-agent',
+  '--variable',
+  '-w',
+  '--write-out',
+};
+
+const Set<String> _curlShortOptionsAllowingAttachedValue = {
+  '-E',
+  '-C',
+  '-b',
+  '-c',
+  '-d',
+  '-D',
+  '-F',
+  '-H',
+  '-h',
+  '-m',
+  '-o',
+  '-U',
+  '-Q',
+  '-r',
+  '-e',
+  '-X',
+  '-Y',
+  '-y',
+  '-t',
+  '-z',
+  '-T',
+  '-u',
+  '-A',
+  '-w',
+};
+
+const Set<String> _wgetOptionsTakingValue = {
+  '-O',
+  '--output-document',
+  '--post-data',
+  '--post-file',
+  '--header',
+  '--user',
+  '--password',
+};
+
+const Set<String> _wgetShortOptionsAllowingAttachedValue = {'-O'};
 
 bool _isLocalTransferTarget(String value) {
   final normalized = value.trim();
@@ -553,21 +753,29 @@ bool _isLoopbackHost(String value) {
 }
 
 _ShellTokenization _shellWords(String commandLine) {
-  final words = <String>[];
-  final buffer = StringBuffer();
+  final words = <_ShellToken>[];
+  var buffer = _ShellTokenBuilder();
   var quote = '';
   var escaped = false;
 
   void flush() {
     if (buffer.isEmpty) return;
-    words.add(buffer.toString());
-    buffer.clear();
+    words.add(buffer.build());
+    buffer = _ShellTokenBuilder();
   }
 
   for (var index = 0; index < commandLine.length; index += 1) {
     final char = commandLine[index];
+    if (quote == "'") {
+      if (char == quote) {
+        quote = '';
+      } else {
+        buffer.write(char, allowsExpansion: false);
+      }
+      continue;
+    }
     if (escaped) {
-      buffer.write(char);
+      buffer.write(char, allowsExpansion: false);
       escaped = false;
       continue;
     }
@@ -575,11 +783,11 @@ _ShellTokenization _shellWords(String commandLine) {
       escaped = true;
       continue;
     }
-    if (quote.isNotEmpty) {
+    if (quote == '"') {
       if (char == quote) {
         quote = '';
       } else {
-        buffer.write(char);
+        buffer.write(char, allowsExpansion: true);
       }
       continue;
     }
@@ -589,7 +797,9 @@ _ShellTokenization _shellWords(String commandLine) {
     }
     if (char == '\n' || char == '\r') {
       flush();
-      if (words.isEmpty || words.last != ';') words.add(';');
+      if (words.isEmpty || words.last.value != ';') {
+        words.add(_ShellToken.literal(';'));
+      }
       continue;
     }
     if (char.trim().isEmpty) {
@@ -599,24 +809,24 @@ _ShellTokenization _shellWords(String commandLine) {
     if (char == ';' || char == '|') {
       flush();
       if (index + 1 < commandLine.length && commandLine[index + 1] == char) {
-        words.add('$char$char');
+        words.add(_ShellToken.literal('$char$char'));
         index += 1;
       } else {
-        words.add(char);
+        words.add(_ShellToken.literal(char));
       }
       continue;
     }
     if (char == '&') {
       flush();
       if (index + 1 < commandLine.length && commandLine[index + 1] == '&') {
-        words.add('&&');
+        words.add(_ShellToken.literal('&&'));
         index += 1;
       } else {
-        words.add('&');
+        words.add(_ShellToken.literal('&'));
       }
       continue;
     }
-    buffer.write(char);
+    buffer.write(char, allowsExpansion: true);
   }
   flush();
   return _ShellTokenization(
@@ -631,8 +841,61 @@ class _ShellTokenization {
     required this.syntaxComplete,
   });
 
-  final List<String> tokens;
+  final List<_ShellToken> tokens;
   final bool syntaxComplete;
+}
+
+class _ShellToken {
+  const _ShellToken(this.value, this._expansionAllowed);
+
+  factory _ShellToken.expanding(String value) {
+    return _ShellToken(
+      value,
+      List<bool>.filled(value.length, true, growable: false),
+    );
+  }
+
+  factory _ShellToken.literal(String value) {
+    return _ShellToken(
+      value,
+      List<bool>.filled(value.length, false, growable: false),
+    );
+  }
+
+  final String value;
+  final List<bool> _expansionAllowed;
+
+  bool allowsExpansionAt(int index) => _expansionAllowed[index];
+
+  bool allowsExpansionRange(int start, int end) {
+    for (var index = start; index < end; index += 1) {
+      if (!_expansionAllowed[index]) return false;
+    }
+    return true;
+  }
+
+  _ShellToken substring(int start) {
+    return _ShellToken(
+      value.substring(start),
+      _expansionAllowed.sublist(start),
+    );
+  }
+}
+
+class _ShellTokenBuilder {
+  final StringBuffer _value = StringBuffer();
+  final List<bool> _expansionAllowed = <bool>[];
+
+  bool get isEmpty => _value.isEmpty;
+
+  void write(String value, {required bool allowsExpansion}) {
+    _value.write(value);
+    _expansionAllowed.addAll(
+      List<bool>.filled(value.length, allowsExpansion, growable: false),
+    );
+  }
+
+  _ShellToken build() => _ShellToken(_value.toString(), _expansionAllowed);
 }
 
 Object? _firstValue(Map? map, List<String> keys) {

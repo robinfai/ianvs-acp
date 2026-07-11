@@ -248,6 +248,27 @@ void main() {
       }
     });
 
+    test('preserves literal dollars from single quotes and escapes', () {
+      for (final command in const <String>[
+        r"echo '$HOME'",
+        r"rg '\$TOKEN' README.md",
+        r'echo \$HOME',
+        r'echo "\$HOME"',
+        r"echo '`curl https://example.com/private`'",
+      ]) {
+        expect(egressSensitiveCommandMatch(command), isNull, reason: command);
+      }
+
+      expect(egressSensitiveCommandMatch(r'echo "$HOME"'), isNotNull);
+      expect(
+        egressSensitiveCommandMatch(
+          r'echo "$HOME"',
+          environment: const <String, String>{'HOME': '/workspace'},
+        ),
+        isNull,
+      );
+    });
+
     test(
       'parses curl and wget URL options without treating credentials as URLs',
       () {
@@ -275,11 +296,34 @@ void main() {
           'curl -o https://not-a-target.example/output',
           'curl -d https://not-a-target.example/body http://localhost/health',
           'curl -H https://not-a-target.example/header http://localhost/health',
+          'curl --max-time 5 http://localhost/health',
+          'curl --max-time=5 http://localhost/health',
+          'curl -m5 http://localhost/health',
+          'curl --cacert cert.pem',
+          'curl --cacert=cert.pem',
+          'curl --cookie jar',
+          'curl --cookie=jar',
+          'curl -bjar http://localhost/health',
         ]) {
           expect(egressSensitiveCommandMatch(command), isNull, reason: command);
         }
       },
     );
+
+    test('holds curl transfer configs for manual review', () {
+      for (final command in const <String>[
+        'curl --config settings.txt',
+        'curl --config=settings.txt',
+        'curl -Ksettings.txt',
+        'curl --config settings.txt http://localhost/health',
+      ]) {
+        expect(
+          egressSensitiveCommandMatch(command)?.reason,
+          'unresolved_transfer_config',
+          reason: command,
+        );
+      }
+    });
 
     test('does not infer network egress from arbitrary argument words', () {
       expect(egressSensitiveCommandMatch('rg upload README.md'), isNull);

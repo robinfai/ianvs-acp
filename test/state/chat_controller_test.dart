@@ -2677,6 +2677,8 @@ void main() {
       await pumpEventQueue();
 
       expect(controller.pendingPermissionRequest?.id, 'permission-env-egress');
+      final activeBindingKey = controller.pendingPermissionRequest!.bindingKey;
+      expect(activeBindingKey, isNot(request.bindingKey));
       expect(fake.lastPermissionDecision, isNull);
       expect(controller.permissionHistory.single.reviewResult?.risk, 'egress');
       expect(
@@ -2685,10 +2687,10 @@ void main() {
       );
       expect(
         controller.permissionHistory.single.request.bindingKey,
-        request.bindingKey,
+        activeBindingKey,
       );
       expect(events.single.request.transientPolicyContext, isEmpty);
-      expect(events.single.request.bindingKey, request.bindingKey);
+      expect(events.single.request.bindingKey, activeBindingKey);
       final historyJson = acpPermissionAuditEntriesToJson(
         controller.permissionHistory,
       );
@@ -2699,7 +2701,7 @@ void main() {
       expect(events, hasLength(2));
       for (final event in events) {
         expect(event.request.transientPolicyContext, isEmpty);
-        expect(event.request.bindingKey, request.bindingKey);
+        expect(event.request.bindingKey, activeBindingKey);
       }
     },
   );
