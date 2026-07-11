@@ -40,6 +40,8 @@ void main() {
         'Bearer real-token',
       );
       expect(config.mcpServers.single.raw['env'].single['value'], 'mcp-secret');
+      expect(config.agentServers.single.explicitHeaderKeys, isEmpty);
+      expect(config.mcpServers.single.explicitEnvKeys, isEmpty);
     },
   );
 
@@ -950,6 +952,48 @@ void main() {
     }
   });
 
+  test(
+    'plaintext parsing marks explicit keys without serializing the signal',
+    () {
+      final agent = AgentServerConfig.fromJson(
+        name: 'Local',
+        json: {
+          'type': 'custom',
+          'command': 'agent',
+          'env': {'TOKEN': 'secret'},
+        },
+      );
+      final referencedAgent = AgentServerConfig.fromJson(
+        name: 'Local',
+        json: {
+          'type': 'custom',
+          'command': 'agent',
+          'env_refs': {
+            'TOKEN':
+                'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        },
+      );
+      final mcp = McpServerConfig.fromJson(
+        index: 0,
+        json: {
+          'name': 'tools',
+          'type': 'http',
+          'url': 'https://tools.example/mcp',
+          'headers': [
+            {'name': 'Authorization', 'value': 'secret'},
+          ],
+        },
+      );
+
+      expect(agent.explicitEnvKeys, {'TOKEN'});
+      expect(referencedAgent.explicitEnvKeys, isEmpty);
+      expect(mcp.explicitHeaderKeys, {'Authorization'});
+      expect(agent.toJson(), isNot(contains('explicitEnvKeys')));
+      expect(mcp.toJson(), isNot(contains('explicitHeaderKeys')));
+    },
+  );
+
   test('MCP target fingerprint is canonical and covers every target field', () {
     const baseRaw = <String, dynamic>{
       'name': 'tools',
@@ -1194,6 +1238,94 @@ void main() {
       expect(migratedReference, isNot(legacyReference));
       expect(loaded.agentServers.single.env['TOKEN'], 'legacy-secret');
       expect(await store.get(migratedReference), 'legacy-secret');
+      expect(await store.get(legacyReference), isNull);
+      expect(store.deleted, contains(legacyReference));
+    },
+  );
+
+  test('failed legacy load persistence keeps the legacy reference', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'acp_secret_legacy_persist_failure',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    final store = FakeSecretStore();
+    final configIdentity = await configSecretIdentity(file.path);
+    final legacyReference = await store.put(
+      namespace: '$configIdentity/agent/Local/env',
+      key: 'TOKEN',
+      value: 'legacy-secret',
+    );
+    await file.writeAsString(
+      jsonEncode({
+        'agent_servers': {
+          'Local': {
+            'type': 'custom',
+            'command': 'agent',
+            'env_refs': {'TOKEN': legacyReference},
+          },
+        },
+      }),
+    );
+
+    await expectLater(
+      AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: store,
+        atomicWriter: (_, _) async => throw StateError('rename failed'),
+      ),
+      throwsStateError,
+    );
+
+    expect(await store.get(legacyReference), 'legacy-secret');
+    expect(store.deleted, isNot(contains(legacyReference)));
+  });
+
+  test(
+    'failed legacy cleanup is queued after load returns resolved config',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_secret_legacy_cleanup_queue',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      final store = FakeSecretStore();
+      final configIdentity = await configSecretIdentity(file.path);
+      final legacyReference = await store.put(
+        namespace: '$configIdentity/agent/Local/env',
+        key: 'TOKEN',
+        value: 'legacy-secret',
+      );
+      await file.writeAsString(
+        jsonEncode({
+          'agent_servers': {
+            'Local': {
+              'type': 'custom',
+              'command': 'agent',
+              'env_refs': {'TOKEN': legacyReference},
+            },
+          },
+        }),
+      );
+      store.failDeletes = true;
+
+      final loaded = await AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: store,
+      );
+
+      expect(loaded.agentServers.single.env, {'TOKEN': 'legacy-secret'});
+      expect(
+        loaded.agentServers.single.envRefs['TOKEN'],
+        isNot(legacyReference),
+      );
+      expect(await store.get(legacyReference), 'legacy-secret');
+      final queue = File(
+        '${file.parent.path}/.${file.uri.pathSegments.last}.secret-cleanup.json',
+      );
+      final queued = jsonDecode(await queue.readAsString()) as Map;
+      expect(queued['version'], 1);
+      expect((queued['intents'] as List).single['reference'], legacyReference);
     },
   );
 
@@ -1255,9 +1387,8 @@ void main() {
               command: 'agent',
               permissionReviewAgent: AcpPermissionReviewAgentConfig(
                 enabled: true,
-                mcpServer: McpServerConfig.fromJson(
-                  index: 0,
-                  json: {
+                mcpServer: McpServerConfig(
+                  raw: {
                     'name': 'agent-review',
                     'type': 'http',
                     'url': 'https://old-review.example/mcp',
@@ -1270,9 +1401,8 @@ void main() {
             ),
           ],
           mcpServers: [
-            McpServerConfig.fromJson(
-              index: 0,
-              json: {
+            McpServerConfig(
+              raw: {
                 'name': 'tools',
                 'type': 'http',
                 'url': 'https://old.example/mcp',
@@ -1286,9 +1416,8 @@ void main() {
             permissions: AcpPermissionProviderConfig(
               reviewAgent: AcpPermissionReviewAgentConfig(
                 enabled: true,
-                mcpServer: McpServerConfig.fromJson(
-                  index: 0,
-                  json: {
+                mcpServer: McpServerConfig(
+                  raw: {
                     'name': 'global-review',
                     'command': 'old-global-review',
                     'env': [
@@ -1319,9 +1448,8 @@ void main() {
               command: 'agent',
               permissionReviewAgent: AcpPermissionReviewAgentConfig(
                 enabled: true,
-                mcpServer: McpServerConfig.fromJson(
-                  index: 0,
-                  json: {
+                mcpServer: McpServerConfig(
+                  raw: {
                     'name': 'agent-review',
                     'type': 'http',
                     'url': 'https://new-review.example/mcp',
@@ -1335,9 +1463,8 @@ void main() {
             ),
           ],
           mcpServers: [
-            McpServerConfig.fromJson(
-              index: 0,
-              json: {
+            McpServerConfig(
+              raw: {
                 'name': 'tools',
                 'type': 'http',
                 'url': 'https://new.example/mcp',
@@ -1352,9 +1479,8 @@ void main() {
             permissions: AcpPermissionProviderConfig(
               reviewAgent: AcpPermissionReviewAgentConfig(
                 enabled: true,
-                mcpServer: McpServerConfig.fromJson(
-                  index: 0,
-                  json: {
+                mcpServer: McpServerConfig(
+                  raw: {
                     'name': 'global-review',
                     'command': 'new-global-review',
                     'env': [
@@ -1381,6 +1507,187 @@ void main() {
       expect(changedGlobal.env, isEmpty);
       expect(changedGlobal.envRefs, isEmpty);
       expect(store.putCount, putCount);
+    },
+  );
+
+  test(
+    'explicit same-key secrets are rekeyed for every changed target',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_target_explicit_secrets',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      final store = FakeSecretStore();
+      final initial = await AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          agentServers: [
+            AgentServerConfig(
+              name: 'Local',
+              type: 'custom',
+              command: 'old-agent',
+              env: const {'TOKEN': 'old-agent-secret'},
+              permissionReviewAgent: AcpPermissionReviewAgentConfig(
+                enabled: true,
+                mcpServer: McpServerConfig.fromJson(
+                  index: 0,
+                  json: {
+                    'name': 'agent-review',
+                    'type': 'http',
+                    'url': 'https://old-agent-review.example/mcp',
+                    'headers': [
+                      {'name': 'Authorization', 'value': 'old-agent-review'},
+                    ],
+                  },
+                ),
+              ),
+            ),
+          ],
+          mcpServers: [
+            McpServerConfig.fromJson(
+              index: 0,
+              json: {
+                'name': 'tools',
+                'type': 'http',
+                'url': 'https://old-tools.example/mcp',
+                'headers': [
+                  {'name': 'Authorization', 'value': 'old-top-secret'},
+                ],
+              },
+            ),
+          ],
+          clientProviders: AcpClientProviderConfig(
+            permissions: AcpPermissionProviderConfig(
+              reviewAgent: AcpPermissionReviewAgentConfig(
+                enabled: true,
+                mcpServer: McpServerConfig.fromJson(
+                  index: 0,
+                  json: {
+                    'name': 'global-review',
+                    'command': 'old-global-review',
+                    'env': [
+                      {'name': 'TOKEN', 'value': 'old-global-secret'},
+                    ],
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+        secretStore: store,
+      );
+      final oldAgent = initial.agentServers.single;
+      final oldAgentReview = oldAgent.permissionReviewAgent.mcpServer!;
+      final oldTop = initial.mcpServers.single;
+      final oldGlobal =
+          initial.clientProviders.permissions.reviewAgent.mcpServer!;
+
+      final changed = await AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          agentServers: const [
+            AgentServerConfig(
+              name: 'Local',
+              type: 'custom',
+              command: 'new-agent',
+              env: {'TOKEN': 'new-agent-secret'},
+              explicitEnvKeys: {'TOKEN'},
+              permissionReviewAgent: AcpPermissionReviewAgentConfig(
+                enabled: true,
+                mcpServer: McpServerConfig(
+                  raw: {
+                    'name': 'agent-review',
+                    'type': 'http',
+                    'url': 'https://new-agent-review.example/mcp',
+                    'headers': [
+                      {'name': 'Authorization', 'value': 'new-agent-review'},
+                    ],
+                  },
+                  explicitHeaderKeys: {'Authorization'},
+                ),
+              ),
+            ),
+          ],
+          mcpServers: const [
+            McpServerConfig(
+              raw: {
+                'name': 'tools',
+                'type': 'http',
+                'url': 'https://new-tools.example/mcp',
+                'headers': [
+                  {'name': 'Authorization', 'value': 'new-top-secret'},
+                ],
+              },
+              explicitHeaderKeys: {'Authorization'},
+            ),
+          ],
+          clientProviders: const AcpClientProviderConfig(
+            permissions: AcpPermissionProviderConfig(
+              reviewAgent: AcpPermissionReviewAgentConfig(
+                enabled: true,
+                mcpServer: McpServerConfig(
+                  raw: {
+                    'name': 'global-review',
+                    'command': 'new-global-review',
+                    'env': [
+                      {'name': 'TOKEN', 'value': 'new-global-secret'},
+                    ],
+                  },
+                  explicitEnvKeys: {'TOKEN'},
+                ),
+              ),
+            ),
+          ),
+        ),
+        secretStore: store,
+      );
+
+      final agent = changed.agentServers.single;
+      final agentReview = agent.permissionReviewAgent.mcpServer!;
+      final top = changed.mcpServers.single;
+      final global = changed.clientProviders.permissions.reviewAgent.mcpServer!;
+      expect(agent.env, {'TOKEN': 'new-agent-secret'});
+      expect(agent.envRefs['TOKEN'], isNot(oldAgent.envRefs['TOKEN']));
+      expect(agentReview.headers, {'Authorization': 'new-agent-review'});
+      expect(
+        agentReview.headerRefs['Authorization'],
+        isNot(oldAgentReview.headerRefs['Authorization']),
+      );
+      expect(top.headers, {'Authorization': 'new-top-secret'});
+      expect(
+        top.headerRefs['Authorization'],
+        isNot(oldTop.headerRefs['Authorization']),
+      );
+      expect(global.env, {'TOKEN': 'new-global-secret'});
+      expect(global.envRefs['TOKEN'], isNot(oldGlobal.envRefs['TOKEN']));
+      expect(agent.explicitEnvKeys, isEmpty);
+      expect(agentReview.explicitHeaderKeys, isEmpty);
+      expect(top.explicitHeaderKeys, isEmpty);
+      expect(global.explicitEnvKeys, isEmpty);
+
+      final changedAgain = await AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          agentServers: [
+            AgentServerConfig(
+              name: agent.name,
+              type: agent.type,
+              command: 'third-agent',
+              env: agent.env,
+              explicitEnvKeys: agent.explicitEnvKeys,
+            ),
+          ],
+        ),
+        secretStore: store,
+      );
+      expect(changedAgain.agentServers.single.env, isEmpty);
+      expect(changedAgain.agentServers.single.envRefs, isEmpty);
+      final persisted = await file.readAsString();
+      expect(persisted, isNot(contains('explicitEnvKeys')));
+      expect(persisted, isNot(contains('explicitHeaderKeys')));
+      expect(persisted, isNot(contains('new-agent-secret')));
+      expect(persisted, isNot(contains('new-global-secret')));
     },
   );
 
@@ -1486,6 +1793,65 @@ void main() {
     expect(store.deleted, isNot(contains(wrongConfigReference)));
     expect(await store.get(wrongConfigReference), 'another-config-secret');
   });
+
+  test(
+    'forged queue intent cannot shadow a later valid reference intent',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_cleanup_queue_shadow',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      await file.writeAsString('{}');
+      final store = FakeSecretStore();
+      final configIdentity = await configSecretIdentity(file.path);
+      final validOwner = SecretOwner(
+        configIdentity: configIdentity,
+        targetKind: 'agent/Retired',
+        targetIdentity: 'retired-target',
+        fieldName: 'env',
+        key: 'TOKEN',
+      );
+      final reference = await store.put(
+        namespace: validOwner.namespace,
+        key: validOwner.key,
+        value: 'retired-secret',
+      );
+      final forgedOwner = SecretOwner(
+        configIdentity: configIdentity,
+        targetKind: 'agent/Forged',
+        targetIdentity: 'forged-target',
+        fieldName: 'env',
+        key: 'TOKEN',
+      );
+      final queue = File(
+        '${file.parent.path}/.${file.uri.pathSegments.last}.secret-cleanup.json',
+      );
+      await queue.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'intents': [
+            SecretCleanupIntent(
+              owner: forgedOwner,
+              reference: reference,
+            ).toJson(),
+            SecretCleanupIntent(
+              owner: validOwner,
+              reference: reference,
+            ).toJson(),
+          ],
+        }),
+      );
+
+      await AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: store,
+      );
+
+      expect(store.deleted, contains(reference));
+      expect(await store.get(reference), isNull);
+    },
+  );
 
   test('cleanup queue never deletes a protected current reference', () async {
     final temp = await Directory.systemTemp.createTemp('acp_protected_cleanup');

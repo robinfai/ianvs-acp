@@ -122,6 +122,8 @@ final class AcpConfigSecretMigrator {
       headers: headers.values,
       envRefs: env.refs,
       headerRefs: headers.refs,
+      explicitEnvKeys: const <String>{},
+      explicitHeaderKeys: const <String>{},
       permissionReviewAgent: reviewAgent,
     );
   }
@@ -161,6 +163,8 @@ final class AcpConfigSecretMigrator {
       headers: headers.values,
       envRefs: env.refs,
       headerRefs: headers.refs,
+      explicitEnvKeys: const <String>{},
+      explicitHeaderKeys: const <String>{},
     );
   }
 

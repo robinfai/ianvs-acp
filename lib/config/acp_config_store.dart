@@ -123,6 +123,8 @@ class AcpConfigStore {
       final raw = await _readExistingJson(file);
       final parsed = AcpClientConfig.fromJson(raw, configPath: path);
       validateUniqueSecretReferences(parsed);
+      final oldOwners = await collectSecretReferenceOwners(parsed);
+      final oldReferences = oldOwners.keys.toSet();
       final configIdentity = await configSecretIdentity(path);
       await _retryPendingSecretCleanup(
         file,
@@ -155,6 +157,30 @@ class AcpConfigStore {
         }
       }
       prepared.commit();
+      final retired = oldReferences.difference(
+        collectSecretReferences(resolved),
+      );
+      if (retired.isNotEmpty) {
+        final intents = <SecretCleanupIntent>[
+          for (final reference in retired)
+            if (oldOwners[reference] case final owner?)
+              SecretCleanupIntent(owner: owner, reference: reference),
+        ];
+        final cleanupErrors = await prepared.deleteReferences(intents);
+        if (cleanupErrors.isNotEmpty) {
+          try {
+            await _persistPendingSecretCleanup(
+              file,
+              intents.where(
+                (intent) => cleanupErrors.containsKey(intent.reference),
+              ),
+            );
+          } catch (queueError) {
+            cleanupErrors['<cleanup-queue>'] = queueError;
+            throw AcpConfigPostCommitCleanupException(resolved, cleanupErrors);
+          }
+        }
+      }
       return resolved;
     });
   }
@@ -241,11 +267,11 @@ Future<void> _retryPendingSecretCleanup(
   final seen = <String>{};
   for (final intent in intents) {
     final reference = intent.reference;
-    if (!seen.add(reference)) continue;
     if (intent.owner.configIdentity != configIdentity ||
         !secretStoreOwnsIntent(secretStore, intent, allowLegacy: true)) {
       continue;
     }
+    if (!seen.add(reference)) continue;
     if (protectedReferences.contains(reference)) {
       remaining.add(intent);
       continue;
@@ -875,12 +901,17 @@ AgentServerConfig _inheritAgentReferences(
       agentSecretTargetIdentity(proposal) != agentSecretTargetIdentity(current);
   return proposal.withSecrets(
     env: targetChanged
-        ? _withoutPreviouslyProtectedValues(proposal.env, current.envRefs)
+        ? _withoutPreviouslyProtectedValues(
+            proposal.env,
+            current.envRefs,
+            proposal.explicitEnvKeys,
+          )
         : proposal.env,
     headers: targetChanged
         ? _withoutPreviouslyProtectedValues(
             proposal.headers,
             current.headerRefs,
+            proposal.explicitHeaderKeys,
           )
         : proposal.headers,
     envRefs: targetChanged
@@ -906,12 +937,17 @@ McpServerConfig _inheritMcpReferences(
       mcpSecretTargetIdentity(proposal) != mcpSecretTargetIdentity(current);
   return proposal.withSecrets(
     env: targetChanged
-        ? _withoutPreviouslyProtectedValues(proposal.env, current.envRefs)
+        ? _withoutPreviouslyProtectedValues(
+            proposal.env,
+            current.envRefs,
+            proposal.explicitEnvKeys,
+          )
         : proposal.env,
     headers: targetChanged
         ? _withoutPreviouslyProtectedValues(
             proposal.headers,
             current.headerRefs,
+            proposal.explicitHeaderKeys,
           )
         : proposal.headers,
     envRefs: targetChanged
@@ -926,10 +962,13 @@ McpServerConfig _inheritMcpReferences(
 Map<String, String> _withoutPreviouslyProtectedValues(
   Map<String, String> values,
   Map<String, String> currentRefs,
+  Set<String> explicitKeys,
 ) {
   return Map.unmodifiable(<String, String>{
     for (final entry in values.entries)
-      if (!currentRefs.containsKey(entry.key)) entry.key: entry.value,
+      if (!currentRefs.containsKey(entry.key) ||
+          explicitKeys.contains(entry.key))
+        entry.key: entry.value,
   });
 }
 

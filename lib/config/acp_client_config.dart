@@ -602,6 +602,8 @@ class AgentServerConfig {
     this.headers = const <String, String>{},
     this.envRefs = const <String, String>{},
     this.headerRefs = const <String, String>{},
+    this.explicitEnvKeys = const <String>{},
+    this.explicitHeaderKeys = const <String>{},
     this.secretRefsResolved = true,
     this.additionalProperties = const <String, dynamic>{},
     this.permissionReviewAgent = const AcpPermissionReviewAgentConfig(),
@@ -617,6 +619,8 @@ class AgentServerConfig {
   final Map<String, String> headers;
   final Map<String, String> envRefs;
   final Map<String, String> headerRefs;
+  final Set<String> explicitEnvKeys;
+  final Set<String> explicitHeaderKeys;
   final bool secretRefsResolved;
   final Map<String, dynamic> additionalProperties;
   final AcpPermissionReviewAgentConfig permissionReviewAgent;
@@ -681,6 +685,7 @@ class AgentServerConfig {
         headers: headers,
         envRefs: envRefs,
         headerRefs: headerRefs,
+        explicitHeaderKeys: Set.unmodifiable(headers.keys),
         secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
         additionalProperties: additionalProperties,
         permissionReviewAgent: _agentPermissionReviewAgent(json),
@@ -717,6 +722,7 @@ class AgentServerConfig {
         headers: headers,
         envRefs: envRefs,
         headerRefs: headerRefs,
+        explicitHeaderKeys: Set.unmodifiable(headers.keys),
         secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
         additionalProperties: additionalProperties,
         permissionReviewAgent: _agentPermissionReviewAgent(json),
@@ -758,6 +764,7 @@ class AgentServerConfig {
       env: env,
       envRefs: envRefs,
       headerRefs: headerRefs,
+      explicitEnvKeys: Set.unmodifiable(env.keys),
       secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
       additionalProperties: additionalProperties,
       permissionReviewAgent: _agentPermissionReviewAgent(json),
@@ -799,6 +806,8 @@ class AgentServerConfig {
     required Map<String, String> headers,
     required Map<String, String> envRefs,
     required Map<String, String> headerRefs,
+    Set<String>? explicitEnvKeys,
+    Set<String>? explicitHeaderKeys,
     AcpPermissionReviewAgentConfig? permissionReviewAgent,
   }) {
     return AgentServerConfig(
@@ -812,6 +821,12 @@ class AgentServerConfig {
       headers: Map.unmodifiable(headers),
       envRefs: Map.unmodifiable(envRefs),
       headerRefs: Map.unmodifiable(headerRefs),
+      explicitEnvKeys: Set.unmodifiable(
+        explicitEnvKeys ?? this.explicitEnvKeys,
+      ),
+      explicitHeaderKeys: Set.unmodifiable(
+        explicitHeaderKeys ?? this.explicitHeaderKeys,
+      ),
       secretRefsResolved: true,
       additionalProperties: additionalProperties,
       permissionReviewAgent:
@@ -844,12 +859,16 @@ class McpServerConfig {
     required this.raw,
     this.envRefs = const <String, String>{},
     this.headerRefs = const <String, String>{},
+    this.explicitEnvKeys = const <String>{},
+    this.explicitHeaderKeys = const <String>{},
     this.secretRefsResolved = true,
   });
 
   final Map<String, dynamic> raw;
   final Map<String, String> envRefs;
   final Map<String, String> headerRefs;
+  final Set<String> explicitEnvKeys;
+  final Set<String> explicitHeaderKeys;
   final bool secretRefsResolved;
 
   Map<String, String> get env => _runtimeSecretMap(raw['env']);
@@ -912,6 +931,12 @@ class McpServerConfig {
 
   factory McpServerConfig.fromJson({required int index, required Map json}) {
     final raw = _jsonMap(json, fieldName: 'mcp_servers[$index]');
+    final explicitEnvKeys = Set<String>.unmodifiable(
+      _runtimeSecretMap(raw['env']).keys,
+    );
+    final explicitHeaderKeys = Set<String>.unmodifiable(
+      _runtimeSecretMap(raw['headers']).keys,
+    );
     final name = _stringValue(raw['name']);
     if (name == null) {
       throw FormatException('MCP server at index $index requires name.');
@@ -954,6 +979,8 @@ class McpServerConfig {
           fieldName: 'header_refs',
           serverName: name,
         ),
+        explicitEnvKeys: explicitEnvKeys,
+        explicitHeaderKeys: explicitHeaderKeys,
         secretRefsResolved: false,
       );
     }
@@ -1017,6 +1044,8 @@ class McpServerConfig {
       raw: raw,
       envRefs: envRefs,
       headerRefs: headerRefs,
+      explicitEnvKeys: explicitEnvKeys,
+      explicitHeaderKeys: explicitHeaderKeys,
       secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
     );
   }
@@ -1026,6 +1055,8 @@ class McpServerConfig {
     required Map<String, String> headers,
     required Map<String, String> envRefs,
     required Map<String, String> headerRefs,
+    Set<String>? explicitEnvKeys,
+    Set<String>? explicitHeaderKeys,
   }) {
     final nextRaw = _jsonMap(raw, fieldName: 'mcp_servers');
     if (env.isEmpty) {
@@ -1048,6 +1079,12 @@ class McpServerConfig {
       raw: nextRaw,
       envRefs: Map.unmodifiable(envRefs),
       headerRefs: Map.unmodifiable(headerRefs),
+      explicitEnvKeys: Set.unmodifiable(
+        explicitEnvKeys ?? this.explicitEnvKeys,
+      ),
+      explicitHeaderKeys: Set.unmodifiable(
+        explicitHeaderKeys ?? this.explicitHeaderKeys,
+      ),
       secretRefsResolved: true,
     );
   }

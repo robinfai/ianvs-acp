@@ -932,12 +932,20 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
     );
     _envControllers.addAll(
       server.env.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitEnvKeys.contains(entry.key),
+        ),
       ),
     );
     _headerControllers.addAll(
       server.headers.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitHeaderKeys.contains(entry.key),
+        ),
       ),
     );
   }
@@ -1018,7 +1026,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   itemPrefix: 'agent-header',
                   controllers: _headerControllers,
                   onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
+                    _headerControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _headerControllers.removeAt(index).dispose();
@@ -1058,7 +1068,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   itemPrefix: 'agent-env',
                   controllers: _envControllers,
                   onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
+                    _envControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _envControllers.removeAt(index).dispose();
@@ -1148,6 +1160,8 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                       key: initial.headerRefs[key]!,
                 }
               : const <String, String>{},
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
           permissionReviewAgent: review,
         ),
       );
@@ -1202,7 +1216,13 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
     }
     final env = raw['env'];
     if (env is List) {
-      _envControllers.addAll(_nameValueControllersFromList(env));
+      _envControllers.addAll(
+        _nameValueControllersFromList(
+          env,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitEnvKeys ?? const <String>{},
+        ),
+      );
     }
     final headers = raw['headers'];
     if (headers is Map) {
@@ -1215,11 +1235,22 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
               (entry) => _NameValueControllers(
                 name: entry.key as String,
                 value: entry.value as String,
+                initiallyDirty:
+                    widget.initialServer?.explicitHeaderKeys.contains(
+                      entry.key,
+                    ) ??
+                    false,
               ),
             ),
       );
     } else if (headers is List) {
-      _headerControllers.addAll(_nameValueControllersFromList(headers));
+      _headerControllers.addAll(
+        _nameValueControllersFromList(
+          headers,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitHeaderKeys ?? const <String>{},
+        ),
+      );
     }
   }
 
@@ -1302,7 +1333,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-header',
                   controllers: _headerControllers,
                   onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
+                    _headerControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _headerControllers.removeAt(index).dispose();
@@ -1335,7 +1368,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-env',
                   controllers: _envControllers,
                   onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
+                    _envControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _envControllers.removeAt(index).dispose();
@@ -1386,10 +1421,11 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
       }
       final server = McpServerConfig.fromJson(index: 0, json: raw);
       final initial = widget.initialServer;
-      if (initial == null || initial.name != server.name) {
+      if (initial == null) {
         Navigator.of(context).pop(server);
         return;
       }
+      final sameIdentity = initial.name == server.name;
       final env = <String, String>{
         for (final item in _nameValueEntries(_envControllers))
           item['name']!: item['value']!,
@@ -1404,13 +1440,16 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
           headers: headers,
           envRefs: {
             for (final key in env.keys)
-              if (initial.envRefs[key] != null) key: initial.envRefs[key]!,
+              if (sameIdentity && initial.envRefs[key] != null)
+                key: initial.envRefs[key]!,
           },
           headerRefs: {
             for (final key in headers.keys)
-              if (initial.headerRefs[key] != null)
+              if (sameIdentity && initial.headerRefs[key] != null)
                 key: initial.headerRefs[key]!,
           },
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
         ),
       );
     } catch (error) {
@@ -1435,14 +1474,28 @@ const Set<String> _mcpEditorManagedKeys = <String>{
 };
 
 class _NameValueControllers {
-  _NameValueControllers({String name = '', String value = ''})
-    : nameController = TextEditingController(text: name),
-      valueController = TextEditingController(text: value);
+  _NameValueControllers({
+    String name = '',
+    String value = '',
+    bool initiallyDirty = false,
+  }) : nameController = TextEditingController(text: name),
+       valueController = TextEditingController(text: value),
+       _dirty = initiallyDirty {
+    _dirtyListener = () => _dirty = true;
+    nameController.addListener(_dirtyListener);
+    valueController.addListener(_dirtyListener);
+  }
 
   final TextEditingController nameController;
   final TextEditingController valueController;
+  late final VoidCallback _dirtyListener;
+  bool _dirty;
+
+  bool get isDirty => _dirty;
 
   void dispose() {
+    nameController.removeListener(_dirtyListener);
+    valueController.removeListener(_dirtyListener);
     nameController.dispose();
     valueController.dispose();
   }
@@ -1705,13 +1758,26 @@ List<Map<String, String>> _nameValueEntries(
   ];
 }
 
-List<_NameValueControllers> _nameValueControllersFromList(List raw) {
+Set<String> _dirtyNameValueKeys(List<_NameValueControllers> controllers) {
+  return Set.unmodifiable(<String>{
+    for (final controllers in controllers)
+      if (controllers.isDirty &&
+          controllers.nameController.text.trim().isNotEmpty)
+        controllers.nameController.text.trim(),
+  });
+}
+
+List<_NameValueControllers> _nameValueControllersFromList(
+  List raw, {
+  Set<String> initiallyDirtyKeys = const <String>{},
+}) {
   return [
     for (final entry in raw)
       if (entry is Map && entry['name'] is String && entry['value'] is String)
         _NameValueControllers(
           name: entry['name'] as String,
           value: entry['value'] as String,
+          initiallyDirty: initiallyDirtyKeys.contains(entry['name']),
         ),
   ];
 }
