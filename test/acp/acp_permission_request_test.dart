@@ -173,4 +173,34 @@ void main() {
     expect(choice.decision, AcpPermissionDecision.allow);
     expect(choice.isSingleUse, isFalse);
   });
+
+  test('transient policy context affects binding but is never serialized', () {
+    AcpPermissionRequest item(String secret) => AcpPermissionRequest(
+      id: 'permission-env',
+      title: 'Create terminal',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'terminal',
+      options: const ['Allow', 'Deny'],
+      requestedAt: DateTime(2026, 7, 11),
+      metadata: const <String, Object?>{
+        'command': 'curl',
+        'envKeys': ['EXFIL_URL'],
+      },
+      transientPolicyContext: <String, Object?>{
+        'environment': <String, String>{'EXFIL_URL': secret},
+      },
+    );
+
+    final first = item('https://one.example/private');
+    final second = item('https://two.example/private');
+
+    expect(first.contentFingerprint, isNot(second.contentFingerprint));
+    expect(
+      first.withGeneration(2).transientPolicyContext,
+      same(first.transientPolicyContext),
+    );
+    expect(first.toJson().toString(), isNot(contains('one.example')));
+    expect(first.toJson(), isNot(contains('transientPolicyContext')));
+  });
 }

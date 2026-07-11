@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -179,6 +180,51 @@ void main() {
 
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('Hello, I am Codex.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline blocks remote and local markdown image IO', (
+    tester,
+  ) async {
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final arguments = call.arguments as Map<Object?, Object?>;
+          copiedText = arguments['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+    });
+
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: [
+            '![remote](https://images.example.com/pixel.png)',
+            '![local](file:///tmp/private.png)',
+            '![inline](data:image/png;base64,AAAA)',
+          ].join('\n\n'),
+        ),
+      ]),
+    );
+
+    expect(find.byType(Image), findsNothing);
+    expect(find.textContaining('Image blocked'), findsNWidgets(3));
+    expect(find.textContaining('images.example.com'), findsOneWidget);
+    expect(find.textContaining('file'), findsOneWidget);
+    expect(find.textContaining('data'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Copy blocked image link').first);
+    await tester.pump();
+    expect(copiedText, 'https://images.example.com/pixel.png');
   });
 
   testWidgets(

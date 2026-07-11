@@ -66,6 +66,7 @@ class PermissionOptions {
     this.choices = const <PermissionChoice>[],
     this.toolKind,
     this.metadata = const <String, Object?>{},
+    this.transientPolicyContext = const <String, Object?>{},
   });
 
   /// Display title of the permission prompt.
@@ -91,6 +92,12 @@ class PermissionOptions {
 
   /// Extra request context for client-side policy and audit.
   final Map<String, Object?> metadata;
+
+  /// Memory-only context for policy decisions.
+  ///
+  /// Values in this map must not be copied into protocol messages, audit
+  /// records, UI metadata, or logs.
+  final Map<String, Object?> transientPolicyContext;
 }
 
 /// Provider interface for answering permission requests.

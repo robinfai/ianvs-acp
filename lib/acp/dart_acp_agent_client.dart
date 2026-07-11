@@ -2247,6 +2247,9 @@ class _AcpPermissionBridge {
         ),
         requestedAt: DateTime.now(),
         metadata: Map<String, Object?>.unmodifiable(options.metadata),
+        transientPolicyContext: Map<String, Object?>.unmodifiable(
+          options.transientPolicyContext,
+        ),
       ),
     );
 

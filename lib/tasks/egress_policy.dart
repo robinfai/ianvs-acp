@@ -16,68 +16,242 @@ bool isEgressSensitiveCommand(String commandLine) {
 EgressPolicyMatch? egressPolicyMatchForPermission(
   AcpPermissionRequest request,
 ) {
-  final commandLine = commandLineFromPermissionRequest(request);
-  if (commandLine != null) {
-    return egressSensitiveCommandMatch(commandLine);
+  final invocation = _commandFromPermissionRequest(request);
+  if (invocation != null) {
+    return egressSensitiveCommandMatch(
+      invocation.command,
+      args: invocation.args,
+      cwd: _permissionCwd(request),
+      environment: _transientEnvironment(request),
+    );
   }
 
   final toolName = request.toolName.trim();
   if (toolName.isEmpty) return null;
-  return egressSensitiveCommandMatch(toolName);
+  return egressSensitiveCommandMatch(
+    toolName,
+    cwd: _permissionCwd(request),
+    environment: _transientEnvironment(request),
+  );
 }
 
-EgressPolicyMatch? egressSensitiveCommandMatch(String commandLine) {
-  final normalized = _normalizedCommandLine(commandLine);
-  if (normalized.isEmpty) return null;
+EgressPolicyMatch? egressSensitiveCommandMatch(
+  String commandLine, {
+  List<String> args = const <String>[],
+  String? cwd,
+  Map<String, String> environment = const <String, String>{},
+}) {
+  final commandWords = _shellWords(commandLine);
+  final words = args.isEmpty
+      ? commandWords
+      : <String>[...commandWords, ...args];
+  if (words.isEmpty) return null;
 
-  for (final nested in _nestedShellCommands(normalized)) {
-    final match = egressSensitiveCommandMatch(nested);
+  final segments = args.isEmpty
+      ? _commandSegments(words)
+      : <List<String>>[words];
+  for (final segment in segments) {
+    final match = _classifySegment(segment, environment);
     if (match != null) return match;
   }
+  return null;
+}
 
-  for (final pattern in _patterns) {
-    if (pattern.regex.hasMatch(normalized)) {
-      return EgressPolicyMatch(reason: pattern.reason, commandLine: normalized);
+EgressPolicyMatch? _classifySegment(
+  List<String> sourceTokens,
+  Map<String, String> inheritedEnvironment,
+) {
+  final environment = Map<String, String>.of(inheritedEnvironment);
+  final tokens = List<String>.of(sourceTokens);
+  var index = 0;
+
+  while (index < tokens.length && _isAssignment(tokens[index])) {
+    final assignment = _assignment(tokens[index]);
+    final resolved = _resolveToken(assignment.value, environment);
+    if (!resolved.complete) {
+      return _manualMatch('unresolved_variable', tokens.skip(index).toList());
+    }
+    environment[assignment.name] = resolved.value;
+    index += 1;
+  }
+  if (index >= tokens.length) return null;
+
+  while (index < tokens.length) {
+    final wrapper = _basename(tokens[index]).toLowerCase();
+    if (wrapper == 'env') {
+      index += 1;
+      var optionsEnded = false;
+      while (index < tokens.length) {
+        final token = tokens[index];
+        if (!optionsEnded && token == '--') {
+          optionsEnded = true;
+          index += 1;
+          continue;
+        }
+        if (!optionsEnded &&
+            (token == '-i' || token == '--ignore-environment')) {
+          environment.clear();
+          index += 1;
+          continue;
+        }
+        if (!optionsEnded && token == '-u') {
+          if (index + 1 >= tokens.length) {
+            return _manualMatch(
+              'unresolved_wrapper',
+              tokens.skip(index - 1).toList(),
+            );
+          }
+          environment.remove(tokens[index + 1]);
+          index += 2;
+          continue;
+        }
+        if (!optionsEnded && token.startsWith('--unset=')) {
+          environment.remove(token.substring('--unset='.length));
+          index += 1;
+          continue;
+        }
+        if (!optionsEnded && token.startsWith('-')) {
+          return _manualMatch(
+            'unresolved_wrapper',
+            tokens.skip(index - 1).toList(),
+          );
+        }
+        if (_isAssignment(token)) {
+          final assignment = _assignment(token);
+          final resolved = _resolveToken(assignment.value, environment);
+          if (!resolved.complete) {
+            return _manualMatch(
+              'unresolved_variable',
+              tokens.skip(index).toList(),
+            );
+          }
+          environment[assignment.name] = resolved.value;
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      if (index >= tokens.length) return null;
+      continue;
+    }
+
+    if (wrapper == 'command') {
+      index += 1;
+      while (index < tokens.length) {
+        final token = tokens[index];
+        if (token == '--' || token == '-p') {
+          index += 1;
+          continue;
+        }
+        if (token == '-v' || token == '-V') return null;
+        if (token.startsWith('-')) {
+          return _manualMatch(
+            'unresolved_wrapper',
+            tokens.skip(index - 1).toList(),
+          );
+        }
+        break;
+      }
+      if (index >= tokens.length) {
+        return _manualMatch('unresolved_executable', const <String>['command']);
+      }
+      continue;
+    }
+    break;
+  }
+
+  final finalTokens = tokens.skip(index).toList(growable: false);
+  if (finalTokens.isEmpty) {
+    return _manualMatch('unresolved_executable', const <String>['<redacted>']);
+  }
+  final resolvedTokens = <String>[];
+  for (final token in finalTokens) {
+    final resolved = _resolveToken(token, environment);
+    if (!resolved.complete) {
+      return _manualMatch('unresolved_variable', finalTokens);
+    }
+    resolvedTokens.add(resolved.value);
+  }
+  if (resolvedTokens.first.trim().isEmpty) {
+    return _manualMatch('unresolved_executable', finalTokens);
+  }
+
+  final executable = _basename(resolvedTokens.first).toLowerCase();
+  final args = resolvedTokens.skip(1).toList(growable: false);
+  final display = _normalizedDisplay(finalTokens);
+
+  if (const {'sh', 'bash', 'zsh'}.contains(executable)) {
+    for (var argIndex = 0; argIndex < args.length - 1; argIndex += 1) {
+      if (const {'-c', '-lc', '-ilc'}.contains(args[argIndex])) {
+        return egressSensitiveCommandMatch(
+          args[argIndex + 1],
+          environment: environment,
+        );
+      }
     }
   }
 
-  final tokens = _shellWords(normalized);
-  if (tokens.isEmpty) return null;
-  final executable = _basename(tokens.first).toLowerCase();
-  if ((executable == 'curl' || executable == 'wget') &&
-      tokens.any(_isExternalHttpUrl)) {
-    return EgressPolicyMatch(
-      reason: 'external_http_transfer',
-      commandLine: normalized,
-    );
+  final lowerArgs = args
+      .map((arg) => arg.toLowerCase())
+      .toList(growable: false);
+  if (lowerArgs.any((arg) => arg.contains('webhook'))) {
+    return EgressPolicyMatch(reason: 'webhook_call', commandLine: display);
+  }
+  if (lowerArgs.any((arg) => arg.contains('upload'))) {
+    return EgressPolicyMatch(reason: 'upload_api', commandLine: display);
+  }
+
+  if (executable == 'curl' || executable == 'wget') {
+    if (args.any(_isExternalHttpUrl) || _hasUnclassifiedTransferTarget(args)) {
+      return EgressPolicyMatch(
+        reason: 'external_http_transfer',
+        commandLine: display,
+      );
+    }
+    return null;
   }
 
   if (_egressExecutables.contains(executable)) {
     return EgressPolicyMatch(
-      reason: 'external_transfer_command',
-      commandLine: normalized,
+      reason: executable == 'mail' || executable == 'sendmail'
+          ? 'external_mail_command'
+          : 'external_transfer_command',
+      commandLine: display,
     );
   }
 
-  if (executable == 'git' && tokens.skip(1).contains('push')) {
-    return EgressPolicyMatch(reason: 'git_push', commandLine: normalized);
+  if (executable == 'git' && lowerArgs.contains('push')) {
+    return EgressPolicyMatch(reason: 'git_push', commandLine: display);
   }
-
   if (executable == 'gh' &&
-      tokens.length >= 3 &&
-      tokens[1] == 'pr' &&
-      tokens[2] == 'create') {
-    return EgressPolicyMatch(reason: 'pull_request', commandLine: normalized);
+      lowerArgs.length >= 2 &&
+      lowerArgs[0] == 'pr' &&
+      lowerArgs[1] == 'create') {
+    return EgressPolicyMatch(reason: 'pull_request', commandLine: display);
   }
-
-  if (executable == 'hub' && tokens.skip(1).contains('pull-request')) {
-    return EgressPolicyMatch(reason: 'pull_request', commandLine: normalized);
+  if (executable == 'hub' && lowerArgs.contains('pull-request')) {
+    return EgressPolicyMatch(reason: 'pull_request', commandLine: display);
   }
 
   return null;
 }
 
+EgressPolicyMatch _manualMatch(String reason, List<String> tokens) {
+  return EgressPolicyMatch(
+    reason: reason,
+    commandLine: _normalizedDisplay(tokens),
+  );
+}
+
 String? commandLineFromPermissionRequest(AcpPermissionRequest request) {
+  final invocation = _commandFromPermissionRequest(request);
+  if (invocation == null) return null;
+  return _commandLine(invocation.command, invocation.args);
+}
+
+_PermissionCommand? _commandFromPermissionRequest(
+  AcpPermissionRequest request,
+) {
   final metadata = request.metadata;
   final rawInput = _firstValue(metadata, const [
     'rawInput',
@@ -128,7 +302,15 @@ String? commandLineFromPermissionRequest(AcpPermissionRequest request) {
     'arguments',
   ]);
 
-  return _commandLine(command, args);
+  if (command == null || command.trim().isEmpty) return null;
+  return _PermissionCommand(command.trim(), args);
+}
+
+class _PermissionCommand {
+  const _PermissionCommand(this.command, this.args);
+
+  final String command;
+  final List<String> args;
 }
 
 const Set<String> _egressExecutables = {
@@ -139,46 +321,79 @@ const Set<String> _egressExecutables = {
   'mail',
 };
 
-final List<_EgressPattern> _patterns = [
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)git\s+push\b'), 'git_push'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)gh\s+pr\s+create\b'), 'pull_request'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)hub\s+pull-request\b'), 'pull_request'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)ssh\b'), 'external_transfer_command'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)scp\b'), 'external_transfer_command'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)rsync\b'), 'external_transfer_command'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)sendmail\b'), 'external_mail_command'),
-  _EgressPattern(RegExp(r'(^|[;&|]\s*)mail\b'), 'external_mail_command'),
-  _EgressPattern(RegExp(r'\bwebhook\b'), 'webhook_call'),
-  _EgressPattern(RegExp(r'\bupload\b'), 'upload_api'),
-];
-
-class _EgressPattern {
-  const _EgressPattern(this.regex, this.reason);
-
-  final RegExp regex;
-  final String reason;
+Map<String, String> _transientEnvironment(AcpPermissionRequest request) {
+  final raw = request.transientPolicyContext['environment'];
+  if (raw is! Map) return const <String, String>{};
+  return <String, String>{
+    for (final entry in raw.entries)
+      if (entry.key is String && entry.value is String)
+        entry.key as String: entry.value as String,
+  };
 }
 
-List<String> _nestedShellCommands(String commandLine) {
-  final tokens = _shellWords(commandLine);
-  if (tokens.length < 3) return const <String>[];
-  final executable = _basename(tokens.first).toLowerCase();
-  if (!const {'sh', 'bash', 'zsh'}.contains(executable)) {
-    return const <String>[];
-  }
+String? _permissionCwd(AcpPermissionRequest request) {
+  final cwd = request.metadata['cwd'];
+  return cwd is String && cwd.trim().isNotEmpty ? cwd.trim() : null;
+}
 
-  final commands = <String>[];
-  for (var index = 1; index < tokens.length - 1; index += 1) {
-    final token = tokens[index];
-    if (token == '-c' || token == '-lc' || token == '-ilc') {
-      commands.add(tokens[index + 1]);
+final RegExp _assignmentPattern = RegExp(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$');
+final RegExp _variablePattern = RegExp(
+  r'\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))',
+);
+
+bool _isAssignment(String value) => _assignmentPattern.hasMatch(value);
+
+({String name, String value}) _assignment(String value) {
+  final match = _assignmentPattern.firstMatch(value)!;
+  return (name: match.group(1)!, value: match.group(2)!);
+}
+
+_ResolvedToken _resolveToken(String token, Map<String, String> environment) {
+  var complete = true;
+  final resolved = token.replaceAllMapped(_variablePattern, (match) {
+    final name = match.group(1) ?? match.group(2)!;
+    final value = environment[name];
+    if (value == null) {
+      complete = false;
+      return match.group(0)!;
     }
-  }
-  return commands;
+    return value;
+  });
+  return _ResolvedToken(resolved, complete);
 }
 
-String _normalizedCommandLine(String value) {
-  return value.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+class _ResolvedToken {
+  const _ResolvedToken(this.value, this.complete);
+
+  final String value;
+  final bool complete;
+}
+
+List<List<String>> _commandSegments(List<String> tokens) {
+  final result = <List<String>>[];
+  var segment = <String>[];
+  for (final token in tokens) {
+    if (const {';', '&&', '||', '|'}.contains(token)) {
+      if (segment.isNotEmpty) result.add(segment);
+      segment = <String>[];
+      continue;
+    }
+    segment.add(token);
+  }
+  if (segment.isNotEmpty) result.add(segment);
+  return result;
+}
+
+String _normalizedDisplay(List<String> tokens) {
+  if (tokens.isEmpty) return '<redacted>';
+  return tokens.map(_safeDisplayToken).join(' ').trim();
+}
+
+String _safeDisplayToken(String token) {
+  final assignment = _assignmentPattern.firstMatch(token);
+  if (assignment != null) return '${assignment.group(1)}=<redacted>';
+  if (!token.contains(RegExp(r'\s'))) return token;
+  return "'${token.replaceAll("'", r"'\''")}'";
 }
 
 String _basename(String value) {
@@ -197,6 +412,20 @@ bool _isExternalHttpUrl(String value) {
       host != '127.0.0.1' &&
       host != '0.0.0.0' &&
       host != '::1';
+}
+
+bool _hasUnclassifiedTransferTarget(List<String> args) {
+  for (final arg in args) {
+    if (arg.isEmpty || arg.startsWith('-')) continue;
+    final uri = Uri.tryParse(arg);
+    if (uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        !_isExternalHttpUrl(arg)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 List<String> _shellWords(String commandLine) {
@@ -236,6 +465,24 @@ List<String> _shellWords(String commandLine) {
     }
     if (char.trim().isEmpty) {
       flush();
+      continue;
+    }
+    if (char == ';' || char == '|') {
+      flush();
+      if (index + 1 < commandLine.length && commandLine[index + 1] == char) {
+        words.add('$char$char');
+        index += 1;
+      } else {
+        words.add(char);
+      }
+      continue;
+    }
+    if (char == '&' &&
+        index + 1 < commandLine.length &&
+        commandLine[index + 1] == '&') {
+      flush();
+      words.add('&&');
+      index += 1;
       continue;
     }
     buffer.write(char);

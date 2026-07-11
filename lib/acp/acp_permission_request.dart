@@ -125,7 +125,9 @@ class AcpPermissionRequest {
     this.choices = const <AcpPermissionChoice>[],
     this.toolKind,
     this.metadata = const <String, Object?>{},
+    this.transientPolicyContext = const <String, Object?>{},
     this.generation = 0,
+    this._transientPolicyContextHash,
   });
 
   final String id;
@@ -138,7 +140,17 @@ class AcpPermissionRequest {
   final List<AcpPermissionChoice> choices;
   final DateTime requestedAt;
   final Map<String, Object?> metadata;
+  final Map<String, Object?> transientPolicyContext;
   final int generation;
+  final String? _transientPolicyContextHash;
+
+  String get transientPolicyContextFingerprint {
+    final retainedHash = _transientPolicyContextHash;
+    if (retainedHash != null && retainedHash.isNotEmpty) return retainedHash;
+    if (transientPolicyContext.isEmpty) return '';
+    final canonical = _canonicalPermissionValue(transientPolicyContext);
+    return sha256.convert(utf8.encode(jsonEncode(canonical))).toString();
+  }
 
   String get contentFingerprint {
     final content = <String, Object?>{
@@ -159,6 +171,8 @@ class AcpPermissionRequest {
           )
           .toList(growable: false),
       'metadata': _canonicalPermissionValue(metadata),
+      if (transientPolicyContextFingerprint.isNotEmpty)
+        'transientPolicyContextHash': transientPolicyContextFingerprint,
     };
     return sha256.convert(utf8.encode(jsonEncode(content))).toString();
   }
@@ -177,7 +191,26 @@ class AcpPermissionRequest {
       choices: choices,
       toolKind: toolKind,
       metadata: metadata,
+      transientPolicyContext: transientPolicyContext,
       generation: value,
+      transientPolicyContextHash: transientPolicyContextFingerprint,
+    );
+  }
+
+  AcpPermissionRequest forAudit() {
+    return AcpPermissionRequest(
+      id: id,
+      title: title,
+      rationale: rationale,
+      sessionId: sessionId,
+      toolName: toolName,
+      options: options,
+      requestedAt: requestedAt,
+      choices: choices,
+      toolKind: toolKind,
+      metadata: metadata,
+      generation: generation,
+      transientPolicyContextHash: transientPolicyContextFingerprint,
     );
   }
 

@@ -2502,6 +2502,12 @@ Future<void> main() async {
         'sessionId': 'session-term',
         'command': 'printf terminal-output',
         'args': <String>[],
+        'env': <Map<String, String>>[
+          <String, String>{
+            'name': 'EXFIL_URL',
+            'value': 'https://collector.example/private-secret',
+          },
+        ],
         'outputByteLimit': 8,
       });
     } else if (message['id'] == 'terminal-create-1') {
@@ -2555,6 +2561,19 @@ Future<void> main() async {
       expect(permissionRequests, hasLength(1));
       expect(permissionRequests.single.toolName, 'terminal');
       expect(permissionRequests.single.toolKind, 'execute');
+      expect(permissionRequests.single.metadata['envKeys'], ['EXFIL_URL']);
+      expect(
+        permissionRequests.single.metadata.toString(),
+        isNot(contains('private-secret')),
+      );
+      expect(
+        permissionRequests.single.transientPolicyContext['environment'],
+        containsPair('EXFIL_URL', 'https://collector.example/private-secret'),
+      );
+      expect(
+        permissionRequests.single.toJson().toString(),
+        isNot(contains('private-secret')),
+      );
 
       final terminalEvents = events
           .where((event) => event.metadata['kind'] == 'terminal')

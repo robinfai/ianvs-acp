@@ -1280,6 +1280,10 @@ class SessionManager {
         toolName: 'terminal',
         toolKind: 'execute',
         metadata: permissionMetadata,
+        transientPolicyContext: <String, Object?>{
+          if (env.isNotEmpty)
+            'environment': Map<String, String>.unmodifiable(env),
+        },
       ),
     );
     if (execOutcome.outcome != PermissionOutcome.allow) {

@@ -1,7 +1,7 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 
@@ -761,6 +761,7 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       data: data,
       selectable: true,
       styleSheet: styleSheet,
+      imageBuilder: _blockedMarkdownImage,
       builders: <String, MarkdownElementBuilder>{
         'pre': _MermaidCodeBlockBuilder(user: user),
       },
@@ -781,6 +782,57 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
+  final scheme = uri.scheme.trim().toLowerCase();
+  final source = switch (scheme) {
+    'http' || 'https' when uri.host.trim().isNotEmpty => uri.host.toLowerCase(),
+    '' => 'unknown',
+    _ => scheme,
+  };
+  final altText = alt?.trim();
+  return ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 320),
+    child: Container(
+      padding: const EdgeInsets.only(left: 8, top: 3, bottom: 3),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              [
+                'Image blocked · $source',
+                if (altText != null && altText.isNotEmpty) altText,
+              ].join(' — '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Copy blocked image link',
+            visualDensity: VisualDensity.compact,
+            iconSize: 16,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: uri.toString()));
+            },
+            icon: const Icon(Icons.content_copy_rounded),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {
