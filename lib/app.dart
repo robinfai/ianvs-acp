@@ -37,6 +37,7 @@ import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/deep_link_confirmation_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
+import 'ui/components/session_workspace_review_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
@@ -1663,6 +1664,11 @@ class _AcpClientAppState extends State<AcpClientApp>
       return;
     }
 
+    if (_hasExactSessionIdentity(_controller, session)) return;
+
+    final approved = await showSessionWorkspaceReviewDialog(context, session);
+    if (!approved || !mounted) return;
+
     var controller = _controller;
     if (widget.controller == null) {
       final sessionAgentName = session.agentName?.trim();
@@ -1680,7 +1686,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       }
     }
 
-    if (controller.currentSession?.id == session.id) return;
     await controller.resumeSession(
       session.id,
       cwd: session.cwd,
@@ -1689,6 +1694,33 @@ class _AcpClientAppState extends State<AcpClientApp>
       updatedAt: session.updatedAt,
     );
     if (mounted) setState(() {});
+  }
+
+  bool _hasExactSessionIdentity(
+    ChatController controller,
+    AgentSession selected,
+  ) {
+    final current = controller.currentSession;
+    if (current == null ||
+        current.id != selected.id ||
+        current.cwd != selected.cwd ||
+        current.additionalDirectories.length !=
+            selected.additionalDirectories.length) {
+      return false;
+    }
+    final selectedAgentName = selected.agentName?.trim();
+    if (selectedAgentName != null &&
+        selectedAgentName.isNotEmpty &&
+        selectedAgentName != controller.agentName) {
+      return false;
+    }
+    for (var index = 0; index < current.additionalDirectories.length; index++) {
+      if (current.additionalDirectories[index] !=
+          selected.additionalDirectories[index]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool _canForkSession(AgentSession session) {

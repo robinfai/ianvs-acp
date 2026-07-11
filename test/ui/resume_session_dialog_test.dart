@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/ui/components/resume_session_dialog.dart';
+import 'package:ianvs_acp/ui/components/session_workspace_review_dialog.dart';
 
 void main() {
   testWidgets('ResumeSessionDialog returns selected conversation', (
@@ -55,6 +57,113 @@ void main() {
 
     expect(selection?.project.cwd, '/workspace/project-a');
     expect(selection?.conversation.id, 'session-a');
+  });
+
+  testWidgets('ResumeSessionDialog previews every workspace root', (
+    tester,
+  ) async {
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Workspace-aware conversation',
+          additionalDirectories: const [
+            '/workspace/shared-one',
+            '/workspace/shared-two',
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(loadSessions: () async => [project]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('/workspace/project-a'), findsWidgets);
+    expect(
+      find.widgetWithText(SelectableText, '/workspace/shared-one'),
+      findsOneWidget,
+    );
+    expect(
+      find.widgetWithText(SelectableText, '/workspace/shared-two'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('SessionWorkspaceReviewDialog returns only explicit approval', (
+    tester,
+  ) async {
+    final session = AgentSession(
+      id: 'session-a',
+      cwd: '/workspace/project-a',
+      createdAt: DateTime(2026, 7, 11),
+      title: 'Workspace-aware conversation',
+      agentName: 'Codex',
+      additionalDirectories: const [
+        '',
+        ' /workspace/shared-one ',
+        '/workspace/shared-one',
+        '/workspace/shared-two',
+      ],
+    );
+    bool? result;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () async {
+                result = await showSessionWorkspaceReviewDialog(
+                  context,
+                  session,
+                );
+              },
+              child: const Text('Open Review'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Workspace-aware conversation'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
+    expect(
+      find.widgetWithText(SelectableText, '/workspace/project-a'),
+      findsOneWidget,
+    );
+    expect(
+      find.widgetWithText(SelectableText, '/workspace/shared-one'),
+      findsOneWidget,
+    );
+    expect(
+      find.widgetWithText(SelectableText, '/workspace/shared-two'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('local file and terminal access roots'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(result, isFalse);
+
+    await tester.tap(find.text('Open Review'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await tester.pumpAndSettle();
+    expect(result, isTrue);
   });
 
   testWidgets('ResumeSessionDialog filters without mutating selected labels', (

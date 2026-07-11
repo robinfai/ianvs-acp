@@ -597,9 +597,56 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Load'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Review Session Workspace'), findsNothing);
     expect(selectedSession?.agentName, 'pi ACP');
     expect(selectedSession?.id, 'session-a');
     expect(selectedSession?.cwd, '/workspace/project-a');
+    expect(codexClient.lastResumeCwd, isNull);
+    expect(piClient.lastResumeCwd, isNull);
+  });
+
+  testWidgets('AppShell direct resume requires workspace confirmation', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Review Session Workspace'), findsOneWidget);
+    expect(client.lastResumeCwd, isNull);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(client.lastResumeCwd, isNull);
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await tester.pumpAndSettle();
+
+    expect(client.lastResumeCwd, '/workspace/project-a');
   });
 }
 

@@ -20,6 +20,7 @@ import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 import '../support/memory_task_repository.dart';
@@ -2559,6 +2560,8 @@ void main() {
 
     await tester.tap(find.text('other'));
     await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await tester.pumpAndSettle();
 
     expect(controller.currentSession?.id, 'other-session');
     expect(
@@ -2568,6 +2571,80 @@ void main() {
       isFalse,
     );
   });
+
+  testWidgets(
+    'AcpClientApp confirms sidebar workspace roots before switching agents',
+    (tester) async {
+      final clients = <String, _RemoteWorkspaceSessionClient>{};
+      final factoryCalls = <String, int>{};
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
+        },
+      });
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          taskInboxController: taskHarness.controller,
+          createAgentClient: (agentConfig) {
+            factoryCalls.update(
+              agentConfig.agentName,
+              (count) => count + 1,
+              ifAbsent: () => 1,
+            );
+            return clients.putIfAbsent(
+              agentConfig.agentName,
+              () => _RemoteWorkspaceSessionClient(agentConfig.agentName),
+            );
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('Remote Pi Session').evaluate().isNotEmpty,
+      );
+      final piFactoryCallsBeforeCancel = factoryCalls['pi ACP'] ?? 0;
+
+      await tester.tap(find.text('Remote Pi Session'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Review Session Workspace'), findsOneWidget);
+      expect(find.text('/workspace/pi'), findsOneWidget);
+      expect(find.text('/workspace/shared-a'), findsOneWidget);
+      expect(find.text('/workspace/shared-b'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(clients['pi ACP']?.resumeCalls, 0);
+      expect(factoryCalls['pi ACP'] ?? 0, piFactoryCallsBeforeCancel);
+      expect(
+        tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName,
+        'Codex',
+      );
+
+      await tester.tap(find.text('Remote Pi Session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+      await tester.pumpAndSettle();
+
+      expect(clients['pi ACP']?.resumeCalls, 1);
+      expect(clients['pi ACP']?.lastResumeSessionId, 'remote-pi-session');
+      expect(clients['pi ACP']?.lastResumeWorkspace, '/workspace/pi');
+      expect(clients['pi ACP']?.lastResumeAdditionalDirectories, [
+        '/workspace/shared-a',
+        '/workspace/shared-b',
+      ]);
+      expect(
+        tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName,
+        'pi ACP',
+      );
+    },
+  );
 
   testWidgets('AcpClientApp forks sessions from the session menu', (
     tester,
@@ -3288,6 +3365,56 @@ Future<void> _pumpUntil(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
     );
     await tester.pump();
+  }
+}
+
+class _RemoteWorkspaceSessionClient extends FakeAgentClient {
+  _RemoteWorkspaceSessionClient(this.agentName);
+
+  final String agentName;
+  int resumeCalls = 0;
+  String? lastResumeSessionId;
+  String? lastResumeWorkspace;
+  List<String>? lastResumeAdditionalDirectories;
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) throw StateError('Fake client is not connected.');
+    if (agentName != 'pi ACP') return const <AcpProjectSessions>[];
+    return [
+      AcpProjectSessions(
+        cwd: '/workspace/pi',
+        sessions: [
+          AcpSessionEntry(
+            id: 'remote-pi-session',
+            cwd: '/workspace/pi',
+            title: 'Remote Pi Session',
+            additionalDirectories: const [
+              '/workspace/shared-a',
+              '/workspace/shared-b',
+            ],
+            meta: const {'agentName': 'pi ACP'},
+          ),
+        ],
+      ),
+    ];
+  }
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    resumeCalls += 1;
+    lastResumeSessionId = sessionId;
+    lastResumeWorkspace = cwd;
+    lastResumeAdditionalDirectories = List.of(additionalDirectories);
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
   }
 }
 

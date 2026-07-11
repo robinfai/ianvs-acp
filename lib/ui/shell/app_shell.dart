@@ -26,6 +26,7 @@ import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_settings_dialog.dart';
+import '../components/session_workspace_review_dialog.dart';
 import '../components/status_bar.dart';
 import '../components/task_inbox_sidebar.dart';
 import '../components/workspace_header.dart';
@@ -721,7 +722,7 @@ class AppShell extends StatelessWidget {
     if (!context.mounted) return;
     final selectedSession = AgentSession(
       id: selection.conversation.id,
-      cwd: selection.project.cwd,
+      cwd: selection.conversation.cwd,
       createdAt:
           selection.conversation.updatedAt ??
           DateTime.fromMillisecondsSinceEpoch(0),
@@ -735,6 +736,12 @@ class AppShell extends StatelessWidget {
       externalSelectSession(selectedSession);
       return;
     }
+
+    final approved = await showSessionWorkspaceReviewDialog(
+      context,
+      selectedSession,
+    );
+    if (!approved || !context.mounted) return;
 
     final targetController = _controllerForAgentName(
       sessionControllerList,

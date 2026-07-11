@@ -502,7 +502,13 @@ class _ConversationPreview extends StatelessWidget {
             ),
             const SizedBox(height: 5),
           ],
-          _PreviewRow(icon: Icons.folder_outlined, label: conversation.cwd),
+          _PreviewPathRow(label: 'Main workspace', path: conversation.cwd),
+          for (final directory in _visibleAdditionalDirectories(
+            conversation,
+          )) ...[
+            const SizedBox(height: 5),
+            _PreviewPathRow(label: 'Additional directory', path: directory),
+          ],
           if (conversation.updatedAt != null) ...[
             const SizedBox(height: 5),
             _PreviewRow(
@@ -595,6 +601,67 @@ class _PreviewRow extends StatelessWidget {
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+List<String> _visibleAdditionalDirectories(AcpSessionEntry conversation) {
+  final mainWorkspace = conversation.cwd.trim();
+  final seen = <String>{if (mainWorkspace.isNotEmpty) mainWorkspace};
+  final directories = <String>[];
+  for (final rawDirectory in conversation.additionalDirectories) {
+    final directory = rawDirectory.trim();
+    if (directory.isEmpty || !seen.add(directory)) continue;
+    directories.add(directory);
+  }
+  return directories;
+}
+
+class _PreviewPathRow extends StatelessWidget {
+  const _PreviewPathRow({required this.label, required this.path});
+
+  final String label;
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 2),
+          child: Icon(
+            Icons.folder_outlined,
+            size: 15,
+            color: AppColors.textTertiary,
+          ),
+        ),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              SelectableText(
+                path,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  height: 1.3,
+                ),
+              ),
+            ],
           ),
         ),
       ],
