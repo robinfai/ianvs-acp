@@ -432,6 +432,7 @@ class ChatController extends ChangeNotifier {
         _retiredSessionIds.remove(session.id);
         currentSession = session;
         _upsertSession(session);
+        _cancelPendingPermissionOutsideSession(session.id);
         isSessionReplayLoading = true;
         _notifyListeners();
         await Future<void>.delayed(Duration.zero);
@@ -451,6 +452,7 @@ class ChatController extends ChangeNotifier {
         _notifyListeners();
       } catch (error) {
         currentSession = previousSession;
+        _cancelPendingPermissionOutsideSession(previousSession?.id);
         sessions
           ..clear()
           ..addAll(previousSessions);
@@ -1353,7 +1355,6 @@ class ChatController extends ChangeNotifier {
     final request = incomingRequest.withGeneration(
       ++_nextPermissionRequestGeneration,
     );
-    if (_hasDeliveredPermissionDecision(request)) return;
 
     if (!_isPermissionRequestForActiveSession(request)) {
       _recordPermissionRequest(request);
@@ -1395,23 +1396,6 @@ class ChatController extends ChangeNotifier {
     _notifyPermissionEventObservers(ChatPermissionEvent.requested(request));
     _resolvePendingPermissionForPolicy(request);
     _notifyListeners();
-  }
-
-  bool _hasDeliveredPermissionDecision(AcpPermissionRequest request) {
-    final index = _permissionHistory.indexWhere(
-      (entry) => entry.request.bindingKey == request.bindingKey,
-    );
-    if (index == -1) return false;
-
-    final entry = _permissionHistory[index];
-    if (entry.status == AcpPermissionAuditStatus.pending) return false;
-    return switch (entry.decisionSource) {
-      AcpPermissionDecisionSource.manual ||
-      AcpPermissionDecisionSource.trustRule ||
-      AcpPermissionDecisionSource.reviewAgent ||
-      AcpPermissionDecisionSource.policy => true,
-      AcpPermissionDecisionSource.system || null => false,
-    };
   }
 
   bool _isCurrentPermissionRequest(AcpPermissionRequest request) {
@@ -1510,7 +1494,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     if (_isDisposed) return;
     if (!_isCurrentPermissionRequest(request)) return;
-    if (_hasDeliveredPermissionDecision(request)) return;
+    if (!_isPermissionRequestForActiveSession(request)) return;
     final bindingKey = request.bindingKey;
     if (!_resolvingPermissionRequestIds.add(bindingKey)) return;
     try {
@@ -1522,15 +1506,16 @@ class ChatController extends ChangeNotifier {
         return;
       }
       if (!_isCurrentPermissionRequest(request)) return;
+      if (!_isPermissionRequestForActiveSession(request)) return;
       final didSend = await _sendPermissionDecision(
         id: request.id,
         decision: decision,
         selectedOptionId: resolvedOptionId,
       );
       if (_isDisposed || !didSend) return;
-      if (_isCurrentPermissionRequest(request)) {
-        pendingPermissionRequest = null;
-      }
+      if (!_isCurrentPermissionRequest(request)) return;
+      if (!_isPermissionRequestForActiveSession(request)) return;
+      pendingPermissionRequest = null;
       _recordPermissionDecision(
         request,
         decision,
@@ -1581,7 +1566,6 @@ class ChatController extends ChangeNotifier {
           return;
         }
         if (!_isCurrentPermissionRequest(request)) return;
-        if (_hasDeliveredPermissionDecision(request)) return;
         await _resolvePermissionRequest(
           request,
           decision,
@@ -1640,6 +1624,30 @@ class ChatController extends ChangeNotifier {
       if (reportErrors) _setActionError(error);
       return error;
     }
+  }
+
+  void _cancelPendingPermissionOutsideSession(String? sessionId) {
+    final request = pendingPermissionRequest;
+    if (request == null) return;
+    final activeSessionId = sessionId?.trim();
+    if (activeSessionId != null &&
+        activeSessionId.isNotEmpty &&
+        request.sessionId.trim() == activeSessionId) {
+      return;
+    }
+    pendingPermissionRequest = null;
+    _recordPermissionDecision(
+      request,
+      AcpPermissionDecision.cancel,
+      source: AcpPermissionDecisionSource.system,
+    );
+    unawaited(
+      _sendPermissionDecision(
+        id: request.id,
+        decision: AcpPermissionDecision.cancel,
+        reportErrors: false,
+      ),
+    );
   }
 
   void _cancelPendingPermissionRequestAfterPromptEnd() {
@@ -2254,8 +2262,7 @@ class ChatController extends ChangeNotifier {
     await disposalComplete;
   }
 
-  Future<void> get disposalComplete =>
-      _disposalFuture ?? Future<void>.value();
+  Future<void> get disposalComplete => _disposalFuture ?? Future<void>.value();
 
   @override
   void dispose() {

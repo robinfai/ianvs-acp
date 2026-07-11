@@ -479,6 +479,7 @@ class SessionManager {
   // Track workspace roots per session for filesystem operations
   final Map<String, String> _sessionWorkspaceRoots = {};
   final Map<String, List<String>> _sessionAdditionalDirectories = {};
+  final Map<String, Future<void>> _sessionSetupTails = {};
 
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
@@ -507,6 +508,8 @@ class SessionManager {
     _cancelledPromptSessions.clear();
     _sessionWorkspaceRoots.clear();
     _sessionAdditionalDirectories.clear();
+    _sessionModes.clear();
+    _sessionSetupTails.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -566,22 +569,17 @@ class SessionManager {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
-    _sessionStreams.putIfAbsent(
-      sessionId,
-      StreamController<AcpUpdate>.broadcast,
-    );
-    _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
-    _setSessionWorkspace(
-      sessionId,
-      workspaceRoot,
+    await _runSessionSetup<void>(
+      sessionId: sessionId,
+      workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
-    );
-    await peer.loadSession(
-      _sessionSetupParams({
-        'sessionId': sessionId,
-        'cwd': workspaceRoot,
-        'mcpServers': config.mcpServers,
-      }, additionalDirectories),
+      action: () => peer.loadSession(
+        _sessionSetupParams({
+          'sessionId': sessionId,
+          'cwd': workspaceRoot,
+          'mcpServers': config.mcpServers,
+        }, additionalDirectories),
+      ),
     );
   }
 
@@ -608,25 +606,22 @@ class SessionManager {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
-    _sessionStreams.putIfAbsent(
-      sessionId,
-      StreamController<AcpUpdate>.broadcast,
-    );
-    _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
-    _setSessionWorkspace(
-      sessionId,
-      workspaceRoot,
+    return _runSessionSetup<SessionResult>(
+      sessionId: sessionId,
+      workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
+      action: () async {
+        final resp = await peer.sendRaw(
+          'session/resume',
+          _sessionSetupParams({
+            'sessionId': sessionId,
+            'cwd': workspaceRoot,
+            'mcpServers': config.mcpServers,
+          }, additionalDirectories),
+        );
+        return SessionResult.fromJson({...resp, 'sessionId': sessionId});
+      },
     );
-    final resp = await peer.sendRaw(
-      'session/resume',
-      _sessionSetupParams({
-        'sessionId': sessionId,
-        'cwd': workspaceRoot,
-        'mcpServers': config.mcpServers,
-      }, additionalDirectories),
-    );
-    return SessionResult.fromJson({...resp, 'sessionId': sessionId});
   }
 
   /// Fork an existing session to create a new independent session.
@@ -688,6 +683,9 @@ class SessionManager {
     if (!_sessionStreams.containsKey(sessionId)) {
       // Unknown session; throw error
       throw ArgumentError('Invalid session ID: $sessionId');
+    }
+    if (!_sessionWorkspaceRoots.containsKey(sessionId)) {
+      throw StateError('Session $sessionId has no workspace binding');
     }
 
     final base = _sessionStreams[sessionId]!.stream;
@@ -798,6 +796,64 @@ class SessionManager {
   bool _sameDirectories(List<String>? left, List<String> right) {
     if (left == null || left.length != right.length) return false;
     return left.toSet().containsAll(right);
+  }
+
+  Future<T> _runSessionSetup<T>({
+    required String sessionId,
+    required String workspaceRoot,
+    required List<String> additionalDirectories,
+    required Future<T> Function() action,
+  }) async {
+    final previousSetup = _sessionSetupTails[sessionId];
+    final completion = Completer<void>();
+    final tail = completion.future;
+    _sessionSetupTails[sessionId] = tail;
+    if (previousSetup != null) await previousSetup;
+
+    try {
+      final hadStream = _sessionStreams.containsKey(sessionId);
+      final hadReplay = _replayBuffers.containsKey(sessionId);
+      final hadBinding = _sessionWorkspaceRoots.containsKey(sessionId);
+      final hadModes = _sessionModes.containsKey(sessionId);
+      final hadToolCalls = _toolCalls.containsKey(sessionId);
+      _sessionStreams.putIfAbsent(
+        sessionId,
+        StreamController<AcpUpdate>.broadcast,
+      );
+      _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
+      try {
+        _setSessionWorkspace(
+          sessionId,
+          workspaceRoot,
+          additionalDirectories: additionalDirectories,
+        );
+        return await action();
+      } catch (_) {
+        if (!hadBinding) {
+          _sessionWorkspaceRoots.remove(sessionId);
+          _sessionAdditionalDirectories.remove(sessionId);
+        }
+        if (!hadReplay) {
+          _replayBuffers.remove(sessionId);
+        }
+        if (!hadModes) {
+          _sessionModes.remove(sessionId);
+        }
+        if (!hadToolCalls) {
+          _toolCalls.remove(sessionId);
+        }
+        if (!hadStream) {
+          final controller = _sessionStreams.remove(sessionId);
+          await controller?.close();
+        }
+        rethrow;
+      }
+    } finally {
+      completion.complete();
+      if (identical(_sessionSetupTails[sessionId], tail)) {
+        _sessionSetupTails.remove(sessionId);
+      }
+    }
   }
 
   Json _sessionSetupParams(Json params, List<String> additionalDirectories) {

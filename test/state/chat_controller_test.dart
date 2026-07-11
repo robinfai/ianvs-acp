@@ -836,6 +836,41 @@ void main() {
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
   });
 
+  test('failed resume cancels permission from the target session', () async {
+    final fake = _PermissionThenFailingResumeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    var resumeCompleted = false;
+    final resume = controller
+        .resumeSession('failed-target', cwd: '/other/project')
+        .whenComplete(() => resumeCompleted = true);
+    await fake.permissionResponseStarted.future;
+    await pumpEventQueue(times: 3);
+    final completedBeforePermissionResponse = resumeCompleted;
+    fake.completePermissionResponse();
+    await resume;
+
+    expect(completedBeforePermissionResponse, isTrue);
+    expect(controller.currentSession?.id, 'fake-session-1');
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(controller.permissionHistory, hasLength(1));
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.cancelled,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.system,
+    );
+    expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+
+    await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+
+    expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+  });
+
   test('resume session keeps ACP session title metadata', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -1201,53 +1236,113 @@ void main() {
   );
 
   test(
-    'repeated permission events receive a new generation',
+    'superseded permission response cannot overwrite its cancelled audit',
     () async {
-      final fake = _CountingPermissionResponseAgentClient();
+      final fake = _DelayedPermissionResponseAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
+      final events = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(events.add);
 
-      final request = AcpPermissionRequest(
-        id: 'permission-1',
-        title: 'Read file',
-        rationale: 'Requested by agent',
-        sessionId: 'session-1',
-        toolName: 'read_text_file',
-        options: const ['Allow', 'Deny'],
-        requestedAt: DateTime(2026, 5, 31, 12),
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-a',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+        ),
       );
-
-      fake.emitPermissionRequest(request);
-      await pumpEventQueue();
-      await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
-
-      expect(fake.permissionResponseCount, 1);
-      expect(controller.pendingPermissionRequest, isNull);
-      expect(
-        controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.allowed,
-      );
-
-      fake.emitPermissionRequest(request);
       await pumpEventQueue();
 
-      expect(fake.permissionResponseCount, 1);
-      expect(controller.pendingPermissionRequest?.generation, 2);
-      expect(controller.permissionHistory, hasLength(2));
-      expect(
-        controller.permissionHistory.first.status,
-        AcpPermissionAuditStatus.pending,
+      final allow = controller.resolvePermissionRequest(
+        AcpPermissionDecision.allow,
       );
-      expect(
-        controller.permissionHistory.last.status,
-        AcpPermissionAuditStatus.allowed,
+      await fake.responseStarted.future;
+
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-b',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12, 1),
+        ),
       );
+      await pumpEventQueue();
+
+      fake.allowResponse.complete();
+      await allow;
+      await pumpEventQueue(times: 2);
+
+      final auditA = controller.permissionHistory.singleWhere(
+        (entry) => entry.request.id == 'permission-a',
+      );
+      expect(auditA.status, AcpPermissionAuditStatus.cancelled);
+      expect(auditA.decisionSource, AcpPermissionDecisionSource.system);
+      expect(controller.pendingPermissionRequest?.id, 'permission-b');
       expect(
-        controller.permissionHistory.last.decisionSource,
-        AcpPermissionDecisionSource.manual,
+        events
+            .where(
+              (event) =>
+                  event.type == ChatPermissionEventType.resolved &&
+                  event.request.id == 'permission-a',
+            )
+            .length,
+        1,
       );
     },
   );
+
+  test('repeated permission events receive a new generation', () async {
+    final fake = _CountingPermissionResponseAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    final request = AcpPermissionRequest(
+      id: 'permission-1',
+      title: 'Read file',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'read_text_file',
+      options: const ['Allow', 'Deny'],
+      requestedAt: DateTime(2026, 5, 31, 12),
+    );
+
+    fake.emitPermissionRequest(request);
+    await pumpEventQueue();
+    await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+
+    expect(fake.permissionResponseCount, 1);
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+
+    fake.emitPermissionRequest(request);
+    await pumpEventQueue();
+
+    expect(fake.permissionResponseCount, 1);
+    expect(controller.pendingPermissionRequest?.generation, 2);
+    expect(controller.permissionHistory, hasLength(2));
+    expect(
+      controller.permissionHistory.first.status,
+      AcpPermissionAuditStatus.pending,
+    );
+    expect(
+      controller.permissionHistory.last.status,
+      AcpPermissionAuditStatus.allowed,
+    );
+    expect(
+      controller.permissionHistory.last.decisionSource,
+      AcpPermissionDecisionSource.manual,
+    );
+  });
 
   test('failed manual permission responses keep the request pending', () async {
     final fake = FakeAgentClient(
@@ -1552,42 +1647,44 @@ void main() {
     },
   );
 
-  test('late permission cancellation failure does not poison a new session', (
-    ) async {
-    final fake = _DelayedFailingPermissionAgentClient(
-      chunkDelay: const Duration(milliseconds: 50),
-    );
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
+  test(
+    'late permission cancellation failure does not poison a new session',
+    () async {
+      final fake = _DelayedFailingPermissionAgentClient(
+        chunkDelay: const Duration(milliseconds: 50),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
 
-    await controller.newSession();
-    await controller.sendPrompt('Hi');
-    fake.emitPermissionRequest(
-      AcpPermissionRequest(
-        id: 'permission-late-failure',
-        title: 'Run command',
-        rationale: 'Requested by agent',
-        sessionId: 'fake-session-1',
-        toolName: 'terminal',
-        options: const ['Allow', 'Deny'],
-        requestedAt: DateTime(2026, 5, 31, 12),
-      ),
-    );
-    await pumpEventQueue();
+      await controller.newSession();
+      await controller.sendPrompt('Hi');
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-late-failure',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'fake-session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+      );
+      await pumpEventQueue();
 
-    await controller.stop(
-      cancellationTimeout: const Duration(milliseconds: 20),
-    );
-    expect(controller.lastError, contains('TimeoutException'));
-    expect(await controller.newSession(), isTrue);
-    expect(controller.lastError, isNull);
+      await controller.stop(
+        cancellationTimeout: const Duration(milliseconds: 20),
+      );
+      expect(controller.lastError, contains('TimeoutException'));
+      expect(await controller.newSession(), isTrue);
+      expect(controller.lastError, isNull);
 
-    fake.failResponse();
-    await pumpEventQueue();
+      fake.failResponse();
+      await pumpEventQueue();
 
-    expect(controller.lastError, isNull);
-    expect(controller.currentSession?.id, 'fake-session-2');
-  });
+      expect(controller.lastError, isNull);
+      expect(controller.currentSession?.id, 'fake-session-2');
+    },
+  );
 
   test(
     'permission history cancels pending request when stream closes',
@@ -2094,10 +2191,7 @@ void main() {
           toolKind: 'read',
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime(2026, 5, 31, 12),
-          metadata: const {
-            'path': '/workspace/report',
-            'note': 'value',
-          },
+          metadata: const {'path': '/workspace/report', 'note': 'value'},
         ),
       );
       await pumpEventQueue();
@@ -2112,10 +2206,7 @@ void main() {
           toolKind: 'read',
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime(2026, 5, 31, 12, 1),
-          metadata: const {
-            'path': '/workspace/report ',
-            'note': ' value',
-          },
+          metadata: const {'path': '/workspace/report ', 'note': ' value'},
         ),
       );
       await pumpEventQueue();
@@ -2128,10 +2219,10 @@ void main() {
         isNot(reviewer.requests.first.contentFingerprint),
       );
       expect(controller.permissionHistory, hasLength(2));
-      expect(
-        controller.permissionHistory.map((entry) => entry.status),
-        [AcpPermissionAuditStatus.pending, AcpPermissionAuditStatus.cancelled],
-      );
+      expect(controller.permissionHistory.map((entry) => entry.status), [
+        AcpPermissionAuditStatus.pending,
+        AcpPermissionAuditStatus.cancelled,
+      ]);
 
       reviewer.complete(
         0,
@@ -3365,6 +3456,58 @@ class _FailingResumeAgentClient extends FakeAgentClient {
   }) async {
     lastResumeCwd = cwd;
     throw StateError('resume failed');
+  }
+}
+
+class _PermissionThenFailingResumeAgentClient extends FakeAgentClient {
+  final List<AcpPermissionDecision> permissionDecisions =
+      <AcpPermissionDecision>[];
+  final Completer<void> permissionResponseStarted = Completer<void>();
+  final Completer<void> _permissionResponse = Completer<void>();
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    lastResumeCwd = cwd;
+    emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-during-resume',
+        title: 'Run target command',
+        rationale: 'Requested by target session',
+        sessionId: sessionId,
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 11, 12),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    throw StateError('resume failed');
+  }
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+    String? selectedOptionId,
+  }) async {
+    permissionDecisions.add(decision);
+    if (!permissionResponseStarted.isCompleted) {
+      permissionResponseStarted.complete();
+    }
+    await _permissionResponse.future;
+    await super.respondToPermissionRequest(
+      id: id,
+      decision: decision,
+      selectedOptionId: selectedOptionId,
+    );
+  }
+
+  void completePermissionResponse() {
+    if (!_permissionResponse.isCompleted) _permissionResponse.complete();
   }
 }
 

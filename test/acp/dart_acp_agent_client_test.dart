@@ -2,11 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
+import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:stream_channel/stream_channel.dart';
 
 void main() {
   test('pins the default Codex ACP adapter version', () {
@@ -78,8 +82,7 @@ void main() {
       '/usr/local/bin/mcp-filesystem',
     );
     expect(
-      () => client.mcpServers.single['url'] =
-          'http://mutated.example.com/mcp',
+      () => client.mcpServers.single['url'] = 'http://mutated.example.com/mcp',
       throwsUnsupportedError,
     );
   });
@@ -1861,6 +1864,160 @@ Future<void> main() async {
       }
     },
   );
+
+  test(
+    'failed resume rolls back only newly registered session state',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File(
+        '${tempDir.path}/fake_resume_rollback_agent.dart',
+      );
+      await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+void send(Map<String, dynamic> message) => stdout.writeln(jsonEncode(message));
+
+Future<void> main() async {
+  var resumeCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'resume': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      });
+    } else if (message['method'] == 'session/resume') {
+      resumeCount += 1;
+      if (resumeCount == 1 || resumeCount == 3) {
+        if (resumeCount == 1) {
+          send(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'session-rollback',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'stale-mode',
+              },
+            },
+          });
+        }
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'error': <String, dynamic>{
+            'code': -32000,
+            'message': 'resume failed',
+          },
+        });
+      } else {
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{},
+        });
+      }
+    } else if (message['method'] == 'session/prompt') {
+      send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      });
+    }
+  }
+}
+''');
+
+      final client = await acp.AcpClient.start(
+        config: acp.AcpConfig(
+          agentCommand: _dartExecutable(),
+          agentArgs: [agentScript.path],
+        ),
+      );
+      var sessionUpdatesDone = false;
+      final sessionUpdates = client
+          .sessionUpdates('session-rollback')
+          .listen((_) {}, onDone: () => sessionUpdatesDone = true);
+
+      try {
+        await client.initialize().timeout(const Duration(seconds: 5));
+        await pumpEventQueue();
+
+        await expectLater(
+          client.resumeSession(
+            sessionId: 'session-rollback',
+            workspaceRoot: '/workspace/wrong',
+          ),
+          throwsA(anything),
+        );
+        await pumpEventQueue();
+        expect(sessionUpdatesDone, isFalse);
+        expect(client.sessionModes('session-rollback'), isNull);
+        expect(
+          () => client.prompt(
+            sessionId: 'session-rollback',
+            content: 'must be invalid',
+          ),
+          throwsA(isA<StateError>()),
+        );
+
+        await client.resumeSession(
+          sessionId: 'session-rollback',
+          workspaceRoot: '/workspace/correct',
+        );
+        await expectLater(
+          client.resumeSession(
+            sessionId: 'session-rollback',
+            workspaceRoot: '/workspace/correct',
+          ),
+          throwsA(anything),
+        );
+
+        await client
+            .prompt(sessionId: 'session-rollback', content: 'still valid')
+            .drain<void>()
+            .timeout(const Duration(seconds: 5));
+      } finally {
+        await sessionUpdates.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('session manager prompt requires a workspace binding', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final updates = manager.sessionUpdates('unbound-session').listen((_) {});
+
+    try {
+      await pumpEventQueue();
+
+      expect(
+        () => manager.prompt(
+          sessionId: 'unbound-session',
+          content: const <Map<String, dynamic>>[],
+        ),
+        throwsA(isA<StateError>()),
+      );
+    } finally {
+      await updates.cancel();
+      await manager.dispose();
+      await peer.close();
+      await channel.local.sink.close();
+    }
+  });
 
   test(
     'filesystem provider allows configured additional directories',
@@ -5445,11 +5602,14 @@ const _tinyWavBytes = <int>[
 
 const _binaryBytes = <int>[0x00, 0xff, 0x10, 0x80, 0x42, 0x24];
 
-Future<({
-  Map<String, dynamic> response,
-  int permissionRequestCount,
-  bool writeTargetExists,
-})> _runInvalidSessionRequest({
+Future<
+  ({
+    Map<String, dynamic> response,
+    int permissionRequestCount,
+    bool writeTargetExists,
+  })
+>
+_runInvalidSessionRequest({
   required String method,
   required String? sessionId,
 }) async {
@@ -5468,10 +5628,7 @@ Future<({
       'content': 'must not be written',
     },
     if (method == 'session/request_permission') ...{
-      'toolCall': <String, Object?>{
-        'title': 'Run command',
-        'kind': 'execute',
-      },
+      'toolCall': <String, Object?>{'title': 'Run command', 'kind': 'execute'},
       'options': <Map<String, Object?>>[
         {'optionId': 'allow', 'kind': 'allow_once', 'name': 'Allow'},
         {'optionId': 'deny', 'kind': 'reject_once', 'name': 'Deny'},
