@@ -23,6 +23,20 @@ class RunnerTests: XCTestCase {
     super.tearDown()
   }
 
+  func testBundleIdentifierIsProductionIdentifier() {
+    XCTAssertEqual(Bundle.main.bundleIdentifier, "com.ianvs.acp")
+  }
+
+  func testRegisteredDeepLinkScheme() {
+    let urlTypes = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes")
+      as? [[String: Any]]
+    let schemes = urlTypes?.flatMap {
+      $0["CFBundleURLSchemes"] as? [String] ?? []
+    }
+
+    XCTAssertTrue(schemes?.contains("ianvs-acp") == true)
+  }
+
   func testStableReferenceUsesSha256Account() throws {
     let first = try store.put(
       namespace: "agent/Codex/env",
