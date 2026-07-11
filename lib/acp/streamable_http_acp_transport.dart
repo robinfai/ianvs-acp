@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:stream_channel/stream_channel.dart';
 
+import 'acp_endpoint_validator.dart';
+
 class StreamableHttpAcpTransport implements acp.AcpTransport {
   StreamableHttpAcpTransport({
     required this.endpoint,
@@ -16,7 +18,12 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.sseIdleTimeout = const Duration(minutes: 5),
   }) : assert(requestTimeout > Duration.zero),
        assert(firstByteTimeout > Duration.zero),
-       assert(sseIdleTimeout > Duration.zero);
+       assert(sseIdleTimeout > Duration.zero) {
+    validateAcpEndpoint(
+      endpoint,
+      allowedSchemes: const <String>{'http', 'https'},
+    );
+  }
 
   final Uri endpoint;
   final Map<String, String> headers;
@@ -92,6 +99,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       }
 
       final request = await client.postUrl(endpoint).timeout(requestTimeout);
+      request.followRedirects = false;
       _applyRequestHeaders(
         request,
         contentType: ContentType.json,
@@ -194,6 +202,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return _streamStartsByKey.putIfAbsent(key, () async {
       try {
         final request = await client.getUrl(endpoint).timeout(requestTimeout);
+        request.followRedirects = false;
         _applyRequestHeaders(request, accept: 'text/event-stream');
         request.headers.set('Acp-Connection-Id', connectionId);
         if (sessionId != null) {
@@ -450,6 +459,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final request = await client
           .deleteUrl(endpoint)
           .timeout(_teardownTimeout);
+      request.followRedirects = false;
       _applyRequestHeaders(request);
       request.headers.set('Acp-Connection-Id', connectionId);
       final response = await request.close().timeout(_teardownTimeout);

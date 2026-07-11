@@ -6,6 +6,161 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/streamable_http_acp_transport.dart';
 
 void main() {
+  test('HTTP POST does not follow redirects', () async {
+    final redirectTarget = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    var targetRequests = 0;
+    final targetSubscription = redirectTarget.listen((request) async {
+      targetRequests += 1;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write('{}');
+      await request.response.close();
+    });
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var originRequests = 0;
+    final originSubscription = origin.listen((request) async {
+      originRequests += 1;
+      await request.drain<void>();
+      request.response
+        ..statusCode = HttpStatus.seeOther
+        ..headers.set(
+          HttpHeaders.locationHeader,
+          'http://127.0.0.1:${redirectTarget.port}/redirected',
+        );
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${origin.port}/acp'),
+      requestTimeout: const Duration(seconds: 1),
+      firstByteTimeout: const Duration(seconds: 1),
+    );
+    await transport.start();
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(originRequests, 1);
+      expect(targetRequests, 0);
+      expect(
+        errors.single,
+        isA<HttpException>().having(
+          (error) => error.message,
+          'message',
+          contains('303'),
+        ),
+      );
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      await originSubscription.cancel();
+      await origin.close(force: true);
+      await targetSubscription.cancel();
+      await redirectTarget.close(force: true);
+    }
+  });
+
+  test('HTTP SSE GET and teardown DELETE do not follow redirects', () async {
+    final redirectTarget = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final targetMethods = <String>[];
+    final targetSubscription = redirectTarget.listen((request) async {
+      targetMethods.add(request.method);
+      request.response.statusCode = HttpStatus.internalServerError;
+      await request.response.close();
+    });
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final originMethods = <String>[];
+    final originSubscription = origin.listen((request) async {
+      originMethods.add(request.method);
+      if (request.method == 'POST') {
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-1')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{
+                'connectionId': 'connection-1',
+                'protocolVersion': 1,
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+      } else {
+        request.response
+          ..statusCode = HttpStatus.temporaryRedirect
+          ..headers.set(
+            HttpHeaders.locationHeader,
+            'http://127.0.0.1:${redirectTarget.port}/redirected',
+          );
+      }
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${origin.port}/acp'),
+      requestTimeout: const Duration(seconds: 1),
+      firstByteTimeout: const Duration(seconds: 1),
+    );
+    await transport.start();
+    final inbound = <Map<String, dynamic>>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      (line) => inbound.add(jsonDecode(line) as Map<String, dynamic>),
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, dynamic>{},
+        }),
+      );
+      await _waitFor(() => inbound.any((message) => message['id'] == 1));
+      await _waitFor(() => originMethods.contains('GET'));
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(targetMethods, isEmpty);
+      expect(errors.single, isA<HttpException>());
+
+      await transport.stop();
+      await _waitFor(() => originMethods.contains('DELETE'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(targetMethods, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      await originSubscription.cancel();
+      await origin.close(force: true);
+      await targetSubscription.cancel();
+      await redirectTarget.close(force: true);
+    }
+  });
+
   test('session setup errors clear pending HTTP response routes', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];

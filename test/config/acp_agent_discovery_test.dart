@@ -7,6 +7,16 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
+  test('pins discovered ACP adapters to reviewed versions', () {
+    final agents = AcpAgentDiscovery.discover(
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (_) => true,
+    );
+
+    expect(agents.first.args.single, '@zed-industries/codex-acp@0.16.0');
+    expect(agents.last.args.last, 'pi-acp@0.0.31');
+  });
+
   test('discovers Codex ACP through npx on PATH', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
@@ -17,7 +27,7 @@ void main() {
     expect(discovered, hasLength(1));
     expect(discovered.single.name, 'Codex');
     expect(discovered.single.command, '/usr/local/bin/npx');
-    expect(discovered.single.args, ['@zed-industries/codex-acp']);
+    expect(discovered.single.args, ['@zed-industries/codex-acp@0.16.0']);
   });
 
   test('discovers pi ACP through npx when pi is installed', () {
@@ -34,7 +44,7 @@ void main() {
     expect(discovered, hasLength(2));
     final pi = discovered.singleWhere((server) => server.name == 'pi ACP');
     expect(pi.command, '/usr/local/bin/npx');
-    expect(pi.args, ['-y', 'pi-acp']);
+    expect(pi.args, ['-y', 'pi-acp@0.0.31']);
     expect(pi.env, isEmpty);
   });
 
@@ -57,7 +67,7 @@ void main() {
             'OpenAI Codex': {
               'type': 'custom',
               'command': '/opt/homebrew/bin/npx',
-              'args': ['@zed-industries/codex-acp'],
+              'args': ['@zed-industries/codex-acp@0.16.0'],
             },
           },
         }),
@@ -78,7 +88,7 @@ void main() {
             'pi': {
               'type': 'custom',
               'command': '/opt/homebrew/bin/npx',
-              'args': ['-y', 'pi-acp'],
+              'args': ['-y', 'pi-acp@0.0.31'],
             },
           },
         }),
@@ -107,7 +117,7 @@ void main() {
           name: 'Codex',
           type: 'custom',
           command: '/usr/local/bin/npx',
-          args: ['@zed-industries/codex-acp'],
+          args: ['@zed-industries/codex-acp@0.16.0'],
         ),
       ],
     );

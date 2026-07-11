@@ -38,10 +38,14 @@ is restored or re-entered.
 
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
-`npx` command running `@zed-industries/codex-acp`, and pi ACP through `npx -y
-pi-acp` when both `npx` and the `pi` command are available. Model provider
-credentials for pi remain user-managed through pi itself or the agent server
-`env` fields in Agent Configuration.
+`npx` command running `@zed-industries/codex-acp@0.16.0`, and pi ACP through
+`npx -y pi-acp@0.0.31` when both `npx` and the `pi` command are available. Model
+provider credentials for pi remain user-managed through pi itself or the agent
+server `env` fields in Agent Configuration.
+
+These adapter versions were checked against the official npm registry on
+2026-07-10 with `npm view <package> version`. Upgrade either adapter only in a
+separate code change with its corresponding discovery tests.
 
 Saved shape example for automation and debugging:
 
@@ -53,13 +57,13 @@ Saved shape example for automation and debugging:
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["@zed-industries/codex-acp"]
+      "args": ["@zed-industries/codex-acp@0.16.0"]
     },
     "pi ACP": {
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["-y", "pi-acp"]
+      "args": ["-y", "pi-acp@0.0.31"]
     }
   },
   "additional_directories": [

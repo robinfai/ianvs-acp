@@ -1,14 +1,84 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mcp_dart/mcp_dart.dart' as mcp;
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/acp/no_redirect_mcp_http_transport.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
+  test('no-redirect MCP transport validates its endpoint directly', () {
+    expect(
+      () => NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('http://reviewer.example.com/mcp'),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('https://user:password@reviewer.example.com/mcp'),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('ftp://reviewer.example.com/mcp'),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:8080/mcp'),
+      ),
+      returnsNormally,
+    );
+  });
+
+  test('no-redirect MCP transport bounds stalled session teardown', () async {
+    final deleteStarted = Completer<void>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        if (!deleteStarted.isCompleted) deleteStarted.complete();
+        return;
+      }
+      await request.drain<void>();
+      request.response
+        ..statusCode = HttpStatus.accepted
+        ..headers.set('Mcp-Session-Id', 'stalled-session');
+      await request.response.close();
+    });
+    final transport = NoRedirectMcpHttpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/mcp'),
+      teardownTimeout: const Duration(milliseconds: 50),
+    );
+
+    try {
+      await transport.start();
+      await transport.send(
+        const mcp.JsonRpcNotification(method: 'test/session'),
+      );
+      final stopwatch = Stopwatch()..start();
+      final closing = transport.close();
+      await deleteStarted.future;
+      await closing.timeout(const Duration(milliseconds: 500));
+
+      expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 500)));
+    } finally {
+      await transport.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('permission review payload includes command context and model', () {
     final payload = acpPermissionReviewPayload(
       AcpPermissionRequest(
@@ -270,6 +340,368 @@ void main() {
 
     expect(reviewer.canAutoApprove, isTrue);
   });
+
+  test('MCP permission reviewer refuses remote plaintext endpoints', () {
+    expect(
+      () => McpPermissionReviewAgent(
+        config: const AcpPermissionReviewAgentConfig(enabled: true),
+        mcpServer: const McpServerConfig(
+          raw: <String, dynamic>{
+            'name': 'permission-reviewer',
+            'type': 'http',
+            'url': 'http://reviewer.example.com/mcp',
+          },
+        ),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('MCP permission reviewer allows loopback plaintext endpoints', () {
+    final reviewer = McpPermissionReviewAgent(
+      config: const AcpPermissionReviewAgentConfig(enabled: true),
+      mcpServer: const McpServerConfig(
+        raw: <String, dynamic>{
+          'name': 'permission-reviewer',
+          'type': 'http',
+          'url': 'http://[::1]:8080/mcp',
+        },
+      ),
+    );
+    addTearDown(reviewer.dispose);
+
+    expect(reviewer.canAutoApprove, isTrue);
+  });
+
+  test('MCP permission reviewer refuses endpoint credentials', () {
+    expect(
+      () => McpPermissionReviewAgent(
+        config: const AcpPermissionReviewAgentConfig(enabled: true),
+        mcpServer: const McpServerConfig(
+          raw: <String, dynamic>{
+            'name': 'permission-reviewer',
+            'type': 'http',
+            'url': 'https://embedded:canary-secret@reviewer.example.com/mcp',
+          },
+        ),
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.toString(),
+          'message',
+          isNot(contains('canary-secret')),
+        ),
+      ),
+    );
+  });
+
+  test('MCP permission reviewer does not follow HTTP redirects', () async {
+    final redirectTarget = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    var targetRequests = 0;
+    final targetSubscription = redirectTarget.listen((request) async {
+      targetRequests += 1;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': -1,
+            'result': <String, dynamic>{
+              'protocolVersion': '2025-11-25',
+              'capabilities': <String, dynamic>{'tools': <String, dynamic>{}},
+              'serverInfo': <String, dynamic>{
+                'name': 'redirect-target',
+                'version': '1.0.0',
+              },
+            },
+          }),
+        );
+      await request.response.close();
+    });
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var originRequests = 0;
+    final originSubscription = origin.listen((request) async {
+      originRequests += 1;
+      await request.drain<void>();
+      request.response
+        ..statusCode = HttpStatus.seeOther
+        ..headers.set(
+          HttpHeaders.locationHeader,
+          'http://127.0.0.1:${redirectTarget.port}/redirected',
+        );
+      await request.response.close();
+    });
+    final reviewer = McpPermissionReviewAgent(
+      config: const AcpPermissionReviewAgentConfig(
+        enabled: true,
+        timeout: Duration(seconds: 1),
+      ),
+      mcpServer: McpServerConfig(
+        raw: <String, dynamic>{
+          'name': 'permission-reviewer',
+          'type': 'http',
+          'url': 'http://127.0.0.1:${origin.port}/mcp',
+        },
+      ),
+    );
+
+    try {
+      final result = await reviewer.review(
+        AcpPermissionRequest(
+          id: 'permission-redirect',
+          title: 'Read status',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 7, 11),
+          metadata: const <String, Object?>{
+            'command': 'git status',
+            'cwd': '/workspace',
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+
+      expect(originRequests, 1);
+      expect(targetRequests, 0);
+      expect(result?.risk, 'unknown');
+      expect(result?.rationale, contains('303'));
+    } finally {
+      await reviewer.dispose();
+      await originSubscription.cancel();
+      await origin.close(force: true);
+      await targetSubscription.cancel();
+      await redirectTarget.close(force: true);
+    }
+  });
+
+  test(
+    'MCP reviewer supports JSON sessions without GET or DELETE redirects',
+    () async {
+      final redirectTarget = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final targetMethods = <String>[];
+      final targetSubscription = redirectTarget.listen((request) async {
+        targetMethods.add(request.method);
+        request.response.statusCode = HttpStatus.internalServerError;
+        await request.response.close();
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sessionHeaders = <String, String?>{};
+      final methods = <String>[];
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'GET') {
+          sessionHeaders['GET'] = request.headers.value('Mcp-Session-Id');
+          request.response
+            ..statusCode = HttpStatus.temporaryRedirect
+            ..headers.set(
+              HttpHeaders.locationHeader,
+              'http://127.0.0.1:${redirectTarget.port}/redirected',
+            );
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'DELETE') {
+          sessionHeaders['DELETE'] = request.headers.value('Mcp-Session-Id');
+          request.response
+            ..statusCode = HttpStatus.temporaryRedirect
+            ..headers.set(
+              HttpHeaders.locationHeader,
+              'http://127.0.0.1:${redirectTarget.port}/redirected',
+            );
+          await request.response.close();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        final method = message['method'] as String;
+        methods.add(method);
+        sessionHeaders[method] = request.headers.value('Mcp-Session-Id');
+        if (method == 'initialize') {
+          request.response
+            ..headers.contentType = ContentType.json
+            ..headers.set('Mcp-Session-Id', 'review-session')
+            ..write(jsonEncode(_mcpInitializeResponse(message['id'])));
+        } else if (method == 'notifications/initialized') {
+          request.response.statusCode = HttpStatus.accepted;
+        } else if (method == 'tools/call') {
+          request.response
+            ..headers.contentType = ContentType.json
+            ..write(jsonEncode(_mcpToolResponse(message['id'])));
+        }
+        await request.response.close();
+      });
+      final reviewer = _localMcpReviewer(server.port);
+
+      try {
+        final result = await reviewer.review(
+          _reviewRequest('json'),
+          workspaceRoot: '/workspace',
+        );
+
+        expect(result?.decision, AcpPermissionDecision.allow);
+        expect(result?.risk, 'low');
+        expect(
+          methods,
+          containsAllInOrder(<String>[
+            'initialize',
+            'notifications/initialized',
+            'tools/call',
+          ]),
+        );
+        expect(sessionHeaders['initialize'], isNull);
+        expect(sessionHeaders['notifications/initialized'], 'review-session');
+        expect(sessionHeaders['tools/call'], 'review-session');
+        await _waitForTest(() => sessionHeaders.containsKey('GET'));
+        expect(targetMethods, isEmpty);
+
+        await reviewer.dispose();
+        expect(sessionHeaders['DELETE'], 'review-session');
+        expect(targetMethods, isEmpty);
+      } finally {
+        await reviewer.dispose();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+        await targetSubscription.cancel();
+        await redirectTarget.close(force: true);
+      }
+    },
+  );
+
+  test('MCP permission reviewer supports SSE responses', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'GET') {
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'notifications/initialized') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      final response = method == 'initialize'
+          ? _mcpInitializeResponse(message['id'])
+          : _mcpToolResponse(message['id']);
+      request.response
+        ..headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        )
+        ..headers.set('Mcp-Session-Id', 'sse-review-session')
+        ..write('event: message\n')
+        ..write('data: ${jsonEncode(response)}\n\n');
+      await request.response.close();
+    });
+    final reviewer = _localMcpReviewer(server.port);
+
+    try {
+      final result = await reviewer.review(
+        _reviewRequest('sse'),
+        workspaceRoot: '/workspace',
+      );
+
+      expect(result?.decision, AcpPermissionDecision.allow);
+      expect(result?.risk, 'low');
+    } finally {
+      await reviewer.dispose();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+}
+
+McpPermissionReviewAgent _localMcpReviewer(int port) {
+  return McpPermissionReviewAgent(
+    config: const AcpPermissionReviewAgentConfig(
+      enabled: true,
+      timeout: Duration(seconds: 2),
+    ),
+    mcpServer: McpServerConfig(
+      raw: <String, dynamic>{
+        'name': 'permission-reviewer',
+        'type': 'http',
+        'url': 'http://127.0.0.1:$port/mcp',
+      },
+    ),
+  );
+}
+
+AcpPermissionRequest _reviewRequest(String id) {
+  return AcpPermissionRequest(
+    id: 'permission-$id',
+    title: 'Read status',
+    rationale: 'Requested by agent',
+    sessionId: 'session-1',
+    toolName: 'terminal',
+    toolKind: 'execute',
+    options: const <String>['Allow', 'Deny'],
+    requestedAt: DateTime.utc(2026, 7, 11),
+    metadata: const <String, Object?>{
+      'command': 'git status',
+      'cwd': '/workspace',
+    },
+  );
+}
+
+Map<String, dynamic> _mcpInitializeResponse(Object? id) {
+  return <String, dynamic>{
+    'jsonrpc': '2.0',
+    'id': id,
+    'result': <String, dynamic>{
+      'protocolVersion': '2025-11-25',
+      'capabilities': <String, dynamic>{'tools': <String, dynamic>{}},
+      'serverInfo': <String, dynamic>{
+        'name': 'local-reviewer',
+        'version': '1.0.0',
+      },
+    },
+  };
+}
+
+Map<String, dynamic> _mcpToolResponse(Object? id) {
+  return <String, dynamic>{
+    'jsonrpc': '2.0',
+    'id': id,
+    'result': <String, dynamic>{
+      'content': <Map<String, dynamic>>[
+        <String, dynamic>{
+          'type': 'text',
+          'text': jsonEncode(<String, dynamic>{
+            'decision': 'allow',
+            'risk': 'low',
+            'rationale': 'Read-only command.',
+          }),
+        },
+      ],
+      'isError': false,
+    },
+  };
+}
+
+Future<void> _waitForTest(bool Function() predicate) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('Timed out waiting for condition.');
 }
 
 class _ReviewFakeAgentClient extends FakeAgentClient {

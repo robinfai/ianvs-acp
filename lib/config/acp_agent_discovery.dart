@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../acp/acp_adapter_packages.dart';
 import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 import 'acp_config_secret_migrator.dart';
@@ -13,9 +14,11 @@ class AcpAgentDiscovery {
   const AcpAgentDiscovery._();
 
   static const String codexAgentName = 'Codex';
-  static const String codexAcpPackage = '@zed-industries/codex-acp';
+  static const String codexAcpVersion = AcpAdapterPackages.codexVersion;
+  static const String codexAcpPackage = AcpAdapterPackages.codex;
   static const String piAgentName = 'pi ACP';
-  static const String piAcpPackage = 'pi-acp';
+  static const String piAcpVersion = AcpAdapterPackages.piVersion;
+  static const String piAcpPackage = AcpAdapterPackages.pi;
 
   static List<AgentServerConfig> discoverMissing(
     AcpClientConfig config, {

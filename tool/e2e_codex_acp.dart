@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart';
+import 'package:ianvs_acp/acp/acp_adapter_packages.dart';
 
 Future<void> main(List<String> args) async {
   final prompt = _optionValue(args, '--prompt');
@@ -10,14 +11,14 @@ Future<void> main(List<String> args) async {
   AcpClient? client;
 
   stdout.writeln('E2E: starting local Codex ACP client');
-  stdout.writeln('command: npx @zed-industries/codex-acp');
+  stdout.writeln('command: npx ${AcpAdapterPackages.codex}');
   stdout.writeln('cwd: ${Directory.current.path}');
 
   try {
     client = await AcpClient.start(
       config: AcpConfig(
         agentCommand: 'npx',
-        agentArgs: const ['@zed-industries/codex-acp'],
+        agentArgs: const [AcpAdapterPackages.codex],
       ),
     );
     stdout.writeln('transport: started');

@@ -5,6 +5,52 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/web_socket_acp_transport.dart';
 
 void main() {
+  test('websocket handshake does not follow redirects', () async {
+    final redirectTarget = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    var targetRequests = 0;
+    final targetSockets = <WebSocket>[];
+    final targetSubscription = redirectTarget.listen((request) async {
+      targetRequests += 1;
+      final socket = await WebSocketTransformer.upgrade(request);
+      targetSockets.add(socket);
+      socket.listen((_) {});
+    });
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var originRequests = 0;
+    final originSubscription = origin.listen((request) async {
+      originRequests += 1;
+      request.response
+        ..statusCode = HttpStatus.temporaryRedirect
+        ..headers.set(
+          HttpHeaders.locationHeader,
+          'http://127.0.0.1:${redirectTarget.port}/redirected',
+        );
+      await request.response.close();
+    });
+    final transport = WebSocketAcpTransport(
+      endpoint: Uri.parse('ws://127.0.0.1:${origin.port}/acp'),
+      connectTimeout: const Duration(seconds: 1),
+    );
+
+    try {
+      await expectLater(transport.start(), throwsA(isA<WebSocketException>()));
+      expect(originRequests, 1);
+      expect(targetRequests, 0);
+    } finally {
+      await transport.stop();
+      for (final socket in targetSockets) {
+        await socket.close();
+      }
+      await originSubscription.cancel();
+      await origin.close(force: true);
+      await targetSubscription.cancel();
+      await redirectTarget.close(force: true);
+    }
+  });
+
   test('websocket connection attempts time out', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requestStarted = Completer<void>();

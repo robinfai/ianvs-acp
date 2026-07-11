@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:mime/mime.dart' as mime;
 
+import 'acp_adapter_packages.dart';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_endpoint_validator.dart';
 import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
@@ -32,7 +34,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.allowFilesystemReadOutsideWorkspace = false,
     this.enableTerminalProvider = false,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
-       agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
+       agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
        agentHeaders = agentHeaders ?? const <String, String>{},
@@ -43,7 +45,25 @@ class DartAcpAgentClient implements AcpAgentClient {
            ? const <String>[]
            : List.unmodifiable(
                additionalDirectories.map((path) => path.trim()),
-             );
+             ) {
+    final webSocketEndpoint = agentWebSocketUrl;
+    if (webSocketEndpoint != null) {
+      validateAcpEndpoint(
+        webSocketEndpoint,
+        allowedSchemes: const <String>{'ws', 'wss'},
+      );
+    }
+    final httpEndpoint = agentHttpUrl;
+    if (httpEndpoint != null) {
+      validateAcpEndpoint(
+        httpEndpoint,
+        allowedSchemes: const <String>{'http', 'https'},
+      );
+    }
+    for (final server in this.mcpServers) {
+      _validateMcpServerEndpoint(server);
+    }
+  }
 
   final String agentCommand;
   final List<String> agentArgs;
@@ -127,6 +147,9 @@ class DartAcpAgentClient implements AcpAgentClient {
       await _disposeActiveClient(closePermissionStream: false);
       if (_disposed) {
         throw StateError('Codex ACP client has been disposed.');
+      }
+      for (final server in mcpServers) {
+        _validateMcpServerEndpoint(server);
       }
       final configuredMcpServers = mcpServers
           .map(Map<String, dynamic>.from)
@@ -2091,7 +2114,20 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (type is String && type.trim().isNotEmpty) {
       copy['type'] = type.trim().toLowerCase();
     }
-    return copy;
+    return Map<String, dynamic>.unmodifiable(copy);
+  }
+
+  static void _validateMcpServerEndpoint(Map<String, dynamic> server) {
+    final transportType = _mcpServerTransportType(server);
+    if (transportType != 'http' && transportType != 'sse') return;
+    final url = server['url'];
+    if (url is! String || url.trim().isEmpty) {
+      throw const FormatException('Remote MCP server requires a URL.');
+    }
+    parseAndValidateAcpEndpoint(
+      url,
+      allowedSchemes: const <String>{'http', 'https'},
+    );
   }
 
   static bool _mcpServerSupportedByAgent(

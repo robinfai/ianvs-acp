@@ -9,6 +9,56 @@ import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 
 void main() {
+  test('pins the default Codex ACP adapter version', () {
+    final client = DartAcpAgentClient(agentCommand: 'unused');
+
+    expect(client.agentArgs, ['@zed-industries/codex-acp@0.16.0']);
+  });
+
+  test('rejects plaintext remote endpoints at the client boundary', () {
+    expect(
+      () => DartAcpAgentClient(
+        agentWebSocketUrl: Uri.parse('ws://agent.example.com/acp'),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => DartAcpAgentClient(
+        agentHttpUrl: Uri.parse('http://agent.example.com/acp'),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => DartAcpAgentClient(
+        mcpServers: const <Map<String, dynamic>>[
+          <String, dynamic>{
+            'name': 'remote-tools',
+            'type': 'http',
+            'url': 'http://tools.example.com/mcp',
+          },
+        ],
+      ),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects endpoint credentials at the client boundary', () {
+    expect(
+      () => DartAcpAgentClient(
+        agentHttpUrl: Uri.parse(
+          'https://embedded:canary-secret@agent.example.com/acp',
+        ),
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.toString(),
+          'message',
+          isNot(contains('canary-secret')),
+        ),
+      ),
+    );
+  });
+
   test('copies configured MCP servers for session setup', () {
     final mcpServer = <String, dynamic>{
       'name': 'filesystem',
@@ -26,6 +76,11 @@ void main() {
     expect(
       client.mcpServers.single['command'],
       '/usr/local/bin/mcp-filesystem',
+    );
+    expect(
+      () => client.mcpServers.single['url'] =
+          'http://mutated.example.com/mcp',
+      throwsUnsupportedError,
     );
   });
 
@@ -94,14 +149,9 @@ Future<void> main() async {
       final connectionFailure = expectLater(connecting, throwsA(anything));
       await client.dispose().timeout(const Duration(seconds: 2));
 
-      await connectionFailure.timeout(
-        const Duration(seconds: 2),
-      );
+      await connectionFailure.timeout(const Duration(seconds: 2));
       final agentPid = int.parse(await pidFile.readAsString());
-      expect(
-        Process.killPid(agentPid, ProcessSignal.sigterm),
-        isFalse,
-      );
+      expect(Process.killPid(agentPid, ProcessSignal.sigterm), isFalse);
     } finally {
       await releaseFile.writeAsString('release');
       try {

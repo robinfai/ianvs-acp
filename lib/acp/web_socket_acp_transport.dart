@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:stream_channel/stream_channel.dart';
 
+import 'acp_endpoint_validator.dart';
+
 class WebSocketAcpTransport implements acp.AcpTransport {
   WebSocketAcpTransport({
     required this.endpoint,
@@ -11,7 +13,9 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     this.onProtocolOut,
     this.onProtocolIn,
     this.connectTimeout = const Duration(seconds: 10),
-  }) : assert(connectTimeout > Duration.zero);
+  }) : assert(connectTimeout > Duration.zero) {
+    validateAcpEndpoint(endpoint, allowedSchemes: const <String>{'ws', 'wss'});
+  }
 
   final Uri endpoint;
   final Map<String, String> headers;
@@ -24,6 +28,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   StreamSubscription<Object?>? _socketSubscription;
   StreamSubscription<String>? _outboundSubscription;
   Completer<WebSocket>? _startCancellation;
+  _NoRedirectHttpClient? _handshakeClient;
   int _startSerial = 0;
 
   @override
@@ -42,10 +47,19 @@ class WebSocketAcpTransport implements acp.AcpTransport {
       throw StateError('Transport connection is already in progress.');
     }
     final serial = ++_startSerial;
-    final connection = WebSocket.connect(
-      endpoint.toString(),
-      headers: headers.isEmpty ? null : headers,
-    );
+    final handshakeClient = _NoRedirectHttpClient();
+    _handshakeClient = handshakeClient;
+    final connection =
+        WebSocket.connect(
+          endpoint.toString(),
+          headers: headers.isEmpty ? null : headers,
+          customClient: handshakeClient,
+        ).whenComplete(() {
+          if (identical(_handshakeClient, handshakeClient)) {
+            _handshakeClient = null;
+          }
+          handshakeClient.close(force: true);
+        });
     final cancellation = Completer<WebSocket>();
     _startCancellation = cancellation;
     WebSocket socket;
@@ -55,10 +69,13 @@ class WebSocketAcpTransport implements acp.AcpTransport {
         cancellation.future,
       ]).timeout(connectTimeout);
     } on Object {
+      handshakeClient.close(force: true);
       unawaited(
-        connection.then<void>((lateSocket) async {
-          await lateSocket.close(WebSocketStatus.normalClosure);
-        }).catchError((Object _) {}),
+        connection
+            .then<void>((lateSocket) async {
+              await lateSocket.close(WebSocketStatus.normalClosure);
+            })
+            .catchError((Object _) {}),
       );
       rethrow;
     } finally {
@@ -118,6 +135,8 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _startSerial += 1;
     final startCancellation = _startCancellation;
     _startCancellation = null;
+    _handshakeClient?.close(force: true);
+    _handshakeClient = null;
     if (startCancellation != null && !startCancellation.isCompleted) {
       startCancellation.completeError(
         StateError('Transport was stopped while connecting.'),
@@ -138,9 +157,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _outboundSubscription = null;
     await cleanUp(() async => _socketSubscription?.cancel());
     _socketSubscription = null;
-    await cleanUp(
-      () async => _socket?.close(WebSocketStatus.normalClosure),
-    );
+    await cleanUp(() async => _socket?.close(WebSocketStatus.normalClosure));
     _socket = null;
     await cleanUp(() async => _controller?.local.sink.close());
     _controller = null;
@@ -148,5 +165,28 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     if (cleanupError != null) {
       Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
+  }
+}
+
+class _NoRedirectHttpClient implements HttpClient {
+  _NoRedirectHttpClient() : _delegate = HttpClient();
+
+  final HttpClient _delegate;
+
+  @override
+  Future<HttpClientRequest> openUrl(String method, Uri url) async {
+    final request = await _delegate.openUrl(method, url);
+    request.followRedirects = false;
+    return request;
+  }
+
+  @override
+  void close({bool force = false}) => _delegate.close(force: force);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    throw UnsupportedError(
+      'WebSocket handshake attempted an unsupported HttpClient operation.',
+    );
   }
 }

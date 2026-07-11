@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
+import 'acp/acp_endpoint_validator.dart';
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
@@ -2074,8 +2075,18 @@ class _AcpClientAppState extends State<AcpClientApp>
       agentArgs: server.isStdio ? server.args : const <String>[],
       agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
-      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
+      agentWebSocketUrl: server.isWebSocket
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'ws', 'wss'},
+            )
+          : null,
+      agentHttpUrl: server.isStreamableHttp
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'http', 'https'},
+            )
+          : null,
       agentHeaders: server.headers,
       mcpServers: mcpServers,
       enableFilesystemReadTextFile:
@@ -2159,8 +2170,18 @@ class _AcpClientAppState extends State<AcpClientApp>
       agentArgs: server.isStdio ? server.args : const <String>[],
       agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
-      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
+      agentWebSocketUrl: server.isWebSocket
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'ws', 'wss'},
+            )
+          : null,
+      agentHttpUrl: server.isStreamableHttp
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'http', 'https'},
+            )
+          : null,
       agentHeaders: server.headers,
     );
   }

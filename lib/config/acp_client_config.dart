@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
 
 class AcpClientConfig {
@@ -1332,6 +1333,7 @@ void _ensureRemoteAgentUrl(
   if (uri.host.trim().isEmpty) {
     throw FormatException('Agent server "$serverName" url requires host.');
   }
+  validateAcpEndpoint(uri);
 }
 
 void _validateHttpHeaderEntry({
@@ -1575,4 +1577,5 @@ void _ensureHttpUrl(
       'MCP server "$serverName" $transportType transport url requires host.',
     );
   }
+  validateAcpEndpoint(uri);
 }

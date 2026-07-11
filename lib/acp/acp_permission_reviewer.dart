@@ -6,9 +6,11 @@ import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 import '../config/acp_client_config.dart';
 import 'acp_agent_client.dart';
+import 'acp_endpoint_validator.dart';
 import 'acp_permission_request.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
+import 'no_redirect_mcp_http_transport.dart';
 
 abstract class AcpPermissionReviewer {
   bool get canAutoApprove => false;
@@ -285,7 +287,14 @@ ${encoder.convert(payload)}
 }
 
 class McpPermissionReviewAgent extends AcpPermissionReviewer {
-  McpPermissionReviewAgent({required this.config, required this.mcpServer});
+  McpPermissionReviewAgent({required this.config, required this.mcpServer}) {
+    if (mcpServer.type == 'http' || mcpServer.type == 'sse') {
+      parseAndValidateAcpEndpoint(
+        mcpServer.url,
+        allowedSchemes: const <String>{'http', 'https'},
+      );
+    }
+  }
 
   final AcpPermissionReviewAgentConfig config;
   final McpServerConfig mcpServer;
@@ -355,17 +364,16 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   mcp.Transport _transportForServer(McpServerConfig server) {
     final runtime = server.toRuntimeJson();
     if (server.type == 'http' || server.type == 'sse') {
-      return mcp.StreamableHttpClientTransport(
-        Uri.parse(server.url),
-        opts: mcp.StreamableHttpClientTransportOptions(
-          requestInit: <String, Object?>{
-            if (server.headerKeys.isNotEmpty)
-              'headers': <String, String>{
-                for (final key in server.headerKeys)
-                  key: _headerValue(runtime['headers'], key) ?? '',
-              },
-          },
-        ),
+      final endpoint = parseAndValidateAcpEndpoint(
+        server.url,
+        allowedSchemes: const <String>{'http', 'https'},
+      );
+      return NoRedirectMcpHttpTransport(
+        endpoint: endpoint,
+        headers: <String, String>{
+          for (final key in server.headerKeys)
+            key: _headerValue(runtime['headers'], key) ?? '',
+        },
       );
     }
     if (server.type == 'acp') {
