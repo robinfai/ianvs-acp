@@ -2708,6 +2708,172 @@ Future<void> main() async {
     },
   );
 
+  test('paused session listener does not block manager dispose', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final server = channel.local.stream.listen((line) {
+      final message = jsonDecode(line) as Map<String, dynamic>;
+      if (message['method'] != 'session/resume') return;
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{},
+        }),
+      );
+    });
+    StreamSubscription<acp.AcpUpdate>? updates;
+    Future<void>? disposeFuture;
+
+    try {
+      await manager.resumeSession(
+        sessionId: 'paused-dispose',
+        workspaceRoot: '/workspace',
+      );
+      updates = manager.sessionUpdates('paused-dispose').listen((_) {});
+      await pumpEventQueue();
+      updates.pause();
+
+      disposeFuture = manager.dispose();
+      await disposeFuture.timeout(const Duration(seconds: 1));
+    } finally {
+      await updates?.cancel();
+      if (disposeFuture != null) await disposeFuture;
+      await peer.close();
+      await server.cancel();
+      await channel.local.sink.close();
+    }
+  });
+
+  test(
+    'paused session listener does not block the original setup RPC error',
+    () async {
+      const originalErrorMessage = 'original setup RPC failure';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final requestId = Completer<Object?>();
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        if (message['method'] == 'session/resume' && !requestId.isCompleted) {
+          requestId.complete(message['id']);
+        }
+      });
+      final setup = manager.resumeSession(
+        sessionId: 'paused-setup-rollback',
+        workspaceRoot: '/workspace',
+      );
+      final setupError = setup.then<Object?>(
+        (_) => null,
+        onError: (Object error, StackTrace _) => error,
+      );
+      StreamSubscription<acp.AcpUpdate>? updates;
+
+      try {
+        final id = await requestId.future.timeout(const Duration(seconds: 5));
+        updates = manager
+            .sessionUpdates('paused-setup-rollback')
+            .listen((_) {});
+        await pumpEventQueue();
+        updates.pause();
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': <String, dynamic>{
+              'code': -32000,
+              'message': originalErrorMessage,
+            },
+          }),
+        );
+
+        final error = await setupError.timeout(const Duration(seconds: 1));
+        expect(error, isNotNull);
+        expect(error.toString(), contains(originalErrorMessage));
+      } finally {
+        await updates?.cancel();
+        await setupError;
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'manager dispose logs terminal cleanup failures without payload',
+    () async {
+      const providerSecret = 'dispose-terminal-provider-secret';
+      const expectedLog =
+          'session dispose cleanup stage terminals failed (count: 1)';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final provider = _RecordingTerminalProvider(
+        failReleaseIds: const <String>{'terminal-1'},
+        releaseErrorMessage: providerSecret,
+      );
+      final config = acp.AcpConfig(
+        terminalProvider: provider,
+        permissionProvider: acp.DefaultPermissionProvider(
+          onRequest: (_) async => const acp.PermissionDecision.allow(),
+        ),
+      );
+      final logs = <String>[];
+      final logSubscription = config.logger.onRecord.listen(
+        (record) => logs.add(record.message),
+      );
+      final manager = SessionManager(config: config, peer: peer);
+      final terminalCreated = Completer<void>();
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        if (message['method'] == 'session/resume') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+        } else if (message['id'] == 'dispose-terminal') {
+          terminalCreated.complete();
+        }
+      });
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'dispose-terminal-session',
+          workspaceRoot: '/workspace',
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 'dispose-terminal',
+            'method': 'terminal/create',
+            'params': <String, dynamic>{
+              'sessionId': 'dispose-terminal-session',
+              'command': 'unused',
+              'args': <String>[],
+            },
+          }),
+        );
+        await terminalCreated.future.timeout(const Duration(seconds: 5));
+
+        await manager.dispose();
+
+        expect(provider.releaseAttempts, ['terminal-1']);
+        expect(logs, contains(expectedLog));
+        expect(logs.join('\n'), isNot(contains(providerSecret)));
+      } finally {
+        await logSubscription.cancel();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
   test(
     'late terminal create is released and never registered after close',
     () async {

@@ -586,28 +586,45 @@ class SessionManager {
   _ReplayBuffer _newReplayBuffer() =>
       _ReplayBuffer(maxItems: maxReplayItems, maxBytes: maxReplayBytes);
 
+  void _closeControllerWithoutWaiting<T>(StreamController<T>? controller) {
+    if (controller == null) return;
+    try {
+      unawaited(controller.close().catchError((Object _) {}));
+    } on Object {
+      // Closing is best-effort and must not depend on listeners consuming done.
+    }
+  }
+
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     final terminalProvider = config.terminalProvider;
     final terminals = _terminals.values.toList(growable: false);
     _terminals.clear();
     _terminalSessions.clear();
+    var terminalReleaseFailures = 0;
     if (terminalProvider != null) {
       await Future.wait<void>(
         terminals.map((handle) async {
           try {
             await terminalProvider.release(handle);
-          } on Object catch (error) {
-            _log.warning('terminal release during dispose failed: $error');
+          } on Object {
+            terminalReleaseFailures += 1;
           }
         }),
       );
     }
-    await _terminalEvents.close();
-    for (final c in _sessionStreams.values) {
-      await c.close();
+    if (terminalReleaseFailures > 0) {
+      _log.warning(
+        'session dispose cleanup stage terminals failed '
+        '(count: $terminalReleaseFailures)',
+      );
     }
+    _closeControllerWithoutWaiting(_terminalEvents);
+    final sessionStreams = _sessionStreams.values.toList(growable: false);
     _sessionStreams.clear();
+    for (final controller in sessionStreams) {
+      _closeControllerWithoutWaiting(controller);
+    }
     _replayBuffers.clear();
     _toolCalls.clear();
     _toolCallSizes.clear();
@@ -728,10 +745,7 @@ class SessionManager {
         }
 
         await cleanup('stream', () {
-          final stream = _sessionStreams.remove(sessionId);
-          if (stream != null) {
-            unawaited(stream.close().catchError((Object _) {}));
-          }
+          _closeControllerWithoutWaiting(_sessionStreams.remove(sessionId));
         });
         await cleanup('replay', () => _replayBuffers.remove(sessionId));
         await cleanup(
@@ -882,14 +896,16 @@ class SessionManager {
             if (!controller.isClosed) controller.add(u);
             if (u is TurnEnded) {
               unawaited(subscription?.cancel());
-              unawaited(controller.close());
+              _closeControllerWithoutWaiting(controller);
             }
           },
           onError: (e, st) {
             if (!controller.isClosed) controller.addError(e, st);
           },
           onDone: () {
-            if (!controller.isClosed) unawaited(controller.close());
+            if (!controller.isClosed) {
+              _closeControllerWithoutWaiting(controller);
+            }
           },
         );
 
@@ -1026,8 +1042,7 @@ class SessionManager {
             _removeToolCalls(sessionId);
           }
           if (!hadStream) {
-            final controller = _sessionStreams.remove(sessionId);
-            await controller?.close();
+            _closeControllerWithoutWaiting(_sessionStreams.remove(sessionId));
           }
         }
         rethrow;
