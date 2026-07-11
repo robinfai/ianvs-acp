@@ -539,6 +539,7 @@ class SessionManager {
        assert(maxToolCallItems > 0),
        assert(maxToolCallBytes > 0),
        _log = config.logger {
+    inputBudget.validate();
     if (maxReplayBytes < minimumSessionReplayBytes) {
       throw ArgumentError.value(
         maxReplayBytes,

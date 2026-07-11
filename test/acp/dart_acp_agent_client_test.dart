@@ -892,6 +892,31 @@ Future<void> main() async {
     );
   });
 
+  test('raw stdio initialize rejects wrong auth method shapes', () async {
+    const secret = 'raw-auth-shape-secret';
+    for (final authMethods in <Object?>[
+      secret,
+      <Object?>[
+        const <String, dynamic>{'id': 'valid'},
+        secret,
+      ],
+    ]) {
+      await expectLater(
+        _runRawInitializeInput(
+          authMethods: authMethods,
+          inputBudget: const acp.AcpInputBudget(),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'payload-free',
+            isNot(contains(secret)),
+          ),
+        ),
+      );
+    }
+  });
+
   test('connects to websocket ACP agent servers', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

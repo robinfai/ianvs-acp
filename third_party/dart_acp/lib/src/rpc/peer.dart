@@ -5,6 +5,12 @@ import 'package:stream_channel/stream_channel.dart';
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
 
+/// Require an object-shaped JSON-RPC result without copying or traversing it.
+Json requireJsonRpcObjectResult(Object? result, {required String resource}) {
+  if (result is Json) return result;
+  throw FormatException('$resource must be a JSON object.');
+}
+
 /// Thin wrapper around json_rpc_2.Peer with client handler hooks.
 class JsonRpcPeer {
   /// Construct a peer bound to a [channel].
@@ -134,8 +140,10 @@ class JsonRpcPeer {
   Future<dynamic> Function(Json)? onTerminalRelease;
 
   /// Send `initialize` and return the JSON payload.
-  Future<Json> initialize(Json params) async =>
-      Map<String, dynamic>.from(await _peer.sendRequest('initialize', params));
+  Future<Json> initialize(Json params) async => requireJsonRpcObjectResult(
+    await _peer.sendRequest('initialize', params),
+    resource: 'JSON-RPC initialize result',
+  );
 
   /// Send `session/new` and return the JSON payload.
   Future<Json> newSession(Json params) async =>
@@ -160,7 +168,10 @@ class JsonRpcPeer {
 
   /// Send an arbitrary JSON-RPC request by method name with params.
   Future<Json> sendRaw(String method, Json params) async =>
-      Map<String, dynamic>.from(await _peer.sendRequest(method, params));
+      requireJsonRpcObjectResult(
+        await _peer.sendRequest(method, params),
+        resource: 'JSON-RPC $method result',
+      );
 
   /// Send an arbitrary JSON-RPC notification by method name with params.
   Future<void> sendNotificationRaw(String method, Json params) async =>

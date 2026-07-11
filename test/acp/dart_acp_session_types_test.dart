@@ -1,17 +1,74 @@
 // ignore_for_file: implementation_imports
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart';
-import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
+import 'package:dart_acp/src/rpc/peer.dart'
+    show JsonRpcPeer, requireJsonRpcObjectResult;
 import 'package:dart_acp/src/session/session_manager.dart'
     show InitializeResult, SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 void main() {
+  test('JSON-RPC result type guard returns a map without traversing it', () {
+    final source = _PeerCountingMap(<String, dynamic>{'value': true});
+
+    final result = requireJsonRpcObjectResult(
+      source,
+      resource: 'ACP initialize result',
+    );
+
+    expect(identical(result, source), isTrue);
+    expect(source.entriesVisited, 0);
+  });
+
+  test('JSON-RPC initialize and sendRaw reject non-object results', () async {
+    for (final method in <String>['initialize', 'test/raw']) {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <Object?>['result-shape-secret'],
+          }),
+        );
+      });
+
+      try {
+        final response = method == 'initialize'
+            ? peer.initialize(<String, dynamic>{})
+            : peer.sendRaw(method, <String, dynamic>{});
+        await expectLater(
+          response,
+          throwsA(
+            isA<FormatException>()
+                .having(
+                  (error) => error.message,
+                  'message',
+                  'JSON-RPC $method result must be a JSON object.',
+                )
+                .having(
+                  (error) => error.toString(),
+                  'payload-free',
+                  isNot(contains('result-shape-secret')),
+                ),
+          ),
+        );
+      } finally {
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    }
+  });
+
   test('initialize result treats capability objects as supported', () {
     final result = InitializeResult(
       protocolVersion: 1,
@@ -116,6 +173,76 @@ void main() {
       ),
     );
   });
+
+  test('session manager initialize rejects wrong auth method shapes', () async {
+    const secret = 'session-auth-shape-secret';
+    for (final authMethods in <Object?>[
+      secret,
+      <Object?>[
+        const <String, dynamic>{'id': 'valid'},
+        secret,
+      ],
+    ]) {
+      await expectLater(
+        _initializeSessionManagerWithInput(
+          result: <String, dynamic>{
+            'protocolVersion': 1,
+            'agentCapabilities': <String, dynamic>{},
+            'authMethods': authMethods,
+            'agentInfo': <String, dynamic>{},
+          },
+          inputBudget: const AcpInputBudget(),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'payload-free',
+            isNot(contains(secret)),
+          ),
+        ),
+      );
+    }
+  });
+
+  test('session manager runtime-validates input budget construction', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    try {
+      expect(
+        () => SessionManager(
+          config: AcpConfig(),
+          peer: peer,
+          inputBudget: AcpInputBudget(maxCapabilityBytes: 0),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    } finally {
+      await peer.close();
+      await channel.local.sink.close();
+    }
+  });
+
+  test(
+    'AcpClient rejects invalid input budget before transport start',
+    () async {
+      final transport = _TrackingTransport();
+      try {
+        await expectLater(
+          Future<void>.sync(() async {
+            await AcpClient.start(
+              config: AcpConfig(),
+              transport: transport,
+              inputBudget: AcpInputBudget(maxCapabilityBytes: 0),
+            );
+          }),
+          throwsA(isA<ArgumentError>()),
+        );
+        expect(transport.started, isFalse);
+      } finally {
+        await transport.close();
+      }
+    },
+  );
 
   test('session capabilities do not treat false or null as supported', () {
     final capabilities = SessionCapabilities.fromJson(<String, dynamic>{
@@ -836,4 +963,64 @@ String _dartExecutable() {
   return executable.endsWith('${Platform.pathSeparator}dart')
       ? executable
       : 'dart';
+}
+
+class _TrackingTransport implements AcpTransport {
+  _TrackingTransport() {
+    _foreignDrain = _controller.foreign.stream.drain<void>();
+  }
+
+  final StreamChannelController<String> _controller =
+      StreamChannelController<String>();
+  late final Future<void> _foreignDrain;
+  var started = false;
+
+  @override
+  StreamChannel<String> get channel => _controller.foreign;
+
+  @override
+  Future<void> start() async {
+    started = true;
+  }
+
+  @override
+  Future<void> stop() async {}
+
+  Future<void> close() async {
+    await _controller.local.sink.close();
+    await _foreignDrain;
+  }
+}
+
+class _PeerCountingMap extends MapBase<String, dynamic> {
+  _PeerCountingMap(this._values);
+
+  final Map<String, dynamic> _values;
+  var entriesVisited = 0;
+
+  @override
+  Iterable<MapEntry<String, dynamic>> get entries sync* {
+    for (final entry in _values.entries) {
+      entriesVisited += 1;
+      yield entry;
+    }
+  }
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  int get length => _values.length;
+
+  @override
+  dynamic operator [](Object? key) => _values[key];
+
+  @override
+  void operator []=(String key, dynamic value) => _values[key] = value;
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  dynamic remove(Object? key) => _values.remove(key);
 }

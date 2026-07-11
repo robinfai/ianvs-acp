@@ -32,6 +32,7 @@ class AcpClient {
     int maxToolCallBytes = 8 * 1024 * 1024,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) async {
+    inputBudget.validate();
     if (maxReplayItems <= 0 ||
         maxReplayBytes < minimumSessionReplayBytes ||
         maxToolCallItems <= 0 ||

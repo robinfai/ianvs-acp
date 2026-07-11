@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:collection';
 import 'dart:math' as math;
 
 /// Host-controlled limits for untrusted ACP input.
@@ -13,15 +13,7 @@ class AcpInputBudget {
     this.maxMetadataNodes = 8192,
     this.maxMetadataEntries = 1024,
     this.maxMetadataBytes = 512 * 1024,
-  }) : assert(maxJsonDepth > 0),
-       assert(maxCapabilityDepth > 0),
-       assert(maxCapabilityNodes > 0),
-       assert(maxCapabilityBytes > 0),
-       assert(maxAuthMethods > 0),
-       assert(maxMetadataDepth > 0),
-       assert(maxMetadataNodes > 0),
-       assert(maxMetadataEntries > 0),
-       assert(maxMetadataBytes > 0);
+  });
 
   final int maxJsonDepth;
   final int maxCapabilityDepth;
@@ -34,6 +26,19 @@ class AcpInputBudget {
   final int maxMetadataNodes;
   final int maxMetadataEntries;
   final int maxMetadataBytes;
+
+  /// Reject invalid dynamic budgets in debug and release builds.
+  void validate() {
+    _requirePositive(maxJsonDepth, 'maxJsonDepth');
+    _requirePositive(maxCapabilityDepth, 'maxCapabilityDepth');
+    _requirePositive(maxCapabilityNodes, 'maxCapabilityNodes');
+    _requirePositive(maxCapabilityBytes, 'maxCapabilityBytes');
+    _requirePositive(maxAuthMethods, 'maxAuthMethods');
+    _requirePositive(maxMetadataDepth, 'maxMetadataDepth');
+    _requirePositive(maxMetadataNodes, 'maxMetadataNodes');
+    _requirePositive(maxMetadataEntries, 'maxMetadataEntries');
+    _requirePositive(maxMetadataBytes, 'maxMetadataBytes');
+  }
 }
 
 /// Capacity failure that never includes the rejected ACP payload.
@@ -65,12 +70,23 @@ copyBoundedInitializeInput({
   Object? agentInfo,
   AcpInputBudget budget = const AcpInputBudget(),
 }) {
-  final rawAuthMethods = authMethods is List ? authMethods : const <Object?>[];
-  if (rawAuthMethods.length > budget.maxAuthMethods) {
+  budget.validate();
+  final List<dynamic> rawAuthMethods;
+  if (authMethods == null) {
+    rawAuthMethods = const <Object?>[];
+  } else if (authMethods is List) {
+    rawAuthMethods = authMethods;
+  } else {
+    throw const FormatException(
+      'ACP initialize auth methods must be a JSON array.',
+    );
+  }
+  final authMethodCount = rawAuthMethods.length;
+  if (authMethodCount > budget.maxAuthMethods) {
     throw AcpInputLimitExceeded(
       resource: 'ACP initialize auth methods',
       limit: budget.maxAuthMethods,
-      observedAtLeast: rawAuthMethods.length,
+      observedAtLeast: authMethodCount,
     );
   }
   final guard = AcpJsonInputGuard(
@@ -80,11 +96,15 @@ copyBoundedInitializeInput({
     maxBytes: budget.maxCapabilityBytes,
   );
   final copiedAgentCapabilities = guard.copyMap(agentCapabilities);
-  final copiedAuthValues = guard.copyList(rawAuthMethods);
+  final copiedAuthValues = guard.copyList(
+    _FixedLengthListView(rawAuthMethods, authMethodCount),
+    rootElementObjectError:
+        'ACP initialize auth methods must contain only JSON objects.',
+  );
   final copiedAgentInfo = guard.copyMap(agentInfo);
   final copiedAuthMethods = <Map<String, dynamic>>[];
   for (final value in copiedAuthValues) {
-    if (value is Map<String, dynamic>) copiedAuthMethods.add(value);
+    copiedAuthMethods.add(value as Map<String, dynamic>);
   }
   return (
     agentCapabilities: copiedAgentCapabilities,
@@ -104,9 +124,11 @@ class AcpJsonInputGuard {
     required this.maxDepth,
     required this.maxNodes,
     required this.maxBytes,
-  }) : assert(maxDepth > 0),
-       assert(maxNodes > 0),
-       assert(maxBytes > 0);
+  }) {
+    _requirePositive(maxDepth, 'maxDepth');
+    _requirePositive(maxNodes, 'maxNodes');
+    _requirePositive(maxBytes, 'maxBytes');
+  }
 
   final String resource;
   final int maxDepth;
@@ -125,16 +147,16 @@ class AcpJsonInputGuard {
     return copy;
   }
 
-  List<dynamic> copyList(Object? source) {
+  List<dynamic> copyList(Object? source, {String? rootElementObjectError}) {
     if (source == null) return <dynamic>[];
-    final copy = _copy(source);
+    final copy = _copy(source, rootElementObjectError: rootElementObjectError);
     if (copy is! List<dynamic>) {
       throw FormatException('$resource must be a JSON array.');
     }
     return copy;
   }
 
-  Object? _copy(Object? source) {
+  Object? _copy(Object? source, {String? rootElementObjectError}) {
     Object? result;
     final pending = <_PendingJsonValue>[
       _PendingJsonValue(
@@ -151,16 +173,27 @@ class AcpJsonInputGuard {
 
       if (value is Map) {
         _checkContainerDepth(current.depth);
-        if (value.length > maxNodes) {
-          _throwLimit(maxNodes, value.length);
+        final reportedLength = value.length;
+        _precheckChildren(reportedLength);
+        final entries = <MapEntry<dynamic, dynamic>>[];
+        for (final entry in value.entries) {
+          if (entry.key is! String) {
+            throw FormatException(
+              '$resource contains a JSON object with a non-string key.',
+            );
+          }
+          final observedAtLeast = _nodes + entries.length + 1;
+          if (observedAtLeast > maxNodes) {
+            _throwLimit(maxNodes, observedAtLeast);
+          }
+          entries.add(entry);
         }
         final copy = <String, dynamic>{};
         current.assign(copy);
-        final entries = value.entries.toList(growable: false);
         for (var index = entries.length - 1; index >= 0; index -= 1) {
           final entry = entries[index];
-          final key = entry.key.toString();
-          _recordBytes(_utf8Length(key));
+          final key = entry.key as String;
+          _recordStringBytes(key);
           pending.add(
             _PendingJsonValue(
               source: entry.value,
@@ -174,15 +207,20 @@ class AcpJsonInputGuard {
 
       if (value is List) {
         _checkContainerDepth(current.depth);
-        if (value.length > maxNodes) {
-          _throwLimit(maxNodes, value.length);
-        }
-        final copy = List<dynamic>.filled(value.length, null);
+        final length = value.length;
+        _precheckChildren(length);
+        final copy = List<dynamic>.filled(length, null);
         current.assign(copy);
-        for (var index = value.length - 1; index >= 0; index -= 1) {
+        for (var index = length - 1; index >= 0; index -= 1) {
+          final child = value[index];
+          if (current.depth == 1 &&
+              rootElementObjectError != null &&
+              child is! Map) {
+            throw FormatException(rootElementObjectError);
+          }
           pending.add(
             _PendingJsonValue(
-              source: value[index],
+              source: child,
               depth: current.depth + 1,
               assign: (child) => copy[index] = child,
             ),
@@ -192,12 +230,20 @@ class AcpJsonInputGuard {
       }
 
       if (value is String) {
-        _recordBytes(_utf8Length(value));
+        _recordStringBytes(value);
         current.assign(value);
         continue;
       }
-      if (value is num || value is bool) {
-        _recordBytes(_utf8Length(value.toString()));
+      if (value is double && !value.isFinite) {
+        throw FormatException('$resource contains a non-finite JSON number.');
+      }
+      if (value is num) {
+        _recordStringBytes(value.toString());
+        current.assign(value);
+        continue;
+      }
+      if (value is bool) {
+        _recordBytes(value ? 4 : 5);
         current.assign(value);
         continue;
       }
@@ -222,6 +268,43 @@ class AcpJsonInputGuard {
     if (_bytes > maxBytes) _throwLimit(maxBytes, _bytes);
   }
 
+  void _recordStringBytes(String value) {
+    var index = 0;
+    while (index < value.length) {
+      final codeUnit = value.codeUnitAt(index);
+      if (codeUnit <= 0x7f) {
+        _recordBytes(1);
+      } else if (codeUnit <= 0x7ff) {
+        _recordBytes(2);
+      } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        final nextIndex = index + 1;
+        if (nextIndex < value.length) {
+          final next = value.codeUnitAt(nextIndex);
+          if (next >= 0xdc00 && next <= 0xdfff) {
+            _recordBytes(4);
+            index = nextIndex;
+          } else {
+            _recordBytes(3);
+          }
+        } else {
+          _recordBytes(3);
+        }
+      } else {
+        // BMP values and unpaired low surrogates encode as three bytes. Dart's
+        // UTF-8 encoder replaces unpaired surrogates with U+FFFD.
+        _recordBytes(3);
+      }
+      index += 1;
+    }
+  }
+
+  void _precheckChildren(int count) {
+    final observedAtLeast = _nodes + count;
+    if (observedAtLeast > maxNodes) {
+      _throwLimit(maxNodes, observedAtLeast);
+    }
+  }
+
   void _checkContainerDepth(int depth) {
     if (depth > maxDepth) _throwLimit(maxDepth, depth);
   }
@@ -233,8 +316,12 @@ class AcpJsonInputGuard {
       observedAtLeast: observedAtLeast,
     );
   }
+}
 
-  static int _utf8Length(String value) => utf8.encode(value).length;
+void _requirePositive(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
 }
 
 class _PendingJsonValue {
@@ -247,4 +334,24 @@ class _PendingJsonValue {
   final Object? source;
   final int depth;
   final void Function(Object? value) assign;
+}
+
+class _FixedLengthListView extends ListBase<dynamic> {
+  _FixedLengthListView(this._source, this._length);
+
+  final List<dynamic> _source;
+  final int _length;
+
+  @override
+  int get length => _length;
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed-length view');
+
+  @override
+  dynamic operator [](int index) => _source[index];
+
+  @override
+  void operator []=(int index, dynamic value) =>
+      throw UnsupportedError('read-only view');
 }
