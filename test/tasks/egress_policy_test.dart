@@ -1188,6 +1188,25 @@ void main() {
       expect(overflow.entries, isEmpty);
     });
 
+    test('accepts args that exactly consume the remaining node budget', () {
+      final args = _ExactNodeBudgetList();
+
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{'command': 'git', 'args': args},
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries, hasLength(1));
+      expect(context.entries.single.label, 'Command');
+      expect(context.entries.single.value.split(' '), hasLength(126));
+      expect(context.entries.single.value, startsWith('git arg0 '));
+      expect(context.entries.single.value, endsWith(' arg124'));
+      expect(args.lengthReads, 1);
+      expect(args.itemReads, 125);
+    });
+
     test('reads list length once before rejecting node overflow', () {
       const canary = 'permission-list-length-canary';
       final args = _LengthReadSentinelList(canary);
@@ -1378,6 +1397,29 @@ class _DefaultNodeLimitSentinelList extends ListBase<String> {
   String operator [](int index) {
     if (index < 125) return 'arg$index';
     throw StateError('129th node value was read');
+  }
+
+  @override
+  void operator []=(int index, String value) => throw UnsupportedError('');
+}
+
+class _ExactNodeBudgetList extends ListBase<String> {
+  int lengthReads = 0;
+  int itemReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    return 125;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('');
+
+  @override
+  String operator [](int index) {
+    itemReads += 1;
+    return 'arg$index';
   }
 
   @override
