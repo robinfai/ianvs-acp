@@ -237,10 +237,13 @@ EgressPolicyMatch? _classifySegment(
   if (_posixShellExecutables.contains(executable)) {
     final commandIndex = _posixShellCommandIndex(args);
     if (commandIndex != null) {
-      return egressSensitiveCommandMatch(
+      final nested = egressSensitiveCommandMatch(
         args[commandIndex],
         environment: environment,
       );
+      return nested == null
+          ? null
+          : EgressPolicyMatch(reason: nested.reason, commandLine: display);
     }
     return EgressPolicyMatch(
       reason: 'unresolved_wrapper',
@@ -249,27 +252,23 @@ EgressPolicyMatch? _classifySegment(
   }
 
   if (_powerShellExecutables.contains(executable)) {
-    final commandIndex = _powerShellCommandIndex(args);
-    if (commandIndex != null) {
-      return egressSensitiveCommandMatch(
-        args[commandIndex],
-        args: args.skip(commandIndex + 1).toList(growable: false),
-        environment: environment,
-      );
-    }
     return EgressPolicyMatch(
       reason: 'unresolved_wrapper',
       commandLine: display,
     );
   }
 
-  if (_multiCallExecutables.contains(executable)) {
-    if (args.isNotEmpty && _executableName(args.first) == 'sh') {
-      return egressSensitiveCommandMatch(
+  if (_multiCallExecutableRoot(executable) != null) {
+    if (args.isNotEmpty &&
+        _posixShellExecutables.contains(_executableName(args.first))) {
+      final nested = egressSensitiveCommandMatch(
         args.first,
         args: args.skip(1).toList(growable: false),
         environment: environment,
       );
+      return nested == null
+          ? null
+          : EgressPolicyMatch(reason: nested.reason, commandLine: display);
     }
     return EgressPolicyMatch(
       reason: 'unresolved_wrapper',
@@ -364,29 +363,60 @@ const Set<String> _posixShellExecutables = {
   'csh',
   'tcsh',
   'nu',
+  'ash',
+  'yash',
+  'xonsh',
+  'osh',
 };
 
 const Set<String> _powerShellExecutables = {'pwsh', 'powershell'};
-const Set<String> _multiCallExecutables = {'busybox', 'toybox'};
-const Set<String> _scriptInterpreterExecutables = {
+const List<String> _scriptInterpreterRoots = <String>[
   'python',
-  'python3',
   'pypy',
-  'pypy3',
   'node',
+  'nodejs',
   'ruby',
   'perl',
   'php',
   'osascript',
-};
+  'lua',
+  'luajit',
+  'rscript',
+  'r',
+  'julia',
+  'tclsh',
+  'wish',
+];
 
-final RegExp _versionedScriptInterpreterPattern = RegExp(
-  r'^(?:python|pypy|node|ruby|perl|php)\d+(?:\.\d+)*$',
+final RegExp _scriptInterpreterSuffixPattern = RegExp(
+  r'^(?:-?\d+(?:\.\d+)*)?(?:[-_.](?:bin|static))?$',
 );
 
 bool _isScriptInterpreterExecutable(String executable) {
-  return _scriptInterpreterExecutables.contains(executable) ||
-      _versionedScriptInterpreterPattern.hasMatch(executable);
+  // executable is already a lowercase basename with a terminal .exe removed.
+  // Accept only a known root followed by a numeric/dotted version and an
+  // optional packaging suffix; arbitrary prefixes such as node_modules do not
+  // become interpreter launchers.
+  for (final root in _scriptInterpreterRoots) {
+    if (!executable.startsWith(root)) continue;
+    final suffix = executable.substring(root.length);
+    if (_scriptInterpreterSuffixPattern.hasMatch(suffix)) return true;
+  }
+  return false;
+}
+
+String? _multiCallExecutableRoot(String executable) {
+  // _executableName has already reduced this to a lowercase basename and
+  // removed a terminal .exe. A dot/dash suffix is a packaging variant such as
+  // busybox.static; only the exact busybox/toybox root is accepted.
+  for (final root in const <String>['busybox', 'toybox']) {
+    if (executable == root ||
+        executable.startsWith('$root.') ||
+        executable.startsWith('$root-')) {
+      return root;
+    }
+  }
+  return null;
 }
 
 int? _posixShellCommandIndex(List<String> args) {
@@ -400,16 +430,6 @@ int? _posixShellCommandIndex(List<String> args) {
     if (option.startsWith('--') || !option.startsWith('-')) return null;
     if (!_shellShortOptionPattern.hasMatch(option)) return null;
     if (option.substring(1).contains('c')) {
-      return index + 1 < args.length ? index + 1 : null;
-    }
-  }
-  return null;
-}
-
-int? _powerShellCommandIndex(List<String> args) {
-  for (var index = 0; index < args.length; index += 1) {
-    final option = args[index].toLowerCase();
-    if (const {'-command', '-c', '/command'}.contains(option)) {
       return index + 1 < args.length ? index + 1 : null;
     }
   }
@@ -492,31 +512,32 @@ _PermissionCommand? _commandFromPermissionRequest(
       metadata;
   final toolCallSource = nestedToolCall is Map ? nestedToolCall : null;
 
-  final command =
-      _firstString(commandSource, const [
-        'command',
-        'cmd',
-        'commandLine',
-        'command_line',
-        'shellCommand',
-        'shell_command',
-        'script',
-      ]) ??
-      _firstString(toolCallSource, const [
-        'command',
-        'cmd',
-        'commandLine',
-        'command_line',
-        'shellCommand',
-        'shell_command',
-      ]) ??
-      _commandLineFromPermissionText(request.title) ??
-      _commandLineFromPermissionText(request.rationale);
-  final args = _firstStringList(commandSource, const [
-    'args',
-    'argv',
-    'arguments',
-  ]);
+  const commandKeys = <String>[
+    'command',
+    'cmd',
+    'commandLine',
+    'command_line',
+    'shellCommand',
+    'shell_command',
+    'script',
+  ];
+  const argumentKeys = <String>['args', 'argv', 'arguments'];
+  final primaryCommand = _firstString(commandSource, commandKeys);
+  final nestedCommand = _firstString(toolCallSource, commandKeys);
+  final String? command;
+  final List<String> args;
+  if (primaryCommand != null) {
+    command = primaryCommand;
+    args = _firstStringList(commandSource, argumentKeys);
+  } else if (nestedCommand != null) {
+    command = nestedCommand;
+    args = _firstStringList(toolCallSource, argumentKeys);
+  } else {
+    command =
+        _commandLineFromPermissionText(request.title) ??
+        _commandLineFromPermissionText(request.rationale);
+    args = const <String>[];
+  }
 
   if (command == null || command.trim().isEmpty) return null;
   return _PermissionCommand(command.trim(), args);
@@ -674,9 +695,7 @@ List<String> _tokenValues(Iterable<_ShellToken> tokens) {
 
 String _normalizedDisplay(List<String> tokens, {int depth = 0}) {
   if (tokens.isEmpty) return '<redacted>';
-  if (depth >= 4) {
-    return '${_shellDisplayArg(tokens.first)} <redacted>';
-  }
+  if (depth >= 4) return '<redacted>';
   final executable = _executableName(tokens.first);
   final args = tokens.skip(1).toList(growable: false);
 
@@ -686,8 +705,9 @@ String _normalizedDisplay(List<String> tokens, {int depth = 0}) {
         : '${_shellDisplayArg(tokens.first)} <redacted>';
   }
 
-  if (_multiCallExecutables.contains(executable)) {
-    if (args.isNotEmpty && _executableName(args.first) == 'sh') {
+  if (_multiCallExecutableRoot(executable) != null) {
+    if (args.isNotEmpty &&
+        _posixShellExecutables.contains(_executableName(args.first))) {
       final nested = _normalizedDisplay(args, depth: depth + 1);
       return '${_shellDisplayArg(tokens.first)} ${_shellDisplayArg(nested)}';
     }
@@ -714,22 +734,7 @@ String _normalizedDisplay(List<String> tokens, {int depth = 0}) {
   }
 
   if (_powerShellExecutables.contains(executable)) {
-    final commandIndex = _powerShellCommandIndex(args);
-    if (commandIndex == null) {
-      return args.isEmpty
-          ? _shellDisplayArg(tokens.first)
-          : '${_shellDisplayArg(tokens.first)} <redacted>';
-    }
-    final absoluteIndex = commandIndex + 1;
-    final nestedTokens = <String>[
-      ..._nestedCommandTokens(tokens[absoluteIndex]),
-      ...tokens.skip(absoluteIndex + 1),
-    ];
-    final prefix = _normalizedDisplayFlat(tokens.sublist(0, absoluteIndex));
-    final nested = nestedTokens.isEmpty
-        ? '<redacted>'
-        : _normalizedDisplay(nestedTokens, depth: depth + 1);
-    return '$prefix ${_shellDisplayArg(nested)}';
+    return '${_shellDisplayArg(tokens.first)} <redacted>';
   }
 
   if (executable == 'eval') {
