@@ -40,7 +40,7 @@ class LineJsonChannel {
       },
       onDone: () {
         _stdoutDecoder.close();
-        unawaited(closeInbound());
+        if (!_stdoutFailed) unawaited(closeInbound());
       },
     );
     // Always drain stderr to prevent subprocess blocking, even if no callback.
@@ -222,7 +222,7 @@ class LineJsonChannel {
 
   Future<void> _dispose() async {
     _stdoutFailed = true;
-    await closeInbound();
+    unawaited(closeInbound().catchError((Object _) {}));
     await _outboundSub.cancel();
     await _stdoutSub.cancel();
     await _stderrSub.cancel();

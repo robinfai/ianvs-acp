@@ -61,6 +61,44 @@ void main() {
       await transport.stop();
     }
   });
+
+  test(
+    'StdioTransport stop completes with paused inbound and flushes queued writes',
+    () async {
+      final outboundLines = <String>[];
+      final inboundLines = <String>[];
+      final transport = acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/cat',
+        onProtocolOut: outboundLines.add,
+        onProtocolIn: inboundLines.add,
+      );
+      StreamSubscription<String>? subscription;
+      Future<void>? stopFuture;
+      const expected = <String>['first', 'second'];
+
+      try {
+        await transport.start();
+        subscription = transport.channel.stream.listen((_) {}, onError: (_) {})
+          ..pause();
+        transport.channel.sink
+          ..add(expected[0])
+          ..add(expected[1]);
+        await _waitFor(() => inboundLines.length == expected.length);
+
+        stopFuture = transport.stop();
+        await stopFuture.timeout(const Duration(seconds: 1));
+
+        expect(outboundLines, expected);
+        expect(inboundLines, expected);
+      } finally {
+        await subscription?.cancel();
+        await (stopFuture ?? transport.stop()).timeout(
+          const Duration(seconds: 2),
+        );
+      }
+    },
+  );
 }
 
 Future<void> _waitFor(bool Function() predicate) async {

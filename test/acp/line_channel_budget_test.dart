@@ -84,6 +84,44 @@ void main() {
   });
 
   test(
+    'stdout invalid UTF-8 at direct EOF reports exactly one decode error',
+    () async {
+      final process = await Process.start('/bin/sh', <String>[
+        '-c',
+        "printf '\\377'",
+      ]);
+      final channel = LineJsonChannel(process);
+      final lines = <String>[];
+      final errors = <Object>[];
+      final done = Completer<void>();
+      final subscription = channel.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+        onDone: done.complete,
+      );
+
+      try {
+        await done.future.timeout(const Duration(seconds: 2));
+
+        expect(lines, isEmpty);
+        expect(errors, hasLength(1));
+        expect(
+          errors.single,
+          isA<acp.TransportProtocolDecodeError>().having(
+            (error) => error.resource,
+            'resource',
+            'stdio stdout line',
+          ),
+        );
+      } finally {
+        await subscription.cancel();
+        await channel.dispose();
+        await process.exitCode;
+      }
+    },
+  );
+
+  test(
     'stderr truncates one oversized line and resumes after newline',
     () async {
       final process = await Process.start('/bin/sh', <String>[
@@ -241,6 +279,42 @@ void main() {
       await process.exitCode;
     }
   });
+
+  test(
+    'dispose completes without an inbound listener and flushes queued writes',
+    () async {
+      final process = await Process.start('/bin/cat', const <String>[]);
+      final outboundLines = <String>[];
+      final channel = LineJsonChannel(
+        process,
+        onOutboundLine: outboundLines.add,
+      );
+      const expected = <String>['first', 'second'];
+
+      try {
+        channel.channel.sink
+          ..add(expected[0])
+          ..add(expected[1]);
+        await Future<void>.delayed(Duration.zero);
+
+        await channel.dispose().timeout(const Duration(seconds: 1));
+
+        expect(outboundLines, expected);
+      } finally {
+        final inboundDone = Completer<void>();
+        final subscription = channel.channel.stream.listen(
+          (_) {},
+          onError: (_) {},
+          onDone: inboundDone.complete,
+        );
+        await inboundDone.future.timeout(const Duration(seconds: 2));
+        await subscription.cancel();
+        await channel.dispose();
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode;
+      }
+    },
+  );
 }
 
 Future<void> _waitFor(bool Function() predicate) async {
