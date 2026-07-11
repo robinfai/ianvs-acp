@@ -1,3 +1,6 @@
+import 'dart:collection';
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/tasks/egress_policy.dart';
@@ -995,6 +998,39 @@ void main() {
       }
     });
 
+    test('rejects deep Map and raw JSON conflicts without partial entries', () {
+      for (final metadata in <Map<String, Object?>>[
+        const <String, Object?>{
+          'command': 'git status',
+          'input': <String, Object?>{
+            'input': <String, Object?>{'command': 'flutter test'},
+          },
+        },
+        const <String, Object?>{
+          'command': 'git status',
+          'rawInput': '{"input":{"command":"flutter test"}}',
+        },
+        const <String, Object?>{
+          'path': '/workspace/a',
+          'input': <String, Object?>{
+            'input': <String, Object?>{'path': '/workspace/b'},
+          },
+        },
+        const <String, Object?>{
+          'target': 'origin',
+          'rawInput': '{"input":{"target":"upstream"}}',
+        },
+      ]) {
+        final context = permissionDisplayContextForRequest(
+          _permissionRequest(metadata: metadata),
+        );
+
+        expect(context.isComplete, isFalse);
+        expect(context.entries, isEmpty);
+        expect(context.warning, PermissionDisplayContext.incompleteWarning);
+      }
+    });
+
     test(
       'accepts exactly 16 KiB of multibyte text and rejects one byte more',
       () {
@@ -1013,66 +1049,110 @@ void main() {
       },
     );
 
-    test('preflights raw JSON at the 16 KiB UTF-8 boundary', () {
+    test('preflights raw JSON before invoking the decoder', () {
       final payload = '${List<String>.filled(8186, 'é').join()}a';
       final exact = '{"path":"$payload"}';
+      var decoded = 0;
+      Object? decode(String source) {
+        decoded += 1;
+        return jsonDecode(source);
+      }
+
       final complete = permissionDisplayContextForRequest(
         _permissionRequest(metadata: <String, Object?>{'rawInput': exact}),
+        decodeRawJsonForTesting: decode,
       );
+      expect(decoded, 1);
       final incomplete = permissionDisplayContextForRequest(
         _permissionRequest(metadata: <String, Object?>{'rawInput': '$exact '}),
+        decodeRawJsonForTesting: decode,
+      );
+      expect(decoded, 1);
+      final codeUnitOverflow = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{'rawInput': '123456789'},
+        ),
+        limits: PermissionDisplayContextLimits(maxUtf8Bytes: 8),
+        decodeRawJsonForTesting: decode,
+      );
+      final utf8Overflow = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: <String, Object?>{'rawInput': 'ééééa'}),
+        limits: PermissionDisplayContextLimits(maxUtf8Bytes: 8),
+        decodeRawJsonForTesting: decode,
       );
 
       expect(complete.isComplete, isTrue);
       expect(complete.entries.single.value, payload);
       expect(incomplete.isComplete, isFalse);
       expect(incomplete.entries, isEmpty);
+      expect(codeUnitOverflow.isComplete, isFalse);
+      expect(utf8Overflow.isComplete, isFalse);
+      expect(decoded, 1);
     });
 
-    test('enforces map entry boundary at 16', () {
-      Map<String, Object?> metadataWithEntries(int count) => <String, Object?>{
-        'command': 'git status',
-        for (var index = 1; index < count; index += 1)
-          'extra$index': 'value$index',
-      };
+    test(
+      'ignores unrelated metadata without traversing or stringifying it',
+      () {
+        final context = permissionDisplayContextForRequest(
+          _permissionRequest(
+            metadata: <String, Object?>{
+              'command': 'git status',
+              'irrelevantObject': _ThrowingToString('irrelevant-object'),
+              'irrelevantList': List<Object?>.filled(
+                1024,
+                _ThrowingToString('irrelevant-list'),
+              ),
+              'irrelevantMap': <String, Object?>{
+                for (var index = 0; index < 1024; index += 1)
+                  'unknown$index': _ThrowingToString('irrelevant-map'),
+              },
+            },
+          ),
+        );
 
-      expect(
-        permissionDisplayContextForRequest(
-          _permissionRequest(metadata: metadataWithEntries(16)),
-        ).isComplete,
-        isTrue,
+        expect(context.isComplete, isTrue);
+        expect(context.entries.single.value, 'git status');
+      },
+    );
+
+    test('does not enumerate metadata to discover recognized fields', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: _DirectLookupOnlyMap(<String, Object?>{
+            'command': 'git status',
+          }),
+        ),
       );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries.single.value, 'git status');
+    });
+
+    test('stops after 16 entries before reading the next recognized value', () {
       final overflow = permissionDisplayContextForRequest(
-        _permissionRequest(metadata: metadataWithEntries(17)),
+        _permissionRequest(metadata: _DefaultEntryLimitSentinelMap()),
       );
+
       expect(overflow.isComplete, isFalse);
       expect(overflow.entries, isEmpty);
     });
 
     test('enforces structured depth boundary at four', () {
-      Object nested(int depth) {
-        Object value = const <String, Object?>{'note': 'leaf'};
+      Map<String, Object?> nested(int depth) {
+        Map<String, Object?> value = const <String, Object?>{
+          'path': '/workspace/file',
+        };
         for (var index = 0; index < depth; index += 1) {
-          value = <String, Object?>{'child': value};
+          value = <String, Object?>{'input': value};
         }
         return value;
       }
 
       final exact = permissionDisplayContextForRequest(
-        _permissionRequest(
-          metadata: <String, Object?>{
-            'path': '/workspace/file',
-            'details': nested(3),
-          },
-        ),
+        _permissionRequest(metadata: nested(4)),
       );
       final overflow = permissionDisplayContextForRequest(
-        _permissionRequest(
-          metadata: <String, Object?>{
-            'path': '/workspace/file',
-            'details': nested(4),
-          },
-        ),
+        _permissionRequest(metadata: nested(5)),
       );
 
       expect(exact.isComplete, isTrue);
@@ -1080,22 +1160,30 @@ void main() {
       expect(overflow.entries, isEmpty);
     });
 
-    test('enforces structured node boundary at 128', () {
-      Map<String, Object?> metadataWithNodes(int leafCount) =>
-          <String, Object?>{
-            'path': '/workspace/file',
-            'details': List<String>.filled(leafCount, 'x'),
-          };
+    test('checks depth before reading an over-depth container value', () {
+      Map<String, Object?> metadata = _DepthSentinelMap();
+      for (var index = 0; index < 4; index += 1) {
+        metadata = <String, Object?>{'input': metadata};
+      }
 
-      expect(
-        permissionDisplayContextForRequest(
-          _permissionRequest(metadata: metadataWithNodes(125)),
-        ).isComplete,
-        isTrue,
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(metadata: metadata),
       );
+
+      expect(context.isComplete, isFalse);
+      expect(context.entries, isEmpty);
+    });
+
+    test('stops after 128 nodes before reading the next list item', () {
       final overflow = permissionDisplayContextForRequest(
-        _permissionRequest(metadata: metadataWithNodes(126)),
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'command': 'git',
+            'args': _DefaultNodeLimitSentinelList(),
+          },
+        ),
       );
+
       expect(overflow.isComplete, isFalse);
       expect(overflow.entries, isEmpty);
     });
@@ -1175,4 +1263,110 @@ class _ThrowingToString {
 
   @override
   String toString() => throw StateError(canary);
+}
+
+class _DirectLookupOnlyMap extends MapBase<String, Object?> {
+  _DirectLookupOnlyMap(this._values);
+
+  final Map<String, Object?> _values;
+
+  @override
+  Object? operator [](Object? key) => _values[key];
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  bool containsKey(Object? key) => _values.containsKey(key);
+
+  @override
+  Iterable<String> get keys => throw StateError('metadata was enumerated');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
+}
+
+class _DefaultEntryLimitSentinelMap extends MapBase<String, Object?> {
+  static final Map<String, Object?> _values = <String, Object?>{
+    'command': 'git',
+    'cmd': 'git',
+    'commandLine': 'git',
+    'command_line': 'git',
+    'shellCommand': 'git',
+    'shell_command': 'git',
+    'script': 'git',
+    'args': const <String>['status'],
+    'argv': const <String>['status'],
+    'arguments': const <String>['status'],
+    'cwd': '/workspace',
+    'path': '/workspace/file',
+    'target': 'local',
+    'toolCall': const <String, Object?>{},
+    'rawInput': const <String, Object?>{},
+    'raw_input': const <String, Object?>{},
+  };
+
+  @override
+  Object? operator [](Object? key) {
+    if (key == 'input') throw StateError('17th entry value was read');
+    return _values[key];
+  }
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  bool containsKey(Object? key) => key == 'input' || _values.containsKey(key);
+
+  @override
+  Iterable<String> get keys => <String>[..._values.keys, 'input'];
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
+}
+
+class _DefaultNodeLimitSentinelList extends ListBase<String> {
+  @override
+  int get length => 126;
+
+  @override
+  set length(int value) => throw UnsupportedError('');
+
+  @override
+  String operator [](int index) {
+    if (index < 125) return 'arg$index';
+    throw StateError('129th node value was read');
+  }
+
+  @override
+  void operator []=(int index, String value) => throw UnsupportedError('');
+}
+
+class _DepthSentinelMap extends MapBase<String, Object?> {
+  @override
+  Object? operator [](Object? key) {
+    if (key == 'input') throw StateError('over-depth value was read');
+    return null;
+  }
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  bool containsKey(Object? key) => key == 'input';
+
+  @override
+  Iterable<String> get keys => const <String>['input'];
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
 }

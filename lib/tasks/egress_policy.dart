@@ -82,27 +82,24 @@ final PermissionDisplayContextLimits _defaultPermissionDisplayContextLimits =
 PermissionDisplayContext permissionDisplayContextForRequest(
   AcpPermissionRequest request, {
   PermissionDisplayContextLimits? limits,
+  Object? Function(String source)? decodeRawJsonForTesting,
 }) {
-  final metadata = request.metadata;
-  if (!_hasPermissionDisplayEvidence(metadata)) {
+  final effectiveLimits = limits ?? _defaultPermissionDisplayContextLimits;
+  final projection = _PermissionDisplayProjectionBuilder(
+    effectiveLimits,
+    decodeRawJsonForTesting ?? jsonDecode,
+  ).build(request.metadata);
+  if (projection == null) return PermissionDisplayContext.incomplete();
+  if (projection.root.isEmpty) {
     return PermissionDisplayContext.complete(const <PermissionDisplayEntry>[]);
   }
-
-  final effectiveLimits = limits ?? _defaultPermissionDisplayContextLimits;
-  final preflight = _PermissionDisplayPreflight(effectiveLimits);
-  if (!preflight.validate(metadata)) {
-    return PermissionDisplayContext.incomplete();
-  }
-
-  final containers = _permissionDisplayContainers(metadata);
-  if (containers == null) return PermissionDisplayContext.incomplete();
 
   final values = <String, List<String>>{
     'cwd': <String>[],
     'path': <String>[],
     'target': <String>[],
   };
-  for (final container in containers) {
+  for (final container in projection.containers) {
     for (final key in values.keys) {
       if (!container.containsKey(key)) continue;
       final value = container[key];
@@ -118,12 +115,15 @@ PermissionDisplayContext permissionDisplayContextForRequest(
   }
 
   final entries = <PermissionDisplayEntry>[];
-  if (_containersHavePermissionCommandEvidence(containers)) {
-    final invocation = _commandFromPermissionRequest(request);
+  if (_containersHavePermissionCommandEvidence(projection.containers)) {
+    final invocation = _commandFromPermissionDisplayContainers(
+      request,
+      projection.containers,
+    );
     if (invocation == null || invocation.ambiguous) {
       return PermissionDisplayContext.incomplete();
     }
-    final commandLine = commandLineFromPermissionRequest(request);
+    final commandLine = _commandLine(invocation.command, invocation.args);
     if (commandLine == null || commandLine == '<redacted>') {
       return PermissionDisplayContext.incomplete();
     }
@@ -145,149 +145,198 @@ PermissionDisplayContext permissionDisplayContextForRequest(
   return PermissionDisplayContext.complete(entries);
 }
 
-const Set<String> _permissionDisplayValueKeys = <String>{
+_PermissionCommand? _commandFromPermissionDisplayContainers(
+  AcpPermissionRequest request,
+  List<Map<String, Object?>> containers,
+) {
+  return _permissionCommandFromResolvedContainers(
+    request,
+    containers.map(_resolvePermissionCommandContainer).toList(growable: false),
+    allowTextFallback: false,
+  );
+}
+
+const List<String> _permissionDisplayScalarKeys = <String>[
+  ..._permissionCommandKeys,
+  ..._permissionArgumentKeys,
   'cwd',
   'path',
   'target',
-};
+];
 
-bool _hasPermissionDisplayEvidence(Map<String, Object?> metadata) {
-  for (final entry in metadata.entries) {
-    final key = entry.key;
-    if (_permissionCommandKeys.contains(key) ||
-        _permissionArgumentKeys.contains(key) ||
-        _permissionDisplayValueKeys.contains(key) ||
-        key == 'toolCall' ||
-        key == 'rawInput' ||
-        key == 'raw_input') {
-      return true;
-    }
-    if (key == 'input') {
-      final value = entry.value;
-      if (value is Map ||
-          (value is String && value.trimLeft().startsWith('{')) ||
-          (value is! String && value != null)) {
-        return true;
-      }
-    }
-  }
-  return false;
+const List<String> _permissionDisplayContainerKeys = <String>[
+  'toolCall',
+  'rawInput',
+  'raw_input',
+  'input',
+];
+
+class _PermissionDisplayProjection {
+  const _PermissionDisplayProjection({
+    required this.root,
+    required this.containers,
+  });
+
+  final Map<String, Object?> root;
+  final List<Map<String, Object?>> containers;
 }
 
-class _PermissionDisplayPreflight {
-  _PermissionDisplayPreflight(this.limits);
+class _PermissionDisplayProjectionBuilder {
+  _PermissionDisplayProjectionBuilder(this.limits, this.decodeRawJson);
 
   final PermissionDisplayContextLimits limits;
+  final Object? Function(String source) decodeRawJson;
   var _utf8Bytes = 0;
   var _entries = 0;
   var _nodes = 0;
+  final List<Map<String, Object?>> _containers = <Map<String, Object?>>[];
+  var _failed = false;
 
-  bool validate(Map<String, Object?> metadata) {
+  _PermissionDisplayProjection? build(Map<String, Object?> metadata) {
     try {
-      return _visit(metadata, depth: 0, countUtf8: true);
+      final root = _projectMap(metadata, depth: 0, countUtf8: true);
+      if (_failed || root == null) return null;
+      return _PermissionDisplayProjection(
+        root: root,
+        containers: List<Map<String, Object?>>.unmodifiable(_containers),
+      );
     } on FormatException {
-      return false;
+      return null;
     }
   }
 
-  bool _visit(Object? value, {required int depth, required bool countUtf8}) {
-    if (++_nodes > limits.maxNodes) return false;
-    if (value is String) {
-      return !countUtf8 || _addUtf8(value);
+  Map<String, Object?>? _projectMap(
+    Map source, {
+    required int depth,
+    required bool countUtf8,
+    bool takeSelfNode = true,
+  }) {
+    if (depth > limits.maxDepth || (takeSelfNode && !_takeNode())) {
+      return _fail();
     }
-    if (value is List) {
-      if (depth > limits.maxDepth) return false;
-      if (value.any((item) => item is! String)) return false;
-      for (final item in value) {
-        if (!_visit(item, depth: depth + 1, countUtf8: countUtf8)) return false;
+    final projected = <String, Object?>{};
+
+    for (final key in _permissionDisplayScalarKeys) {
+      if (_failed) return null;
+      if (!source.containsKey(key)) continue;
+      if (!_takeEntry()) return _fail();
+      if (_permissionArgumentKeys.contains(key) && depth >= limits.maxDepth) {
+        return _fail();
       }
-      return true;
-    }
-    if (value is! Map) return false;
-    if (depth > limits.maxDepth) return false;
-    if (value.keys.any((key) => key is! String)) return false;
-    _entries += value.length;
-    if (_entries > limits.maxEntries) return false;
-    for (final entry in value.entries) {
-      final key = entry.key as String;
-      final item = entry.value;
-      if (key == 'toolCall') {
-        if (item is! Map ||
-            !_visit(item, depth: depth + 1, countUtf8: countUtf8)) {
-          return false;
-        }
+      if (!_takeNode()) return _fail();
+      final raw = source[key];
+      if (_permissionArgumentKeys.contains(key)) {
+        final args = _projectStringList(
+          raw,
+          depth: depth + 1,
+          countUtf8: countUtf8,
+        );
+        if (args == null) return _fail();
+        projected[key] = args;
         continue;
       }
-      if (_permissionRawInputKeys.contains(key) && item is String) {
-        if (!_addRawJsonUtf8(item)) return false;
-        final decoded = jsonDecode(item);
-        if (decoded is! Map ||
-            !_visit(decoded, depth: depth + 1, countUtf8: false)) {
-          return false;
-        }
-        continue;
+      if (raw is! String || !_addUtf8(raw, countUtf8: countUtf8)) {
+        return _fail();
       }
-      if (!_visit(item, depth: depth + 1, countUtf8: countUtf8)) return false;
+      final normalized = raw.trim();
+      if (normalized.isEmpty) return _fail();
+      projected[key] = normalized;
     }
+
+    for (final key in _permissionDisplayContainerKeys) {
+      if (_failed) return null;
+      if (!source.containsKey(key)) continue;
+      if (!_takeEntry()) return _fail();
+      if (depth >= limits.maxDepth || !_takeNode()) return _fail();
+      final raw = source[key];
+      Map? nested;
+      var nestedCountsUtf8 = countUtf8;
+      if (raw is Map) {
+        nested = raw;
+      } else if (raw is String) {
+        if (!_addUtf8(raw, countUtf8: countUtf8)) {
+          return _fail();
+        }
+        if (key == 'input' && !raw.trimLeft().startsWith('{')) {
+          continue;
+        }
+        final decoded = decodeRawJson(raw);
+        if (decoded is! Map) return _fail();
+        nested = decoded;
+        nestedCountsUtf8 = false;
+      } else {
+        return _fail();
+      }
+      final nestedProjection = _projectMap(
+        nested,
+        depth: depth + 1,
+        countUtf8: nestedCountsUtf8,
+        takeSelfNode: raw is String,
+      );
+      if (nestedProjection == null) return _fail();
+      projected[key] = nestedProjection;
+    }
+
+    final immutable = Map<String, Object?>.unmodifiable(projected);
+    _containers.add(immutable);
+    return immutable;
+  }
+
+  List<String>? _projectStringList(
+    Object? raw, {
+    required int depth,
+    required bool countUtf8,
+  }) {
+    if (raw is! List || depth > limits.maxDepth) return null;
+    final result = <String>[];
+    var index = 0;
+    while (index < raw.length) {
+      if (!_takeNode()) return null;
+      final item = raw[index++];
+      if (item is! String || !_addUtf8(item, countUtf8: countUtf8)) {
+        return null;
+      }
+      result.add(item);
+    }
+    return List<String>.unmodifiable(result);
+  }
+
+  bool _takeEntry() {
+    if (_entries >= limits.maxEntries) {
+      _failed = true;
+      return false;
+    }
+    _entries += 1;
     return true;
   }
 
-  bool _addRawJsonUtf8(String value) {
-    final remaining = limits.maxUtf8Bytes - _utf8Bytes;
-    if (value.length > remaining) return false;
-    return _addUtf8(value);
+  bool _takeNode() {
+    if (_nodes >= limits.maxNodes) {
+      _failed = true;
+      return false;
+    }
+    _nodes += 1;
+    return true;
   }
 
-  bool _addUtf8(String value) {
+  bool _addUtf8(String value, {required bool countUtf8}) {
+    if (!countUtf8) return true;
     final remaining = limits.maxUtf8Bytes - _utf8Bytes;
-    if (value.length > remaining) return false;
+    if (value.length > remaining) {
+      _failed = true;
+      return false;
+    }
     final length = utf8.encode(value).length;
-    if (length > remaining) return false;
+    if (length > remaining) {
+      _failed = true;
+      return false;
+    }
     _utf8Bytes += length;
     return true;
   }
-}
 
-List<Map<String, Object?>>? _permissionDisplayContainers(
-  Map<String, Object?> metadata,
-) {
-  final result = <Map<String, Object?>>[];
-
-  bool collect(Map source) {
-    if (source.keys.any((key) => key is! String)) return false;
-    final typed = <String, Object?>{
-      for (final entry in source.entries) entry.key as String: entry.value,
-    };
-    result.add(typed);
-    for (final key in const <String>[
-      'toolCall',
-      'rawInput',
-      'raw_input',
-      'input',
-    ]) {
-      if (!typed.containsKey(key)) continue;
-      final value = typed[key];
-      if (key == 'input' &&
-          value is String &&
-          !value.trimLeft().startsWith('{')) {
-        continue;
-      }
-      final nested = _permissionDisplayMap(value);
-      if (nested == null || !collect(nested)) return false;
-    }
-    return true;
-  }
-
-  return collect(metadata) ? result : null;
-}
-
-Map? _permissionDisplayMap(Object? value) {
-  if (value is Map) return value;
-  if (value is! String) return null;
-  try {
-    final decoded = jsonDecode(value);
-    return decoded is Map ? decoded : null;
-  } on FormatException {
+  T? _fail<T>() {
+    _failed = true;
     return null;
   }
 }
@@ -296,9 +345,11 @@ bool _containersHavePermissionCommandEvidence(
   List<Map<String, Object?>> containers,
 ) {
   for (final container in containers) {
-    if (_permissionCommandKeys.any(container.containsKey) ||
-        _permissionArgumentKeys.any(container.containsKey)) {
-      return true;
+    for (final key in _permissionCommandKeys) {
+      if (container.containsKey(key)) return true;
+    }
+    for (final key in _permissionArgumentKeys) {
+      if (container.containsKey(key)) return true;
     }
   }
   return false;
@@ -809,30 +860,51 @@ _PermissionCommand? _commandFromPermissionRequest(
   final metadata = request.metadata;
   final nestedToolCall = metadata['toolCall'];
   final toolCallSource = nestedToolCall is Map ? nestedToolCall : null;
-  final primary = _resolvePermissionCommandContainer(metadata);
-  final nested = _resolvePermissionCommandContainer(toolCallSource);
-  if (primary.ambiguous || nested.ambiguous) {
-    final sawCommandEvidence =
-        primary.sawCommandEvidence || nested.sawCommandEvidence;
-    final sawArgsEvidence = primary.sawArgsEvidence || nested.sawArgsEvidence;
+  return _permissionCommandFromResolvedContainers(
+    request,
+    <_PermissionCommandContainer>[
+      _resolvePermissionCommandContainer(metadata),
+      _resolvePermissionCommandContainer(toolCallSource),
+    ],
+  );
+}
+
+_PermissionCommand? _permissionCommandFromResolvedContainers(
+  AcpPermissionRequest request,
+  List<_PermissionCommandContainer> containers, {
+  bool allowTextFallback = true,
+}) {
+  final sawCommandEvidence = containers.any(
+    (container) => container.sawCommandEvidence,
+  );
+  final sawArgsEvidence = containers.any(
+    (container) => container.sawArgsEvidence,
+  );
+  if (containers.any((container) => container.ambiguous)) {
     if (sawCommandEvidence ||
         (sawArgsEvidence && _isExplicitCommandPermission(request))) {
       return const _PermissionCommand.ambiguous();
     }
     return null;
   }
-  if (primary.command != null && nested.command != null) {
-    if (primary.command != nested.command ||
-        primary.hasArgs != nested.hasArgs ||
-        !_sameStringList(primary.args, nested.args)) {
+
+  _PermissionCommandContainer? selected;
+  for (final container in containers) {
+    if (container.command == null) continue;
+    if (selected == null) {
+      selected = container;
+      continue;
+    }
+    if (selected.command != container.command ||
+        selected.hasArgs != container.hasArgs ||
+        !_sameStringList(selected.args, container.args)) {
       return const _PermissionCommand.ambiguous();
     }
-    return _PermissionCommand(primary.command!, primary.args);
   }
-  final resolved = primary.command != null ? primary : nested;
-  if (resolved.command != null) {
-    return _PermissionCommand(resolved.command!, resolved.args);
+  if (selected != null) {
+    return _PermissionCommand(selected.command!, selected.args);
   }
+  if (!allowTextFallback) return null;
   final textCommand =
       _commandLineFromPermissionText(request.title) ??
       _commandLineFromPermissionText(request.rationale);
