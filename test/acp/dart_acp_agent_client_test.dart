@@ -2175,6 +2175,67 @@ Future<void> main() async {
   });
 
   test(
+    'fork requires a known or explicit workspace before contacting agent',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      var forkRequestCount = 0;
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/fork') return;
+        forkRequestCount += 1;
+        final params = request['params'] as Map<String, dynamic>;
+        final generatedId = params.containsKey('cwd')
+            ? 'explicit-fork'
+            : 'unexpected-fork';
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{'sessionId': generatedId},
+          }),
+        );
+      });
+
+      try {
+        Object? missingRootError;
+        try {
+          await manager.forkSession(sessionId: 'unknown-source');
+        } catch (error) {
+          missingRootError = error;
+        }
+
+        expect(missingRootError, isA<StateError>());
+        expect(forkRequestCount, 0);
+        expect(
+          () => manager.prompt(
+            sessionId: 'unexpected-fork',
+            content: const <Map<String, dynamic>>[],
+          ),
+          throwsArgumentError,
+        );
+
+        final explicit = await manager.forkSession(
+          sessionId: 'unknown-source',
+          workspaceRoot: '/workspace/explicit',
+        );
+        expect(explicit.sessionId, 'explicit-fork');
+        expect(forkRequestCount, 1);
+        expect(
+          manager.getWorkspaceRoot('explicit-fork'),
+          '/workspace/explicit',
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
     'filesystem provider allows configured additional directories',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

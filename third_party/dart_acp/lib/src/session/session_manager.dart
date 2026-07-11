@@ -632,6 +632,11 @@ class SessionManager {
     List<String> additionalDirectories = const <String>[],
   }) async {
     final root = workspaceRoot ?? _sessionWorkspaceRoots[sessionId];
+    if (root == null) {
+      throw StateError(
+        'Cannot fork session $sessionId without a workspace binding',
+      );
+    }
     final directories = additionalDirectories.isEmpty
         ? _sessionAdditionalDirectories[sessionId] ?? const <String>[]
         : additionalDirectories;
@@ -639,7 +644,7 @@ class SessionManager {
       'session/fork',
       _sessionSetupParams({
         'sessionId': sessionId,
-        'cwd': ?root,
+        'cwd': root,
         'mcpServers': config.mcpServers,
       }, directories),
     );
@@ -844,7 +849,7 @@ class SessionManager {
 
   Future<void> _registerGeneratedSession({
     required String sessionId,
-    required String? workspaceRoot,
+    required String workspaceRoot,
     required List<String> additionalDirectories,
     ({String? currentModeId, List<({String id, String name})> availableModes})?
     modes,
@@ -855,13 +860,11 @@ class SessionManager {
         StreamController<AcpUpdate>.broadcast,
       );
       _replayBuffers.putIfAbsent(sessionId, () => <AcpUpdate>[]);
-      if (workspaceRoot != null) {
-        _setSessionWorkspace(
-          sessionId,
-          workspaceRoot,
-          additionalDirectories: additionalDirectories,
-        );
-      }
+      _setSessionWorkspace(
+        sessionId,
+        workspaceRoot,
+        additionalDirectories: additionalDirectories,
+      );
       if (modes != null) _sessionModes[sessionId] = modes;
     });
   }
