@@ -1548,6 +1548,507 @@ void main() {
       });
     }
   });
+
+  group('AcpStructuredUpdateGuard typed values', () {
+    AcpStructuredUpdateGuard guard({
+      int maxNodes = 100,
+      int maxBytes = 100,
+      int maxStringBytes = 100,
+      int maxItems = 100,
+    }) => AcpStructuredUpdateGuard(
+      budget: AcpInputBudget(
+        maxStructuredUpdateNodes: maxNodes,
+        maxStructuredUpdateBytes: maxBytes,
+        maxStructuredStringBytes: maxStringBytes,
+        maxCollectionItems: maxItems,
+      ),
+      resource: 'ACP test update',
+    );
+
+    test('copyString accepts exact UTF-8 and rejects one byte beyond', () {
+      final isolatedSurrogate = String.fromCharCode(0xd800);
+      expect(
+        guard(
+          maxBytes: 3,
+          maxStringBytes: 3,
+        ).copyString(isolatedSurrogate, field: 'title'),
+        same(isolatedSurrogate),
+      );
+
+      expect(
+        () => guard(
+          maxBytes: 3,
+          maxStringBytes: 3,
+        ).copyString('${isolatedSurrogate}a', field: 'title'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 3)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+        ),
+      );
+    });
+
+    test('copyString checks its per-string limit before the root limit', () {
+      expect(
+        () => guard(
+          maxBytes: 1,
+          maxStringBytes: 1,
+        ).copyString('ab', field: 'title'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.resource, 'resource', contains('title'))
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        ),
+      );
+    });
+
+    test('copyScalar accepts exact JSON scalar byte boundaries', () {
+      expect(guard(maxBytes: 4).copyScalar(null, field: 'value'), isNull);
+      expect(guard(maxBytes: 4).copyScalar(true, field: 'value'), isTrue);
+      expect(guard(maxBytes: 5).copyScalar(false, field: 'value'), isFalse);
+      expect(guard(maxBytes: 4).copyScalar(1234, field: 'value'), 1234);
+      expect(guard(maxBytes: 4).copyScalar(1.25, field: 'value'), 1.25);
+
+      expect(
+        () => guard(maxBytes: 3).copyScalar(true, field: 'value'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 3)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+        ),
+      );
+    });
+
+    test(
+      'copy methods reject invalid types without invoking payload methods',
+      () {
+        final canary = _RetainedValueCanary();
+        for (final invalid in <Object?>[
+          double.nan,
+          double.infinity,
+          double.negativeInfinity,
+          canary,
+          'string',
+        ]) {
+          expect(
+            () => guard().copyScalar(invalid, field: 'value'),
+            throwsA(
+              isA<FormatException>().having(
+                (error) => error.toString(),
+                'message',
+                isNot(contains('PAYLOAD_CANARY')),
+              ),
+            ),
+          );
+        }
+        expect(
+          () => guard().copyString(canary, field: 'title'),
+          throwsA(isA<FormatException>()),
+        );
+        expect(canary.toStringCalls, 0);
+        expect(canary.toJsonCalls, 0);
+      },
+    );
+
+    test('one guard shares root nodes and bytes across typed fields', () {
+      final shared = guard(maxNodes: 2, maxBytes: 3);
+      expect(shared.copyString('ab', field: 'first'), 'ab');
+      expect(
+        () => shared.copyScalar(true, field: 'second'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      final nodes = guard(maxNodes: 2);
+      expect(nodes.copyScalar(null, field: 'first'), isNull);
+      expect(nodes.copyScalar(null, field: 'second'), isNull);
+      expect(
+        () => nodes.copyScalar(null, field: 'third'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      expect(guard(maxNodes: 1).copyScalar(null, field: 'a'), isNull);
+      expect(guard(maxNodes: 1).copyScalar(null, field: 'b'), isNull);
+    });
+
+    test('failed typed call is atomic and a smaller value can continue', () {
+      final value = guard(maxNodes: 1, maxBytes: 2, maxStringBytes: 3);
+      expect(
+        () => value.copyString('abc', field: 'large'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(value.copyString('ok', field: 'small'), 'ok');
+    });
+
+    test('checkCollection enforces reported length before element access', () {
+      final exact = _ReportedLengthList(2);
+      expect(guard(maxItems: 2).checkCollection(exact, field: 'items'), 2);
+      expect(exact.indexReads, 0);
+
+      final beyond = _ReportedLengthList(3);
+      expect(
+        () => guard(maxItems: 2).checkCollection(beyond, field: 'items'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(beyond.indexReads, 0);
+      expect(
+        guard(maxItems: 2).checkCollection(<String, Object?>{}, field: 'map'),
+        0,
+      );
+      expect(
+        () => guard(maxItems: 1).checkCollection(<String, Object?>{
+          'a': null,
+          'b': null,
+        }, field: 'map'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        () => guard().checkCollection('not a collection', field: 'items'),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('container and entry calls model nested root node ownership', () {
+      final strings = guard(maxNodes: 3, maxBytes: 2);
+      strings.consumeContainerNode(field: 'strings');
+      expect(strings.copyString('a', field: 'strings[]'), 'a');
+      expect(strings.copyString('b', field: 'strings[]'), 'b');
+      expect(
+        () => strings.consumeEntry(field: 'extra'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      final models = guard(maxNodes: 5, maxBytes: 2);
+      models.consumeContainerNode(field: 'models');
+      for (final value in const <String>['a', 'b']) {
+        models.consumeEntry(field: 'models[]');
+        models.copyString(value, field: 'models[].name');
+      }
+      expect(
+        () => models.consumeContainerNode(field: 'nested'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    });
+  });
+
+  group('AcpStructuredUpdateGuard metadata', () {
+    AcpStructuredUpdateGuard guard({
+      int maxDepth = 100,
+      int maxNodes = 100,
+      int maxEntries = 100,
+      int maxMetadataBytes = 100,
+      int maxRootNodes = 100,
+      int maxRootBytes = 100,
+      int maxStringBytes = 100,
+      int maxItems = 100,
+    }) => AcpStructuredUpdateGuard(
+      budget: AcpInputBudget(
+        maxJsonDepth: maxDepth,
+        maxMetadataDepth: maxDepth,
+        maxMetadataNodes: maxNodes,
+        maxMetadataEntries: maxEntries,
+        maxMetadataBytes: maxMetadataBytes,
+        maxStructuredUpdateNodes: maxRootNodes,
+        maxStructuredUpdateBytes: maxRootBytes,
+        maxStructuredStringBytes: maxStringBytes,
+        maxCollectionItems: maxItems,
+      ),
+      resource: 'ACP test update',
+    );
+
+    test('returns a detached deeply immutable metadata copy', () {
+      final nestedList = <Object?>[
+        <String, Object?>{'value': 1},
+      ];
+      final source = <String, Object?>{'nested': nestedList};
+      final copy = guard().copyMetadata(source, field: 'metadata');
+
+      nestedList.add(2);
+      (nestedList.first as Map<String, Object?>)['value'] = 3;
+      source['later'] = true;
+
+      expect(copy, <String, Object?>{
+        'nested': <Object?>[
+          <String, Object?>{'value': 1},
+        ],
+      });
+      expect(() => copy['x'] = null, throwsUnsupportedError);
+      final copiedList = copy['nested'] as List<Object?>;
+      expect(() => copiedList.add(null), throwsUnsupportedError);
+      expect(
+        () => (copiedList.first as Map<String, Object?>)['value'] = 2,
+        throwsUnsupportedError,
+      );
+
+      final absent = guard(
+        maxNodes: 1,
+        maxMetadataBytes: 1,
+        maxRootNodes: 1,
+        maxRootBytes: 1,
+      );
+      final empty = absent.copyMetadata(null, field: 'metadata');
+      expect(empty, isEmpty);
+      expect(() => empty['x'] = null, throwsUnsupportedError);
+      expect(absent.copyString('a', field: 'title'), 'a');
+    });
+
+    test('metadata nodes accept exact local and root boundaries', () {
+      final input = <String, Object?>{'a': 'b'};
+      expect(
+        guard(
+          maxNodes: 2,
+          maxRootNodes: 2,
+        ).copyMetadata(input, field: 'metadata'),
+        input,
+      );
+      expect(
+        () => guard(maxNodes: 1).copyMetadata(input, field: 'metadata'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        ),
+      );
+      expect(
+        () => guard(maxRootNodes: 1).copyMetadata(input, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    });
+
+    test('metadata depth accepts exact boundary and rejects one beyond', () {
+      final input = <String, Object?>{
+        'a': <Object?>[null],
+      };
+      expect(guard(maxDepth: 3).copyMetadata(input, field: 'metadata'), input);
+      expect(
+        () => guard(maxDepth: 2).copyMetadata(input, field: 'metadata'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 2)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
+        ),
+      );
+    });
+
+    test('metadata map entries and list lengths share the tighter cap', () {
+      final map = <String, Object?>{'a': null, 'b': null};
+      expect(
+        guard(maxEntries: 2, maxItems: 2).copyMetadata(map, field: 'metadata'),
+        map,
+      );
+      expect(
+        () => guard(maxEntries: 1).copyMetadata(map, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        () => guard(maxEntries: 1).copyMetadata(<String, Object?>{
+          'list': <Object?>[null, null],
+        }, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    });
+
+    test('metadata bytes and individual strings have exact boundaries', () {
+      final input = <String, Object?>{'é': '€'};
+      expect(
+        guard(
+          maxMetadataBytes: 5,
+          maxRootBytes: 5,
+          maxStringBytes: 3,
+        ).copyMetadata(input, field: 'metadata'),
+        input,
+      );
+      expect(
+        () => guard(maxMetadataBytes: 4).copyMetadata(input, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        () => guard(maxRootBytes: 4).copyMetadata(input, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        () => guard(maxStringBytes: 2).copyMetadata(input, field: 'metadata'),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having((error) => error.limit, 'limit', 2)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
+        ),
+      );
+    });
+
+    test('typed fields and metadata share one root budget', () {
+      final exact = guard(maxRootNodes: 3, maxRootBytes: 6);
+      exact.copyString('a', field: 'title');
+      expect(
+        exact.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
+        <String, Object?>{'b': null},
+      );
+
+      final nodes = guard(maxRootNodes: 2);
+      nodes.copyString('a', field: 'title');
+      expect(
+        () =>
+            nodes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      final bytes = guard(maxRootBytes: 5);
+      bytes.copyString('a', field: 'title');
+      expect(
+        () =>
+            bytes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    });
+
+    test('rejects cycles but copies shared non-cyclic aliases twice', () {
+      final cycle = <String, Object?>{};
+      cycle['self'] = cycle;
+      expect(
+        () => guard().copyMetadata(cycle, field: 'metadata'),
+        throwsA(isA<FormatException>()),
+      );
+
+      final shared = <Object?>[1];
+      final copy = guard().copyMetadata(<String, Object?>{
+        'first': shared,
+        'second': shared,
+      }, field: 'metadata');
+      expect(copy['first'], <Object?>[1]);
+      expect(copy['second'], <Object?>[1]);
+      expect(identical(copy['first'], copy['second']), isFalse);
+    });
+
+    test('rejects non-JSON metadata without invoking payload methods', () {
+      final canary = _RetainedValueCanary();
+      for (final invalid in <Object?>[
+        <Object?, Object?>{1: null},
+        <String, Object?>{'value': double.nan},
+        <String, Object?>{'value': double.infinity},
+        <String, Object?>{'value': canary},
+        <Object?>[],
+      ]) {
+        final value = guard();
+        expect(
+          () => value.copyMetadata(invalid, field: 'metadata'),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
+          ),
+        );
+      }
+      expect(canary.toStringCalls, 0);
+      expect(canary.toJsonCalls, 0);
+    });
+
+    test(
+      'sanitizes malicious collection failures and bounds underreporting',
+      () {
+        for (final input in <Map<Object?, Object?>>[
+          _ThrowingMetadataMap(throwFromLength: true),
+          _ThrowingMetadataMap(throwFromLength: false),
+          <String, Object?>{'list': _ThrowingMetadataList()},
+        ]) {
+          expect(
+            () => guard().copyMetadata(input, field: 'metadata'),
+            throwsA(
+              isA<FormatException>().having(
+                (error) => error.toString(),
+                'message',
+                isNot(contains('PAYLOAD_CANARY')),
+              ),
+            ),
+          );
+        }
+
+        final underreported = _UnderreportedRetainedMap(
+          reportedLength: 0,
+          backingValues: <String, Object?>{
+            'a': null,
+            'b': null,
+            'c': null,
+            'd': null,
+          },
+        );
+        expect(
+          () => guard(
+            maxEntries: 2,
+          ).copyMetadata(underreported, field: 'metadata'),
+          throwsA(isA<AcpInputLimitExceeded>()),
+        );
+        expect(underreported.entriesVisited, 3);
+      },
+    );
+
+    test('reported collection length fails before nested traversal', () {
+      final huge = _ReportedLengthList(3);
+      expect(
+        () => guard(
+          maxEntries: 2,
+          maxItems: 2,
+        ).copyMetadata(<String, Object?>{'huge': huge}, field: 'metadata'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(huge.indexReads, 0);
+    });
+
+    test('metadata failure poisons the guard with a fixed state error', () {
+      final value = guard();
+      expect(
+        () => value.copyMetadata(<String, Object?>{
+          'bad': double.nan,
+        }, field: 'metadata'),
+        throwsA(isA<FormatException>()),
+      );
+      for (final call in <void Function()>[
+        () => value.copyString('PAYLOAD_CANARY', field: 'title'),
+        () => value.copyScalar(null, field: 'value'),
+        () => value.checkCollection(<Object?>[], field: 'items'),
+        () => value.consumeContainerNode(field: 'items'),
+        () => value.consumeEntry(field: 'entry'),
+        () => value.copyMetadata(null, field: 'metadata'),
+      ]) {
+        expect(
+          call,
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
+          ),
+        );
+      }
+    });
+
+    test('uses an explicit stack for 3000 nested containers', () {
+      const containerDepth = 3000;
+      Object? nested;
+      for (var index = 0; index < containerDepth; index += 1) {
+        nested = <Object?>[nested];
+      }
+      final input = <String, Object?>{'value': nested};
+
+      final copy = guard(
+        maxDepth: containerDepth + 2,
+        maxNodes: containerDepth + 2,
+        maxEntries: 1,
+        maxRootNodes: containerDepth + 2,
+        maxItems: 1,
+      ).copyMetadata(input, field: 'metadata');
+      Object? cursor = copy['value'];
+      for (var index = 0; index < containerDepth; index += 1) {
+        expect(cursor, isA<List<Object?>>());
+        final list = cursor! as List<Object?>;
+        expect(list, hasLength(1));
+        cursor = list.first;
+      }
+      expect(cursor, isNull);
+    });
+  });
 }
 
 final class _RetainedValueCanary {
@@ -1624,4 +2125,52 @@ final class _UnderreportedRetainedMap extends MapBase<String, Object?> {
 
   @override
   Object? remove(Object? key) => backingValues.remove(key);
+}
+
+final class _ThrowingMetadataMap extends MapBase<Object?, Object?> {
+  _ThrowingMetadataMap({required this.throwFromLength});
+
+  final bool throwFromLength;
+
+  @override
+  int get length {
+    if (throwFromLength) throw StateError('PAYLOAD_CANARY length');
+    return 1;
+  }
+
+  @override
+  Iterable<MapEntry<Object?, Object?>> get entries sync* {
+    throw StateError('PAYLOAD_CANARY iterator');
+  }
+
+  @override
+  Iterable<Object?> get keys => const <Object?>[];
+
+  @override
+  Object? operator [](Object? key) => null;
+
+  @override
+  void operator []=(Object? key, Object? value) =>
+      throw UnsupportedError('read only');
+
+  @override
+  void clear() => throw UnsupportedError('read only');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('read only');
+}
+
+final class _ThrowingMetadataList extends ListBase<Object?> {
+  @override
+  int get length => 1;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  Object? operator [](int index) => throw StateError('PAYLOAD_CANARY element');
+
+  @override
+  void operator []=(int index, Object? value) =>
+      throw UnsupportedError('read only');
 }

@@ -556,6 +556,534 @@ class AcpInputBudget {
   }
 }
 
+/// Shares one host-owned node and byte budget across a structured ACP update.
+///
+/// Callers count each List/Map/model container with [consumeContainerNode] or
+/// [consumeEntry]. A `List<String>` copies each item directly with
+/// [copyString], while a `List<Model>` consumes one entry before copying that
+/// model's fields. Nested Lists and Maps each consume their own container node.
+final class AcpStructuredUpdateGuard {
+  AcpStructuredUpdateGuard({
+    required AcpInputBudget budget,
+    required String resource,
+  }) : _budget = _validatedAcpInputBudget(budget),
+       _resource = resource;
+
+  final AcpInputBudget _budget;
+  final String _resource;
+
+  var _nodes = 0;
+  var _bytes = 0;
+  var _metadataFailed = false;
+
+  String copyString(Object? value, {required String field}) {
+    _ensureUsable();
+    if (value is! String) {
+      throw FormatException('Invalid $_resource $field: expected a string.');
+    }
+    final byteCount = _boundedAcpUtf8Length(
+      value,
+      limit: _budget.maxStructuredStringBytes,
+      onExceeded: (observedAtLeast) => _throwLimit(
+        field: field,
+        kind: 'string bytes',
+        limit: _budget.maxStructuredStringBytes,
+        observedAtLeast: observedAtLeast,
+      ),
+    );
+    _consume(nodes: 1, bytes: byteCount, field: field);
+    return value;
+  }
+
+  Object? copyScalar(Object? value, {required String field}) {
+    _ensureUsable();
+    final int byteCount;
+    if (value is int) {
+      byteCount = value.toString().length;
+    } else if (value is double) {
+      if (!value.isFinite) {
+        throw FormatException(
+          'Invalid $_resource $field: expected a finite JSON scalar.',
+        );
+      }
+      byteCount = value.toString().length;
+    } else if (value is bool) {
+      byteCount = value ? 4 : 5;
+    } else if (value == null) {
+      byteCount = 4;
+    } else {
+      throw FormatException(
+        'Invalid $_resource $field: expected a JSON scalar.',
+      );
+    }
+    _consume(nodes: 1, bytes: byteCount, field: field);
+    return value;
+  }
+
+  int checkCollection(Object? value, {required String field}) {
+    _ensureUsable();
+    if (value is! List && value is! Map) {
+      throw FormatException(
+        'Invalid $_resource $field: expected a collection.',
+      );
+    }
+    final int length;
+    try {
+      length = value is List ? value.length : (value as Map).length;
+    } catch (_) {
+      throw FormatException(
+        'Invalid $_resource $field: collection length is unavailable.',
+      );
+    }
+    if (length > _budget.maxCollectionItems) {
+      _throwLimit(
+        field: field,
+        kind: 'collection items',
+        limit: _budget.maxCollectionItems,
+        observedAtLeast: length,
+      );
+    }
+    return length;
+  }
+
+  Map<String, Object?> copyMetadata(Object? value, {required String field}) {
+    _ensureUsable();
+    if (value == null) return Map<String, Object?>.unmodifiable(const {});
+
+    try {
+      if (value is! Map) {
+        throw FormatException(
+          'Invalid $_resource $field: expected a JSON object.',
+        );
+      }
+      return _copyMetadataMap(value, field: field);
+    } catch (_) {
+      _metadataFailed = true;
+      rethrow;
+    }
+  }
+
+  Map<String, Object?> _copyMetadataMap(Map source, {required String field}) {
+    final maxDepth = math.min(_budget.maxJsonDepth, _budget.maxMetadataDepth);
+    final entryLimit = math.min(
+      _budget.maxCollectionItems,
+      _budget.maxMetadataEntries,
+    );
+    var metadataNodes = 0;
+    var metadataBytes = 0;
+    var rootNodes = _nodes;
+    var rootBytes = _bytes;
+    Object? result;
+    final activeContainers = HashSet<Object>.identity();
+    final pending = <_StructuredMetadataFrame>[
+      _StructuredMetadataValueFrame(
+        source: source,
+        depth: 1,
+        assign: (copy) => result = copy,
+      ),
+    ];
+
+    void checkDepth(int depth) {
+      if (depth > maxDepth) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata depth',
+          limit: maxDepth,
+          observedAtLeast: depth,
+        );
+      }
+    }
+
+    void recordNode(int depth) {
+      checkDepth(depth);
+      if (metadataNodes >= _budget.maxMetadataNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata nodes',
+          limit: _budget.maxMetadataNodes,
+          observedAtLeast: _budget.maxMetadataNodes + 1,
+        );
+      }
+      if (rootNodes >= _budget.maxStructuredUpdateNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'nodes',
+          limit: _budget.maxStructuredUpdateNodes,
+          observedAtLeast: _budget.maxStructuredUpdateNodes + 1,
+        );
+      }
+      metadataNodes += 1;
+      rootNodes += 1;
+    }
+
+    void precheckChildren(int count) {
+      if (count > _budget.maxMetadataNodes - metadataNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata nodes',
+          limit: _budget.maxMetadataNodes,
+          observedAtLeast: _safeObservedAtLeast(
+            metadataNodes,
+            count,
+            _budget.maxMetadataNodes,
+          ),
+        );
+      }
+      if (count > _budget.maxStructuredUpdateNodes - rootNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'nodes',
+          limit: _budget.maxStructuredUpdateNodes,
+          observedAtLeast: _safeObservedAtLeast(
+            rootNodes,
+            count,
+            _budget.maxStructuredUpdateNodes,
+          ),
+        );
+      }
+    }
+
+    void recordBytes(int count) {
+      if (count > _budget.maxMetadataBytes - metadataBytes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata bytes',
+          limit: _budget.maxMetadataBytes,
+          observedAtLeast: _safeObservedAtLeast(
+            metadataBytes,
+            count,
+            _budget.maxMetadataBytes,
+          ),
+        );
+      }
+      if (count > _budget.maxStructuredUpdateBytes - rootBytes) {
+        _throwLimit(
+          field: field,
+          kind: 'bytes',
+          limit: _budget.maxStructuredUpdateBytes,
+          observedAtLeast: _safeObservedAtLeast(
+            rootBytes,
+            count,
+            _budget.maxStructuredUpdateBytes,
+          ),
+        );
+      }
+      metadataBytes += count;
+      rootBytes += count;
+    }
+
+    void recordString(String string) {
+      final count = _boundedAcpUtf8Length(
+        string,
+        limit: _budget.maxStructuredStringBytes,
+        onExceeded: (observedAtLeast) => _throwLimit(
+          field: field,
+          kind: 'string bytes',
+          limit: _budget.maxStructuredStringBytes,
+          observedAtLeast: observedAtLeast,
+        ),
+      );
+      recordBytes(count);
+    }
+
+    int readLength(Object collection) {
+      try {
+        if (collection is List) return collection.length;
+        return (collection as Map).length;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+    }
+
+    List<Object?> snapshotList(List list) {
+      final Iterator<Object?> iterator;
+      try {
+        iterator = list.iterator;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+      final values = <Object?>[];
+      while (true) {
+        final bool hasNext;
+        try {
+          hasNext = iterator.moveNext();
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        if (!hasNext) return values;
+        if (values.length >= entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: entryLimit + 1,
+          );
+        }
+        try {
+          values.add(iterator.current);
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+      }
+    }
+
+    List<MapEntry<String, Object?>> snapshotMap(Map map) {
+      final Iterator<MapEntry<Object?, Object?>> iterator;
+      try {
+        iterator = map.entries.cast<MapEntry<Object?, Object?>>().iterator;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+      final entries = <MapEntry<String, Object?>>[];
+      while (true) {
+        final bool hasNext;
+        try {
+          hasNext = iterator.moveNext();
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        if (!hasNext) return entries;
+        if (entries.length >= entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: entryLimit + 1,
+          );
+        }
+        final MapEntry<Object?, Object?> entry;
+        try {
+          entry = iterator.current;
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        final key = entry.key;
+        if (key is! String) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata key must be a string.',
+          );
+        }
+        recordString(key);
+        entries.add(MapEntry<String, Object?>(key, entry.value));
+      }
+    }
+
+    while (pending.isNotEmpty) {
+      final frame = pending.removeLast();
+      if (frame is _StructuredMetadataListExitFrame) {
+        activeContainers.remove(frame.source);
+        frame.assign(List<Object?>.unmodifiable(frame.copy));
+        continue;
+      }
+      if (frame is _StructuredMetadataMapExitFrame) {
+        activeContainers.remove(frame.source);
+        frame.assign(Map<String, Object?>.unmodifiable(frame.copy));
+        continue;
+      }
+
+      final valueFrame = frame as _StructuredMetadataValueFrame;
+      final current = valueFrame.source;
+      recordNode(valueFrame.depth);
+
+      if (current is List) {
+        if (activeContainers.contains(current)) {
+          throw FormatException(
+            'Invalid $_resource $field: cyclic metadata container.',
+          );
+        }
+        final reportedLength = readLength(current);
+        if (reportedLength > entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: reportedLength,
+          );
+        }
+        precheckChildren(reportedLength);
+        final values = snapshotList(current);
+        precheckChildren(values.length);
+        final copy = List<Object?>.filled(values.length, null);
+        activeContainers.add(current);
+        pending.add(
+          _StructuredMetadataListExitFrame(
+            source: current,
+            copy: copy,
+            assign: valueFrame.assign,
+          ),
+        );
+        for (var index = values.length - 1; index >= 0; index -= 1) {
+          final targetIndex = index;
+          pending.add(
+            _StructuredMetadataValueFrame(
+              source: values[index],
+              depth: valueFrame.depth + 1,
+              assign: (child) => copy[targetIndex] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is Map) {
+        if (activeContainers.contains(current)) {
+          throw FormatException(
+            'Invalid $_resource $field: cyclic metadata container.',
+          );
+        }
+        final reportedLength = readLength(current);
+        if (reportedLength > entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: reportedLength,
+          );
+        }
+        precheckChildren(reportedLength);
+        final entries = snapshotMap(current);
+        precheckChildren(entries.length);
+        final copy = <String, Object?>{};
+        activeContainers.add(current);
+        pending.add(
+          _StructuredMetadataMapExitFrame(
+            source: current,
+            copy: copy,
+            assign: valueFrame.assign,
+          ),
+        );
+        for (var index = entries.length - 1; index >= 0; index -= 1) {
+          final entry = entries[index];
+          pending.add(
+            _StructuredMetadataValueFrame(
+              source: entry.value,
+              depth: valueFrame.depth + 1,
+              assign: (child) => copy[entry.key] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is String) {
+        recordString(current);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current is int) {
+        recordBytes(current.toString().length);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current is double) {
+        if (!current.isFinite) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata number must be finite.',
+          );
+        }
+        recordBytes(current.toString().length);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current is bool) {
+        recordBytes(current ? 4 : 5);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current == null) {
+        recordBytes(4);
+        valueFrame.assign(null);
+        continue;
+      }
+      throw FormatException(
+        'Invalid $_resource $field: metadata contains a non-JSON value.',
+      );
+    }
+
+    _nodes = rootNodes;
+    _bytes = rootBytes;
+    return result! as Map<String, Object?>;
+  }
+
+  void consumeContainerNode({required String field}) {
+    _ensureUsable();
+    _consume(nodes: 1, bytes: 0, field: field);
+  }
+
+  void consumeEntry({required String field}) {
+    _ensureUsable();
+    _consume(nodes: 1, bytes: 0, field: field);
+  }
+
+  void _ensureUsable() {
+    if (_metadataFailed) {
+      throw StateError(
+        'AcpStructuredUpdateGuard is unusable after metadata failure.',
+      );
+    }
+  }
+
+  void _consume({
+    required int nodes,
+    required int bytes,
+    required String field,
+  }) {
+    if (nodes > _budget.maxStructuredUpdateNodes - _nodes) {
+      _throwLimit(
+        field: field,
+        kind: 'nodes',
+        limit: _budget.maxStructuredUpdateNodes,
+        observedAtLeast: _safeObservedAtLeast(
+          _nodes,
+          nodes,
+          _budget.maxStructuredUpdateNodes,
+        ),
+      );
+    }
+    if (bytes > _budget.maxStructuredUpdateBytes - _bytes) {
+      _throwLimit(
+        field: field,
+        kind: 'bytes',
+        limit: _budget.maxStructuredUpdateBytes,
+        observedAtLeast: _safeObservedAtLeast(
+          _bytes,
+          bytes,
+          _budget.maxStructuredUpdateBytes,
+        ),
+      );
+    }
+    _nodes += nodes;
+    _bytes += bytes;
+  }
+
+  Never _throwLimit({
+    required String field,
+    required String kind,
+    required int limit,
+    required int observedAtLeast,
+  }) {
+    throw AcpInputLimitExceeded(
+      resource: '$_resource $field $kind',
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+  }
+}
+
 /// Deterministically estimates retained JSON-compatible ACP state.
 final class AcpRetainedSizeEstimator {
   AcpRetainedSizeEstimator({required AcpInputBudget budget})
@@ -1075,33 +1603,16 @@ class AcpJsonInputGuard {
   }
 
   void _recordStringBytes(String value) {
-    var index = 0;
-    while (index < value.length) {
-      final codeUnit = value.codeUnitAt(index);
-      if (codeUnit <= 0x7f) {
-        _recordBytes(1);
-      } else if (codeUnit <= 0x7ff) {
-        _recordBytes(2);
-      } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-        final nextIndex = index + 1;
-        if (nextIndex < value.length) {
-          final next = value.codeUnitAt(nextIndex);
-          if (next >= 0xdc00 && next <= 0xdfff) {
-            _recordBytes(4);
-            index = nextIndex;
-          } else {
-            _recordBytes(3);
-          }
-        } else {
-          _recordBytes(3);
-        }
-      } else {
-        // BMP values and unpaired low surrogates encode as three bytes. Dart's
-        // UTF-8 encoder replaces unpaired surrogates with U+FFFD.
-        _recordBytes(3);
-      }
-      index += 1;
-    }
+    final remaining = maxBytes - _bytes;
+    final count = _boundedAcpUtf8Length(
+      value,
+      limit: remaining < 0 ? 0 : remaining,
+      onExceeded: (observedAtLeast) => _throwLimit(
+        maxBytes,
+        _safeObservedAtLeast(_bytes, observedAtLeast, maxBytes),
+      ),
+    );
+    _recordBytes(count);
   }
 
   void _precheckChildren(int count) {
@@ -1145,6 +1656,11 @@ void _requirePositiveSafeBudgetInteger(int value, String name) {
   _requireSafeBudgetInteger(value, name);
 }
 
+AcpInputBudget _validatedAcpInputBudget(AcpInputBudget budget) {
+  budget.validate();
+  return budget;
+}
+
 bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
 
 bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
@@ -1154,6 +1670,38 @@ int _safeObservedAtLeast(int current, int increment, int limit) {
     return current + increment;
   }
   return limit + 1;
+}
+
+int _boundedAcpUtf8Length(
+  String value, {
+  required int limit,
+  required Never Function(int observedAtLeast) onExceeded,
+}) {
+  var bytes = 0;
+  var index = 0;
+  while (index < value.length) {
+    final codeUnit = value.codeUnitAt(index);
+    final int increment;
+    if (codeUnit <= 0x7f) {
+      increment = 1;
+    } else if (codeUnit <= 0x7ff) {
+      increment = 2;
+    } else if (_isHighSurrogate(codeUnit) &&
+        index + 1 < value.length &&
+        _isLowSurrogate(value.codeUnitAt(index + 1))) {
+      increment = 4;
+      index += 1;
+    } else {
+      // Dart's UTF-8 encoder replaces either isolated surrogate with U+FFFD.
+      increment = 3;
+    }
+    if (increment > limit - bytes) {
+      onExceeded(_safeObservedAtLeast(bytes, increment, limit));
+    }
+    bytes += increment;
+    index += 1;
+  }
+  return bytes;
 }
 
 void _requireAtMost(int observed, int limit, String resource) {
@@ -1175,6 +1723,46 @@ class _PendingJsonValue {
 
   final Object? source;
   final int depth;
+  final void Function(Object? value) assign;
+}
+
+sealed class _StructuredMetadataFrame {
+  const _StructuredMetadataFrame();
+}
+
+final class _StructuredMetadataValueFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataValueFrame({
+    required this.source,
+    required this.depth,
+    required this.assign,
+  });
+
+  final Object? source;
+  final int depth;
+  final void Function(Object? value) assign;
+}
+
+final class _StructuredMetadataListExitFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataListExitFrame({
+    required this.source,
+    required this.copy,
+    required this.assign,
+  });
+
+  final List source;
+  final List<Object?> copy;
+  final void Function(Object? value) assign;
+}
+
+final class _StructuredMetadataMapExitFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataMapExitFrame({
+    required this.source,
+    required this.copy,
+    required this.assign,
+  });
+
+  final Map source;
+  final Map<String, Object?> copy;
   final void Function(Object? value) assign;
 }
 
