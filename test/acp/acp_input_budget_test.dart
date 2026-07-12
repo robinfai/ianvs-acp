@@ -1858,8 +1858,9 @@ void main() {
         ).copyMetadata(input, field: 'metadata'),
         input,
       );
+      final localNodes = guard(maxNodes: 1, maxRootNodes: 1);
       expect(
-        () => guard(maxNodes: 1).copyMetadata(input, field: 'metadata'),
+        () => localNodes.copyMetadata(input, field: 'metadata'),
         throwsA(
           isA<AcpInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 1)
@@ -1867,8 +1868,18 @@ void main() {
         ),
       );
       expect(
-        () => guard(maxRootNodes: 1).copyMetadata(input, field: 'metadata'),
+        localNodes.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
+        isEmpty,
+      );
+
+      final rootNodes = guard(maxRootNodes: 1);
+      expect(
+        () => rootNodes.copyMetadata(input, field: 'metadata'),
         throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        rootNodes.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
+        isEmpty,
       );
     });
 
@@ -1915,13 +1926,24 @@ void main() {
         ).copyMetadata(input, field: 'metadata'),
         input,
       );
+      final localBytes = guard(maxMetadataBytes: 4, maxRootBytes: 4);
       expect(
-        () => guard(maxMetadataBytes: 4).copyMetadata(input, field: 'metadata'),
+        () => localBytes.copyMetadata(input, field: 'metadata'),
         throwsA(isA<AcpInputLimitExceeded>()),
       );
       expect(
-        () => guard(maxRootBytes: 4).copyMetadata(input, field: 'metadata'),
+        localBytes.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
+      );
+
+      final rootBytes = guard(maxRootBytes: 4);
+      expect(
+        () => rootBytes.copyMetadata(input, field: 'metadata'),
         throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(
+        rootBytes.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
       );
       expect(
         () => guard(maxStringBytes: 2).copyMetadata(input, field: 'metadata'),
@@ -1987,22 +2009,36 @@ void main() {
             nodes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
         throwsA(isA<AcpInputLimitExceeded>()),
       );
+      expect(nodes.copyScalar(null, field: 'afterFailure'), isNull);
 
-      final bytes = guard(maxRootBytes: 5);
+      final bytes = guard(maxRootBytes: 4);
       bytes.copyString('a', field: 'title');
       expect(
         () =>
             bytes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
         throwsA(isA<AcpInputLimitExceeded>()),
       );
+      expect(bytes.copyString('bbb', field: 'afterFailure'), 'bbb');
     });
 
     test('rejects cycles but copies shared non-cyclic aliases twice', () {
       final cycle = <String, Object?>{};
       cycle['self'] = cycle;
+      final cycleGuard = guard(
+        maxNodes: 2,
+        maxMetadataBytes: 4,
+        maxRootNodes: 2,
+        maxRootBytes: 4,
+      );
+      Map<String, Object?>? partial;
       expect(
-        () => guard().copyMetadata(cycle, field: 'metadata'),
+        () => partial = cycleGuard.copyMetadata(cycle, field: 'metadata'),
         throwsA(isA<FormatException>()),
+      );
+      expect(partial, isNull);
+      expect(
+        cycleGuard.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
       );
 
       final shared = <Object?>[1];
@@ -2035,6 +2071,10 @@ void main() {
             ),
           ),
         );
+        expect(
+          value.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
+          isEmpty,
+        );
       }
       expect(canary.toStringCalls, 0);
       expect(canary.toJsonCalls, 0);
@@ -2048,8 +2088,9 @@ void main() {
           _ThrowingMetadataMap(throwFromLength: false),
           <String, Object?>{'list': _ThrowingMetadataList()},
         ]) {
+          final value = guard();
           expect(
-            () => guard().copyMetadata(input, field: 'metadata'),
+            () => value.copyMetadata(input, field: 'metadata'),
             throwsA(
               isA<FormatException>().having(
                 (error) => error.toString(),
@@ -2058,6 +2099,7 @@ void main() {
               ),
             ),
           );
+          expect(value.copyString('a', field: 'afterFailure'), 'a');
         }
 
         final underreported = _UnderreportedRetainedMap(
@@ -2091,49 +2133,62 @@ void main() {
       expect(huge.indexReads, 0);
     });
 
-    test('metadata rejects negative lengths without iteration and poisons', () {
-      final rootMap = _NegativeLengthMetadataMap();
-      final rootGuard = guard();
-      expect(
-        () => rootGuard.copyMetadata(rootMap, field: 'metadata'),
-        throwsA(
-          isA<FormatException>().having(
-            (error) => error.toString(),
-            'message',
-            isNot(contains('PAYLOAD_CANARY')),
+    test(
+      'metadata rejects negative lengths transactionally without iteration',
+      () {
+        final rootMap = _NegativeLengthMetadataMap();
+        final rootGuard = guard(maxRootNodes: 1);
+        expect(
+          () => rootGuard.copyMetadata(rootMap, field: 'metadata'),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
           ),
-        ),
-      );
-      expect(rootMap.iterationReads, 0);
-      expect(
-        () => rootGuard.copyScalar(null, field: 'afterFailure'),
-        throwsA(isA<StateError>()),
-      );
+        );
+        expect(rootMap.iterationReads, 0);
+        expect(
+          rootGuard.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
+          isEmpty,
+        );
 
-      final nestedList = _NegativeLengthMetadataList();
-      final nestedGuard = guard();
-      expect(
-        () => nestedGuard.copyMetadata(<String, Object?>{
-          'list': nestedList,
-        }, field: 'metadata'),
-        throwsA(
-          isA<FormatException>().having(
-            (error) => error.toString(),
-            'message',
-            isNot(contains('PAYLOAD_CANARY')),
+        final nestedList = _NegativeLengthMetadataList();
+        final nestedGuard = guard(
+          maxNodes: 2,
+          maxMetadataBytes: 4,
+          maxRootNodes: 2,
+          maxRootBytes: 4,
+        );
+        expect(
+          () => nestedGuard.copyMetadata(<String, Object?>{
+            'list': nestedList,
+          }, field: 'metadata'),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
           ),
-        ),
-      );
-      expect(nestedList.iterationReads, 0);
-      expect(
-        () => nestedGuard.copyScalar(null, field: 'afterFailure'),
-        throwsA(isA<StateError>()),
-      );
-    });
+        );
+        expect(nestedList.iterationReads, 0);
+        expect(
+          nestedGuard.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+          <String, Object?>{'': null},
+        );
+      },
+    );
 
     test('underreported list prechecks actual nodes before current', () {
       final list = _UnderreportedCurrentTrapList();
-      final value = guard(maxNodes: 2, maxRootNodes: 2);
+      final value = guard(
+        maxNodes: 2,
+        maxMetadataBytes: 4,
+        maxRootNodes: 2,
+        maxRootBytes: 4,
+      );
       Object? failure;
 
       try {
@@ -2160,8 +2215,8 @@ void main() {
       );
       expect(list.currentReads, 0);
       expect(
-        () => value.copyScalar(null, field: 'afterFailure'),
-        throwsA(isA<StateError>()),
+        value.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
       );
     });
 
@@ -2194,38 +2249,27 @@ void main() {
       );
       expect(source.currentOrKeyReads, 0);
       expect(
-        () => value.copyScalar(null, field: 'afterFailure'),
-        throwsA(isA<StateError>()),
+        value.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
+        isEmpty,
       );
     });
 
-    test('metadata failure poisons the guard with a fixed state error', () {
-      final value = guard();
+    test('metadata failure rolls back before every subsequent API', () {
+      final value = guard(maxRootNodes: 4, maxRootBytes: 5);
+      Map<String, Object?>? partial;
       expect(
-        () => value.copyMetadata(<String, Object?>{
+        () => partial = value.copyMetadata(<String, Object?>{
           'bad': double.nan,
         }, field: 'metadata'),
         throwsA(isA<FormatException>()),
       );
-      for (final call in <void Function()>[
-        () => value.copyString('PAYLOAD_CANARY', field: 'title'),
-        () => value.copyScalar(null, field: 'value'),
-        () => value.checkCollection(<Object?>[], field: 'items'),
-        () => value.consumeContainerNode(field: 'items'),
-        () => value.consumeEntry(field: 'entry'),
-        () => value.copyMetadata(null, field: 'metadata'),
-      ]) {
-        expect(
-          call,
-          throwsA(
-            isA<StateError>().having(
-              (error) => error.toString(),
-              'message',
-              isNot(contains('PAYLOAD_CANARY')),
-            ),
-          ),
-        );
-      }
+      expect(partial, isNull);
+      expect(value.copyString('a', field: 'title'), 'a');
+      expect(value.checkCollection(<Object?>[], field: 'items'), 0);
+      value.consumeContainerNode(field: 'container');
+      value.consumeEntry(field: 'entry');
+      expect(value.copyScalar(null, field: 'value'), isNull);
+      expect(value.copyMetadata(null, field: 'metadata'), isEmpty);
     });
 
     test('uses an explicit stack for 3000 nested containers', () {

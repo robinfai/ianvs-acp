@@ -564,6 +564,7 @@ class AcpInputBudget {
 /// model's fields. Nested Lists and Maps each consume their own container node.
 /// The constructor's `resource` and every method's `field` must be host-owned
 /// constants and must never be derived from an untrusted ACP payload.
+/// A failed [copyMetadata] call leaves this guard's budgets unchanged.
 final class AcpStructuredUpdateGuard {
   AcpStructuredUpdateGuard({
     required AcpInputBudget budget,
@@ -576,10 +577,8 @@ final class AcpStructuredUpdateGuard {
 
   var _nodes = 0;
   var _bytes = 0;
-  var _metadataFailed = false;
 
   String copyString(Object? value, {required String field}) {
-    _ensureUsable();
     if (value is! String) {
       throw FormatException('Invalid $_resource $field: expected a string.');
     }
@@ -598,7 +597,6 @@ final class AcpStructuredUpdateGuard {
   }
 
   Object? copyScalar(Object? value, {required String field}) {
-    _ensureUsable();
     final int byteCount;
     if (value is int) {
       byteCount = value.toString().length;
@@ -623,7 +621,6 @@ final class AcpStructuredUpdateGuard {
   }
 
   int checkCollection(Object? value, {required String field}) {
-    _ensureUsable();
     if (value is! List && value is! Map) {
       throw FormatException(
         'Invalid $_resource $field: expected a collection.',
@@ -654,20 +651,13 @@ final class AcpStructuredUpdateGuard {
   }
 
   Map<String, Object?> copyMetadata(Object? value, {required String field}) {
-    _ensureUsable();
     if (value == null) return Map<String, Object?>.unmodifiable(const {});
-
-    try {
-      if (value is! Map) {
-        throw FormatException(
-          'Invalid $_resource $field: expected a JSON object.',
-        );
-      }
-      return _copyMetadataMap(value, field: field);
-    } catch (_) {
-      _metadataFailed = true;
-      rethrow;
+    if (value is! Map) {
+      throw FormatException(
+        'Invalid $_resource $field: expected a JSON object.',
+      );
     }
+    return _copyMetadataMap(value, field: field);
   }
 
   Map<String, Object?> _copyMetadataMap(Map source, {required String field}) {
@@ -1037,21 +1027,11 @@ final class AcpStructuredUpdateGuard {
   }
 
   void consumeContainerNode({required String field}) {
-    _ensureUsable();
     _consume(nodes: 1, bytes: 0, field: field);
   }
 
   void consumeEntry({required String field}) {
-    _ensureUsable();
     _consume(nodes: 1, bytes: 0, field: field);
-  }
-
-  void _ensureUsable() {
-    if (_metadataFailed) {
-      throw StateError(
-        'AcpStructuredUpdateGuard is unusable after metadata failure.',
-      );
-    }
   }
 
   void _consume({
