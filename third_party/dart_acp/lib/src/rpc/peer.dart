@@ -30,7 +30,8 @@ class JsonRpcPeer {
 
   /// Underlying JSON-RPC peer.
   final rpc.Peer _peer;
-  final StreamController<Json> _sessionUpdates = StreamController.broadcast();
+  final StreamController<Json> _sessionUpdates =
+      StreamController<Json>.broadcast(sync: true);
 
   /// Close the peer and clean up resources.
   Future<void> close() async {

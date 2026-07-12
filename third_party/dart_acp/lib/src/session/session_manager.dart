@@ -7,6 +7,7 @@ import '../capabilities.dart';
 import '../config.dart';
 import '../extensions.dart';
 import '../input_budget.dart';
+import '../models/content_types.dart';
 import '../models/session_types.dart';
 import '../models/terminal_events.dart';
 import '../models/tool_types.dart';
@@ -287,79 +288,30 @@ String? _firstNonEmptyString(Map<String, dynamic>? map, List<String> keys) {
   return null;
 }
 
-String _toolCallIdFromUpdate(Map<String, dynamic> update) {
-  return _firstNonEmptyString(update, const [
-        'toolCallId',
-        'tool_call_id',
-        'id',
-        'callId',
-        'call_id',
-      ]) ??
-      '';
-}
-
 String? _sessionIdFromMap(Map<String, dynamic>? map) {
   return _firstNonEmptyString(map, const ['sessionId', 'session_id']);
 }
 
-String _sessionIdFromResult(
-  Map<String, dynamic> response, {
-  required String method,
-}) {
-  final sessionId =
-      _sessionIdFromMap(response) ??
-      _firstNonEmptyString(response, const ['id']);
-  if (sessionId == null) {
+String _requireSessionResultId(SessionResult result, {required String method}) {
+  final sessionId = result.sessionId.trim();
+  if (sessionId.isEmpty) {
     throw FormatException('$method response did not include a session id.');
   }
   return sessionId;
 }
 
-({String? currentModeId, List<({String id, String name})> availableModes})?
-_sessionModeInfoFromRaw(Object? raw) {
-  final map = _jsonMapFromRaw(raw);
-  if (map == null) return null;
-  final currentModeId = _modeIdFromRaw(map);
-  final availableModes = _availableModesFromRaw(
-    map['availableModes'] ?? map['available_modes'],
-  );
-  if (currentModeId == null && availableModes.isEmpty) return null;
-  return (currentModeId: currentModeId, availableModes: availableModes);
-}
-
-String? _modeIdFromRaw(Map<String, dynamic>? map) {
-  return _firstNonEmptyString(map, const [
-    'currentModeId',
-    'current_mode_id',
-    'modeId',
-    'mode_id',
-  ]);
-}
-
-List<({String id, String name})> _availableModesFromRaw(Object? raw) {
-  if (raw is! List) return const <({String id, String name})>[];
-  final modes = <({String id, String name})>[];
-  for (final item in raw) {
-    final map = _jsonMapFromRaw(item);
-    if (map == null) continue;
-    final id = _firstNonEmptyString(map, const [
-      'id',
-      'modeId',
-      'mode_id',
-      'value',
-    ]);
-    if (id == null) continue;
-    final name =
-        _firstNonEmptyString(map, const [
-          'name',
-          'label',
-          'displayName',
-          'display_name',
-        ]) ??
-        id;
-    modes.add((id: id, name: name));
+SessionResult _withExpectedSessionId(SessionResult result, String sessionId) {
+  final received = result.sessionId.trim();
+  if (received.isNotEmpty && received != sessionId) {
+    throw const FormatException('ACP session response id did not match.');
   }
-  return modes;
+  return SessionResult(
+    sessionId: sessionId,
+    configOptions: result.configOptions,
+    meta: result.meta,
+    modes: result.modes,
+    omissions: result.omissions,
+  );
 }
 
 const Set<String> _allowPermissionWords = <String>{
@@ -482,47 +434,6 @@ class InitializeResult {
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
 
-List<Json> _contentBlocksFromRaw(Object? content) {
-  if (content is List) {
-    return content
-        .map(_contentBlockFromRaw)
-        .whereType<Json>()
-        .toList(growable: false);
-  }
-  final block = _contentBlockFromRaw(content);
-  return block == null ? const <Json>[] : <Json>[block];
-}
-
-Json? _contentBlockFromRaw(Object? raw) {
-  if (raw is String) {
-    return <String, dynamic>{'type': 'text', 'text': raw};
-  }
-  if (raw is! Map) return null;
-  final block = raw.map((key, value) => MapEntry(key.toString(), value));
-  if (block['type'] == null && block['text'] is String) {
-    block['type'] = 'text';
-  }
-  return block;
-}
-
-List<Json> _availableCommandsFromRaw(Object? raw) {
-  if (raw is! List) return const <Json>[];
-  return raw
-      .map(_availableCommandFromRaw)
-      .whereType<Json>()
-      .toList(growable: false);
-}
-
-Json? _availableCommandFromRaw(Object? raw) {
-  if (raw is String) {
-    final name = raw.trim();
-    if (name.isEmpty) return null;
-    return <String, dynamic>{'name': name};
-  }
-  if (raw is! Map) return null;
-  return raw.map((key, value) => MapEntry(key.toString(), value));
-}
-
 /// Opaque identity for one session input-budget phase.
 final class AcpSessionInputBudgetOwner {
   const AcpSessionInputBudgetOwner._(this.sessionId, this.generation);
@@ -546,6 +457,17 @@ final class _SessionInputBudgetPhase {
   int mediaBytes = 0;
   int items = 0;
   int retainedBytes = 0;
+  bool invalidated = false;
+}
+
+final class _RequestInputBudgetPhase {
+  _RequestInputBudgetPhase({
+    required this.structuredGuard,
+    this.sourceSessionId,
+  });
+
+  final AcpStructuredUpdateGuard structuredGuard;
+  final String? sourceSessionId;
   bool invalidated = false;
 }
 
@@ -602,6 +524,8 @@ class SessionManager {
   final Map<String, _ReplayBuffer> _replayBuffers = {};
   final Map<String, _SessionInputBudgetPhase> _inputBudgetPhases =
       <String, _SessionInputBudgetPhase>{};
+  final Set<_RequestInputBudgetPhase> _requestInputBudgetPhases =
+      <_RequestInputBudgetPhase>{};
   final Map<String, AcpSessionInputBudgetOwner> _cancelledPromptOwners =
       <String, AcpSessionInputBudgetOwner>{};
   final StreamController<TerminalEvent> _terminalEvents =
@@ -636,6 +560,7 @@ class SessionManager {
   Future<void> dispose() async {
     _disposed = true;
     _invalidateAllInputBudgetPhases();
+    _invalidateAllRequestInputBudgetPhases();
     final terminalProvider = config.terminalProvider;
     final terminals = _terminals.values.toList(growable: false);
     _terminals.clear();
@@ -718,20 +643,41 @@ class SessionManager {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
-    final resp = await peer.newSession(
-      _sessionSetupParams({
-        'cwd': workspaceRoot,
-        'mcpServers': config.mcpServers,
-      }, additionalDirectories),
+    final requestPhase = _beginRequestInputBudgetPhase(
+      resource: 'session new response',
     );
-    final id = _sessionIdFromResult(resp, method: 'session/new');
-    await _registerGeneratedSession(
-      sessionId: id,
-      workspaceRoot: workspaceRoot,
-      additionalDirectories: additionalDirectories,
-      modes: _sessionModeInfoFromRaw(resp['modes']),
-    );
-    return id;
+    try {
+      final resp = await peer.newSession(
+        _sessionSetupParams({
+          'cwd': workspaceRoot,
+          'mcpServers': config.mcpServers,
+        }, additionalDirectories),
+      );
+      _requireRequestInputBudgetPhase(requestPhase);
+      final result = SessionResult.fromJson(
+        resp,
+        inputBudget: inputBudget,
+        structuredGuard: requestPhase.structuredGuard,
+      );
+      final id = _requireSessionResultId(result, method: 'session/new');
+      await _registerGeneratedSession(
+        sessionId: id,
+        workspaceRoot: workspaceRoot,
+        additionalDirectories: additionalDirectories,
+        modes: result.modes,
+        requestPhase: requestPhase,
+      );
+      try {
+        await _drainGeneratedSessionUpdates(id);
+        _requireRequestInputBudgetPhase(requestPhase);
+      } on Object {
+        await _rollbackGeneratedSession(id);
+        rethrow;
+      }
+      return id;
+    } finally {
+      _endRequestInputBudgetPhase(requestPhase);
+    }
   }
 
   /// Load a previous session and replay updates to the client.
@@ -740,17 +686,31 @@ class SessionManager {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
-    await _runSessionSetup<void>(
+    await _runSessionSetup<SessionResult>(
       sessionId: sessionId,
       workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
-      action: () => peer.loadSession(
-        _sessionSetupParams({
-          'sessionId': sessionId,
-          'cwd': workspaceRoot,
-          'mcpServers': config.mcpServers,
-        }, additionalDirectories),
-      ),
+      action: (phase) async {
+        final resp = await peer.sendRaw(
+          'session/load',
+          _sessionSetupParams({
+            'sessionId': sessionId,
+            'cwd': workspaceRoot,
+            'mcpServers': config.mcpServers,
+          }, additionalDirectories),
+        );
+        final parsed = SessionResult.fromJson(
+          resp,
+          inputBudget: inputBudget,
+          structuredGuard: phase.structuredGuard,
+        );
+        final result = _withExpectedSessionId(parsed, sessionId);
+        _requireInputBudgetPhase(phase.owner);
+        _consumePhaseSessionResult(phase, result);
+        await Future<void>.delayed(Duration.zero);
+        return result;
+      },
+      commit: (result) => _commitSessionResultModes(sessionId, result),
     );
   }
 
@@ -824,6 +784,7 @@ class SessionManager {
 
   Object _beginSessionClose(String sessionId) {
     _invalidateInputBudgetPhase(sessionId);
+    _invalidateRequestInputBudgetPhasesForSource(sessionId);
     _cancelledPromptOwners.remove(sessionId);
     final owner = Object();
     _sessionClosingOwners.putIfAbsent(sessionId, () => <Object>{}).add(owner);
@@ -852,7 +813,7 @@ class SessionManager {
       sessionId: sessionId,
       workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
-      action: () async {
+      action: (phase) async {
         final resp = await peer.sendRaw(
           'session/resume',
           _sessionSetupParams({
@@ -861,8 +822,18 @@ class SessionManager {
             'mcpServers': config.mcpServers,
           }, additionalDirectories),
         );
-        return SessionResult.fromJson({...resp, 'sessionId': sessionId});
+        final parsed = SessionResult.fromJson(
+          resp,
+          inputBudget: inputBudget,
+          structuredGuard: phase.structuredGuard,
+        );
+        final result = _withExpectedSessionId(parsed, sessionId);
+        _requireInputBudgetPhase(phase.owner);
+        _consumePhaseSessionResult(phase, result);
+        await Future<void>.delayed(Duration.zero);
+        return result;
       },
+      commit: (result) => _commitSessionResultModes(sessionId, result),
     );
   }
 
@@ -885,21 +856,40 @@ class SessionManager {
     final directories = additionalDirectories.isEmpty
         ? _sessionAdditionalDirectories[sessionId] ?? const <String>[]
         : additionalDirectories;
-    final resp = await peer.sendRaw(
-      'session/fork',
-      _sessionSetupParams({
-        'sessionId': sessionId,
-        'cwd': root,
-        'mcpServers': config.mcpServers,
-      }, directories),
+    final requestPhase = _beginRequestInputBudgetPhase(
+      resource: 'session fork response',
+      sourceSessionId: _sessionWorkspaceRoots.containsKey(sessionId)
+          ? sessionId
+          : null,
     );
-    final newId = _sessionIdFromResult(resp, method: 'session/fork');
-    await _registerGeneratedSession(
-      sessionId: newId,
-      workspaceRoot: root,
-      additionalDirectories: directories,
-    );
-    return SessionResult.fromJson(resp);
+    try {
+      final resp = await peer.sendRaw(
+        'session/fork',
+        _sessionSetupParams({
+          'sessionId': sessionId,
+          'cwd': root,
+          'mcpServers': config.mcpServers,
+        }, directories),
+      );
+      _requireRequestInputBudgetPhase(requestPhase);
+      final result = SessionResult.fromJson(
+        resp,
+        inputBudget: inputBudget,
+        structuredGuard: requestPhase.structuredGuard,
+      );
+      final newId = _requireSessionResultId(result, method: 'session/fork');
+      await _registerGeneratedSession(
+        sessionId: newId,
+        workspaceRoot: root,
+        additionalDirectories: directories,
+        modes: result.modes,
+        requestPhase: requestPhase,
+      );
+      await _drainGeneratedSessionUpdates(newId);
+      return result;
+    } finally {
+      _endRequestInputBudgetPhase(requestPhase);
+    }
   }
 
   /// Set a configuration option for a session.
@@ -1098,6 +1088,57 @@ class SessionManager {
     _inputBudgetPhases.clear();
   }
 
+  _RequestInputBudgetPhase _beginRequestInputBudgetPhase({
+    required String resource,
+    String? sourceSessionId,
+  }) {
+    if (_disposed) throw StateError('Session manager is disposed.');
+    if (sourceSessionId != null && _isSessionClosing(sourceSessionId)) {
+      throw StateError('Session is closing or closed.');
+    }
+    final phase = _RequestInputBudgetPhase(
+      structuredGuard: AcpStructuredUpdateGuard(
+        budget: inputBudget,
+        resource: resource,
+      ),
+      sourceSessionId: sourceSessionId,
+    );
+    _requestInputBudgetPhases.add(phase);
+    return phase;
+  }
+
+  void _requireRequestInputBudgetPhase(_RequestInputBudgetPhase phase) {
+    if (_disposed ||
+        phase.invalidated ||
+        !_requestInputBudgetPhases.contains(phase)) {
+      throw StateError('ACP request input phase is no longer active.');
+    }
+    final sourceSessionId = phase.sourceSessionId;
+    if (sourceSessionId != null &&
+        (_isSessionClosing(sourceSessionId) ||
+            !_sessionWorkspaceRoots.containsKey(sourceSessionId))) {
+      throw StateError('ACP request source session is no longer active.');
+    }
+  }
+
+  void _endRequestInputBudgetPhase(_RequestInputBudgetPhase phase) {
+    phase.invalidated = true;
+    _requestInputBudgetPhases.remove(phase);
+  }
+
+  void _invalidateRequestInputBudgetPhasesForSource(String sessionId) {
+    for (final phase in _requestInputBudgetPhases) {
+      if (phase.sourceSessionId == sessionId) phase.invalidated = true;
+    }
+  }
+
+  void _invalidateAllRequestInputBudgetPhases() {
+    for (final phase in _requestInputBudgetPhases) {
+      phase.invalidated = true;
+    }
+    _requestInputBudgetPhases.clear();
+  }
+
   bool _ownsInputBudgetPhase(AcpSessionInputBudgetOwner owner) {
     if (_disposed || _isSessionClosing(owner.sessionId)) return false;
     final phase = _inputBudgetPhases[owner.sessionId];
@@ -1152,7 +1193,8 @@ class SessionManager {
     required String sessionId,
     required String workspaceRoot,
     required List<String> additionalDirectories,
-    required Future<T> Function() action,
+    required Future<T> Function(_SessionInputBudgetPhase phase) action,
+    void Function(T result)? commit,
   }) {
     if (_isSessionClosing(sessionId)) {
       return Future<T>.error(StateError('Session is closing or closed.'));
@@ -1178,8 +1220,13 @@ class SessionManager {
           workspaceRoot,
           additionalDirectories: additionalDirectories,
         );
-        final result = await action();
+        final phase = _inputBudgetPhases[sessionId];
+        if (phase == null || !identical(phase.owner, phaseOwner)) {
+          throw StateError('ACP session input phase is no longer active.');
+        }
+        final result = await action(phase);
         _requireInputBudgetPhase(phaseOwner);
+        commit?.call(result);
         return result;
       } catch (_) {
         if (!hadBinding) {
@@ -1211,12 +1258,16 @@ class SessionManager {
     required List<String> additionalDirectories,
     ({String? currentModeId, List<({String id, String name})> availableModes})?
     modes,
+    _RequestInputBudgetPhase? requestPhase,
   }) {
     if (_disposed) {
       return Future<void>.error(StateError('Session manager is disposed.'));
     }
     return _runSerializedSessionMutation(sessionId, () async {
       if (_disposed) throw StateError('Session manager is disposed.');
+      if (requestPhase != null) {
+        _requireRequestInputBudgetPhase(requestPhase);
+      }
       if (_isSessionClosing(sessionId)) {
         throw StateError('Session is closing or closed.');
       }
@@ -1232,6 +1283,33 @@ class SessionManager {
       );
       if (modes != null) _sessionModes[sessionId] = modes;
     });
+  }
+
+  void _commitSessionResultModes(String sessionId, SessionResult result) {
+    final modes = result.modes;
+    if (modes != null) _sessionModes[sessionId] = modes;
+  }
+
+  Future<void> _drainGeneratedSessionUpdates(String sessionId) async {
+    final owner = _beginInputBudgetPhase(sessionId);
+    try {
+      await Future<void>.delayed(Duration.zero);
+      _requireInputBudgetPhase(owner);
+    } finally {
+      endPromptTurn(owner);
+    }
+  }
+
+  Future<void> _rollbackGeneratedSession(String sessionId) async {
+    _invalidateInputBudgetPhase(sessionId);
+    _cancelledPromptOwners.remove(sessionId);
+    _closeControllerWithoutWaiting(_sessionStreams.remove(sessionId));
+    _replayBuffers.remove(sessionId);
+    _sessionWorkspaceRoots.remove(sessionId);
+    _sessionAdditionalDirectories.remove(sessionId);
+    _sessionModes.remove(sessionId);
+    _removeToolCalls(sessionId);
+    await _releaseSessionTerminals(sessionId);
   }
 
   Future<T> _runSerializedSessionMutation<T>(
@@ -1291,8 +1369,11 @@ class SessionManager {
         .stream;
   }
 
-  void _recordReplay(String sessionId, AcpUpdate update, {Object? raw}) {
-    final sizeBytes = raw == null ? null : utf8.encode(jsonEncode(raw)).length;
+  void _recordReplay(
+    String sessionId,
+    AcpUpdate update, {
+    required int sizeBytes,
+  }) {
     _replayBuffers[sessionId]?.add(update, sizeBytes: sizeBytes);
   }
 
@@ -1305,7 +1386,9 @@ class SessionManager {
       _toolCallItemCount -= 1;
       _toolCallByteCount -= previousSize;
     }
-    final size = utf8.encode(jsonEncode(toolCall.toJson())).length;
+    final size = AcpRetainedSizeEstimator(
+      budget: inputBudget,
+    ).estimate(toolCall.toJson());
 
     while (_toolCallItemCount + 1 > maxToolCallItems ||
         _toolCallByteCount + size > maxToolCallBytes) {
@@ -1365,54 +1448,40 @@ class SessionManager {
   }
 
   void _routeSessionUpdate(Json json) {
-    final sessionId = _sessionIdFromMap(json);
-    final update = json['update'] as Map<String, dynamic>?;
-    if (sessionId == null || update == null) return;
-    if (_isSessionClosing(sessionId) ||
+    final rawSessionId = json['sessionId'] ?? json['session_id'];
+    if (rawSessionId is! String) return;
+    final sessionId = rawSessionId.trim();
+    if (sessionId.isEmpty ||
+        _disposed ||
+        _isSessionClosing(sessionId) ||
         !_sessionWorkspaceRoots.containsKey(sessionId)) {
       return;
     }
-    _sessionStreams.putIfAbsent(
-      sessionId,
-      StreamController<AcpUpdate>.broadcast,
-    );
-    _replayBuffers.putIfAbsent(sessionId, _newReplayBuffer);
+    final phase = _inputBudgetPhases[sessionId];
+    if (phase == null || phase.invalidated) return;
+    final stream = _sessionStreams[sessionId];
+    final replay = _replayBuffers[sessionId];
+    if (stream == null || replay == null) return;
 
-    final kind = update['sessionUpdate'];
-    if (kind == 'available_commands_update') {
-      final cmds = _availableCommandsFromRaw(update['availableCommands']);
-      final u = AvailableCommandsUpdate.fromRaw(cmds);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'plan') {
-      final u = PlanUpdate.fromJson(update);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'tool_call' || kind == 'tool_call_update') {
-      // Get tool call ID from the update
-      final toolCallId = _toolCallIdFromUpdate(update);
-
-      // Initialize tool calls map for session if needed
-      _toolCalls.putIfAbsent(sessionId, () => {});
-
-      final ToolCall toolCall;
-      if (kind == 'tool_call') {
-        // New tool call - create and store it
-        toolCall = ToolCall.fromJson(update);
-      } else {
-        // tool_call_update - merge with existing
-        final existing = _toolCalls[sessionId]![toolCallId];
-        if (existing != null) {
-          // Merge update fields into existing tool call
-          toolCall = existing.merge(update);
-        } else {
-          // No existing tool call found, create new one from update
-          toolCall = ToolCall.fromJson(update);
-        }
-      }
-
-      if (!_storeToolCall(sessionId, toolCallId, toolCall)) {
-        _sessionStreams[sessionId]!.addError(
+    final rawUpdate = json['update'];
+    if (rawUpdate is! Map<String, dynamic>) return;
+    try {
+      final update = _parseSessionUpdate(
+        sessionId: sessionId,
+        raw: rawUpdate,
+        phase: phase,
+      );
+      if (!_ownsInputBudgetPhase(phase.owner)) return;
+      final consumed = _consumePhaseUpdate(phase, update);
+      final bounded = consumed.update;
+      if (!_ownsInputBudgetPhase(phase.owner)) return;
+      if (bounded is ToolCallUpdate &&
+          !_storeToolCall(
+            sessionId,
+            bounded.toolCall.toolCallId,
+            bounded.toolCall,
+          )) {
+        stream.addError(
           SessionToolStateLimitException(
             maxItems: maxToolCallItems,
             maxBytes: maxToolCallBytes,
@@ -1420,54 +1489,460 @@ class SessionManager {
         );
         return;
       }
+      if (bounded is ModeUpdate && bounded.omission == null) {
+        final existing = _sessionModes[sessionId];
+        _sessionModes[sessionId] = (
+          currentModeId: bounded.currentModeId,
+          availableModes:
+              existing?.availableModes ?? const <({String id, String name})>[],
+        );
+      }
+      _recordReplay(sessionId, bounded, sizeBytes: consumed.retainedBytes);
+      stream.add(bounded);
+    } on Object catch (error, stackTrace) {
+      if (!_ownsInputBudgetPhase(phase.owner)) return;
+      _log.warning('session update rejected by input budget');
+      stream.addError(error, stackTrace);
+    }
+  }
 
-      final u = ToolCallUpdate(toolCall);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'user_message_chunk' ||
+  AcpUpdate _parseSessionUpdate({
+    required String sessionId,
+    required Map<String, dynamic> raw,
+    required _SessionInputBudgetPhase phase,
+  }) {
+    final rawKind = raw['sessionUpdate'];
+    final kind = phase.structuredGuard.copyString(
+      rawKind,
+      field: 'session update kind',
+    );
+    if (kind == 'available_commands_update') {
+      final rawCommands = raw['availableCommands'];
+      final List<Object?> commands = rawCommands is List
+          ? rawCommands
+          : <Object?>[rawCommands];
+      return AvailableCommandsUpdate.fromRaw(
+        commands,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
+      );
+    }
+    if (kind == 'plan') {
+      return PlanUpdate.fromJson(
+        raw,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
+      );
+    }
+    if (kind == 'tool_call' || kind == 'tool_call_update') {
+      final toolCallId = _boundedToolCallIdForRouting(
+        raw,
+        phase.structuredGuard,
+      );
+      final existing = _toolCalls[sessionId]?[toolCallId];
+      final toolCall = existing == null
+          ? ToolCall.fromJson(
+              raw,
+              inputBudget: inputBudget,
+              structuredGuard: phase.structuredGuard,
+            )
+          : existing.merge(
+              raw,
+              inputBudget: inputBudget,
+              structuredGuard: phase.structuredGuard,
+            );
+      return ToolCallUpdate(toolCall);
+    }
+    if (kind == 'user_message_chunk' ||
         kind == 'agent_message_chunk' ||
         kind == 'agent_thought_chunk') {
-      final blocks = _contentBlocksFromRaw(update['content']);
-      final role = kind == 'user_message_chunk' ? 'user' : 'assistant';
-      final u = MessageDelta.fromRaw(
-        role: role,
+      final rawContent = raw['content'];
+      final List<Object?> blocks = rawContent is List
+          ? rawContent
+          : <Object?>[rawContent];
+      return MessageDelta.fromRaw(
+        role: kind == 'user_message_chunk' ? 'user' : 'assistant',
         rawContent: blocks,
         isThought: kind == 'agent_thought_chunk',
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
       );
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'diff') {
-      final u = DiffUpdate.fromJson(update);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'current_mode_update') {
-      final currentModeId = _modeIdFromRaw(update);
-      if (currentModeId != null) {
-        final existing = _sessionModes[sessionId];
-        if (existing != null) {
-          _sessionModes[sessionId] = (
-            currentModeId: currentModeId,
-            availableModes: existing.availableModes,
-          );
-        } else {
-          _sessionModes[sessionId] = (
-            currentModeId: currentModeId,
-            availableModes: const <({String id, String name})>[],
-          );
+    }
+    if (kind == 'diff') {
+      return DiffUpdate.fromJson(
+        raw,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
+      );
+    }
+    if (kind == 'current_mode_update') {
+      return ModeUpdate.fromJson(
+        raw,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
+      );
+    }
+    if (kind == 'usage_update') {
+      return UsageUpdate.fromJson(
+        raw,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
+      );
+    }
+    final parsed = UnknownUpdate.fromJson(
+      raw,
+      inputBudget: inputBudget,
+      structuredGuard: phase.structuredGuard,
+    );
+    return UnknownUpdate(
+      Map<String, dynamic>.unmodifiable(<String, dynamic>{
+        'sessionId': sessionId,
+        'update': parsed.raw,
+      }),
+      omission: parsed.omission,
+    );
+  }
+
+  String _boundedToolCallIdForRouting(
+    Map<String, dynamic> raw,
+    AcpStructuredUpdateGuard guard,
+  ) {
+    for (final key in const <String>[
+      'toolCallId',
+      'tool_call_id',
+      'id',
+      'callId',
+      'call_id',
+    ]) {
+      final value = raw[key];
+      if (value == null) continue;
+      return guard.copyString(value, field: 'tool call routing id');
+    }
+    return '';
+  }
+
+  ({AcpUpdate update, int retainedBytes}) _consumePhaseUpdate(
+    _SessionInputBudgetPhase phase,
+    AcpUpdate update,
+  ) {
+    if (phase.items >= inputBudget.maxTurnItems) {
+      throw AcpInputLimitExceeded(
+        resource: 'turn items',
+        limit: inputBudget.maxTurnItems,
+        observedAtLeast: inputBudget.maxTurnItems + 1,
+      );
+    }
+    final bounded = update is MessageDelta
+        ? _applyMessagePhaseBudgets(phase, update)
+        : update;
+    final retainedBytes = _retainedUpdateSize(bounded);
+    if (retainedBytes >
+        inputBudget.maxTurnRetainedBytes - phase.retainedBytes) {
+      throw AcpInputLimitExceeded(
+        resource: 'turn retained bytes',
+        limit: inputBudget.maxTurnRetainedBytes,
+        observedAtLeast: inputBudget.maxTurnRetainedBytes + 1,
+      );
+    }
+    phase.items += 1;
+    phase.retainedBytes += retainedBytes;
+    return (update: bounded, retainedBytes: retainedBytes);
+  }
+
+  void _consumePhaseSessionResult(
+    _SessionInputBudgetPhase phase,
+    SessionResult result,
+  ) {
+    if (result.configOptions == null &&
+        result.meta == null &&
+        result.modes == null &&
+        result.omissions.isEmpty) {
+      return;
+    }
+    if (phase.items >= inputBudget.maxTurnItems) {
+      throw AcpInputLimitExceeded(
+        resource: 'turn items',
+        limit: inputBudget.maxTurnItems,
+        observedAtLeast: inputBudget.maxTurnItems + 1,
+      );
+    }
+    final modes = result.modes;
+    final projection = <String, Object?>{
+      if (result.configOptions != null)
+        'configOptions': result.configOptions!
+            .map((option) => option.toJson())
+            .toList(),
+      if (result.meta != null) 'meta': result.meta,
+      if (modes != null)
+        'modes': <String, Object?>{
+          if (modes.currentModeId != null) 'currentModeId': modes.currentModeId,
+          'availableModes': modes.availableModes
+              .map(
+                (mode) => <String, Object?>{'id': mode.id, 'name': mode.name},
+              )
+              .toList(),
+        },
+      if (result.omissions.isNotEmpty) 'omissions': result.omissions,
+    };
+    final retainedBytes = AcpRetainedSizeEstimator(
+      budget: inputBudget,
+    ).estimate(projection);
+    if (retainedBytes >
+        inputBudget.maxTurnRetainedBytes - phase.retainedBytes) {
+      throw AcpInputLimitExceeded(
+        resource: 'turn retained bytes',
+        limit: inputBudget.maxTurnRetainedBytes,
+        observedAtLeast: inputBudget.maxTurnRetainedBytes + 1,
+      );
+    }
+    phase.items += 1;
+    phase.retainedBytes += retainedBytes;
+  }
+
+  MessageDelta _applyMessagePhaseBudgets(
+    _SessionInputBudgetPhase phase,
+    MessageDelta update,
+  ) {
+    final blocks = <ContentBlock>[];
+    final omissions = <AcpInputOmission>[...update.omissions];
+    final seen = <String>{
+      for (final omission in omissions)
+        '${omission.reason.name}\u0000${omission.resource}',
+    };
+
+    void addOmission(AcpInputOmission? omission) {
+      if (omission == null) return;
+      final key = '${omission.reason.name}\u0000${omission.resource}';
+      if (seen.add(key)) omissions.add(omission);
+    }
+
+    for (final block in update.content) {
+      if (block is TextContent) {
+        final counter = update.isThought ? phase.thought : phase.text;
+        final chunk = counter.append(block.text);
+        final omission = chunk.omission ?? block.omission;
+        blocks.add(TextContent(text: chunk.safePrefix, omission: omission));
+        addOmission(omission);
+        continue;
+      }
+      if (block is ResourceContent && block.text != null) {
+        final counter = update.isThought ? phase.thought : phase.text;
+        final chunk = counter.append(block.text!);
+        final omission = chunk.omission ?? block.omission;
+        final media = _consumeEmbeddedMedia(
+          phase,
+          block.blob,
+          resource: 'resource_blob',
+        );
+        if (media != null) {
+          blocks.add(media);
+          addOmission(media.omission);
+          continue;
+        }
+        blocks.add(
+          ResourceContent(
+            uri: block.uri,
+            title: block.title,
+            mimeType: block.mimeType,
+            text: chunk.safePrefix,
+            blob: block.blob,
+            size: block.size,
+            embedded: block.embedded,
+            omission: omission,
+          ),
+        );
+        addOmission(omission);
+        continue;
+      }
+      if (block is ImageContent) {
+        final omitted = _consumeEmbeddedMedia(
+          phase,
+          block.data,
+          resource: 'image_data',
+        );
+        blocks.add(omitted ?? block);
+        addOmission(omitted?.omission);
+        continue;
+      }
+      if (block is AudioContent && block.data != null) {
+        final omitted = _consumeEmbeddedMedia(
+          phase,
+          block.data,
+          resource: 'audio_data',
+        );
+        blocks.add(omitted ?? block);
+        addOmission(omitted?.omission);
+        continue;
+      }
+      if (block is ResourceContent && block.blob != null) {
+        final omitted = _consumeEmbeddedMedia(
+          phase,
+          block.blob,
+          resource: 'resource_blob',
+        );
+        blocks.add(omitted ?? block);
+        addOmission(omitted?.omission);
+        continue;
+      }
+      blocks.add(block);
+    }
+    return MessageDelta(
+      role: update.role,
+      content: List<ContentBlock>.unmodifiable(blocks),
+      isThought: update.isThought,
+      omissions: List<AcpInputOmission>.unmodifiable(omissions),
+    );
+  }
+
+  UnknownContent? _consumeEmbeddedMedia(
+    _SessionInputBudgetPhase phase,
+    String? encoded, {
+    required String resource,
+  }) {
+    if (encoded == null) return null;
+    final scan = scanAcpBase64(
+      encoded,
+      maxDecodedBytes: inputBudget.maxEmbeddedMediaBytes,
+      resource: resource,
+    );
+    if (scan.decodedBytes >
+        inputBudget.maxEmbeddedMediaBytes - phase.mediaBytes) {
+      return UnknownContent.omitted(
+        AcpInputOmission(
+          reason: AcpInputOmissionReason.inputLimit,
+          resource: 'turn_media',
+          truncated: false,
+          limit: inputBudget.maxEmbeddedMediaBytes,
+          observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
+        ),
+      );
+    }
+    phase.mediaBytes += scan.decodedBytes;
+    return null;
+  }
+
+  int _retainedUpdateSize(AcpUpdate update) {
+    final projection = _retainedUpdateProjection(update);
+    return AcpRetainedSizeEstimator(
+          budget: inputBudget,
+        ).estimate(projection.value) +
+        projection.detachedBytes;
+  }
+
+  ({Object? value, int detachedBytes}) _retainedUpdateProjection(
+    AcpUpdate update,
+  ) {
+    if (update is MessageDelta) {
+      var detachedBytes = _trustedUtf8Length(update.role);
+      final contents = <Object?>[];
+      for (final block in update.content) {
+        if (block is TextContent) {
+          detachedBytes += _trustedUtf8Length(block.text);
+          contents.add(<String, Object?>{
+            'type': 'text',
+            'text': '',
+            if (block.omission != null) 'omission': block.omission,
+          });
+        } else if (block is ImageContent) {
+          detachedBytes += block.data.length;
+          contents.add(<String, Object?>{
+            'type': 'image',
+            'mimeType': block.mimeType,
+            'data': '',
+          });
+        } else if (block is AudioContent) {
+          detachedBytes += block.data?.length ?? 0;
+          contents.add(<String, Object?>{
+            'type': 'audio',
+            'mimeType': block.mimeType,
+            if (block.data != null) 'data': '',
+            if (block.uri != null) 'uri': block.uri,
+          });
+        } else if (block is ResourceContent) {
+          detachedBytes += _trustedUtf8Length(block.text ?? '');
+          detachedBytes += block.blob?.length ?? 0;
+          contents.add(<String, Object?>{
+            'type': block.embedded ? 'resource' : 'resource_link',
+            'uri': block.uri,
+            if (block.title != null) 'title': block.title,
+            if (block.mimeType != null) 'mimeType': block.mimeType,
+            if (block.text != null) 'text': '',
+            if (block.blob != null) 'blob': '',
+            if (block.size != null) 'size': block.size,
+            if (block.omission != null) 'omission': block.omission,
+          });
+        } else if (block is UnknownContent) {
+          contents.add(<String, Object?>{
+            'data': block.data,
+            if (block.omission != null) 'omission': block.omission,
+          });
         }
       }
-      final u = ModeUpdate(currentModeId ?? '');
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else if (kind == 'usage_update') {
-      final u = UsageUpdate.fromJson(update);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
-    } else {
-      final u = UnknownUpdate(json);
-      _recordReplay(sessionId, u, raw: json);
-      _sessionStreams[sessionId]!.add(u);
+      return (
+        value: <String, Object?>{
+          'role': '',
+          'content': contents,
+          'isThought': update.isThought,
+          'omissions': update.omissions,
+        },
+        detachedBytes: detachedBytes,
+      );
     }
+    final Object? value;
+    if (update is PlanUpdate) {
+      value = update.plan.toJson();
+    } else if (update is ToolCallUpdate) {
+      value = update.toolCall.toJson();
+    } else if (update is DiffUpdate) {
+      value = update.diff.toJson();
+    } else if (update is AvailableCommandsUpdate) {
+      value = <String, Object?>{
+        'commands': update.commands.map((command) => command.toJson()).toList(),
+        if (update.omission != null) 'omission': update.omission,
+      };
+    } else if (update is ModeUpdate) {
+      value = <String, Object?>{
+        'currentModeId': update.currentModeId,
+        if (update.omission != null) 'omission': update.omission,
+      };
+    } else if (update is UsageUpdate) {
+      value = update.toJson();
+    } else if (update is UnknownUpdate) {
+      value = <String, Object?>{
+        'raw': update.raw,
+        if (update.omission != null) 'omission': update.omission,
+      };
+    } else if (update is TurnEnded) {
+      value = <String, Object?>{'stopReason': update.stopReason.name};
+    } else {
+      value = <String, Object?>{'text': update.text};
+    }
+    return (value: value, detachedBytes: 0);
+  }
+
+  int _trustedUtf8Length(String value) {
+    var bytes = 0;
+    for (var index = 0; index < value.length; index += 1) {
+      final codeUnit = value.codeUnitAt(index);
+      if (codeUnit <= 0x7f) {
+        bytes += 1;
+      } else if (codeUnit <= 0x7ff) {
+        bytes += 2;
+      } else if (codeUnit >= 0xd800 &&
+          codeUnit <= 0xdbff &&
+          index + 1 < value.length) {
+        final low = value.codeUnitAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          bytes += 4;
+          index += 1;
+        } else {
+          bytes += 3;
+        }
+      } else {
+        bytes += 3;
+      }
+    }
+    return bytes;
   }
 
   // ===== Modes support (extension) =====

@@ -3025,6 +3025,1135 @@ Future<void> main() async {
   );
 
   test(
+    'new and fork responses are bounded before generated sessions register',
+    () async {
+      const budget = acp.AcpInputBudget(maxStructuredStringBytes: 4);
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: budget,
+      );
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        final method = request['method'];
+        if (method == 'session/resume') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+        } else if (method == 'session/new' || method == 'session/fork') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{'sessionId': '12345'},
+            }),
+          );
+        }
+      });
+
+      try {
+        await expectLater(
+          manager.newSession(workspaceRoot: '/workspace'),
+          throwsA(isA<acp.AcpInputLimitExceeded>()),
+        );
+        expect(
+          () => manager.prompt(
+            sessionId: '12345',
+            content: const <Map<String, dynamic>>[],
+          ),
+          throwsArgumentError,
+        );
+
+        await manager.resumeSession(
+          sessionId: 's',
+          workspaceRoot: '/workspace',
+        );
+        await expectLater(
+          manager.forkSession(sessionId: 's'),
+          throwsA(isA<acp.AcpInputLimitExceeded>()),
+        );
+        expect(
+          () => manager.prompt(
+            sessionId: '12345',
+            content: const <Map<String, dynamic>>[],
+          ),
+          throwsArgumentError,
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'generated session drops pre-response updates and owns post-response updates',
+    () async {
+      const canary = 'PRE_RESPONSE_OVERSIZE_CANARY';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 24),
+      );
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/new') return;
+        for (final update in <Object?>[
+          <Object?>['non-map-pre-response'],
+          <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': canary,
+          },
+        ]) {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': <String, dynamic>{
+                'sessionId': 'generated-order',
+                'update': update,
+              },
+            }),
+          );
+        }
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{'sessionId': 'generated-order'},
+          }),
+        );
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'generated-order',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'post-response',
+              },
+            },
+          }),
+        );
+      });
+
+      try {
+        final sessionId = await manager.newSession(workspaceRoot: '/workspace');
+        expect(sessionId, 'generated-order');
+        expect(manager.sessionModes(sessionId)?.currentModeId, 'post-response');
+        final replay = await manager.sessionUpdates(sessionId).take(1).toList();
+        expect(replay.single, isA<acp.ModeUpdate>());
+        expect(
+          (replay.single as acp.ModeUpdate).currentModeId,
+          'post-response',
+        );
+        expect(replay.toString(), isNot(contains(canary)));
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'session updates require an owning phase and use its structured guard',
+    () async {
+      const budget = acp.AcpInputBudget(maxStructuredStringBytes: 20);
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: budget,
+      );
+      final updates = <acp.AcpUpdate>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      StreamSubscription<acp.AcpUpdate>? subscription;
+
+      void sendMode(String currentModeId) {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'owned-route',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': currentModeId,
+              },
+            },
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'owned-route',
+          workspaceRoot: '/workspace',
+        );
+        subscription = manager
+            .sessionUpdates('owned-route')
+            .listen(updates.add);
+
+        sendMode('late');
+        await pumpEventQueue();
+        expect(
+          updates,
+          isEmpty,
+          reason: 'updates without a phase are rejected',
+        );
+
+        final owner = manager.beginPromptTurn('owned-route');
+        sendMode('123456789012345678901');
+        await pumpEventQueue();
+        final bounded = updates.single as acp.ModeUpdate;
+        expect(bounded.currentModeId, isEmpty);
+        expect(bounded.omission?.reason, acp.AcpInputOmissionReason.inputLimit);
+        manager.endPromptTurn(owner);
+
+        sendMode('late');
+        await pumpEventQueue();
+        expect(updates, hasLength(1));
+      } finally {
+        await subscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'unknown session rejects a non-map update before typed access',
+    () async {
+      final uncaught = <Object>[];
+      await runZonedGuarded<Future<void>>(() async {
+        final channel = StreamChannelController<String>();
+        final peer = JsonRpcPeer(channel.foreign);
+        final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+        try {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': <String, dynamic>{
+                'sessionId': 'never-registered',
+                'update': <Object?>['must-not-be-cast'],
+              },
+            }),
+          );
+          await pumpEventQueue();
+          expect(
+            () => manager.prompt(
+              sessionId: 'never-registered',
+              content: const <Map<String, dynamic>>[],
+            ),
+            throwsArgumentError,
+          );
+        } finally {
+          await manager.dispose();
+          await peer.close();
+          await channel.local.sink.close();
+        }
+      }, (error, _) => uncaught.add(error));
+      expect(uncaught, isEmpty);
+    },
+  );
+
+  test(
+    'load replay update and immediate result share one structured root',
+    () async {
+      Future<void> runCase({
+        required int maxNodes,
+        required bool succeeds,
+      }) async {
+        final channel = StreamChannelController<String>();
+        final peer = JsonRpcPeer(channel.foreign);
+        final manager = SessionManager(
+          config: acp.AcpConfig(),
+          peer: peer,
+          inputBudget: acp.AcpInputBudget(maxStructuredUpdateNodes: maxNodes),
+        );
+        final updates = <acp.AcpUpdate>[];
+        final subscription = manager
+            .sessionUpdates('shared-root')
+            .listen(updates.add, onError: (_) {});
+        final server = channel.local.stream.listen((line) {
+          final request = jsonDecode(line) as Map<String, dynamic>;
+          if (request['method'] != 'session/load') return;
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': <String, dynamic>{
+                'sessionId': 'shared-root',
+                'update': <String, dynamic>{
+                  'sessionUpdate': 'current_mode_update',
+                  'currentModeId': 'm',
+                },
+              },
+            }),
+          );
+          Future<void>.delayed(const Duration(milliseconds: 10), () {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': request['id'],
+                'result': <String, dynamic>{},
+              }),
+            );
+          });
+        });
+
+        try {
+          final load = manager.loadSession(
+            sessionId: 'shared-root',
+            workspaceRoot: '/workspace',
+          );
+          if (succeeds) {
+            await load;
+            expect(updates.whereType<acp.ModeUpdate>(), hasLength(1));
+          } else {
+            await expectLater(load, throwsA(isA<acp.AcpInputLimitExceeded>()));
+          }
+        } finally {
+          await subscription.cancel();
+          await manager.dispose();
+          await peer.close();
+          await server.cancel();
+          await channel.local.sink.close();
+        }
+      }
+
+      await runCase(maxNodes: 4, succeeds: true);
+      await runCase(maxNodes: 3, succeeds: false);
+    },
+  );
+
+  test(
+    'load update and immediate result share item and retained budgets',
+    () async {
+      Future<
+        ({
+          SessionManager manager,
+          JsonRpcPeer peer,
+          StreamSubscription<String> server,
+          StreamChannelController<String> channel,
+        })
+      >
+      createCase({
+        required acp.AcpInputBudget budget,
+        required String metaValue,
+        bool seedOldMode = false,
+      }) async {
+        final channel = StreamChannelController<String>();
+        final peer = JsonRpcPeer(channel.foreign);
+        final manager = SessionManager(
+          config: acp.AcpConfig(),
+          peer: peer,
+          inputBudget: budget,
+        );
+        final server = channel.local.stream.listen((line) {
+          final request = jsonDecode(line) as Map<String, dynamic>;
+          if (request['method'] == 'session/resume') {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': request['id'],
+                'result': <String, dynamic>{
+                  if (seedOldMode) 'currentModeId': 'old',
+                },
+              }),
+            );
+          } else if (request['method'] == 'session/load') {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'method': 'session/update',
+                'params': <String, dynamic>{
+                  'sessionId': 'combined-budget',
+                  'update': <String, dynamic>{
+                    'sessionUpdate': 'plan',
+                    'entries': const <Object?>[],
+                  },
+                },
+              }),
+            );
+            Future<void>.delayed(const Duration(milliseconds: 10), () {
+              channel.local.sink.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': request['id'],
+                  'result': <String, dynamic>{
+                    if (seedOldMode) 'currentModeId': 'new',
+                    'meta': <String, dynamic>{'x': metaValue},
+                  },
+                }),
+              );
+            });
+          }
+        });
+        return (manager: manager, peer: peer, server: server, channel: channel);
+      }
+
+      for (final retainedCase in const <({String value, bool succeeds})>[
+        (value: '', succeeds: true),
+        (value: 'a', succeeds: false),
+      ]) {
+        final state = await createCase(
+          budget: const acp.AcpInputBudget(maxTurnRetainedBytes: 364),
+          metaValue: retainedCase.value,
+        );
+        try {
+          final load = state.manager.loadSession(
+            sessionId: 'combined-budget',
+            workspaceRoot: '/workspace',
+          );
+          if (retainedCase.succeeds) {
+            await load;
+          } else {
+            await expectLater(
+              load,
+              throwsA(
+                isA<acp.AcpInputLimitExceeded>().having(
+                  (error) => error.resource,
+                  'resource',
+                  'turn retained bytes',
+                ),
+              ),
+            );
+          }
+        } finally {
+          await state.manager.dispose();
+          await state.peer.close();
+          await state.server.cancel();
+          await state.channel.local.sink.close();
+        }
+      }
+
+      final itemState = await createCase(
+        budget: const acp.AcpInputBudget(maxTurnItems: 1),
+        metaValue: '',
+        seedOldMode: true,
+      );
+      try {
+        await itemState.manager.resumeSession(
+          sessionId: 'combined-budget',
+          workspaceRoot: '/workspace',
+        );
+        await expectLater(
+          itemState.manager.loadSession(
+            sessionId: 'combined-budget',
+            workspaceRoot: '/workspace',
+          ),
+          throwsA(
+            isA<acp.AcpInputLimitExceeded>().having(
+              (error) => error.resource,
+              'resource',
+              'turn items',
+            ),
+          ),
+        );
+        expect(
+          itemState.manager.sessionModes('combined-budget')?.currentModeId,
+          'old',
+        );
+      } finally {
+        await itemState.manager.dispose();
+        await itemState.peer.close();
+        await itemState.server.cancel();
+        await itemState.channel.local.sink.close();
+      }
+    },
+  );
+
+  test('late load response cannot restore modes after dispose', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final loadId = Completer<Object?>();
+    final server = channel.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] == 'session/resume') {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{
+              'currentModeId': 'old',
+              'availableModes': <Map<String, dynamic>>[
+                <String, dynamic>{'id': 'old', 'name': 'Old'},
+              ],
+            },
+          }),
+        );
+      } else if (request['method'] == 'session/load' && !loadId.isCompleted) {
+        loadId.complete(request['id']);
+      }
+    });
+
+    try {
+      await manager.resumeSession(
+        sessionId: 'late-modes',
+        workspaceRoot: '/workspace',
+      );
+      expect(manager.sessionModes('late-modes')?.currentModeId, 'old');
+
+      final load = manager.loadSession(
+        sessionId: 'late-modes',
+        workspaceRoot: '/workspace',
+      );
+      final pendingId = await loadId.future.timeout(const Duration(seconds: 5));
+      await manager.dispose();
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': pendingId,
+          'result': <String, dynamic>{
+            'currentModeId': 'new',
+            'availableModes': <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'new', 'name': 'New'},
+            ],
+          },
+        }),
+      );
+
+      await expectLater(load, throwsStateError);
+      expect(manager.sessionModes('late-modes'), isNull);
+    } finally {
+      await manager.dispose();
+      await peer.close();
+      await server.cancel();
+      await channel.local.sink.close();
+    }
+  });
+
+  test('closing a fork source invalidates its pending request guard', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final forkId = Completer<Object?>();
+    final closeId = Completer<Object?>();
+    final server = channel.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] == 'session/resume') {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      } else if (request['method'] == 'session/fork') {
+        if (!forkId.isCompleted) forkId.complete(request['id']);
+      } else if (request['method'] == 'session/close') {
+        if (!closeId.isCompleted) closeId.complete(request['id']);
+      }
+    });
+
+    try {
+      await manager.resumeSession(
+        sessionId: 'fork-source',
+        workspaceRoot: '/workspace',
+      );
+      final fork = manager.forkSession(sessionId: 'fork-source');
+      final pendingForkId = await forkId.future.timeout(
+        const Duration(seconds: 5),
+      );
+      final close = manager.closeSession(sessionId: 'fork-source');
+      final pendingCloseId = await closeId.future.timeout(
+        const Duration(seconds: 5),
+      );
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': pendingCloseId,
+          'result': <String, dynamic>{},
+        }),
+      );
+      await close;
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': pendingForkId,
+          'result': <String, dynamic>{'sessionId': 'late-fork'},
+        }),
+      );
+
+      await expectLater(fork, throwsStateError);
+      expect(
+        () => manager.prompt(
+          sessionId: 'late-fork',
+          content: const <Map<String, dynamic>>[],
+        ),
+        throwsArgumentError,
+      );
+    } finally {
+      await manager.dispose();
+      await peer.close();
+      await server.cancel();
+      await channel.local.sink.close();
+    }
+  });
+
+  test(
+    'turn text thought and media aggregates enforce exact plus one',
+    () async {
+      const budget = acp.AcpInputBudget(
+        maxMessageTextBytes: 4,
+        maxMarkdownFallbackBytes: 4,
+        maxThoughtTextBytes: 2,
+        maxEmbeddedMediaBytes: 1,
+      );
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: budget,
+      );
+      final updates = <acp.AcpUpdate>[];
+      final errors = <Object>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      StreamSubscription<acp.AcpUpdate>? subscription;
+
+      void sendChunk(String kind, Map<String, dynamic> block) {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'aggregate-turn',
+              'update': <String, dynamic>{
+                'sessionUpdate': kind,
+                'content': <Map<String, dynamic>>[block],
+              },
+            },
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'aggregate-turn',
+          workspaceRoot: '/workspace',
+        );
+        subscription = manager
+            .sessionUpdates('aggregate-turn')
+            .listen(updates.add, onError: errors.add);
+        final owner = manager.beginPromptTurn('aggregate-turn');
+
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'ab',
+        });
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'cd',
+        });
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'e',
+        });
+        sendChunk('agent_thought_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'ab',
+        });
+        sendChunk('agent_thought_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'c',
+        });
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'image',
+          'mimeType': 'image/png',
+          'data': 'YQ==',
+        });
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'image',
+          'mimeType': 'image/png',
+          'data': 'YQ==',
+        });
+        await pumpEventQueue();
+
+        final deltas = updates.whereType<acp.MessageDelta>().toList();
+        expect(deltas, hasLength(7));
+        expect(deltas[0].text, 'ab');
+        expect(deltas[1].text, 'cd');
+        expect(deltas[2].text, isEmpty);
+        expect(deltas[2].omissions.single.resource, 'message text');
+        expect(deltas[3].text, 'ab');
+        expect(deltas[4].text, isEmpty);
+        expect(deltas[4].omissions.single.resource, 'thought text');
+        expect(deltas[5].content.single, isA<acp.ImageContent>());
+        expect(deltas[6].content.single, isA<acp.UnknownContent>());
+        expect(
+          (deltas[6].content.single as acp.UnknownContent).omission?.resource,
+          'turn_media',
+        );
+        expect(errors, isEmpty);
+
+        manager.endPromptTurn(owner);
+        updates.clear();
+        final replacement = manager.beginPromptTurn('aggregate-turn');
+        sendChunk('agent_message_chunk', <String, dynamic>{
+          'type': 'text',
+          'text': 'abcd',
+        });
+        await pumpEventQueue();
+        expect(updates.whereType<acp.MessageDelta>().single.text, 'abcd');
+        manager.endPromptTurn(replacement);
+      } finally {
+        await subscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  for (final budgetCase in const <({String name, acp.AcpInputBudget budget})>[
+    (name: 'items', budget: acp.AcpInputBudget(maxTurnItems: 2)),
+    (
+      name: 'retained bytes',
+      budget: acp.AcpInputBudget(maxTurnRetainedBytes: 220),
+    ),
+  ]) {
+    test('turn ${budgetCase.name} enforce exact plus one and reset', () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: budgetCase.budget,
+      );
+      final updates = <acp.AcpUpdate>[];
+      final errors = <Object>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      final subscription = manager
+          .sessionUpdates('turn-root')
+          .listen(updates.add, onError: errors.add);
+
+      void sendMode() {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'turn-root',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'currentModeId': 'x',
+              },
+            },
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'turn-root',
+          workspaceRoot: '/workspace',
+        );
+        final owner = manager.beginPromptTurn('turn-root');
+        sendMode();
+        sendMode();
+        sendMode();
+        await pumpEventQueue();
+        expect(updates.whereType<acp.ModeUpdate>(), hasLength(2));
+        expect(errors, hasLength(1));
+        expect(errors.single, isA<acp.AcpInputLimitExceeded>());
+        manager.endPromptTurn(owner);
+
+        final replacement = manager.beginPromptTurn('turn-root');
+        sendMode();
+        await pumpEventQueue();
+        expect(updates.whereType<acp.ModeUpdate>(), hasLength(3));
+        expect(errors, hasLength(1));
+        manager.endPromptTurn(replacement);
+      } finally {
+        await subscription.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    });
+  }
+
+  test('every ordinary update family uses the owning phase guard', () async {
+    final overlong = List<String>.filled(65, 'x').join();
+    final cases =
+        <
+          ({
+            String name,
+            Map<String, dynamic> update,
+            void Function(List<acp.AcpUpdate>, List<Object>) verify,
+          })
+        >[
+          (
+            name: 'commands',
+            update: <String, dynamic>{
+              'sessionUpdate': 'available_commands_update',
+              'availableCommands': <Map<String, dynamic>>[
+                <String, dynamic>{'name': overlong},
+              ],
+            },
+            verify: (updates, errors) {
+              final value = updates.single as acp.AvailableCommandsUpdate;
+              expect(value.commands, isEmpty);
+              expect(value.omission, isNotNull);
+              expect(errors, isEmpty);
+            },
+          ),
+          (
+            name: 'plan',
+            update: <String, dynamic>{
+              'sessionUpdate': 'plan',
+              'title': overlong,
+              'entries': const <Object?>[],
+            },
+            verify: (updates, errors) {
+              expect(updates, isEmpty);
+              expect(errors.single, isA<acp.AcpInputLimitExceeded>());
+            },
+          ),
+          (
+            name: 'tool',
+            update: <String, dynamic>{
+              'sessionUpdate': 'tool_call',
+              'toolCallId': overlong,
+              'status': 'pending',
+            },
+            verify: (updates, errors) {
+              expect(updates, isEmpty);
+              expect(errors.single, isA<acp.AcpInputLimitExceeded>());
+            },
+          ),
+          (
+            name: 'message',
+            update: <String, dynamic>{
+              'sessionUpdate': 'agent_message_chunk',
+              'content': <Map<String, dynamic>>[
+                <String, dynamic>{'type': overlong},
+              ],
+            },
+            verify: (updates, errors) {
+              final value = updates.single as acp.MessageDelta;
+              expect(value.content.single, isA<acp.UnknownContent>());
+              expect(value.omissions, isNotEmpty);
+              expect(errors, isEmpty);
+            },
+          ),
+          (
+            name: 'diff',
+            update: <String, dynamic>{
+              'sessionUpdate': 'diff',
+              'id': overlong,
+              'changes': const <Object?>[],
+            },
+            verify: (updates, errors) {
+              expect(updates, isEmpty);
+              expect(errors.single, isA<acp.AcpInputLimitExceeded>());
+            },
+          ),
+          (
+            name: 'mode',
+            update: <String, dynamic>{
+              'sessionUpdate': 'current_mode_update',
+              'currentModeId': overlong,
+            },
+            verify: (updates, errors) {
+              final value = updates.single as acp.ModeUpdate;
+              expect(value.currentModeId, isEmpty);
+              expect(value.omission, isNotNull);
+              expect(errors, isEmpty);
+            },
+          ),
+          (
+            name: 'usage',
+            update: <String, dynamic>{
+              'sessionUpdate': 'usage_update',
+              'used': 1,
+              'size': 2,
+              'cost': <String, dynamic>{'amount': 1, 'currency': overlong},
+            },
+            verify: (updates, errors) {
+              expect(updates, isEmpty);
+              expect(errors.single, isA<acp.AcpInputLimitExceeded>());
+            },
+          ),
+          (
+            name: 'unknown',
+            update: <String, dynamic>{
+              'sessionUpdate': 'vendor_update',
+              'metadata': <String, dynamic>{'value': overlong},
+            },
+            verify: (updates, errors) {
+              final value = updates.single as acp.UnknownUpdate;
+              expect(value.raw['sessionId'], 's');
+              expect(value.raw['update'], isEmpty);
+              expect(value.omission, isNotNull);
+              expect(errors, isEmpty);
+            },
+          ),
+        ];
+
+    for (final family in cases) {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 64),
+      );
+      final updates = <acp.AcpUpdate>[];
+      final errors = <Object>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      StreamSubscription<acp.AcpUpdate>? subscription;
+      try {
+        await manager.resumeSession(
+          sessionId: 's',
+          workspaceRoot: '/workspace',
+        );
+        subscription = manager
+            .sessionUpdates('s')
+            .listen(updates.add, onError: errors.add);
+        final owner = manager.beginPromptTurn('s');
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 's',
+              'update': family.update,
+            },
+          }),
+        );
+        await pumpEventQueue();
+        family.verify(updates, errors);
+        manager.endPromptTurn(owner);
+      } finally {
+        await subscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    }
+  });
+
+  test(
+    'cancel error close and dispose release exact aggregate counters',
+    () async {
+      const budget = acp.AcpInputBudget(
+        maxMessageTextBytes: 4,
+        maxMarkdownFallbackBytes: 4,
+      );
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: budget,
+      );
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] == 'session/resume' ||
+            request['method'] == 'session/close') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+        } else if (request['method'] == 'session/prompt') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'session/update',
+              'params': <String, dynamic>{
+                'sessionId': 'release-counters',
+                'update': <String, dynamic>{
+                  'sessionUpdate': 'agent_message_chunk',
+                  'content': <Map<String, dynamic>>[
+                    <String, dynamic>{'type': 'text', 'text': 'abcd'},
+                  ],
+                },
+              },
+            }),
+          );
+          Future<void>.delayed(const Duration(milliseconds: 10), () {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': request['id'],
+                'error': <String, dynamic>{
+                  'code': -32000,
+                  'message': 'fixed prompt failure',
+                },
+              }),
+            );
+          });
+        }
+      });
+      var updates = <acp.AcpUpdate>[];
+      StreamSubscription<acp.AcpUpdate>? subscription;
+
+      void sendText() {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'release-counters',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'agent_message_chunk',
+                'content': <Map<String, dynamic>>[
+                  <String, dynamic>{'type': 'text', 'text': 'abcd'},
+                ],
+              },
+            },
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'release-counters',
+          workspaceRoot: '/workspace',
+        );
+        subscription = manager
+            .sessionUpdates('release-counters')
+            .listen(updates.add, onError: (_) {});
+
+        final cancelled = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        await manager.cancelPromptTurn(cancelled);
+        final afterCancel = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        expect(
+          updates.whereType<acp.MessageDelta>().map((update) => update.text),
+          <String>['abcd', 'abcd'],
+        );
+        manager.endPromptTurn(afterCancel);
+
+        await expectLater(
+          manager
+              .prompt(
+                sessionId: 'release-counters',
+                content: const <Map<String, dynamic>>[],
+              )
+              .toList(),
+          throwsA(anything),
+        );
+        final afterError = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        expect(updates.whereType<acp.MessageDelta>().last.text, 'abcd');
+        manager.endPromptTurn(afterError);
+
+        final beforeClose = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        await manager.closeSession(sessionId: 'release-counters');
+        manager.endPromptTurn(beforeClose);
+        await subscription.cancel();
+        subscription = null;
+
+        await manager.resumeSession(
+          sessionId: 'release-counters',
+          workspaceRoot: '/workspace',
+        );
+        updates = <acp.AcpUpdate>[];
+        subscription = manager
+            .sessionUpdates('release-counters')
+            .listen(updates.add, onError: (_) {});
+        final afterClose = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        expect(updates.whereType<acp.MessageDelta>().single.text, 'abcd');
+        manager.endPromptTurn(afterClose);
+
+        final beforeDispose = manager.beginPromptTurn('release-counters');
+        sendText();
+        await pumpEventQueue();
+        await manager.dispose();
+        manager.endPromptTurn(beforeDispose);
+        sendText();
+        await pumpEventQueue();
+        expect(
+          () => manager.beginPromptTurn('release-counters'),
+          throwsStateError,
+        );
+      } finally {
+        await subscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
     'session replay is item bounded and carries a truncation marker',
     () async {
       final channel = StreamChannelController<String>();
@@ -3053,6 +4182,7 @@ Future<void> main() async {
           sessionId: 'bounded-replay',
           workspaceRoot: '/workspace',
         );
+        final owner = manager.beginPromptTurn('bounded-replay');
         for (var index = 0; index < 5; index += 1) {
           channel.local.sink.add(
             jsonEncode(<String, dynamic>{
@@ -3069,6 +4199,7 @@ Future<void> main() async {
           );
         }
         await pumpEventQueue();
+        manager.endPromptTurn(owner);
 
         final replay = await manager
             .sessionUpdates('bounded-replay')
@@ -3120,6 +4251,7 @@ Future<void> main() async {
         sessionId: 'byte-replay',
         workspaceRoot: '/workspace',
       );
+      final owner = manager.beginPromptTurn('byte-replay');
       channel.local.sink.add(
         jsonEncode(<String, dynamic>{
           'jsonrpc': '2.0',
@@ -3134,6 +4266,7 @@ Future<void> main() async {
         }),
       );
       await pumpEventQueue();
+      manager.endPromptTurn(owner);
       final replay = await manager
           .sessionUpdates('byte-replay')
           .take(1)
@@ -3156,7 +4289,7 @@ Future<void> main() async {
         config: acp.AcpConfig(),
         peer: peer,
         maxToolCallItems: 2,
-        maxToolCallBytes: 150,
+        maxToolCallBytes: 500,
       );
       final errors = <Object>[];
       final subscription = manager
@@ -3198,6 +4331,7 @@ Future<void> main() async {
           sessionId: 'bounded-tools',
           workspaceRoot: '/workspace',
         );
+        final owner = manager.beginPromptTurn('bounded-tools');
         sendTool('active-a', 'in_progress');
         sendTool('completed', 'completed');
         sendTool('active-b', 'in_progress');
@@ -3216,6 +4350,7 @@ Future<void> main() async {
           contains('manual intervention required'),
         );
         expect(errors.single.toString(), isNot(contains('active-c')));
+        manager.endPromptTurn(owner);
       } finally {
         await subscription.cancel();
         await manager.dispose();
@@ -3426,6 +4561,7 @@ Future<void> main() async {
           sessionId: 'paused-close',
           workspaceRoot: '/workspace',
         );
+        final modeOwner = manager.beginPromptTurn('paused-close');
         channel.local.sink.add(
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
@@ -3440,6 +4576,7 @@ Future<void> main() async {
           }),
         );
         await pumpEventQueue();
+        manager.endPromptTurn(modeOwner);
         expect(
           manager.sessionModes('paused-close')?.currentModeId,
           'seeded-mode',
@@ -3873,6 +5010,7 @@ Future<void> main() async {
           sessionId: 'shared-close',
           workspaceRoot: '/workspace',
         );
+        final acceptedOwner = manager.beginPromptTurn('shared-close');
         channel.local.sink.add(
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
@@ -3887,6 +5025,7 @@ Future<void> main() async {
           }),
         );
         await pumpEventQueue();
+        manager.endPromptTurn(acceptedOwner);
         expect(
           manager.sessionModes('shared-close')?.currentModeId,
           'accepted-after-close',
@@ -7415,7 +8554,7 @@ Future<void> main() async {
           'update': <String, dynamic>{
             'sessionUpdate': 'available_commands_update',
             'availableCommands': <Object>[
-              'review',
+              <String, dynamic>{'name': 'review'},
               <String, dynamic>{
                 'id': 'explain',
                 'summary': 'Explain the current change.',
@@ -7429,7 +8568,6 @@ Future<void> main() async {
                   'placeholder': 'Patch instructions',
                 },
               },
-              42,
             ],
           },
         },

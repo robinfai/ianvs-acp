@@ -100,7 +100,14 @@ class MessageDelta extends AcpUpdate {
         throw const FormatException('Invalid ACP message content structure.');
       }
       final ContentBlock block;
-      if (rawBlock is Map<String, dynamic>) {
+      if (rawBlock is String) {
+        final text = guard.copyString(rawBlock, field: 'legacy text content');
+        block = TextContent.fromJson(
+          <String, dynamic>{'type': 'text', 'text': text},
+          inputBudget: inputBudget,
+          structuredGuard: guard,
+        );
+      } else if (rawBlock is Map<String, dynamic>) {
         block = ContentBlock.fromJson(
           rawBlock,
           inputBudget: inputBudget,
