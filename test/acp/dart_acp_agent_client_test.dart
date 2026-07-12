@@ -4403,6 +4403,21 @@ Future<void> main() async {
       final first = prompt.first as Map<String, dynamic>;
       if (first['text'] == 'cancel immediately') {
         await File($promptSeenPath).writeAsString('prompted');
+      } else {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'method': 'session/update',
+          'params': <String, dynamic>{
+            'sessionId': params['sessionId'],
+            'update': <String, dynamic>{
+              'sessionUpdate': 'agent_message_chunk',
+              'content': <String, dynamic>{
+                'type': 'text',
+                'text': 'replacement-only',
+              },
+            },
+          },
+        }));
       }
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
@@ -4426,14 +4441,95 @@ Future<void> main() async {
           .sendPrompt(sessionId: session.id, prompt: 'cancel immediately')
           .toList();
       await client.cancel();
-      await promptEvents.timeout(const Duration(seconds: 5));
-      await _waitForFile(cancelSeenFile);
-      await client
+      final replacement = await client
           .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
-          .drain<void>()
+          .toList()
           .timeout(const Duration(seconds: 5));
+      expect(replacement.last.metadata['stopReason'], 'endTurn');
+      expect(await promptEvents.timeout(const Duration(seconds: 5)), isEmpty);
+      await _waitForFile(cancelSeenFile);
       expect(await promptSeenFile.exists(), isFalse);
     } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('paused raw prompt cancel releases identity before returning', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+    final unexpectedPromptFile = File('${tempDir.path}/unexpected_prompt');
+    final agentScript = File('${tempDir.path}/fake_paused_cancel_agent.dart');
+    final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+    final unexpectedPromptPath = jsonEncode(unexpectedPromptFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/cancel') {
+      await File($cancelSeenPath).writeAsString('cancelled');
+    } else if (message['method'] == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      final prompt = params['prompt'] as List<dynamic>;
+      final first = prompt.first as Map<String, dynamic>;
+      if (first['text'] == 'paused cancel') {
+        await File($unexpectedPromptPath).writeAsString('unexpected');
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+    StreamSubscription<AgentEvent>? subscription;
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      subscription = client
+          .sendPrompt(sessionId: session.id, prompt: 'paused cancel')
+          .listen((_) {});
+      subscription.pause();
+
+      await client.cancel().timeout(const Duration(seconds: 5));
+      final replacement = await client
+          .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
+          .toList()
+          .timeout(const Duration(seconds: 5));
+      expect(replacement.last.metadata['stopReason'], 'endTurn');
+      await _waitForFile(cancelSeenFile);
+      expect(await unexpectedPromptFile.exists(), isFalse);
+    } finally {
+      subscription?.resume();
+      await subscription?.cancel();
       await client.dispose();
       await tempDir.delete(recursive: true);
     }

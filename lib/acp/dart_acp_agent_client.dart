@@ -847,6 +847,10 @@ class DartAcpAgentClient implements AcpAgentClient {
         workspaceRoot: _cwdBySession[operation.sessionId],
       );
       if (operation.locallyInvalidated) return;
+      if (operation.cancelRequested) {
+        await _cancelRawPromptOperation(client, operation);
+        return;
+      }
       await for (final event in _sendRawPrompt(
         client: client,
         operation: operation,
@@ -1434,6 +1438,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     required List<Map<String, dynamic>> content,
   }) async* {
     if (operation.locallyInvalidated) return;
+    if (operation.cancelRequested) {
+      await _cancelRawPromptOperation(client, operation);
+      return;
+    }
     final sessionId = operation.sessionId;
     final events = StreamController<AgentEvent>();
     var acceptingUpdates = false;
@@ -1482,13 +1490,20 @@ class DartAcpAgentClient implements AcpAgentClient {
     try {
       await Future<void>.delayed(Duration.zero);
       if (operation.locallyInvalidated) return;
+      if (operation.cancelRequested) {
+        await _cancelRawPromptOperation(client, operation);
+        return;
+      }
       acceptingUpdates = true;
       unawaited(() async {
         acp.AcpSessionInputBudgetOwner? owner;
         try {
           if (operation.locallyInvalidated) return;
-          owner = client.beginPromptTurn(sessionId);
-          operation.owner = owner;
+          owner = operation.owner;
+          if (owner == null) {
+            owner = client.beginPromptTurn(sessionId);
+            operation.owner = owner;
+          }
           if (operation.locallyInvalidated) return;
           if (operation.cancelRequested) {
             await _cancelRawPromptOperation(client, operation);
@@ -2284,16 +2299,36 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (!operation.streamCancellation.isCompleted) {
       operation.streamCancellation.complete();
     }
-    (await cancellation).throwIfFailed();
+    try {
+      (await cancellation).throwIfFailed();
+    } finally {
+      if (identical(_rawPromptOperationsBySession[sessionId], operation)) {
+        _rawPromptOperationsBySession.remove(sessionId);
+      }
+    }
   }
 
   Future<void> _cancelRawPromptOperation(
     acp.AcpClient client,
     _RawPromptOperation operation,
   ) {
-    final owner = operation.owner;
-    if (owner == null) return Future<void>.value();
     final completion = operation.cancelCompletion ??= Completer<void>();
+    var owner = operation.owner;
+    if (owner == null) {
+      if (operation.locallyInvalidated || operation.finished) {
+        if (!completion.isCompleted) completion.complete();
+        return completion.future;
+      }
+      try {
+        owner = client.beginPromptTurn(operation.sessionId);
+        operation.owner = owner;
+      } on Object catch (error, stackTrace) {
+        if (!completion.isCompleted) {
+          completion.completeError(error, stackTrace);
+        }
+        return completion.future;
+      }
+    }
     if (operation.cancelSent) return completion.future;
     operation.cancelSent = true;
     try {
