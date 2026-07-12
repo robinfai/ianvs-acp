@@ -28,6 +28,7 @@ class ChatTimeline extends StatefulWidget {
     this.hasActiveSession = false,
     this.activeSessionLabel,
     this.isLoadingSession = false,
+    this.messageListRevision = 0,
     this.onNewSession,
   });
 
@@ -36,6 +37,7 @@ class ChatTimeline extends StatefulWidget {
   final bool hasActiveSession;
   final String? activeSessionLabel;
   final bool isLoadingSession;
+  final int messageListRevision;
   final VoidCallback? onNewSession;
 
   @override
@@ -46,6 +48,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   final ScrollController _scrollController = ScrollController();
   late int _messageSignature = _timelineMessagesSignature(
     widget.messages,
+    messageListRevision: widget.messageListRevision,
     isLoadingSession: widget.isLoadingSession,
   );
 
@@ -116,6 +119,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void _syncMessageSignature() {
     final nextSignature = _timelineMessagesSignature(
       widget.messages,
+      messageListRevision: widget.messageListRevision,
       isLoadingSession: widget.isLoadingSession,
     );
     if (nextSignature == _messageSignature) return;
@@ -146,12 +150,13 @@ class _ChatTimelineState extends State<ChatTimeline> {
 
 int _timelineMessagesSignature(
   List<ChatMessage> messages, {
+  required int messageListRevision,
   required bool isLoadingSession,
 }) {
   final visibleMessages = _visibleTimelineMessages(messages);
   return _messagesSignature(
     visibleMessages,
-    skippedCount: messages.length - visibleMessages.length,
+    messageListRevision: messageListRevision,
     isLoadingSession: isLoadingSession,
   );
 }
@@ -163,46 +168,17 @@ List<ChatMessage> _visibleTimelineMessages(List<ChatMessage> messages) {
 
 int _messagesSignature(
   List<ChatMessage> messages, {
-  required int skippedCount,
+  required int messageListRevision,
   required bool isLoadingSession,
 }) {
   return Object.hashAll([
-    skippedCount,
+    messageListRevision,
     isLoadingSession,
-    messages.length,
     for (final message in messages) ...[
-      message.role,
-      message.text.length,
-      message.timestamp.microsecondsSinceEpoch,
-      _metadataSignature(message.metadata),
+      identityHashCode(message),
+      message.revision,
     ],
   ]);
-}
-
-int _metadataSignature(Object? value) {
-  if (value is Map) {
-    final entries =
-        value.entries
-            .map((entry) => MapEntry(entry.key.toString(), entry.value))
-            .toList()
-          ..sort((a, b) => a.key.compareTo(b.key));
-    return Object.hashAll([
-      'map',
-      entries.length,
-      for (final entry in entries) ...[
-        entry.key,
-        _metadataSignature(entry.value),
-      ],
-    ]);
-  }
-  if (value is Iterable) {
-    return Object.hashAll([
-      'iterable',
-      for (final item in value) _metadataSignature(item),
-    ]);
-  }
-  if (value is DateTime) return value.microsecondsSinceEpoch;
-  return Object.hash(value.runtimeType, value);
 }
 
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {

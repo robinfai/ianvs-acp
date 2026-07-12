@@ -145,9 +145,13 @@ class ChatMessage {
     this._revision = 0,
     int? acceptedUtf8Bytes,
     this._retainedBytes,
+    int? turnId,
   }) : _textBuffer = StringBuffer(text),
        _materializedText = text,
-       _acceptedUtf8Bytes = acceptedUtf8Bytes ?? utf8.encode(text).length;
+       _acceptedUtf8Bytes = acceptedUtf8Bytes ?? utf8.encode(text).length,
+       // The private named constructor keeps a readable `turnId` argument.
+       // ignore: prefer_initializing_formals
+       _turnId = turnId;
 
   final ChatMessageRole role;
   StringBuffer _textBuffer;
@@ -158,6 +162,24 @@ class ChatMessage {
   final bool _frozen;
   final acp.AcpInputBudget _inputBudget;
   int? _retainedBytes;
+  int? _turnId;
+  Object? _ownerToken;
+
+  int? get turnId => _turnId;
+
+  void _claimOwnership(Object ownerToken, int turnId) {
+    if (_frozen || _ownerToken != null || _turnId != null) {
+      throw StateError('Chat message is already owned.');
+    }
+    _ownerToken = ownerToken;
+    _turnId = turnId;
+  }
+
+  void _requireOwner(Object ownerToken) {
+    if (!identical(_ownerToken, ownerToken)) {
+      throw StateError('Chat message is not owned by this controller.');
+    }
+  }
 
   String get text {
     final cached = _materializedText;
@@ -170,6 +192,15 @@ class ChatMessage {
 
   set text(String value) {
     _requireActive();
+    _setText(value);
+  }
+
+  void _setTextForOwner(Object ownerToken, String value) {
+    _requireOwner(ownerToken);
+    _setText(value);
+  }
+
+  void _setText(String value) {
     _textBuffer = StringBuffer(value);
     _materializedText = value;
     _acceptedUtf8Bytes = utf8.encode(value).length;
@@ -199,6 +230,19 @@ class ChatMessage {
 
   void appendAcceptedText(String value, {required int acceptedUtf8Bytes}) {
     _requireActive();
+    _appendAcceptedText(value, acceptedUtf8Bytes: acceptedUtf8Bytes);
+  }
+
+  void _appendAcceptedTextForOwner(
+    Object ownerToken,
+    String value, {
+    required int acceptedUtf8Bytes,
+  }) {
+    _requireOwner(ownerToken);
+    _appendAcceptedText(value, acceptedUtf8Bytes: acceptedUtf8Bytes);
+  }
+
+  void _appendAcceptedText(String value, {required int acceptedUtf8Bytes}) {
     if (acceptedUtf8Bytes < 0) {
       throw ArgumentError.value(
         acceptedUtf8Bytes,
@@ -231,6 +275,15 @@ class ChatMessage {
 
   bool addOmission(acp.AcpInputOmission omission) {
     _requireActive();
+    return _addOmission(omission);
+  }
+
+  bool _addOmissionForOwner(Object ownerToken, acp.AcpInputOmission omission) {
+    _requireOwner(ownerToken);
+    return _addOmission(omission);
+  }
+
+  bool _addOmission(acp.AcpInputOmission omission) {
     if (_omissions.length >= _maxOmissions ||
         _omissions.any(
           (existing) =>
@@ -255,6 +308,7 @@ class ChatMessage {
   ChatMessage _copyForBudget(
     acp.AcpInputBudget inputBudget, {
     required bool frozen,
+    bool preserveTurnId = true,
   }) {
     inputBudget.validate();
     final materializedText = text;
@@ -305,6 +359,7 @@ class ChatMessage {
       frozen: frozen,
       revision: _revision,
       acceptedUtf8Bytes: copiedAcceptedUtf8Bytes,
+      turnId: preserveTurnId ? _turnId : null,
     );
   }
 
@@ -328,12 +383,16 @@ class ChatMessage {
       revision: _revision,
       acceptedUtf8Bytes: _acceptedUtf8Bytes,
       retainedBytes: retainedBytes,
+      turnId: _turnId,
     );
   }
 
   void _requireActive() {
     if (_frozen) {
       throw StateError('Frozen chat message is immutable.');
+    }
+    if (_ownerToken != null) {
+      throw StateError('Controller-owned chat message is immutable.');
     }
   }
 }
@@ -1517,7 +1576,7 @@ class _SessionViewSnapshot {
       sessionSettingsLoading: sessionSettingsLoading,
       status: status,
       activeSessionSettingsLoadId: activeSessionSettingsLoadId,
-      retainedBytes: _estimateSessionSnapshotRetainedBytes(
+      retainedBytes: _estimateSessionViewRetainedBytes(
         messages: frozenMessages,
         availableCommands: copiedCommands,
         sessionSettings: copiedSettings,
@@ -1586,42 +1645,89 @@ AgentSession _copyAgentSession(
   AgentSession session,
   acp.AcpInputBudget inputBudget,
 ) {
+  try {
+    return _copyAgentSessionStrict(session, inputBudget);
+  } on Object {
+    return AgentSession(
+      id: session.id,
+      cwd: session.cwd,
+      createdAt: session.createdAt,
+      title: session.title,
+      titleOverride: session.titleOverride,
+      updatedAt: session.updatedAt,
+      agentName: session.agentName,
+      pinned: session.pinned,
+      archived: session.archived,
+      unread: session.unread,
+    );
+  }
+}
+
+AgentSession _copyAgentSessionStrict(
+  AgentSession session,
+  acp.AcpInputBudget inputBudget,
+) {
   final guard = acp.AcpStructuredUpdateGuard(
     budget: inputBudget,
     resource: 'session snapshot',
   );
   guard.consumeContainerNode(field: 'session');
-  List<String> directories = const <String>[];
-  List<AgentEvent> events = const <AgentEvent>[];
-  try {
-    final copiedDirectories = guard.copyJsonValue(
-      session.additionalDirectories,
-      field: 'additional directories',
-    );
-    if (copiedDirectories is! List ||
-        copiedDirectories.any((directory) => directory is! String)) {
-      throw const FormatException('Invalid session directories.');
-    }
-    directories = List<String>.unmodifiable(copiedDirectories.cast<String>());
-    events = _copyInitialEvents(session.initialEvents, inputBudget, guard);
-  } on Object {
-    directories = const <String>[];
-    events = const <AgentEvent>[];
+  String? copyOptionalString(String? value, String field) {
+    return value == null ? null : guard.copyString(value, field: field);
   }
-  return AgentSession(
-    id: session.id,
-    cwd: session.cwd,
+
+  final id = guard.copyString(session.id, field: 'session id');
+  final cwd = guard.copyString(session.cwd, field: 'session cwd');
+  final rawDirectories = session.additionalDirectories;
+  final directoryCount = guard.checkCollection(
+    rawDirectories,
+    field: 'additional directories',
+  );
+  guard.consumeContainerNode(field: 'additional directories');
+  final directories = <String>[];
+  for (var index = 0; index < directoryCount; index += 1) {
+    guard.consumeEntry(field: 'additional directory');
+    directories.add(
+      guard.copyString(rawDirectories[index], field: 'additional directory'),
+    );
+  }
+  if (rawDirectories.length != directoryCount) {
+    throw const FormatException('Invalid session directory count.');
+  }
+  final eventsGuard = acp.AcpStructuredUpdateGuard(
+    budget: inputBudget,
+    resource: 'session initial events',
+  )..consumeContainerNode(field: 'session');
+  final events = _copyInitialEvents(
+    session.initialEvents,
+    inputBudget,
+    eventsGuard,
+  );
+  final copied = AgentSession(
+    id: id,
+    cwd: cwd,
     createdAt: session.createdAt,
-    additionalDirectories: directories,
-    title: session.title,
-    titleOverride: session.titleOverride,
+    additionalDirectories: List<String>.unmodifiable(directories),
+    title: copyOptionalString(session.title, 'session title'),
+    titleOverride: copyOptionalString(
+      session.titleOverride,
+      'session title override',
+    ),
     updatedAt: session.updatedAt,
-    agentName: session.agentName,
+    agentName: copyOptionalString(session.agentName, 'session agent name'),
     initialEvents: events,
     pinned: session.pinned,
     archived: session.archived,
     unread: session.unread,
   );
+  _addAgentSessionRetainedBytes(
+    0,
+    acp.AcpRetainedSizeEstimator(
+      budget: _retainedAccountingBudget(inputBudget),
+    ),
+    copied,
+  );
+  return copied;
 }
 
 List<AgentEvent> _copyInitialEvents(
@@ -1848,7 +1954,21 @@ AcpSessionUsage? _copySessionUsage(AcpSessionUsage? usage) {
   );
 }
 
-int _estimateSessionSnapshotRetainedBytes({
+int _estimateTimelineRetainedBytes(
+  List<ChatMessage> messages, {
+  int? precomputedMessageRetainedBytes,
+}) {
+  var retained = _addRetainedListHostBytes(0, messages.length);
+  if (precomputedMessageRetainedBytes case final messageBytes?) {
+    return _checkedRetainedAdd(retained, messageBytes);
+  }
+  for (final message in messages) {
+    retained = _checkedRetainedAdd(retained, message.retainedBytes);
+  }
+  return retained;
+}
+
+int _estimateSessionViewRetainedBytes({
   required List<ChatMessage> messages,
   required List<Map<String, Object?>> availableCommands,
   required AcpSessionSettings sessionSettings,
@@ -1858,15 +1978,16 @@ int _estimateSessionSnapshotRetainedBytes({
   required String? lastError,
   required int? activeSessionSettingsLoadId,
   required acp.AcpInputBudget inputBudget,
+  int? precomputedTimelineRetainedBytes,
 }) {
-  final estimator = acp.AcpRetainedSizeEstimator(budget: inputBudget);
-  var retained = _addRetainedListHostBytes(
-    _sessionSnapshotHostRetainedBytes,
-    messages.length,
+  final estimator = acp.AcpRetainedSizeEstimator(
+    budget: _retainedAccountingBudget(inputBudget),
   );
-  for (final message in messages) {
-    retained = _checkedRetainedAdd(retained, message.retainedBytes);
-  }
+  var retained = _checkedRetainedAdd(
+    _sessionSnapshotHostRetainedBytes,
+    precomputedTimelineRetainedBytes ??
+        _estimateTimelineRetainedBytes(messages),
+  );
   retained = _addAgentSessionRetainedBytes(retained, estimator, session);
   retained = _addEstimatedRetainedBytes(retained, estimator, availableCommands);
   if (lastLatency != null) {
@@ -1893,6 +2014,36 @@ int _estimateSessionSnapshotRetainedBytes({
     );
   }
   return retained;
+}
+
+acp.AcpInputBudget _retainedAccountingBudget(acp.AcpInputBudget inputBudget) {
+  const defaults = acp.AcpInputBudget();
+  int atLeastDefault(int value, int fallback) {
+    return value < fallback ? fallback : value;
+  }
+
+  return acp.AcpInputBudget(
+    maxMetadataDepth: atLeastDefault(
+      inputBudget.maxMetadataDepth,
+      defaults.maxMetadataDepth,
+    ),
+    maxMetadataNodes: atLeastDefault(
+      inputBudget.maxMetadataNodes,
+      defaults.maxMetadataNodes,
+    ),
+    maxMetadataEntries: atLeastDefault(
+      inputBudget.maxMetadataEntries,
+      defaults.maxMetadataEntries,
+    ),
+    maxCollectionItems: atLeastDefault(
+      inputBudget.maxCollectionItems,
+      defaults.maxCollectionItems,
+    ),
+    maxStructuredStringBytes: atLeastDefault(
+      inputBudget.maxStructuredStringBytes,
+      defaults.maxStructuredStringBytes,
+    ),
+  );
 }
 
 int _addAgentSessionRetainedBytes(
@@ -2101,13 +2252,45 @@ class ChatController extends ChangeNotifier {
   final AcpPermissionReviewer? permissionReviewer;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
-  AgentSession? currentSession;
+  AgentSession? _currentSession;
+  AgentSession? get currentSession => _currentSession;
+  set currentSession(AgentSession? value) {
+    _currentSession = value;
+    _requestActiveUiStateRefresh();
+  }
+
   final List<AgentSession> sessions = <AgentSession>[];
-  final List<ChatMessage> messages = <ChatMessage>[];
-  List<Map<String, Object?>> availableCommands = const <Map<String, Object?>>[];
+  final Object _messageOwnerToken = Object();
+  final List<ChatMessage> _messages = <ChatMessage>[];
+  late final UnmodifiableListView<ChatMessage> _messagesView =
+      UnmodifiableListView<ChatMessage>(_messages);
+  UnmodifiableListView<ChatMessage> get messages => _messagesView;
+  int messagesRevision = 0;
+  int _nextTurnId = 0;
+  int? _activeTurnId;
+  int _activeTimelineRetainedBytes = _retainedListHostBytes;
+  bool _enforcingTimelineBudget = false;
+  List<Map<String, Object?>> _availableCommands =
+      const <Map<String, Object?>>[];
+  List<Map<String, Object?>> get availableCommands => _availableCommands;
+  set availableCommands(List<Map<String, Object?>> commands) {
+    _tryReplaceAvailableCommands(commands);
+  }
+
+  int availableCommandsRevision = 0;
   AcpAgentCapabilities? capabilities;
-  AcpSessionSettings sessionSettings = const AcpSessionSettings();
-  AcpSessionUsage? sessionUsage;
+  AcpSessionSettings _sessionSettings = const AcpSessionSettings();
+  AcpSessionSettings get sessionSettings => _sessionSettings;
+  set sessionSettings(AcpSessionSettings value) {
+    _tryReplaceSessionSettings(value);
+  }
+
+  AcpSessionUsage? _sessionUsage;
+  AcpSessionUsage? get sessionUsage => _sessionUsage;
+  set sessionUsage(AcpSessionUsage? value) {
+    _tryReplaceSessionUsage(value);
+  }
+
   AcpPermissionRequest? pendingPermissionRequest;
   AcpToolCallExecutionPolicy toolCallExecutionPolicy =
       AcpToolCallExecutionPolicy.defaultPermissions;
@@ -2123,7 +2306,19 @@ class ChatController extends ChangeNotifier {
       <ChatPermissionEventObserver>[];
   final Map<String, _SessionViewSnapshot> _sessionViewSnapshots =
       <String, _SessionViewSnapshot>{};
-  String? lastError;
+  int _inactiveSnapshotRetainedBytes = 0;
+  int _activeUiStateRetainedBytes = 0;
+  int _uiStateTransactionDepth = 0;
+  bool _uiStateRefreshPending = false;
+  bool _uiStateNotificationPending = false;
+  bool _enforcingUiStateBudget = false;
+  String? _lastError;
+  String? get lastError => _lastError;
+  set lastError(String? value) {
+    _lastError = value;
+    _requestActiveUiStateRefresh();
+  }
+
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
@@ -2173,6 +2368,25 @@ class ChatController extends ChangeNotifier {
   @visibleForTesting
   bool get debugTurnTextCounterTouched =>
       _turnBudget?.textCounterTouched ?? false;
+
+  @visibleForTesting
+  List<String> get debugInactiveSnapshotIds =>
+      List<String>.unmodifiable(_sessionViewSnapshots.keys);
+
+  @visibleForTesting
+  int get debugUiStateRetainedBytes =>
+      _activeUiStateRetainedBytes + _inactiveSnapshotRetainedBytes;
+
+  @visibleForTesting
+  int get debugActiveUiStateRetainedBytes => _activeUiStateRetainedBytes;
+
+  @visibleForTesting
+  int get debugActiveTimelineRetainedBytes => _activeTimelineRetainedBytes;
+
+  @visibleForTesting
+  void touchInactiveSnapshotForTesting(String sessionId) {
+    _touchSessionViewSnapshot(sessionId);
+  }
 
   String? get currentModelValue => sessionSettings.modelOption?.currentValue;
 
@@ -2236,9 +2450,27 @@ class ChatController extends ChangeNotifier {
   StreamSubscription<AgentEvent>? _promptSubscription;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   DateTime? _lastPromptStartedAt;
-  Duration? lastLatency;
+  Duration? _lastLatency;
+  Duration? get lastLatency => _lastLatency;
+  set lastLatency(Duration? value) {
+    _lastLatency = value;
+    _requestActiveUiStateRefresh();
+  }
+
   int _sessionSettingsLoadSerial = 0;
-  int? _activeSessionSettingsLoadId;
+  int _sessionOperationGeneration = 0;
+  int? __activeSessionSettingsLoadId;
+  int? get _activeSessionSettingsLoadId => __activeSessionSettingsLoadId;
+  set _activeSessionSettingsLoadId(int? value) {
+    __activeSessionSettingsLoadId = value;
+    _requestActiveUiStateRefresh();
+  }
+
+  int _beginSessionOperationGeneration() => ++_sessionOperationGeneration;
+
+  bool _isCurrentSessionOperationGeneration(int generation) {
+    return !_isDisposed && generation == _sessionOperationGeneration;
+  }
 
   Future<void> connect() async {
     if (isSessionOperationRunning) return;
@@ -2266,43 +2498,64 @@ class ChatController extends ChangeNotifier {
         ? this.cwd
         : cwd.trim();
     var created = false;
+    final operationGeneration = _beginSessionOperationGeneration();
     await _runSessionOperation(() async {
       try {
         if (status == ConnectionStatus.disconnected ||
             status == ConnectionStatus.error) {
           await _connectWithStatus(ConnectionStatus.connecting);
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return;
+          }
           if (status == ConnectionStatus.error) return;
         }
-        final session = (await client.createSession(
+        final remoteSession = await client.createSession(
           cwd: workspaceCwd,
           additionalDirectories: additionalDirectories,
-        )).copyWith(agentName: agentName);
-        _snapshotCurrentSession();
-        _retiredSessionIds.remove(session.id);
-        currentSession = session;
-        _upsertSession(session);
-        messages.clear();
-        availableCommands = const <Map<String, Object?>>[];
-        lastLatency = null;
-        lastError = null;
-        sessionSettings = const AcpSessionSettings();
-        sessionUsage = null;
-        for (final event in session.initialEvents) {
-          _handleAgentEvent(event, notify: false);
-        }
-        _finishTurnBudget();
+        );
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        final createdSession = _copyAgentSessionStrict(
+          remoteSession.copyWith(agentName: agentName),
+          inputBudget,
+        );
+        final initialEvents = createdSession.initialEvents;
+        final session = createdSession.copyWith(
+          initialEvents: const <AgentEvent>[],
+        );
+        await _runUiStateTransaction(() {
+          _snapshotCurrentSession();
+          _retiredSessionIds.remove(session.id);
+          currentSession = session;
+          _upsertSession(session);
+          _clearMessages();
+          availableCommands = const <Map<String, Object?>>[];
+          lastLatency = null;
+          lastError = null;
+          sessionSettings = const AcpSessionSettings();
+          sessionUsage = null;
+          sessionSettingsLoading = false;
+          _activeSessionSettingsLoadId = null;
+          for (final event in initialEvents) {
+            _handleAgentEvent(event, notify: false);
+          }
+          _finishTurnBudget();
+        });
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (messages.isEmpty) {
           _localUnstartedSessionIds.add(session.id);
         } else {
           _localUnstartedSessionIds.remove(session.id);
         }
-        await _loadSessionSettings(session.id, notify: false);
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
           created = currentSession?.id == session.id;
         }
         _notifyListeners();
+        await _loadSessionSettings(session.id, notify: false);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        _notifyListeners();
       } catch (error) {
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _setError(error);
       }
     });
@@ -2346,6 +2599,7 @@ class ChatController extends ChangeNotifier {
         additionalDirectories ?? this.additionalDirectories;
     _finishTurnBudget();
 
+    final operationGeneration = _beginSessionOperationGeneration();
     await _runSessionOperation(() async {
       final previousSession = currentSession;
       final previousSessions = List<AgentSession>.from(sessions);
@@ -2357,101 +2611,147 @@ class ChatController extends ChangeNotifier {
       final previousSessionSettingsLoading = sessionSettingsLoading;
       final previousSettingsLoadId = _activeSessionSettingsLoadId;
       final previousSessionReplayLoading = isSessionReplayLoading;
+      final previousSessionViewSnapshots = Map<String, _SessionViewSnapshot>.of(
+        _sessionViewSnapshots,
+      );
+      final previousInactiveSnapshotRetainedBytes =
+          _inactiveSnapshotRetainedBytes;
+      _SessionViewSnapshot? targetSnapshot;
       try {
         await _promptSubscription?.cancel();
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _promptSubscription = null;
         if (status == ConnectionStatus.disconnected ||
             status == ConnectionStatus.error) {
           await _connectWithStatus(ConnectionStatus.connecting);
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return;
+          }
           if (status == ConnectionStatus.error) return;
         }
 
         final existingSession = _sessionWithId(trimmedSessionId);
-        _snapshotCurrentSession();
-        final snapshot = _sessionViewSnapshots[trimmedSessionId];
-        if (snapshot != null) {
-          await _activateSessionViewSnapshot(
-            snapshot,
-            cwd: explicitCwd == null || explicitCwd.isEmpty
-                ? null
-                : explicitCwd,
-            additionalDirectories: additionalDirectories,
-            title: title,
-            updatedAt: updatedAt,
+        targetSnapshot = _takeSessionViewSnapshot(trimmedSessionId);
+        var activatedLocal = false;
+        var loadLocalSettings = false;
+        await _runUiStateTransaction(() {
+          _snapshotCurrentSession();
+          if (targetSnapshot case final snapshot?) {
+            _activateSessionViewSnapshot(
+              snapshot,
+              cwd: explicitCwd == null || explicitCwd.isEmpty
+                  ? null
+                  : explicitCwd,
+              additionalDirectories: additionalDirectories,
+              title: title,
+              updatedAt: updatedAt,
+            );
+            activatedLocal = true;
+            return;
+          }
+          if (existingSession != null &&
+              _localUnstartedSessionIds.contains(trimmedSessionId)) {
+            _activateLocalUnstartedSession(
+              existingSession,
+              cwd: explicitCwd == null || explicitCwd.isEmpty
+                  ? null
+                  : explicitCwd,
+              additionalDirectories: additionalDirectories,
+              title: title,
+              updatedAt: updatedAt,
+            );
+            activatedLocal = true;
+            loadLocalSettings = true;
+            return;
+          }
+          status = ConnectionStatus.reconnecting;
+          isStreaming = false;
+          lastError = null;
+          _clearMessages();
+          availableCommands = const <Map<String, Object?>>[];
+          lastLatency = null;
+          sessionSettings = const AcpSessionSettings();
+          sessionUsage = null;
+          sessionSettingsLoading = false;
+          _activeSessionSettingsLoadId = null;
+          final session = _copyAgentSessionStrict(
+            AgentSession(
+              id: trimmedSessionId,
+              cwd: workspaceCwd,
+              createdAt: existingSession?.createdAt ?? DateTime.now(),
+              additionalDirectories: workspaceAdditionalDirectories,
+              title: title ?? existingSession?.title,
+              titleOverride: existingSession?.titleOverride,
+              updatedAt: updatedAt,
+              agentName: agentName,
+              pinned: existingSession?.pinned ?? false,
+              archived: false,
+              unread: false,
+            ),
+            inputBudget,
           );
+          _retiredSessionIds.remove(session.id);
+          currentSession = session;
+          _upsertSession(session);
+          _cancelPendingPermissionOutsideSession(session.id);
+          isSessionReplayLoading = true;
+        });
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        if (activatedLocal) {
+          if (loadLocalSettings) {
+            await _loadSessionSettings(trimmedSessionId, notify: false);
+            if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+              return;
+            }
+            if (status != ConnectionStatus.error) {
+              status = ConnectionStatus.sessionReady;
+            }
+            _notifyListeners();
+          }
           return;
         }
-        if (existingSession != null &&
-            _localUnstartedSessionIds.contains(trimmedSessionId)) {
-          await _activateLocalUnstartedSession(
-            existingSession,
-            cwd: explicitCwd == null || explicitCwd.isEmpty
-                ? null
-                : explicitCwd,
-            additionalDirectories: additionalDirectories,
-            title: title,
-            updatedAt: updatedAt,
-          );
-          return;
-        }
-        status = ConnectionStatus.reconnecting;
-        isStreaming = false;
-        lastError = null;
-        messages.clear();
-        availableCommands = const <Map<String, Object?>>[];
-        lastLatency = null;
-        sessionSettings = const AcpSessionSettings();
-        sessionUsage = null;
-        final session = AgentSession(
-          id: trimmedSessionId,
-          cwd: workspaceCwd,
-          createdAt: existingSession?.createdAt ?? DateTime.now(),
-          additionalDirectories: workspaceAdditionalDirectories,
-          title: title ?? existingSession?.title,
-          titleOverride: existingSession?.titleOverride,
-          updatedAt: updatedAt,
-          agentName: agentName,
-          pinned: existingSession?.pinned ?? false,
-          archived: false,
-          unread: false,
-        );
-        _retiredSessionIds.remove(session.id);
-        currentSession = session;
-        _upsertSession(session);
-        _cancelPendingPermissionOutsideSession(session.id);
-        isSessionReplayLoading = true;
         _notifyListeners();
         await Future<void>.delayed(Duration.zero);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
 
         final replay = await client.resumeSession(
           sessionId: trimmedSessionId,
           cwd: workspaceCwd,
           additionalDirectories: workspaceAdditionalDirectories,
         );
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _localUnstartedSessionIds.remove(trimmedSessionId);
         await _replaySessionEvents(replay);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _loadSessionSettings(trimmedSessionId, notify: false);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         isSessionReplayLoading = false;
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
         _notifyListeners();
       } catch (error) {
-        currentSession = previousSession;
-        _cancelPendingPermissionOutsideSession(previousSession?.id);
-        sessions
-          ..clear()
-          ..addAll(previousSessions);
-        messages
-          ..clear()
-          ..addAll(previousMessages);
-        availableCommands = previousAvailableCommands;
-        lastLatency = previousLastLatency;
-        sessionSettings = previousSessionSettings;
-        sessionUsage = previousSessionUsage;
-        sessionSettingsLoading = previousSessionSettingsLoading;
-        _activeSessionSettingsLoadId = previousSettingsLoadId;
-        isSessionReplayLoading = previousSessionReplayLoading;
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        await _runUiStateTransaction(() {
+          _sessionViewSnapshots
+            ..clear()
+            ..addAll(previousSessionViewSnapshots);
+          _inactiveSnapshotRetainedBytes =
+              previousInactiveSnapshotRetainedBytes;
+          currentSession = previousSession;
+          _cancelPendingPermissionOutsideSession(previousSession?.id);
+          sessions
+            ..clear()
+            ..addAll(previousSessions);
+          _replaceAllMessages(previousMessages);
+          availableCommands = previousAvailableCommands;
+          lastLatency = previousLastLatency;
+          sessionSettings = previousSessionSettings;
+          sessionUsage = previousSessionUsage;
+          sessionSettingsLoading = previousSessionSettingsLoading;
+          _activeSessionSettingsLoadId = previousSettingsLoadId;
+          isSessionReplayLoading = previousSessionReplayLoading;
+        });
         _setError(error);
       }
     });
@@ -2571,7 +2871,7 @@ class ChatController extends ChangeNotifier {
     if (wasCurrent) _finishTurnBudget();
     final inactiveSnapshot = wasCurrent
         ? null
-        : _sessionViewSnapshots[sessionId];
+        : _touchSessionViewSnapshot(sessionId);
     final snapshot = ArchivedSessionSnapshot(
       session: session,
       wasCurrent: wasCurrent,
@@ -2601,10 +2901,10 @@ class ChatController extends ChangeNotifier {
     );
 
     _upsertSession(session.copyWith(archived: true, unread: false));
-    _sessionViewSnapshots.remove(sessionId);
+    _removeSessionViewSnapshot(sessionId);
     if (wasCurrent) {
       currentSession = null;
-      messages.clear();
+      _clearMessages();
       availableCommands = const <Map<String, Object?>>[];
       lastLatency = null;
       lastError = null;
@@ -2638,9 +2938,7 @@ class ChatController extends ChangeNotifier {
     _upsertSession(prepared.session);
     if (wasCurrent && currentSession == null) {
       currentSession = prepared.session;
-      messages
-        ..clear()
-        ..addAll(prepared.messages.map((message) => message.thaw()));
+      _replaceAllMessages(prepared.messages.map((message) => message.thaw()));
       availableCommands = _copyAvailableCommands(
         prepared.availableCommands,
         inputBudget,
@@ -2656,7 +2954,7 @@ class ChatController extends ChangeNotifier {
       status = prepared.status;
       _activeSessionSettingsLoadId = prepared.activeSessionSettingsLoadId;
     } else {
-      _sessionViewSnapshots[prepared.session.id] = prepared;
+      _storeSessionViewSnapshot(prepared.session.id, prepared);
     }
     _notifyListeners();
   }
@@ -2668,50 +2966,309 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  void _storeSessionViewSnapshot(
+    String sessionId,
+    _SessionViewSnapshot snapshot,
+  ) {
+    final previous = _sessionViewSnapshots.remove(sessionId);
+    if (previous != null) {
+      _inactiveSnapshotRetainedBytes -= previous.retainedBytes;
+    }
+    _sessionViewSnapshots[sessionId] = snapshot;
+    _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
+      _inactiveSnapshotRetainedBytes,
+      snapshot.retainedBytes,
+    );
+    if (_uiStateTransactionDepth > 0) {
+      _uiStateRefreshPending = true;
+    } else {
+      _enforceUiStateBudget();
+    }
+  }
+
+  _SessionViewSnapshot? _takeSessionViewSnapshot(String sessionId) {
+    final snapshot = _sessionViewSnapshots.remove(sessionId);
+    if (snapshot != null) {
+      _inactiveSnapshotRetainedBytes -= snapshot.retainedBytes;
+    }
+    return snapshot;
+  }
+
+  void _removeSessionViewSnapshot(String sessionId) {
+    _takeSessionViewSnapshot(sessionId);
+  }
+
+  _SessionViewSnapshot? _touchSessionViewSnapshot(String sessionId) {
+    final snapshot = _takeSessionViewSnapshot(sessionId);
+    if (snapshot == null) return null;
+    _sessionViewSnapshots[sessionId] = snapshot;
+    _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
+      _inactiveSnapshotRetainedBytes,
+      snapshot.retainedBytes,
+    );
+    return snapshot;
+  }
+
+  void _clearSessionViewSnapshots() {
+    _sessionViewSnapshots.clear();
+    _inactiveSnapshotRetainedBytes = 0;
+  }
+
+  void _requestActiveUiStateRefresh() {
+    if (_uiStateTransactionDepth > 0) {
+      _uiStateRefreshPending = true;
+      return;
+    }
+    _refreshActiveUiStateBudget();
+  }
+
+  bool _commitAuxiliaryUiStateMutation({
+    required VoidCallback apply,
+    required VoidCallback rollback,
+  }) {
+    apply();
+    _recomputeActiveUiStateRetainedBytes();
+    if (!_canFitActiveMessageRetainedDelta(0)) {
+      rollback();
+      _recomputeActiveUiStateRetainedBytes();
+      return false;
+    }
+    if (_uiStateTransactionDepth > 0) {
+      _uiStateRefreshPending = true;
+      return true;
+    }
+    _enforceUiStateBudget();
+    if (debugUiStateRetainedBytes <= inputBudget.maxUiStateBytes) return true;
+    rollback();
+    _recomputeActiveUiStateRetainedBytes();
+    _enforceUiStateBudget();
+    return false;
+  }
+
+  bool _tryReplaceAvailableCommands(List<Map<String, Object?>> commands) {
+    final copied = _copyAvailableCommands(commands, inputBudget);
+    final previous = _availableCommands;
+    final accepted = _commitAuxiliaryUiStateMutation(
+      apply: () => _availableCommands = copied,
+      rollback: () => _availableCommands = previous,
+    );
+    if (accepted) availableCommandsRevision += 1;
+    return accepted;
+  }
+
+  bool _tryReplaceSessionSettings(AcpSessionSettings settings) {
+    final previous = _sessionSettings;
+    return _commitAuxiliaryUiStateMutation(
+      apply: () => _sessionSettings = settings,
+      rollback: () => _sessionSettings = previous,
+    );
+  }
+
+  bool _tryReplaceSessionUsage(AcpSessionUsage? usage) {
+    final previous = _sessionUsage;
+    return _commitAuxiliaryUiStateMutation(
+      apply: () => _sessionUsage = usage,
+      rollback: () => _sessionUsage = previous,
+    );
+  }
+
+  bool _tryReplaceCurrentSession(AgentSession session) {
+    final previous = _currentSession;
+    return _commitAuxiliaryUiStateMutation(
+      apply: () => _currentSession = session,
+      rollback: () => _currentSession = previous,
+    );
+  }
+
+  bool _canAdmitAuxiliaryUiState({
+    required VoidCallback apply,
+    required VoidCallback rollback,
+  }) {
+    apply();
+    _recomputeActiveUiStateRetainedBytes();
+    final canAdmit = _canFitActiveMessageRetainedDelta(0);
+    rollback();
+    _recomputeActiveUiStateRetainedBytes();
+    return canAdmit;
+  }
+
+  Future<T> _runUiStateTransaction<T>(FutureOr<T> Function() operation) async {
+    _uiStateTransactionDepth += 1;
+    try {
+      return await operation();
+    } finally {
+      _uiStateTransactionDepth -= 1;
+      if (_uiStateTransactionDepth == 0 && _uiStateRefreshPending) {
+        _uiStateRefreshPending = false;
+        _refreshActiveUiStateBudget();
+      }
+      if (_uiStateTransactionDepth == 0 && _uiStateNotificationPending) {
+        _uiStateNotificationPending = false;
+        _notifyListeners();
+      }
+    }
+  }
+
+  void _refreshActiveUiStateBudget() {
+    if (_uiStateTransactionDepth > 0) {
+      _uiStateRefreshPending = true;
+      return;
+    }
+    _recomputeActiveUiStateRetainedBytes();
+    _enforceUiStateBudget();
+  }
+
+  void _recomputeActiveUiStateRetainedBytes() {
+    final session = _currentSession;
+    _activeUiStateRetainedBytes = session == null
+        ? 0
+        : _estimateSessionViewRetainedBytes(
+            messages: _messages,
+            availableCommands: _availableCommands,
+            sessionSettings: _sessionSettings,
+            sessionUsage: _sessionUsage,
+            session: session,
+            lastLatency: _lastLatency,
+            lastError: _lastError,
+            activeSessionSettingsLoadId: __activeSessionSettingsLoadId,
+            inputBudget: inputBudget,
+            precomputedTimelineRetainedBytes: _activeTimelineRetainedBytes,
+          );
+  }
+
+  void _enforceUiStateBudget() {
+    if (_enforcingUiStateBudget || _uiStateTransactionDepth > 0) return;
+    _enforcingUiStateBudget = true;
+    var removedHistory = false;
+    try {
+      while (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes &&
+          _sessionViewSnapshots.isNotEmpty) {
+        _takeSessionViewSnapshot(_sessionViewSnapshots.keys.first);
+      }
+      while (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes) {
+        int? oldestTurnId;
+        for (final message in _messages) {
+          if (_isHistoryMarker(message)) continue;
+          final turnId = message.turnId;
+          if (turnId == null || turnId == _activeTurnId) continue;
+          oldestTurnId = turnId;
+          break;
+        }
+        if (oldestTurnId == null) break;
+        _mutateMessages(
+          () => _messages.removeWhere(
+            (message) => message.turnId == oldestTurnId,
+          ),
+          enforceBudget: false,
+        );
+        removedHistory = true;
+        _recomputeActiveUiStateRetainedBytes();
+      }
+      if (removedHistory && !_messages.any(_isHistoryMarker)) {
+        final marker = _prepareOwnedMessage(
+          ChatMessage(
+            role: ChatMessageRole.status,
+            text: '',
+            omissions: <acp.AcpInputOmission>[
+              acp.AcpInputOmission(
+                reason: acp.AcpInputOmissionReason.inputLimit,
+                resource: 'timeline history',
+                truncated: true,
+                limit: inputBudget.maxUiStateBytes,
+                observedAtLeast: inputBudget.maxUiStateBytes + 1,
+              ),
+            ],
+            inputBudget: inputBudget,
+          ),
+          turnId: ++_nextTurnId,
+        );
+        _mutateMessages(
+          () => _messages.insert(0, marker),
+          enforceBudget: false,
+        );
+        _recomputeActiveUiStateRetainedBytes();
+        while (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes) {
+          int? oldestTurnId;
+          for (final message in _messages) {
+            if (_isHistoryMarker(message)) continue;
+            final turnId = message.turnId;
+            if (turnId == null || turnId == _activeTurnId) continue;
+            oldestTurnId = turnId;
+            break;
+          }
+          if (oldestTurnId == null) break;
+          _mutateMessages(
+            () => _messages.removeWhere(
+              (message) => message.turnId == oldestTurnId,
+            ),
+            enforceBudget: false,
+          );
+          _recomputeActiveUiStateRetainedBytes();
+        }
+      }
+      if (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes) {
+        final markerIndex = _messages.indexWhere(_isHistoryMarker);
+        if (markerIndex >= 0) {
+          _mutateMessages(
+            () => _messages.removeAt(markerIndex),
+            enforceBudget: false,
+          );
+          _recomputeActiveUiStateRetainedBytes();
+        }
+      }
+    } finally {
+      _enforcingUiStateBudget = false;
+    }
+  }
+
   void _snapshotCurrentSession() {
     final session = currentSession;
     if (session == null) return;
     _finishTurnBudget();
-    _sessionViewSnapshots[session.id] = _SessionViewSnapshot(
-      session: session,
-      messages: List<ChatMessage>.from(messages),
-      availableCommands: availableCommands,
-      lastLatency: lastLatency,
-      lastError: lastError,
-      sessionSettings: sessionSettings,
-      sessionUsage: sessionUsage,
-      sessionSettingsLoading: sessionSettingsLoading,
-      status: status,
-      activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
-      inputBudget: inputBudget,
+    _storeSessionViewSnapshot(
+      session.id,
+      _SessionViewSnapshot(
+        session: session,
+        messages: List<ChatMessage>.from(messages),
+        availableCommands: availableCommands,
+        lastLatency: lastLatency,
+        lastError: lastError,
+        sessionSettings: sessionSettings,
+        sessionUsage: sessionUsage,
+        sessionSettingsLoading: sessionSettingsLoading,
+        status: status,
+        activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
+        inputBudget: inputBudget,
+      ),
     );
   }
 
-  Future<void> _activateSessionViewSnapshot(
+  void _activateSessionViewSnapshot(
     _SessionViewSnapshot snapshot, {
     String? cwd,
     List<String>? additionalDirectories,
     String? title,
     DateTime? updatedAt,
-  }) async {
+  }) {
     final existingSession = _sessionWithId(snapshot.session.id);
     final sidebarSession = existingSession ?? snapshot.session;
-    final session = sidebarSession.copyWith(
-      cwd: cwd ?? sidebarSession.cwd,
-      additionalDirectories:
-          additionalDirectories ?? sidebarSession.additionalDirectories,
-      title: title ?? sidebarSession.title,
-      updatedAt: updatedAt ?? sidebarSession.updatedAt,
-      archived: false,
-      unread: false,
+    final session = _copyAgentSessionStrict(
+      sidebarSession.copyWith(
+        cwd: cwd ?? sidebarSession.cwd,
+        additionalDirectories:
+            additionalDirectories ?? sidebarSession.additionalDirectories,
+        title: title ?? sidebarSession.title,
+        updatedAt: updatedAt ?? sidebarSession.updatedAt,
+        archived: false,
+        unread: false,
+      ),
+      inputBudget,
     );
     _retiredSessionIds.remove(session.id);
     currentSession = session;
     _upsertSession(session);
     _cancelPendingPermissionOutsideSession(session.id);
-    messages
-      ..clear()
-      ..addAll(snapshot.messages.map((message) => message.thaw()));
+    _replaceAllMessages(snapshot.messages.map((message) => message.thaw()));
     availableCommands = _copyAvailableCommands(
       snapshot.availableCommands,
       inputBudget,
@@ -2728,43 +3285,33 @@ class ChatController extends ChangeNotifier {
         ? ConnectionStatus.sessionReady
         : snapshot.status;
     _activeSessionSettingsLoadId = snapshot.activeSessionSettingsLoadId;
-    _sessionViewSnapshots[session.id] = _SessionViewSnapshot(
-      session: session,
-      messages: List<ChatMessage>.from(messages),
-      availableCommands: availableCommands,
-      lastLatency: lastLatency,
-      lastError: lastError,
-      sessionSettings: sessionSettings,
-      sessionUsage: sessionUsage,
-      sessionSettingsLoading: sessionSettingsLoading,
-      status: status,
-      activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
-      inputBudget: inputBudget,
-    );
     _notifyListeners();
   }
 
-  Future<void> _activateLocalUnstartedSession(
+  void _activateLocalUnstartedSession(
     AgentSession existingSession, {
     String? cwd,
     List<String>? additionalDirectories,
     String? title,
     DateTime? updatedAt,
-  }) async {
-    final session = existingSession.copyWith(
-      cwd: cwd ?? existingSession.cwd,
-      additionalDirectories:
-          additionalDirectories ?? existingSession.additionalDirectories,
-      title: title ?? existingSession.title,
-      updatedAt: updatedAt ?? existingSession.updatedAt,
-      archived: false,
-      unread: false,
+  }) {
+    final session = _copyAgentSessionStrict(
+      existingSession.copyWith(
+        cwd: cwd ?? existingSession.cwd,
+        additionalDirectories:
+            additionalDirectories ?? existingSession.additionalDirectories,
+        title: title ?? existingSession.title,
+        updatedAt: updatedAt ?? existingSession.updatedAt,
+        archived: false,
+        unread: false,
+      ),
+      inputBudget,
     );
     _retiredSessionIds.remove(session.id);
     currentSession = session;
     _upsertSession(session);
     _cancelPendingPermissionOutsideSession(session.id);
-    messages.clear();
+    _clearMessages();
     availableCommands = const <Map<String, Object?>>[];
     lastLatency = null;
     lastError = null;
@@ -2772,12 +3319,6 @@ class ChatController extends ChangeNotifier {
     sessionUsage = null;
     sessionSettingsLoading = false;
     status = ConnectionStatus.reconnecting;
-    _notifyListeners();
-
-    await _loadSessionSettings(session.id, notify: false);
-    if (status != ConnectionStatus.error) {
-      status = ConnectionStatus.sessionReady;
-    }
     _notifyListeners();
   }
 
@@ -2814,6 +3355,7 @@ class ChatController extends ChangeNotifier {
     if (session == null) return ChatPromptSubmissionResult.sessionUnavailable;
     _localUnstartedSessionIds.remove(session.id);
     _finishTurnBudget();
+    _startLocalTurn();
     _turnBudget = _TurnBudgetState(inputBudget);
 
     final contentBlocks = attachments
@@ -2911,10 +3453,15 @@ class ChatController extends ChangeNotifier {
       currentSession = null;
       sessions.clear();
       _localUnstartedSessionIds.clear();
-      _sessionViewSnapshots.clear();
+      _clearSessionViewSnapshots();
+      _clearMessages();
       availableCommands = const <Map<String, Object?>>[];
       sessionSettings = const AcpSessionSettings();
+      sessionUsage = null;
+      lastLatency = null;
+      lastError = null;
       sessionSettingsLoading = false;
+      _activeSessionSettingsLoadId = null;
       await _connectWithStatus(ConnectionStatus.reconnecting);
     });
   }
@@ -3031,46 +3578,62 @@ class ChatController extends ChangeNotifier {
     if (isStreaming || isSessionOperationRunning) return;
     _finishTurnBudget();
 
+    final operationGeneration = _beginSessionOperationGeneration();
     await _runSessionOperation(() async {
       try {
         await _promptSubscription?.cancel();
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _promptSubscription = null;
         if (status == ConnectionStatus.disconnected ||
             status == ConnectionStatus.error) {
           await _connectWithStatus(ConnectionStatus.connecting);
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return;
+          }
           if (status == ConnectionStatus.error) return;
         }
-        final forked = await client.forkSession(
+        final remoteFork = await client.forkSession(
           sessionId: session.id,
           cwd: session.cwd,
           additionalDirectories: session.additionalDirectories,
         );
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        final forked = _copyAgentSessionStrict(remoteFork, inputBudget);
         final forkedTitle = forked.title?.trim().isNotEmpty == true
             ? forked.title
             : 'Fork of ${session.displayTitle}';
-        final updatedSession = forked.copyWith(
-          title: forkedTitle,
-          agentName: agentName,
+        final initialEvents = forked.initialEvents;
+        final updatedSession = _copyAgentSessionStrict(
+          forked.copyWith(
+            title: forkedTitle,
+            agentName: agentName,
+            initialEvents: const <AgentEvent>[],
+          ),
+          inputBudget,
         );
         _retiredSessionIds.remove(updatedSession.id);
         currentSession = updatedSession;
         _upsertSession(updatedSession);
-        messages.clear();
+        _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
         sessionSettings = const AcpSessionSettings();
         sessionUsage = null;
-        for (final event in updatedSession.initialEvents) {
+        sessionSettingsLoading = false;
+        _activeSessionSettingsLoadId = null;
+        for (final event in initialEvents) {
           _handleAgentEvent(event, notify: false);
         }
         _finishTurnBudget();
         await _loadSessionSettings(updatedSession.id, notify: false);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
         _notifyListeners();
       } catch (error) {
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _setActionError(error);
       }
     });
@@ -3089,10 +3652,10 @@ class ChatController extends ChangeNotifier {
         await client.closeSession(sessionId: session.id);
         _retiredSessionIds.add(session.id);
         _localUnstartedSessionIds.remove(session.id);
-        _sessionViewSnapshots.remove(session.id);
+        _removeSessionViewSnapshot(session.id);
         currentSession = null;
         sessions.removeWhere((item) => item.id == session.id);
-        messages.clear();
+        _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
@@ -3123,10 +3686,10 @@ class ChatController extends ChangeNotifier {
         }
         _retiredSessionIds.addAll(sessions.map((session) => session.id));
         _localUnstartedSessionIds.clear();
-        _sessionViewSnapshots.clear();
+        _clearSessionViewSnapshots();
         currentSession = null;
         sessions.clear();
-        messages.clear();
+        _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
@@ -3240,26 +3803,34 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _runSessionOperation(Future<void> Function() action) async {
+    if (_isDisposed) return;
     isSessionOperationRunning = true;
     _notifyListeners();
     try {
       await action();
     } finally {
-      isSessionOperationRunning = false;
-      _notifyListeners();
+      if (!_isDisposed) {
+        isSessionOperationRunning = false;
+        _notifyListeners();
+      }
     }
   }
 
   Future<T> _runSessionOperationWithResult<T>(
     Future<T> Function() action,
   ) async {
+    if (_isDisposed) {
+      throw StateError('Chat controller is disposed.');
+    }
     isSessionOperationRunning = true;
     _notifyListeners();
     try {
       return await action();
     } finally {
-      isSessionOperationRunning = false;
-      _notifyListeners();
+      if (!_isDisposed) {
+        isSessionOperationRunning = false;
+        _notifyListeners();
+      }
     }
   }
 
@@ -3476,6 +4047,7 @@ class ChatController extends ChangeNotifier {
       // A replayed/live user message is the next turn. Release the previous
       // counters before inspecting any media carried by the new message.
       _finishTurnBudget();
+      _startLocalTurn();
     }
     event = _safeAgentEvent(event);
     if (_isDisposed) return;
@@ -3534,7 +4106,7 @@ class ChatController extends ChangeNotifier {
             inputBudget: inputBudget,
           );
           final accepted = _addTurnMessage(errorMessage);
-          lastError = accepted ? errorMessage.text : null;
+          lastError = accepted?.text;
           status = ConnectionStatus.error;
           _finishStreaming(notify: false, suppressProjection: true);
         case AgentEventType.status:
@@ -4163,12 +4735,330 @@ class ChatController extends ChangeNotifier {
   }
 
   _TurnBudgetState _ensureTurnBudget() {
+    _activeTurnId ??= ++_nextTurnId;
     return _turnBudget ??= _TurnBudgetState(inputBudget);
   }
 
-  bool _addTurnMessage(ChatMessage message) {
+  void _startLocalTurn() {
+    _activeTurnId = ++_nextTurnId;
+  }
+
+  @visibleForTesting
+  void addMessageForTesting(ChatMessage message, {bool startsNewTurn = false}) {
+    if (startsNewTurn) {
+      _finishTurnBudget();
+      _startLocalTurn();
+      _turnBudget = _TurnBudgetState(inputBudget);
+    }
+    if (_addTurnMessage(message) == null) {
+      throw StateError('The test message did not fit the turn budget.');
+    }
+  }
+
+  @visibleForTesting
+  void appendTextForTesting(String chunk) {
+    if (_messages.isEmpty) {
+      throw StateError('A message is required before appending text.');
+    }
+    _appendTextToMessage(_messages.last, chunk);
+  }
+
+  @visibleForTesting
+  void appendTextToMessageForTesting(int index, String chunk) {
+    _appendTextToMessage(_messages[index], chunk);
+  }
+
+  @visibleForTesting
+  void setLastMessageTextForTesting(String text) {
+    if (_messages.isEmpty) {
+      throw StateError('A message is required before setting text.');
+    }
+    setMessageTextForTesting(_messages.length - 1, text);
+  }
+
+  @visibleForTesting
+  void setMessageTextForTesting(int index, String text) {
+    _messages[index]._setTextForOwner(_messageOwnerToken, text);
+    _mutateMessages(() {});
+  }
+
+  @visibleForTesting
+  bool replaceLastMessageForTesting(ChatMessage replacement) {
+    if (_messages.isEmpty) {
+      throw StateError('A message is required before replacing it.');
+    }
+    return _replaceTurnMessage(_messages.length - 1, replacement);
+  }
+
+  @visibleForTesting
+  void addOmissionForTesting(acp.AcpInputOmission omission) {
+    if (_messages.isEmpty) {
+      throw StateError('A message is required before adding an omission.');
+    }
+    final target = _messages.last;
+    final applied = _applyTurnTextMutation(
+      _ensureTurnBudget(),
+      parts: const <_TurnTextAppend>[],
+      omissionTarget: target,
+      omission: omission,
+    );
+    if (!applied) throw StateError('The omission did not fit the turn budget.');
+  }
+
+  ChatMessage _prepareOwnedMessage(ChatMessage message, {required int turnId}) {
+    if (message._ownerToken != null || message.turnId != null) {
+      throw StateError('Cannot admit an already-owned chat message.');
+    }
+    final owned = message._copyForBudget(
+      inputBudget,
+      frozen: false,
+      preserveTurnId: false,
+    );
+    owned._claimOwnership(_messageOwnerToken, turnId);
+    return owned;
+  }
+
+  ChatMessage? _appendTimelineMessage(
+    ChatMessage message, {
+    bool allowCompleteTurnEviction = true,
+  }) {
+    final owned = _prepareOwnedMessage(
+      message,
+      turnId: _activeTurnId ?? ++_nextTurnId,
+    );
+    return _appendOwnedTimelineMessage(
+          owned,
+          allowCompleteTurnEviction: allowCompleteTurnEviction,
+        )
+        ? owned
+        : null;
+  }
+
+  bool _appendOwnedTimelineMessage(
+    ChatMessage message, {
+    bool allowCompleteTurnEviction = true,
+  }) {
+    message._requireOwner(_messageOwnerToken);
+    if (!_canFitActiveMessageRetainedDelta(
+      message.retainedBytes + _retainedListItemHostBytes,
+      allowCompleteTurnEviction: allowCompleteTurnEviction,
+    )) {
+      return false;
+    }
+    _mutateMessages(() => _messages.add(message));
+    return true;
+  }
+
+  bool _canFitActiveMessageRetainedDelta(
+    int retainedDelta, {
+    bool allowCompleteTurnEviction = true,
+  }) {
+    if (_currentSession == null) return true;
+    if (_uiStateTransactionDepth > 0) {
+      _recomputeActiveUiStateRetainedBytes();
+    }
+    var projected = _checkedRetainedAdd(
+      _activeUiStateRetainedBytes,
+      retainedDelta,
+    );
+    if (projected <= inputBudget.maxUiStateBytes) return true;
+    if (!allowCompleteTurnEviction) return false;
+    for (final message in _messages) {
+      if (_isHistoryMarker(message)) continue;
+      final turnId = message.turnId;
+      if (turnId == null || turnId == _activeTurnId) continue;
+      projected -= message.retainedBytes + _retainedListItemHostBytes;
+      if (projected <= inputBudget.maxUiStateBytes) return true;
+    }
+    final historyMarker = _messages.where(_isHistoryMarker).firstOrNull;
+    if (historyMarker != null) {
+      projected -= historyMarker.retainedBytes + _retainedListItemHostBytes;
+    }
+    return projected <= inputBudget.maxUiStateBytes;
+  }
+
+  bool _canFitTimelineReplacement(
+    int index,
+    ChatMessage replacement, {
+    required int turnId,
+  }) {
+    if (_currentSession == null) return true;
+    if (_uiStateTransactionDepth > 0) {
+      _recomputeActiveUiStateRetainedBytes();
+    }
+    final previous = _messages[index];
+    var projected =
+        _activeUiStateRetainedBytes -
+        previous.retainedBytes +
+        replacement.retainedBytes;
+    if (projected <= inputBudget.maxUiStateBytes) return true;
+    for (
+      var messageIndex = 0;
+      messageIndex < _messages.length;
+      messageIndex++
+    ) {
+      if (messageIndex == index) continue;
+      final message = _messages[messageIndex];
+      if (_isHistoryMarker(message)) continue;
+      final messageTurnId = message.turnId;
+      if (messageTurnId == null || messageTurnId == turnId) continue;
+      projected -= message.retainedBytes + _retainedListItemHostBytes;
+      if (projected <= inputBudget.maxUiStateBytes) return true;
+    }
+    final historyMarker = _messages.where(_isHistoryMarker).firstOrNull;
+    if (historyMarker != null) {
+      projected -= historyMarker.retainedBytes + _retainedListItemHostBytes;
+    }
+    return projected <= inputBudget.maxUiStateBytes;
+  }
+
+  bool _replaceTimelineMessage(
+    int index,
+    ChatMessage replacement, {
+    required int turnId,
+  }) {
+    replacement._requireOwner(_messageOwnerToken);
+    if (!_canFitTimelineReplacement(index, replacement, turnId: turnId)) {
+      return false;
+    }
+    _mutateMessages(() => _messages[index] = replacement);
+    return true;
+  }
+
+  void _replaceAllMessages(Iterable<ChatMessage> replacements) {
+    final copied = <ChatMessage>[];
+    final copiedTurnIds = <int, int>{};
+    for (final message in replacements) {
+      final previousTurnId = message.turnId;
+      final turnId = previousTurnId == null
+          ? ++_nextTurnId
+          : copiedTurnIds.putIfAbsent(previousTurnId, () => ++_nextTurnId);
+      final owned = message._copyForBudget(
+        inputBudget,
+        frozen: false,
+        preserveTurnId: false,
+      );
+      owned._claimOwnership(_messageOwnerToken, turnId);
+      copied.add(owned);
+    }
+    _mutateMessages(() {
+      _messages
+        ..clear()
+        ..addAll(copied);
+    });
+  }
+
+  void _clearMessages() {
+    if (_messages.isEmpty) return;
+    _mutateMessages(_messages.clear);
+  }
+
+  void _mutateMessages(VoidCallback mutation, {bool enforceBudget = true}) {
+    mutation();
+    messagesRevision += 1;
+    _activeTimelineRetainedBytes = _estimateTimelineRetainedBytes(_messages);
+    if (enforceBudget) {
+      _enforceTimelineBudget();
+      _refreshActiveUiStateBudget();
+    }
+  }
+
+  bool get _timelineIsOverBudget {
+    return _messages.length > inputBudget.maxTimelineItems ||
+        _activeTimelineRetainedBytes > inputBudget.maxTimelineBytes;
+  }
+
+  bool _isHistoryMarker(ChatMessage message) {
+    return message.omissions.any(
+      (omission) => omission.resource == 'timeline history',
+    );
+  }
+
+  void _enforceTimelineBudget() {
+    if (_enforcingTimelineBudget) return;
+    _enforcingTimelineBudget = true;
+    var removedHistory = false;
+    try {
+      while (_timelineIsOverBudget) {
+        int? oldestTurnId;
+        for (final message in _messages) {
+          if (_isHistoryMarker(message)) continue;
+          final turnId = message.turnId;
+          if (turnId == null || turnId == _activeTurnId) continue;
+          oldestTurnId = turnId;
+          break;
+        }
+        if (oldestTurnId == null) break;
+        _mutateMessages(
+          () => _messages.removeWhere(
+            (message) => message.turnId == oldestTurnId,
+          ),
+          enforceBudget: false,
+        );
+        removedHistory = true;
+      }
+      if (removedHistory && !_messages.any(_isHistoryMarker)) {
+        final marker = _prepareOwnedMessage(
+          ChatMessage(
+            role: ChatMessageRole.status,
+            text: '',
+            omissions: <acp.AcpInputOmission>[
+              acp.AcpInputOmission(
+                reason: acp.AcpInputOmissionReason.inputLimit,
+                resource: 'timeline history',
+                truncated: true,
+                limit: _messages.length > inputBudget.maxTimelineItems
+                    ? inputBudget.maxTimelineItems
+                    : inputBudget.maxTimelineBytes,
+                observedAtLeast: _messages.length > inputBudget.maxTimelineItems
+                    ? inputBudget.maxTimelineItems + 1
+                    : inputBudget.maxTimelineBytes + 1,
+              ),
+            ],
+            inputBudget: inputBudget,
+          ),
+          turnId: ++_nextTurnId,
+        );
+        _mutateMessages(
+          () => _messages.insert(0, marker),
+          enforceBudget: false,
+        );
+      }
+      while (_timelineIsOverBudget) {
+        int? oldestTurnId;
+        for (final message in _messages) {
+          if (_isHistoryMarker(message)) continue;
+          final turnId = message.turnId;
+          if (turnId == null || turnId == _activeTurnId) continue;
+          oldestTurnId = turnId;
+          break;
+        }
+        if (oldestTurnId == null) break;
+        _mutateMessages(
+          () => _messages.removeWhere(
+            (message) => message.turnId == oldestTurnId,
+          ),
+          enforceBudget: false,
+        );
+      }
+      if (_timelineIsOverBudget) {
+        final markerIndex = _messages.indexWhere(_isHistoryMarker);
+        if (markerIndex >= 0) {
+          _mutateMessages(
+            () => _messages.removeAt(markerIndex),
+            enforceBudget: false,
+          );
+        }
+      }
+    } finally {
+      _enforcingTimelineBudget = false;
+    }
+  }
+
+  ChatMessage? _addTurnMessage(ChatMessage message) {
     final turnBudget = _ensureTurnBudget();
-    final retainedBytes = message.retainedBytes;
+    final owned = _prepareOwnedMessage(message, turnId: _activeTurnId!);
+    final retainedBytes = owned.retainedBytes;
     if (turnBudget.items >= turnBudget.normalItemLimit) {
       _recordTurnOverflow(
         turnBudget,
@@ -4176,7 +5066,7 @@ class ChatController extends ChangeNotifier {
         limit: turnBudget.normalItemLimit,
         observedAtLeast: turnBudget.normalItemLimit + 1,
       );
-      return false;
+      return null;
     }
     if (retainedBytes >
         turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
@@ -4186,21 +5076,33 @@ class ChatController extends ChangeNotifier {
         limit: turnBudget.normalRetainedByteLimit,
         observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
       );
-      return false;
+      return null;
     }
-    messages.add(message);
+    if (!_appendOwnedTimelineMessage(owned)) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return null;
+    }
     turnBudget.items += 1;
     turnBudget.retainedBytes += retainedBytes;
-    turnBudget.messageRetainedBytes[message] = retainedBytes;
-    _markAgentEventMessageAccepted(message);
-    return true;
+    turnBudget.messageRetainedBytes[owned] = retainedBytes;
+    _markAgentEventMessageAccepted(owned);
+    return owned;
   }
 
   bool _replaceTurnMessage(int index, ChatMessage replacement) {
     final turnBudget = _ensureTurnBudget();
     final previous = messages[index];
     final previousRetained = turnBudget.messageRetainedBytes[previous];
-    final replacementRetained = replacement.retainedBytes;
+    final ownedReplacement = _prepareOwnedMessage(
+      replacement,
+      turnId: _activeTurnId!,
+    );
+    final replacementRetained = ownedReplacement.retainedBytes;
     if (previousRetained == null) {
       if (turnBudget.items >= turnBudget.normalItemLimit) {
         _recordTurnOverflow(
@@ -4221,11 +5123,23 @@ class ChatController extends ChangeNotifier {
         );
         return false;
       }
-      messages[index] = replacement;
+      if (!_replaceTimelineMessage(
+        index,
+        ownedReplacement,
+        turnId: _activeTurnId!,
+      )) {
+        _recordTurnOverflow(
+          turnBudget,
+          resource: 'UI state retained bytes',
+          limit: inputBudget.maxUiStateBytes,
+          observedAtLeast: inputBudget.maxUiStateBytes + 1,
+        );
+        return false;
+      }
       turnBudget.items += 1;
       turnBudget.retainedBytes += replacementRetained;
-      turnBudget.messageRetainedBytes[replacement] = replacementRetained;
-      _markAgentEventMessageAccepted(replacement);
+      turnBudget.messageRetainedBytes[ownedReplacement] = replacementRetained;
+      _markAgentEventMessageAccepted(ownedReplacement);
       return true;
     }
     final delta = replacementRetained - previousRetained;
@@ -4239,11 +5153,23 @@ class ChatController extends ChangeNotifier {
       );
       return false;
     }
-    messages[index] = replacement;
+    if (!_replaceTimelineMessage(
+      index,
+      ownedReplacement,
+      turnId: _activeTurnId!,
+    )) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return false;
+    }
     turnBudget.messageRetainedBytes.remove(previous);
-    turnBudget.messageRetainedBytes[replacement] = replacementRetained;
+    turnBudget.messageRetainedBytes[ownedReplacement] = replacementRetained;
     turnBudget.retainedBytes += delta;
-    _markAgentEventMessageAccepted(replacement);
+    _markAgentEventMessageAccepted(ownedReplacement);
     return true;
   }
 
@@ -4256,16 +5182,30 @@ class ChatController extends ChangeNotifier {
         ? 0
         : acp.AcpRetainedSizeEstimator(budget: inputBudget).estimate(copied);
     final turnBudget = _ensureTurnBudget();
+    final previousCommands = _availableCommands;
+    if (!_canAdmitAuxiliaryUiState(
+      apply: () => _availableCommands = copied,
+      rollback: () => _availableCommands = previousCommands,
+    )) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return false;
+    }
     return _replaceTurnState(
       turnBudget,
       previousRetained: turnBudget.commandStateRetainedBytes,
       nextRetained: nextRetained,
       commit: () {
-        availableCommands = copied;
+        if (!_tryReplaceAvailableCommands(copied)) return false;
         turnBudget.commandStateRetainedBytes = nextRetained;
+        return true;
       },
       clear: () {
-        availableCommands = const <Map<String, Object?>>[];
+        _tryReplaceAvailableCommands(const <Map<String, Object?>>[]);
         turnBudget.commandStateRetainedBytes = 0;
       },
       markAccepted: markAccepted,
@@ -4291,16 +5231,30 @@ class ChatController extends ChangeNotifier {
           )
         : 0;
     final turnBudget = _ensureTurnBudget();
+    final previousSettings = _sessionSettings;
+    if (!_canAdmitAuxiliaryUiState(
+      apply: () => _sessionSettings = copied,
+      rollback: () => _sessionSettings = previousSettings,
+    )) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return false;
+    }
     return _replaceTurnState(
       turnBudget,
       previousRetained: turnBudget.settingsStateRetainedBytes,
       nextRetained: nextRetained,
       commit: () {
-        sessionSettings = copied;
+        if (!_tryReplaceSessionSettings(copied)) return false;
         turnBudget.settingsStateRetainedBytes = nextRetained;
+        return true;
       },
       clear: () {
-        sessionSettings = const AcpSessionSettings();
+        _tryReplaceSessionSettings(const AcpSessionSettings());
         turnBudget.settingsStateRetainedBytes = 0;
       },
       markAccepted: markAccepted,
@@ -4311,7 +5265,7 @@ class ChatController extends ChangeNotifier {
     _TurnBudgetState turnBudget, {
     required int previousRetained,
     required int nextRetained,
-    required VoidCallback commit,
+    required bool Function() commit,
     required VoidCallback clear,
     bool clearOnFailure = true,
     bool markAccepted = true,
@@ -4345,9 +5299,17 @@ class ChatController extends ChangeNotifier {
       );
       return false;
     }
+    if (!commit()) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return false;
+    }
     turnBudget.items = itemsWithoutPrevious + nextItems;
     turnBudget.retainedBytes = retainedWithoutPrevious + nextRetained;
-    commit();
     if (markAccepted) _markAgentEventAccepted();
     return true;
   }
@@ -4405,13 +5367,27 @@ class ChatController extends ChangeNotifier {
       next,
     );
     final turnBudget = _ensureTurnBudget();
+    final previousUsage = _sessionUsage;
+    if (!_canAdmitAuxiliaryUiState(
+      apply: () => _sessionUsage = next,
+      rollback: () => _sessionUsage = previousUsage,
+    )) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return (usage: null, invalidResource: null);
+    }
     final accepted = _replaceTurnState(
       turnBudget,
       previousRetained: turnBudget.usageStateRetainedBytes,
       nextRetained: retained,
       commit: () {
-        sessionUsage = next;
+        if (!_tryReplaceSessionUsage(next)) return false;
         turnBudget.usageStateRetainedBytes = retained;
+        return true;
       },
       clear: () {},
       clearOnFailure: false,
@@ -4450,14 +5426,28 @@ class ChatController extends ChangeNotifier {
       );
     }
     final turnBudget = _ensureTurnBudget();
+    final previousSession = _currentSession;
+    if (!_canAdmitAuxiliaryUiState(
+      apply: () => _currentSession = updated,
+      rollback: () => _currentSession = previousSession,
+    )) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'UI state retained bytes',
+        limit: inputBudget.maxUiStateBytes,
+        observedAtLeast: inputBudget.maxUiStateBytes + 1,
+      );
+      return null;
+    }
     final accepted = _replaceTurnState(
       turnBudget,
       previousRetained: turnBudget.sessionInfoStateRetainedBytes,
       nextRetained: retained,
       commit: () {
-        currentSession = updated;
+        if (!_tryReplaceCurrentSession(updated)) return false;
         _upsertSession(updated);
         turnBudget.sessionInfoStateRetainedBytes = retained;
+        return true;
       },
       clear: () {},
       clearOnFailure: false,
@@ -4508,11 +5498,18 @@ class ChatController extends ChangeNotifier {
       final delta = nextRetained - previousRetained;
       if (delta >= 0 &&
           delta <= turnBudget.maxRetainedBytes - turnBudget.retainedBytes &&
-          target.addOmission(omission)) {
+          _canFitActiveMessageRetainedDelta(
+            delta,
+            allowCompleteTurnEviction: false,
+          ) &&
+          target._addOmissionForOwner(_messageOwnerToken, omission)) {
         turnBudget.retainedBytes += delta;
+        _activeTimelineRetainedBytes += delta;
         turnBudget.messageRetainedBytes[target] = nextRetained;
         turnBudget.materializationTargets.add(target);
         turnBudget.overflowMarkerPublished = true;
+        _enforceTimelineBudget();
+        _refreshActiveUiStateBudget();
         return;
       }
     }
@@ -4526,10 +5523,16 @@ class ChatController extends ChangeNotifier {
     if (turnBudget.items < turnBudget.maxItems &&
         markerRetained <=
             turnBudget.maxRetainedBytes - turnBudget.retainedBytes) {
-      messages.add(marker);
+      final ownedMarker = _appendTimelineMessage(
+        marker,
+        allowCompleteTurnEviction: false,
+      );
+      if (ownedMarker == null) {
+        return;
+      }
       turnBudget.items += 1;
       turnBudget.retainedBytes += markerRetained;
-      turnBudget.messageRetainedBytes[marker] = markerRetained;
+      turnBudget.messageRetainedBytes[ownedMarker] = markerRetained;
       turnBudget.overflowMarkerPublished = true;
     }
   }
@@ -4718,9 +5721,19 @@ class ChatController extends ChangeNotifier {
           turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
         return false;
       }
+      if (!_canFitActiveMessageRetainedDelta(totalDelta)) {
+        _recordTurnOverflow(
+          turnBudget,
+          resource: 'UI state retained bytes',
+          limit: inputBudget.maxUiStateBytes,
+          observedAtLeast: inputBudget.maxUiStateBytes + 1,
+        );
+        return false;
+      }
       for (final part in parts) {
         final revision = part.target.revision;
-        part.target.appendAcceptedText(
+        part.target._appendAcceptedTextForOwner(
+          _messageOwnerToken,
           part.text,
           acceptedUtf8Bytes: part.acceptedUtf8Bytes,
         );
@@ -4729,14 +5742,17 @@ class ChatController extends ChangeNotifier {
         }
       }
       if (omissionTarget != null && omission != null) {
-        if (omissionTarget.addOmission(omission)) {
+        if (omissionTarget._addOmissionForOwner(_messageOwnerToken, omission)) {
           turnBudget.materializationTargets.add(omissionTarget);
         }
       }
       turnBudget.retainedBytes += totalDelta;
+      _activeTimelineRetainedBytes += totalDelta;
       for (final entry in nextRetained.entries) {
         turnBudget.messageRetainedBytes[entry.key] = entry.value;
       }
+      _enforceTimelineBudget();
+      _refreshActiveUiStateBudget();
       if (_trackingAgentEvent) {
         for (final part in parts) {
           _markAgentEventAccepted(text: part.text);
@@ -4754,7 +5770,10 @@ class ChatController extends ChangeNotifier {
   void _finishTurnBudget() {
     _streamingNotificationPending = false;
     final turnBudget = _turnBudget;
-    if (turnBudget == null) return;
+    if (turnBudget == null) {
+      _activeTurnId = null;
+      return;
+    }
     _turnBudget = null;
     final textFinishTarget =
         turnBudget.textPendingHigh?.target ?? turnBudget.textTarget;
@@ -4769,6 +5788,9 @@ class ChatController extends ChangeNotifier {
     turnBudget.textPendingHigh = null;
     turnBudget.thoughtPendingHigh = null;
     _materializeBudgetTargets(turnBudget);
+    _activeTurnId = null;
+    _enforceTimelineBudget();
+    _refreshActiveUiStateBudget();
   }
 
   void _appendFinishedText(
@@ -4829,18 +5851,20 @@ class ChatController extends ChangeNotifier {
         }
       }
     } else {
-      target = ChatMessage._guarded(
+      final candidate = ChatMessage._guarded(
         role: role,
         text: '',
         metadata: metadata,
         omissions: omissions,
         inputBudget: inputBudget,
       );
-      if (!_addTurnMessage(target)) {
+      final admitted = _addTurnMessage(candidate);
+      if (admitted == null) {
         final turnBudget = _ensureTurnBudget();
         turnBudget.textRootDrained = true;
         return;
       }
+      target = admitted;
     }
     _appendTextToMessage(target, text);
   }
@@ -5062,12 +6086,13 @@ class ChatController extends ChangeNotifier {
         omissions: event.omissions,
         inputBudget: inputBudget,
       );
-      if (!_addTurnMessage(message)) {
+      final admitted = _addTurnMessage(message);
+      if (admitted == null) {
         final turnBudget = _ensureTurnBudget();
         turnBudget.thoughtRootDrained = true;
         return;
       }
-      _appendThoughtToMessage(message, event.text);
+      _appendThoughtToMessage(admitted, event.text);
       return;
     }
     _addTurnMessage(
@@ -5169,7 +6194,7 @@ class ChatController extends ChangeNotifier {
           item.metadata['kind'] == kind;
     });
     if (index == -1) {
-      return _addTurnMessage(message);
+      return _addTurnMessage(message) != null;
     }
     return _replaceTurnMessage(index, message);
   }
@@ -5555,10 +6580,13 @@ class ChatController extends ChangeNotifier {
     String sessionId, {
     bool notify = true,
   }) async {
+    if (_isDisposed) return;
     final loadId = ++_sessionSettingsLoadSerial;
-    _activeSessionSettingsLoadId = loadId;
-    sessionSettingsLoading = true;
-    if (notify) _notifyListeners();
+    if (notify) {
+      _activeSessionSettingsLoadId = loadId;
+      sessionSettingsLoading = true;
+      _notifyListeners();
+    }
 
     try {
       final settings = await client.sessionSettings(sessionId);
@@ -5570,7 +6598,7 @@ class ChatController extends ChangeNotifier {
         sessionSettings = const AcpSessionSettings();
       }
     } finally {
-      if (_activeSessionSettingsLoadId == loadId) {
+      if (notify && !_isDisposed && _activeSessionSettingsLoadId == loadId) {
         _activeSessionSettingsLoadId = null;
         sessionSettingsLoading = false;
         if (notify) _notifyListeners();
@@ -5580,7 +6608,7 @@ class ChatController extends ChangeNotifier {
 
   bool _isCurrentSessionSettingsLoad(int loadId, String sessionId) {
     return !_isDisposed &&
-        _activeSessionSettingsLoadId == loadId &&
+        _sessionSettingsLoadSerial == loadId &&
         _isActiveSession(sessionId);
   }
 
@@ -5610,6 +6638,8 @@ class ChatController extends ChangeNotifier {
   // ignore: must_call_super
   void dispose() {
     if (_isDisposed) return;
+    _sessionOperationGeneration += 1;
+    _sessionSettingsLoadSerial += 1;
     _finishTurnBudget();
     _streamingNotificationPending = false;
     _isDisposed = true;
@@ -5643,6 +6673,11 @@ class ChatController extends ChangeNotifier {
 
   void _notifyListeners() {
     if (_isDisposed) return;
+    if (_uiStateTransactionDepth > 0) {
+      _uiStateNotificationPending = true;
+      return;
+    }
+    _refreshActiveUiStateBudget();
     _notificationDepth += 1;
     try {
       notifyListeners();

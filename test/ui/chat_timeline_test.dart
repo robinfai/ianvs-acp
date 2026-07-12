@@ -13,6 +13,7 @@ void main() {
     bool hasActiveSession = false,
     String? activeSessionLabel,
     bool isLoadingSession = false,
+    int messageListRevision = 0,
     VoidCallback? onNewSession,
     ThemeData? theme,
   }) {
@@ -25,6 +26,7 @@ void main() {
           hasActiveSession: hasActiveSession,
           activeSessionLabel: activeSessionLabel,
           isLoadingSession: isLoadingSession,
+          messageListRevision: messageListRevision,
           onNewSession: onNewSession,
         ),
       ),
@@ -381,6 +383,71 @@ void main() {
     position = timelinePosition();
     expect(position.pixels, moreOrLessEquals(position.maxScrollExtent));
   });
+
+  testWidgets(
+    'ChatTimeline refreshes same-length replace and reorder by list revision',
+    (tester) async {
+      final messages = List<ChatMessage>.generate(
+        24,
+        (index) => ChatMessage(
+          role: index.isEven ? ChatMessageRole.user : ChatMessageRole.assistant,
+          text: 'Message $index\n${List.filled(3, 'line').join('\n')}',
+        ),
+      );
+      var listRevision = 0;
+
+      Widget constrainedTimeline() {
+        return MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 420,
+              height: 240,
+              child: ChatTimeline(
+                messages: messages,
+                messageListRevision: listRevision,
+              ),
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(constrainedTimeline());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      final controller = tester
+          .widget<ListView>(find.byType(ListView))
+          .controller!;
+      controller.jumpTo(0);
+
+      messages[messages.length - 1] = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'Replacement\n${List.filled(20, 'tall').join('\n')}',
+      );
+      listRevision += 1;
+      await tester.pumpWidget(constrainedTimeline());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(
+        controller.position.pixels,
+        moreOrLessEquals(controller.position.maxScrollExtent),
+      );
+
+      controller.jumpTo(0);
+      final first = messages.removeAt(0);
+      messages.add(first);
+      listRevision += 1;
+      await tester.pumpWidget(constrainedTimeline());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(
+        controller.position.pixels,
+        moreOrLessEquals(controller.position.maxScrollExtent),
+      );
+    },
+  );
 
   testWidgets('ChatTimeline limits initial render for large histories', (
     tester,

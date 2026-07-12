@@ -268,6 +268,7 @@ class AppShell extends StatelessWidget {
                           final hideInspector = constraints.maxWidth < 1120;
                           final timeline = ChatTimeline(
                             messages: controller.messages,
+                            messageListRevision: controller.messagesRevision,
                             agentName: agentName,
                             hasActiveSession: controller.currentSession != null,
                             activeSessionLabel:
@@ -527,9 +528,7 @@ class AppShell extends StatelessWidget {
     final authenticated = await controller.authenticate(methodId);
     final callback = onAgentAuthenticated;
     if (!authenticated || callback == null) return;
-    await Future<void>.sync(
-      () => callback(controller.agentName, methodId),
-    );
+    await Future<void>.sync(() => callback(controller.agentName, methodId));
   }
 
   List<ChatController> _controllers() {

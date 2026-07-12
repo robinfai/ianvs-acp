@@ -1522,9 +1522,16 @@ void main() {
             ),
           );
 
-          final thought = controller.messages.singleWhere(
+          final thoughtMessages = controller.messages.where(
             (message) => message.metadata['kind'] == 'thought',
           );
+          expect(
+            thoughtMessages,
+            isNotEmpty,
+            reason:
+                '${controller.messages.map((message) => <Object?>[message.text, message.metadata, message.omissions])} error=${controller.lastError}',
+          );
+          final thought = thoughtMessages.single;
           expect(thought.text, 'a');
           expect(
             thought.omissions.where(
@@ -1573,7 +1580,7 @@ void main() {
             maxMessageTextBytes: 100,
             maxThoughtTextBytes: 1,
             maxMarkdownFallbackBytes: 100,
-            maxStructuredStringBytes: 1,
+            maxStructuredStringBytes: 16,
           ),
           metadata: const <String, Object?>{'kind': 'thought', 'bad': canary},
           metadataReason: acp.AcpInputOmissionReason.inputLimit,
@@ -1773,7 +1780,7 @@ void main() {
       () async {
         const canary = 'TYPED_CONFIG_LIMIT_CANARY_MUST_NOT_APPEAR';
         final state = await configController(
-          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 4),
+          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
         );
         addTearDown(state.controller.dispose);
         expect(state.controller.sessionSettings.configOptions, isNotEmpty);
@@ -1877,7 +1884,7 @@ void main() {
       () async {
         const canary = 'STATEFUL_TYPED_MAP_CANARY_MUST_NOT_APPEAR';
         final state = await configController(
-          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 4),
+          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
         );
         addTearDown(state.controller.dispose);
         final metadata = _StatefulTypedConfigMetadataMap(canary);
@@ -3224,7 +3231,7 @@ void main() {
         ]) {
           await verify(
             kind: kind,
-            budget: const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+            budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
             metadata: <String, Object?>{'kind': kind, 'value': canary},
             reason: acp.AcpInputOmissionReason.inputLimit,
           );
@@ -3263,9 +3270,18 @@ void main() {
         addTearDown(replacement.dispose);
         replacement.currentSession = controller.currentSession;
         replacement.sessions.addAll(controller.sessions);
-        replacement.messages.addAll(
-          controller.messages.map((message) => message.thaw()),
-        );
+        for (final message in controller.messages) {
+          replacement.addMessageForTesting(
+            ChatMessage(
+              role: message.role,
+              text: message.text,
+              timestamp: message.timestamp,
+              metadata: message.metadata,
+              omissions: message.omissions,
+            ),
+            startsNewTurn: message.role == ChatMessageRole.user,
+          );
+        }
         await replacement.sendPrompt('second');
         second.emit(
           const AgentEvent(
@@ -3765,7 +3781,7 @@ void main() {
     });
 
     test(
-      'host fixed overflow resources survive a one-byte string budget',
+      'host fixed overflow resources survive a small string budget',
       () async {
         final fake = _ControlledPromptAgentClient();
         final controller = ChatController(
@@ -3773,7 +3789,7 @@ void main() {
           cwd: '/workspace',
           inputBudget: const acp.AcpInputBudget(
             maxTurnItems: 2,
-            maxStructuredStringBytes: 1,
+            maxStructuredStringBytes: 16,
           ),
         );
         addTearDown(controller.dispose);
@@ -3951,7 +3967,7 @@ void main() {
           cwd: '/workspace',
           inputBudget: const acp.AcpInputBudget(
             maxEmbeddedMediaBytes: 1,
-            maxStructuredStringBytes: 1,
+            maxStructuredStringBytes: 16,
           ),
         );
         addTearDown(controller.dispose);
@@ -4403,6 +4419,1701 @@ void main() {
     );
   });
 
+  group('ChatController timeline budgets', () {
+    test(
+      'message and command collections expose immutable revisioned views',
+      () {
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+        );
+        addTearDown(controller.dispose);
+
+        expect(controller.messagesRevision, 0);
+        expect(
+          () => controller.messages.add(
+            ChatMessage(role: ChatMessageRole.user, text: 'bypass'),
+          ),
+          throwsUnsupportedError,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: 'guarded'),
+          startsNewTurn: true,
+        );
+        expect(controller.messagesRevision, 1);
+
+        final nested = <Object?>['safe'];
+        final commands = <Map<String, Object?>>[
+          <String, Object?>{'name': 'review', 'payload': nested},
+        ];
+        expect(controller.availableCommandsRevision, 0);
+        controller.availableCommands = commands;
+        expect(controller.availableCommandsRevision, 1);
+        nested.add('mutated');
+        commands.clear();
+        expect(controller.availableCommands.single['payload'], <Object?>[
+          'safe',
+        ]);
+        expect(
+          () => controller.availableCommands.clear(),
+          throwsUnsupportedError,
+        );
+        controller.availableCommands = const <Map<String, Object?>>[];
+        expect(controller.availableCommandsRevision, 2);
+        expect(controller.availableCommands, isEmpty);
+      },
+    );
+
+    test('controller owns independent immutable message instances', () {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      final source = ChatMessage(role: ChatMessageRole.user, text: 'safe');
+
+      controller.addMessageForTesting(source, startsNewTurn: true);
+      final firstOwned = controller.messages.single;
+      expect(firstOwned, isNot(same(source)));
+      source.text = 'source changed';
+      expect(firstOwned.text, 'safe');
+      expect(() => firstOwned.text = 'bypass', throwsStateError);
+      expect(
+        () => firstOwned.appendAcceptedText('!', acceptedUtf8Bytes: 1),
+        throwsStateError,
+      );
+      expect(
+        () => firstOwned.addOmission(
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: 'bypass',
+            truncated: false,
+          ),
+        ),
+        throwsStateError,
+      );
+
+      final repeated = ChatMessage(role: ChatMessageRole.user, text: 'repeat');
+      controller.addMessageForTesting(repeated, startsNewTurn: true);
+      controller.addMessageForTesting(repeated, startsNewTurn: true);
+      expect(controller.messages[1], isNot(same(controller.messages[2])));
+      expect(
+        controller.messages[1].turnId,
+        isNot(controller.messages[2].turnId),
+      );
+      expect(controller.debugCurrentTurnItems, 1);
+      expect(
+        () => controller.addMessageForTesting(firstOwned, startsNewTurn: true),
+        throwsStateError,
+      );
+    });
+
+    test(
+      'item overflow evicts the oldest complete turn and keeps one marker',
+      () {
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxTimelineItems: 3),
+        );
+        addTearDown(controller.dispose);
+
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: 'turn one user'),
+          startsNewTurn: true,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'turn one assistant',
+          ),
+        );
+        final firstTurnId = controller.messages.first.turnId;
+
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: 'turn two user'),
+          startsNewTurn: true,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'turn two assistant',
+          ),
+        );
+
+        expect(controller.messages.map((message) => message.text), <String>[
+          '',
+          'turn two user',
+          'turn two assistant',
+        ]);
+        expect(
+          controller.messages.where(
+            (message) => message.omissions.any(
+              (omission) => omission.resource == 'timeline history',
+            ),
+          ),
+          hasLength(1),
+        );
+        final currentTurn = controller.messages.skip(1).toList();
+        expect(
+          currentTurn.map((message) => message.turnId).toSet(),
+          hasLength(1),
+        );
+        expect(currentTurn.first.turnId, isNot(firstTurnId));
+
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: 'turn three user'),
+          startsNewTurn: true,
+        );
+        expect(
+          controller.messages.where(
+            (message) => message.omissions.any(
+              (omission) => omission.resource == 'timeline history',
+            ),
+          ),
+          hasLength(1),
+        );
+        expect(controller.messages.last.text, 'turn three user');
+      },
+    );
+
+    test('byte exact keeps history and plus one evicts a complete turn', () {
+      final userText = List<String>.filled(1500, 'u').join();
+      final assistantText = List<String>.filled(1500, 'a').join();
+      final turnBytes =
+          ChatMessage(
+            role: ChatMessageRole.user,
+            text: userText,
+          ).retainedBytes +
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: assistantText,
+          ).retainedBytes;
+      final timelineBytes = 64 + 32 * 4 + turnBytes * 2;
+      final budget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: turnBytes + 1025,
+        maxTimelineBytes: timelineBytes,
+        maxUiStateBytes: timelineBytes + 16384,
+      );
+
+      ChatController build({required bool overflow}) {
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: userText),
+          startsNewTurn: true,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.assistant, text: assistantText),
+        );
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: userText),
+          startsNewTurn: true,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: overflow ? '$assistantText!' : assistantText,
+          ),
+        );
+        return controller;
+      }
+
+      final exact = build(overflow: false);
+      expect(exact.messages, hasLength(4));
+      expect(
+        exact.messages.where(
+          (message) => message.omissions.any(
+            (omission) => omission.resource == 'timeline history',
+          ),
+        ),
+        isEmpty,
+      );
+
+      final overflow = build(overflow: true);
+      expect(overflow.messages, hasLength(3));
+      expect(overflow.messages.first.text, isEmpty);
+      expect(overflow.messages[1].role, ChatMessageRole.user);
+      expect(overflow.messages[2].text, '$assistantText!');
+      expect(overflow.messages[1].turnId, overflow.messages[2].turnId);
+    });
+
+    test('timeline bytes include one list host and every list entry', () {
+      final texts = <String>['first', 'second', 'third', 'fourth'];
+      final samples = <ChatMessage>[
+        for (final text in texts)
+          ChatMessage(role: ChatMessageRole.user, text: text),
+      ];
+      final exactBytes =
+          64 +
+          32 * samples.length +
+          samples.fold<int>(0, (sum, message) => sum + message.retainedBytes);
+      final turnBytes =
+          samples
+              .map((message) => message.retainedBytes)
+              .reduce((left, right) => left > right ? left : right) +
+          1025;
+      final exact = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: acp.AcpInputBudget(
+          maxTurnRetainedBytes: turnBytes,
+          maxTimelineBytes: exactBytes,
+          maxUiStateBytes: exactBytes + 4096,
+        ),
+      );
+      addTearDown(exact.dispose);
+      for (final message in samples) {
+        exact.addMessageForTesting(message, startsNewTurn: true);
+      }
+
+      expect(exact.debugActiveTimelineRetainedBytes, exactBytes);
+      expect(exact.messages, hasLength(4));
+
+      final plusOne = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: acp.AcpInputBudget(
+          maxTurnRetainedBytes: turnBytes,
+          maxTimelineBytes: exactBytes - 1,
+          maxUiStateBytes: exactBytes + 4096,
+        ),
+      );
+      addTearDown(plusOne.dispose);
+      plusOne.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'old'),
+        startsNewTurn: true,
+      );
+      for (final text in texts) {
+        plusOne.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: text),
+          startsNewTurn: true,
+        );
+      }
+
+      expect(
+        plusOne.messages.where((message) => message.text == 'old'),
+        isEmpty,
+      );
+      expect(
+        plusOne.debugActiveTimelineRetainedBytes,
+        lessThanOrEqualTo(exactBytes - 1),
+      );
+    });
+
+    test(
+      'inactive snapshots use LRU and reconnect clears the whole ledger',
+      () async {
+        ArchivedSessionSnapshot snapshot(
+          String id, {
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) {
+          return ArchivedSessionSnapshot(
+            session: AgentSession(
+              id: id,
+              cwd: '/workspace',
+              createdAt: DateTime(2026, 7, 13),
+            ),
+            wasCurrent: false,
+            messages: const <ChatMessage>[],
+            availableCommands: const <Map<String, Object?>>[],
+            lastLatency: null,
+            lastError: null,
+            sessionSettings: const AcpSessionSettings(),
+            sessionUsage: null,
+            sessionSettingsLoading: false,
+            status: app_state.ConnectionStatus.sessionReady,
+            activeSessionSettingsLoadId: null,
+            inputBudget: budget,
+          );
+        }
+
+        final oneSnapshotBytes = snapshot('s1').retainedBytes;
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 2048,
+          maxTimelineBytes: 2048,
+          maxUiStateBytes: oneSnapshotBytes * 2,
+        );
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+
+        controller.restoreArchivedSessionLocally(
+          snapshot('s1', budget: budget),
+        );
+        controller.restoreArchivedSessionLocally(
+          snapshot('s2', budget: budget),
+        );
+        expect(controller.debugInactiveSnapshotIds, <String>['s1', 's2']);
+        expect(controller.debugUiStateRetainedBytes, oneSnapshotBytes * 2);
+
+        controller.touchInactiveSnapshotForTesting('s1');
+        expect(controller.debugInactiveSnapshotIds, <String>['s2', 's1']);
+        controller.restoreArchivedSessionLocally(
+          snapshot('s3', budget: budget),
+        );
+
+        expect(controller.debugInactiveSnapshotIds, <String>['s1', 's3']);
+        expect(
+          controller.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(budget.maxUiStateBytes),
+        );
+
+        controller.addMessageForTesting(
+          ChatMessage(role: ChatMessageRole.user, text: 'active'),
+          startsNewTurn: true,
+        );
+        expect(controller.messages.single.text, 'active');
+        expect(
+          controller.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(budget.maxUiStateBytes),
+        );
+
+        await controller.reconnect();
+        expect(controller.messages, isEmpty);
+        expect(controller.debugInactiveSnapshotIds, isEmpty);
+        expect(controller.debugUiStateRetainedBytes, 0);
+      },
+    );
+
+    test(
+      'active commands settings and usage share snapshot retained accounting',
+      () async {
+        final session = AgentSession(
+          id: 'active-ledger',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 10),
+          title: 'Active ledger',
+        );
+        final inactiveSession = AgentSession(
+          id: 'inactive-ledgr',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 11),
+          title: 'Inactive cache',
+        );
+        const commands = <Map<String, Object?>>[
+          <String, Object?>{
+            'name': 'review',
+            'description': 'Review active state',
+          },
+        ];
+        const settings = AcpSessionSettings(
+          modes: AcpSessionModeInfo(
+            currentModeId: 'ask',
+            availableModes: <AcpSessionMode>[
+              AcpSessionMode(id: 'ask', name: 'Ask'),
+            ],
+          ),
+        );
+        const usage = AcpSessionUsage(
+          used: 7,
+          size: 100,
+          cost: AcpSessionUsageCost(amount: 1.5, currency: 'USD'),
+        );
+
+        ArchivedSessionSnapshot view({
+          required AgentSession session,
+          List<Map<String, Object?>> availableCommands =
+              const <Map<String, Object?>>[],
+          AcpSessionSettings sessionSettings = const AcpSessionSettings(),
+          AcpSessionUsage? sessionUsage,
+          bool wasCurrent = false,
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) {
+          return ArchivedSessionSnapshot(
+            session: session,
+            wasCurrent: wasCurrent,
+            messages: const <ChatMessage>[],
+            availableCommands: availableCommands,
+            lastLatency: const Duration(milliseconds: 12),
+            lastError: 'bounded error',
+            sessionSettings: sessionSettings,
+            sessionUsage: sessionUsage,
+            sessionSettingsLoading: false,
+            status: app_state.ConnectionStatus.sessionReady,
+            activeSessionSettingsLoadId: 3,
+            inputBudget: budget,
+          );
+        }
+
+        final inactive = view(session: inactiveSession);
+        final cases =
+            <
+              ({
+                String name,
+                ArchivedSessionSnapshot desired,
+                void Function(ChatController) apply,
+              })
+            >[
+              (
+                name: 'commands',
+                desired: view(session: session, availableCommands: commands),
+                apply: (controller) => controller.availableCommands = commands,
+              ),
+              (
+                name: 'settings',
+                desired: view(session: session, sessionSettings: settings),
+                apply: (controller) => controller.sessionSettings = settings,
+              ),
+              (
+                name: 'usage',
+                desired: view(session: session, sessionUsage: usage),
+                apply: (controller) => controller.sessionUsage = usage,
+              ),
+            ];
+
+        ChatController build(int maxUiStateBytes) {
+          final budget = acp.AcpInputBudget(
+            maxTurnRetainedBytes: 2048,
+            maxTimelineBytes: 2048,
+            maxUiStateBytes: maxUiStateBytes,
+          );
+          final controller = ChatController(
+            client: FakeAgentClient(),
+            cwd: '/workspace',
+            inputBudget: budget,
+          );
+          addTearDown(controller.dispose);
+          controller.restoreArchivedSessionLocally(
+            view(session: session, wasCurrent: true, budget: budget),
+          );
+          controller.restoreArchivedSessionLocally(
+            view(session: inactiveSession, budget: budget),
+          );
+          return controller;
+        }
+
+        for (final stateCase in cases) {
+          final exactTotal =
+              stateCase.desired.retainedBytes + inactive.retainedBytes;
+
+          final exact = build(exactTotal);
+          stateCase.apply(exact);
+          expect(
+            exact.debugActiveUiStateRetainedBytes,
+            stateCase.desired.retainedBytes,
+            reason: stateCase.name,
+          );
+          expect(exact.debugInactiveSnapshotIds, <String>[
+            inactiveSession.id,
+          ], reason: stateCase.name);
+          expect(exact.debugUiStateRetainedBytes, exactTotal);
+
+          final plusOne = build(exactTotal - 1);
+          stateCase.apply(plusOne);
+          expect(
+            plusOne.debugActiveUiStateRetainedBytes,
+            stateCase.desired.retainedBytes,
+            reason: stateCase.name,
+          );
+          expect(plusOne.debugInactiveSnapshotIds, isEmpty);
+          expect(
+            plusOne.debugUiStateRetainedBytes,
+            lessThanOrEqualTo(exactTotal - 1),
+          );
+        }
+
+        final reconnect = build(
+          cases.first.desired.retainedBytes + inactive.retainedBytes,
+        );
+        reconnect.availableCommands = commands;
+        reconnect.sessionSettings = settings;
+        reconnect.sessionUsage = usage;
+        await reconnect.reconnect();
+        expect(reconnect.currentSession, isNull);
+        expect(reconnect.messages, isEmpty);
+        expect(reconnect.availableCommands, isEmpty);
+        expect(reconnect.sessionSettings, const AcpSessionSettings());
+        expect(reconnect.sessionUsage, isNull);
+        expect(reconnect.lastLatency, isNull);
+        expect(reconnect.lastError, isNull);
+        expect(reconnect.debugInactiveSnapshotIds, isEmpty);
+        expect(reconnect.debugActiveUiStateRetainedBytes, 0);
+        expect(reconnect.debugUiStateRetainedBytes, 0);
+      },
+    );
+
+    test(
+      'new session transfers active ownership without transient eviction',
+      () async {
+        final oldSession = AgentSession(
+          id: 'old-session',
+          cwd: '/workspace/old',
+          createdAt: DateTime(2026, 7, 13, 12),
+        );
+        final newSession = AgentSession(
+          id: 'fake-session-1',
+          cwd: '/workspace/new',
+          createdAt: DateTime(2026, 5, 28, 12),
+          agentName: 'Codex',
+        );
+        final oldMessage = ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: List<String>.filled(3000, 'o').join(),
+        );
+
+        ArchivedSessionSnapshot snapshot(
+          AgentSession session, {
+          List<ChatMessage> messages = const <ChatMessage>[],
+          bool wasCurrent = false,
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) => ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: wasCurrent,
+          messages: messages,
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+
+        final oldRetained = snapshot(
+          oldSession,
+          messages: <ChatMessage>[oldMessage],
+        ).retainedBytes;
+        final newRetained = snapshot(newSession).retainedBytes;
+        final exact = oldRetained + newRetained;
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 4096,
+          maxTimelineBytes: 4096,
+          maxUiStateBytes: exact,
+        );
+        final controller = ChatController(
+          client: FakeAgentClient(sessionSettings: const AcpSessionSettings()),
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        await controller.connect();
+        controller.restoreArchivedSessionLocally(
+          snapshot(
+            oldSession,
+            messages: <ChatMessage>[oldMessage],
+            wasCurrent: true,
+            budget: budget,
+          ),
+        );
+
+        final created = await controller.newSession(cwd: '/workspace/new');
+        expect(
+          created,
+          isTrue,
+          reason:
+              '${controller.lastError} ${controller.debugUiStateRetainedBytes}/$exact ${controller.debugInactiveSnapshotIds}',
+        );
+        expect(controller.currentSession?.id, newSession.id);
+        expect(controller.debugInactiveSnapshotIds, <String>[oldSession.id]);
+        expect(controller.debugUiStateRetainedBytes, exact);
+      },
+    );
+
+    test(
+      'local resume transfers exact active and snapshot ownership',
+      () async {
+        final firstSession = AgentSession(
+          id: 'local-first',
+          cwd: '/workspace/first',
+          createdAt: DateTime(2026, 7, 13, 12),
+        );
+        final secondSession = AgentSession(
+          id: 'local-second',
+          cwd: '/workspace/second',
+          createdAt: DateTime(2026, 7, 13, 13),
+        );
+
+        ArchivedSessionSnapshot snapshot(
+          AgentSession session,
+          String text, {
+          required bool wasCurrent,
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) => ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: wasCurrent,
+          messages: <ChatMessage>[
+            ChatMessage(role: ChatMessageRole.assistant, text: text),
+          ],
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+
+        final firstText = List<String>.filled(900, 'a').join();
+        final secondText = List<String>.filled(700, 'b').join();
+        final exact =
+            snapshot(firstSession, firstText, wasCurrent: true).retainedBytes +
+            snapshot(
+              secondSession,
+              secondText,
+              wasCurrent: false,
+            ).retainedBytes;
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 4096,
+          maxTimelineBytes: 4096,
+          maxUiStateBytes: exact,
+        );
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(
+          snapshot(firstSession, firstText, wasCurrent: true, budget: budget),
+        );
+        controller.restoreArchivedSessionLocally(
+          snapshot(
+            secondSession,
+            secondText,
+            wasCurrent: false,
+            budget: budget,
+          ),
+        );
+        expect(controller.debugUiStateRetainedBytes, exact);
+
+        await controller.resumeSession(secondSession.id);
+        expect(controller.currentSession?.id, secondSession.id);
+        expect(controller.messages.single.text, secondText);
+        expect(controller.debugInactiveSnapshotIds, <String>[firstSession.id]);
+        expect(controller.debugUiStateRetainedBytes, exact);
+
+        await controller.resumeSession(firstSession.id);
+        expect(controller.currentSession?.id, firstSession.id);
+        expect(controller.messages.single.text, firstText);
+        expect(controller.debugInactiveSnapshotIds, <String>[secondSession.id]);
+        expect(controller.debugUiStateRetainedBytes, exact);
+      },
+    );
+
+    test('failed remote resume restores inactive LRU atomically', () async {
+      final activeSession = AgentSession(
+        id: 'rollback-active',
+        cwd: '/workspace/active',
+        createdAt: DateTime(2026, 7, 13, 15),
+      );
+      final cachedSession = AgentSession(
+        id: 'rollback-cached',
+        cwd: '/workspace/cached',
+        createdAt: DateTime(2026, 7, 13, 16),
+      );
+
+      ArchivedSessionSnapshot snapshot(
+        AgentSession session,
+        String text, {
+        required bool wasCurrent,
+        String? lastError,
+        acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+      }) => ArchivedSessionSnapshot(
+        session: session,
+        wasCurrent: wasCurrent,
+        messages: <ChatMessage>[
+          ChatMessage(role: ChatMessageRole.assistant, text: text),
+        ],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: lastError,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: budget,
+      );
+
+      final activeText = List<String>.filled(300, 'a').join();
+      final cachedText = List<String>.filled(200, 'c').join();
+      const failedError = 'Bad state: resume failed';
+      final exactAfterRollback =
+          snapshot(
+            activeSession,
+            activeText,
+            wasCurrent: true,
+            lastError: failedError,
+          ).retainedBytes +
+          snapshot(cachedSession, cachedText, wasCurrent: false).retainedBytes;
+      final budget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: 4096,
+        maxTimelineBytes: 4096,
+        maxUiStateBytes: exactAfterRollback,
+      );
+      final controller = ChatController(
+        client: _FailingResumeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: budget,
+      );
+      addTearDown(controller.dispose);
+      controller.restoreArchivedSessionLocally(
+        snapshot(activeSession, activeText, wasCurrent: true, budget: budget),
+      );
+      controller.restoreArchivedSessionLocally(
+        snapshot(cachedSession, cachedText, wasCurrent: false, budget: budget),
+      );
+      expect(controller.debugInactiveSnapshotIds, <String>[cachedSession.id]);
+
+      await controller.resumeSession('rollback-target', cwd: '/workspace/b');
+
+      expect(controller.currentSession?.id, activeSession.id);
+      expect(controller.messages.single.text, activeText);
+      expect(controller.lastError, failedError);
+      expect(controller.debugInactiveSnapshotIds, <String>[cachedSession.id]);
+      expect(controller.debugUiStateRetainedBytes, exactAfterRollback);
+    });
+
+    test(
+      'hostile remote session is rejected before ownership commit',
+      () async {
+        final previous = AgentSession(
+          id: 'safe-current',
+          cwd: '/workspace/safe',
+          createdAt: DateTime(2026, 7, 13, 19),
+        );
+        final controller = ChatController(
+          client: _HostileCreateSessionAgentClient(),
+          cwd: '/workspace',
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(
+          ArchivedSessionSnapshot(
+            session: previous,
+            wasCurrent: true,
+            messages: <ChatMessage>[
+              ChatMessage(role: ChatMessageRole.assistant, text: 'safe'),
+            ],
+            availableCommands: const <Map<String, Object?>>[],
+            lastLatency: null,
+            lastError: null,
+            sessionSettings: const AcpSessionSettings(),
+            sessionUsage: null,
+            sessionSettingsLoading: false,
+            status: app_state.ConnectionStatus.sessionReady,
+            activeSessionSettingsLoadId: null,
+          ),
+        );
+        expect(await controller.newSession(), isFalse);
+
+        expect(controller.currentSession?.id, previous.id);
+        expect(controller.messages.single.text, 'safe');
+        expect(controller.sessions.map((session) => session.id), [previous.id]);
+        expect(controller.debugInactiveSnapshotIds, isEmpty);
+        expect(
+          controller.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(controller.inputBudget.maxUiStateBytes),
+        );
+      },
+    );
+
+    test(
+      'new session publishes committed state before settings await',
+      () async {
+        final fake = _DelayedInitialSettingsAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        final committedNotifications = <String>[];
+        controller.addListener(() {
+          final sessionId = controller.currentSession?.id;
+          if (sessionId != null) {
+            committedNotifications.add(sessionId);
+            expect(
+              controller.debugUiStateRetainedBytes,
+              lessThanOrEqualTo(controller.inputBudget.maxUiStateBytes),
+            );
+          }
+        });
+
+        final creating = controller.newSession();
+        await fake.settingsStarted.future;
+
+        expect(controller.currentSession?.id, 'fake-session-1');
+        expect(committedNotifications, contains('fake-session-1'));
+
+        fake.allowSettings.complete();
+        expect(await creating, isTrue);
+      },
+    );
+
+    test('initial events are copied as one atomic bounded batch', () async {
+      final previous = AgentSession(
+        id: 'events-safe',
+        cwd: '/workspace/safe',
+        createdAt: DateTime(2026, 7, 13, 20),
+      );
+      final controller = ChatController(
+        client: _GrowingInitialEventsAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      controller.restoreArchivedSessionLocally(
+        ArchivedSessionSnapshot(
+          session: previous,
+          wasCurrent: true,
+          messages: <ChatMessage>[
+            ChatMessage(role: ChatMessageRole.assistant, text: 'safe'),
+          ],
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+        ),
+      );
+
+      expect(await controller.newSession(), isFalse);
+      expect(controller.currentSession?.id, previous.id);
+      expect(controller.messages.single.text, 'safe');
+      expect(controller.sessions.map((session) => session.id), [previous.id]);
+      expect(controller.debugInactiveSnapshotIds, isEmpty);
+    });
+
+    test(
+      'remote session collections are stable after source mutation',
+      () async {
+        final fake = _MutableCreateSessionAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+
+        expect(await controller.newSession(), isTrue);
+        fake.directories.add('/mutated');
+        fake.events.add(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'mutated',
+          ),
+        );
+
+        expect(controller.currentSession?.additionalDirectories, ['/safe']);
+        expect(controller.currentSession?.initialEvents, isEmpty);
+        expect(controller.messages.map((message) => message.text), ['initial']);
+      },
+    );
+
+    test('disposed controller drops delayed session result', () async {
+      final fake = _DelayedCreateSessionAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+
+      final creating = controller.newSession();
+      await fake.createStarted.future;
+      controller.dispose();
+      fake.allowCreate.complete();
+      await creating;
+
+      expect(controller.currentSession, isNull);
+      expect(controller.sessions, isEmpty);
+      expect(controller.messages, isEmpty);
+      expect(controller.debugInactiveSnapshotIds, isEmpty);
+      await controller.disposalComplete;
+    });
+
+    test(
+      'active-only overflow evicts old turns and rejects auxiliary plus one',
+      () {
+        final session = AgentSession(
+          id: 'active-only',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 13),
+        );
+        ChatMessage oldMessage() => ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: List<String>.filled(1000, 'o').join(),
+        );
+        ChatMessage currentMessage() =>
+            ChatMessage(role: ChatMessageRole.assistant, text: '');
+
+        ArchivedSessionSnapshot snapshot({
+          List<ChatMessage> messages = const <ChatMessage>[],
+          List<Map<String, Object?>> commands = const <Map<String, Object?>>[],
+          AcpSessionSettings settings = const AcpSessionSettings(),
+          AcpSessionUsage? usage,
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) => ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: true,
+          messages: messages,
+          availableCommands: commands,
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: settings,
+          sessionUsage: usage,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+
+        final measuring = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+        );
+        addTearDown(measuring.dispose);
+        measuring.restoreArchivedSessionLocally(
+          snapshot(messages: <ChatMessage>[oldMessage()]),
+        );
+        measuring.addMessageForTesting(currentMessage(), startsNewTurn: true);
+        final messageExact = measuring.debugUiStateRetainedBytes;
+        final messageBudget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 4096,
+          maxTimelineBytes: 4096,
+          maxUiStateBytes: messageExact,
+        );
+        final messageController = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: messageBudget,
+        );
+        addTearDown(messageController.dispose);
+        messageController.restoreArchivedSessionLocally(
+          snapshot(
+            messages: <ChatMessage>[oldMessage()],
+            budget: messageBudget,
+          ),
+        );
+        messageController.addMessageForTesting(
+          currentMessage(),
+          startsNewTurn: true,
+        );
+        expect(
+          messageController.debugUiStateRetainedBytes,
+          messageExact,
+          reason: messageController.messages
+              .map((message) => '${message.text.length}:${message.turnId}')
+              .toString(),
+        );
+        messageController.appendTextForTesting('x\n');
+        expect(
+          messageController.messages.where(
+            (message) => message.text.startsWith('o'),
+          ),
+          isEmpty,
+        );
+        expect(
+          messageController.messages.where(
+            (message) => message.omissions.any(
+              (omission) => omission.resource == 'timeline history',
+            ),
+          ),
+          hasLength(1),
+        );
+        expect(
+          messageController.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(messageBudget.maxUiStateBytes),
+        );
+
+        const commands = <Map<String, Object?>>[
+          <String, Object?>{'name': 'review'},
+        ];
+        const settings = AcpSessionSettings(
+          modes: AcpSessionModeInfo(
+            currentModeId: 'ask',
+            availableModes: <AcpSessionMode>[
+              AcpSessionMode(id: 'ask', name: 'Ask'),
+            ],
+          ),
+        );
+        const usage = AcpSessionUsage(used: 1, size: 10);
+        final desired =
+            <
+              ({
+                int retained,
+                void Function(ChatController) apply,
+                void Function(ChatController) verifyRejected,
+              })
+            >[
+              (
+                retained: snapshot(commands: commands).retainedBytes,
+                apply: (controller) => controller.availableCommands = commands,
+                verifyRejected: (controller) =>
+                    expect(controller.availableCommands, isEmpty),
+              ),
+              (
+                retained: snapshot(settings: settings).retainedBytes,
+                apply: (controller) => controller.sessionSettings = settings,
+                verifyRejected: (controller) {
+                  expect(
+                    controller.sessionSettings.modes.currentModeId,
+                    isNull,
+                  );
+                  expect(
+                    controller.sessionSettings.modes.availableModes,
+                    isEmpty,
+                  );
+                  expect(controller.sessionSettings.configOptions, isEmpty);
+                },
+              ),
+              (
+                retained: snapshot(usage: usage).retainedBytes,
+                apply: (controller) => controller.sessionUsage = usage,
+                verifyRejected: (controller) =>
+                    expect(controller.sessionUsage, isNull),
+              ),
+            ];
+        for (final stateCase in desired) {
+          final budget = acp.AcpInputBudget(
+            maxTurnRetainedBytes: 2048,
+            maxTimelineBytes: 2048,
+            maxUiStateBytes: stateCase.retained - 1,
+          );
+          final controller = ChatController(
+            client: FakeAgentClient(),
+            cwd: '/workspace',
+            inputBudget: budget,
+          );
+          addTearDown(controller.dispose);
+          controller.restoreArchivedSessionLocally(snapshot(budget: budget));
+          stateCase.apply(controller);
+          stateCase.verifyRejected(controller);
+          expect(controller.currentSession?.id, session.id);
+          expect(
+            controller.debugUiStateRetainedBytes,
+            lessThanOrEqualTo(budget.maxUiStateBytes),
+          );
+        }
+      },
+    );
+
+    test('internal command UI overflow is atomic and payload-free', () async {
+      const commands = <Map<String, Object?>>[
+        <String, Object?>{
+          'name': 'review',
+          'description': 'Review current changes',
+        },
+      ];
+      final session = AgentSession(
+        id: 'fake-session-1',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 5, 28, 12),
+        agentName: 'Codex',
+      );
+      final desired = ArchivedSessionSnapshot(
+        session: session,
+        wasCurrent: true,
+        messages: const <ChatMessage>[],
+        availableCommands: commands,
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+      final budget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: 2048,
+        maxTimelineBytes: 2048,
+        maxUiStateBytes: desired.retainedBytes - 1,
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(
+          sessionSettings: const AcpSessionSettings(),
+          createSessionEvents: const <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'commands',
+              metadata: <String, Object?>{
+                'kind': 'commands',
+                'commands': commands,
+              },
+            ),
+          ],
+        ),
+        cwd: '/workspace',
+        inputBudget: budget,
+      );
+      addTearDown(controller.dispose);
+      final observed = <AgentEvent>[];
+      controller.addAgentEventObserver((_, event) => observed.add(event));
+
+      expect(await controller.newSession(), isTrue);
+      expect(controller.availableCommands, isEmpty);
+      expect(
+        controller.debugUiStateRetainedBytes,
+        lessThanOrEqualTo(budget.maxUiStateBytes),
+      );
+      final commandEvent = observed.single;
+      expect(commandEvent.text, isEmpty);
+      expect(commandEvent.metadata, isEmpty);
+      expect(
+        commandEvent.omissions.where(
+          (omission) => omission.resource == 'UI state retained bytes',
+        ),
+        hasLength(1),
+        reason:
+            'text=${commandEvent.text} metadata=${commandEvent.metadata} omissions=${commandEvent.omissions} error=${controller.lastError} retained=${controller.debugUiStateRetainedBytes}/${budget.maxUiStateBytes}',
+      );
+    });
+
+    test(
+      'auxiliary preflight rejects usage beyond all evictable turns',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final session = AgentSession(
+          id: 'auxiliary-exact',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 17),
+        );
+        final largeDescription = List<String>.filled(1000, 's').join();
+        final currency = List<String>.filled(1000, 'u').join();
+        final settings = AcpSessionSettings(
+          configOptions: <AcpConfigOption>[
+            AcpConfigOption(
+              id: 'large',
+              name: 'Large',
+              type: 'text',
+              currentValue: 'safe',
+              options: const <AcpConfigOptionChoice>[],
+              description: largeDescription,
+            ),
+          ],
+        );
+        final proposedUsage = AcpSessionUsage(
+          used: 1,
+          size: 10,
+          cost: AcpSessionUsageCost(amount: 1, currency: currency),
+        );
+
+        ArchivedSessionSnapshot view({
+          required List<ChatMessage> messages,
+          AcpSessionUsage? usage,
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) => ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: true,
+          messages: messages,
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: settings,
+          sessionUsage: usage,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+
+        final currentMessage = ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'u',
+        );
+        final proposedWithoutOld = view(
+          messages: <ChatMessage>[currentMessage],
+          usage: proposedUsage,
+        ).retainedBytes;
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 4096,
+          maxTimelineBytes: 4096,
+          maxUiStateBytes: proposedWithoutOld - 1,
+        );
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(
+          view(
+            messages: <ChatMessage>[
+              ChatMessage(role: ChatMessageRole.assistant, text: 'old'),
+            ],
+            budget: budget,
+          ),
+        );
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: currency,
+            metadata: <String, Object?>{
+              'kind': 'usage_update',
+              'used': 1,
+              'size': 10,
+              'cost': <String, Object?>{'amount': 1, 'currency': currency},
+            },
+          ),
+        );
+
+        expect(controller.sessionUsage, isNull);
+        expect(controller.sessionSettings.configOptions.single.id, 'large');
+        expect(controller.messages.map((message) => message.text), [
+          'old',
+          'u',
+        ]);
+        expect(
+          controller.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(budget.maxUiStateBytes),
+        );
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(currency)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'UI state retained bytes',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('commands and settings share exact auxiliary rejection', () async {
+      final session = AgentSession(
+        id: 'auxiliary-peer-cases',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 13, 18),
+      );
+      final canary = List<String>.filled(700, 'z').join();
+      final commands = <Map<String, Object?>>[
+        <String, Object?>{'name': 'large', 'description': canary},
+      ];
+      final settings = AcpSessionSettings(
+        configOptions: <AcpConfigOption>[
+          AcpConfigOption(
+            id: 'large',
+            name: 'Large',
+            type: 'text',
+            currentValue: 'safe',
+            options: const <AcpConfigOptionChoice>[],
+            description: canary,
+          ),
+        ],
+      );
+
+      ArchivedSessionSnapshot view({
+        required List<ChatMessage> messages,
+        List<Map<String, Object?>> availableCommands =
+            const <Map<String, Object?>>[],
+        AcpSessionSettings sessionSettings = const AcpSessionSettings(),
+        acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+      }) => ArchivedSessionSnapshot(
+        session: session,
+        wasCurrent: true,
+        messages: messages,
+        availableCommands: availableCommands,
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: sessionSettings,
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: budget,
+      );
+
+      Future<void> verify({required bool commandsCase}) async {
+        final desired = view(
+          messages: <ChatMessage>[
+            ChatMessage(role: ChatMessageRole.user, text: 'u'),
+          ],
+          availableCommands: commandsCase ? commands : const [],
+          sessionSettings: commandsCase ? const AcpSessionSettings() : settings,
+        );
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 2048,
+          maxTimelineBytes: 2048,
+          maxUiStateBytes: desired.retainedBytes - 1,
+        );
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(
+          view(
+            messages: <ChatMessage>[
+              ChatMessage(role: ChatMessageRole.assistant, text: 'old'),
+            ],
+            budget: budget,
+          ),
+        );
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: commandsCase
+                ? <String, Object?>{'kind': 'commands', 'commands': commands}
+                : <String, Object?>{
+                    'kind': 'config_option_update',
+                    'configOptions': settings.configOptions,
+                  },
+          ),
+        );
+
+        expect(controller.availableCommands, isEmpty);
+        expect(controller.sessionSettings.configOptions, isEmpty);
+        expect(controller.messages.map((message) => message.text), [
+          'old',
+          'u',
+        ]);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'UI state retained bytes',
+          ),
+          hasLength(1),
+        );
+      }
+
+      await verify(commandsCase: true);
+      await verify(commandsCase: false);
+    });
+
+    test(
+      'prior-turn replacement rejects without deleting its target',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final session = AgentSession(
+          id: 'prior-replacement',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 18),
+        );
+        final largeSetting = List<String>.filled(1000, 's').join();
+        final settings = AcpSessionSettings(
+          configOptions: <AcpConfigOption>[
+            AcpConfigOption(
+              id: 'large',
+              name: 'Large',
+              type: 'text',
+              currentValue: largeSetting,
+              options: const <AcpConfigOptionChoice>[],
+            ),
+          ],
+        );
+        final oldText = List<String>.filled(900, 'p').join();
+        final replacementText = '${oldText}x';
+        const planMetadata = <String, Object?>{'kind': 'plan', 'title': 'plan'};
+        ChatMessage plan(String text) => ChatMessage(
+          role: ChatMessageRole.status,
+          text: text,
+          metadata: planMetadata,
+        );
+
+        ArchivedSessionSnapshot view(
+          List<ChatMessage> messages, {
+          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        }) => ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: true,
+          messages: messages,
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: settings,
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+
+        final desired = view(<ChatMessage>[
+          plan(replacementText),
+          ChatMessage(role: ChatMessageRole.user, text: 'u'),
+        ]);
+        final budget = acp.AcpInputBudget(
+          maxTurnRetainedBytes: 4096,
+          maxTimelineBytes: 4096,
+          maxUiStateBytes: desired.retainedBytes - 1,
+        );
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(
+          view(<ChatMessage>[plan(oldText)], budget: budget),
+        );
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: replacementText,
+            metadata: planMetadata,
+          ),
+        );
+
+        expect(controller.messages.map((message) => message.text), [
+          oldText,
+          'u',
+        ]);
+        expect(
+          controller.messages.where(
+            (message) => message.omissions.any(
+              (omission) => omission.resource == 'timeline history',
+            ),
+          ),
+          isEmpty,
+        );
+        expect(
+          controller.debugUiStateRetainedBytes,
+          lessThanOrEqualTo(budget.maxUiStateBytes),
+        );
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(replacementText)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'UI state retained bytes',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('current-only append and replace reject retained-byte plus one', () {
+      final session = AgentSession(
+        id: 'current-only-mutations',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 13, 14),
+      );
+
+      ArchivedSessionSnapshot snapshot(acp.AcpInputBudget budget) =>
+          ArchivedSessionSnapshot(
+            session: session,
+            wasCurrent: true,
+            messages: const <ChatMessage>[],
+            availableCommands: const <Map<String, Object?>>[],
+            lastLatency: null,
+            lastError: null,
+            sessionSettings: const AcpSessionSettings(),
+            sessionUsage: null,
+            sessionSettingsLoading: false,
+            status: app_state.ConnectionStatus.sessionReady,
+            activeSessionSettingsLoadId: null,
+            inputBudget: budget,
+          );
+
+      ChatController build(acp.AcpInputBudget budget) {
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(snapshot(budget));
+        return controller;
+      }
+
+      const measuringBudget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: 2048,
+        maxTimelineBytes: 2048,
+      );
+      final appendMeasuring = build(measuringBudget);
+      appendMeasuring.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: ''),
+        startsNewTurn: true,
+      );
+      appendMeasuring.appendTextForTesting('a\n');
+      final appendExact = appendMeasuring.debugUiStateRetainedBytes;
+
+      final appendBudget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: 2048,
+        maxTimelineBytes: 2048,
+        maxUiStateBytes: appendExact,
+      );
+      final appendController = build(appendBudget);
+      appendController.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: ''),
+        startsNewTurn: true,
+      );
+      appendController.appendTextForTesting('a\n');
+      appendController.appendTextForTesting('b\n');
+      expect(appendController.messages.single.text, 'a\n');
+      expect(
+        appendController.debugUiStateRetainedBytes,
+        lessThanOrEqualTo(appendBudget.maxUiStateBytes),
+      );
+
+      final replaceMeasuring = build(measuringBudget);
+      replaceMeasuring.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.status, text: 'a'),
+        startsNewTurn: true,
+      );
+      expect(
+        replaceMeasuring.replaceLastMessageForTesting(
+          ChatMessage(role: ChatMessageRole.status, text: 'ab'),
+        ),
+        isTrue,
+      );
+      final replaceExact = replaceMeasuring.debugUiStateRetainedBytes;
+      final replaceBudget = acp.AcpInputBudget(
+        maxTurnRetainedBytes: 2048,
+        maxTimelineBytes: 2048,
+        maxUiStateBytes: replaceExact - 1,
+      );
+      final replaceController = build(replaceBudget);
+      replaceController.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.status, text: 'a'),
+        startsNewTurn: true,
+      );
+      expect(
+        replaceController.replaceLastMessageForTesting(
+          ChatMessage(role: ChatMessageRole.status, text: 'ab'),
+        ),
+        isFalse,
+      );
+      expect(replaceController.messages.single.text, 'a');
+      expect(
+        replaceController.debugUiStateRetainedBytes,
+        lessThanOrEqualTo(replaceBudget.maxUiStateBytes),
+      );
+    });
+
+    test('streaming append refreshes active bytes before timeline eviction', () {
+      final oldText = List<String>.filled(4000, 'o').join();
+      final oldRetained = ChatMessage(
+        role: ChatMessageRole.user,
+        text: oldText,
+      ).retainedBytes;
+      final turnBytes = oldRetained + 1025;
+      final timelineBytes = turnBytes;
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: acp.AcpInputBudget(
+          maxMessageTextBytes: 700,
+          maxMarkdownFallbackBytes: 700,
+          maxTurnRetainedBytes: turnBytes,
+          maxTimelineBytes: timelineBytes,
+          maxUiStateBytes: timelineBytes + 4096,
+        ),
+      );
+      addTearDown(controller.dispose);
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: oldText),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: ''),
+        startsNewTurn: true,
+      );
+
+      controller.appendTextForTesting('123456789\n');
+      expect(
+        controller.messages,
+        hasLength(2),
+        reason: controller.messages
+            .map(
+              (message) =>
+                  '${message.text.length}:${message.omissions.map((o) => o.resource)}',
+            )
+            .toString(),
+      );
+      expect(
+        controller.debugActiveTimelineRetainedBytes,
+        controller.messages.fold<int>(
+          64 + 32 * controller.messages.length,
+          (retained, message) => retained + message.retainedBytes,
+        ),
+      );
+
+      controller.addOmissionForTesting(
+        acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.invalidStructure,
+          resource: 'streaming text',
+          truncated: false,
+        ),
+      );
+      expect(
+        controller.debugActiveTimelineRetainedBytes,
+        controller.messages.fold<int>(
+          64 + 32 * controller.messages.length,
+          (retained, message) => retained + message.retainedBytes,
+        ),
+      );
+      final overflowChunk = '${List<String>.filled(599, 'x').join()}\n';
+      controller.appendTextForTesting(overflowChunk);
+      expect(
+        controller.messages.where((message) => message.text == oldText),
+        isEmpty,
+      );
+      final current = controller.messages.singleWhere(
+        (message) => message.role == ChatMessageRole.assistant,
+      );
+      expect(current.text, '123456789\n$overflowChunk');
+      expect(current.omissions, isNotEmpty);
+      expect(
+        controller.debugActiveTimelineRetainedBytes,
+        controller.messages.fold<int>(
+          64 + 32 * controller.messages.length,
+          (retained, message) => retained + message.retainedBytes,
+        ),
+      );
+    });
+
+    test('marker reserve evicts another old turn and stays a singleton', () {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxTimelineItems: 4),
+      );
+      addTearDown(controller.dispose);
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'oldest'),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'second oldest'),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'current one'),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'current two'),
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.status, text: 'current three'),
+      );
+
+      expect(controller.messages.map((message) => message.text), <String>[
+        '',
+        'current one',
+        'current two',
+        'current three',
+      ]);
+      expect(
+        controller.messages.where(
+          (message) => message.omissions.any(
+            (omission) => omission.resource == 'timeline history',
+          ),
+        ),
+        hasLength(1),
+      );
+    });
+  });
+
   test('connect success sets connected status', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -4837,8 +6548,9 @@ void main() {
     );
     controller.currentSession = session;
     controller.sessions.add(session);
-    controller.messages.add(
+    controller.addMessageForTesting(
       ChatMessage(role: ChatMessageRole.assistant, text: 'Existing reply'),
+      startsNewTurn: true,
     );
     controller.status = app_state.ConnectionStatus.sessionReady;
 
@@ -5047,7 +6759,7 @@ void main() {
         contains('second original omission'),
       );
       final activeRetained = active.retainedBytes;
-      active.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+      controller.setLastMessageTextForTesting('${active.text}!');
       expect(active.retainedBytes, greaterThan(activeRetained));
       expect(archived.messages.single.text, 'wide original');
       expect(archived.messages.single.retainedBytes, archivedRetained);
@@ -5140,7 +6852,7 @@ void main() {
     expect(thought.acceptedUtf8Bytes, 2);
     expect(thought.omissions.single.resource, 'thought text');
     final overflowRetained = overflow.retainedBytes;
-    overflow.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+    controller.setMessageTextForTesting(1, '${overflow.text}!');
     expect(overflow.retainedBytes, greaterThan(overflowRetained));
     expect(archived.messages.map((message) => message.text), archivedTexts);
     expect(
@@ -5165,8 +6877,9 @@ void main() {
     );
     controller.currentSession = activeSession;
     controller.sessions.add(activeSession);
-    controller.messages.add(
+    controller.addMessageForTesting(
       ChatMessage(role: ChatMessageRole.assistant, text: 'active untouched'),
+      startsNewTurn: true,
     );
     final hostile = _ThrowingWasCurrentArchivedSnapshot(canary: canary);
 
@@ -5777,7 +7490,7 @@ void main() {
     );
     expect(first.availableCommands, isNot(same(second.availableCommands)));
     expect(first.sessionSettings, isNot(same(second.sessionSettings)));
-    first.messages.single.appendAcceptedText(' first', acceptedUtf8Bytes: 6);
+    first.setLastMessageTextForTesting('shared first');
     first.availableCommands = const <Map<String, Object?>>[];
     first.sessionSettings = const AcpSessionSettings();
 
@@ -5967,8 +7680,9 @@ void main() {
 
       await controller.newSession(cwd: '/workspace/first');
       final firstSession = controller.currentSession!;
-      controller.messages.add(
+      controller.addMessageForTesting(
         ChatMessage(role: ChatMessageRole.assistant, text: 'first-only'),
+        startsNewTurn: true,
       );
       controller.availableCommands = <Map<String, Object?>>[
         <String, Object?>{'name': 'first-command'},
@@ -5979,8 +7693,9 @@ void main() {
         cwd: '/workspace/second',
       );
       final secondSession = controller.currentSession!;
-      controller.messages.add(
+      controller.addMessageForTesting(
         ChatMessage(role: ChatMessageRole.assistant, text: 'second-only'),
+        startsNewTurn: true,
       );
 
       final archived = controller.archiveSessionLocally(firstSession.id)!;
@@ -5997,7 +7712,7 @@ void main() {
       expect(archived.availableCommands.single['name'], 'first-command');
 
       controller.restoreArchivedSessionLocally(archived);
-      controller.messages.last.text = 'second-mutated';
+      controller.setLastMessageTextForTesting('second-mutated');
       await controller.resumeSession(firstSession.id);
 
       expect(controller.currentSession?.id, firstSession.id);
@@ -6012,8 +7727,9 @@ void main() {
       expect(controller.availableCommands.single['name'], 'first-command');
       expect(
         () => controller.messages.last.text = 'active mutation',
-        returnsNormally,
+        throwsStateError,
       );
+      controller.setLastMessageTextForTesting('active mutation');
       expect(
         archived.messages.map((message) => message.text),
         isNot(contains('active mutation')),
@@ -6366,6 +8082,14 @@ void main() {
     );
     expect(controller.availableCommands.single['name'], 'review');
     expect(controller.sessionSettings.configOptions.single.id, 'approval');
+    expect(
+      controller.debugInactiveSnapshotIds,
+      isNot(contains('fake-session-1')),
+    );
+    expect(
+      controller.debugUiStateRetainedBytes,
+      lessThanOrEqualTo(controller.inputBudget.maxUiStateBytes),
+    );
   });
 
   test('failed resume cancels permission from the target session', () async {
@@ -9724,6 +11448,91 @@ class _FailingResumeAgentClient extends FakeAgentClient {
   }) async {
     lastResumeCwd = cwd;
     throw StateError('resume failed');
+  }
+}
+
+class _HostileCreateSessionAgentClient extends FakeAgentClient {
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    return AgentSession(
+      id: 'hostile-created',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 13, 19),
+      additionalDirectories: _ThrowingStringList('HOSTILE_REMOTE_SESSION'),
+    );
+  }
+}
+
+class _DelayedInitialSettingsAgentClient extends FakeAgentClient {
+  final Completer<void> settingsStarted = Completer<void>();
+  final Completer<void> allowSettings = Completer<void>();
+
+  @override
+  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+    if (!settingsStarted.isCompleted) settingsStarted.complete();
+    await allowSettings.future;
+    return const AcpSessionSettings();
+  }
+}
+
+class _GrowingInitialEventsAgentClient extends FakeAgentClient {
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    return AgentSession(
+      id: 'growing-events',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 13, 20),
+      initialEvents: _GrowingLengthList<AgentEvent>(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'partial'),
+        'GROWING_INITIAL_EVENTS',
+      ),
+    );
+  }
+}
+
+class _DelayedCreateSessionAgentClient extends FakeAgentClient {
+  final Completer<void> createStarted = Completer<void>();
+  final Completer<void> allowCreate = Completer<void>();
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    if (!createStarted.isCompleted) createStarted.complete();
+    await allowCreate.future;
+    return AgentSession(
+      id: 'delayed-created',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 13, 21),
+    );
+  }
+}
+
+class _MutableCreateSessionAgentClient extends FakeAgentClient {
+  final List<String> directories = <String>['/safe'];
+  final List<AgentEvent> events = <AgentEvent>[
+    const AgentEvent(type: AgentEventType.agentTextDelta, text: 'initial'),
+  ];
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    return AgentSession(
+      id: 'mutable-created',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 13, 22),
+      additionalDirectories: directories,
+      initialEvents: events,
+    );
   }
 }
 
