@@ -95,43 +95,96 @@ class AcpInputBudget {
 
   /// Reject invalid dynamic budgets in debug and release builds.
   void validate() {
-    _requirePositive(maxJsonDepth, 'maxJsonDepth');
-    _requirePositive(maxCapabilityDepth, 'maxCapabilityDepth');
-    _requirePositive(maxCapabilityNodes, 'maxCapabilityNodes');
-    _requirePositive(maxCapabilityBytes, 'maxCapabilityBytes');
-    _requirePositive(maxAuthMethods, 'maxAuthMethods');
-    _requirePositive(maxMetadataDepth, 'maxMetadataDepth');
-    _requirePositive(maxMetadataNodes, 'maxMetadataNodes');
-    _requirePositive(maxMetadataEntries, 'maxMetadataEntries');
-    _requirePositive(maxMetadataBytes, 'maxMetadataBytes');
-    _requirePositive(maxCollectionItems, 'maxCollectionItems');
-    _requirePositive(maxStructuredUpdateNodes, 'maxStructuredUpdateNodes');
-    _requirePositive(maxStructuredUpdateBytes, 'maxStructuredUpdateBytes');
-    _requirePositive(maxStructuredStringBytes, 'maxStructuredStringBytes');
-    _requirePositive(maxMessageTextBytes, 'maxMessageTextBytes');
-    _requirePositive(maxMessageTextLines, 'maxMessageTextLines');
-    _requirePositive(maxMarkdownSyntaxTokens, 'maxMarkdownSyntaxTokens');
-    _requirePositive(maxMarkdownFallbackBytes, 'maxMarkdownFallbackBytes');
-    _requirePositive(maxThoughtTextBytes, 'maxThoughtTextBytes');
-    _requirePositive(maxEmbeddedMediaBytes, 'maxEmbeddedMediaBytes');
-    _requirePositive(maxImageDimension, 'maxImageDimension');
-    _requirePositive(maxImagePixels, 'maxImagePixels');
-    _requirePositive(maxImagePreviewPixels, 'maxImagePreviewPixels');
-    _requirePositive(maxConcurrentImageDecodes, 'maxConcurrentImageDecodes');
-    _requirePositive(
+    _requirePositiveSafeBudgetInteger(maxJsonDepth, 'maxJsonDepth');
+    _requirePositiveSafeBudgetInteger(maxCapabilityDepth, 'maxCapabilityDepth');
+    _requirePositiveSafeBudgetInteger(maxCapabilityNodes, 'maxCapabilityNodes');
+    _requirePositiveSafeBudgetInteger(maxCapabilityBytes, 'maxCapabilityBytes');
+    _requirePositiveSafeBudgetInteger(maxAuthMethods, 'maxAuthMethods');
+    _requirePositiveSafeBudgetInteger(maxMetadataDepth, 'maxMetadataDepth');
+    _requirePositiveSafeBudgetInteger(maxMetadataNodes, 'maxMetadataNodes');
+    _requirePositiveSafeBudgetInteger(maxMetadataEntries, 'maxMetadataEntries');
+    _requirePositiveSafeBudgetInteger(maxMetadataBytes, 'maxMetadataBytes');
+    _requirePositiveSafeBudgetInteger(maxCollectionItems, 'maxCollectionItems');
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredUpdateNodes,
+      'maxStructuredUpdateNodes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredUpdateBytes,
+      'maxStructuredUpdateBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredStringBytes,
+      'maxStructuredStringBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMessageTextBytes,
+      'maxMessageTextBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMessageTextLines,
+      'maxMessageTextLines',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMarkdownSyntaxTokens,
+      'maxMarkdownSyntaxTokens',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMarkdownFallbackBytes,
+      'maxMarkdownFallbackBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxThoughtTextBytes,
+      'maxThoughtTextBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxEmbeddedMediaBytes,
+      'maxEmbeddedMediaBytes',
+    );
+    _requirePositiveSafeBudgetInteger(maxImageDimension, 'maxImageDimension');
+    _requirePositiveSafeBudgetInteger(maxImagePixels, 'maxImagePixels');
+    _requirePositiveSafeBudgetInteger(
+      maxImagePreviewPixels,
+      'maxImagePreviewPixels',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxConcurrentImageDecodes,
+      'maxConcurrentImageDecodes',
+    );
+    _requirePositiveSafeBudgetInteger(
       maxImagePreviewPixelsGlobal,
       'maxImagePreviewPixelsGlobal',
     );
-    _requirePositive(maxImageDecodeBytesGlobal, 'maxImageDecodeBytesGlobal');
-    _requirePositive(maxTurnItems, 'maxTurnItems');
-    _requirePositive(maxTurnRetainedBytes, 'maxTurnRetainedBytes');
-    _requirePositive(maxTimelineItems, 'maxTimelineItems');
-    _requirePositive(maxTimelineBytes, 'maxTimelineBytes');
-    _requirePositive(maxUiStateBytes, 'maxUiStateBytes');
-    _requirePositive(maxMetadataPreviewBytes, 'maxMetadataPreviewBytes');
-    _requirePositive(maxMetadataPreviewChars, 'maxMetadataPreviewChars');
+    _requirePositiveSafeBudgetInteger(
+      maxImageDecodeBytesGlobal,
+      'maxImageDecodeBytesGlobal',
+    );
+    _requirePositiveSafeBudgetInteger(maxTurnItems, 'maxTurnItems');
+    _requirePositiveSafeBudgetInteger(
+      maxTurnRetainedBytes,
+      'maxTurnRetainedBytes',
+    );
+    _requirePositiveSafeBudgetInteger(maxTimelineItems, 'maxTimelineItems');
+    _requirePositiveSafeBudgetInteger(maxTimelineBytes, 'maxTimelineBytes');
+    _requirePositiveSafeBudgetInteger(maxUiStateBytes, 'maxUiStateBytes');
+    _requirePositiveSafeBudgetInteger(
+      maxMetadataPreviewBytes,
+      'maxMetadataPreviewBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMetadataPreviewChars,
+      'maxMetadataPreviewChars',
+    );
 
     acpMaxBase64EncodedLength(maxEmbeddedMediaBytes);
+    if (maxImagePreviewPixels > _maxSafeBudgetInteger ~/ 4) {
+      throw ArgumentError.value(
+        maxImagePreviewPixels,
+        'maxImagePreviewPixels',
+        'decoded preview bytes exceed the cross-platform safe integer range',
+      );
+    }
+
     _requireAtMost(
       maxImagePreviewPixels,
       maxImagePixels,
@@ -158,18 +211,12 @@ class AcpInputBudget {
       'maxTimelineBytes relative to maxUiStateBytes',
     );
 
-    if (maxImagePreviewPixels > _maxSafeBudgetInteger ~/ 4) {
-      throw ArgumentError.value(
-        maxImagePreviewPixels,
-        'maxImagePreviewPixels',
-        'decoded preview bytes exceed the cross-platform safe integer range',
-      );
-    }
-    _requireSafeBudgetInteger(
-      maxImageDecodeBytesGlobal,
-      'maxImageDecodeBytesGlobal',
-    );
     final previewBytes = maxImagePreviewPixels * 4;
+    _requireAtMost(
+      previewBytes,
+      maxImageDecodeBytesGlobal,
+      'maxImagePreviewPixels bytes relative to maxImageDecodeBytesGlobal',
+    );
     final remainingImageDecodeBytes = maxImageDecodeBytesGlobal - previewBytes;
     if (maxEmbeddedMediaBytes > remainingImageDecodeBytes) {
       throw AcpInputLimitExceeded(
@@ -472,6 +519,11 @@ void _requireSafeBudgetInteger(int value, String name) {
       'must not exceed the cross-platform safe integer range',
     );
   }
+}
+
+void _requirePositiveSafeBudgetInteger(int value, String name) {
+  _requirePositive(value, name);
+  _requireSafeBudgetInteger(value, name);
 }
 
 void _requireAtMost(int observed, int limit, String resource) {

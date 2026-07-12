@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('AcpInputBudget', () {
-    final invalidNewLimits =
+    final newBudgetLimits =
         <({String field, AcpInputBudget Function(int value) create})>[
           (
             field: 'maxCollectionItems',
@@ -100,7 +100,48 @@ void main() {
           ),
         ];
 
-    for (final invalidLimit in invalidNewLimits) {
+    final allBudgetLimits =
+        <({String field, AcpInputBudget Function(int value) create})>[
+          (
+            field: 'maxJsonDepth',
+            create: (value) => AcpInputBudget(maxJsonDepth: value),
+          ),
+          (
+            field: 'maxCapabilityDepth',
+            create: (value) => AcpInputBudget(maxCapabilityDepth: value),
+          ),
+          (
+            field: 'maxCapabilityNodes',
+            create: (value) => AcpInputBudget(maxCapabilityNodes: value),
+          ),
+          (
+            field: 'maxCapabilityBytes',
+            create: (value) => AcpInputBudget(maxCapabilityBytes: value),
+          ),
+          (
+            field: 'maxAuthMethods',
+            create: (value) => AcpInputBudget(maxAuthMethods: value),
+          ),
+          (
+            field: 'maxMetadataDepth',
+            create: (value) => AcpInputBudget(maxMetadataDepth: value),
+          ),
+          (
+            field: 'maxMetadataNodes',
+            create: (value) => AcpInputBudget(maxMetadataNodes: value),
+          ),
+          (
+            field: 'maxMetadataEntries',
+            create: (value) => AcpInputBudget(maxMetadataEntries: value),
+          ),
+          (
+            field: 'maxMetadataBytes',
+            create: (value) => AcpInputBudget(maxMetadataBytes: value),
+          ),
+          ...newBudgetLimits,
+        ];
+
+    for (final invalidLimit in newBudgetLimits) {
       for (final value in const <int>[0, -1]) {
         test('${invalidLimit.field} rejects $value at runtime', () {
           expect(
@@ -115,6 +156,21 @@ void main() {
           );
         });
       }
+    }
+
+    for (final budgetLimit in allBudgetLimits) {
+      test('${budgetLimit.field} rejects unsafe integers first', () {
+        expect(
+          budgetLimit.create(0x1fffffffffffff + 1).validate,
+          throwsA(
+            isA<ArgumentError>().having(
+              (error) => error.name,
+              'field',
+              budgetLimit.field,
+            ),
+          ),
+        );
+      });
     }
 
     test('approved small turn limits remain valid', () {
@@ -279,17 +335,13 @@ void main() {
       );
     });
 
-    test('preview byte reservation rejects unsafe multiplication', () {
+    test('preview pixels reject unsafe integers before relationships', () {
       const maxSafeBudgetInteger = 0x1fffffffffffff;
       const unsafePreviewPixels = maxSafeBudgetInteger ~/ 4 + 1;
 
       expect(
         const AcpInputBudget(
-          maxEmbeddedMediaBytes: 1,
-          maxImagePixels: unsafePreviewPixels,
           maxImagePreviewPixels: unsafePreviewPixels,
-          maxImagePreviewPixelsGlobal: unsafePreviewPixels,
-          maxImageDecodeBytesGlobal: maxSafeBudgetInteger,
         ).validate,
         throwsA(
           isA<ArgumentError>().having(
@@ -339,6 +391,50 @@ void main() {
                 'observedAtLeast',
                 maxSafeDecodedBytes,
               ),
+        ),
+      );
+    });
+
+    test(
+      'preview bytes beyond global decode bytes report non-negative limit',
+      () {
+        expect(
+          const AcpInputBudget(
+            maxEmbeddedMediaBytes: 1,
+            maxImagePreviewPixels: 2,
+            maxImageDecodeBytesGlobal: 7,
+          ).validate,
+          throwsA(
+            isA<AcpInputLimitExceeded>()
+                .having(
+                  (error) => error.resource,
+                  'resource',
+                  'maxImagePreviewPixels bytes relative to '
+                      'maxImageDecodeBytesGlobal',
+                )
+                .having((error) => error.limit, 'limit', 7)
+                .having((error) => error.observedAtLeast, 'observedAtLeast', 8),
+          ),
+        );
+      },
+    );
+
+    test('preview bytes may consume global decode bytes exactly', () {
+      expect(
+        const AcpInputBudget(
+          maxEmbeddedMediaBytes: 1,
+          maxImagePreviewPixels: 2,
+          maxImageDecodeBytesGlobal: 8,
+        ).validate,
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'maxEmbeddedMediaBytes after image preview reservation',
+              )
+              .having((error) => error.limit, 'limit', 0)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 1),
         ),
       );
     });
