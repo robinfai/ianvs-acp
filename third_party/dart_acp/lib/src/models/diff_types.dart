@@ -401,7 +401,7 @@ DiffChange? _diffChangeFromRaw(
   if (raw is String) {
     guard.consumeEntry(field: 'change');
     final bounded = guard.copyString(raw, field: 'change text');
-    final text = bounded.trimRight();
+    final text = rawUnifiedDiff ? bounded : bounded.trimRight();
     if (text.trim().isEmpty) return null;
     if (rawUnifiedDiff && (text.startsWith('+++') || text.startsWith('---'))) {
       return DiffChange(type: 'change', content: text);

@@ -1912,6 +1912,37 @@ Future<void> main() async {
     expect(structured.changes.single.content, '++ b/a.dart');
   });
 
+  test('raw unified diff preserves trailing whitespace on every line', () {
+    for (final separator in const <String>['\n', '\r', '\r\n']) {
+      final diff = Diff.fromJson(<String, dynamic>{
+        'diff': <String>[
+          '+++ b/a.dart ',
+          '---\ta/a.dart\t',
+          '+added ',
+          '-removed\t',
+        ].join(separator),
+      });
+      expect(
+        diff.changes.map((change) => change.type),
+        <String>['change', 'change', 'addition', 'deletion'],
+        reason: separator.codeUnits.toString(),
+      );
+      expect(
+        diff.changes.map((change) => change.content),
+        <String>['+++ b/a.dart ', '---\ta/a.dart\t', 'added ', 'removed\t'],
+        reason: separator.codeUnits.toString(),
+      );
+    }
+
+    final structured = Diff.fromJson(<String, dynamic>{
+      'changes': <Object?>['+added ', '+++ b '],
+    });
+    expect(structured.changes.map((change) => change.content), <String>[
+      'added',
+      '++ b',
+    ]);
+  });
+
   test('plans retain only a bounded immutable display prefix', () {
     final sourceEntry = <String, dynamic>{
       'content': 'second',
