@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_capabilities.dart';
@@ -43,17 +45,473 @@ const List<String> _toolCallIdMetadataKeys = [
 const int _sessionReplayBatchSize = 32;
 
 class ChatMessage {
-  ChatMessage({
-    required this.role,
-    required this.text,
+  factory ChatMessage({
+    required ChatMessageRole role,
+    required String text,
     DateTime? timestamp,
-    this.metadata = const <String, Object?>{},
-  }) : timestamp = timestamp ?? DateTime.now();
+    Map<String, Object?> metadata = const <String, Object?>{},
+    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+    acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
+  }) {
+    inputBudget.validate();
+    final guarded = _guardChatMessageMetadata(metadata, inputBudget);
+    final boundedOmissions = _boundedChatMessageOmissions(
+      omissions,
+      guarded.omission,
+      inputBudget.maxCollectionItems,
+    );
+    return ChatMessage._(
+      role: role,
+      text: text,
+      timestamp: timestamp ?? DateTime.now(),
+      metadata: guarded.metadata,
+      omissions: boundedOmissions,
+      maxOmissions: inputBudget.maxCollectionItems,
+    );
+  }
+
+  ChatMessage._({
+    required this.role,
+    required String text,
+    required this.timestamp,
+    required this.metadata,
+    required this._omissions,
+    required this._maxOmissions,
+  }) : _textBuffer = StringBuffer(text),
+       _materializedText = text,
+       _acceptedUtf8Bytes = utf8.encode(text).length;
 
   final ChatMessageRole role;
-  String text;
+  StringBuffer _textBuffer;
+  String? _materializedText;
+  int _revision = 0;
+  int _materializationCount = 0;
+  int _acceptedUtf8Bytes;
+
+  String get text {
+    final cached = _materializedText;
+    if (cached != null) return cached;
+    final materialized = _textBuffer.toString();
+    _materializedText = materialized;
+    _materializationCount += 1;
+    return materialized;
+  }
+
+  set text(String value) {
+    _textBuffer = StringBuffer(value);
+    _materializedText = value;
+    _acceptedUtf8Bytes = utf8.encode(value).length;
+    _revision += 1;
+  }
+
+  int get revision => _revision;
+
+  int get acceptedUtf8Bytes => _acceptedUtf8Bytes;
+
+  @visibleForTesting
+  int get materializationCount => _materializationCount;
+
+  void appendAcceptedText(String value, {required int acceptedUtf8Bytes}) {
+    if (acceptedUtf8Bytes < 0) {
+      throw ArgumentError.value(
+        acceptedUtf8Bytes,
+        'acceptedUtf8Bytes',
+        'must not be negative',
+      );
+    }
+    final actualUtf8Bytes = utf8.encode(value).length;
+    if (acceptedUtf8Bytes != actualUtf8Bytes) {
+      throw ArgumentError.value(
+        acceptedUtf8Bytes,
+        'acceptedUtf8Bytes',
+        'must match the accepted text UTF-8 length',
+      );
+    }
+    if (value.isEmpty) return;
+    _textBuffer.write(value);
+    _materializedText = null;
+    _acceptedUtf8Bytes += acceptedUtf8Bytes;
+    _revision += 1;
+  }
+
   final DateTime timestamp;
   final Map<String, Object?> metadata;
+  List<acp.AcpInputOmission> _omissions;
+  final int _maxOmissions;
+
+  List<acp.AcpInputOmission> get omissions => _omissions;
+
+  bool addOmission(acp.AcpInputOmission omission) {
+    if (_omissions.length >= _maxOmissions ||
+        _omissions.any(
+          (existing) =>
+              existing.resource == omission.resource &&
+              existing.reason == omission.reason,
+        )) {
+      return false;
+    }
+    _omissions = List<acp.AcpInputOmission>.unmodifiable([
+      ..._omissions,
+      omission,
+    ]);
+    _revision += 1;
+    return true;
+  }
+}
+
+({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+_guardChatMessageMetadata(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget,
+) {
+  final snapshot = _snapshotChatMessageMetadata(metadata, budget);
+  final stableMetadata = snapshot.metadata;
+  if (stableMetadata == null) return _invalidChatMessageMetadata();
+  final typed = _guardRecognizedTypedConfigUpdateMetadata(
+    stableMetadata,
+    budget,
+  );
+  if (typed != null) {
+    final topLevelLimit = snapshot.limit;
+    if (topLevelLimit == null) return typed;
+    return _failedTypedConfigUpdateMetadata(
+      acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.inputLimit,
+        resource: 'chat message metadata',
+        truncated: false,
+        limit: topLevelLimit.limit,
+        observedAtLeast: topLevelLimit.observedAtLeast,
+      ),
+    );
+  }
+  if (snapshot.limit case final limit?) {
+    return _limitedChatMessageMetadata(limit);
+  }
+  try {
+    final guarded = acp.AcpStructuredUpdateGuard(
+      budget: budget,
+      resource: 'chat message metadata',
+    ).copyMetadata(stableMetadata, field: 'metadata');
+    return (metadata: guarded, omission: null);
+  } on acp.AcpInputLimitExceeded catch (error) {
+    return _limitedChatMessageMetadata(error);
+  } on Object {
+    return _invalidChatMessageMetadata();
+  }
+}
+
+({Map<String, Object?>? metadata, acp.AcpInputLimitExceeded? limit})
+_snapshotChatMessageMetadata(
+  Map<String, Object?> raw,
+  acp.AcpInputBudget budget,
+) {
+  final int reportedLength;
+  try {
+    reportedLength = raw.length;
+  } on Object {
+    return (metadata: null, limit: null);
+  }
+  if (reportedLength < 0) return (metadata: null, limit: null);
+  final entryLimit = budget.maxCollectionItems < budget.maxMetadataEntries
+      ? budget.maxCollectionItems
+      : budget.maxMetadataEntries;
+  final hasLimit = reportedLength > entryLimit;
+  final snapshotLength = hasLimit ? entryLimit + 1 : reportedLength;
+  final Iterator<MapEntry<String, Object?>> iterator;
+  try {
+    iterator = raw.entries.iterator;
+  } on Object {
+    return (metadata: null, limit: null);
+  }
+  final snapshot = <String, Object?>{};
+  for (var index = 0; index < snapshotLength; index += 1) {
+    final bool hasNext;
+    try {
+      hasNext = iterator.moveNext();
+    } on Object {
+      return (metadata: null, limit: null);
+    }
+    if (!hasNext) return (metadata: null, limit: null);
+    final MapEntry<String, Object?> entry;
+    try {
+      entry = iterator.current;
+    } on Object {
+      return (metadata: null, limit: null);
+    }
+    if (snapshot.containsKey(entry.key)) {
+      return (metadata: null, limit: null);
+    }
+    snapshot[entry.key] = entry.value;
+  }
+  if (!hasLimit) {
+    final bool hasUnexpectedEntry;
+    try {
+      hasUnexpectedEntry = iterator.moveNext();
+    } on Object {
+      return (metadata: null, limit: null);
+    }
+    if (hasUnexpectedEntry) return (metadata: null, limit: null);
+  }
+  return (
+    metadata: Map<String, Object?>.unmodifiable(snapshot),
+    limit: hasLimit
+        ? acp.AcpInputLimitExceeded(
+            resource: 'chat message metadata entries',
+            limit: entryLimit,
+            observedAtLeast: reportedLength,
+          )
+        : null,
+  );
+}
+
+({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+_limitedChatMessageMetadata(acp.AcpInputLimitExceeded error) => (
+  metadata: const <String, Object?>{},
+  omission: acp.AcpInputOmission(
+    reason: acp.AcpInputOmissionReason.inputLimit,
+    resource: 'chat message metadata',
+    truncated: false,
+    limit: error.limit,
+    observedAtLeast: error.observedAtLeast,
+  ),
+);
+
+({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+_invalidChatMessageMetadata() => (
+  metadata: const <String, Object?>{},
+  omission: acp.AcpInputOmission(
+    reason: acp.AcpInputOmissionReason.invalidStructure,
+    resource: 'chat message metadata',
+    truncated: false,
+  ),
+);
+
+({Map<String, Object?> metadata, acp.AcpInputOmission? omission})?
+_guardRecognizedTypedConfigUpdateMetadata(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget,
+) {
+  if (!_isRecognizedTypedConfigUpdateMetadata(metadata)) return null;
+  try {
+    final copied = _copyTypedConfigUpdateMetadata(metadata, budget);
+    if (copied == null) return null;
+    return (metadata: copied, omission: null);
+  } on acp.AcpInputLimitExceeded catch (error) {
+    return _failedTypedConfigUpdateMetadata(
+      acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.inputLimit,
+        resource: 'chat message metadata',
+        truncated: false,
+        limit: error.limit,
+        observedAtLeast: error.observedAtLeast,
+      ),
+    );
+  } on Object {
+    return _failedTypedConfigUpdateMetadata(
+      acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.invalidStructure,
+        resource: 'chat message metadata',
+        truncated: false,
+      ),
+    );
+  }
+}
+
+bool _isRecognizedTypedConfigUpdateMetadata(Map<String, Object?> metadata) {
+  try {
+    if (metadata.length != 2) return false;
+    Object? kind;
+    Object? options;
+    var count = 0;
+    for (final entry in metadata.entries) {
+      count += 1;
+      if (count > 2) return false;
+      if (entry.key == 'kind') {
+        kind = entry.value;
+      } else if (entry.key == 'configOptions') {
+        options = entry.value;
+      } else {
+        return false;
+      }
+    }
+    return count == 2 && kind == 'config_option_update' && options is List;
+  } on Object {
+    return false;
+  }
+}
+
+({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+_failedTypedConfigUpdateMetadata(acp.AcpInputOmission omission) => (
+  metadata: const <String, Object?>{
+    'kind': 'config_option_update',
+    'configOptions': <AcpConfigOption>[],
+  },
+  omission: omission,
+);
+
+Map<String, Object?>? _copyTypedConfigUpdateMetadata(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget,
+) {
+  final entryLimit = budget.maxMetadataEntries;
+  final int metadataLength;
+  try {
+    metadataLength = metadata.length;
+  } on Object {
+    throw const FormatException(
+      'Invalid chat message metadata collection access.',
+    );
+  }
+  if (metadataLength > entryLimit) {
+    throw acp.AcpInputLimitExceeded(
+      resource: 'chat message metadata entries',
+      limit: entryLimit,
+      observedAtLeast: metadataLength,
+    );
+  }
+  if (metadataLength != 2) return null;
+
+  Object? rawKind;
+  Object? rawOptions;
+  var observedEntries = 0;
+  try {
+    for (final entry in metadata.entries) {
+      observedEntries += 1;
+      if (observedEntries > metadataLength) {
+        throw const FormatException(
+          'Invalid chat message metadata entry count.',
+        );
+      }
+      if (entry.key == 'kind') {
+        rawKind = entry.value;
+      } else if (entry.key == 'configOptions') {
+        rawOptions = entry.value;
+      } else {
+        return null;
+      }
+    }
+  } on acp.AcpInputLimitExceeded {
+    rethrow;
+  } on Object {
+    throw const FormatException(
+      'Invalid chat message metadata collection access.',
+    );
+  }
+  if (observedEntries != metadataLength ||
+      rawKind != 'config_option_update' ||
+      rawOptions is! List) {
+    return null;
+  }
+
+  final guard = acp.AcpStructuredUpdateGuard(
+    budget: budget,
+    resource: 'chat message metadata',
+  );
+  guard.consumeContainerNode(field: 'metadata');
+  final kind = guard.copyString(rawKind, field: 'kind');
+  final optionCount = guard.checkCollection(
+    rawOptions,
+    field: 'config options',
+  );
+  guard.consumeContainerNode(field: 'config options');
+  final copiedOptions = <AcpConfigOption>[];
+  for (var optionIndex = 0; optionIndex < optionCount; optionIndex += 1) {
+    final Object? rawOption;
+    try {
+      rawOption = rawOptions[optionIndex];
+    } on Object {
+      throw const FormatException('Invalid chat message config option access.');
+    }
+    if (rawOption is! AcpConfigOption) {
+      throw const FormatException('Invalid chat message config option.');
+    }
+    guard.consumeEntry(field: 'config option');
+    final choiceCount = guard.checkCollection(
+      rawOption.options,
+      field: 'config option choices',
+    );
+    guard.consumeContainerNode(field: 'config option choices');
+    final copiedChoices = <AcpConfigOptionChoice>[];
+    for (var choiceIndex = 0; choiceIndex < choiceCount; choiceIndex += 1) {
+      final choice = rawOption.options[choiceIndex];
+      guard.consumeEntry(field: 'config option choice');
+      copiedChoices.add(
+        AcpConfigOptionChoice(
+          value: guard.copyString(
+            choice.value,
+            field: 'config option choice value',
+          ),
+          name: guard.copyString(
+            choice.name,
+            field: 'config option choice name',
+          ),
+          description: choice.description == null
+              ? null
+              : guard.copyString(
+                  choice.description,
+                  field: 'config option choice description',
+                ),
+        ),
+      );
+    }
+    copiedOptions.add(
+      AcpConfigOption(
+        id: guard.copyString(rawOption.id, field: 'config option id'),
+        name: guard.copyString(rawOption.name, field: 'config option name'),
+        type: guard.copyString(rawOption.type, field: 'config option type'),
+        currentValue: guard.copyString(
+          rawOption.currentValue,
+          field: 'config option current value',
+        ),
+        options: List<AcpConfigOptionChoice>.unmodifiable(copiedChoices),
+        description: rawOption.description == null
+            ? null
+            : guard.copyString(
+                rawOption.description,
+                field: 'config option description',
+              ),
+        category: rawOption.category == null
+            ? null
+            : guard.copyString(
+                rawOption.category,
+                field: 'config option category',
+              ),
+        group: rawOption.group == null
+            ? null
+            : guard.copyString(rawOption.group, field: 'config option group'),
+      ),
+    );
+  }
+  return Map<String, Object?>.unmodifiable(<String, Object?>{
+    'kind': kind,
+    'configOptions': List<AcpConfigOption>.unmodifiable(copiedOptions),
+  });
+}
+
+List<acp.AcpInputOmission> _boundedChatMessageOmissions(
+  List<acp.AcpInputOmission> trusted,
+  acp.AcpInputOmission? local,
+  int limit,
+) {
+  final bounded = <acp.AcpInputOmission>[];
+  for (final omission in trusted) {
+    if (bounded.length >= limit) break;
+    final duplicate = bounded.any(
+      (existing) =>
+          existing.resource == omission.resource &&
+          existing.reason == omission.reason,
+    );
+    if (!duplicate) bounded.add(omission);
+  }
+  if (local != null && bounded.length < limit) {
+    final duplicate = bounded.any(
+      (existing) =>
+          existing.resource == local.resource &&
+          existing.reason == local.reason,
+    );
+    if (!duplicate) bounded.add(local);
+  }
+  return List<acp.AcpInputOmission>.unmodifiable(bounded);
 }
 
 class ChatPermissionEvent {
@@ -131,6 +589,35 @@ class _SessionViewSnapshot {
   final int? activeSessionSettingsLoadId;
 }
 
+class _TurnBudgetState {
+  _TurnBudgetState(acp.AcpInputBudget budget)
+    : text = acp.AcpUtf8LineBudgetCounter(
+        maxBytes: budget.maxMessageTextBytes,
+        maxLines: budget.maxMessageTextLines,
+        resource: 'message text',
+      ),
+      thought = acp.AcpUtf8LineBudgetCounter(
+        maxBytes: budget.maxThoughtTextBytes,
+        maxLines: budget.maxMessageTextLines,
+        resource: 'thought text',
+      );
+
+  final acp.AcpUtf8LineBudgetCounter text;
+  final acp.AcpUtf8LineBudgetCounter thought;
+  ChatMessage? textTarget;
+  ChatMessage? thoughtTarget;
+  _PendingHighSurrogate? textPendingHigh;
+  _PendingHighSurrogate? thoughtPendingHigh;
+  final Set<ChatMessage> materializationTargets = <ChatMessage>{};
+}
+
+class _PendingHighSurrogate {
+  const _PendingHighSurrogate({required this.target, required this.codeUnit});
+
+  final ChatMessage target;
+  final int codeUnit;
+}
+
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -138,11 +625,13 @@ class ChatController extends ChangeNotifier {
     this.additionalDirectories = const <String>[],
     this.agentName = 'Codex',
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
+    this.inputBudget = const acp.AcpInputBudget(),
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
     this.permissionReviewer,
   }) : assert(permissionHistoryLimit > 0),
        permissionTrustRules = List.unmodifiable(permissionTrustRules) {
+    inputBudget.validate();
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
@@ -158,6 +647,7 @@ class ChatController extends ChangeNotifier {
   final List<String> additionalDirectories;
   final String agentName;
   final int permissionHistoryLimit;
+  final acp.AcpInputBudget inputBudget;
   final List<AcpPermissionTrustRule> permissionTrustRules;
   final AcpPermissionReviewer? permissionReviewer;
 
@@ -190,8 +680,12 @@ class ChatController extends ChangeNotifier {
   bool isSessionOperationRunning = false;
   bool isSessionReplayLoading = false;
   bool _isDisposed = false;
+  bool _changeNotifierDisposed = false;
+  int _notificationDepth = 0;
   Future<void>? _disposalFuture;
   int _nextPermissionRequestGeneration = 0;
+  _TurnBudgetState? _turnBudget;
+  bool _streamingNotificationPending = false;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -295,6 +789,7 @@ class ChatController extends ChangeNotifier {
 
   Future<bool> newSession({String? cwd}) async {
     if (isStreaming || isSessionOperationRunning) return false;
+    _finishTurnBudget();
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
         ? this.cwd
         : cwd.trim();
@@ -323,6 +818,7 @@ class ChatController extends ChangeNotifier {
         for (final event in session.initialEvents) {
           _handleAgentEvent(event, notify: false);
         }
+        _finishTurnBudget();
         if (messages.isEmpty) {
           _localUnstartedSessionIds.add(session.id);
         } else {
@@ -376,6 +872,7 @@ class ChatController extends ChangeNotifier {
         : explicitCwd;
     final workspaceAdditionalDirectories =
         additionalDirectories ?? this.additionalDirectories;
+    _finishTurnBudget();
 
     await _runSessionOperation(() async {
       final previousSession = currentSession;
@@ -489,6 +986,7 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _replaySessionEvents(List<AgentEvent> replay) async {
+    _finishTurnBudget();
     var pendingText = StringBuffer();
     Map<String, Object?> pendingTextMetadata = const <String, Object?>{};
 
@@ -509,7 +1007,8 @@ class ChatController extends ChangeNotifier {
     for (var index = 0; index < replay.length; index += 1) {
       final event = replay[index];
       if (event.type == AgentEventType.agentTextDelta &&
-          event.metadata.isEmpty) {
+          event.metadata.isEmpty &&
+          event.omissions.isEmpty) {
         pendingText.write(event.text);
       } else {
         flushPendingText();
@@ -523,6 +1022,7 @@ class ChatController extends ChangeNotifier {
       }
     }
     flushPendingText();
+    _finishTurnBudget();
   }
 
   Future<List<AcpProjectSessions>> listSessions() async {
@@ -596,6 +1096,7 @@ class ChatController extends ChangeNotifier {
     final session = _sessionWithId(sessionId);
     if (session == null || session.archived) return null;
     final wasCurrent = currentSession?.id == sessionId;
+    if (wasCurrent) _finishTurnBudget();
     final snapshot = ArchivedSessionSnapshot(
       session: session,
       wasCurrent: wasCurrent,
@@ -659,6 +1160,7 @@ class ChatController extends ChangeNotifier {
   void _snapshotCurrentSession() {
     final session = currentSession;
     if (session == null) return;
+    _finishTurnBudget();
     _sessionViewSnapshots[session.id] = _SessionViewSnapshot(
       session: session,
       messages: List<ChatMessage>.from(messages),
@@ -792,6 +1294,8 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return ChatPromptSubmissionResult.sessionUnavailable;
     _localUnstartedSessionIds.remove(session.id);
+    _finishTurnBudget();
+    _turnBudget = _TurnBudgetState(inputBudget);
 
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
@@ -800,6 +1304,7 @@ class ChatController extends ChangeNotifier {
       ChatMessage(
         role: ChatMessageRole.user,
         text: prompt,
+        inputBudget: inputBudget,
         metadata: contentBlocks.isEmpty
             ? const <String, Object?>{}
             : <String, Object?>{'contentBlocks': contentBlocks},
@@ -878,6 +1383,7 @@ class ChatController extends ChangeNotifier {
 
   Future<void> reconnect() async {
     if (isSessionOperationRunning) return;
+    _finishTurnBudget();
     await _runSessionOperation(() async {
       await _promptSubscription?.cancel();
       _promptSubscription = null;
@@ -1004,6 +1510,7 @@ class ChatController extends ChangeNotifier {
   Future<void> forkSession(AgentSession session) async {
     if (!supportsSessionFork) return;
     if (isStreaming || isSessionOperationRunning) return;
+    _finishTurnBudget();
 
     await _runSessionOperation(() async {
       try {
@@ -1038,6 +1545,7 @@ class ChatController extends ChangeNotifier {
         for (final event in updatedSession.initialEvents) {
           _handleAgentEvent(event, notify: false);
         }
+        _finishTurnBudget();
         await _loadSessionSettings(updatedSession.id, notify: false);
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
@@ -1053,6 +1561,7 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null || !supportsSessionClose) return;
     if (isStreaming || isSessionOperationRunning) return;
+    _finishTurnBudget();
 
     await _runSessionOperation(() async {
       try {
@@ -1083,6 +1592,7 @@ class ChatController extends ChangeNotifier {
   Future<void> logout() async {
     if (!supportsAuthLogout) return;
     if (isStreaming || isSessionOperationRunning) return;
+    _finishTurnBudget();
 
     await _runSessionOperation(() async {
       try {
@@ -1234,7 +1744,42 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  AgentEvent _safeAgentEvent(AgentEvent event) {
+    final guarded = _guardChatMessageMetadata(event.metadata, inputBudget);
+    return AgentEvent(
+      type: event.type,
+      text: event.text,
+      timestamp: event.timestamp,
+      metadata: guarded.metadata,
+      omissions: _boundedChatMessageOmissions(
+        event.omissions,
+        guarded.omission,
+        inputBudget.maxCollectionItems,
+      ),
+    );
+  }
+
   void _handleAgentEvent(AgentEvent event, {bool notify = true}) {
+    if (_isDisposed) return;
+    event = _safeAgentEvent(event);
+    if (_isDisposed) return;
+    final coalescesNotification =
+        event.type == AgentEventType.agentTextDelta ||
+        (event.type == AgentEventType.status &&
+            event.metadata['kind'] == 'thought');
+    final coalescedTargetBefore = event.type == AgentEventType.agentTextDelta
+        ? _turnBudget?.textTarget
+        : _turnBudget?.thoughtTarget;
+    final coalescedRevisionBefore = coalescedTargetBefore?.revision;
+    final messageCountBefore = messages.length;
+    if (notify && !coalescesNotification) {
+      _materializeTurnTargets();
+      _flushStreamingNotification();
+      if (_isDisposed) return;
+    }
+    if (event.type == AgentEventType.userMessage) {
+      _finishTurnBudget();
+    }
     _notifyAgentEventObservers(event);
     switch (event.type) {
       case AgentEventType.userMessage:
@@ -1243,6 +1788,8 @@ class ChatController extends ChangeNotifier {
             role: ChatMessageRole.user,
             text: event.text,
             metadata: event.metadata,
+            omissions: event.omissions,
+            inputBudget: inputBudget,
           ),
         );
       case AgentEventType.agentTextDelta:
@@ -1250,23 +1797,42 @@ class ChatController extends ChangeNotifier {
           ChatMessageRole.assistant,
           event.text,
           metadata: event.metadata,
+          omissions: event.omissions,
         );
       case AgentEventType.agentTextDone:
         _appendTurnStatus(event);
-        _finishStreaming();
+        _finishStreaming(notify: false);
       case AgentEventType.toolCall:
         _appendToolCall(event);
       case AgentEventType.error:
         final message = _messageForAgentError(event);
         lastError = message;
-        messages.add(ChatMessage(role: ChatMessageRole.error, text: message));
+        messages.add(
+          ChatMessage(
+            role: ChatMessageRole.error,
+            text: message,
+            omissions: event.omissions,
+            inputBudget: inputBudget,
+          ),
+        );
         status = ConnectionStatus.error;
-        _finishStreaming();
+        _finishStreaming(notify: false);
       case AgentEventType.status:
         _appendStatus(event);
     }
     if (notify) {
-      _notifyListeners();
+      if (coalescesNotification) {
+        final coalescedTargetAfter = event.type == AgentEventType.agentTextDelta
+            ? _turnBudget?.textTarget
+            : _turnBudget?.thoughtTarget;
+        final didChange =
+            messages.length != messageCountBefore ||
+            !identical(coalescedTargetAfter, coalescedTargetBefore) ||
+            coalescedTargetAfter?.revision != coalescedRevisionBefore;
+        if (didChange) _scheduleStreamingNotification();
+      } else {
+        _notifyListeners();
+      }
     }
   }
 
@@ -1278,6 +1844,8 @@ class ChatController extends ChangeNotifier {
           role: ChatMessageRole.tool,
           text: event.text,
           metadata: event.metadata,
+          omissions: event.omissions,
+          inputBudget: inputBudget,
         ),
       );
       return;
@@ -1296,6 +1864,8 @@ class ChatController extends ChangeNotifier {
         text: event.text.trim().isEmpty ? message.text : event.text,
         timestamp: message.timestamp,
         metadata: _mergeMetadata(message.metadata, event.metadata),
+        omissions: [...message.omissions, ...event.omissions],
+        inputBudget: inputBudget,
       );
       return;
     }
@@ -1305,6 +1875,8 @@ class ChatController extends ChangeNotifier {
         role: ChatMessageRole.tool,
         text: event.text,
         metadata: event.metadata,
+        omissions: event.omissions,
+        inputBudget: inputBudget,
       ),
     );
   }
@@ -1770,17 +2342,181 @@ class ChatController extends ChangeNotifier {
     };
   }
 
+  _TurnBudgetState _ensureTurnBudget() {
+    return _turnBudget ??= _TurnBudgetState(inputBudget);
+  }
+
+  void _appendTextToMessage(ChatMessage target, String chunk) {
+    final turnBudget = _ensureTurnBudget();
+    _appendBudgetedChunk(
+      turnBudget: turnBudget,
+      target: target,
+      chunk: chunk,
+      thought: false,
+    );
+  }
+
+  void _appendThoughtToMessage(ChatMessage target, String chunk) {
+    final turnBudget = _ensureTurnBudget();
+    _appendBudgetedChunk(
+      turnBudget: turnBudget,
+      target: target,
+      chunk: chunk,
+      thought: true,
+    );
+  }
+
+  void _appendBudgetedChunk({
+    required _TurnBudgetState turnBudget,
+    required ChatMessage target,
+    required String chunk,
+    required bool thought,
+  }) {
+    final counter = thought ? turnBudget.thought : turnBudget.text;
+    final pending = thought
+        ? turnBudget.thoughtPendingHigh
+        : turnBudget.textPendingHigh;
+    if (thought) {
+      turnBudget.thoughtTarget = target;
+    } else {
+      turnBudget.textTarget = target;
+    }
+
+    final accepted = counter.append(chunk);
+    if (pending != null &&
+        !identical(pending.target, target) &&
+        accepted.safePrefix.isNotEmpty) {
+      final pairsWithLow =
+          chunk.isNotEmpty && _isChatLowSurrogate(chunk.codeUnitAt(0));
+      final resolvedCodeUnits = pairsWithLow ? 2 : 1;
+      final resolvedBytes = pairsWithLow ? 4 : 3;
+      final resolvedPrefix = pairsWithLow
+          ? String.fromCharCodes(<int>[pending.codeUnit, chunk.codeUnitAt(0)])
+          : String.fromCharCode(pending.codeUnit);
+      _appendAcceptedToTarget(
+        turnBudget,
+        pending.target,
+        resolvedPrefix,
+        resolvedBytes,
+      );
+      _appendAcceptedToTarget(
+        turnBudget,
+        target,
+        accepted.safePrefix.substring(resolvedCodeUnits),
+        accepted.acceptedBytes - resolvedBytes,
+      );
+    } else {
+      _appendAcceptedToTarget(
+        turnBudget,
+        target,
+        accepted.safePrefix,
+        accepted.acceptedBytes,
+      );
+    }
+
+    if (accepted.omission case final omission?) {
+      final omissionTarget = pending != null && accepted.safePrefix.isEmpty
+          ? pending.target
+          : target;
+      if (omissionTarget.addOmission(omission)) {
+        turnBudget.materializationTargets.add(omissionTarget);
+      }
+    }
+
+    final _PendingHighSurrogate? nextPending;
+    if (accepted.omission != null) {
+      nextPending = null;
+    } else if (chunk.isEmpty) {
+      nextPending = pending;
+    } else {
+      final lastCodeUnit = chunk.codeUnitAt(chunk.length - 1);
+      nextPending = _isChatHighSurrogate(lastCodeUnit)
+          ? _PendingHighSurrogate(target: target, codeUnit: lastCodeUnit)
+          : null;
+    }
+    if (thought) {
+      turnBudget.thoughtPendingHigh = nextPending;
+    } else {
+      turnBudget.textPendingHigh = nextPending;
+    }
+  }
+
+  void _appendAcceptedToTarget(
+    _TurnBudgetState turnBudget,
+    ChatMessage target,
+    String text,
+    int acceptedUtf8Bytes,
+  ) {
+    final revision = target.revision;
+    target.appendAcceptedText(text, acceptedUtf8Bytes: acceptedUtf8Bytes);
+    if (target.revision != revision) {
+      turnBudget.materializationTargets.add(target);
+    }
+  }
+
+  void _finishTurnBudget() {
+    _streamingNotificationPending = false;
+    final turnBudget = _turnBudget;
+    if (turnBudget == null) return;
+    _turnBudget = null;
+    final textFinishTarget =
+        turnBudget.textPendingHigh?.target ?? turnBudget.textTarget;
+    final thoughtFinishTarget =
+        turnBudget.thoughtPendingHigh?.target ?? turnBudget.thoughtTarget;
+    _appendFinishedText(turnBudget, textFinishTarget, turnBudget.text.finish());
+    _appendFinishedText(
+      turnBudget,
+      thoughtFinishTarget,
+      turnBudget.thought.finish(),
+    );
+    turnBudget.textPendingHigh = null;
+    turnBudget.thoughtPendingHigh = null;
+    _materializeBudgetTargets(turnBudget);
+  }
+
+  void _appendFinishedText(
+    _TurnBudgetState turnBudget,
+    ChatMessage? target,
+    acp.AcpTextBudgetChunk finished,
+  ) {
+    if (target == null) return;
+    _appendAcceptedToTarget(
+      turnBudget,
+      target,
+      finished.safePrefix,
+      finished.acceptedBytes,
+    );
+    if (finished.omission case final omission?) {
+      if (target.addOmission(omission)) {
+        turnBudget.materializationTargets.add(target);
+      }
+    }
+  }
+
   void _appendText(
     ChatMessageRole role,
     String text, {
     Map<String, Object?> metadata = const <String, Object?>{},
+    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
   }) {
     final lastMessage = messages.isNotEmpty ? messages.last : null;
+    final ChatMessage target;
     if (metadata.isEmpty && lastMessage != null && lastMessage.role == role) {
-      lastMessage.text += text;
+      target = lastMessage;
+      for (final omission in omissions) {
+        target.addOmission(omission);
+      }
     } else {
-      messages.add(ChatMessage(role: role, text: text, metadata: metadata));
+      target = ChatMessage(
+        role: role,
+        text: '',
+        metadata: metadata,
+        omissions: omissions,
+        inputBudget: inputBudget,
+      );
+      messages.add(target);
     }
+    _appendTextToMessage(target, text);
   }
 
   void _appendStatus(AgentEvent event) {
@@ -1822,7 +2558,22 @@ class ChatController extends ChangeNotifier {
         lastMessage != null &&
         lastMessage.role == ChatMessageRole.status &&
         lastMessage.metadata['kind'] == 'thought') {
-      lastMessage.text += event.text;
+      for (final omission in event.omissions) {
+        lastMessage.addOmission(omission);
+      }
+      _appendThoughtToMessage(lastMessage, event.text);
+      return;
+    }
+    if (kind == 'thought') {
+      final message = ChatMessage(
+        role: ChatMessageRole.status,
+        text: '',
+        metadata: event.metadata,
+        omissions: event.omissions,
+        inputBudget: inputBudget,
+      );
+      messages.add(message);
+      _appendThoughtToMessage(message, event.text);
       return;
     }
     messages.add(
@@ -1830,6 +2581,8 @@ class ChatController extends ChangeNotifier {
         role: ChatMessageRole.status,
         text: event.text,
         metadata: event.metadata,
+        omissions: event.omissions,
+        inputBudget: inputBudget,
       ),
     );
   }
@@ -1842,6 +2595,8 @@ class ChatController extends ChangeNotifier {
           role: ChatMessageRole.status,
           text: event.text,
           metadata: event.metadata,
+          omissions: event.omissions,
+          inputBudget: inputBudget,
         ),
       );
       return;
@@ -1858,6 +2613,8 @@ class ChatController extends ChangeNotifier {
           role: ChatMessageRole.status,
           text: event.text,
           metadata: event.metadata,
+          omissions: event.omissions,
+          inputBudget: inputBudget,
         ),
       );
       return;
@@ -1874,6 +2631,8 @@ class ChatController extends ChangeNotifier {
       role: ChatMessageRole.status,
       text: _terminalStatusText(event.text, previous.text),
       metadata: metadata,
+      omissions: [...previous.omissions, ...event.omissions],
+      inputBudget: inputBudget,
     );
   }
 
@@ -1894,6 +2653,8 @@ class ChatController extends ChangeNotifier {
       role: ChatMessageRole.status,
       text: event.text,
       metadata: event.metadata,
+      omissions: event.omissions,
+      inputBudget: inputBudget,
     );
     final index = messages.indexWhere((item) {
       return item.role == ChatMessageRole.status &&
@@ -2142,6 +2903,8 @@ class ChatController extends ChangeNotifier {
         role: ChatMessageRole.status,
         text: _stopReasonLabel(stopReason),
         metadata: <String, Object?>{'kind': 'turn', 'stopReason': stopReason},
+        omissions: event.omissions,
+        inputBudget: inputBudget,
       ),
     );
   }
@@ -2157,7 +2920,8 @@ class ChatController extends ChangeNotifier {
     };
   }
 
-  void _finishStreaming() {
+  void _finishStreaming({bool notify = true}) {
+    _finishTurnBudget();
     if (!isStreaming) return;
     isStreaming = false;
     _cancelPendingPermissionRequestAfterPromptEnd();
@@ -2170,10 +2934,11 @@ class ChatController extends ChangeNotifier {
     if (startedAt != null) {
       lastLatency = DateTime.now().difference(startedAt);
     }
-    _notifyListeners();
+    if (notify) _notifyListeners();
   }
 
   void _setError(Object error) {
+    _finishTurnBudget();
     lastError = _messageForError(error);
     status = ConnectionStatus.error;
     isStreaming = false;
@@ -2296,8 +3061,13 @@ class ChatController extends ChangeNotifier {
   Future<void> get disposalComplete => _disposalFuture ?? Future<void>.value();
 
   @override
+  // ChangeNotifier forbids super.dispose during notifyListeners; the helper
+  // invokes it exactly once after the local notification depth returns to 0.
+  // ignore: must_call_super
   void dispose() {
     if (_isDisposed) return;
+    _finishTurnBudget();
+    _streamingNotificationPending = false;
     _isDisposed = true;
     final promptSubscription = _promptSubscription;
     _promptSubscription = null;
@@ -2305,7 +3075,7 @@ class ChatController extends ChangeNotifier {
     unawaited(_disposalFuture);
     _resolvingPermissionRequestIds.clear();
     _reviewingPermissionRequestIds.clear();
-    super.dispose();
+    if (_notificationDepth == 0) _disposeChangeNotifier();
   }
 
   Future<void> _disposeResources(
@@ -2329,6 +3099,61 @@ class ChatController extends ChangeNotifier {
 
   void _notifyListeners() {
     if (_isDisposed) return;
-    notifyListeners();
+    _notificationDepth += 1;
+    try {
+      notifyListeners();
+    } finally {
+      _notificationDepth -= 1;
+      if (_isDisposed && _notificationDepth == 0) {
+        _disposeChangeNotifier();
+      }
+    }
+  }
+
+  void _disposeChangeNotifier() {
+    if (_changeNotifierDisposed) return;
+    _changeNotifierDisposed = true;
+    super.dispose();
+  }
+
+  void _scheduleStreamingNotification() {
+    if (_isDisposed || _streamingNotificationPending) return;
+    _streamingNotificationPending = true;
+    scheduleMicrotask(() {
+      if (!_streamingNotificationPending) return;
+      _streamingNotificationPending = false;
+      _materializeTurnTargets();
+      _notifyListeners();
+    });
+  }
+
+  void _flushStreamingNotification() {
+    if (!_streamingNotificationPending) return;
+    _streamingNotificationPending = false;
+    _materializeTurnTargets();
+    _notifyListeners();
+  }
+
+  void _materializeTurnTargets() {
+    final turnBudget = _turnBudget;
+    if (turnBudget == null) return;
+    _materializeBudgetTargets(turnBudget);
+  }
+
+  void _materializeBudgetTargets(_TurnBudgetState turnBudget) {
+    for (final target in turnBudget.materializationTargets) {
+      target.text;
+    }
+    turnBudget.materializationTargets.clear();
+    turnBudget.textTarget?.text;
+    if (!identical(turnBudget.thoughtTarget, turnBudget.textTarget)) {
+      turnBudget.thoughtTarget?.text;
+    }
   }
 }
+
+bool _isChatHighSurrogate(int codeUnit) =>
+    codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+
+bool _isChatLowSurrogate(int codeUnit) =>
+    codeUnit >= 0xdc00 && codeUnit <= 0xdfff;

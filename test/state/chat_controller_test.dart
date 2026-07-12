@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
@@ -13,6 +14,1436 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 
 void main() {
+  group('ChatMessage text buffer', () {
+    test(
+      'getter setter append revision and materialization stay compatible',
+      () {
+        final message = ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'seed',
+        );
+
+        expect(message.text, 'seed');
+        expect(message.revision, 0);
+        expect(message.materializationCount, 0);
+
+        message.appendAcceptedText(' one', acceptedUtf8Bytes: 4);
+        expect(message.revision, 1);
+        expect(message.materializationCount, 0);
+        expect(message.text, 'seed one');
+        expect(message.materializationCount, 1);
+        expect(message.acceptedUtf8Bytes, 8);
+        expect(message.text, 'seed one');
+        expect(message.materializationCount, 1);
+
+        message.appendAcceptedText('', acceptedUtf8Bytes: 0);
+        expect(message.revision, 1);
+        expect(
+          () => message.appendAcceptedText('x', acceptedUtf8Bytes: 0),
+          throwsArgumentError,
+        );
+        expect(message.text, 'seed one');
+        expect(message.revision, 1);
+
+        message.text = 'reset';
+        expect(message.text, 'reset');
+        expect(message.acceptedUtf8Bytes, 5);
+        expect(message.revision, 2);
+        message.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+        expect(message.text, 'reset!');
+        expect(message.revision, 3);
+        expect(message.materializationCount, 2);
+      },
+    );
+
+    test('one hundred thousand micro chunks retain order in linear time', () {
+      final message = ChatMessage(role: ChatMessageRole.assistant, text: '');
+      final stopwatch = Stopwatch()..start();
+
+      for (var index = 0; index < 100000; index += 1) {
+        message.appendAcceptedText(
+          String.fromCharCode(97 + index % 26),
+          acceptedUtf8Bytes: 1,
+        );
+      }
+      final text = message.text;
+      stopwatch.stop();
+
+      expect(text, hasLength(100000));
+      expect(
+        text.substring(0, 52),
+        'abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz',
+      );
+      expect(text.substring(99974), 'efghijklmnopqrstuvwxyzabcd');
+      expect(message.revision, 100000);
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)));
+    });
+  });
+
+  group('ChatMessage guarded metadata and omissions', () {
+    test('metadata is defensively copied and deeply immutable', () {
+      final nested = <String, Object?>{'value': 'original'};
+      final items = <Object?>[nested];
+      final source = <String, Object?>{'items': items};
+
+      final message = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: source,
+      );
+      nested['value'] = 'changed';
+      items.add('changed');
+      source['late'] = 'changed';
+
+      final copiedItems = message.metadata['items']! as List<Object?>;
+      expect(copiedItems, hasLength(1));
+      expect(
+        (copiedItems.single! as Map<String, Object?>)['value'],
+        'original',
+      );
+      expect(message.metadata, isNot(contains('late')));
+      expect(() => message.metadata['new'] = 1, throwsUnsupportedError);
+      expect(() => copiedItems.add(2), throwsUnsupportedError);
+      expect(
+        () => (copiedItems.single! as Map<String, Object?>)['value'] = 'x',
+        throwsUnsupportedError,
+      );
+    });
+
+    test('hostile metadata fails safe without leaking payload', () {
+      const canary = 'CHAT_METADATA_CANARY_MUST_NOT_APPEAR';
+      final message = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: <String, Object?>{
+          'omissions': <Object?>[
+            <String, Object?>{
+              'resource': 'forged',
+              'reason': 'inputLimit',
+              'payload': canary,
+            },
+          ],
+          'bad': StringBuffer(canary),
+        },
+      );
+
+      expect(message.metadata, isEmpty);
+      expect(message.text, 'safe');
+      expect(message.omissions, hasLength(1));
+      expect(
+        message.omissions.single.reason,
+        acp.AcpInputOmissionReason.invalidStructure,
+      );
+      expect(message.omissions.single.resource, 'chat message metadata');
+      expect(message.omissions.single.toString(), isNot(contains(canary)));
+    });
+
+    test('metadata over its guard budget records a payload-free omission', () {
+      const canary = 'CHAT_METADATA_LIMIT_CANARY_MUST_NOT_APPEAR';
+      final message = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: const <String, Object?>{'first': 'safe', 'second': canary},
+        inputBudget: const acp.AcpInputBudget(maxMetadataNodes: 2),
+      );
+
+      expect(message.metadata, isEmpty);
+      expect(
+        message.omissions.single.reason,
+        acp.AcpInputOmissionReason.inputLimit,
+      );
+      expect(message.omissions.single.limit, 2);
+      expect(message.omissions.single.toString(), isNot(contains(canary)));
+    });
+
+    test('structured metadata guard enforces depth and entry limits', () {
+      final depthLimited = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: const <String, Object?>{
+          'nested': <String, Object?>{'value': 'safe'},
+        },
+        inputBudget: const acp.AcpInputBudget(maxJsonDepth: 1),
+      );
+      final entryLimited = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: const <String, Object?>{'a': 1, 'b': 2},
+        inputBudget: const acp.AcpInputBudget(maxMetadataEntries: 1),
+      );
+
+      expect(depthLimited.metadata, isEmpty);
+      expect(
+        depthLimited.omissions.single.reason,
+        acp.AcpInputOmissionReason.inputLimit,
+      );
+      expect(entryLimited.metadata, isEmpty);
+      expect(entryLimited.omissions.single.limit, 1);
+    });
+
+    test('structured metadata nodes bytes and strings honor exact limits', () {
+      ChatMessage message(acp.AcpInputBudget budget, String value) {
+        return ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'safe',
+          metadata: <String, Object?>{'a': value},
+          inputBudget: budget,
+        );
+      }
+
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredUpdateNodes: 2),
+          'b',
+        ).metadata,
+        {'a': 'b'},
+      );
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredUpdateNodes: 1),
+          'b',
+        ).metadata,
+        isEmpty,
+      );
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredUpdateBytes: 2),
+          'b',
+        ).metadata,
+        {'a': 'b'},
+      );
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredUpdateBytes: 1),
+          'b',
+        ).metadata,
+        isEmpty,
+      );
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+          'b',
+        ).metadata,
+        {'a': 'b'},
+      );
+      expect(
+        message(
+          const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+          'bb',
+        ).metadata,
+        isEmpty,
+      );
+    });
+
+    test(
+      'deep allowed metadata is copied iteratively and remains immutable',
+      () {
+        Map<String, Object?> metadata = <String, Object?>{'leaf': 'safe'};
+        for (var depth = 0; depth < 256; depth += 1) {
+          metadata = <String, Object?>{'next': metadata};
+        }
+        final message = ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'safe',
+          metadata: metadata,
+          inputBudget: const acp.AcpInputBudget(
+            maxJsonDepth: 300,
+            maxMetadataDepth: 300,
+            maxMetadataNodes: 600,
+            maxStructuredUpdateNodes: 600,
+          ),
+        );
+
+        expect(message.metadata, isNotEmpty);
+        Map<String, Object?> cursor = message.metadata;
+        for (var depth = 0; depth < 256; depth += 1) {
+          cursor = cursor['next']! as Map<String, Object?>;
+        }
+        expect(cursor['leaf'], 'safe');
+        expect(() => cursor['late'] = 'no', throwsUnsupportedError);
+      },
+    );
+
+    test('typed omissions are copied deduplicated immutable and bounded', () {
+      acp.AcpInputOmission omission(String resource, int limit) {
+        return acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.inputLimit,
+          resource: resource,
+          truncated: true,
+          limit: limit,
+          observedAtLeast: limit + 1,
+        );
+      }
+
+      final source = <acp.AcpInputOmission>[
+        omission('message text', 4),
+        omission('message text', 8),
+        omission('thought text', 4),
+        omission('ignored third resource', 4),
+      ];
+      final message = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: '',
+        omissions: source,
+        inputBudget: const acp.AcpInputBudget(maxCollectionItems: 2),
+        metadata: const <String, Object?>{
+          'omissions': <Object?>[
+            <String, Object?>{'resource': 'forged', 'reason': 'inputLimit'},
+          ],
+        },
+      );
+      source.clear();
+
+      expect(message.omissions.map((item) => item.resource), [
+        'message text',
+        'thought text',
+      ]);
+      expect(message.omissions, hasLength(2));
+      expect(
+        () => message.omissions.add(omission('another', 4)),
+        throwsUnsupportedError,
+      );
+      expect(message.addOmission(omission('message text', 16)), isFalse);
+      expect(message.addOmission(omission('over limit', 4)), isFalse);
+      expect(message.revision, 0);
+
+      final growing = ChatMessage(role: ChatMessageRole.assistant, text: '');
+      expect(growing.addOmission(omission('new resource', 4)), isTrue);
+      expect(growing.revision, 1);
+    });
+
+    test('trusted omissions take capacity before local metadata failures', () {
+      final trusted = acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.inputLimit,
+        resource: 'trusted event resource',
+        truncated: true,
+        limit: 1,
+        observedAtLeast: 2,
+      );
+      final message = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'safe',
+        metadata: <String, Object?>{'bad': StringBuffer('payload')},
+        omissions: <acp.AcpInputOmission>[trusted],
+        inputBudget: const acp.AcpInputBudget(maxCollectionItems: 1),
+      );
+
+      expect(message.metadata, isEmpty);
+      expect(message.omissions, hasLength(1));
+      expect(message.omissions.single.resource, 'trusted event resource');
+      expect(() => message.omissions.add(trusted), throwsUnsupportedError);
+    });
+  });
+
+  group('ChatController turn text budgets', () {
+    test('input budget is validated during controller construction', () {
+      expect(
+        () => ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxMessageTextBytes: 4),
+        ),
+        throwsA(isA<acp.AcpInputLimitExceeded>()),
+      );
+    });
+
+    test('split surrogate pairs survive tool and status boundaries', () async {
+      final high = String.fromCharCode(0xd83d);
+      final low = String.fromCharCode(0xde00);
+      final controller = ChatController(
+        client: FakeAgentClient(
+          promptEvents: [
+            AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+            const AgentEvent(
+              type: AgentEventType.toolCall,
+              text: 'tool boundary',
+            ),
+            AgentEvent(type: AgentEventType.agentTextDelta, text: low),
+            AgentEvent(
+              type: AgentEventType.status,
+              text: high,
+              metadata: const <String, Object?>{'kind': 'thought'},
+            ),
+            const AgentEvent(
+              type: AgentEventType.status,
+              text: 'ordinary status boundary',
+            ),
+            AgentEvent(
+              type: AgentEventType.status,
+              text: low,
+              metadata: const <String, Object?>{'kind': 'thought'},
+            ),
+            const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+          ],
+        ),
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMessageTextBytes: 4,
+          maxThoughtTextBytes: 4,
+          maxMarkdownFallbackBytes: 4,
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.sendPrompt('go');
+      await pumpEventQueue();
+
+      final textMessages = controller.messages
+          .where((message) => message.role == ChatMessageRole.assistant)
+          .toList();
+      final thoughtMessages = controller.messages
+          .where((message) => message.metadata['kind'] == 'thought')
+          .toList();
+      expect(textMessages.map((message) => message.text), ['$high$low', '']);
+      expect(thoughtMessages.map((message) => message.text), ['$high$low', '']);
+      expect(textMessages.map((message) => message.acceptedUtf8Bytes), [4, 0]);
+      expect(thoughtMessages.map((message) => message.acceptedUtf8Bytes), [
+        4,
+        0,
+      ]);
+      final toolIndex = controller.messages.indexWhere(
+        (message) => message.role == ChatMessageRole.tool,
+      );
+      final ordinaryStatusIndex = controller.messages.indexWhere(
+        (message) => message.text == 'ordinary status boundary',
+      );
+      expect(
+        controller.messages.indexOf(textMessages.first),
+        lessThan(toolIndex),
+      );
+      expect(
+        controller.messages.indexOf(textMessages.last),
+        greaterThan(toolIndex),
+      );
+      expect(
+        controller.messages.indexOf(thoughtMessages.first),
+        lessThan(ordinaryStatusIndex),
+      );
+      expect(
+        controller.messages.indexOf(thoughtMessages.last),
+        greaterThan(ordinaryStatusIndex),
+      );
+      expect(
+        controller.messages.expand((message) => message.omissions),
+        isEmpty,
+      );
+    });
+
+    test(
+      'pending high surrogate and following non-low keep source order',
+      () async {
+        final high = String.fromCharCode(0xd83d);
+        final controller = ChatController(
+          client: FakeAgentClient(
+            promptEvents: [
+              AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+              const AgentEvent(type: AgentEventType.toolCall, text: 'tool'),
+              const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: high,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.status, text: 'status'),
+              const AgentEvent(
+                type: AgentEventType.status,
+                text: 'b',
+                metadata: <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace',
+        );
+        addTearDown(controller.dispose);
+
+        await controller.sendPrompt('go');
+        await pumpEventQueue();
+
+        expect(
+          controller.messages
+              .where((message) => message.role == ChatMessageRole.assistant)
+              .map((message) => message.text),
+          [high, 'a'],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.role == ChatMessageRole.assistant)
+              .map((message) => message.acceptedUtf8Bytes),
+          [3, 1],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.metadata['kind'] == 'thought')
+              .map((message) => message.text),
+          [high, 'b'],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.metadata['kind'] == 'thought')
+              .map((message) => message.acceptedUtf8Bytes),
+          [3, 1],
+        );
+      },
+    );
+
+    test(
+      'consecutive pending high surrogates retain each source target',
+      () async {
+        final high = String.fromCharCode(0xd83d);
+        final low = String.fromCharCode(0xde00);
+        final controller = ChatController(
+          client: FakeAgentClient(
+            promptEvents: [
+              AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+              const AgentEvent(type: AgentEventType.toolCall, text: 'tool-1'),
+              AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+              const AgentEvent(type: AgentEventType.status, text: 'status-1'),
+              AgentEvent(type: AgentEventType.agentTextDelta, text: low),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: high,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.status, text: 'status-2'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: high,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.toolCall, text: 'tool-2'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: low,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 7,
+            maxThoughtTextBytes: 7,
+            maxMarkdownFallbackBytes: 7,
+          ),
+        );
+        addTearDown(controller.dispose);
+
+        await controller.sendPrompt('go');
+        await pumpEventQueue();
+
+        expect(
+          controller.messages
+              .where((message) => message.role == ChatMessageRole.assistant)
+              .map((message) => message.text),
+          [high, '$high$low', ''],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.role == ChatMessageRole.assistant)
+              .map((message) => message.acceptedUtf8Bytes),
+          [3, 4, 0],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.metadata['kind'] == 'thought')
+              .map((message) => message.text),
+          [high, '$high$low', ''],
+        );
+        expect(
+          controller.messages
+              .where((message) => message.metadata['kind'] == 'thought')
+              .map((message) => message.acceptedUtf8Bytes),
+          [3, 4, 0],
+        );
+      },
+    );
+
+    test(
+      'pending surrogate limit omission belongs to its source target',
+      () async {
+        final high = String.fromCharCode(0xd83d);
+        final low = String.fromCharCode(0xde00);
+        final controller = ChatController(
+          client: FakeAgentClient(
+            promptEvents: [
+              AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+              const AgentEvent(type: AgentEventType.toolCall, text: 'tool'),
+              AgentEvent(type: AgentEventType.agentTextDelta, text: low),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: high,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.status, text: 'status'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: low,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 3,
+            maxThoughtTextBytes: 3,
+            maxMarkdownFallbackBytes: 3,
+          ),
+        );
+        addTearDown(controller.dispose);
+
+        await controller.sendPrompt('go');
+        await pumpEventQueue();
+
+        final textMessages = controller.messages
+            .where((message) => message.role == ChatMessageRole.assistant)
+            .toList();
+        final thoughtMessages = controller.messages
+            .where((message) => message.metadata['kind'] == 'thought')
+            .toList();
+        expect(textMessages.map((message) => message.text), ['', '']);
+        expect(thoughtMessages.map((message) => message.text), ['', '']);
+        expect(textMessages.map((message) => message.acceptedUtf8Bytes), [
+          0,
+          0,
+        ]);
+        expect(thoughtMessages.map((message) => message.acceptedUtf8Bytes), [
+          0,
+          0,
+        ]);
+        expect(textMessages.first.omissions.single.resource, 'message text');
+        expect(textMessages.last.omissions, isEmpty);
+        expect(thoughtMessages.first.omissions.single.resource, 'thought text');
+        expect(thoughtMessages.last.omissions, isEmpty);
+      },
+    );
+
+    test(
+      'finish without a low surrogate writes to the source target',
+      () async {
+        final high = String.fromCharCode(0xd83d);
+        final controller = ChatController(
+          client: FakeAgentClient(
+            promptEvents: [
+              AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+              const AgentEvent(type: AgentEventType.toolCall, text: 'tool'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: high,
+                metadata: const <String, Object?>{'kind': 'thought'},
+              ),
+              const AgentEvent(type: AgentEventType.status, text: 'status'),
+              const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace',
+        );
+        addTearDown(controller.dispose);
+
+        await controller.sendPrompt('go');
+        await pumpEventQueue();
+
+        expect(
+          controller.messages
+              .where((message) => message.role == ChatMessageRole.assistant)
+              .single
+              .text,
+          high,
+        );
+        expect(
+          controller.messages
+              .where((message) => message.metadata['kind'] == 'thought')
+              .single
+              .text,
+          high,
+        );
+      },
+    );
+
+    test(
+      'CRLF and limits aggregate across text tool and status messages',
+      () async {
+        const textCanary = 'TEXT_BUDGET_CANARY_MUST_NOT_APPEAR';
+        const thoughtCanary = 'THOUGHT_BUDGET_CANARY_MUST_NOT_APPEAR';
+        final controller = ChatController(
+          client: FakeAgentClient(
+            promptEvents: const [
+              AgentEvent(type: AgentEventType.agentTextDelta, text: 'a\r'),
+              AgentEvent(type: AgentEventType.toolCall, text: 'tool boundary'),
+              AgentEvent(type: AgentEventType.agentTextDelta, text: '\nb'),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: 'ordinary text status boundary',
+              ),
+              AgentEvent(
+                type: AgentEventType.agentTextDelta,
+                text: '\n$textCanary',
+              ),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: 'x\r',
+                metadata: <String, Object?>{'kind': 'thought'},
+              ),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: 'ordinary status boundary',
+              ),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: '\ny',
+                metadata: <String, Object?>{'kind': 'thought'},
+              ),
+              AgentEvent(
+                type: AgentEventType.status,
+                text: '\n$thoughtCanary',
+                metadata: <String, Object?>{'kind': 'thought'},
+              ),
+              AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+            ],
+          ),
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 128,
+            maxMessageTextLines: 2,
+            maxThoughtTextBytes: 128,
+            maxMarkdownFallbackBytes: 64,
+          ),
+        );
+        addTearDown(controller.dispose);
+
+        await controller.sendPrompt('go');
+        await pumpEventQueue();
+
+        final assistantMessages = controller.messages.where(
+          (message) => message.role == ChatMessageRole.assistant,
+        );
+        final thoughtMessages = controller.messages.where(
+          (message) => message.metadata['kind'] == 'thought',
+        );
+        expect(
+          assistantMessages.map((message) => message.text).join(),
+          'a\r\nb',
+        );
+        expect(thoughtMessages.map((message) => message.text).join(), 'x\r\ny');
+        final output = controller.messages
+            .map((message) => message.text)
+            .join();
+        expect(output, isNot(contains(textCanary)));
+        expect(output, isNot(contains(thoughtCanary)));
+        expect(
+          assistantMessages
+              .expand((message) => message.omissions)
+              .map((item) => item.resource),
+          contains('message text'),
+        );
+        expect(
+          thoughtMessages
+              .expand((message) => message.omissions)
+              .map((item) => item.resource),
+          contains('thought text'),
+        );
+      },
+    );
+
+    List<AgentEvent> twoTurnEvents() => const <AgentEvent>[
+      AgentEvent(type: AgentEventType.userMessage, text: 'user one'),
+      AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+      AgentEvent(
+        type: AgentEventType.status,
+        text: 'x',
+        metadata: <String, Object?>{'kind': 'thought'},
+      ),
+      AgentEvent(type: AgentEventType.userMessage, text: 'user two'),
+      AgentEvent(type: AgentEventType.agentTextDelta, text: 'b'),
+      AgentEvent(
+        type: AgentEventType.status,
+        text: 'y',
+        metadata: <String, Object?>{'kind': 'thought'},
+      ),
+    ];
+
+    void expectTwoTurns(ChatController controller) {
+      expect(
+        controller.messages
+            .where((message) => message.role == ChatMessageRole.assistant)
+            .map((message) => message.text),
+        ['a', 'b'],
+      );
+      expect(
+        controller.messages
+            .where((message) => message.metadata['kind'] == 'thought')
+            .map((message) => message.text),
+        ['x', 'y'],
+      );
+      expect(
+        controller.messages.expand((message) => message.omissions),
+        isEmpty,
+      );
+    }
+
+    const twoTurnBudget = acp.AcpInputBudget(
+      maxMessageTextBytes: 1,
+      maxThoughtTextBytes: 1,
+      maxMarkdownFallbackBytes: 1,
+    );
+
+    test(
+      'replay user messages begin new text and thought turn budgets',
+      () async {
+        final controller = ChatController(
+          client: FakeAgentClient(resumeEvents: twoTurnEvents()),
+          cwd: '/workspace',
+          inputBudget: twoTurnBudget,
+        );
+        addTearDown(controller.dispose);
+
+        await controller.resumeSession('two-turn-replay');
+
+        expectTwoTurns(controller);
+      },
+    );
+
+    test('new session initial user messages begin new turn budgets', () async {
+      final controller = ChatController(
+        client: FakeAgentClient(createSessionEvents: twoTurnEvents()),
+        cwd: '/workspace',
+        inputBudget: twoTurnBudget,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      expectTwoTurns(controller);
+    });
+
+    test('fork initial user messages begin new turn budgets', () async {
+      final controller = ChatController(
+        client: FakeAgentClient(forkSessionEvents: twoTurnEvents()),
+        cwd: '/workspace',
+        inputBudget: twoTurnBudget,
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+
+      await controller.forkCurrentSession();
+
+      expectTwoTurns(controller);
+    });
+
+    test(
+      'live echoed user message finishes old turn before observation',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: twoTurnBudget,
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('go');
+        final observedAssistantText = <String>[];
+        controller.addAgentEventObserver((_, event) {
+          if (event.type == AgentEventType.userMessage) {
+            observedAssistantText.add(
+              controller.messages
+                  .where((message) => message.role == ChatMessageRole.assistant)
+                  .last
+                  .text,
+            );
+          }
+        });
+        var notifications = 0;
+        controller.addListener(() => notifications += 1);
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+        );
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'x',
+            metadata: <String, Object?>{'kind': 'thought'},
+          ),
+        );
+        fake.emit(
+          const AgentEvent(type: AgentEventType.userMessage, text: 'echo'),
+        );
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'b'),
+        );
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'y',
+            metadata: <String, Object?>{'kind': 'thought'},
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(observedAssistantText, ['a']);
+        expect(notifications, 3);
+        expectTwoTurns(controller);
+      },
+    );
+  });
+
+  group('ChatController streaming notifications', () {
+    Future<
+      ({
+        ChatController controller,
+        _ControlledPromptAgentClient fake,
+        List<AgentEvent> observed,
+      })
+    >
+    configController({
+      acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+    }) async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: budget,
+      );
+      await controller.newSession();
+      await controller.sendPrompt('update config');
+      final observed = <AgentEvent>[];
+      controller.addAgentEventObserver((_, event) => observed.add(event));
+      return (controller: controller, fake: fake, observed: observed);
+    }
+
+    AgentEvent typedConfigEvent(
+      List<Object?> options, {
+      List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+    }) {
+      return AgentEvent(
+        type: AgentEventType.status,
+        text: 'config updated',
+        metadata: <String, Object?>{
+          'kind': 'config_option_update',
+          'configOptions': options,
+        },
+        omissions: omissions,
+      );
+    }
+
+    test(
+      'recognized typed config limit clears old cache without payload',
+      () async {
+        const canary = 'TYPED_CONFIG_LIMIT_CANARY_MUST_NOT_APPEAR';
+        final state = await configController(
+          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 4),
+        );
+        addTearDown(state.controller.dispose);
+        expect(state.controller.sessionSettings.configOptions, isNotEmpty);
+
+        state.fake.emit(
+          typedConfigEvent(<Object?>[
+            const AcpConfigOption(
+              id: canary,
+              name: 'name',
+              type: 'type',
+              currentValue: 'value',
+              options: <AcpConfigOptionChoice>[],
+            ),
+          ]),
+        );
+
+        expect(state.controller.sessionSettings.configOptions, isEmpty);
+        expect(state.observed.single.metadata['kind'], 'config_option_update');
+        expect(state.observed.single.metadata['configOptions'], isEmpty);
+        expect(
+          state.observed.single.omissions.single.reason,
+          acp.AcpInputOmissionReason.inputLimit,
+        );
+        expect(
+          <Object?>[
+            state.controller.lastError,
+            ...state.controller.messages.map((message) => message.text),
+            ...state.observed.single.omissions.map((item) => item.toString()),
+          ].join(' '),
+          isNot(contains(canary)),
+        );
+      },
+    );
+
+    test(
+      'recognized typed config invalid item clears without partial prefix',
+      () async {
+        final state = await configController();
+        addTearDown(state.controller.dispose);
+        expect(state.controller.sessionSettings.configOptions, isNotEmpty);
+
+        state.fake.emit(
+          typedConfigEvent(<Object?>[
+            const AcpConfigOption(
+              id: 'valid',
+              name: 'Valid',
+              type: 'select',
+              currentValue: 'on',
+              options: <AcpConfigOptionChoice>[],
+            ),
+            42,
+          ]),
+        );
+
+        expect(state.controller.sessionSettings.configOptions, isEmpty);
+        expect(state.observed.single.metadata['kind'], 'config_option_update');
+        expect(state.observed.single.metadata['configOptions'], isEmpty);
+        expect(
+          state.observed.single.omissions.single.reason,
+          acp.AcpInputOmissionReason.invalidStructure,
+        );
+      },
+    );
+
+    test(
+      'trusted omission may fill cap while empty config carrier still clears',
+      () async {
+        final trusted = acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.inputLimit,
+          resource: 'trusted config omission',
+          truncated: false,
+          limit: 1,
+          observedAtLeast: 2,
+        );
+        final state = await configController(
+          budget: const acp.AcpInputBudget(maxCollectionItems: 1),
+        );
+        addTearDown(state.controller.dispose);
+        expect(state.controller.sessionSettings.configOptions, isNotEmpty);
+
+        state.fake.emit(
+          typedConfigEvent(
+            <Object?>[42],
+            omissions: <acp.AcpInputOmission>[trusted],
+          ),
+        );
+
+        expect(state.controller.sessionSettings.configOptions, isEmpty);
+        expect(state.observed.single.metadata['kind'], 'config_option_update');
+        expect(state.observed.single.metadata['configOptions'], isEmpty);
+        expect(state.observed.single.omissions, hasLength(1));
+        expect(
+          state.observed.single.omissions.single.resource,
+          'trusted config omission',
+        );
+      },
+    );
+
+    test(
+      'stateful typed metadata is read once and cannot evade fail-close',
+      () async {
+        const canary = 'STATEFUL_TYPED_MAP_CANARY_MUST_NOT_APPEAR';
+        final state = await configController(
+          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 4),
+        );
+        addTearDown(state.controller.dispose);
+        final metadata = _StatefulTypedConfigMetadataMap(canary);
+
+        state.fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'config updated',
+            metadata: metadata,
+          ),
+        );
+
+        expect(metadata.entriesReads, 1);
+        expect(state.controller.sessionSettings.configOptions, isEmpty);
+        expect(state.observed.single.metadata['kind'], 'config_option_update');
+        expect(state.observed.single.metadata['configOptions'], isEmpty);
+        expect(
+          <Object?>[
+            ...state.observed.single.omissions.map((item) => item.toString()),
+            state.controller.lastError,
+          ].join(' '),
+          isNot(contains(canary)),
+        );
+      },
+    );
+
+    test(
+      'recognized stateful options fail closed without partial config',
+      () async {
+        final state = await configController();
+        addTearDown(state.controller.dispose);
+        final options = _StatefulConfigOptionsList();
+
+        state.fake.emit(typedConfigEvent(options));
+
+        expect(state.controller.sessionSettings.configOptions, isEmpty);
+        expect(state.observed.single.metadata['kind'], 'config_option_update');
+        expect(state.observed.single.metadata['configOptions'], isEmpty);
+        expect(
+          state.observed.single.omissions.single.reason,
+          acp.AcpInputOmissionReason.invalidStructure,
+        );
+        expect(options.lengthReads, greaterThan(0));
+        expect(options.indexReads, greaterThan(0));
+      },
+    );
+
+    test('disposed controller does not access late hostile metadata', () async {
+      final fake = _LateEventAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      await controller.newSession();
+      await controller.sendPrompt('go');
+      var observed = 0;
+      controller.addAgentEventObserver((_, _) => observed += 1);
+      final metadata = _CountingThrowingMetadataMap();
+
+      controller.dispose();
+      fake.emit(
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'late',
+          metadata: metadata,
+        ),
+      );
+      await controller.disposalComplete;
+
+      expect(metadata.accesses, 0);
+      expect(observed, 0);
+      expect(
+        controller.messages.where((message) => message.text == 'late'),
+        isEmpty,
+      );
+    });
+
+    test(
+      'raw hostile metadata is guarded before kind reads or observers',
+      () async {
+        const canary = 'RAW_EVENT_METADATA_CANARY_MUST_NOT_APPEAR';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('go');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        expect(
+          () => fake.emit(
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'safe status',
+              metadata: _ThrowingMetadataMap(canary),
+            ),
+          ),
+          returnsNormally,
+        );
+
+        expect(observed, hasLength(1));
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.omissions, hasLength(1));
+        expect(
+          observed.single.omissions.single.reason,
+          acp.AcpInputOmissionReason.invalidStructure,
+        );
+        final visible = <Object?>[
+          controller.lastError,
+          ...controller.messages.map((message) => message.text),
+          ...observed.single.omissions.map((item) => item.toString()),
+        ].join(' ');
+        expect(visible, isNot(contains(canary)));
+      },
+    );
+
+    test(
+      'text and thought chunks coalesce until a synchronous boundary',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('go');
+
+        var notifications = 0;
+        final snapshots = <List<String>>[];
+        controller.addListener(() {
+          notifications += 1;
+          snapshots.add(
+            controller.messages
+                .map((message) => '${message.role.name}:${message.text}')
+                .toList(),
+          );
+        });
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+        );
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'b'),
+        );
+        expect(notifications, 0);
+        final assistant = controller.messages.last;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'tool boundary',
+          ),
+        );
+        expect(notifications, 2);
+        expect(snapshots.first.last, 'assistant:ab');
+        expect(snapshots.last.last, 'tool:tool boundary');
+        expect(assistant.materializationCount, 1);
+
+        notifications = 0;
+        snapshots.clear();
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'x',
+            metadata: <String, Object?>{'kind': 'thought'},
+          ),
+        );
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'y',
+            metadata: <String, Object?>{'kind': 'thought'},
+          ),
+        );
+        expect(notifications, 0);
+
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifications, 1);
+        expect(snapshots.single.last, 'status:xy');
+
+        notifications = 0;
+        snapshots.clear();
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'tail'),
+        );
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+        );
+        expect(notifications, 2);
+      },
+    );
+
+    test(
+      'dispose suppresses an already scheduled streaming notification',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        await controller.newSession();
+        await controller.sendPrompt('go');
+        var notifications = 0;
+        controller.addListener(() => notifications += 1);
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+        );
+        expect(notifications, 0);
+        controller.dispose();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifications, 0);
+      },
+    );
+
+    test(
+      'tool boundary materializes pending text without a listener',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('go');
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+        );
+        final target = controller.messages.last;
+        expect(target.materializationCount, 0);
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'tool boundary',
+          ),
+        );
+
+        expect(target.materializationCount, 1);
+      },
+    );
+
+    test('stream onDone consumes a pending delta notification once', () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('go');
+      var notifications = 0;
+      controller.addListener(() => notifications += 1);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'tail'),
+      );
+      expect(notifications, 0);
+      await fake.finishPrompt();
+      expect(notifications, 1);
+
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+      expect(controller.messages.last.text, 'tail');
+    });
+
+    test('drained empty chunks do not schedule notifications', () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMessageTextBytes: 1,
+          maxMarkdownFallbackBytes: 1,
+        ),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('go');
+      var notifications = 0;
+      controller.addListener(() => notifications += 1);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'b'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 2);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'c'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 2);
+    });
+
+    test(
+      'disposing during boundary flush stops observer and boundary mutation',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        await controller.newSession();
+        await controller.sendPrompt('go');
+        var observedTools = 0;
+        controller.addAgentEventObserver((_, event) {
+          if (event.type == AgentEventType.toolCall) observedTools += 1;
+        });
+        controller.addListener(controller.dispose);
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'tail'),
+        );
+        final messageCountBeforeBoundary = controller.messages.length;
+        fake.emit(
+          const AgentEvent(type: AgentEventType.toolCall, text: 'must not add'),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(observedTools, 0);
+        expect(controller.messages, hasLength(messageCountBeforeBoundary));
+        expect(
+          controller.messages.where(
+            (message) => message.role == ChatMessageRole.tool,
+          ),
+          isEmpty,
+        );
+        await controller.disposalComplete;
+      },
+    );
+  });
+
+  group('ChatController turn budget terminal lifecycle', () {
+    Future<
+      ({
+        ChatController controller,
+        _ControlledPromptAgentClient fake,
+        ChatMessage target,
+        String high,
+      })
+    >
+    pendingHighSurrogate() async {
+      final high = String.fromCharCode(0xd83d);
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      await controller.newSession();
+      await controller.sendPrompt('go');
+      fake.emit(AgentEvent(type: AgentEventType.agentTextDelta, text: high));
+      return (
+        controller: controller,
+        fake: fake,
+        target: controller.messages.last,
+        high: high,
+      );
+    }
+
+    test('stop finishes pending text exactly once', () async {
+      final state = await pendingHighSurrogate();
+      addTearDown(state.controller.dispose);
+
+      await state.controller.stop();
+      expect(state.target.materializationCount, 1);
+      expect(state.target.text, state.high);
+      expect(state.target.revision, 1);
+      state.controller.dispose();
+      expect(state.target.revision, 1);
+    });
+
+    test('reconnect finishes pending text before releasing the turn', () async {
+      final state = await pendingHighSurrogate();
+      addTearDown(state.controller.dispose);
+
+      await state.controller.reconnect();
+      expect(state.target.text, state.high);
+      expect(state.target.revision, 1);
+      state.controller.dispose();
+      expect(state.target.revision, 1);
+    });
+
+    test('session close and switch finish the old pending target', () async {
+      final closing = await pendingHighSurrogate();
+      addTearDown(closing.controller.dispose);
+      closing.controller.isStreaming = false;
+
+      await closing.controller.closeCurrentSession();
+      expect(closing.target.text, closing.high);
+      expect(closing.target.revision, 1);
+
+      final switching = await pendingHighSurrogate();
+      addTearDown(switching.controller.dispose);
+      switching.controller.isStreaming = false;
+      await switching.controller.newSession();
+
+      expect(switching.target.text, switching.high);
+      expect(switching.target.revision, 1);
+    });
+
+    test(
+      'dispose finishes pending text and suppresses double finish',
+      () async {
+        final state = await pendingHighSurrogate();
+
+        state.controller.dispose();
+        state.controller.dispose();
+
+        expect(state.target.text, state.high);
+        expect(state.target.revision, 1);
+        await state.controller.disposalComplete;
+      },
+    );
+  });
+
   test('connect success sets connected status', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -4790,6 +6221,185 @@ class _StaleSessionSettingsAgentClient extends FakeAgentClient {
     }
     return super.sessionSettings(sessionId);
   }
+}
+
+class _ControlledPromptAgentClient extends FakeAgentClient {
+  final StreamController<AgentEvent> _events = StreamController<AgentEvent>(
+    sync: true,
+  );
+
+  void emit(AgentEvent event) => _events.add(event);
+
+  Future<void> finishPrompt() => _events.close();
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    lastAttachments = attachments;
+    return _events.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    if (!_events.isClosed) await _events.close();
+    await super.dispose();
+  }
+}
+
+class _LateEventAgentClient extends FakeAgentClient {
+  void Function(AgentEvent)? _onData;
+
+  void emit(AgentEvent event) => _onData?.call(event);
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    return _LateEventStream((onData) => _onData = onData);
+  }
+}
+
+class _LateEventStream extends Stream<AgentEvent> {
+  _LateEventStream(this.onListen);
+
+  final void Function(void Function(AgentEvent)? onData) onListen;
+
+  @override
+  StreamSubscription<AgentEvent> listen(
+    void Function(AgentEvent event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    onListen(onData);
+    return const _LateEventSubscription();
+  }
+}
+
+class _LateEventSubscription implements StreamSubscription<AgentEvent> {
+  const _LateEventSubscription();
+
+  @override
+  Future<void> cancel() async {}
+
+  @override
+  void onData(void Function(AgentEvent data)? handleData) {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _ThrowingMetadataMap implements Map<String, Object?> {
+  _ThrowingMetadataMap(this.canary);
+
+  final String canary;
+
+  @override
+  Object? operator [](Object? key) => throw StateError(canary);
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries => throw StateError(canary);
+
+  @override
+  int get length => throw StateError(canary);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw StateError(canary);
+}
+
+class _CountingThrowingMetadataMap implements Map<String, Object?> {
+  int accesses = 0;
+
+  Never _fail() {
+    accesses += 1;
+    throw const FormatException('late metadata must not be accessed');
+  }
+
+  @override
+  Object? operator [](Object? key) => _fail();
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries => _fail();
+
+  @override
+  int get length => _fail();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => _fail();
+}
+
+class _StatefulTypedConfigMetadataMap implements Map<String, Object?> {
+  _StatefulTypedConfigMetadataMap(this.canary);
+
+  final String canary;
+  int entriesReads = 0;
+
+  @override
+  int get length => 2;
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries {
+    entriesReads += 1;
+    if (entriesReads == 1) {
+      return <MapEntry<String, Object?>>[
+        const MapEntry<String, Object?>('kind', 'config_option_update'),
+        MapEntry<String, Object?>('configOptions', <AcpConfigOption>[
+          AcpConfigOption(
+            id: canary,
+            name: 'Valid',
+            type: 'select',
+            currentValue: 'on',
+            options: <AcpConfigOptionChoice>[],
+          ),
+        ]),
+      ];
+    }
+    return <MapEntry<String, Object?>>[
+      const MapEntry<String, Object?>('unknown', true),
+      MapEntry<String, Object?>('payload', canary),
+    ];
+  }
+
+  @override
+  Object? operator [](Object? key) => throw StateError(canary);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw StateError(canary);
+}
+
+class _StatefulConfigOptionsList implements List<Object?> {
+  int lengthReads = 0;
+  int indexReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    return 1;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed');
+
+  @override
+  Object? operator [](int index) {
+    indexReads += 1;
+    throw const FormatException('stateful option access');
+  }
+
+  @override
+  void operator []=(int index, Object? value) {
+    throw UnsupportedError('fixed');
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 AcpSessionSettings _settingsWithMode(String modeId) {
