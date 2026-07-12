@@ -17,6 +17,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.cancelError,
     this.forkError,
     this.closeError,
+    this.deleteError,
     this.authenticateError,
     this.logoutError,
     this.extensionError,
@@ -27,6 +28,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.supportsLoadSession = true,
     this.supportsResumeSession = false,
     this.supportsLogout = true,
+    this.supportsDelete = false,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
     this.createSessionDelay = Duration.zero,
@@ -70,6 +72,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? cancelError;
   final Object? forkError;
   final Object? closeError;
+  final Object? deleteError;
   final Object? authenticateError;
   final Object? logoutError;
   final Object? extensionError;
@@ -80,6 +83,7 @@ class FakeAgentClient implements AcpAgentClient {
   final bool supportsLoadSession;
   final bool supportsResumeSession;
   final bool supportsLogout;
+  final bool supportsDelete;
   final Duration chunkDelay;
   final Duration connectDelay;
   final Duration createSessionDelay;
@@ -104,6 +108,7 @@ class FakeAgentClient implements AcpAgentClient {
   AcpPermissionDecision? lastPermissionDecision;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
+  String? lastDeletedSessionId;
   String? lastAuthenticatedMethodId;
   String? lastExtensionMethod;
   Map<String, Object?>? lastExtensionParams;
@@ -132,9 +137,11 @@ class FakeAgentClient implements AcpAgentClient {
             configOptions: true,
             additionalDirectories: true,
             close: true,
+            delete: supportsDelete,
             rawKeys: [
               'additionalDirectories',
               'close',
+              if (supportsDelete) 'delete',
               'configOptions',
               if (supportsFork) 'fork',
               if (supportsListSessions) 'list',
@@ -341,6 +348,16 @@ class FakeAgentClient implements AcpAgentClient {
       throw closeError!;
     }
     lastClosedSessionId = sessionId;
+  }
+
+  @override
+  Future<void> deleteSession({required String sessionId}) async {
+    if (!connected) throw StateError('Fake client is not connected.');
+    if (!supportsDelete) {
+      throw StateError('Fake client does not support delete.');
+    }
+    if (deleteError != null) throw deleteError!;
+    lastDeletedSessionId = sessionId;
   }
 
   @override

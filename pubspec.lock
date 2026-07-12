@@ -79,7 +79,7 @@ packages:
       path: "third_party/dart_acp"
       relative: true
     source: path
-    version: "0.1.1"
+    version: "0.1.1+acp.1.2.1"
   dbus:
     dependency: transitive
     description:

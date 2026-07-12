@@ -214,7 +214,6 @@ Future<void> main() async {
           'type': 'resource',
           'resource': {
             'uri': 'file:///workspace/README.md',
-            'title': 'README.md',
             'mimeType': 'text/markdown',
             'text': '# Project notes',
           },
@@ -289,7 +288,7 @@ Future<void> main() async {
           'url': 'https://events.example.com/mcp',
           'headers': <Map<String, String>>[],
         },
-        {'name': 'acp-tools', 'type': 'acp', 'id': 'nested-agent'},
+        {'name': 'acp-tools', 'type': 'acp', 'serverId': 'nested-agent'},
         {
           'name': 'typo-tools',
           'type': 'htp',
@@ -297,6 +296,9 @@ Future<void> main() async {
           'headers': <Map<String, String>>[],
         },
       ],
+      mcpConnectProvider: (params) async => {'connectionId': 'connection-1'},
+      mcpMessageProvider: (params) async => const <String, dynamic>{},
+      mcpDisconnectProvider: (params) async => const <String, dynamic>{},
     );
 
     try {
@@ -316,7 +318,7 @@ Future<void> main() async {
       );
       expect(forwardedServers.cast<Map<String, dynamic>>()[1]['type'], 'sse');
       expect(
-        forwardedServers.cast<Map<String, dynamic>>().last['id'],
+        forwardedServers.cast<Map<String, dynamic>>().last['serverId'],
         'nested-agent',
       );
     } finally {
@@ -645,6 +647,16 @@ Future<void> main() async {
         initializeParams['clientCapabilities'],
         containsPair('fs', containsPair('readTextFile', false)),
       );
+      final clientCapabilities =
+          initializeParams['clientCapabilities'] as Map<String, dynamic>;
+      expect(
+        clientCapabilities,
+        containsPair(
+          'session',
+          containsPair('configOptions', containsPair('boolean', isA<Map>())),
+        ),
+      );
+      expect(clientCapabilities, containsPair('plan', isA<Map>()));
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
@@ -1612,7 +1624,7 @@ Future<void> main() async {
                 as Map<String, dynamic>;
 
         expect(readResponse['result'], containsPair('content', 'hello extra'));
-        expect(writeResponse, containsPair('result', null));
+        expect(writeResponse, containsPair('result', isEmpty));
         expect(await extraCreated.readAsString(), 'created in extra workspace');
         expect(outsideResponse, contains('error'));
         expect(await outsideFile.exists(), isFalse);
@@ -1835,7 +1847,11 @@ Future<void> main() async {
               as Map<String, dynamic>;
       expect(
         terminalResponse['result'],
-        containsPair('outputmode', 'terminal-output'),
+        containsPair('output', 'terminal-output'),
+      );
+      expect(
+        terminalResponse['result'],
+        containsPair('exitStatus', containsPair('exitCode', 0)),
       );
     } finally {
       await subscription.cancel();
@@ -2493,6 +2509,10 @@ Future<void> main() async {
     'prefers config options over modes returned by session creation',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final setConfigParamsFile = File(
+        '${tempDir.path}/set_config_params.json',
+      );
+      final setConfigParamsPath = jsonEncode(setConfigParamsFile.path);
       final agentScript = File(
         '${tempDir.path}/fake_session_result_agent.dart',
       );
@@ -2537,14 +2557,62 @@ Future<void> main() async {
               'id': 'model',
               'name': 'Model',
               'type': 'select',
-              'currentValue': 'gpt-5',
+              'currentValue': 'gpt-5.6-sol',
               'category': 'model',
               'options': <Map<String, dynamic>>[
                 <String, dynamic>{
-                  'value': 'gpt-5',
-                  'name': 'GPT-5',
+                  'group': 'openai',
+                  'name': 'OpenAI',
+                  'options': <Map<String, dynamic>>[
+                    <String, dynamic>{
+                      'value': 'gpt-5.6-sol',
+                      'name': 'GPT-5.6-Sol',
+                    },
+                    <String, dynamic>{
+                      'value': 'gpt-5.5',
+                      'name': 'GPT-5.5',
+                    },
+                  ],
                 },
               ],
+            },
+            <String, dynamic>{
+              'id': 'reasoning_effort',
+              'name': 'Reasoning effort',
+              'type': 'select',
+              'currentValue': 'max',
+              'category': 'thought_level',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'high', 'name': 'High'},
+                <String, dynamic>{'value': 'max', 'name': 'Max'},
+                <String, dynamic>{'value': 'ultra', 'name': 'Ultra'},
+              ],
+            },
+            <String, dynamic>{
+              'id': 'fast-mode',
+              'name': 'Fast mode',
+              'type': 'boolean',
+              'currentValue': false,
+              'category': 'model_config',
+            },
+          ],
+        },
+      }));
+    } else if (message['method'] == 'session/set_config_option') {
+      await File($setConfigParamsPath).writeAsString(
+        jsonEncode(message['params']),
+      );
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'fast-mode',
+              'name': 'Fast mode',
+              'type': 'boolean',
+              'currentValue': true,
+              'category': 'model_config',
             },
           ],
         },
@@ -2566,10 +2634,31 @@ Future<void> main() async {
         final settings = await client.sessionSettings(session.id);
 
         expect(session.id, 'session-1');
-        expect(settings.configOptions, hasLength(1));
-        expect(settings.currentModelLabel, 'GPT-5');
+        expect(settings.configOptions, hasLength(3));
+        expect(settings.currentModelLabel, 'GPT-5.6-Sol');
+        expect(settings.currentReasoningEffortLabel, 'Max');
+        expect(settings.modelOption!.options.last.value, 'gpt-5.5');
+        expect(settings.modelOption!.options.first.groupName, 'OpenAI');
+        expect(settings.nonModelConfigOptions.single.currentBoolValue, isFalse);
         expect(settings.modes.currentModeId, isNull);
         expect(settings.modes.availableModes, isEmpty);
+
+        final updated = await client.setConfigOption(
+          sessionId: session.id,
+          configId: 'fast-mode',
+          value: true,
+        );
+        await _waitForFile(setConfigParamsFile);
+        expect(
+          jsonDecode(await setConfigParamsFile.readAsString()),
+          <String, dynamic>{
+            'sessionId': 'session-1',
+            'configId': 'fast-mode',
+            'type': 'boolean',
+            'value': true,
+          },
+        );
+        expect(updated.single.currentBoolValue, isTrue);
       } finally {
         await client.dispose();
         await tempDir.delete(recursive: true);

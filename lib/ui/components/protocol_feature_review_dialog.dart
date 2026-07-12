@@ -182,12 +182,32 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
         runtime: [_runtimeFlag('session.list', caps?.session.list == true)],
       ),
       _ProtocolFeature(
+        icon: Icons.inventory_2_outlined,
+        title: 'Session Lifecycle',
+        status: _FeatureStatus.done,
+        reference: 'protocol/v1/session-delete',
+        implementation: [
+          'session/close releases active resources without deleting history',
+          'session/delete permanently removes advertised persisted sessions',
+          'session/fork remains available for agents implementing the current RFD',
+        ],
+        gui: [
+          'Session Settings exposes capability-gated Fork, Close, and Delete actions',
+        ],
+        runtime: [
+          _runtimeFlag('session.close', caps?.session.close == true),
+          _runtimeFlag('session.delete', caps?.session.delete == true),
+          _runtimeFlag('session.fork', caps?.session.fork == true),
+        ],
+      ),
+      _ProtocolFeature(
         icon: Icons.forum_outlined,
         title: 'Prompt Turn',
         status: _FeatureStatus.done,
         reference: 'protocol/v1/prompt-turn',
         implementation: [
           'session/prompt streaming, stop/cancel, turn status',
+          'end-turn token usage and request cancellation metadata are retained',
           'user echo suppression and latency tracking',
         ],
         gui: [
@@ -377,6 +397,29 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
             'Vendor-specific extension workflows wait for concrete _meta contracts.',
       ),
       _ProtocolFeature(
+        icon: Icons.science_outlined,
+        title: 'ACP 1.2 Experimental Surfaces',
+        status: _FeatureStatus.done,
+        reference: 'rfds/updates',
+        implementation: [
+          'provider list/set/disable requests have named client APIs',
+          'NES lifecycle, document notifications, and accept/reject are exposed',
+          'elicitation and MCP-over-ACP agent callbacks are provider-driven',
+          r'$/cancel_request and arbitrary JSON result requests are supported',
+        ],
+        gui: [
+          'ACP Compatibility reports negotiated providers, NES, elicitation, and position encoding capabilities',
+        ],
+        runtime: [
+          _runtimeFlag('agent providers', caps?.providers == true),
+          _runtimeFlag('agent NES', caps?.nes == true),
+          _runtimeFlag(
+            'client boolean config',
+            caps?.client.booleanConfigOptions == true,
+          ),
+        ],
+      ),
+      _ProtocolFeature(
         icon: Icons.hub_outlined,
         title: 'MCP Servers',
         status: _FeatureStatus.done,
@@ -386,7 +429,7 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
           'remote MCP entries are forwarded only when agent capabilities allow them',
         ],
         gui: [
-          'Agent Configuration lists MCP names, transport type, command/url/id, headers',
+          'Agent Configuration lists MCP names, transport type, command/url/serverId, headers',
           'ACP Compatibility shows negotiated MCP transport capabilities',
         ],
         runtime: [

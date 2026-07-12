@@ -3,6 +3,10 @@ import 'capabilities.dart';
 import 'providers/fs_provider.dart';
 import 'providers/permission_provider.dart';
 import 'providers/terminal_provider.dart';
+import 'schema_version.dart';
+
+/// Callback for an evolving ACP request surface.
+typedef AcpRequestHandler = Future<dynamic> Function(Map<String, dynamic>);
 
 /// Collection of timeout knobs for ACP requests.
 class AcpTimeouts {
@@ -31,6 +35,11 @@ class AcpConfig {
     this.agentArgs = const [],
     this.envOverrides = const {},
     this.capabilities = const AcpCapabilities(),
+    this.clientInfo = const AcpImplementation(
+      name: 'dart_acp',
+      version: dartAcpImplementationVersion,
+    ),
+    this.initializeMeta,
     this.mcpServers = const [],
     this.allowReadOutsideWorkspace = false,
     this.timeouts = const AcpTimeouts(),
@@ -38,6 +47,10 @@ class AcpConfig {
     this.fsProvider,
     PermissionProvider? permissionProvider,
     this.terminalProvider,
+    this.elicitationProvider,
+    this.mcpConnectProvider,
+    this.mcpMessageProvider,
+    this.mcpDisconnectProvider,
     this.onProtocolOut,
     this.onProtocolIn,
   }) : logger = logger ?? Logger('dart_acp'),
@@ -59,6 +72,12 @@ class AcpConfig {
 
   /// Client capability advertisement.
   final AcpCapabilities capabilities;
+
+  /// Client implementation metadata sent during initialization.
+  final AcpImplementation? clientInfo;
+
+  /// Optional ACP `_meta` data sent with the initialize request.
+  final Map<String, dynamic>? initializeMeta;
 
   /// Global MCP servers forwarded to session/new and session/load.
   final List<Map<String, dynamic>> mcpServers;
@@ -86,4 +105,16 @@ class AcpConfig {
 
   /// Optional terminal provider to allow terminal lifecycle methods.
   final TerminalProvider? terminalProvider;
+
+  /// Optional handler for unstable `elicitation/create` requests.
+  final AcpRequestHandler? elicitationProvider;
+
+  /// Optional handler for unstable `mcp/connect` requests.
+  final AcpRequestHandler? mcpConnectProvider;
+
+  /// Optional handler for unstable `mcp/message` requests/notifications.
+  final AcpRequestHandler? mcpMessageProvider;
+
+  /// Optional handler for unstable `mcp/disconnect` requests.
+  final AcpRequestHandler? mcpDisconnectProvider;
 }

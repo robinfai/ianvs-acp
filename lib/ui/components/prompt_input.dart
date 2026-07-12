@@ -843,7 +843,9 @@ class _SessionConfigSelector extends StatelessWidget {
                 child: _PopupChoiceRow(
                   selected: choice.value == modelOption!.currentValue,
                   icon: Icons.memory_rounded,
-                  label: choice.label,
+                  label: choice.groupName == null
+                      ? choice.label
+                      : '${choice.groupName} · ${choice.label}',
                   description: choice.description ?? '',
                 ),
               ),

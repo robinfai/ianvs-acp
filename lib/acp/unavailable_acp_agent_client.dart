@@ -33,6 +33,9 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   Future<void> closeSession({required String sessionId}) => _failure<void>();
 
   @override
+  Future<void> deleteSession({required String sessionId}) => _failure<void>();
+
+  @override
   Future<void> connect() => _failure<void>();
 
   @override

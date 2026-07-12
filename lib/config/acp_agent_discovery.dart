@@ -9,7 +9,8 @@ class AcpAgentDiscovery {
   const AcpAgentDiscovery._();
 
   static const String codexAgentName = 'Codex';
-  static const String codexAcpPackage = '@zed-industries/codex-acp';
+  static const String codexAcpPackage = '@agentclientprotocol/codex-acp';
+  static const String legacyCodexAcpPackage = '@zed-industries/codex-acp';
   static const String piAgentName = 'pi ACP';
   static const String piAcpPackage = 'pi-acp';
 
@@ -105,6 +106,7 @@ class AcpAgentDiscovery {
     final hadConfiguredAgents = existingServers.isNotEmpty;
 
     for (final server in servers) {
+      if (_upgradeLegacyCodexServer(existingServers, server)) continue;
       if (existingServers.containsKey(server.name)) continue;
       existingServers[server.name] = server.toJson();
     }
@@ -136,11 +138,47 @@ class AcpAgentDiscovery {
     AgentServerConfig candidate,
   ) {
     for (final server in config.selectableAgentServers) {
+      if (_isLegacyCodexInvocation(server) &&
+          _isCurrentCodexInvocation(candidate)) {
+        continue;
+      }
       if (server.name == candidate.name) return true;
       if (_sameStdioInvocation(server, candidate)) return true;
     }
     return false;
   }
+
+  static bool _upgradeLegacyCodexServer(
+    Map<String, dynamic> existingServers,
+    AgentServerConfig candidate,
+  ) {
+    if (!_isCurrentCodexInvocation(candidate)) return false;
+    for (final entry in existingServers.entries) {
+      final raw = entry.value;
+      if (raw is! Map) continue;
+      final mapped = raw.map((key, value) => MapEntry(key.toString(), value));
+      final args = mapped['args'];
+      if (args is! List ||
+          args.length != 1 ||
+          args.single != legacyCodexAcpPackage) {
+        continue;
+      }
+      mapped['args'] = <String>[codexAcpPackage];
+      existingServers[entry.key] = mapped;
+      return true;
+    }
+    return false;
+  }
+
+  static bool _isCurrentCodexInvocation(AgentServerConfig server) =>
+      server.isStdio &&
+      server.args.length == 1 &&
+      server.args.single == codexAcpPackage;
+
+  static bool _isLegacyCodexInvocation(AgentServerConfig server) =>
+      server.isStdio &&
+      server.args.length == 1 &&
+      server.args.single == legacyCodexAcpPackage;
 
   static bool _sameStdioInvocation(
     AgentServerConfig left,

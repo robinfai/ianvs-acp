@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -15,7 +16,7 @@ void main() {
     expect(discovered, hasLength(1));
     expect(discovered.single.name, 'Codex');
     expect(discovered.single.command, '/usr/local/bin/npx');
-    expect(discovered.single.args, ['@zed-industries/codex-acp']);
+    expect(discovered.single.args, ['@agentclientprotocol/codex-acp']);
   });
 
   test('discovers pi ACP through npx when pi is installed', () {
@@ -55,7 +56,7 @@ void main() {
             'OpenAI Codex': {
               'type': 'custom',
               'command': '/opt/homebrew/bin/npx',
-              'args': ['@zed-industries/codex-acp'],
+              'args': ['@agentclientprotocol/codex-acp'],
             },
           },
         }),
@@ -105,7 +106,7 @@ void main() {
           name: 'Codex',
           type: 'custom',
           command: '/usr/local/bin/npx',
-          args: ['@zed-industries/codex-acp'],
+          args: ['@agentclientprotocol/codex-acp'],
         ),
       ],
     );
@@ -117,5 +118,46 @@ void main() {
       await File(configPath).readAsString(),
       contains('default_agent_server'),
     );
+  });
+
+  test('offers and applies migration from the legacy Codex adapter', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
+    addTearDown(() => temp.delete(recursive: true));
+    final configPath = '${temp.path}/settings.json';
+    final file = File(configPath);
+    await file.writeAsString('''
+{
+  "default_agent_server": "OpenAI Codex",
+  "agent_servers": {
+    "OpenAI Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"],
+      "env": {"KEEP_ME": "yes"}
+    }
+  }
+}
+''');
+    final config = AcpClientConfig.fromJson(
+      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      configPath: configPath,
+    );
+
+    final migration = AcpAgentDiscovery.discoverMissing(
+      config,
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) => path == '/opt/homebrew/bin/npx',
+    );
+    expect(migration.single.args, ['@agentclientprotocol/codex-acp']);
+
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
+      config,
+      migration,
+    );
+    final server = migrated.agentServers.single;
+    expect(server.name, 'OpenAI Codex');
+    expect(server.args, ['@agentclientprotocol/codex-acp']);
+    expect(server.env, {'KEEP_ME': 'yes'});
+    expect(migrated.agentName, 'OpenAI Codex');
   });
 }

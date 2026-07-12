@@ -15,6 +15,7 @@ import '../providers/permission_provider.dart';
 import '../providers/terminal_provider.dart';
 import '../rpc/peer.dart';
 import '../security/workspace_jail.dart';
+import '../schema_version.dart';
 
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
@@ -275,6 +276,8 @@ class InitializeResult {
     required this.protocolVersion,
     required this.agentCapabilities,
     required this.authMethods,
+    this.agentInfo,
+    this.meta,
   });
 
   /// Negotiated protocol version.
@@ -285,6 +288,12 @@ class InitializeResult {
 
   /// Supported auth methods (if any).
   final List<Map<String, dynamic>>? authMethods;
+
+  /// Agent implementation metadata.
+  final Map<String, dynamic>? agentInfo;
+
+  /// Top-level ACP extension metadata from the initialize response.
+  final Map<String, dynamic>? meta;
 
   /// Get extension capabilities from the agent (`_meta` field).
   ///
@@ -321,12 +330,16 @@ class InitializeResult {
   }
 
   /// Get MCP capabilities from the agent.
-  ({bool http, bool sse}) get mcpCapabilities {
+  ({bool http, bool sse, bool acp}) get mcpCapabilities {
     final caps = agentCapabilities?['mcpCapabilities'];
     if (caps is! Map<String, dynamic>) {
-      return (http: false, sse: false);
+      return (http: false, sse: false, acp: false);
     }
-    return (http: caps['http'] == true, sse: caps['sse'] == true);
+    return (
+      http: caps['http'] == true,
+      sse: caps['sse'] == true,
+      acp: caps['acp'] == true,
+    );
   }
 
   /// Get session capabilities from the agent.
@@ -344,11 +357,17 @@ class InitializeResult {
   /// Check if the agent supports session listing.
   bool get supportsListSessions => sessionCapabilities.list;
 
+  /// Check if the agent supports deleting persisted sessions.
+  bool get supportsDeleteSession => sessionCapabilities.delete;
+
   /// Check if the agent supports session resuming (without history).
   bool get supportsResumeSession => sessionCapabilities.resume;
 
   /// Check if the agent supports session forking.
   bool get supportsForkSession => sessionCapabilities.fork;
+
+  /// Check if the agent supports closing an active session.
+  bool get supportsCloseSession => sessionCapabilities.close;
 
   /// Check if the agent supports additional workspace roots.
   bool get supportsAdditionalDirectories =>
@@ -412,6 +431,10 @@ class SessionManager {
     peer.onTerminalWaitForExit = _onTerminalWaitForExit;
     peer.onTerminalKill = _onTerminalKill;
     peer.onTerminalRelease = _onTerminalRelease;
+    peer.onElicitationCreate = config.elicitationProvider;
+    peer.onMcpConnect = config.mcpConnectProvider;
+    peer.onMcpMessage = config.mcpMessageProvider;
+    peer.onMcpDisconnect = config.mcpDisconnectProvider;
 
     peer.sessionUpdates.listen(_routeSessionUpdate);
   }
@@ -452,13 +475,19 @@ class SessionManager {
     AcpCapabilities? capabilitiesOverride,
   }) async {
     final caps = capabilitiesOverride ?? config.capabilities;
-    // Build client capabilities payload from standard caps,
-    // and include non-standard terminal capability when supported.
+    // Build the client capabilities payload and derive terminal support from
+    // the installed provider when one is configured.
     final clientCaps = Map<String, dynamic>.from(caps.toJson());
     if (config.terminalProvider != null) {
       clientCaps['terminal'] = true; // Non-standard: used by some adapters
     }
-    final payload = {'protocolVersion': 1, 'clientCapabilities': clientCaps};
+    final payload = <String, dynamic>{
+      'protocolVersion': acpProtocolVersion,
+      'clientCapabilities': clientCaps,
+      if (config.clientInfo != null) 'clientInfo': config.clientInfo!.toJson(),
+      if (config.initializeMeta != null && config.initializeMeta!.isNotEmpty)
+        '_meta': config.initializeMeta,
+    };
     final resp = await peer.initialize(payload);
     final negotiated = (resp['protocolVersion'] as num?)?.toInt() ?? 0;
     if (negotiated < AcpConfig.minimumProtocolVersion) {
@@ -471,11 +500,25 @@ class SessionManager {
       protocolVersion: (resp['protocolVersion'] as num?)?.toInt() ?? 1,
       agentCapabilities: resp['agentCapabilities'] as Map<String, dynamic>?,
       authMethods: (resp['authMethods'] as List?)?.cast<Map<String, dynamic>>(),
+      agentInfo: _jsonMapFromRaw(resp['agentInfo']),
+      meta: _jsonMapFromRaw(resp['_meta']),
     );
   }
 
   /// Create a new session and return its id.
   Future<String> newSession({
+    required String workspaceRoot,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    final result = await newSessionResult(
+      workspaceRoot: workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
+    return result.sessionId;
+  }
+
+  /// Create a new session and preserve the complete ACP response.
+  Future<SessionResult> newSessionResult({
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
@@ -495,11 +538,11 @@ class SessionManager {
     );
     final modes = _sessionModeInfoFromRaw(resp['modes']);
     if (modes != null) _sessionModes[id] = modes;
-    return id;
+    return SessionResult.fromJson(resp);
   }
 
   /// Load a previous session and replay updates to the client.
-  Future<void> loadSession({
+  Future<SessionResult> loadSession({
     required String sessionId,
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
@@ -514,13 +557,16 @@ class SessionManager {
       workspaceRoot,
       additionalDirectories: additionalDirectories,
     );
-    await peer.loadSession(
+    final resp = await peer.loadSession(
       _sessionSetupParams({
         'sessionId': sessionId,
         'cwd': workspaceRoot,
         'mcpServers': config.mcpServers,
       }, additionalDirectories),
     );
+    final modes = _sessionModeInfoFromRaw(resp['modes']);
+    if (modes != null) _sessionModes[sessionId] = modes;
+    return SessionResult.fromJson({...resp, 'sessionId': sessionId});
   }
 
   // ===== Session Extension Methods =====
@@ -536,6 +582,39 @@ class SessionManager {
     if (cursor != null) params['cursor'] = cursor;
     final resp = await peer.sendRaw('session/list', params);
     return SessionListResult.fromJson(resp);
+  }
+
+  /// Authenticate using an agent-advertised method identifier.
+  Future<void> authenticate({required String methodId}) async {
+    await peer.sendRaw('authenticate', {'methodId': methodId});
+  }
+
+  /// Log out of the current agent account.
+  Future<void> logout() async {
+    await peer.sendRaw('logout', const <String, dynamic>{});
+  }
+
+  /// Delete a persisted session from the agent's session history.
+  Future<void> deleteSession({required String sessionId}) async {
+    await peer.sendRaw('session/delete', {'sessionId': sessionId});
+    await _forgetSession(sessionId);
+  }
+
+  /// Close an active session without deleting persisted history.
+  Future<void> closeSession({required String sessionId}) async {
+    await peer.sendRaw('session/close', {'sessionId': sessionId});
+    await _forgetSession(sessionId);
+  }
+
+  Future<void> _forgetSession(String sessionId) async {
+    final stream = _sessionStreams.remove(sessionId);
+    await stream?.close();
+    _replayBuffers.remove(sessionId);
+    _toolCalls.remove(sessionId);
+    _sessionWorkspaceRoots.remove(sessionId);
+    _sessionAdditionalDirectories.remove(sessionId);
+    _sessionModes.remove(sessionId);
+    _cancellingSessions.remove(sessionId);
   }
 
   /// Resume a session without loading history (simpler than loadSession).
@@ -564,6 +643,8 @@ class SessionManager {
         'mcpServers': config.mcpServers,
       }, additionalDirectories),
     );
+    final modes = _sessionModeInfoFromRaw(resp['modes']);
+    if (modes != null) _sessionModes[sessionId] = modes;
     return SessionResult.fromJson({...resp, 'sessionId': sessionId});
   }
 
@@ -595,6 +676,8 @@ class SessionManager {
     if (root != null) {
       _setSessionWorkspace(newId, root, additionalDirectories: directories);
     }
+    final modes = _sessionModeInfoFromRaw(resp['modes']);
+    if (modes != null) _sessionModes[newId] = modes;
     return SessionResult.fromJson(resp);
   }
 
@@ -604,11 +687,19 @@ class SessionManager {
   Future<List<ConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
-    required String value,
+    required Object value,
   }) async {
+    if (value is! String && value is! bool) {
+      throw ArgumentError.value(
+        value,
+        'value',
+        'ACP config option values must be a String or bool.',
+      );
+    }
     final resp = await peer.sendRaw('session/set_config_option', {
       'sessionId': sessionId,
       'configId': configId,
+      if (value is bool) 'type': 'boolean',
       'value': value,
     });
     final configList = resp['configOptions'] as List<dynamic>? ?? [];
@@ -658,7 +749,12 @@ class SessionManager {
             final stop = stopReasonFromWire(
               (resp['stopReason'] as String?) ?? 'other',
             );
-            final turnEnded = TurnEnded(stop);
+            final usage = _jsonMapFromRaw(resp['usage']);
+            final turnEnded = TurnEnded(
+              stop,
+              usage: usage == null ? null : PromptUsage.fromJson(usage),
+              meta: _jsonMapFromRaw(resp['_meta']),
+            );
             _replayBuffers[sessionId]?.add(turnEnded);
             _sessionStreams[sessionId]!.add(turnEnded);
             if (stop == StopReason.cancelled) {
@@ -805,6 +901,8 @@ class SessionManager {
         role: role,
         rawContent: blocks,
         isThought: kind == 'agent_thought_chunk',
+        messageId: _firstNonEmptyString(update, const ['messageId']),
+        meta: _jsonMapFromRaw(update['_meta']),
       );
       _replayBuffers[sessionId]!.add(u);
       _sessionStreams[sessionId]!.add(u);
@@ -829,6 +927,26 @@ class SessionManager {
         }
       }
       final u = ModeUpdate(currentModeId ?? '');
+      _replayBuffers[sessionId]!.add(u);
+      _sessionStreams[sessionId]!.add(u);
+    } else if (kind == 'config_option_update') {
+      final u = ConfigOptionUpdate.fromJson(update);
+      _replayBuffers[sessionId]!.add(u);
+      _sessionStreams[sessionId]!.add(u);
+    } else if (kind == 'session_info_update') {
+      final u = SessionInfoUpdate.fromJson(update);
+      _replayBuffers[sessionId]!.add(u);
+      _sessionStreams[sessionId]!.add(u);
+    } else if (kind == 'plan_update') {
+      final u = StructuredPlanUpdate(Map<String, dynamic>.from(update));
+      _replayBuffers[sessionId]!.add(u);
+      _sessionStreams[sessionId]!.add(u);
+    } else if (kind == 'plan_removed') {
+      final planId = _firstNonEmptyString(update, const ['planId']) ?? '';
+      final u = PlanRemovedUpdate(
+        planId,
+        meta: _jsonMapFromRaw(update['_meta']),
+      );
       _replayBuffers[sessionId]!.add(u);
       _sessionStreams[sessionId]!.add(u);
     } else if (kind == 'usage_update') {
@@ -996,7 +1114,7 @@ class SessionManager {
     try {
       await provider.writeTextFile(path, content);
       _log.fine('fs/write_text_file -> ok path=$path');
-      return null; // per schema null
+      return const <String, dynamic>{};
     } catch (e) {
       _log.warning('fs/write_text_file -> error path=$path: $e');
       rethrow;
@@ -1119,6 +1237,7 @@ class SessionManager {
       args: args,
       cwd: cwd,
       env: env.isEmpty ? null : env,
+      outputByteLimit: (req['outputByteLimit'] as num?)?.toInt(),
     );
     _terminals[handle.terminalId] = handle;
     _terminalEvents.add(
@@ -1136,12 +1255,12 @@ class SessionManager {
   Future<Json> _onTerminalOutput(Json req) async {
     final provider = config.terminalProvider;
     if (provider == null) {
-      return {'outputmode': '', 'truncated': false, 'exitStatus': null};
+      return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final termId = req['terminalId'] as String;
     final handle = _terminals[termId];
     if (handle == null) {
-      return {'outputmode': '', 'truncated': false, 'exitStatus': null};
+      return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final output = await provider.currentOutput(handle);
     int? exitCode;
@@ -1156,55 +1275,43 @@ class SessionManager {
       TerminalOutputEvent(
         terminalId: termId,
         output: output,
-        truncated: false,
+        truncated: handle.truncated,
         exitCode: exitCode,
       ),
     );
     return {
-      'outputmode': output,
-      'truncated': false,
-      'exitStatus': exitCode == null ? null : {'code': exitCode},
+      'output': output,
+      'truncated': handle.truncated,
+      'exitStatus': exitCode == null ? null : {'exitCode': exitCode},
     };
   }
 
   Future<Json> _onTerminalWaitForExit(Json req) async {
     final provider = config.terminalProvider;
     if (provider == null) {
-      return {
-        'outputmode': '',
-        'truncated': false,
-        'exitStatus': {'code': 0},
-      };
+      return {'exitCode': 0};
     }
     final termId = req['terminalId'] as String;
     final handle = _terminals[termId];
     if (handle == null) {
-      return {
-        'outputmode': '',
-        'truncated': false,
-        'exitStatus': {'code': 0},
-      };
+      return {'exitCode': 0};
     }
     final code = await provider.waitForExit(handle);
     _terminalEvents.add(TerminalExited(terminalId: termId, code: code));
-    return {
-      'outputmode': handle.currentOutput(),
-      'truncated': false,
-      'exitStatus': {'code': code},
-    };
+    return {'exitCode': code};
   }
 
-  Future<Json?> _onTerminalKill(Json req) async {
+  Future<Json> _onTerminalKill(Json req) async {
     final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
     final handle = _terminals[termId];
     if (provider != null && handle != null) {
       await provider.kill(handle);
     }
-    return null;
+    return const <String, dynamic>{};
   }
 
-  Future<Json?> _onTerminalRelease(Json req) async {
+  Future<Json> _onTerminalRelease(Json req) async {
     final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
     final handle = _terminals.remove(termId);
@@ -1212,7 +1319,7 @@ class SessionManager {
       await provider.release(handle);
     }
     _terminalEvents.add(TerminalReleased(terminalId: termId));
-    return null;
+    return const <String, dynamic>{};
   }
 
   // UI helpers to interact with terminals

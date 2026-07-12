@@ -14,6 +14,12 @@ menu includes Protocol Coverage, which reviews implemented ACP areas against the
 official docs and points each area to its visible configuration and interaction
 surface.
 
+The vendored Dart protocol layer tracks `@agentclientprotocol/sdk` 1.2.1. It
+supports native boolean and grouped session config options, session delete,
+end-turn usage, current terminal response shapes, and opt-in provider/NES/
+elicitation/MCP-over-ACP surfaces. See
+[`docs/acp_1_2_1_conformance.md`](docs/acp_1_2_1_conformance.md).
+
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
 
@@ -30,7 +36,7 @@ agent. The app persists those GUI choices to:
 
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
-`npx` command running `@zed-industries/codex-acp`, and pi ACP through `npx -y
+`npx` command running `@agentclientprotocol/codex-acp`, and pi ACP through `npx -y
 pi-acp` when both `npx` and the `pi` command are available. Model provider
 credentials for pi remain user-managed through pi itself or the agent server
 `env` fields in Agent Configuration.
@@ -45,7 +51,7 @@ Saved shape example for automation and debugging:
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["@zed-industries/codex-acp"]
+      "args": ["@agentclientprotocol/codex-acp"]
     },
     "pi ACP": {
       "type": "custom",

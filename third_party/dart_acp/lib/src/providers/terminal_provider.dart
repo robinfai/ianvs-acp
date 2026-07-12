@@ -5,12 +5,15 @@ import 'dart:io';
 /// Handle for a managed terminal process.
 class TerminalProcessHandle {
   /// Create a terminal process handle.
-  TerminalProcessHandle({required this.terminalId, required this.process})
-    : _stdoutSub = process.stdout.listen((data) {}),
-      _stderrSub = process.stderr.listen((data) {}) {
+  TerminalProcessHandle({
+    required this.terminalId,
+    required this.process,
+    this.outputByteLimit,
+  }) : _stdoutSub = process.stdout.listen((data) {}),
+       _stderrSub = process.stderr.listen((data) {}) {
     // Rewire subscriptions to buffer output as text
-    _stdoutSub.onData((data) => _buffer.write(utf8.decode(data)));
-    _stderrSub.onData((data) => _buffer.write(utf8.decode(data)));
+    _stdoutSub.onData(_appendOutput);
+    _stderrSub.onData(_appendOutput);
   }
 
   /// Unique terminal identifier.
@@ -18,13 +21,37 @@ class TerminalProcessHandle {
 
   /// Underlying OS process.
   final Process process;
+  final int? outputByteLimit;
   final StreamSubscription<List<int>> _stdoutSub;
   final StreamSubscription<List<int>> _stderrSub;
-  final StringBuffer _buffer = StringBuffer();
+  String _buffer = '';
+  bool _truncated = false;
   bool _released = false;
 
   /// Return currently buffered output as a String.
-  String currentOutput() => _buffer.toString();
+  String currentOutput() => _buffer;
+
+  /// Whether output was truncated to the requested byte limit.
+  bool get truncated => _truncated;
+
+  void _appendOutput(List<int> bytes) {
+    _buffer += utf8.decode(bytes, allowMalformed: true);
+    final limit = outputByteLimit;
+    if (limit == null || limit < 0) return;
+    final encoded = utf8.encode(_buffer);
+    if (encoded.length <= limit) return;
+    _truncated = true;
+    var start = encoded.length - limit;
+    while (start < encoded.length) {
+      try {
+        _buffer = utf8.decode(encoded.sublist(start));
+        return;
+      } on FormatException {
+        start += 1;
+      }
+    }
+    _buffer = '';
+  }
 
   /// Wait for process to exit and return its code.
   Future<int> waitForExit() async => process.exitCode;
@@ -52,6 +79,7 @@ abstract class TerminalProvider {
     List<String> args,
     String? cwd,
     Map<String, String>? env,
+    int? outputByteLimit,
   });
 
   /// Read the current buffered output for the terminal.
@@ -78,6 +106,7 @@ class DefaultTerminalProvider implements TerminalProvider {
     List<String> args = const [],
     String? cwd,
     Map<String, String>? env,
+    int? outputByteLimit,
   }) async {
     // If no args are provided, treat the command as a shell one-liner.
     // This matches how many adapters (e.g., Claude Code) invoke terminal
@@ -118,6 +147,7 @@ class DefaultTerminalProvider implements TerminalProvider {
     final handle = TerminalProcessHandle(
       terminalId: '$sessionId:${DateTime.now().microsecondsSinceEpoch}',
       process: process,
+      outputByteLimit: outputByteLimit,
     );
     _handles[handle.terminalId] = handle;
     return handle;

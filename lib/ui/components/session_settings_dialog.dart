@@ -44,6 +44,16 @@ class SessionSettingsDialog extends StatelessWidget {
                 label: const Text('Close Session'),
                 style: TextButton.styleFrom(foregroundColor: AppColors.danger),
               ),
+            if (controller.currentSession != null &&
+                controller.capabilities?.session.delete == true)
+              TextButton.icon(
+                onPressed: controller.canDeleteCurrentSession
+                    ? () => unawaited(_confirmDeleteSession(context))
+                    : null,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Delete Session'),
+                style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+              ),
             TextButton.icon(
               onPressed:
                   controller.currentSession != null &&
@@ -163,6 +173,40 @@ class SessionSettingsDialog extends StatelessWidget {
     if (context.mounted) {
       Navigator.of(context).pop();
     }
+  }
+
+  Future<void> _confirmDeleteSession(BuildContext context) async {
+    final session = controller.currentSession;
+    if (session == null) return;
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Session?'),
+        content: Text(
+          'Permanently delete "${session.displayTitle}" from the agent\'s '
+          'session history. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              foregroundColor: Colors.white,
+              backgroundColor: AppColors.danger,
+            ),
+            child: const Text('Delete Session'),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete != true) return;
+    final deletingSessionId = session.id;
+    await controller.deleteCurrentSession();
+    if (controller.currentSession?.id == deletingSessionId) return;
+    if (context.mounted) Navigator.of(context).pop();
   }
 }
 
@@ -624,7 +668,9 @@ class _ConfigOptionTile extends StatelessWidget {
                           (choice) => DropdownMenuItem<String>(
                             value: choice.value,
                             child: Text(
-                              choice.label,
+                              choice.groupName == null
+                                  ? choice.label
+                                  : '${choice.groupName} · ${choice.label}',
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),

@@ -67,6 +67,10 @@ class CapabilitiesDialog extends StatelessWidget {
                       children: [
                         _BoolRow(label: 'List', supported: caps.session.list),
                         _BoolRow(
+                          label: 'Delete',
+                          supported: caps.session.delete,
+                        ),
+                        _BoolRow(
                           label: 'Resume without history',
                           supported: caps.session.resume,
                         ),
@@ -123,6 +127,37 @@ class CapabilitiesDialog extends StatelessWidget {
                         _BoolRow(
                           label: 'Read outside workspace',
                           supported: caps.client.allowReadOutsideWorkspace,
+                        ),
+                        _BoolRow(
+                          label: 'Boolean config options',
+                          supported: caps.client.booleanConfigOptions,
+                        ),
+                        _BoolRow(
+                          label: 'Plan updates',
+                          supported: caps.client.plan,
+                        ),
+                      ],
+                    ),
+                    _Section(
+                      icon: Icons.science_outlined,
+                      title: 'Experimental',
+                      children: [
+                        _BoolRow(
+                          label: 'Agent providers',
+                          supported: caps.providers,
+                        ),
+                        _BoolRow(label: 'Agent NES', supported: caps.nes),
+                        _BoolRow(
+                          label: 'Client elicitation form',
+                          supported: caps.client.elicitationForm,
+                        ),
+                        _BoolRow(
+                          label: 'Client elicitation URL',
+                          supported: caps.client.elicitationUrl,
+                        ),
+                        _InfoRow(
+                          label: 'Position encoding',
+                          value: caps.positionEncoding ?? 'not negotiated',
                         ),
                       ],
                     ),
