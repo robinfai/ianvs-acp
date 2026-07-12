@@ -1058,6 +1058,39 @@ void main() {
       }
     });
 
+    test('rejects non-canonical Base64 padding bits', () {
+      for (final encoded in const <String>['TR==', 'TWF=']) {
+        expect(
+          () => scanAcpBase64(encoded, maxDecodedBytes: 2, resource: 'media'),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              'Invalid ACP Base64 encoding.',
+            ),
+          ),
+          reason: encoded,
+        );
+      }
+
+      expect(
+        scanAcpBase64(
+          'TQ==',
+          maxDecodedBytes: 1,
+          resource: 'media',
+        ).decodedBytes,
+        1,
+      );
+      expect(
+        scanAcpBase64(
+          'TWE=',
+          maxDecodedBytes: 2,
+          resource: 'media',
+        ).decodedBytes,
+        2,
+      );
+    });
+
     test('rejects whitespace, URL-safe alphabet, and other characters', () {
       for (final encoded in const <String>[
         'TW E',
@@ -1374,6 +1407,47 @@ void main() {
       );
     });
 
+    test('map node capacity fails before scanning a long key', () {
+      expect(
+        () => estimator(
+          maxNodes: 1,
+          maxStringBytes: 3,
+        ).estimate(<String, Object?>{'long': null}),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'ACP retained state nodes',
+              )
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        ),
+      );
+    });
+
+    test('underreported map checks node capacity before each long key', () {
+      final source = _UnderreportedRetainedMap(
+        reportedLength: 0,
+        backingValues: <String, Object?>{'long': null},
+      );
+
+      expect(
+        () => estimator(maxNodes: 1, maxStringBytes: 3).estimate(source),
+        throwsA(
+          isA<AcpInputLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'ACP retained state nodes',
+              )
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        ),
+      );
+      expect(source.entriesVisited, 1);
+    });
+
     test('rejects non-JSON values without invoking payload methods', () {
       final value = estimator();
       final canary = _RetainedValueCanary();
@@ -1403,7 +1477,7 @@ void main() {
 
     test('uses an explicit stack for very deep valid input', () {
       const depth = 3000;
-      Object? value = null;
+      Object? value;
       for (var index = 0; index < depth; index += 1) {
         value = <Object?>[value];
       }
@@ -1513,4 +1587,41 @@ final class _ReportedLengthList extends ListBase<Object?> {
   @override
   void operator []=(int index, Object? value) =>
       throw UnsupportedError('read only');
+}
+
+final class _UnderreportedRetainedMap extends MapBase<String, Object?> {
+  _UnderreportedRetainedMap({
+    required this.reportedLength,
+    required this.backingValues,
+  });
+
+  final int reportedLength;
+  final Map<String, Object?> backingValues;
+  var entriesVisited = 0;
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries sync* {
+    for (final entry in backingValues.entries) {
+      entriesVisited += 1;
+      yield entry;
+    }
+  }
+
+  @override
+  Iterable<String> get keys => backingValues.keys;
+
+  @override
+  int get length => reportedLength;
+
+  @override
+  Object? operator [](Object? key) => backingValues[key];
+
+  @override
+  void operator []=(String key, Object? value) => backingValues[key] = value;
+
+  @override
+  void clear() => backingValues.clear();
+
+  @override
+  Object? remove(Object? key) => backingValues.remove(key);
 }

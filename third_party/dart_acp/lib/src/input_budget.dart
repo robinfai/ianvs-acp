@@ -43,22 +43,26 @@ AcpBase64ScanResult scanAcpBase64(
     final second = encoded.codeUnitAt(index + 1);
     final third = encoded.codeUnitAt(index + 2);
     final fourth = encoded.codeUnitAt(index + 3);
-    if (!_isBase64Alphabet(first) || !_isBase64Alphabet(second)) {
+    final secondValue = _base64SextetValue(second);
+    if (_base64SextetValue(first) < 0 || secondValue < 0) {
       _throwInvalidBase64();
     }
 
     final isLastQuartet = index + 4 == encodedLength;
     final int quartetBytes;
     if (third == 0x3d) {
-      if (fourth != 0x3d || !isLastQuartet) _throwInvalidBase64();
+      if (fourth != 0x3d || !isLastQuartet || (secondValue & 0x0f) != 0) {
+        _throwInvalidBase64();
+      }
       quartetBytes = 1;
     } else {
-      if (!_isBase64Alphabet(third)) _throwInvalidBase64();
+      final thirdValue = _base64SextetValue(third);
+      if (thirdValue < 0) _throwInvalidBase64();
       if (fourth == 0x3d) {
-        if (!isLastQuartet) _throwInvalidBase64();
+        if (!isLastQuartet || (thirdValue & 0x03) != 0) _throwInvalidBase64();
         quartetBytes = 2;
       } else {
-        if (!_isBase64Alphabet(fourth)) _throwInvalidBase64();
+        if (_base64SextetValue(fourth) < 0) _throwInvalidBase64();
         quartetBytes = 3;
       }
     }
@@ -80,12 +84,14 @@ AcpBase64ScanResult scanAcpBase64(
   return AcpBase64ScanResult(encodedLength, decodedBytes);
 }
 
-bool _isBase64Alphabet(int codeUnit) =>
-    (codeUnit >= 0x41 && codeUnit <= 0x5a) ||
-    (codeUnit >= 0x61 && codeUnit <= 0x7a) ||
-    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
-    codeUnit == 0x2b ||
-    codeUnit == 0x2f;
+int _base64SextetValue(int codeUnit) {
+  if (codeUnit >= 0x41 && codeUnit <= 0x5a) return codeUnit - 0x41;
+  if (codeUnit >= 0x61 && codeUnit <= 0x7a) return codeUnit - 0x47;
+  if (codeUnit >= 0x30 && codeUnit <= 0x39) return codeUnit + 0x04;
+  if (codeUnit == 0x2b) return 62;
+  if (codeUnit == 0x2f) return 63;
+  return -1;
+}
 
 Never _throwInvalidBase64() {
   throw const FormatException('Invalid ACP Base64 encoding.');
@@ -714,13 +720,16 @@ final class AcpRetainedSizeEstimator {
           _budget.maxCollectionItems,
           _budget.maxMetadataEntries,
         );
+        final reportedLength = current.length;
         checkCollectionLength(
-          current.length,
+          reportedLength,
           entryLimit,
           'ACP retained state map entries',
         );
+        precheckNodes(reportedLength);
         final entries = <MapEntry<String, Object?>>[];
         for (final entry in current.entries) {
+          precheckNodes(entries.length + 1);
           if (entry.key is! String) {
             throw const FormatException(
               'Invalid ACP retained state: map key must be a string.',
