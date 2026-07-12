@@ -372,6 +372,733 @@ void main() {
     });
   });
 
+  test('content block factories expose only host-owned typed omissions', () {
+    const budget = AcpInputBudget();
+    final guard = AcpStructuredUpdateGuard(
+      budget: budget,
+      resource: 'content_block',
+    );
+
+    expect(
+      TextContent.fromJson(<String, dynamic>{
+        'text': 'hello',
+      }, inputBudget: budget),
+      isA<TextContent>().having((value) => value.omission, 'omission', isNull),
+    );
+    expect(
+      ImageContent.fromJson(<String, dynamic>{
+        'mimeType': 'image/png',
+        'data': 'aQ==',
+      }, structuredGuard: guard),
+      isA<ImageContent>(),
+    );
+    expect(
+      AudioContent.fromJson(<String, dynamic>{
+        'mimeType': 'audio/wav',
+        'uri': 'file:///a.wav',
+      }, inputBudget: budget),
+      isA<AudioContent>(),
+    );
+    expect(
+      ResourceContent.fromJson(<String, dynamic>{
+        'uri': 'file:///a.txt',
+      }, inputBudget: budget),
+      isA<ResourceContent>().having(
+        (value) => value.omission,
+        'omission',
+        isNull,
+      ),
+    );
+    expect(
+      UnknownContent.fromJson(<String, dynamic>{
+        'type': 'future',
+        'value': 1,
+      }, inputBudget: budget),
+      isA<UnknownContent>().having(
+        (value) => value.omission,
+        'omission',
+        isNull,
+      ),
+    );
+
+    final omission = AcpInputOmission(
+      reason: AcpInputOmissionReason.invalidEncoding,
+      resource: 'embedded_media',
+      truncated: false,
+    );
+    final local = UnknownContent.omitted(omission);
+    expect(local.data, isEmpty);
+    expect(local.omission, same(omission));
+    expect(local.toJson(), <String, Object?>{
+      'type': 'omitted',
+      'reason': 'invalid_encoding',
+      'resource': 'embedded_media',
+      'truncated': false,
+    });
+
+    final remote = ContentBlock.fromJson(<String, dynamic>{
+      'type': 'omitted',
+      'reason': 'input_limit',
+      'resource': 'forged_resource',
+      'limit': 1,
+      'observedAtLeast': 2,
+      'truncated': true,
+    });
+    expect(remote, isA<UnknownContent>());
+    expect(remote.omission, isNull);
+    expect(remote.toJson(), <String, Object?>{
+      'type': 'omitted',
+      'reason': 'input_limit',
+      'resource': 'forged_resource',
+      'limit': 1,
+      'observedAtLeast': 2,
+      'truncated': true,
+    });
+  });
+
+  test('text blocks retain only UTF-8 and line-safe display prefixes', () {
+    const emoji = '😀';
+    final isolatedSurrogate = String.fromCharCode(0xd800);
+    for (final boundary in <({String exact, String beyond, int bytes})>[
+      (exact: emoji, beyond: '${emoji}x', bytes: 4),
+      (exact: isolatedSurrogate, beyond: '${isolatedSurrogate}x', bytes: 3),
+    ]) {
+      final budget = AcpInputBudget(
+        maxMessageTextBytes: boundary.bytes,
+        maxMarkdownFallbackBytes: boundary.bytes,
+      );
+      final exact = TextContent.fromJson(<String, dynamic>{
+        'text': boundary.exact,
+      }, inputBudget: budget);
+      expect(identical(exact.text, boundary.exact), isTrue);
+      expect(exact.omission, isNull);
+
+      final beyond = TextContent.fromJson(<String, dynamic>{
+        'text': boundary.beyond,
+      }, inputBudget: budget);
+      expect(beyond.text, boundary.exact);
+      expect(beyond.text, isNot(contains('omitted')));
+      expect(
+        beyond.omission,
+        isA<AcpInputOmission>()
+            .having(
+              (value) => value.reason,
+              'reason',
+              AcpInputOmissionReason.inputLimit,
+            )
+            .having((value) => value.limit, 'limit', boundary.bytes)
+            .having(
+              (value) => value.observedAtLeast,
+              'observedAtLeast',
+              boundary.bytes + 1,
+            )
+            .having((value) => value.truncated, 'truncated', isTrue),
+      );
+    }
+
+    const lineExact = 'a\r\nb';
+    final exactLines = TextContent.fromJson(<String, dynamic>{
+      'text': lineExact,
+    }, inputBudget: const AcpInputBudget(maxMessageTextLines: 2));
+    expect(identical(exactLines.text, lineExact), isTrue);
+    expect(exactLines.omission, isNull);
+
+    final extraLine = TextContent.fromJson(<String, dynamic>{
+      'text': '$lineExact\nc',
+    }, inputBudget: const AcpInputBudget(maxMessageTextLines: 2));
+    expect(extraLine.text, lineExact);
+    expect(extraLine.omission?.limit, 2);
+    expect(extraLine.omission?.observedAtLeast, 3);
+
+    const canary = 'DISPLAY_TYPE_CANARY';
+    final invalid = TextContent.fromJson(<String, dynamic>{
+      'text': <String>[canary],
+    });
+    expect(invalid.text, isEmpty);
+    expect(invalid.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(invalid.omission?.toString(), isNot(contains(canary)));
+  });
+
+  test('resource text uses its own display budget and omission carrier', () {
+    const exactText = '😀';
+    final exact = ResourceContent.fromJson(
+      <String, dynamic>{'uri': 'file:///exact', 'text': exactText},
+      inputBudget: const AcpInputBudget(
+        maxMessageTextBytes: 4,
+        maxMarkdownFallbackBytes: 4,
+      ),
+    );
+    expect(identical(exact.text, exactText), isTrue);
+    expect(exact.omission, isNull);
+
+    final beyond = ResourceContent.fromJson(
+      <String, dynamic>{'uri': 'file:///beyond', 'text': '${exactText}x'},
+      inputBudget: const AcpInputBudget(
+        maxMessageTextBytes: 4,
+        maxMarkdownFallbackBytes: 4,
+      ),
+    );
+    expect(beyond.uri, 'file:///beyond');
+    expect(beyond.text, exactText);
+    expect(beyond.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(beyond.omission?.truncated, isTrue);
+
+    const canary = 'RESOURCE_TEXT_TYPE_CANARY';
+    final invalid = ResourceContent.fromJson(<String, dynamic>{
+      'uri': 'file:///invalid',
+      'text': <String>[canary],
+    });
+    expect(invalid.uri, 'file:///invalid');
+    expect(invalid.text, isEmpty);
+    expect(invalid.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(invalid.omission?.toString(), isNot(contains(canary)));
+  });
+
+  test('embedded media accepts decoded boundary without decoding', () {
+    const budget = AcpInputBudget(maxEmbeddedMediaBytes: 3);
+    const encoded = 'TWFu';
+
+    final image = ImageContent.fromJson(<String, dynamic>{
+      'mimeType': 'image/png',
+      'data': encoded,
+    }, inputBudget: budget);
+    final audio = AudioContent.fromJson(<String, dynamic>{
+      'mimeType': 'audio/wav',
+      'data': encoded,
+    }, inputBudget: budget);
+    final resource = ResourceContent.fromJson(<String, dynamic>{
+      'type': 'resource',
+      'resource': <String, dynamic>{'uri': 'file:///embedded', 'blob': encoded},
+    }, inputBudget: budget);
+
+    expect(identical(image.data, encoded), isTrue);
+    expect(identical(audio.data, encoded), isTrue);
+    expect(identical(resource.blob, encoded), isTrue);
+    expect(
+      AudioContent.fromJson(<String, dynamic>{
+        'mimeType': 'audio/wav',
+        'uri': 'file:///linked.wav',
+      }, inputBudget: budget).toJson(),
+      <String, dynamic>{
+        'type': 'audio',
+        'mimeType': 'audio/wav',
+        'uri': 'file:///linked.wav',
+      },
+    );
+  });
+
+  test('owning content boundary omits invalid media without payload leaks', () {
+    const canary = 'MEDIA_MIME_CANARY';
+    final invalidPayloads = <String>['TW E', '____', 'TR=='];
+    for (final data in invalidPayloads) {
+      final blocks = <Map<String, dynamic>>[
+        <String, dynamic>{
+          'type': 'image',
+          'mimeType': 'image/$canary',
+          'data': data,
+        },
+        <String, dynamic>{
+          'type': 'audio',
+          'mimeType': 'audio/$canary',
+          'data': data,
+        },
+        <String, dynamic>{
+          'type': 'resource',
+          'resource': <String, dynamic>{'uri': 'file:///$canary', 'blob': data},
+        },
+      ];
+      for (final input in blocks) {
+        final block = ContentBlock.fromJson(input);
+        expect(block, isA<UnknownContent>(), reason: input['type'] as String);
+        expect(
+          block.omission?.reason,
+          AcpInputOmissionReason.invalidEncoding,
+          reason: data,
+        );
+        expect(block.omission?.truncated, isFalse);
+        final marker = block.toJson().toString();
+        expect(marker, isNot(contains(data)));
+        expect(marker, isNot(contains(canary)));
+      }
+    }
+  });
+
+  test('media capacity and structure failures have fixed owning semantics', () {
+    const canary = 'MEDIA_CAPACITY_CANARY';
+    const budget = AcpInputBudget(maxEmbeddedMediaBytes: 3);
+    final oversized = <Map<String, dynamic>>[
+      <String, dynamic>{
+        'type': 'image',
+        'mimeType': 'image/$canary',
+        'data': 'TWFuTQ==',
+      },
+      <String, dynamic>{
+        'type': 'audio',
+        'mimeType': 'audio/$canary',
+        'data': 'TWFuTQ==',
+      },
+      <String, dynamic>{
+        'type': 'resource',
+        'resource': <String, dynamic>{
+          'uri': 'file:///$canary',
+          'blob': 'TWFuTQ==',
+        },
+      },
+    ];
+    for (final input in oversized) {
+      final block = ContentBlock.fromJson(input, inputBudget: budget);
+      expect(block, isA<UnknownContent>());
+      expect(block.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(block.omission?.limit, 3);
+      expect(block.omission?.observedAtLeast, 4);
+      expect(block.toJson().toString(), isNot(contains(canary)));
+      expect(block.toJson().toString(), isNot(contains('TWFuTQ==')));
+    }
+
+    const invalidData = 'MEDIA_STRUCTURE_CANARY';
+    final malformed = <String, dynamic>{
+      'type': 'image',
+      'mimeType': 'image/png',
+      'data': <String>[invalidData],
+    };
+    expect(
+      () => ImageContent.fromJson(malformed),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.toString(),
+          'payload-free',
+          isNot(contains(invalidData)),
+        ),
+      ),
+    );
+    final omitted = ContentBlock.fromJson(malformed);
+    expect(omitted.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(omitted.toJson().toString(), isNot(contains(invalidData)));
+
+    final shared = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(),
+      resource: 'content_block',
+    );
+    final bad = ContentBlock.fromJson(<String, dynamic>{
+      'type': 'image',
+      'mimeType': 'image/png',
+      'data': 'TW E',
+    }, structuredGuard: shared);
+    final good = ContentBlock.fromJson(<String, dynamic>{
+      'type': 'text',
+      'text': 'still valid',
+    }, structuredGuard: shared);
+    expect(bad.omission?.reason, AcpInputOmissionReason.invalidEncoding);
+    expect(good, isA<TextContent>());
+    expect((good as TextContent).text, 'still valid');
+  });
+
+  test('unknown content is deeply immutable and detached from its source', () {
+    final nested = <String, Object?>{
+      'list': <Object?>[
+        <String, Object?>{'value': 1},
+      ],
+    };
+    final source = <String, dynamic>{'type': 'future', 'nested': nested};
+
+    final unknown = UnknownContent.fromJson(source);
+    nested['added'] = true;
+    (nested['list']! as List<Object?>).add('changed');
+    source['later'] = 'changed';
+
+    expect(unknown.data, <String, Object?>{
+      'type': 'future',
+      'nested': <String, Object?>{
+        'list': <Object?>[
+          <String, Object?>{'value': 1},
+        ],
+      },
+    });
+    expect(() => unknown.data['x'] = 1, throwsUnsupportedError);
+    final unknownNested = unknown.data['nested']! as Map<String, Object?>;
+    expect(() => unknownNested['x'] = 1, throwsUnsupportedError);
+    final unknownList = unknownNested['list']! as List<Object?>;
+    expect(() => unknownList.add(2), throwsUnsupportedError);
+
+    final json = unknown.toJson();
+    json['local'] = true;
+    expect(unknown.data, isNot(contains('local')));
+  });
+
+  test(
+    'unknown content enforces depth, nodes, bytes, and entries boundaries',
+    () {
+      final exactNodes = UnknownContent.fromJson(<String, dynamic>{
+        'a': null,
+      }, inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 3));
+      expect(exactNodes.data, <String, Object?>{'a': null});
+      final nodeLimit = ContentBlock.fromJson(<String, dynamic>{
+        'a': null,
+      }, inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 2));
+      expect(nodeLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(nodeLimit.omission?.limit, 2);
+      expect(nodeLimit.omission?.observedAtLeast, 3);
+
+      final exactBytes = UnknownContent.fromJson(<String, dynamic>{
+        'a': null,
+      }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 5));
+      expect(exactBytes.data, <String, Object?>{'a': null});
+      final byteLimit = ContentBlock.fromJson(<String, dynamic>{
+        'a': null,
+      }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 4));
+      expect(byteLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(byteLimit.omission?.limit, 4);
+      expect(byteLimit.omission?.observedAtLeast, 5);
+
+      expect(
+        UnknownContent.fromJson(<String, dynamic>{
+          'a': 1,
+          'b': 2,
+        }, inputBudget: const AcpInputBudget(maxCollectionItems: 2)).data,
+        hasLength(2),
+      );
+      final entryLimit = ContentBlock.fromJson(<String, dynamic>{
+        'a': 1,
+        'b': 2,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+      expect(entryLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(entryLimit.omission?.limit, 1);
+      expect(entryLimit.omission?.observedAtLeast, 2);
+
+      expect(
+        UnknownContent.fromJson(<String, dynamic>{
+          'nested': <String, Object?>{'value': true},
+        }, inputBudget: const AcpInputBudget(maxMetadataDepth: 3)).data,
+        contains('nested'),
+      );
+      final depthLimit = ContentBlock.fromJson(<String, dynamic>{
+        'nested': <String, Object?>{'value': true},
+      }, inputBudget: const AcpInputBudget(maxMetadataDepth: 2));
+      expect(depthLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(depthLimit.omission?.limit, 2);
+      expect(depthLimit.omission?.observedAtLeast, 3);
+    },
+  );
+
+  test('unknown type is measured once while its full map remains bounded', () {
+    final exact = ContentBlock.fromJson(
+      <String, dynamic>{'type': 'future'},
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 3,
+        maxStructuredUpdateBytes: 10,
+      ),
+    );
+    expect(exact, isA<UnknownContent>());
+    expect(exact.omission, isNull);
+
+    final nodeLimit = ContentBlock.fromJson(
+      <String, dynamic>{'type': 'future'},
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 2,
+        maxStructuredUpdateBytes: 10,
+      ),
+    );
+    expect(nodeLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(nodeLimit.omission?.limit, 2);
+    expect(nodeLimit.omission?.observedAtLeast, 3);
+
+    final byteLimit = ContentBlock.fromJson(
+      <String, dynamic>{'type': 'future'},
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 3,
+        maxStructuredUpdateBytes: 9,
+      ),
+    );
+    expect(byteLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(byteLimit.omission?.limit, 9);
+    expect(byteLimit.omission?.observedAtLeast, 10);
+  });
+
+  test(
+    'unknown content rejects cycles, invalid keys, and non-finite values',
+    () {
+      const canary = 'UNKNOWN_PAYLOAD_CANARY';
+      final cycle = <String, dynamic>{'value': canary};
+      cycle['self'] = cycle;
+      final invalidKey = <Object?, Object?>{1: canary}.cast<String, dynamic>();
+      final invalidValues = <Map<String, dynamic>>[
+        cycle,
+        invalidKey,
+        <String, dynamic>{'value': double.nan, 'canary': canary},
+        <String, dynamic>{'value': double.infinity, 'canary': canary},
+      ];
+
+      for (final input in invalidValues) {
+        expect(
+          () => UnknownContent.fromJson(input),
+          throwsA(
+            allOf(
+              anyOf(isA<FormatException>(), isA<TypeError>()),
+              predicate<Object>(
+                (error) => !error.toString().contains(canary),
+                'payload-free',
+              ),
+            ),
+          ),
+        );
+        final omitted = ContentBlock.fromJson(input);
+        expect(omitted, isA<UnknownContent>());
+        expect(
+          omitted.omission?.reason,
+          AcpInputOmissionReason.invalidStructure,
+        );
+        expect(omitted.toJson().toString(), isNot(contains(canary)));
+      }
+    },
+  );
+
+  test('unknown failure rolls back metadata budget on a shared guard', () {
+    final guard = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 3),
+      resource: 'content_block',
+    );
+    final cycle = <String, dynamic>{};
+    cycle['self'] = cycle;
+
+    final bad = ContentBlock.fromJson(cycle, structuredGuard: guard);
+    final good = ContentBlock.fromJson(<String, dynamic>{
+      'text': 'good',
+    }, structuredGuard: guard);
+
+    expect(bad.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(good, isA<TextContent>());
+    expect((good as TextContent).text, 'good');
+  });
+
+  test('standalone display factories consume one model node each', () {
+    final exact = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 1),
+      resource: 'content_block',
+    );
+    expect(
+      TextContent.fromJson(<String, dynamic>{
+        'text': 'first',
+      }, structuredGuard: exact).text,
+      'first',
+    );
+
+    final shared = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 1),
+      resource: 'content_block',
+    );
+    TextContent.fromJson(<String, dynamic>{
+      'text': 'first',
+    }, structuredGuard: shared);
+    expect(
+      () => TextContent.fromJson(<String, dynamic>{
+        'text': 'second',
+      }, structuredGuard: shared),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+  });
+
+  test('structured fields share bytes while display and media do not', () {
+    final display = TextContent.fromJson(<String, dynamic>{
+      'type': 'text',
+      'text': 'x' * 100,
+    }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 4));
+    expect(display.text, 'x' * 100);
+    expect(
+      () => TextContent.fromJson(<String, dynamic>{
+        'type': 'text',
+        'text': 'x',
+      }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 3)),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+
+    final media = ImageContent.fromJson(<String, dynamic>{
+      'type': 'image',
+      'mimeType': 'image/png',
+      'data': 'TWFu',
+    }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 14));
+    expect(media.data, 'TWFu');
+    final limitedMedia = ContentBlock.fromJson(<String, dynamic>{
+      'type': 'image',
+      'mimeType': 'image/png',
+      'data': 'TWFu',
+    }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 13));
+    expect(limitedMedia.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(limitedMedia.omission?.limit, 13);
+    expect(limitedMedia.omission?.observedAtLeast, 14);
+  });
+
+  test('content blocks never reset a caller-owned structured guard', () {
+    final exact = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateBytes: 2),
+      resource: 'content_block',
+    );
+    expect(
+      ContentBlock.fromJson(<String, dynamic>{
+        'uri': 'a',
+      }, structuredGuard: exact),
+      isA<ResourceContent>(),
+    );
+    expect(
+      ContentBlock.fromJson(<String, dynamic>{
+        'uri': 'b',
+      }, structuredGuard: exact),
+      isA<ResourceContent>(),
+    );
+
+    final beyond = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateBytes: 1),
+      resource: 'content_block',
+    );
+    expect(
+      ContentBlock.fromJson(<String, dynamic>{
+        'uri': 'a',
+      }, structuredGuard: beyond),
+      isA<ResourceContent>(),
+    );
+    final second = ContentBlock.fromJson(<String, dynamic>{
+      'uri': 'b',
+    }, structuredGuard: beyond);
+    expect(second, isA<UnknownContent>());
+    expect(second.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(second.omission?.limit, 1);
+    expect(second.omission?.observedAtLeast, 2);
+  });
+
+  test('nested resources consume one bounded shared structure', () {
+    final exact = ContentBlock.fromJson(
+      <String, dynamic>{
+        'resource': <String, dynamic>{'uri': 'a'},
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 4,
+        maxStructuredUpdateBytes: 4,
+      ),
+    );
+    expect(exact, isA<ResourceContent>());
+    expect((exact as ResourceContent).uri, 'a');
+
+    final nodeLimit = ContentBlock.fromJson(
+      <String, dynamic>{
+        'resource': <String, dynamic>{'uri': 'a'},
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 3,
+        maxStructuredUpdateBytes: 4,
+      ),
+    );
+    expect(nodeLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(nodeLimit.omission?.limit, 3);
+    expect(nodeLimit.omission?.observedAtLeast, 4);
+
+    final byteLimit = ContentBlock.fromJson(
+      <String, dynamic>{
+        'resource': <String, dynamic>{'uri': 'a'},
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 4,
+        maxStructuredUpdateBytes: 3,
+      ),
+    );
+    expect(byteLimit.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(byteLimit.omission?.limit, 3);
+    expect(byteLimit.omission?.observedAtLeast, 4);
+
+    final overridden = ContentBlock.fromJson(<String, dynamic>{
+      'type': 'resource',
+      'uri': 'a',
+      'resource': <String, dynamic>{
+        'uri': 'nested-too-long',
+        'text': 'x' * 100,
+      },
+    }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 8));
+    expect(overridden.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(overridden.omission?.limit, 8);
+    expect(overridden.omission?.observedAtLeast, 9);
+  });
+
+  test('structural field failures are fixed and retain no partial block', () {
+    const canary = 'STRUCTURE_FIELD_CANARY';
+    final malformed = <Map<String, dynamic>>[
+      <String, dynamic>{
+        'type': 'image',
+        'mimeType': <String>[canary],
+        'data': 'TQ==',
+      },
+      <String, dynamic>{'type': 'image', 'mimeType': 'image/png', 'data': null},
+      <String, dynamic>{
+        'type': 'audio',
+        'mimeType': 'audio/wav',
+        'uri': <String>[canary],
+      },
+      <String, dynamic>{
+        'type': 'resource_link',
+        'uri': 'file:///a',
+        'title': <String>[canary],
+      },
+      <String, dynamic>{
+        'type': 'resource',
+        'resource': <String, dynamic>{
+          'uri': 'file:///a',
+          'size': double.nan,
+          'canary': canary,
+        },
+      },
+    ];
+
+    for (final input in malformed) {
+      final omitted = ContentBlock.fromJson(input);
+      expect(omitted, isA<UnknownContent>());
+      expect(omitted.omission?.reason, AcpInputOmissionReason.invalidStructure);
+      expect(omitted.toJson().toString(), isNot(contains(canary)));
+    }
+  });
+
+  test('malicious content maps fail with fixed payload-free errors', () {
+    const canary = 'MALICIOUS_MAP_CANARY';
+    final malicious = <Map<String, dynamic>>[
+      _ContentThrowingLengthMap(canary),
+      _ContentThrowingGetterMap(canary),
+      _ContentThrowingEntriesMap(canary),
+    ];
+
+    for (final input in malicious) {
+      final block = ContentBlock.fromJson(input);
+      expect(block, isA<UnknownContent>());
+      expect(block.omission?.reason, AcpInputOmissionReason.invalidStructure);
+      expect(block.toJson().toString(), isNot(contains(canary)));
+    }
+
+    expect(
+      () => TextContent.fromJson(_ContentThrowingGetterMap(canary)),
+      throwsA(
+        predicate<Object>(
+          (error) => !error.toString().contains(canary),
+          'payload-free',
+        ),
+      ),
+    );
+    expect(
+      () => UnknownContent.fromJson(_ContentThrowingEntriesMap(canary)),
+      throwsA(
+        predicate<Object>(
+          (error) => !error.toString().contains(canary),
+          'payload-free',
+        ),
+      ),
+    );
+
+    final nested = <String, dynamic>{
+      'type': 'resource',
+      'resource': _ContentThrowingEntriesMap(canary, unknownType: false),
+    };
+    final nestedBlock = ContentBlock.fromJson(nested);
+    expect(
+      nestedBlock.omission?.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+    expect(nestedBlock.toJson().toString(), isNot(contains(canary)));
+  });
+
   test('tool calls accept legacy content and location payloads', () {
     final toolCall = ToolCall.fromJson(<String, dynamic>{
       'tool_call_id': 'call-1',
@@ -1023,4 +1750,85 @@ class _PeerCountingMap extends MapBase<String, dynamic> {
 
   @override
   dynamic remove(Object? key) => _values.remove(key);
+}
+
+class _ContentThrowingLengthMap extends MapBase<String, dynamic> {
+  _ContentThrowingLengthMap(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => throw StateError(canary);
+
+  @override
+  Iterable<String> get keys => const <String>[];
+
+  @override
+  dynamic operator [](Object? key) => null;
+
+  @override
+  void operator []=(String key, dynamic value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  dynamic remove(Object? key) => throw UnsupportedError('');
+}
+
+class _ContentThrowingGetterMap extends MapBase<String, dynamic> {
+  _ContentThrowingGetterMap(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => 2;
+
+  @override
+  Iterable<String> get keys => const <String>['type', 'text'];
+
+  @override
+  dynamic operator [](Object? key) => throw StateError(canary);
+
+  @override
+  void operator []=(String key, dynamic value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  dynamic remove(Object? key) => throw UnsupportedError('');
+}
+
+class _ContentThrowingEntriesMap extends MapBase<String, dynamic> {
+  _ContentThrowingEntriesMap(this.canary, {this.unknownType = true});
+
+  final String canary;
+  final bool unknownType;
+
+  @override
+  Iterable<MapEntry<String, dynamic>> get entries => throw StateError(canary);
+
+  @override
+  int get length => 1;
+
+  @override
+  Iterable<String> get keys =>
+      unknownType ? const <String>['type'] : const <String>['uri'];
+
+  @override
+  dynamic operator [](Object? key) {
+    if (unknownType && key == 'type') return 'future';
+    if (!unknownType && key == 'uri') return 'file:///nested';
+    return null;
+  }
+
+  @override
+  void operator []=(String key, dynamic value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  dynamic remove(Object? key) => throw UnsupportedError('');
 }
