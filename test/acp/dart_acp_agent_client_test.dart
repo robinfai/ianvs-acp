@@ -4595,6 +4595,215 @@ Future<void> main() async {
     },
   );
 
+  test('raw stream stale cancel returns error without zone leak', () async {
+    final zoneErrors = <Object>[];
+    final bodyDone = Completer<void>();
+    runZonedGuarded(
+      () async {
+        final tempDir = await Directory.systemTemp.createTemp(
+          'ianvs-acp-test-',
+        );
+        final promptSeenFile = File('${tempDir.path}/prompt_seen');
+        final agentScript = File(
+          '${tempDir.path}/fake_stale_stream_cancel_agent.dart',
+        );
+        final promptSeenPath = jsonEncode(promptSeenFile.path);
+        await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'close': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptSeenPath).writeAsString('prompted');
+    } else if (message['method'] == 'session/close') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+        final client = DartAcpAgentClient(
+          agentCommand: _dartExecutable(),
+          agentArgs: <String>[agentScript.path],
+        );
+        StreamSubscription<AgentEvent>? subscription;
+
+        try {
+          await client.connect().timeout(const Duration(seconds: 5));
+          final session = await client.createSession(cwd: '/workspace');
+          subscription = client
+              .sendPrompt(sessionId: session.id, prompt: 'hold stale')
+              .listen((_) {});
+          await _waitForFile(promptSeenFile);
+          await client.closeSession(sessionId: session.id);
+
+          Object? cancelError;
+          try {
+            await subscription.cancel().timeout(const Duration(seconds: 5));
+          } on Object catch (error) {
+            cancelError = error;
+          }
+          subscription = null;
+          expect(cancelError, isA<StateError>());
+          await pumpEventQueue();
+          expect(zoneErrors, isEmpty);
+        } finally {
+          try {
+            await subscription?.cancel().timeout(const Duration(seconds: 1));
+          } on Object {
+            // Keep failure-path cleanup bounded.
+          }
+          await client.dispose();
+          await tempDir.delete(recursive: true);
+        }
+        bodyDone.complete();
+      },
+      (error, _) {
+        zoneErrors.add(error);
+        if (!bodyDone.isCompleted) bodyDone.complete();
+      },
+    );
+
+    await bodyDone.future.timeout(const Duration(seconds: 10));
+    expect(zoneErrors, isEmpty);
+  });
+
+  test(
+    'explicit and stream raw cancel settle once without zone leak',
+    () async {
+      final zoneErrors = <Object>[];
+      final bodyDone = Completer<void>();
+      runZonedGuarded(
+        () async {
+          final tempDir = await Directory.systemTemp.createTemp(
+            'ianvs-acp-test-',
+          );
+          final promptSeenFile = File('${tempDir.path}/prompt_seen');
+          final cancelCountFile = File('${tempDir.path}/cancel_count');
+          final agentScript = File(
+            '${tempDir.path}/fake_concurrent_cancel_agent.dart',
+          );
+          final promptSeenPath = jsonEncode(promptSeenFile.path);
+          final cancelCountPath = jsonEncode(cancelCountFile.path);
+          await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  var promptCount = 0;
+  var cancelCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      promptCount += 1;
+      if (promptCount == 1) {
+        await File($promptSeenPath).writeAsString('prompted');
+      } else {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        }));
+      }
+    } else if (message['method'] == 'session/cancel') {
+      cancelCount += 1;
+      await File($cancelCountPath).writeAsString(cancelCount.toString());
+    }
+  }
+}
+''');
+          final client = DartAcpAgentClient(
+            agentCommand: _dartExecutable(),
+            agentArgs: <String>[agentScript.path],
+          );
+          StreamSubscription<AgentEvent>? subscription;
+
+          try {
+            await client.connect().timeout(const Duration(seconds: 5));
+            final session = await client.createSession(cwd: '/workspace');
+            subscription = client
+                .sendPrompt(sessionId: session.id, prompt: 'hold concurrent')
+                .listen((_) {});
+            await _waitForFile(promptSeenFile);
+
+            final explicitCancel = client.cancel();
+            final streamCancel = subscription.cancel();
+            await Future.wait<void>(<Future<void>>[
+              explicitCancel,
+              streamCancel,
+            ]).timeout(const Duration(seconds: 5));
+            subscription = null;
+            await _waitForFile(cancelCountFile);
+            expect(await cancelCountFile.readAsString(), '1');
+            await pumpEventQueue();
+            expect(zoneErrors, isEmpty);
+
+            final events = await client
+                .sendPrompt(sessionId: session.id, prompt: 'replacement')
+                .toList()
+                .timeout(const Duration(seconds: 5));
+            expect(events.last.metadata['stopReason'], 'endTurn');
+          } finally {
+            await subscription?.cancel();
+            await client.dispose();
+            await tempDir.delete(recursive: true);
+          }
+          bodyDone.complete();
+        },
+        (error, _) {
+          zoneErrors.add(error);
+          if (!bodyDone.isCompleted) bodyDone.complete();
+        },
+      );
+
+      await bodyDone.future.timeout(const Duration(seconds: 10));
+      expect(zoneErrors, isEmpty);
+    },
+  );
+
   test(
     'unlistened raw prompt does not reserve or cancel an operation',
     () async {

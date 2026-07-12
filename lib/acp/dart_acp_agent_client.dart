@@ -798,23 +798,30 @@ class DartAcpAgentClient implements AcpAgentClient {
       onCancel: () async {
         final currentOperation = operation;
         final client = operationClient;
-        Future<void>? cancellation;
+        final settlements = <Future<_VoidFutureSettlement>>[];
         if (currentOperation != null &&
             !currentOperation.finished &&
             client != null) {
           currentOperation.cancelRequested = true;
-          final completion = currentOperation.cancelCompletion ??=
-              Completer<void>();
-          cancellation = completion.future;
-          unawaited(_cancelRawPromptOperation(client, currentOperation));
+          settlements.add(
+            _settleVoidFuture(
+              _cancelRawPromptOperation(client, currentOperation),
+            ),
+          );
           if (!currentOperation.streamCancellation.isCompleted) {
             currentOperation.streamCancellation.complete();
           }
         }
+        Future<void> forwardingCleanup;
         try {
-          await forwarding?.cancel();
-        } finally {
-          if (cancellation != null) await cancellation;
+          forwardingCleanup = forwarding?.cancel() ?? Future<void>.value();
+        } on Object catch (error, stackTrace) {
+          forwardingCleanup = Future<void>.error(error, stackTrace);
+        }
+        settlements.add(_settleVoidFuture(forwardingCleanup));
+        final outcomes = await Future.wait<_VoidFutureSettlement>(settlements);
+        for (final outcome in outcomes) {
+          outcome.throwIfFailed();
         }
       },
     );
@@ -2219,12 +2226,13 @@ class DartAcpAgentClient implements AcpAgentClient {
     final operation = _rawPromptOperationsBySession[sessionId];
     if (operation == null) return;
     operation.cancelRequested = true;
-    final completion = operation.cancelCompletion ??= Completer<void>();
-    unawaited(_cancelRawPromptOperation(client, operation));
+    final cancellation = _settleVoidFuture(
+      _cancelRawPromptOperation(client, operation),
+    );
     if (!operation.streamCancellation.isCompleted) {
       operation.streamCancellation.complete();
     }
-    await completion.future;
+    (await cancellation).throwIfFailed();
   }
 
   Future<void> _cancelRawPromptOperation(
@@ -2495,6 +2503,28 @@ final class _RawPromptRpcOutcome {
   final Object? error;
   final StackTrace? stackTrace;
   final bool cancelled;
+}
+
+Future<_VoidFutureSettlement> _settleVoidFuture(Future<void> future) {
+  return future.then<_VoidFutureSettlement>(
+    (_) => const _VoidFutureSettlement.success(),
+    onError: (Object error, StackTrace stackTrace) =>
+        _VoidFutureSettlement.failure(error, stackTrace),
+  );
+}
+
+final class _VoidFutureSettlement {
+  const _VoidFutureSettlement.success() : error = null, stackTrace = null;
+
+  const _VoidFutureSettlement.failure(this.error, this.stackTrace);
+
+  final Object? error;
+  final StackTrace? stackTrace;
+
+  void throwIfFailed() {
+    final failure = error;
+    if (failure != null) Error.throwWithStackTrace(failure, stackTrace!);
+  }
 }
 
 class _AcpPermissionBridge {
