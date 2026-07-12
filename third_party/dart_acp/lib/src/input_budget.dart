@@ -20,6 +20,77 @@ int acpMaxBase64EncodedLength(int decodedByteLimit) {
   return groups * 4;
 }
 
+final class AcpBase64ScanResult {
+  const AcpBase64ScanResult(this.encodedLength, this.decodedBytes);
+
+  final int encodedLength;
+  final int decodedBytes;
+}
+
+/// Validates standard Base64 and counts decoded bytes without decoding it.
+AcpBase64ScanResult scanAcpBase64(
+  String encoded, {
+  required int maxDecodedBytes,
+  required String resource,
+}) {
+  _requirePositiveSafeBudgetInteger(maxDecodedBytes, 'maxDecodedBytes');
+  final encodedLength = encoded.length;
+  if (encodedLength % 4 != 0) _throwInvalidBase64();
+
+  var decodedBytes = 0;
+  for (var index = 0; index < encodedLength; index += 4) {
+    final first = encoded.codeUnitAt(index);
+    final second = encoded.codeUnitAt(index + 1);
+    final third = encoded.codeUnitAt(index + 2);
+    final fourth = encoded.codeUnitAt(index + 3);
+    if (!_isBase64Alphabet(first) || !_isBase64Alphabet(second)) {
+      _throwInvalidBase64();
+    }
+
+    final isLastQuartet = index + 4 == encodedLength;
+    final int quartetBytes;
+    if (third == 0x3d) {
+      if (fourth != 0x3d || !isLastQuartet) _throwInvalidBase64();
+      quartetBytes = 1;
+    } else {
+      if (!_isBase64Alphabet(third)) _throwInvalidBase64();
+      if (fourth == 0x3d) {
+        if (!isLastQuartet) _throwInvalidBase64();
+        quartetBytes = 2;
+      } else {
+        if (!_isBase64Alphabet(fourth)) _throwInvalidBase64();
+        quartetBytes = 3;
+      }
+    }
+
+    if (quartetBytes > maxDecodedBytes - decodedBytes) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: maxDecodedBytes,
+        observedAtLeast: _safeObservedAtLeast(
+          decodedBytes,
+          quartetBytes,
+          maxDecodedBytes,
+        ),
+      );
+    }
+    decodedBytes += quartetBytes;
+  }
+
+  return AcpBase64ScanResult(encodedLength, decodedBytes);
+}
+
+bool _isBase64Alphabet(int codeUnit) =>
+    (codeUnit >= 0x41 && codeUnit <= 0x5a) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7a) ||
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    codeUnit == 0x2b ||
+    codeUnit == 0x2f;
+
+Never _throwInvalidBase64() {
+  throw const FormatException('Invalid ACP Base64 encoding.');
+}
+
 enum AcpInputOmissionReason {
   inputLimit,
   invalidEncoding,
@@ -79,12 +150,7 @@ final class AcpInputOmission {
 
   Map<String, Object?> toJson() {
     final json = <String, Object?>{
-      'reason': switch (reason) {
-        AcpInputOmissionReason.inputLimit => 'input_limit',
-        AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
-        AcpInputOmissionReason.invalidImage => 'invalid_image',
-        AcpInputOmissionReason.invalidStructure => 'invalid_structure',
-      },
+      'reason': _omissionReasonWireName(reason),
       'resource': resource,
     };
     if (reason == AcpInputOmissionReason.inputLimit) {
@@ -102,6 +168,178 @@ final class AcpInputOmission {
     );
     return 'AcpInputOmission(${fields.join(', ')})';
   }
+}
+
+final class AcpTextBudgetChunk {
+  const AcpTextBudgetChunk({
+    required this.safePrefix,
+    required this.acceptedBytes,
+    required this.totalBytes,
+    required this.totalLines,
+    this.omission,
+  });
+
+  final String safePrefix;
+  final int acceptedBytes;
+  final int totalBytes;
+  final int totalLines;
+  final AcpInputOmission? omission;
+}
+
+/// Counts UTF-8 bytes and logical lines without joining input chunks.
+final class AcpUtf8LineBudgetCounter {
+  AcpUtf8LineBudgetCounter({
+    required int maxBytes,
+    required int maxLines,
+    required String resource,
+  }) : _maxBytes = maxBytes,
+       _maxLines = maxLines,
+       _resource = resource {
+    _requirePositiveSafeBudgetInteger(_maxBytes, 'maxBytes');
+    _requirePositiveSafeBudgetInteger(_maxLines, 'maxLines');
+  }
+
+  final int _maxBytes;
+  final int _maxLines;
+  final String _resource;
+
+  var _totalBytes = 0;
+  var _totalLines = 0;
+  var _previousWasCR = false;
+  var _finished = false;
+  var _omitted = false;
+  int? _pendingHighSurrogate;
+
+  AcpTextBudgetChunk append(String chunk) {
+    if (_finished) {
+      throw StateError('Cannot append after the text budget is finished.');
+    }
+    if (_omitted) return _emptyChunk();
+    return _consume(chunk, finish: false);
+  }
+
+  AcpTextBudgetChunk finish() {
+    if (_finished) return _emptyChunk();
+    _finished = true;
+    if (_omitted) return _emptyChunk();
+    return _consume('', finish: true);
+  }
+
+  AcpTextBudgetChunk _consume(String chunk, {required bool finish}) {
+    final safePrefix = StringBuffer();
+    var acceptedBytes = 0;
+    AcpInputOmission? omission;
+    var index = 0;
+
+    bool accept(String text, int byteCount, int firstCodeUnit) {
+      final startsText = _totalBytes == 0;
+      var addedLines = startsText ? 1 : 0;
+      if (firstCodeUnit == 0x0d) {
+        addedLines += 1;
+      } else if (firstCodeUnit == 0x0a && !_previousWasCR) {
+        addedLines += 1;
+      }
+
+      if (byteCount > _maxBytes - _totalBytes) {
+        omission = _makeOmission(
+          _maxBytes,
+          _safeObservedAtLeast(_totalBytes, byteCount, _maxBytes),
+        );
+        _omitted = true;
+        return false;
+      }
+      if (addedLines > _maxLines - _totalLines) {
+        omission = _makeOmission(
+          _maxLines,
+          _safeObservedAtLeast(_totalLines, addedLines, _maxLines),
+        );
+        _omitted = true;
+        return false;
+      }
+
+      safePrefix.write(text);
+      acceptedBytes += byteCount;
+      _totalBytes += byteCount;
+      _totalLines += addedLines;
+      _previousWasCR = firstCodeUnit == 0x0d;
+      return true;
+    }
+
+    final pendingHigh = _pendingHighSurrogate;
+    if (pendingHigh != null && (chunk.isNotEmpty || finish)) {
+      _pendingHighSurrogate = null;
+      if (chunk.isNotEmpty && _isLowSurrogate(chunk.codeUnitAt(0))) {
+        final low = chunk.codeUnitAt(0);
+        if (!accept(
+          String.fromCharCodes(<int>[pendingHigh, low]),
+          4,
+          pendingHigh,
+        )) {
+          return _chunk(safePrefix, acceptedBytes, omission);
+        }
+        index = 1;
+      } else if (!accept(String.fromCharCode(pendingHigh), 3, pendingHigh)) {
+        return _chunk(safePrefix, acceptedBytes, omission);
+      }
+    }
+
+    while (index < chunk.length) {
+      final codeUnit = chunk.codeUnitAt(index);
+      if (_isHighSurrogate(codeUnit)) {
+        final nextIndex = index + 1;
+        if (nextIndex == chunk.length) {
+          _pendingHighSurrogate = codeUnit;
+          break;
+        }
+        final next = chunk.codeUnitAt(nextIndex);
+        if (_isLowSurrogate(next)) {
+          if (!accept(chunk.substring(index, index + 2), 4, codeUnit)) break;
+          index += 2;
+          continue;
+        }
+      }
+
+      final byteCount = codeUnit <= 0x7f
+          ? 1
+          : codeUnit <= 0x7ff
+          ? 2
+          : 3;
+      if (!accept(chunk.substring(index, index + 1), byteCount, codeUnit)) {
+        break;
+      }
+      index += 1;
+    }
+
+    return _chunk(safePrefix, acceptedBytes, omission);
+  }
+
+  AcpInputOmission _makeOmission(int limit, int observedAtLeast) =>
+      AcpInputOmission(
+        reason: AcpInputOmissionReason.inputLimit,
+        resource: _resource,
+        truncated: true,
+        limit: limit,
+        observedAtLeast: observedAtLeast,
+      );
+
+  AcpTextBudgetChunk _chunk(
+    StringBuffer prefix,
+    int acceptedBytes,
+    AcpInputOmission? omission,
+  ) => AcpTextBudgetChunk(
+    safePrefix: prefix.toString(),
+    acceptedBytes: acceptedBytes,
+    totalBytes: _totalBytes,
+    totalLines: _totalLines,
+    omission: omission,
+  );
+
+  AcpTextBudgetChunk _emptyChunk() => AcpTextBudgetChunk(
+    safePrefix: '',
+    acceptedBytes: 0,
+    totalBytes: _totalBytes,
+    totalLines: _totalLines,
+  );
 }
 
 /// Host-controlled limits for untrusted ACP input.
@@ -311,6 +549,294 @@ class AcpInputBudget {
     }
   }
 }
+
+/// Deterministically estimates retained JSON-compatible ACP state.
+final class AcpRetainedSizeEstimator {
+  AcpRetainedSizeEstimator({required AcpInputBudget budget})
+    : _budget = budget {
+    budget.validate();
+  }
+
+  final AcpInputBudget _budget;
+
+  int estimate(Object? value) {
+    var nodes = 0;
+    var bytes = 0;
+    final activeContainers = HashSet<Object>.identity();
+    final pending = <_RetainedSizeFrame>[
+      _RetainedValueFrame(value: value, depth: 1),
+    ];
+
+    Never throwLimit(String resource, int limit, int observedAtLeast) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: limit,
+        observedAtLeast: observedAtLeast,
+      );
+    }
+
+    void recordNode() {
+      if (nodes >= _budget.maxMetadataNodes) {
+        throwLimit(
+          'ACP retained state nodes',
+          _budget.maxMetadataNodes,
+          _budget.maxMetadataNodes + 1,
+        );
+      }
+      nodes += 1;
+    }
+
+    void precheckNodes(int count) {
+      if (count > _budget.maxMetadataNodes - nodes) {
+        throwLimit(
+          'ACP retained state nodes',
+          _budget.maxMetadataNodes,
+          _safeObservedAtLeast(nodes, count, _budget.maxMetadataNodes),
+        );
+      }
+    }
+
+    void addBytes(int count) {
+      if (count > _maxSafeBudgetInteger - bytes) {
+        throwLimit(
+          'ACP retained state bytes',
+          _maxSafeBudgetInteger,
+          _maxSafeBudgetInteger + 1,
+        );
+      }
+      bytes += count;
+    }
+
+    void addRepeatedOverhead(int count) {
+      if (count > _maxSafeBudgetInteger ~/ 32) {
+        throwLimit(
+          'ACP retained state bytes',
+          _maxSafeBudgetInteger,
+          _maxSafeBudgetInteger + 1,
+        );
+      }
+      addBytes(count * 32);
+    }
+
+    void checkDepth(int depth) {
+      if (depth > _budget.maxMetadataDepth) {
+        throwLimit('ACP retained state depth', _budget.maxMetadataDepth, depth);
+      }
+    }
+
+    int stringBytes(String string) {
+      var result = 0;
+      var index = 0;
+      while (index < string.length) {
+        final codeUnit = string.codeUnitAt(index);
+        final int codePointBytes;
+        if (codeUnit <= 0x7f) {
+          codePointBytes = 1;
+        } else if (codeUnit <= 0x7ff) {
+          codePointBytes = 2;
+        } else if (_isHighSurrogate(codeUnit) &&
+            index + 1 < string.length &&
+            _isLowSurrogate(string.codeUnitAt(index + 1))) {
+          codePointBytes = 4;
+          index += 1;
+        } else {
+          codePointBytes = 3;
+        }
+        if (codePointBytes > _budget.maxStructuredStringBytes - result) {
+          throwLimit(
+            'ACP retained state string bytes',
+            _budget.maxStructuredStringBytes,
+            _safeObservedAtLeast(
+              result,
+              codePointBytes,
+              _budget.maxStructuredStringBytes,
+            ),
+          );
+        }
+        result += codePointBytes;
+        index += 1;
+      }
+      return result;
+    }
+
+    void checkCollectionLength(int length, int limit, String resource) {
+      if (length > limit) throwLimit(resource, limit, length);
+    }
+
+    while (pending.isNotEmpty) {
+      final frame = pending.removeLast();
+      if (frame is _RetainedExitFrame) {
+        activeContainers.remove(frame.container);
+        continue;
+      }
+
+      final valueFrame = frame as _RetainedValueFrame;
+      final current = valueFrame.value;
+      recordNode();
+
+      if (current is List) {
+        if (activeContainers.contains(current)) {
+          throw const FormatException(
+            'Invalid ACP retained state: cyclic container.',
+          );
+        }
+        checkDepth(valueFrame.depth);
+        final length = current.length;
+        checkCollectionLength(
+          length,
+          _budget.maxCollectionItems,
+          'ACP retained state collection items',
+        );
+        precheckNodes(length);
+        addBytes(64);
+        addRepeatedOverhead(length);
+        activeContainers.add(current);
+        pending.add(_RetainedExitFrame(current));
+        for (var index = length - 1; index >= 0; index -= 1) {
+          pending.add(
+            _RetainedValueFrame(
+              value: current[index],
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is Map) {
+        if (activeContainers.contains(current)) {
+          throw const FormatException(
+            'Invalid ACP retained state: cyclic container.',
+          );
+        }
+        checkDepth(valueFrame.depth);
+        final entryLimit = math.min(
+          _budget.maxCollectionItems,
+          _budget.maxMetadataEntries,
+        );
+        checkCollectionLength(
+          current.length,
+          entryLimit,
+          'ACP retained state map entries',
+        );
+        final entries = <MapEntry<String, Object?>>[];
+        for (final entry in current.entries) {
+          if (entry.key is! String) {
+            throw const FormatException(
+              'Invalid ACP retained state: map key must be a string.',
+            );
+          }
+          if (entries.length >= entryLimit) {
+            throwLimit(
+              'ACP retained state map entries',
+              entryLimit,
+              entryLimit + 1,
+            );
+          }
+          final key = entry.key as String;
+          addBytes(stringBytes(key));
+          entries.add(MapEntry<String, Object?>(key, entry.value));
+        }
+        precheckNodes(entries.length);
+        addBytes(64);
+        addRepeatedOverhead(entries.length);
+        activeContainers.add(current);
+        pending.add(_RetainedExitFrame(current));
+        for (var index = entries.length - 1; index >= 0; index -= 1) {
+          pending.add(
+            _RetainedValueFrame(
+              value: entries[index].value,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is AcpInputOmission) {
+        checkDepth(valueFrame.depth);
+        final isInputLimit =
+            current.reason == AcpInputOmissionReason.inputLimit;
+        final fieldCount = isInputLimit ? 5 : 3;
+        precheckNodes(fieldCount);
+        addBytes(64);
+        addRepeatedOverhead(fieldCount);
+        pending.add(
+          _RetainedValueFrame(
+            value: current.truncated,
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        if (isInputLimit) {
+          pending.add(
+            _RetainedValueFrame(
+              value: current.observedAtLeast!,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+          pending.add(
+            _RetainedValueFrame(
+              value: current.limit!,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        pending.add(
+          _RetainedValueFrame(
+            value: current.resource,
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        pending.add(
+          _RetainedValueFrame(
+            value: _omissionReasonWireName(current.reason),
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        continue;
+      }
+
+      if (current is String) {
+        addBytes(stringBytes(current));
+        continue;
+      }
+      if (current is int) {
+        addBytes(current.toString().length);
+        continue;
+      }
+      if (current is double) {
+        if (!current.isFinite) {
+          throw const FormatException(
+            'Invalid ACP retained state: number must be finite.',
+          );
+        }
+        addBytes(current.toString().length);
+        continue;
+      }
+      if (current is bool) {
+        addBytes(current ? 4 : 5);
+        continue;
+      }
+      if (current == null) {
+        addBytes(4);
+        continue;
+      }
+      throw const FormatException(
+        'Invalid ACP retained state: unsupported value.',
+      );
+    }
+
+    return bytes;
+  }
+}
+
+String _omissionReasonWireName(AcpInputOmissionReason reason) =>
+    switch (reason) {
+      AcpInputOmissionReason.inputLimit => 'input_limit',
+      AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
+      AcpInputOmissionReason.invalidImage => 'invalid_image',
+      AcpInputOmissionReason.invalidStructure => 'invalid_structure',
+    };
 
 /// Capacity failure that never includes the rejected ACP payload.
 class AcpInputLimitExceeded implements Exception {
@@ -610,6 +1136,17 @@ void _requirePositiveSafeBudgetInteger(int value, String name) {
   _requireSafeBudgetInteger(value, name);
 }
 
+bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+
+bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+
+int _safeObservedAtLeast(int current, int increment, int limit) {
+  if (current <= _maxSafeBudgetInteger - increment) {
+    return current + increment;
+  }
+  return limit + 1;
+}
+
 void _requireAtMost(int observed, int limit, String resource) {
   if (observed > limit) {
     throw AcpInputLimitExceeded(
@@ -630,6 +1167,23 @@ class _PendingJsonValue {
   final Object? source;
   final int depth;
   final void Function(Object? value) assign;
+}
+
+sealed class _RetainedSizeFrame {
+  const _RetainedSizeFrame();
+}
+
+final class _RetainedValueFrame extends _RetainedSizeFrame {
+  const _RetainedValueFrame({required this.value, required this.depth});
+
+  final Object? value;
+  final int depth;
+}
+
+final class _RetainedExitFrame extends _RetainedSizeFrame {
+  const _RetainedExitFrame(this.container);
+
+  final Object container;
 }
 
 class _FixedLengthListView extends ListBase<dynamic> {
