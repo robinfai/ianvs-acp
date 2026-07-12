@@ -1867,6 +1867,51 @@ Future<void> main() async {
     expect(beyondBytes.omission?.observedAtLeast, 8);
   });
 
+  test('raw unified diff preserves file headers for every line separator', () {
+    for (final separator in const <String>['\n', '\r', '\r\n']) {
+      final diff = Diff.fromJson(<String, dynamic>{
+        'diff': <String>[
+          '+++ b/a.dart',
+          '--- a/a.dart',
+          '+++\tb/a.dart',
+          '---a/a.dart',
+          '+added',
+          '-removed',
+        ].join(separator),
+      });
+      expect(
+        diff.changes.map((change) => change.type),
+        <String>[
+          'change',
+          'change',
+          'change',
+          'change',
+          'addition',
+          'deletion',
+        ],
+        reason: separator.codeUnits.toString(),
+      );
+      expect(
+        diff.changes.map((change) => change.content),
+        <String>[
+          '+++ b/a.dart',
+          '--- a/a.dart',
+          '+++\tb/a.dart',
+          '---a/a.dart',
+          'added',
+          'removed',
+        ],
+        reason: separator.codeUnits.toString(),
+      );
+    }
+
+    final structured = Diff.fromJson(<String, dynamic>{
+      'changes': <Object?>['+++ b/a.dart'],
+    });
+    expect(structured.changes.single.type, 'addition');
+    expect(structured.changes.single.content, '++ b/a.dart');
+  });
+
   test('plans retain only a bounded immutable display prefix', () {
     final sourceEntry = <String, dynamic>{
       'content': 'second',

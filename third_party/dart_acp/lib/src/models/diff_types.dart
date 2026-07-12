@@ -382,23 +382,30 @@ List<DiffChange> _diffChangesFromString(
     index += 1;
     start = index;
     if (line.trim().isEmpty) continue;
-    final change = _diffChangeFromRaw(line, guard);
+    final change = _diffChangeFromRaw(line, guard, rawUnifiedDiff: true);
     if (change != null) changes.add(change);
   }
   final finalLine = raw.substring(start);
   if (finalLine.trim().isNotEmpty) {
-    final change = _diffChangeFromRaw(finalLine, guard);
+    final change = _diffChangeFromRaw(finalLine, guard, rawUnifiedDiff: true);
     if (change != null) changes.add(change);
   }
   return List<DiffChange>.unmodifiable(changes);
 }
 
-DiffChange? _diffChangeFromRaw(Object? raw, AcpStructuredUpdateGuard guard) {
+DiffChange? _diffChangeFromRaw(
+  Object? raw,
+  AcpStructuredUpdateGuard guard, {
+  bool rawUnifiedDiff = false,
+}) {
   if (raw is String) {
     guard.consumeEntry(field: 'change');
     final bounded = guard.copyString(raw, field: 'change text');
     final text = bounded.trimRight();
     if (text.trim().isEmpty) return null;
+    if (rawUnifiedDiff && (text.startsWith('+++') || text.startsWith('---'))) {
+      return DiffChange(type: 'change', content: text);
+    }
     if (text.startsWith('+')) {
       return DiffChange(type: 'addition', content: text.substring(1));
     }
