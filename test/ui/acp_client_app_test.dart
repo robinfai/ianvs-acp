@@ -2936,8 +2936,11 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace/current');
     addTearDown(controller.dispose);
     await controller.newSession(cwd: '/workspace/current');
-    final sessionId = controller.currentSession!.id;
-    controller.setSessionUnread(sessionId, true);
+    final firstSessionId = controller.currentSession!.id;
+    controller.setSessionUnread(firstSessionId, true);
+    await controller.newSession(cwd: '/workspace/current');
+    final secondSessionId = controller.currentSession!.id;
+    controller.setSessionUnread(secondSessionId, true);
 
     await pumpWithWindowSize(
       tester,
@@ -2953,38 +2956,166 @@ void main() {
     await tester.tap(find.text('Archive Conversations'));
     await tester.pump();
 
-    expect(
-      controller.sessions
-          .singleWhere((session) => session.id == sessionId)
-          .archived,
-      isTrue,
-    );
-    expect(
-      controller.sessions
-          .singleWhere((session) => session.id == sessionId)
-          .unread,
-      isFalse,
-    );
+    for (final sessionId in <String>[firstSessionId, secondSessionId]) {
+      final session = controller.sessions.singleWhere(
+        (session) => session.id == sessionId,
+      );
+      expect(session.archived, isTrue);
+      expect(session.unread, isFalse);
+    }
     expect(controller.currentSession, isNull);
+    expect(controller.debugUiStateRetainedBytes, greaterThan(0));
     await tester.pumpAndSettle();
     expect(find.text('Undo'), findsOneWidget);
 
     await tester.tap(find.text('Undo'));
     await tester.pumpAndSettle();
 
-    expect(
-      controller.sessions
-          .singleWhere((session) => session.id == sessionId)
-          .archived,
-      isFalse,
+    for (final sessionId in <String>[firstSessionId, secondSessionId]) {
+      final session = controller.sessions.singleWhere(
+        (session) => session.id == sessionId,
+      );
+      expect(session.archived, isFalse);
+      expect(session.unread, isTrue);
+    }
+    expect(controller.currentSession?.id, secondSessionId);
+  });
+
+  testWidgets('workspace archive close discards every snapshot lease', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/current',
     );
-    expect(
-      controller.sessions
-          .singleWhere((session) => session.id == sessionId)
-          .unread,
-      isTrue,
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final firstSessionId = controller.currentSession!.id;
+    await controller.newSession(cwd: '/workspace/current');
+    final secondSessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+      const Size(1400, 900),
     );
-    expect(controller.currentSession?.id, sessionId);
+    await tester.tap(find.byTooltip('Workspace actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive Conversations'));
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession, isNull);
+    expect(controller.debugUiStateRetainedBytes, greaterThan(0));
+
+    tester
+        .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger).first)
+        .hideCurrentSnackBar();
+    await tester.pumpAndSettle();
+    await tester.pump();
+
+    expect(controller.debugUiStateRetainedBytes, 0);
+    for (final sessionId in <String>[firstSessionId, secondSessionId]) {
+      expect(
+        controller.sessions
+            .singleWhere((session) => session.id == sessionId)
+            .archived,
+        isTrue,
+      );
+    }
+  });
+
+  testWidgets('archive snackbar discards its lease on every close path', (
+    tester,
+  ) async {
+    Future<({ChatController controller, String sessionId})> archiveOne() async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/current',
+      );
+      await controller.newSession(cwd: '/workspace/current');
+      final sessionId = controller.currentSession!.id;
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          controller: controller,
+          taskInboxController: taskHarness.controller,
+        ),
+        const Size(1400, 900),
+      );
+      await tester.tap(find.byTooltip('Session actions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Archive Conversation'));
+      await tester.pumpAndSettle();
+      expect(controller.debugActiveUiStateRetainedBytes, 0);
+      expect(controller.debugUiStateRetainedBytes, greaterThan(0));
+      expect(find.text('Undo'), findsOneWidget);
+      return (controller: controller, sessionId: sessionId);
+    }
+
+    for (final closePath in <String>[
+      'hide',
+      'dismiss',
+      'remove replacement',
+      'timeout',
+      'swipe',
+      'app dispose',
+    ]) {
+      final archived = await archiveOne();
+      final messenger = tester.state<ScaffoldMessengerState>(
+        find.byType(ScaffoldMessenger).first,
+      );
+      switch (closePath) {
+        case 'hide':
+          messenger.hideCurrentSnackBar();
+          await tester.pumpAndSettle();
+          break;
+        case 'dismiss':
+          messenger.hideCurrentSnackBar(reason: SnackBarClosedReason.dismiss);
+          await tester.pumpAndSettle();
+          break;
+        case 'remove replacement':
+          messenger.removeCurrentSnackBar();
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Replacement notification')),
+          );
+          await tester.pumpAndSettle();
+          break;
+        case 'timeout':
+          messenger.hideCurrentSnackBar(reason: SnackBarClosedReason.timeout);
+          await tester.pumpAndSettle();
+          break;
+        case 'swipe':
+          messenger.hideCurrentSnackBar(reason: SnackBarClosedReason.swipe);
+          await tester.pumpAndSettle();
+          break;
+        case 'app dispose':
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          break;
+      }
+      await tester.pump();
+
+      expect(
+        archived.controller.debugUiStateRetainedBytes,
+        0,
+        reason: closePath,
+      );
+      expect(
+        archived.controller.sessions
+            .singleWhere((session) => session.id == archived.sessionId)
+            .archived,
+        isTrue,
+        reason: closePath,
+      );
+      if (closePath != 'app dispose') {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      }
+      archived.controller.dispose();
+    }
   });
 
   testWidgets('AcpClientApp disables prompt input during session operations', (

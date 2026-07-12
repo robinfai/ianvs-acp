@@ -153,6 +153,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
+  final Set<ArchivedSessionSnapshot> _pendingUndoSnapshots =
+      HashSet<ArchivedSessionSnapshot>.identity();
   TaskInboxController? _taskInboxController;
   TaskScheduler? _taskScheduler;
   String? _selectedTaskId;
@@ -355,6 +357,10 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    for (final snapshot in _pendingUndoSnapshots.toList(growable: false)) {
+      snapshot.discard();
+    }
+    _pendingUndoSnapshots.clear();
     final taskCleanup = _stopTaskInboxTransition();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
@@ -896,17 +902,15 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   String _deepLinkRequestKey(DeepLinkRequest request) {
-    return jsonEncode(
-      switch (request.kind) {
-        DeepLinkRequestKind.session => <String?>[
-          'session',
-          request.sessionId,
-          request.cwd,
-          request.agentName,
-        ],
-        DeepLinkRequestKind.task => <String?>['task', request.taskId],
-      },
-    );
+    return jsonEncode(switch (request.kind) {
+      DeepLinkRequestKind.session => <String?>[
+        'session',
+        request.sessionId,
+        request.cwd,
+        request.agentName,
+      ],
+      DeepLinkRequestKind.task => <String?>['task', request.taskId],
+    });
   }
 
   Future<void> _drainDeepLinkConfirmationQueue() async {
@@ -1739,10 +1743,12 @@ class _AcpClientAppState extends State<AcpClientApp>
       case WorkspaceSessionMenuAction.archive:
         final snapshot = controller.archiveSessionLocally(session.id);
         if (snapshot == null) return;
-        _showUndoableSnackBar('Archived "${session.displayTitle}".', () {
-          controller.restoreArchivedSessionLocally(snapshot);
-          if (mounted) setState(() {});
-        });
+        _showUndoableSnackBar(
+          'Archived "${session.displayTitle}".',
+          <({ChatController controller, ArchivedSessionSnapshot snapshot})>[
+            (controller: controller, snapshot: snapshot),
+          ],
+        );
         if (mounted) setState(() {});
       case WorkspaceSessionMenuAction.toggleUnread:
         controller.setSessionUnread(session.id, !session.unread);
@@ -1769,8 +1775,8 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   void _archiveWorkspaceSessions(WorkspaceRecord workspace) {
     final workspacePath = normalizeWorkspacePath(workspace.path);
-    final snapshotsByController =
-        <ChatController, List<ArchivedSessionSnapshot>>{};
+    final archivedSnapshots =
+        <({ChatController controller, ArchivedSessionSnapshot snapshot})>[];
     var archivedCount = 0;
     for (final controller in _sessionControllers) {
       for (final session in controller.sessions.toList(growable: false)) {
@@ -1778,21 +1784,15 @@ class _AcpClientAppState extends State<AcpClientApp>
         if (session.archived) continue;
         final snapshot = controller.archiveSessionLocally(session.id);
         if (snapshot == null) continue;
-        snapshotsByController
-            .putIfAbsent(controller, () => <ArchivedSessionSnapshot>[])
-            .add(snapshot);
+        archivedSnapshots.add((controller: controller, snapshot: snapshot));
         archivedCount += 1;
       }
     }
     if (archivedCount > 0) {
-      _showUndoableSnackBar('Archived $archivedCount conversation(s).', () {
-        for (final entry in snapshotsByController.entries) {
-          for (final snapshot in entry.value) {
-            entry.key.restoreArchivedSessionLocally(snapshot);
-          }
-        }
-        if (mounted) setState(() {});
-      });
+      _showUndoableSnackBar(
+        'Archived $archivedCount conversation(s).',
+        archivedSnapshots,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -2167,13 +2167,50 @@ class _AcpClientAppState extends State<AcpClientApp>
     _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _showUndoableSnackBar(String message, VoidCallback onUndo) {
-    if (!mounted) return;
-    _messengerKey.currentState?.showSnackBar(
+  void _showUndoableSnackBar(
+    String message,
+    List<({ChatController controller, ArchivedSessionSnapshot snapshot})>
+    archivedSnapshots,
+  ) {
+    void discardSnapshots() {
+      for (final archived in archivedSnapshots) {
+        archived.snapshot.discard();
+        _pendingUndoSnapshots.remove(archived.snapshot);
+      }
+    }
+
+    if (!mounted) {
+      discardSnapshots();
+      return;
+    }
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) {
+      discardSnapshots();
+      return;
+    }
+    for (final archived in archivedSnapshots) {
+      _pendingUndoSnapshots.add(archived.snapshot);
+    }
+    final featureController = messenger.showSnackBar(
       SnackBar(
         content: Text(message),
-        action: SnackBarAction(label: 'Undo', onPressed: onUndo),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            for (final archived in archivedSnapshots) {
+              archived.controller.restoreArchivedSessionLocally(
+                archived.snapshot,
+              );
+            }
+            if (mounted) setState(() {});
+          },
+        ),
       ),
+    );
+    unawaited(
+      featureController.closed
+          .whenComplete(discardSnapshots)
+          .then<void>((_) {}),
     );
   }
 

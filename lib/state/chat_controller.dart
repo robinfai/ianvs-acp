@@ -1455,6 +1455,11 @@ class ArchivedSessionSnapshot {
       activeSessionSettingsLoadId = prepared.activeSessionSettingsLoadId,
       retainedBytes = prepared.retainedBytes;
 
+  bool _leaseIssued = false;
+  Object? _leaseOwnerToken;
+  int? _leaseId;
+  VoidCallback? _releaseLease;
+
   final AgentSession session;
   final bool wasCurrent;
   final List<ChatMessage> messages;
@@ -1467,6 +1472,46 @@ class ArchivedSessionSnapshot {
   final ConnectionStatus status;
   final int? activeSessionSettingsLoadId;
   final int retainedBytes;
+
+  void _attachLease({
+    required Object ownerToken,
+    required int leaseId,
+    required VoidCallback release,
+  }) {
+    if (_leaseIssued) {
+      throw StateError('An archive snapshot lease can only be issued once.');
+    }
+    _leaseIssued = true;
+    _leaseOwnerToken = ownerToken;
+    _leaseId = leaseId;
+    _releaseLease = release;
+  }
+
+  bool _hasActiveLease(Object ownerToken, int leaseId) {
+    return _leaseIssued &&
+        identical(_leaseOwnerToken, ownerToken) &&
+        _leaseId == leaseId &&
+        _releaseLease != null;
+  }
+
+  bool _consumeLease(Object ownerToken, int leaseId) {
+    if (!_hasActiveLease(ownerToken, leaseId)) return false;
+    _releaseOnce();
+    return true;
+  }
+
+  void _releaseOnce() {
+    final release = _releaseLease;
+    if (release == null) return;
+    _releaseLease = null;
+    release();
+  }
+
+  /// Releases the controller-owned UI-state bytes when undo is no longer
+  /// possible. Calling this more than once is harmless.
+  void discard() {
+    _releaseOnce();
+  }
 }
 
 final class _PreparedArchivedSessionSnapshot {
@@ -2307,6 +2352,11 @@ class ChatController extends ChangeNotifier {
   final Map<String, _SessionViewSnapshot> _sessionViewSnapshots =
       <String, _SessionViewSnapshot>{};
   int _inactiveSnapshotRetainedBytes = 0;
+  final Object _archiveLeaseOwnerToken = Object();
+  final Map<int, ArchivedSessionSnapshot> _archiveLeasesById =
+      <int, ArchivedSessionSnapshot>{};
+  int _nextArchiveLeaseId = 0;
+  int _archivedLeaseRetainedBytes = 0;
   int _activeUiStateRetainedBytes = 0;
   int _uiStateTransactionDepth = 0;
   bool _uiStateRefreshPending = false;
@@ -2374,8 +2424,13 @@ class ChatController extends ChangeNotifier {
       List<String>.unmodifiable(_sessionViewSnapshots.keys);
 
   @visibleForTesting
-  int get debugUiStateRetainedBytes =>
-      _activeUiStateRetainedBytes + _inactiveSnapshotRetainedBytes;
+  int get debugUiStateRetainedBytes => _checkedRetainedAdd(
+    _checkedRetainedAdd(
+      _activeUiStateRetainedBytes,
+      _inactiveSnapshotRetainedBytes,
+    ),
+    _archivedLeaseRetainedBytes,
+  );
 
   @visibleForTesting
   int get debugActiveUiStateRetainedBytes => _activeUiStateRetainedBytes;
@@ -2869,9 +2924,10 @@ class ChatController extends ChangeNotifier {
     if (session == null || session.archived) return null;
     final wasCurrent = currentSession?.id == sessionId;
     if (wasCurrent) _finishTurnBudget();
+    _refreshActiveUiStateBudget();
     final inactiveSnapshot = wasCurrent
         ? null
-        : _touchSessionViewSnapshot(sessionId);
+        : _sessionViewSnapshots[sessionId];
     final snapshot = ArchivedSessionSnapshot(
       session: session,
       wasCurrent: wasCurrent,
@@ -2900,27 +2956,48 @@ class ChatController extends ChangeNotifier {
       inputBudget: inputBudget,
     );
 
-    _upsertSession(session.copyWith(archived: true, unread: false));
-    _removeSessionViewSnapshot(sessionId);
-    if (wasCurrent) {
-      currentSession = null;
-      _clearMessages();
-      availableCommands = const <Map<String, Object?>>[];
-      lastLatency = null;
-      lastError = null;
-      sessionSettings = const AcpSessionSettings();
-      sessionUsage = null;
-      sessionSettingsLoading = false;
-      _activeSessionSettingsLoadId = null;
-      if (status == ConnectionStatus.sessionReady) {
-        status = ConnectionStatus.connected;
-      }
+    final sourceRetainedBytes = wasCurrent
+        ? _activeUiStateRetainedBytes
+        : inactiveSnapshot?.retainedBytes ?? 0;
+    final totalRetainedBytes = debugUiStateRetainedBytes;
+    if (sourceRetainedBytes > totalRetainedBytes) return null;
+    final retainedWithoutSource = totalRetainedBytes - sourceRetainedBytes;
+    if (retainedWithoutSource > inputBudget.maxUiStateBytes ||
+        snapshot.retainedBytes >
+            inputBudget.maxUiStateBytes - retainedWithoutSource) {
+      return null;
     }
-    _notifyListeners();
-    return snapshot;
+
+    return _runSynchronousUiStateTransaction(() {
+      _upsertSession(session.copyWith(archived: true, unread: false));
+      _removeSessionViewSnapshot(sessionId);
+      if (wasCurrent) {
+        currentSession = null;
+        _clearMessages();
+        availableCommands = const <Map<String, Object?>>[];
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
+        sessionSettingsLoading = false;
+        _activeSessionSettingsLoadId = null;
+        if (status == ConnectionStatus.sessionReady) {
+          status = ConnectionStatus.connected;
+        }
+      }
+      _issueArchiveLease(snapshot);
+      _notifyListeners();
+      return snapshot;
+    });
   }
 
   void restoreArchivedSessionLocally(ArchivedSessionSnapshot snapshot) {
+    final leaseId = snapshot._leaseId;
+    final hasIssuedLease = snapshot._leaseIssued;
+    if (hasIssuedLease &&
+        (leaseId == null || !_ownsActiveArchiveLease(snapshot, leaseId))) {
+      return;
+    }
     final wasCurrent = snapshot.wasCurrent;
     final prepared = _SessionViewSnapshot(
       session: snapshot.session,
@@ -2935,28 +3012,61 @@ class ChatController extends ChangeNotifier {
       activeSessionSettingsLoadId: snapshot.activeSessionSettingsLoadId,
       inputBudget: inputBudget,
     );
-    _upsertSession(prepared.session);
-    if (wasCurrent && currentSession == null) {
-      currentSession = prepared.session;
-      _replaceAllMessages(prepared.messages.map((message) => message.thaw()));
-      availableCommands = _copyAvailableCommands(
-        prepared.availableCommands,
-        inputBudget,
-      );
-      lastLatency = prepared.lastLatency;
-      lastError = prepared.lastError;
-      sessionSettings = _copySessionSettings(
-        prepared.sessionSettings,
-        inputBudget,
-      );
-      sessionUsage = _copySessionUsage(prepared.sessionUsage);
-      sessionSettingsLoading = prepared.sessionSettingsLoading;
-      status = prepared.status;
-      _activeSessionSettingsLoadId = prepared.activeSessionSettingsLoadId;
-    } else {
-      _storeSessionViewSnapshot(prepared.session.id, prepared);
-    }
-    _notifyListeners();
+    _runSynchronousUiStateTransaction(() {
+      if (hasIssuedLease && !_consumeArchiveLease(snapshot, leaseId!)) return;
+      _upsertSession(prepared.session);
+      if (wasCurrent && currentSession == null) {
+        currentSession = prepared.session;
+        _replaceAllMessages(prepared.messages.map((message) => message.thaw()));
+        availableCommands = _copyAvailableCommands(
+          prepared.availableCommands,
+          inputBudget,
+        );
+        lastLatency = prepared.lastLatency;
+        lastError = prepared.lastError;
+        sessionSettings = _copySessionSettings(
+          prepared.sessionSettings,
+          inputBudget,
+        );
+        sessionUsage = _copySessionUsage(prepared.sessionUsage);
+        sessionSettingsLoading = prepared.sessionSettingsLoading;
+        status = prepared.status;
+        _activeSessionSettingsLoadId = prepared.activeSessionSettingsLoadId;
+      } else {
+        _storeSessionViewSnapshot(prepared.session.id, prepared);
+      }
+      _notifyListeners();
+    });
+  }
+
+  void _issueArchiveLease(ArchivedSessionSnapshot snapshot) {
+    final leaseId = ++_nextArchiveLeaseId;
+    _archiveLeasesById[leaseId] = snapshot;
+    _archivedLeaseRetainedBytes = _checkedRetainedAdd(
+      _archivedLeaseRetainedBytes,
+      snapshot.retainedBytes,
+    );
+    snapshot._attachLease(
+      ownerToken: _archiveLeaseOwnerToken,
+      leaseId: leaseId,
+      release: () => _releaseArchiveLease(leaseId),
+    );
+  }
+
+  bool _ownsActiveArchiveLease(ArchivedSessionSnapshot snapshot, int leaseId) {
+    return snapshot._hasActiveLease(_archiveLeaseOwnerToken, leaseId) &&
+        identical(_archiveLeasesById[leaseId], snapshot);
+  }
+
+  bool _consumeArchiveLease(ArchivedSessionSnapshot snapshot, int leaseId) {
+    if (!_ownsActiveArchiveLease(snapshot, leaseId)) return false;
+    return snapshot._consumeLease(_archiveLeaseOwnerToken, leaseId);
+  }
+
+  void _releaseArchiveLease(int leaseId) {
+    final snapshot = _archiveLeasesById.remove(leaseId);
+    if (snapshot == null) return;
+    _archivedLeaseRetainedBytes -= snapshot.retainedBytes;
   }
 
   void setSessionUnread(String sessionId, bool unread) {
@@ -3097,15 +3207,28 @@ class ChatController extends ChangeNotifier {
     try {
       return await operation();
     } finally {
-      _uiStateTransactionDepth -= 1;
-      if (_uiStateTransactionDepth == 0 && _uiStateRefreshPending) {
-        _uiStateRefreshPending = false;
-        _refreshActiveUiStateBudget();
-      }
-      if (_uiStateTransactionDepth == 0 && _uiStateNotificationPending) {
-        _uiStateNotificationPending = false;
-        _notifyListeners();
-      }
+      _finishUiStateTransaction();
+    }
+  }
+
+  T _runSynchronousUiStateTransaction<T>(T Function() operation) {
+    _uiStateTransactionDepth += 1;
+    try {
+      return operation();
+    } finally {
+      _finishUiStateTransaction();
+    }
+  }
+
+  void _finishUiStateTransaction() {
+    _uiStateTransactionDepth -= 1;
+    if (_uiStateTransactionDepth == 0 && _uiStateRefreshPending) {
+      _uiStateRefreshPending = false;
+      _refreshActiveUiStateBudget();
+    }
+    if (_uiStateTransactionDepth == 0 && _uiStateNotificationPending) {
+      _uiStateNotificationPending = false;
+      _notifyListeners();
     }
   }
 
@@ -4858,7 +4981,10 @@ class ChatController extends ChangeNotifier {
       _recomputeActiveUiStateRetainedBytes();
     }
     var projected = _checkedRetainedAdd(
-      _activeUiStateRetainedBytes,
+      _checkedRetainedAdd(
+        _activeUiStateRetainedBytes,
+        _archivedLeaseRetainedBytes,
+      ),
       retainedDelta,
     );
     if (projected <= inputBudget.maxUiStateBytes) return true;
@@ -4888,7 +5014,8 @@ class ChatController extends ChangeNotifier {
     }
     final previous = _messages[index];
     var projected =
-        _activeUiStateRetainedBytes -
+        _activeUiStateRetainedBytes +
+        _archivedLeaseRetainedBytes -
         previous.retainedBytes +
         replacement.retainedBytes;
     if (projected <= inputBudget.maxUiStateBytes) return true;
@@ -6641,6 +6768,9 @@ class ChatController extends ChangeNotifier {
     _sessionOperationGeneration += 1;
     _sessionSettingsLoadSerial += 1;
     _finishTurnBudget();
+    for (final snapshot in _archiveLeasesById.values.toList(growable: false)) {
+      snapshot.discard();
+    }
     _streamingNotificationPending = false;
     _isDisposed = true;
     final promptSubscription = _promptSubscription;

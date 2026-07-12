@@ -7643,6 +7643,191 @@ void main() {
     );
   });
 
+  test(
+    'archive lease transfers UI bytes and restore consumes it once',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'leased history'),
+        startsNewTurn: true,
+      );
+      final sessionId = controller.currentSession!.id;
+      final activeBytes = controller.debugActiveUiStateRetainedBytes;
+
+      final snapshot = controller.archiveSessionLocally(sessionId)!;
+
+      expect(activeBytes, snapshot.retainedBytes);
+      expect(controller.debugActiveUiStateRetainedBytes, 0);
+      expect(controller.debugUiStateRetainedBytes, snapshot.retainedBytes);
+
+      controller.restoreArchivedSessionLocally(snapshot);
+      controller.setLastMessageTextForTesting('kept after first restore');
+      final restoredBytes = controller.debugUiStateRetainedBytes;
+
+      controller.restoreArchivedSessionLocally(snapshot);
+
+      expect(controller.currentSession?.id, sessionId);
+      expect(controller.messages.single.text, 'kept after first restore');
+      expect(controller.debugUiStateRetainedBytes, restoredBytes);
+      snapshot.discard();
+      expect(controller.debugUiStateRetainedBytes, restoredBytes);
+    },
+  );
+
+  test(
+    'inactive archive transfers its snapshot bytes to a discardable lease',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession(cwd: '/workspace/first');
+      final first = controller.currentSession!;
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'inactive history'),
+        startsNewTurn: true,
+      );
+      await controller.resumeSession('second', cwd: '/workspace/second');
+      final activeSessionId = controller.currentSession!.id;
+      final activeBytes = controller.debugActiveUiStateRetainedBytes;
+      final totalBefore = controller.debugUiStateRetainedBytes;
+      expect(controller.debugInactiveSnapshotIds, contains(first.id));
+
+      final snapshot = controller.archiveSessionLocally(first.id)!;
+
+      expect(controller.currentSession?.id, activeSessionId);
+      expect(controller.debugActiveUiStateRetainedBytes, activeBytes);
+      expect(controller.debugInactiveSnapshotIds, isNot(contains(first.id)));
+      expect(controller.debugUiStateRetainedBytes, totalBefore);
+
+      snapshot.discard();
+      controller.restoreArchivedSessionLocally(snapshot);
+
+      expect(controller.debugUiStateRetainedBytes, activeBytes);
+      expect(controller.debugInactiveSnapshotIds, isNot(contains(first.id)));
+      expect(
+        controller.sessions
+            .singleWhere((session) => session.id == first.id)
+            .archived,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'archive lease rejects foreign restore and discard releases once',
+    () async {
+      final owner = ChatController(client: FakeAgentClient(), cwd: '/owner');
+      final foreign = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/foreign',
+      );
+      addTearDown(owner.dispose);
+      addTearDown(foreign.dispose);
+
+      await owner.newSession();
+      final sessionId = owner.currentSession!.id;
+      final snapshot = owner.archiveSessionLocally(sessionId)!;
+      final leasedBytes = owner.debugUiStateRetainedBytes;
+
+      foreign.restoreArchivedSessionLocally(snapshot);
+
+      expect(foreign.currentSession, isNull);
+      expect(owner.debugUiStateRetainedBytes, leasedBytes);
+
+      snapshot.discard();
+      snapshot.discard();
+      owner.restoreArchivedSessionLocally(snapshot);
+
+      expect(owner.debugUiStateRetainedBytes, 0);
+      expect(owner.currentSession, isNull);
+      expect(
+        owner.sessions
+            .singleWhere((session) => session.id == sessionId)
+            .archived,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'archive lease capacity rejects new untracked snapshots without growth',
+    () {
+      final createdAt = DateTime(2026, 7, 12, 16);
+      final measured = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'session-a',
+          cwd: '/same',
+          createdAt: createdAt,
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: acp.AcpInputBudget(
+          maxTurnRetainedBytes: measured.retainedBytes,
+          maxTimelineBytes: measured.retainedBytes,
+          maxUiStateBytes: measured.retainedBytes,
+        ),
+      );
+      addTearDown(controller.dispose);
+      controller.mergeSessionIndex(<AgentSession>[
+        AgentSession(id: 'session-a', cwd: '/same', createdAt: createdAt),
+        AgentSession(id: 'session-b', cwd: '/same', createdAt: createdAt),
+      ]);
+
+      final first = controller.archiveSessionLocally('session-a');
+      final afterFirst = controller.debugUiStateRetainedBytes;
+      final second = controller.archiveSessionLocally('session-b');
+
+      expect(first, isNotNull);
+      expect(afterFirst, measured.retainedBytes);
+      expect(second, isNull);
+      expect(controller.debugUiStateRetainedBytes, afterFirst);
+      expect(
+        controller.sessions
+            .singleWhere((session) => session.id == 'session-b')
+            .archived,
+        isFalse,
+      );
+    },
+  );
+
+  test('controller dispose releases every pending archive lease', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    await controller.newSession();
+    final snapshot = controller.archiveSessionLocally(
+      controller.sessions.single.id,
+    )!;
+    expect(controller.debugUiStateRetainedBytes, snapshot.retainedBytes);
+
+    controller.dispose();
+    snapshot.discard();
+
+    expect(controller.debugUiStateRetainedBytes, 0);
+  });
+
   test('restore after switching sessions keeps the active session', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
