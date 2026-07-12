@@ -2,6 +2,150 @@ import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('AcpInputOmission', () {
+    test('serializes every reason with its exact wire fields', () {
+      final omissions = <AcpInputOmission>[
+        AcpInputOmission(
+          reason: AcpInputOmissionReason.inputLimit,
+          resource: 'message_text',
+          truncated: true,
+          limit: 0,
+          observedAtLeast: 1,
+        ),
+        AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidEncoding,
+          resource: 'message_text',
+          truncated: false,
+        ),
+        AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidImage,
+          resource: 'embedded_image',
+          truncated: false,
+        ),
+        AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidStructure,
+          resource: 'structured_update',
+          truncated: true,
+        ),
+      ];
+
+      expect(omissions.map((omission) => omission.toJson()).toList(), [
+        <String, Object?>{
+          'reason': 'input_limit',
+          'resource': 'message_text',
+          'limit': 0,
+          'observedAtLeast': 1,
+          'truncated': true,
+        },
+        <String, Object?>{
+          'reason': 'invalid_encoding',
+          'resource': 'message_text',
+          'truncated': false,
+        },
+        <String, Object?>{
+          'reason': 'invalid_image',
+          'resource': 'embedded_image',
+          'truncated': false,
+        },
+        <String, Object?>{
+          'reason': 'invalid_structure',
+          'resource': 'structured_update',
+          'truncated': true,
+        },
+      ]);
+    });
+
+    test('input limit requires both capacity fields', () {
+      for (final capacity in const <({int? limit, int? observedAtLeast})>[
+        (limit: null, observedAtLeast: null),
+        (limit: 10, observedAtLeast: null),
+        (limit: null, observedAtLeast: 11),
+      ]) {
+        expect(
+          () => AcpInputOmission(
+            reason: AcpInputOmissionReason.inputLimit,
+            resource: 'message_text',
+            truncated: true,
+            limit: capacity.limit,
+            observedAtLeast: capacity.observedAtLeast,
+          ),
+          throwsArgumentError,
+        );
+      }
+    });
+
+    test('non-capacity reasons reject every capacity field shape', () {
+      for (final reason in const <AcpInputOmissionReason>[
+        AcpInputOmissionReason.invalidEncoding,
+        AcpInputOmissionReason.invalidImage,
+        AcpInputOmissionReason.invalidStructure,
+      ]) {
+        for (final capacity in const <({int? limit, int? observedAtLeast})>[
+          (limit: 10, observedAtLeast: 11),
+          (limit: 10, observedAtLeast: null),
+          (limit: null, observedAtLeast: 11),
+        ]) {
+          expect(
+            () => AcpInputOmission(
+              reason: reason,
+              resource: 'untrusted_input',
+              truncated: false,
+              limit: capacity.limit,
+              observedAtLeast: capacity.observedAtLeast,
+            ),
+            throwsArgumentError,
+          );
+        }
+      }
+    });
+
+    test('exposes immutable fields and formats only the fixed key set', () {
+      const canary = 'PAYLOAD_CANARY_MUST_NOT_APPEAR';
+      final inputLimit = AcpInputOmission(
+        reason: AcpInputOmissionReason.inputLimit,
+        resource: 'message_text',
+        truncated: true,
+        limit: 0,
+        observedAtLeast: 1,
+      );
+      final invalidImage = AcpInputOmission(
+        reason: AcpInputOmissionReason.invalidImage,
+        resource: 'embedded_image',
+        truncated: false,
+      );
+
+      expect(inputLimit.reason, AcpInputOmissionReason.inputLimit);
+      expect(inputLimit.resource, 'message_text');
+      expect(inputLimit.truncated, isTrue);
+      expect(inputLimit.limit, 0);
+      expect(inputLimit.observedAtLeast, 1);
+      expect(inputLimit.toJson().keys.toList(), [
+        'reason',
+        'resource',
+        'limit',
+        'observedAtLeast',
+        'truncated',
+      ]);
+      expect(invalidImage.toJson().keys.toList(), [
+        'reason',
+        'resource',
+        'truncated',
+      ]);
+      expect(
+        inputLimit.toString(),
+        'AcpInputOmission(reason: input_limit, resource: message_text, '
+        'limit: 0, observedAtLeast: 1, truncated: true)',
+      );
+      expect(
+        invalidImage.toString(),
+        'AcpInputOmission(reason: invalid_image, resource: embedded_image, '
+        'truncated: false)',
+      );
+      expect(inputLimit.toJson().toString(), isNot(contains(canary)));
+      expect(inputLimit.toString(), isNot(contains(canary)));
+    });
+  });
+
   group('AcpInputBudget', () {
     final newBudgetLimits =
         <({String field, AcpInputBudget Function(int value) create})>[

@@ -20,6 +20,90 @@ int acpMaxBase64EncodedLength(int decodedByteLimit) {
   return groups * 4;
 }
 
+enum AcpInputOmissionReason {
+  inputLimit,
+  invalidEncoding,
+  invalidImage,
+  invalidStructure,
+}
+
+/// A typed description of ACP input that owning code omitted.
+final class AcpInputOmission {
+  factory AcpInputOmission({
+    required AcpInputOmissionReason reason,
+    required String resource,
+    required bool truncated,
+    int? limit,
+    int? observedAtLeast,
+  }) {
+    final hasLimit = limit != null;
+    final hasObservedAtLeast = observedAtLeast != null;
+    if (hasLimit != hasObservedAtLeast) {
+      throw ArgumentError(
+        'limit and observedAtLeast must either both be provided or both be null',
+      );
+    }
+    final hasCapacity = hasLimit;
+    if (reason == AcpInputOmissionReason.inputLimit && !hasCapacity) {
+      throw ArgumentError(
+        'inputLimit omissions require limit and observedAtLeast',
+      );
+    }
+    if (reason != AcpInputOmissionReason.inputLimit && hasCapacity) {
+      throw ArgumentError(
+        'only inputLimit omissions may include limit and observedAtLeast',
+      );
+    }
+    return AcpInputOmission._(
+      reason: reason,
+      resource: resource,
+      truncated: truncated,
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+  }
+
+  const AcpInputOmission._({
+    required this.reason,
+    required this.resource,
+    required this.truncated,
+    required this.limit,
+    required this.observedAtLeast,
+  });
+
+  final AcpInputOmissionReason reason;
+  final String resource;
+  final bool truncated;
+  final int? limit;
+  final int? observedAtLeast;
+
+  Map<String, Object?> toJson() {
+    final json = <String, Object?>{
+      'reason': switch (reason) {
+        AcpInputOmissionReason.inputLimit => 'input_limit',
+        AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
+        AcpInputOmissionReason.invalidImage => 'invalid_image',
+        AcpInputOmissionReason.invalidStructure => 'invalid_structure',
+      },
+      'resource': resource,
+    };
+    if (reason == AcpInputOmissionReason.inputLimit) {
+      json['limit'] = limit;
+      json['observedAtLeast'] = observedAtLeast;
+    }
+    json['truncated'] = truncated;
+    return json;
+  }
+
+  @override
+  String toString() {
+    final fields = toJson().entries.map(
+      (entry) => '${entry.key}: ${entry.value}',
+    );
+    return 'AcpInputOmission(${fields.join(', ')})';
+  }
+}
+
 /// Host-controlled limits for untrusted ACP input.
 class AcpInputBudget {
   const AcpInputBudget({
