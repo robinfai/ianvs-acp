@@ -2067,6 +2067,51 @@ Future<void> main() async {
     );
   });
 
+  test('available commands own bounded legacy string names', () {
+    final exact = AvailableCommandsUpdate.fromRaw(const <Object?>[
+      'abcd',
+    ], inputBudget: const AcpInputBudget(maxStructuredStringBytes: 4));
+    expect(exact.commands.map((command) => command.name), ['abcd']);
+    expect(exact.omission, isNull);
+
+    const canary = 'COMMAND_STRING_CANARY';
+    final tooLong = AvailableCommandsUpdate.fromRaw(const <Object?>[
+      'abcde$canary',
+    ], inputBudget: const AcpInputBudget(maxStructuredStringBytes: 4));
+    expect(tooLong.commands, isEmpty);
+    expect(tooLong.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(tooLong.toString(), isNot(contains(canary)));
+    expect(tooLong.omission.toString(), isNot(contains(canary)));
+
+    for (final raw in const <List<Object?>>[
+      <Object?>['   '],
+      <Object?>[42],
+      <Object?>['safe', 42],
+    ]) {
+      final invalid = AvailableCommandsUpdate.fromRaw(raw);
+      expect(invalid.commands, isEmpty);
+      expect(invalid.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    }
+  });
+
+  test('legacy message text consumes its owning root exactly once', () {
+    final exact = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: const <Object?>['abcd'],
+      inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 6),
+    );
+    expect(exact.text, 'abcd');
+
+    expect(
+      () => MessageDelta.fromRaw(
+        role: 'assistant',
+        rawContent: const <Object?>['abcd'],
+        inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 5),
+      ),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+  });
+
   test('fromRaw owners validate dynamic list items without caller casts', () {
     final canary = _UpdateToStringCanary();
     final commands = AvailableCommandsUpdate.fromRaw(<Object?>[

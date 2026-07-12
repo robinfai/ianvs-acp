@@ -596,6 +596,69 @@ void main() {
       resource: 'message_text',
     );
 
+    test('checkpoint restores every streaming state', () {
+      final crlf = counter(maxLines: 2);
+      crlf.append('a\r');
+      final crlfCheckpoint = crlf.checkpoint();
+      crlf.append('\n');
+      crlf.restore(crlfCheckpoint);
+      expect(crlf.append('\n').totalLines, 2);
+
+      final high = String.fromCharCode(0xd83d);
+      final low = String.fromCharCode(0xde00);
+      final surrogate = counter(maxBytes: 4);
+      final surrogateCheckpoint = surrogate.checkpoint();
+      surrogate.append(high);
+      surrogate.restore(surrogateCheckpoint);
+      final isolatedLow = surrogate.append(low);
+      expect(isolatedLow.acceptedBytes, 3);
+      expect(isolatedLow.totalBytes, 3);
+
+      final omitted = counter(maxBytes: 1);
+      final omittedCheckpoint = omitted.checkpoint();
+      expect(omitted.append('ab').omission, isNotNull);
+      omitted.restore(omittedCheckpoint);
+      expect(omitted.append('a').safePrefix, 'a');
+
+      final finished = counter();
+      final finishedCheckpoint = finished.checkpoint();
+      finished.finish();
+      finished.restore(finishedCheckpoint);
+      expect(finished.append('a').safePrefix, 'a');
+    });
+
+    test('checkpoint cannot be forged or restored across counters', () {
+      final owner = counter();
+      final other = counter();
+      final checkpoint = owner.checkpoint();
+      expect(
+        () => other.restore(checkpoint),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'ACP text budget checkpoint belongs to another counter.',
+          ),
+        ),
+      );
+      expect(other.append('a').safePrefix, 'a');
+    });
+
+    test('nested checkpoints restore their respective snapshots', () {
+      final value = counter(maxBytes: 2);
+      final outer = value.checkpoint();
+      value.append('a');
+      final inner = value.checkpoint();
+      value.append('b');
+      value.restore(inner);
+      expect(value.append('b').totalBytes, 2);
+      value.restore(outer);
+
+      final restored = value.append('ab');
+      expect(restored.safePrefix, 'ab');
+      expect(restored.totalBytes, 2);
+    });
+
     test('accepts exact ASCII and multi-byte UTF-8 boundaries', () {
       for (final value in <({String text, int bytes})>[
         (text: 'a', bytes: 1),

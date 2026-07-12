@@ -464,11 +464,20 @@ final class _RequestInputBudgetPhase {
   _RequestInputBudgetPhase({
     required this.structuredGuard,
     this.sourceSessionId,
+    this.sourceWasRegistered = false,
   });
 
   final AcpStructuredUpdateGuard structuredGuard;
   final String? sourceSessionId;
+  final bool sourceWasRegistered;
   bool invalidated = false;
+}
+
+final class _GeneratedSessionRegistration {
+  const _GeneratedSessionRegistration(this.sessionId, this.identity);
+
+  final String sessionId;
+  final Object identity;
 }
 
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
@@ -526,6 +535,8 @@ class SessionManager {
       <String, _SessionInputBudgetPhase>{};
   final Set<_RequestInputBudgetPhase> _requestInputBudgetPhases =
       <_RequestInputBudgetPhase>{};
+  final Map<String, Object> _generatedSessionRegistrationOwners =
+      <String, Object>{};
   final Map<String, AcpSessionInputBudgetOwner> _cancelledPromptOwners =
       <String, AcpSessionInputBudgetOwner>{};
   final StreamController<TerminalEvent> _terminalEvents =
@@ -600,6 +611,7 @@ class SessionManager {
     _sessionModes.clear();
     _sessionSetupTails.clear();
     _sessionClosingOwners.clear();
+    _generatedSessionRegistrationOwners.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -660,7 +672,7 @@ class SessionManager {
         structuredGuard: requestPhase.structuredGuard,
       );
       final id = _requireSessionResultId(result, method: 'session/new');
-      await _registerGeneratedSession(
+      final registration = await _registerGeneratedSession(
         sessionId: id,
         workspaceRoot: workspaceRoot,
         additionalDirectories: additionalDirectories,
@@ -670,8 +682,9 @@ class SessionManager {
       try {
         await _drainGeneratedSessionUpdates(id);
         _requireRequestInputBudgetPhase(requestPhase);
+        _commitGeneratedSessionRegistration(registration);
       } on Object {
-        await _rollbackGeneratedSession(id);
+        await _rollbackGeneratedSession(registration);
         rethrow;
       }
       return id;
@@ -764,6 +777,10 @@ class SessionManager {
           () => _sessionAdditionalDirectories.remove(sessionId),
         );
         await cleanup('modes', () => _sessionModes.remove(sessionId));
+        await cleanup(
+          'registration',
+          () => _generatedSessionRegistrationOwners.remove(sessionId),
+        );
         await cleanup('toolCalls', () => _removeToolCalls(sessionId));
         await cleanup('prompt', () {
           _invalidateInputBudgetPhase(sessionId);
@@ -858,9 +875,8 @@ class SessionManager {
         : additionalDirectories;
     final requestPhase = _beginRequestInputBudgetPhase(
       resource: 'session fork response',
-      sourceSessionId: _sessionWorkspaceRoots.containsKey(sessionId)
-          ? sessionId
-          : null,
+      sourceSessionId: sessionId,
+      sourceWasRegistered: _sessionWorkspaceRoots.containsKey(sessionId),
     );
     try {
       final resp = await peer.sendRaw(
@@ -878,14 +894,21 @@ class SessionManager {
         structuredGuard: requestPhase.structuredGuard,
       );
       final newId = _requireSessionResultId(result, method: 'session/fork');
-      await _registerGeneratedSession(
+      final registration = await _registerGeneratedSession(
         sessionId: newId,
         workspaceRoot: root,
         additionalDirectories: directories,
         modes: result.modes,
         requestPhase: requestPhase,
       );
-      await _drainGeneratedSessionUpdates(newId);
+      try {
+        await _drainGeneratedSessionUpdates(newId);
+        _requireRequestInputBudgetPhase(requestPhase);
+        _commitGeneratedSessionRegistration(registration);
+      } on Object {
+        await _rollbackGeneratedSession(registration);
+        rethrow;
+      }
       return result;
     } finally {
       _endRequestInputBudgetPhase(requestPhase);
@@ -1091,6 +1114,7 @@ class SessionManager {
   _RequestInputBudgetPhase _beginRequestInputBudgetPhase({
     required String resource,
     String? sourceSessionId,
+    bool sourceWasRegistered = false,
   }) {
     if (_disposed) throw StateError('Session manager is disposed.');
     if (sourceSessionId != null && _isSessionClosing(sourceSessionId)) {
@@ -1102,6 +1126,7 @@ class SessionManager {
         resource: resource,
       ),
       sourceSessionId: sourceSessionId,
+      sourceWasRegistered: sourceWasRegistered,
     );
     _requestInputBudgetPhases.add(phase);
     return phase;
@@ -1116,7 +1141,8 @@ class SessionManager {
     final sourceSessionId = phase.sourceSessionId;
     if (sourceSessionId != null &&
         (_isSessionClosing(sourceSessionId) ||
-            !_sessionWorkspaceRoots.containsKey(sourceSessionId))) {
+            (phase.sourceWasRegistered &&
+                !_sessionWorkspaceRoots.containsKey(sourceSessionId)))) {
       throw StateError('ACP request source session is no longer active.');
     }
   }
@@ -1252,7 +1278,7 @@ class SessionManager {
     });
   }
 
-  Future<void> _registerGeneratedSession({
+  Future<_GeneratedSessionRegistration> _registerGeneratedSession({
     required String sessionId,
     required String workspaceRoot,
     required List<String> additionalDirectories,
@@ -1261,7 +1287,9 @@ class SessionManager {
     _RequestInputBudgetPhase? requestPhase,
   }) {
     if (_disposed) {
-      return Future<void>.error(StateError('Session manager is disposed.'));
+      return Future<_GeneratedSessionRegistration>.error(
+        StateError('Session manager is disposed.'),
+      );
     }
     return _runSerializedSessionMutation(sessionId, () async {
       if (_disposed) throw StateError('Session manager is disposed.');
@@ -1271,19 +1299,47 @@ class SessionManager {
       if (_isSessionClosing(sessionId)) {
         throw StateError('Session is closing or closed.');
       }
-      _sessionStreams.putIfAbsent(
-        sessionId,
-        StreamController<AcpUpdate>.broadcast,
-      );
-      _replayBuffers.putIfAbsent(sessionId, _newReplayBuffer);
+      if (_hasAnySessionState(sessionId)) {
+        throw StateError('Generated session id is already registered.');
+      }
+      final identity = Object();
+      _sessionStreams[sessionId] = StreamController<AcpUpdate>.broadcast();
+      _replayBuffers[sessionId] = _newReplayBuffer();
       _setSessionWorkspace(
         sessionId,
         workspaceRoot,
         additionalDirectories: additionalDirectories,
       );
       if (modes != null) _sessionModes[sessionId] = modes;
+      _generatedSessionRegistrationOwners[sessionId] = identity;
+      return _GeneratedSessionRegistration(sessionId, identity);
     });
   }
+
+  void _commitGeneratedSessionRegistration(
+    _GeneratedSessionRegistration registration,
+  ) {
+    if (identical(
+      _generatedSessionRegistrationOwners[registration.sessionId],
+      registration.identity,
+    )) {
+      _generatedSessionRegistrationOwners.remove(registration.sessionId);
+    }
+  }
+
+  bool _hasAnySessionState(String sessionId) =>
+      _sessionStreams.containsKey(sessionId) ||
+      _replayBuffers.containsKey(sessionId) ||
+      _sessionWorkspaceRoots.containsKey(sessionId) ||
+      _sessionAdditionalDirectories.containsKey(sessionId) ||
+      _sessionModes.containsKey(sessionId) ||
+      _toolCalls.containsKey(sessionId) ||
+      _toolCallSizes.containsKey(sessionId) ||
+      _inputBudgetPhases.containsKey(sessionId) ||
+      _cancelledPromptOwners.containsKey(sessionId) ||
+      _sessionClosingOwners.containsKey(sessionId) ||
+      _terminalSessions.containsValue(sessionId) ||
+      _generatedSessionRegistrationOwners.containsKey(sessionId);
 
   void _commitSessionResultModes(String sessionId, SessionResult result) {
     final modes = result.modes;
@@ -1300,7 +1356,17 @@ class SessionManager {
     }
   }
 
-  Future<void> _rollbackGeneratedSession(String sessionId) async {
+  Future<void> _rollbackGeneratedSession(
+    _GeneratedSessionRegistration registration,
+  ) async {
+    final sessionId = registration.sessionId;
+    if (!identical(
+      _generatedSessionRegistrationOwners[sessionId],
+      registration.identity,
+    )) {
+      return;
+    }
+    _generatedSessionRegistrationOwners.remove(sessionId);
     _invalidateInputBudgetPhase(sessionId);
     _cancelledPromptOwners.remove(sessionId);
     _closeControllerWithoutWaiting(_sessionStreams.remove(sessionId));
@@ -1378,59 +1444,63 @@ class SessionManager {
   }
 
   bool _storeToolCall(String sessionId, String toolCallId, ToolCall toolCall) {
-    final calls = _toolCalls.putIfAbsent(sessionId, () => {});
-    final sizes = _toolCallSizes.putIfAbsent(sessionId, () => {});
-    final previous = calls.remove(toolCallId);
-    final previousSize = sizes.remove(toolCallId);
-    if (previous != null && previousSize != null) {
-      _toolCallItemCount -= 1;
-      _toolCallByteCount -= previousSize;
-    }
     final size = AcpRetainedSizeEstimator(
       budget: inputBudget,
     ).estimate(toolCall.toJson());
-
-    while (_toolCallItemCount + 1 > maxToolCallItems ||
-        _toolCallByteCount + size > maxToolCallBytes) {
-      if (!_evictOneCompletedToolCall()) break;
-    }
-    if (_toolCallItemCount + 1 > maxToolCallItems ||
-        _toolCallByteCount + size > maxToolCallBytes) {
-      if (toolCall.status != ToolCallStatus.completed &&
-          previous != null &&
-          previousSize != null) {
-        calls[toolCallId] = previous;
-        sizes[toolCallId] = previousSize;
-        _toolCallItemCount += 1;
-        _toolCallByteCount += previousSize;
-      }
-      return toolCall.status == ToolCallStatus.completed;
-    }
-    calls[toolCallId] = toolCall;
-    sizes[toolCallId] = size;
-    _toolCallItemCount += 1;
-    _toolCallByteCount += size;
-    return true;
-  }
-
-  bool _evictOneCompletedToolCall() {
-    String? completedSessionId;
-    String? completedToolCallId;
+    final existingCalls = _toolCalls[sessionId];
+    final existingSizes = _toolCallSizes[sessionId];
+    final previous = existingCalls?[toolCallId];
+    final previousSize = existingSizes?[toolCallId] ?? 0;
+    var nextItemCount = _toolCallItemCount - (previous == null ? 0 : 1) + 1;
+    var nextByteCount = _toolCallByteCount - previousSize + size;
+    final evictions = <({String sessionId, String toolCallId, int size})>[];
     for (final sessionEntry in _toolCalls.entries) {
       for (final callEntry in sessionEntry.value.entries) {
+        if (sessionEntry.key == sessionId && callEntry.key == toolCallId) {
+          continue;
+        }
         if (callEntry.value.status != ToolCallStatus.completed) continue;
-        completedSessionId = sessionEntry.key;
-        completedToolCallId = callEntry.key;
+        final completedSize =
+            _toolCallSizes[sessionEntry.key]?[callEntry.key] ?? 0;
+        evictions.add((
+          sessionId: sessionEntry.key,
+          toolCallId: callEntry.key,
+          size: completedSize,
+        ));
+        nextItemCount -= 1;
+        nextByteCount -= completedSize;
+        if (nextItemCount <= maxToolCallItems &&
+            nextByteCount <= maxToolCallBytes) {
+          break;
+        }
+      }
+      if (nextItemCount <= maxToolCallItems &&
+          nextByteCount <= maxToolCallBytes) {
         break;
       }
-      if (completedSessionId != null) break;
     }
-    if (completedSessionId == null || completedToolCallId == null) return false;
-    final size =
-        _toolCallSizes[completedSessionId]?.remove(completedToolCallId) ?? 0;
-    _toolCalls[completedSessionId]?.remove(completedToolCallId);
-    _toolCallItemCount -= 1;
-    _toolCallByteCount -= size;
+
+    if (nextItemCount > maxToolCallItems || nextByteCount > maxToolCallBytes) {
+      if (toolCall.status != ToolCallStatus.completed) return false;
+      if (previous != null) {
+        existingCalls?.remove(toolCallId);
+        existingSizes?.remove(toolCallId);
+        _toolCallItemCount -= 1;
+        _toolCallByteCount -= previousSize;
+      }
+      return true;
+    }
+
+    for (final eviction in evictions) {
+      _toolCalls[eviction.sessionId]?.remove(eviction.toolCallId);
+      _toolCallSizes[eviction.sessionId]?.remove(eviction.toolCallId);
+    }
+    final calls = _toolCalls.putIfAbsent(sessionId, () => {});
+    final sizes = _toolCallSizes.putIfAbsent(sessionId, () => {});
+    calls[toolCallId] = toolCall;
+    sizes[toolCallId] = size;
+    _toolCallItemCount = nextItemCount;
+    _toolCallByteCount = nextByteCount;
     return true;
   }
 
@@ -1447,7 +1517,9 @@ class SessionManager {
     }
   }
 
-  void _routeSessionUpdate(Json json) {
+  void _routeSessionUpdate(Object? envelope) {
+    if (envelope is! Map) return;
+    final json = envelope;
     final rawSessionId = json['sessionId'] ?? json['session_id'];
     if (rawSessionId is! String) return;
     final sessionId = rawSessionId.trim();
@@ -1472,23 +1544,9 @@ class SessionManager {
         phase: phase,
       );
       if (!_ownsInputBudgetPhase(phase.owner)) return;
-      final consumed = _consumePhaseUpdate(phase, update);
+      final consumed = _consumePhaseUpdate(sessionId, phase, update);
       final bounded = consumed.update;
       if (!_ownsInputBudgetPhase(phase.owner)) return;
-      if (bounded is ToolCallUpdate &&
-          !_storeToolCall(
-            sessionId,
-            bounded.toolCall.toolCallId,
-            bounded.toolCall,
-          )) {
-        stream.addError(
-          SessionToolStateLimitException(
-            maxItems: maxToolCallItems,
-            maxBytes: maxToolCallBytes,
-          ),
-        );
-        return;
-      }
       if (bounded is ModeUpdate && bounded.omission == null) {
         final existing = _sessionModes[sessionId];
         _sessionModes[sessionId] = (
@@ -1535,14 +1593,25 @@ class SessionManager {
       );
     }
     if (kind == 'tool_call' || kind == 'tool_call_update') {
-      final toolCallId = _boundedToolCallIdForRouting(
+      if (kind == 'tool_call') {
+        return ToolCallUpdate(
+          ToolCall.fromJson(
+            raw,
+            inputBudget: inputBudget,
+            structuredGuard: phase.structuredGuard,
+          ),
+        );
+      }
+      final toolCallId = ToolCall.copyRoutingId(
         raw,
-        phase.structuredGuard,
+        inputBudget: inputBudget,
+        structuredGuard: phase.structuredGuard,
       );
       final existing = _toolCalls[sessionId]?[toolCallId];
       final toolCall = existing == null
-          ? ToolCall.fromJson(
+          ? ToolCall.fromJsonWithOwnedRoutingId(
               raw,
+              toolCallId: toolCallId,
               inputBudget: inputBudget,
               structuredGuard: phase.structuredGuard,
             )
@@ -1603,50 +1672,54 @@ class SessionManager {
     );
   }
 
-  String _boundedToolCallIdForRouting(
-    Map<String, dynamic> raw,
-    AcpStructuredUpdateGuard guard,
-  ) {
-    for (final key in const <String>[
-      'toolCallId',
-      'tool_call_id',
-      'id',
-      'callId',
-      'call_id',
-    ]) {
-      final value = raw[key];
-      if (value == null) continue;
-      return guard.copyString(value, field: 'tool call routing id');
-    }
-    return '';
-  }
-
   ({AcpUpdate update, int retainedBytes}) _consumePhaseUpdate(
+    String sessionId,
     _SessionInputBudgetPhase phase,
     AcpUpdate update,
   ) {
-    if (phase.items >= inputBudget.maxTurnItems) {
-      throw AcpInputLimitExceeded(
-        resource: 'turn items',
-        limit: inputBudget.maxTurnItems,
-        observedAtLeast: inputBudget.maxTurnItems + 1,
-      );
+    final textCheckpoint = phase.text.checkpoint();
+    final thoughtCheckpoint = phase.thought.checkpoint();
+    final mediaBytes = phase.mediaBytes;
+    try {
+      if (phase.items >= inputBudget.maxTurnItems) {
+        throw AcpInputLimitExceeded(
+          resource: 'turn items',
+          limit: inputBudget.maxTurnItems,
+          observedAtLeast: inputBudget.maxTurnItems + 1,
+        );
+      }
+      final bounded = update is MessageDelta
+          ? _applyMessagePhaseBudgets(phase, update)
+          : update;
+      final retainedBytes = _retainedUpdateSize(bounded);
+      if (retainedBytes >
+          inputBudget.maxTurnRetainedBytes - phase.retainedBytes) {
+        throw AcpInputLimitExceeded(
+          resource: 'turn retained bytes',
+          limit: inputBudget.maxTurnRetainedBytes,
+          observedAtLeast: inputBudget.maxTurnRetainedBytes + 1,
+        );
+      }
+      if (bounded is ToolCallUpdate &&
+          !_storeToolCall(
+            sessionId,
+            bounded.toolCall.toolCallId,
+            bounded.toolCall,
+          )) {
+        throw SessionToolStateLimitException(
+          maxItems: maxToolCallItems,
+          maxBytes: maxToolCallBytes,
+        );
+      }
+      phase.items += 1;
+      phase.retainedBytes += retainedBytes;
+      return (update: bounded, retainedBytes: retainedBytes);
+    } catch (_) {
+      phase.text.restore(textCheckpoint);
+      phase.thought.restore(thoughtCheckpoint);
+      phase.mediaBytes = mediaBytes;
+      rethrow;
     }
-    final bounded = update is MessageDelta
-        ? _applyMessagePhaseBudgets(phase, update)
-        : update;
-    final retainedBytes = _retainedUpdateSize(bounded);
-    if (retainedBytes >
-        inputBudget.maxTurnRetainedBytes - phase.retainedBytes) {
-      throw AcpInputLimitExceeded(
-        resource: 'turn retained bytes',
-        limit: inputBudget.maxTurnRetainedBytes,
-        observedAtLeast: inputBudget.maxTurnRetainedBytes + 1,
-      );
-    }
-    phase.items += 1;
-    phase.retainedBytes += retainedBytes;
-    return (update: bounded, retainedBytes: retainedBytes);
   }
 
   void _consumePhaseSessionResult(

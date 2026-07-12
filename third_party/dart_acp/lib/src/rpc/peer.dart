@@ -30,8 +30,8 @@ class JsonRpcPeer {
 
   /// Underlying JSON-RPC peer.
   final rpc.Peer _peer;
-  final StreamController<Json> _sessionUpdates =
-      StreamController<Json>.broadcast(sync: true);
+  final StreamController<Object?> _sessionUpdates =
+      StreamController<Object?>.broadcast(sync: true);
 
   /// Close the peer and clean up resources.
   Future<void> close() async {
@@ -40,12 +40,15 @@ class JsonRpcPeer {
   }
 
   /// Stream of raw `session/update` notifications.
-  Stream<Json> get sessionUpdates => _sessionUpdates.stream;
+  Stream<Object?> get sessionUpdates => _sessionUpdates.stream;
 
   void _registerClientHandlers() {
     _peer.registerMethod('session/update', (rpc.Parameters params) async {
-      final json = params.value as Map;
-      _sessionUpdates.add(Map<String, dynamic>.from(json));
+      try {
+        _sessionUpdates.add(params.value);
+      } on Object {
+        // Malformed envelopes and isolated routing failures are dropped.
+      }
       return null;
     });
     // The following methods are handled by higher-level wiring. We expose

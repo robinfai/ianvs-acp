@@ -192,6 +192,33 @@ final class AcpTextBudgetChunk {
   final AcpInputOmission? omission;
 }
 
+/// Opaque snapshot of one [AcpUtf8LineBudgetCounter].
+final class AcpUtf8LineBudgetCheckpoint {
+  const AcpUtf8LineBudgetCheckpoint._({
+    required Object owner,
+    required int totalBytes,
+    required int totalLines,
+    required bool previousWasCR,
+    required bool finished,
+    required bool omitted,
+    required int? pendingHighSurrogate,
+  }) : _owner = owner,
+       _totalBytes = totalBytes,
+       _totalLines = totalLines,
+       _previousWasCR = previousWasCR,
+       _finished = finished,
+       _omitted = omitted,
+       _pendingHighSurrogate = pendingHighSurrogate;
+
+  final Object _owner;
+  final int _totalBytes;
+  final int _totalLines;
+  final bool _previousWasCR;
+  final bool _finished;
+  final bool _omitted;
+  final int? _pendingHighSurrogate;
+}
+
 /// Counts UTF-8 bytes and logical lines without joining input chunks.
 final class AcpUtf8LineBudgetCounter {
   AcpUtf8LineBudgetCounter({
@@ -208,6 +235,7 @@ final class AcpUtf8LineBudgetCounter {
   final int _maxBytes;
   final int _maxLines;
   final String _resource;
+  final Object _checkpointOwner = Object();
 
   var _totalBytes = 0;
   var _totalLines = 0;
@@ -215,6 +243,32 @@ final class AcpUtf8LineBudgetCounter {
   var _finished = false;
   var _omitted = false;
   int? _pendingHighSurrogate;
+
+  /// Captures an opaque snapshot that only this counter can restore.
+  AcpUtf8LineBudgetCheckpoint checkpoint() => AcpUtf8LineBudgetCheckpoint._(
+    owner: _checkpointOwner,
+    totalBytes: _totalBytes,
+    totalLines: _totalLines,
+    previousWasCR: _previousWasCR,
+    finished: _finished,
+    omitted: _omitted,
+    pendingHighSurrogate: _pendingHighSurrogate,
+  );
+
+  /// Restores a snapshot created by this exact counter.
+  void restore(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    if (!identical(checkpoint._owner, _checkpointOwner)) {
+      throw StateError(
+        'ACP text budget checkpoint belongs to another counter.',
+      );
+    }
+    _totalBytes = checkpoint._totalBytes;
+    _totalLines = checkpoint._totalLines;
+    _previousWasCR = checkpoint._previousWasCR;
+    _finished = checkpoint._finished;
+    _omitted = checkpoint._omitted;
+    _pendingHighSurrogate = checkpoint._pendingHighSurrogate;
+  }
 
   AcpTextBudgetChunk append(String chunk) {
     if (_finished) {

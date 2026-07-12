@@ -201,6 +201,55 @@ class ToolCall {
     guard.checkCollection(json, field: 'tool call');
     guard.consumeEntry(field: 'tool call');
     final toolCallId = _boundedToolCallId(json, guard);
+    return _fromJsonWithOwnedRoutingId(
+      json,
+      toolCallId: toolCallId,
+      inputBudget: inputBudget,
+      guard: guard,
+    );
+  }
+
+  /// Copies the routing identifier while retaining ownership of its budget.
+  static String copyRoutingId(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(
+          budget: inputBudget,
+          resource: 'tool_call_routing',
+        );
+    return _boundedToolCallId(json, guard);
+  }
+
+  /// Creates a tool call after [toolCallId] was copied by [copyRoutingId].
+  factory ToolCall.fromJsonWithOwnedRoutingId(
+    Map<String, dynamic> json, {
+    required String toolCallId,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(budget: inputBudget, resource: 'tool_call');
+    guard.checkCollection(json, field: 'tool call');
+    guard.consumeEntry(field: 'tool call');
+    return _fromJsonWithOwnedRoutingId(
+      json,
+      toolCallId: toolCallId,
+      inputBudget: inputBudget,
+      guard: guard,
+    );
+  }
+
+  static ToolCall _fromJsonWithOwnedRoutingId(
+    Map<String, dynamic> json, {
+    required String toolCallId,
+    required AcpInputBudget inputBudget,
+    required AcpStructuredUpdateGuard guard,
+  }) {
     final status = ToolCallStatus.fromWire(
       _boundedOptionalToolString(
         json,

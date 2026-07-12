@@ -289,6 +289,16 @@ class AvailableCommandsUpdate extends AcpUpdate {
         } catch (_) {
           throw const FormatException('Invalid ACP available commands.');
         }
+        if (rawCommand is String) {
+          final name = guard
+              .copyString(rawCommand, field: 'available command name')
+              .trim();
+          if (name.isEmpty) {
+            throw const FormatException('Invalid ACP available command.');
+          }
+          commands.add(AvailableCommand(name: name));
+          continue;
+        }
         if (rawCommand is! Map<String, dynamic>) {
           throw const FormatException('Invalid ACP available command.');
         }
