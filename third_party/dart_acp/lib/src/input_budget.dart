@@ -565,6 +565,7 @@ class AcpInputBudget {
 /// The constructor's `resource` and every method's `field` must be host-owned
 /// constants and must never be derived from an untrusted ACP payload.
 /// A failed [copyMetadata] call leaves this guard's budgets unchanged.
+/// Reentrant calls made by a metadata source are rejected.
 final class AcpStructuredUpdateGuard {
   AcpStructuredUpdateGuard({
     required AcpInputBudget budget,
@@ -577,8 +578,10 @@ final class AcpStructuredUpdateGuard {
 
   var _nodes = 0;
   var _bytes = 0;
+  var _metadataCopyInProgress = false;
 
   String copyString(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
     if (value is! String) {
       throw FormatException('Invalid $_resource $field: expected a string.');
     }
@@ -597,6 +600,7 @@ final class AcpStructuredUpdateGuard {
   }
 
   Object? copyScalar(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
     final int byteCount;
     if (value is int) {
       byteCount = value.toString().length;
@@ -621,6 +625,7 @@ final class AcpStructuredUpdateGuard {
   }
 
   int checkCollection(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
     if (value is! List && value is! Map) {
       throw FormatException(
         'Invalid $_resource $field: expected a collection.',
@@ -651,13 +656,19 @@ final class AcpStructuredUpdateGuard {
   }
 
   Map<String, Object?> copyMetadata(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
     if (value == null) return Map<String, Object?>.unmodifiable(const {});
     if (value is! Map) {
       throw FormatException(
         'Invalid $_resource $field: expected a JSON object.',
       );
     }
-    return _copyMetadataMap(value, field: field);
+    _metadataCopyInProgress = true;
+    try {
+      return _copyMetadataMap(value, field: field);
+    } finally {
+      _metadataCopyInProgress = false;
+    }
   }
 
   Map<String, Object?> _copyMetadataMap(Map source, {required String field}) {
@@ -1027,11 +1038,21 @@ final class AcpStructuredUpdateGuard {
   }
 
   void consumeContainerNode({required String field}) {
+    _rejectReentrantMetadataAccess();
     _consume(nodes: 1, bytes: 0, field: field);
   }
 
   void consumeEntry({required String field}) {
+    _rejectReentrantMetadataAccess();
     _consume(nodes: 1, bytes: 0, field: field);
+  }
+
+  void _rejectReentrantMetadataAccess() {
+    if (_metadataCopyInProgress) {
+      throw StateError(
+        'Cannot access an AcpStructuredUpdateGuard during a metadata copy.',
+      );
+    }
   }
 
   void _consume({

@@ -1813,6 +1813,65 @@ void main() {
       resource: 'ACP test update',
     );
 
+    final reentrantCalls =
+        <({String name, void Function(AcpStructuredUpdateGuard guard) call})>[
+          (
+            name: 'copyString',
+            call: (value) => value.copyString('a', field: 'reentrant'),
+          ),
+          (
+            name: 'copyScalar',
+            call: (value) => value.copyScalar(null, field: 'reentrant'),
+          ),
+          (
+            name: 'checkCollection',
+            call: (value) =>
+                value.checkCollection(<Object?>[], field: 'reentrant'),
+          ),
+          (
+            name: 'copyMetadata null',
+            call: (value) => value.copyMetadata(null, field: 'reentrant'),
+          ),
+          (
+            name: 'copyMetadata map',
+            call: (value) =>
+                value.copyMetadata(<String, Object?>{}, field: 'reentrant'),
+          ),
+          (
+            name: 'consumeContainerNode',
+            call: (value) => value.consumeContainerNode(field: 'reentrant'),
+          ),
+          (
+            name: 'consumeEntry',
+            call: (value) => value.consumeEntry(field: 'reentrant'),
+          ),
+        ];
+
+    for (final testCase in reentrantCalls) {
+      test('root length rejects reentrant ${testCase.name}', () {
+        late AcpStructuredUpdateGuard value;
+        final source = _ReentrantMetadataMap(
+          stage: _MetadataReentryStage.length,
+          onReenter: () => testCase.call(value),
+        );
+        value = guard(maxRootNodes: 1, maxRootBytes: 4);
+        Map<String, Object?>? partial;
+
+        expect(
+          () => partial = value.copyMetadata(source, field: 'metadata'),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
+          ),
+        );
+        expect(partial, isNull);
+        expect(value.copyScalar(null, field: 'afterFailure'), isNull);
+      });
+    }
+
     test('returns a detached deeply immutable metadata copy', () {
       final nestedList = <Object?>[
         <String, Object?>{'value': 1},
@@ -2272,6 +2331,119 @@ void main() {
       expect(value.copyMetadata(null, field: 'metadata'), isEmpty);
     });
 
+    test('rejects reentrancy from root entries before mutation', () {
+      late AcpStructuredUpdateGuard value;
+      final source = _ReentrantMetadataMap(
+        stage: _MetadataReentryStage.entries,
+        onReenter: () => value.copyString('a', field: 'PAYLOAD_CANARY'),
+      );
+      value = guard(maxRootNodes: 1, maxRootBytes: 4);
+      Map<String, Object?>? partial;
+
+      expect(
+        () => partial = value.copyMetadata(source, field: 'metadata'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('PAYLOAD_CANARY')),
+          ),
+        ),
+      );
+      expect(partial, isNull);
+      expect(value.copyScalar(null, field: 'afterFailure'), isNull);
+    });
+
+    test('rejects reentrancy from root iterator current before mutation', () {
+      late AcpStructuredUpdateGuard value;
+      final source = _ReentrantMetadataMap(
+        stage: _MetadataReentryStage.current,
+        onReenter: () => value.consumeEntry(field: 'PAYLOAD_CANARY'),
+      );
+      value = guard(
+        maxNodes: 2,
+        maxMetadataBytes: 4,
+        maxRootNodes: 2,
+        maxRootBytes: 4,
+      );
+      Map<String, Object?>? partial;
+
+      expect(
+        () => partial = value.copyMetadata(source, field: 'metadata'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('PAYLOAD_CANARY')),
+          ),
+        ),
+      );
+      expect(partial, isNull);
+      expect(
+        value.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
+      );
+    });
+
+    test('rejects reentrancy from nested list iterator before mutation', () {
+      late AcpStructuredUpdateGuard value;
+      final list = _ReentrantMetadataList(
+        onReenter: () => value.copyScalar(null, field: 'PAYLOAD_CANARY'),
+      );
+      value = guard(
+        maxNodes: 2,
+        maxMetadataBytes: 4,
+        maxRootNodes: 2,
+        maxRootBytes: 4,
+      );
+      Map<String, Object?>? partial;
+
+      expect(
+        () => partial = value.copyMetadata(<String, Object?>{
+          'list': list,
+        }, field: 'metadata'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('PAYLOAD_CANARY')),
+          ),
+        ),
+      );
+      expect(partial, isNull);
+      expect(
+        value.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
+        <String, Object?>{'': null},
+      );
+    });
+
+    test('caught reentrant failure consumes no hidden root budget', () {
+      late AcpStructuredUpdateGuard value;
+      StateError? innerFailure;
+      final source = _ReentrantMetadataMap(
+        stage: _MetadataReentryStage.length,
+        onReenter: () {
+          try {
+            value.copyString('a', field: 'PAYLOAD_CANARY');
+          } on StateError catch (error) {
+            innerFailure = error;
+          }
+        },
+      );
+      value = guard(maxRootNodes: 2, maxRootBytes: 1);
+
+      expect(value.copyMetadata(source, field: 'metadata'), isEmpty);
+      expect(
+        innerFailure.toString(),
+        allOf(isNot(contains('PAYLOAD_CANARY')), contains('metadata copy')),
+      );
+      expect(value.copyString('a', field: 'afterMetadata'), 'a');
+      expect(
+        () => value.consumeEntry(field: 'beyond'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    });
+
     test('uses an explicit stack for 3000 nested containers', () {
       const containerDepth = 3000;
       Object? nested;
@@ -2552,4 +2724,75 @@ final class _NegativeLengthMetadataMap extends MapBase<Object?, Object?> {
 
   @override
   Object? remove(Object? key) => throw UnsupportedError('read only');
+}
+
+enum _MetadataReentryStage { length, entries, current }
+
+final class _ReentrantMetadataMap extends MapBase<Object?, Object?> {
+  _ReentrantMetadataMap({required this.stage, required this.onReenter});
+
+  final _MetadataReentryStage stage;
+  final void Function() onReenter;
+
+  @override
+  int get length {
+    if (stage == _MetadataReentryStage.length) onReenter();
+    return 0;
+  }
+
+  @override
+  Iterable<MapEntry<Object?, Object?>> get entries {
+    if (stage == _MetadataReentryStage.entries) {
+      onReenter();
+      return const <MapEntry<Object?, Object?>>[];
+    }
+    if (stage == _MetadataReentryStage.current) {
+      return _CurrentTrapIterable<MapEntry<Object?, Object?>>(() {
+        onReenter();
+        return const MapEntry<Object?, Object?>('', null);
+      });
+    }
+    return const <MapEntry<Object?, Object?>>[];
+  }
+
+  @override
+  Iterable<Object?> get keys => const <Object?>[];
+
+  @override
+  Object? operator [](Object? key) => null;
+
+  @override
+  void operator []=(Object? key, Object? value) =>
+      throw UnsupportedError('read only');
+
+  @override
+  void clear() => throw UnsupportedError('read only');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('read only');
+}
+
+final class _ReentrantMetadataList extends ListBase<Object?> {
+  _ReentrantMetadataList({required this.onReenter});
+
+  final void Function() onReenter;
+
+  @override
+  int get length => 0;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  Iterator<Object?> get iterator {
+    onReenter();
+    return const <Object?>[].iterator;
+  }
+
+  @override
+  Object? operator [](int index) => null;
+
+  @override
+  void operator []=(int index, Object? value) =>
+      throw UnsupportedError('read only');
 }
