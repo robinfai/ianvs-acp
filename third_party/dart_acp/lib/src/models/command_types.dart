@@ -477,7 +477,7 @@ _boundedPlanEntries(
     } catch (_) {
       omission = _invalidOmission(
         resource: _planEntriesResource,
-        truncated: false,
+        truncated: entries.isNotEmpty,
       );
       break;
     }
@@ -487,7 +487,7 @@ _boundedPlanEntries(
       omission = AcpInputOmission(
         reason: AcpInputOmissionReason.inputLimit,
         resource: _planEntriesResource,
-        truncated: true,
+        truncated: entries.isNotEmpty,
         limit: inputBudget.maxCollectionItems,
         observedAtLeast: observedItems,
       );
@@ -496,7 +496,7 @@ _boundedPlanEntries(
     if (observedItems > reportedLength) {
       omission = _invalidOmission(
         resource: _planEntriesResource,
-        truncated: true,
+        truncated: entries.isNotEmpty,
       );
       break;
     }
@@ -506,7 +506,7 @@ _boundedPlanEntries(
     } catch (_) {
       omission = _invalidOmission(
         resource: _planEntriesResource,
-        truncated: false,
+        truncated: entries.isNotEmpty,
       );
       break;
     }
@@ -517,13 +517,13 @@ _boundedPlanEntries(
       omission = _limitOmission(
         resource: _planEntriesResource,
         error: error,
-        truncated: true,
+        truncated: entries.isNotEmpty,
       );
       break;
     } catch (_) {
       omission = _invalidOmission(
         resource: _planEntriesResource,
-        truncated: false,
+        truncated: entries.isNotEmpty,
       );
       break;
     }
@@ -534,14 +534,14 @@ _boundedPlanEntries(
       omission = AcpInputOmission(
         reason: AcpInputOmissionReason.inputLimit,
         resource: _planEntriesResource,
-        truncated: true,
+        truncated: entries.isNotEmpty,
         limit: inputBudget.maxCollectionItems,
         observedAtLeast: reportedLength,
       );
     } else if (observedItems != reportedLength) {
       omission = _invalidOmission(
         resource: _planEntriesResource,
-        truncated: true,
+        truncated: entries.isNotEmpty,
       );
     }
   }

@@ -1896,6 +1896,56 @@ Future<void> main() async {
     );
   });
 
+  test('plan omission truncation reflects a retained visible prefix', () {
+    final invalidAfterPrefix = Plan.fromJson(<String, dynamic>{
+      'entries': <Object?>['safe', 3],
+    });
+    expect(invalidAfterPrefix.entries.single.content, 'safe');
+    expect(invalidAfterPrefix.truncated, isTrue);
+    expect(invalidAfterPrefix.omission?.truncated, isTrue);
+
+    final invalidFirst = Plan.fromJson(<String, dynamic>{
+      'entries': <Object?>[3, 'unread'],
+    });
+    expect(invalidFirst.entries, isEmpty);
+    expect(invalidFirst.truncated, isTrue);
+    expect(invalidFirst.omission?.truncated, isFalse);
+
+    final limitedAfterPrefix = Plan.fromJson(<String, dynamic>{
+      'entries': <Object?>['safe', 'too long'],
+    }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 4));
+    expect(limitedAfterPrefix.entries.single.content, 'safe');
+    expect(
+      limitedAfterPrefix.omission?.reason,
+      AcpInputOmissionReason.inputLimit,
+    );
+    expect(limitedAfterPrefix.omission?.truncated, isTrue);
+  });
+
+  test('plan iterator failures report whether a prefix was retained', () {
+    for (final failOnCurrent in <bool>[false, true]) {
+      final afterPrefix = Plan.fromJson(<String, dynamic>{
+        'entries': _FailingPlanList(
+          values: const <Object?>['safe', 'unread'],
+          failAtIndex: 1,
+          failOnCurrent: failOnCurrent,
+        ),
+      });
+      expect(afterPrefix.entries.single.content, 'safe');
+      expect(afterPrefix.omission?.truncated, isTrue);
+
+      final beforePrefix = Plan.fromJson(<String, dynamic>{
+        'entries': _FailingPlanList(
+          values: const <Object?>['unread'],
+          failAtIndex: 0,
+          failOnCurrent: failOnCurrent,
+        ),
+      });
+      expect(beforePrefix.entries, isEmpty);
+      expect(beforePrefix.omission?.truncated, isFalse);
+    }
+  });
+
   test('available commands fail closed without retaining partial input', () {
     final exact = AvailableCommandsUpdate.fromRaw(<Map<String, dynamic>>[
       <String, dynamic>{'name': 'one'},
@@ -2355,6 +2405,191 @@ Future<void> main() async {
     expect(messageRaw.currentReads, 1);
   });
 
+  test('actual command capacity outranks a reported length mismatch', () {
+    final raw = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'name': 'safe'},
+        <String, dynamic>{'name': 'unread'},
+      ],
+    );
+    final update = AvailableCommandsUpdate.fromRaw(
+      raw,
+      inputBudget: const AcpInputBudget(maxCollectionItems: 1),
+    );
+    expect(update.commands, isEmpty);
+    expect(update.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(update.omission?.limit, 1);
+    expect(update.omission?.observedAtLeast, 2);
+    expect(raw.currentReads, 1);
+  });
+
+  test('session list families classify actual capacity before mismatch', () {
+    final directories = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['/safe', '/unread'],
+    );
+    expect(
+      () => SessionInfo.fromJson(<String, dynamic>{
+        'additionalDirectories': directories,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 1)),
+      throwsA(
+        predicate<Object>((error) {
+          return error is AcpInputLimitExceeded &&
+              error.limit == 1 &&
+              error.observedAtLeast == 2;
+        }),
+      ),
+    );
+    expect(directories.currentReads, 1);
+
+    final sessions = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'sessionId': 'safe'},
+        <String, dynamic>{'sessionId': 'unread'},
+      ],
+    );
+    expect(
+      () => SessionListResult.fromJson(<String, dynamic>{
+        'sessions': sessions,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 1)),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+    expect(sessions.currentReads, 1);
+
+    final configOptions = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'id': 'safe'},
+        <String, dynamic>{'id': 'unread'},
+      ],
+    );
+    final configResult = SessionResult.fromJson(<String, dynamic>{
+      'configOptions': configOptions,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+    expect(configResult.configOptions, isEmpty);
+    expect(
+      configResult.omissions.single.reason,
+      AcpInputOmissionReason.inputLimit,
+    );
+    expect(configResult.omissions.single.limit, 1);
+    expect(configResult.omissions.single.observedAtLeast, 2);
+    expect(configOptions.currentReads, 1);
+
+    final choices = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['safe', 'unread'],
+    );
+    expect(
+      () => ConfigOption.fromJson(<String, dynamic>{
+        'options': choices,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 1)),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+    expect(choices.currentReads, 1);
+
+    final modes = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'id': 'safe'},
+        <String, dynamic>{'id': 'unread'},
+      ],
+    );
+    final modeResult = SessionResult.fromJson(<String, dynamic>{
+      'availableModes': modes,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+    expect(modeResult.modes, isNull);
+    expect(
+      modeResult.omissions.single.reason,
+      AcpInputOmissionReason.inputLimit,
+    );
+    expect(modeResult.omissions.single.limit, 1);
+    expect(modeResult.omissions.single.observedAtLeast, 2);
+    expect(modes.currentReads, 1);
+  });
+
+  test('session list families keep below-capacity mismatches structural', () {
+    final directories = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['/safe', '/extra'],
+    );
+    expect(
+      () => SessionInfo.fromJson(<String, dynamic>{
+        'sessionId': 'session',
+        'additionalDirectories': directories,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 3)),
+      throwsA(isA<FormatException>()),
+    );
+
+    final sessions = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'sessionId': 'safe'},
+        <String, dynamic>{'sessionId': 'extra'},
+      ],
+    );
+    expect(
+      () => SessionListResult.fromJson(<String, dynamic>{
+        'sessions': sessions,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 3)),
+      throwsA(isA<FormatException>()),
+    );
+
+    final configOptions = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'id': 'safe'},
+        <String, dynamic>{'id': 'extra'},
+      ],
+    );
+    final configResult = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 'session',
+      'configOptions': configOptions,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+    expect(
+      configResult.omissions.single.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+
+    final choices = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['safe', 'extra'],
+    );
+    expect(
+      () => ConfigOption.fromJson(<String, dynamic>{
+        'id': 'option',
+        'options': choices,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 3)),
+      throwsA(isA<FormatException>()),
+    );
+
+    final modes = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>[
+        <String, dynamic>{'id': 'safe'},
+        <String, dynamic>{'id': 'extra'},
+      ],
+    );
+    final modeResult = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 'session',
+      'availableModes': modes,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+    expect(
+      modeResult.omissions.single.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+    for (final raw in <_ExtraYieldTrapList<Object?>>[
+      directories,
+      sessions,
+      configOptions,
+      choices,
+      modes,
+    ]) {
+      expect(raw.currentReads, 1);
+    }
+  });
+
   test('plan and diff reject length mismatches below capacity limits', () {
     final extraPlanRaw = _ExtraYieldTrapList<Object?>(
       reportedLength: 1,
@@ -2636,6 +2871,50 @@ Future<void> main() async {
       ),
     );
     expect(canary.calls, 0);
+  });
+
+  test('usage costs reject non-finite numeric strings', () {
+    for (final amount in <String>['NaN', 'Infinity', '-Infinity', '1e9999']) {
+      expect(
+        () => UsageCost.fromJson(<String, dynamic>{
+          'amount': amount,
+          'currency': 'USD',
+        }),
+        throwsA(isA<FormatException>()),
+        reason: amount,
+      );
+    }
+  });
+
+  test('nested usage costs preserve null semantics without hiding attacks', () {
+    for (final cost in <Map<String, dynamic>>[
+      <String, dynamic>{},
+      <String, dynamic>{'amount': 1},
+      <String, dynamic>{'currency': 'USD'},
+      <String, dynamic>{'amount': 'not-a-number', 'currency': 'USD'},
+      <String, dynamic>{'amount': 1, 'currency': '   '},
+    ]) {
+      expect(
+        UsageUpdate.fromJson(<String, dynamic>{'cost': cost}).cost,
+        isNull,
+      );
+    }
+
+    final canary = _UpdateToStringCanary();
+    expect(
+      () => UsageUpdate.fromJson(<String, dynamic>{
+        'cost': <String, dynamic>{'amount': 1, 'currency': canary},
+      }),
+      throwsA(isA<FormatException>()),
+    );
+    expect(canary.calls, 0);
+
+    expect(
+      () => UsageUpdate.fromJson(<String, dynamic>{
+        'cost': <String, dynamic>{'amount': 1, 'currency': 'USD'},
+      }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 2)),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
   });
 
   test('nested structured model factories expose the same bounded API', () {
@@ -2988,6 +3267,69 @@ class _CurrentCountingIterator<T> implements Iterator<T> {
   @override
   bool moveNext() {
     index += 1;
+    return index < values.length;
+  }
+}
+
+class _FailingPlanList extends ListBase<Object?> {
+  _FailingPlanList({
+    required this.values,
+    required this.failAtIndex,
+    required this.failOnCurrent,
+  });
+
+  final List<Object?> values;
+  final int failAtIndex;
+  final bool failOnCurrent;
+
+  @override
+  int get length => values.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable');
+
+  @override
+  Object? operator [](int index) => values[index];
+
+  @override
+  void operator []=(int index, Object? value) =>
+      throw UnsupportedError('immutable');
+
+  @override
+  Iterator<Object?> get iterator => _FailingPlanIterator(
+    values: values,
+    failAtIndex: failAtIndex,
+    failOnCurrent: failOnCurrent,
+  );
+}
+
+class _FailingPlanIterator implements Iterator<Object?> {
+  _FailingPlanIterator({
+    required this.values,
+    required this.failAtIndex,
+    required this.failOnCurrent,
+  });
+
+  final List<Object?> values;
+  final int failAtIndex;
+  final bool failOnCurrent;
+  var index = -1;
+
+  @override
+  Object? get current {
+    if (failOnCurrent && index == failAtIndex) {
+      throw StateError('current failure');
+    }
+    return values[index];
+  }
+
+  @override
+  bool moveNext() {
+    final nextIndex = index + 1;
+    if (!failOnCurrent && nextIndex == failAtIndex) {
+      throw StateError('moveNext failure');
+    }
+    index = nextIndex;
     return index < values.length;
   }
 }

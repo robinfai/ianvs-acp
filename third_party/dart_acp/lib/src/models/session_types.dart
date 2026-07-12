@@ -62,7 +62,7 @@ class SessionInfo {
     ]);
     final directories = identical(rawDirectories, _absentSessionField)
         ? const <String>[]
-        : _boundedAdditionalDirectories(rawDirectories, guard);
+        : _boundedAdditionalDirectories(rawDirectories, inputBudget, guard);
     final title = _copyOptionalSessionString(
       json,
       const <String>['title', 'name', 'label'],
@@ -580,6 +580,7 @@ String? _copyOptionalSessionString(
 
 List<String> _boundedAdditionalDirectories(
   Object? raw,
+  AcpInputBudget inputBudget,
   AcpStructuredUpdateGuard guard,
 ) {
   if (raw is! List) {
@@ -595,6 +596,7 @@ List<String> _boundedAdditionalDirectories(
   _forEachReportedListItem(
     raw,
     reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
     resource: 'additional directories',
     visit: (item) {
       if (item is! String) {
@@ -623,6 +625,7 @@ List<SessionInfo> _boundedSessionInfos(
   _forEachReportedListItem(
     raw,
     reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
     resource: 'sessions',
     visit: (item) {
       if (item is! Map) return;
@@ -668,6 +671,7 @@ List<ConfigOption> _boundedConfigOptions(
   _forEachReportedListItem(
     raw,
     reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
     resource: 'config options',
     visit: (item) {
       if (item is! Map) {
@@ -694,6 +698,7 @@ List<ConfigOptionChoice> _boundedConfigChoices(
   _forEachReportedListItem(
     raw,
     reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
     resource: 'config choices',
     visit: (item) {
       choices.add(_boundedConfigChoice(item, guard));
@@ -814,6 +819,7 @@ _boundedSessionModes(
   _forEachReportedListItem(
     rawModes,
     reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
     resource: 'available modes',
     visit: (item) {
       if (item is! Map) {
@@ -852,6 +858,7 @@ _boundedSessionModes(
 void _forEachReportedListItem(
   List raw, {
   required int reportedLength,
+  required int maxItems,
   required String resource,
   required void Function(Object? item) visit,
 }) {
@@ -871,6 +878,13 @@ void _forEachReportedListItem(
     }
     if (!hasNext) break;
     observedItems += 1;
+    if (observedItems > maxItems) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: maxItems,
+        observedAtLeast: observedItems,
+      );
+    }
     if (observedItems > reportedLength) {
       throw FormatException('Invalid ACP $resource collection.');
     }

@@ -300,6 +300,13 @@ class AvailableCommandsUpdate extends AcpUpdate {
         throw const FormatException('Invalid ACP available commands.');
       }
       if (hasExtra) {
+        if (reportedLength >= inputBudget.maxCollectionItems) {
+          throw AcpInputLimitExceeded(
+            resource: 'available_commands',
+            limit: inputBudget.maxCollectionItems,
+            observedAtLeast: reportedLength + 1,
+          );
+        }
         throw const FormatException('Invalid ACP available commands.');
       }
       return AvailableCommandsUpdate(
@@ -605,9 +612,22 @@ num _boundedUsageNumber(
   AcpStructuredUpdateGuard guard, {
   required String field,
 }) {
+  final value = _tryBoundedUsageNumber(raw, guard, field: field);
+  if (value == null) throw const FormatException('Invalid ACP usage value.');
+  return value;
+}
+
+num? _tryBoundedUsageNumber(
+  Object? raw,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
   if (raw is String) {
     final value = num.tryParse(guard.copyString(raw, field: field).trim());
-    if (value == null) throw const FormatException('Invalid ACP usage value.');
+    if (value == null) return null;
+    if (!value.isFinite) {
+      throw const FormatException('Invalid ACP usage value.');
+    }
     return value;
   }
   final value = guard.copyScalar(raw, field: field);
@@ -615,9 +635,18 @@ num _boundedUsageNumber(
   throw const FormatException('Invalid ACP usage value.');
 }
 
-UsageCost _boundedUsageCost(Object? raw, AcpStructuredUpdateGuard guard) {
-  if (raw is! Map) {
-    throw const FormatException('Invalid ACP usage cost.');
-  }
-  return UsageCost._fromMap(raw, guard);
+UsageCost? _boundedUsageCost(Object? raw, AcpStructuredUpdateGuard guard) {
+  if (raw is! Map) return null;
+  guard.checkCollection(raw, field: 'usage cost');
+  guard.consumeEntry(field: 'usage cost');
+  final rawAmount = _firstUpdateValue(raw, const <String>['amount']);
+  final rawCurrency = _firstUpdateValue(raw, const <String>['currency']);
+  final amount = identical(rawAmount, _absentUpdateField)
+      ? null
+      : _tryBoundedUsageNumber(rawAmount, guard, field: 'usage amount');
+  final currency = identical(rawCurrency, _absentUpdateField)
+      ? null
+      : guard.copyString(rawCurrency, field: 'usage currency').trim();
+  if (amount == null || currency == null || currency.isEmpty) return null;
+  return UsageCost(amount: amount, currency: currency);
 }
