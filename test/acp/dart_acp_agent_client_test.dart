@@ -183,9 +183,11 @@ void main() {
       final peer = JsonRpcPeer(channel.foreign);
       final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
       final observations = <acp.AcpBoundedUpdateObservation>[];
+      final deliveryOrder = <String>[];
       void listener(acp.AcpBoundedObservation observation) {
         if (observation is acp.AcpBoundedUpdateObservation) {
           observations.add(observation);
+          deliveryOrder.add('observation');
         }
       }
 
@@ -209,9 +211,12 @@ void main() {
         );
         manager.addBoundedObservationListener(listener);
         final streamed = <acp.AcpUpdate>[];
-        updateSubscription = manager
-            .sessionUpdates('update-observed')
-            .listen(streamed.add);
+        updateSubscription = manager.sessionUpdates('update-observed').listen((
+          update,
+        ) {
+          streamed.add(update);
+          deliveryOrder.add('stream');
+        });
         final owner = manager.beginPromptTurn('update-observed');
         peer.dispatchSessionUpdateForTesting(<String, dynamic>{
           'sessionId': 'update-observed',
@@ -220,9 +225,15 @@ void main() {
             'currentModeId': 'same-instance',
           },
         });
+
+        expect(deliveryOrder, <String>['observation']);
+        expect(observations, hasLength(1));
+        expect(streamed, isEmpty);
+
         await pumpEventQueue();
         manager.endPromptTurn(owner);
 
+        expect(deliveryOrder, <String>['observation', 'stream']);
         expect(observations, hasLength(1));
         expect(observations.single.sessionId, 'update-observed');
         expect(streamed, hasLength(1));
@@ -327,9 +338,12 @@ void main() {
       late acp.AcpBoundedObservationListener selfRemoving;
       void addedDuringPublish(acp.AcpBoundedObservation _) =>
           calls.add('added');
+      void removedDuringPublish(acp.AcpBoundedObservation _) =>
+          calls.add('removed');
       selfRemoving = (_) {
         calls.add('self');
         manager.removeBoundedObservationListener(selfRemoving);
+        manager.removeBoundedObservationListener(removedDuringPublish);
         manager.addBoundedObservationListener(addedDuringPublish);
       };
       void throwing(acp.AcpBoundedObservation _) {
@@ -358,6 +372,7 @@ void main() {
         );
         manager.addBoundedObservationListener(selfRemoving);
         manager.addBoundedObservationListener(throwing);
+        manager.addBoundedObservationListener(removedDuringPublish);
         manager.addBoundedObservationListener(last);
         await pumpEventQueue();
         expect(calls, isEmpty, reason: 'old observations must not replay');
@@ -366,7 +381,7 @@ void main() {
           sessionId: 'snapshot-listener',
           workspaceRoot: '/workspace',
         );
-        expect(calls, <String>['self', 'throwing', 'last']);
+        expect(calls, <String>['self', 'throwing', 'removed', 'last']);
         expect(records, contains('bounded observation listener failed'));
         expect(records.join('\n'), isNot(contains(canary)));
 
@@ -413,6 +428,72 @@ void main() {
         await server.cancel();
         await channel.local.sink.close();
         await logSubscription.cancel();
+      }
+    },
+  );
+
+  test(
+    'result listener disposal does not undo commit or the current snapshot',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final delivered = <acp.AcpBoundedSessionResultObservation>[];
+      Future<void>? disposing;
+
+      void disposingListener(acp.AcpBoundedObservation observation) {
+        if (observation is! acp.AcpBoundedSessionResultObservation) return;
+        delivered.add(observation);
+        disposing = manager.dispose();
+      }
+
+      void remainingListener(acp.AcpBoundedObservation observation) {
+        if (observation is acp.AcpBoundedSessionResultObservation) {
+          delivered.add(observation);
+        }
+      }
+
+      manager.addBoundedObservationListener(disposingListener);
+      manager.addBoundedObservationListener(remainingListener);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{'sessionId': 'dispose-observed'},
+          }),
+        );
+      });
+
+      try {
+        final result = await manager.resumeSession(
+          sessionId: 'dispose-observed',
+          workspaceRoot: '/workspace',
+        );
+
+        expect(result.sessionId, 'dispose-observed');
+        expect(delivered, hasLength(2));
+        expect(identical(delivered.first, delivered.last), isTrue);
+        expect(identical(delivered.first.result, result), isTrue);
+        expect(disposing, isNotNull);
+        await disposing;
+
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'dispose-observed',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': 'after-dispose',
+          },
+        });
+        expect(delivered, hasLength(2));
+      } finally {
+        await disposing;
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
       }
     },
   );
