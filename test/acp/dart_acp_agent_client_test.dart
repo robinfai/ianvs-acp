@@ -4432,6 +4432,170 @@ Future<void> main() async {
   });
 
   test(
+    'raw stream cancel sends exact cancel and releases the session',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final promptSeenFile = File('${tempDir.path}/prompt_seen');
+      final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+      final agentScript = File('${tempDir.path}/fake_stream_cancel_agent.dart');
+      final promptSeenPath = jsonEncode(promptSeenFile.path);
+      final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  var promptCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      promptCount += 1;
+      if (promptCount == 1) {
+        await File($promptSeenPath).writeAsString('prompted');
+      } else {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        }));
+      }
+    } else if (message['method'] == 'session/cancel') {
+      await File($cancelSeenPath).writeAsString('cancelled');
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      StreamSubscription<AgentEvent>? first;
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        first = client
+            .sendPrompt(sessionId: session.id, prompt: 'hold first')
+            .listen((_) {});
+        await _waitForFile(promptSeenFile);
+        await first.cancel().timeout(const Duration(seconds: 5));
+        first = null;
+        await _waitForFile(cancelSeenFile);
+
+        final events = await client
+            .sendPrompt(sessionId: session.id, prompt: 'replacement')
+            .toList()
+            .timeout(const Duration(seconds: 5));
+        expect(events.last.metadata['stopReason'], 'endTurn');
+      } finally {
+        try {
+          await first?.cancel().timeout(const Duration(seconds: 1));
+        } on Object {
+          // Keep cleanup bounded if an earlier cancellation assertion fails.
+        }
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'raw stream cancel before owner never sends prompt or leaks phase',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final promptSeenFile = File('${tempDir.path}/prompt_seen');
+      final agentScript = File(
+        '${tempDir.path}/fake_pre_owner_cancel_agent.dart',
+      );
+      final promptSeenPath = jsonEncode(promptSeenFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      final prompt = params['prompt'] as List<dynamic>;
+      final first = prompt.first as Map<String, dynamic>;
+      final text = first['text'];
+      if (text == 'cancel before owner') {
+        await File($promptSeenPath).writeAsString('unexpected');
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        final first = client
+            .sendPrompt(sessionId: session.id, prompt: 'cancel before owner')
+            .listen((_) {});
+        await first.cancel().timeout(const Duration(seconds: 5));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(await promptSeenFile.exists(), isFalse);
+
+        final events = await client
+            .sendPrompt(sessionId: session.id, prompt: 'replacement')
+            .toList()
+            .timeout(const Duration(seconds: 5));
+        expect(events.last.metadata['stopReason'], 'endTurn');
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
     'unlistened raw prompt does not reserve or cancel an operation',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

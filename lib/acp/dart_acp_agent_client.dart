@@ -760,22 +760,26 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) {
     late final StreamController<AgentEvent> controller;
     StreamSubscription<AgentEvent>? forwarding;
+    acp.AcpClient? operationClient;
+    _RawPromptOperation? operation;
     controller = StreamController<AgentEvent>(
       onListen: () {
         try {
           final client = _requireClient();
+          operationClient = client;
           _activeSessionId = sessionId;
-          final operation = _RawPromptOperation(sessionId);
+          final currentOperation = _RawPromptOperation(sessionId);
+          operation = currentOperation;
           final accepted = !_rawPromptOperationsBySession.containsKey(
             sessionId,
           );
           if (accepted) {
-            _rawPromptOperationsBySession[sessionId] = operation;
+            _rawPromptOperationsBySession[sessionId] = currentOperation;
           }
           forwarding =
               _runRawPromptOperation(
                 client: client,
-                operation: operation,
+                operation: currentOperation,
                 prompt: prompt,
                 attachments: attachments,
                 accepted: accepted,
@@ -791,7 +795,28 @@ class DartAcpAgentClient implements AcpAgentClient {
       },
       onPause: () => forwarding?.pause(),
       onResume: () => forwarding?.resume(),
-      onCancel: () => forwarding?.cancel(),
+      onCancel: () async {
+        final currentOperation = operation;
+        final client = operationClient;
+        Future<void>? cancellation;
+        if (currentOperation != null &&
+            !currentOperation.finished &&
+            client != null) {
+          currentOperation.cancelRequested = true;
+          final completion = currentOperation.cancelCompletion ??=
+              Completer<void>();
+          cancellation = completion.future;
+          unawaited(_cancelRawPromptOperation(client, currentOperation));
+          if (!currentOperation.streamCancellation.isCompleted) {
+            currentOperation.streamCancellation.complete();
+          }
+        }
+        try {
+          await forwarding?.cancel();
+        } finally {
+          if (cancellation != null) await cancellation;
+        }
+      },
     );
     return controller.stream;
   }
@@ -828,6 +853,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         timestamp: DateTime.now(),
       );
     } finally {
+      operation.finished = true;
       final cancelCompletion = operation.cancelCompletion;
       if (operation.cancelRequested &&
           operation.owner == null &&
@@ -1441,10 +1467,30 @@ class DartAcpAgentClient implements AcpAgentClient {
             await _cancelRawPromptOperation(client, operation);
             return;
           }
-          final response = await client.sendRaw(
-            'session/prompt',
-            <String, dynamic>{'sessionId': sessionId, 'prompt': content},
+          final request = client
+              .sendRaw('session/prompt', <String, dynamic>{
+                'sessionId': sessionId,
+                'prompt': content,
+              })
+              .then<_RawPromptRpcOutcome>(
+                _RawPromptRpcOutcome.response,
+                onError: (Object error, StackTrace stackTrace) =>
+                    _RawPromptRpcOutcome.error(error, stackTrace),
+              );
+          final outcome = await Future.any<_RawPromptRpcOutcome>(
+            <Future<_RawPromptRpcOutcome>>[
+              request,
+              operation.streamCancellation.future.then(
+                (_) => const _RawPromptRpcOutcome.cancelled(),
+              ),
+            ],
           );
+          if (outcome.cancelled) return;
+          final error = outcome.error;
+          if (error != null) {
+            Error.throwWithStackTrace(error, outcome.stackTrace!);
+          }
+          final response = outcome.response!;
           if (!events.isClosed) {
             events.add(_eventFromPromptResponse(response));
           }
@@ -2175,29 +2221,42 @@ class DartAcpAgentClient implements AcpAgentClient {
     operation.cancelRequested = true;
     final completion = operation.cancelCompletion ??= Completer<void>();
     unawaited(_cancelRawPromptOperation(client, operation));
+    if (!operation.streamCancellation.isCompleted) {
+      operation.streamCancellation.complete();
+    }
     await completion.future;
   }
 
   Future<void> _cancelRawPromptOperation(
     acp.AcpClient client,
     _RawPromptOperation operation,
-  ) async {
+  ) {
     final owner = operation.owner;
-    if (owner == null) return;
+    if (owner == null) return Future<void>.value();
     final completion = operation.cancelCompletion ??= Completer<void>();
-    if (operation.cancelSent) {
-      await completion.future;
-      return;
-    }
+    if (operation.cancelSent) return completion.future;
     operation.cancelSent = true;
     try {
-      await client.cancelPromptTurn(owner);
-      if (!completion.isCompleted) completion.complete();
+      unawaited(
+        client
+            .cancelPromptTurn(owner)
+            .then<void>(
+              (_) {
+                if (!completion.isCompleted) completion.complete();
+              },
+              onError: (Object error, StackTrace stackTrace) {
+                if (!completion.isCompleted) {
+                  completion.completeError(error, stackTrace);
+                }
+              },
+            ),
+      );
     } on Object catch (error, stackTrace) {
       if (!completion.isCompleted) {
         completion.completeError(error, stackTrace);
       }
     }
+    return completion.future;
   }
 
   @override
@@ -2411,7 +2470,31 @@ final class _RawPromptOperation {
   acp.AcpSessionInputBudgetOwner? owner;
   bool cancelRequested = false;
   bool cancelSent = false;
+  bool finished = false;
   Completer<void>? cancelCompletion;
+  final Completer<void> streamCancellation = Completer<void>();
+}
+
+final class _RawPromptRpcOutcome {
+  const _RawPromptRpcOutcome.response(Map<String, dynamic> response)
+    : this._(response: response);
+
+  const _RawPromptRpcOutcome.error(Object error, StackTrace stackTrace)
+    : this._(error: error, stackTrace: stackTrace);
+
+  const _RawPromptRpcOutcome.cancelled() : this._(cancelled: true);
+
+  const _RawPromptRpcOutcome._({
+    this.response,
+    this.error,
+    this.stackTrace,
+    this.cancelled = false,
+  });
+
+  final Map<String, dynamic>? response;
+  final Object? error;
+  final StackTrace? stackTrace;
+  final bool cancelled;
 }
 
 class _AcpPermissionBridge {

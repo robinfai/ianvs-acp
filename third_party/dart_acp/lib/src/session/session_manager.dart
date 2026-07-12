@@ -1043,15 +1043,17 @@ class SessionManager {
   }
 
   /// Cancel the phase owned by [owner], rejecting stale owners locally.
-  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) async {
+  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) {
     final phase = _inputBudgetPhases[owner.sessionId];
     if (phase == null || !identical(phase.owner, owner)) {
-      throw StateError('ACP prompt phase owner is no longer active.');
+      return Future<void>.error(
+        StateError('ACP prompt phase owner is no longer active.'),
+      );
     }
     phase.invalidated = true;
     _inputBudgetPhases.remove(owner.sessionId);
     _cancelledPromptOwners[owner.sessionId] = owner;
-    await peer.cancel({'sessionId': owner.sessionId});
+    return peer.cancel({'sessionId': owner.sessionId});
   }
 
   AcpSessionInputBudgetOwner _beginInputBudgetPhase(String sessionId) {
