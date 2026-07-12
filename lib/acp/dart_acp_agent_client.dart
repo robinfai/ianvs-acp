@@ -665,6 +665,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.session.close != true) {
       throw StateError('ACP agent does not support session/close.');
     }
+    _invalidateRawPromptOperation(sessionId);
     try {
       await client.closeSession(sessionId: sessionId);
     } on acp.SessionCloseCleanupException {
@@ -675,7 +676,6 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   void _clearSessionState(String sessionId) {
-    _rawPromptOperationsBySession.remove(sessionId);
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
@@ -801,6 +801,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         final settlements = <Future<_VoidFutureSettlement>>[];
         if (currentOperation != null &&
             !currentOperation.finished &&
+            !currentOperation.locallyInvalidated &&
             client != null) {
           currentOperation.cancelRequested = true;
           settlements.add(
@@ -839,11 +840,13 @@ class DartAcpAgentClient implements AcpAgentClient {
       if (!accepted) {
         throw StateError('An ACP prompt operation is already active.');
       }
+      if (operation.locallyInvalidated) return;
       final content = await _promptContentBlocks(
         prompt,
         attachments,
         workspaceRoot: _cwdBySession[operation.sessionId],
       );
+      if (operation.locallyInvalidated) return;
       await for (final event in _sendRawPrompt(
         client: client,
         operation: operation,
@@ -852,6 +855,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         yield event;
       }
     } catch (error) {
+      if (operation.locallyInvalidated) return;
       final details = _agentErrorDetails(error);
       yield AgentEvent(
         type: AgentEventType.error,
@@ -1429,26 +1433,37 @@ class DartAcpAgentClient implements AcpAgentClient {
     required _RawPromptOperation operation,
     required List<Map<String, dynamic>> content,
   }) async* {
+    if (operation.locallyInvalidated) return;
     final sessionId = operation.sessionId;
     final events = StreamController<AgentEvent>();
     var acceptingUpdates = false;
     final terminalSubscription = client.terminalEvents.listen(
       (update) {
-        if (!acceptingUpdates || events.isClosed) return;
+        if (!acceptingUpdates ||
+            operation.locallyInvalidated ||
+            events.isClosed) {
+          return;
+        }
         final event = _eventFromTerminalEvent(update, sessionId);
         if (event != null) {
           events.add(event);
         }
       },
       onError: (Object error, StackTrace stackTrace) {
-        if (!events.isClosed) events.addError(error, stackTrace);
+        if (!operation.locallyInvalidated && !events.isClosed) {
+          events.addError(error, stackTrace);
+        }
       },
     );
     final subscription = client
         .sessionUpdates(sessionId)
         .listen(
           (update) {
-            if (!acceptingUpdates || events.isClosed) return;
+            if (!acceptingUpdates ||
+                operation.locallyInvalidated ||
+                events.isClosed) {
+              return;
+            }
             final event = _eventFromAcpUpdate(
               update,
               includeUserMessages: false,
@@ -1459,17 +1474,22 @@ class DartAcpAgentClient implements AcpAgentClient {
             }
           },
           onError: (Object error, StackTrace stackTrace) {
-            if (!events.isClosed) events.addError(error, stackTrace);
+            if (!operation.locallyInvalidated && !events.isClosed) {
+              events.addError(error, stackTrace);
+            }
           },
         );
     try {
       await Future<void>.delayed(Duration.zero);
+      if (operation.locallyInvalidated) return;
       acceptingUpdates = true;
       unawaited(() async {
         acp.AcpSessionInputBudgetOwner? owner;
         try {
+          if (operation.locallyInvalidated) return;
           owner = client.beginPromptTurn(sessionId);
           operation.owner = owner;
+          if (operation.locallyInvalidated) return;
           if (operation.cancelRequested) {
             await _cancelRawPromptOperation(client, operation);
             return;
@@ -1498,11 +1518,13 @@ class DartAcpAgentClient implements AcpAgentClient {
             Error.throwWithStackTrace(error, outcome.stackTrace!);
           }
           final response = outcome.response!;
-          if (!events.isClosed) {
+          if (!operation.locallyInvalidated && !events.isClosed) {
             events.add(_eventFromPromptResponse(response));
           }
         } catch (error, stackTrace) {
-          if (!events.isClosed) events.addError(error, stackTrace);
+          if (!operation.locallyInvalidated && !events.isClosed) {
+            events.addError(error, stackTrace);
+          }
         } finally {
           if (owner != null) {
             client.endPromptTurn(owner);
@@ -2217,6 +2239,36 @@ class DartAcpAgentClient implements AcpAgentClient {
         method == 'session/fork';
   }
 
+  void _invalidateRawPromptOperation(String sessionId) {
+    final operation = _rawPromptOperationsBySession[sessionId];
+    if (operation == null) return;
+    operation.locallyInvalidated = true;
+    if (identical(_rawPromptOperationsBySession[sessionId], operation)) {
+      _rawPromptOperationsBySession.remove(sessionId);
+    }
+    if (!operation.streamCancellation.isCompleted) {
+      operation.streamCancellation.complete();
+    }
+  }
+
+  void _invalidateAllRawPromptOperations() {
+    final operations = _rawPromptOperationsBySession.values.toList(
+      growable: false,
+    );
+    for (final operation in operations) {
+      operation.locallyInvalidated = true;
+      if (identical(
+        _rawPromptOperationsBySession[operation.sessionId],
+        operation,
+      )) {
+        _rawPromptOperationsBySession.remove(operation.sessionId);
+      }
+      if (!operation.streamCancellation.isCompleted) {
+        operation.streamCancellation.complete();
+      }
+    }
+  }
+
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
@@ -2306,6 +2358,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<void> _disposeActiveClient({
     required bool closePermissionStream,
   }) async {
+    _invalidateAllRawPromptOperations();
     final client = _client;
     final transport = _transport;
     _client = null;
@@ -2479,6 +2532,7 @@ final class _RawPromptOperation {
   bool cancelRequested = false;
   bool cancelSent = false;
   bool finished = false;
+  bool locallyInvalidated = false;
   Completer<void>? cancelCompletion;
   final Completer<void> streamCancellation = Completer<void>();
 }

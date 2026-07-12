@@ -4398,7 +4398,12 @@ Future<void> main() async {
     } else if (message['method'] == 'session/cancel') {
       await File($cancelSeenPath).writeAsString('cancelled');
     } else if (message['method'] == 'session/prompt') {
-      await File($promptSeenPath).writeAsString('prompted');
+      final params = message['params'] as Map<String, dynamic>;
+      final prompt = params['prompt'] as List<dynamic>;
+      final first = prompt.first as Map<String, dynamic>;
+      if (first['text'] == 'cancel immediately') {
+        await File($promptSeenPath).writeAsString('prompted');
+      }
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
         'id': message['id'],
@@ -4423,7 +4428,10 @@ Future<void> main() async {
       await client.cancel();
       await promptEvents.timeout(const Duration(seconds: 5));
       await _waitForFile(cancelSeenFile);
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await client
+          .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
+          .drain<void>()
+          .timeout(const Duration(seconds: 5));
       expect(await promptSeenFile.exists(), isFalse);
     } finally {
       await client.dispose();
@@ -4580,14 +4588,13 @@ Future<void> main() async {
             .sendPrompt(sessionId: session.id, prompt: 'cancel before owner')
             .listen((_) {});
         await first.cancel().timeout(const Duration(seconds: 5));
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        expect(await promptSeenFile.exists(), isFalse);
 
         final events = await client
             .sendPrompt(sessionId: session.id, prompt: 'replacement')
             .toList()
             .timeout(const Duration(seconds: 5));
         expect(events.last.metadata['stopReason'], 'endTurn');
+        expect(await promptSeenFile.exists(), isFalse);
       } finally {
         await client.dispose();
         await tempDir.delete(recursive: true);
@@ -4595,7 +4602,7 @@ Future<void> main() async {
     },
   );
 
-  test('raw stream stale cancel returns error without zone leak', () async {
+  test('locally invalidated raw stream cancel has no zone leak', () async {
     final zoneErrors = <Object>[];
     final bodyDone = Completer<void>();
     runZonedGuarded(
@@ -4669,7 +4676,7 @@ Future<void> main() async {
             cancelError = error;
           }
           subscription = null;
-          expect(cancelError, isA<StateError>());
+          expect(cancelError, isNull);
           await pumpEventQueue();
           expect(zoneErrors, isEmpty);
         } finally {
@@ -4803,6 +4810,346 @@ Future<void> main() async {
       expect(zoneErrors, isEmpty);
     },
   );
+
+  for (final lateOutcome in const <String>['success', 'error']) {
+    test(
+      'raw close drops held late $lateOutcome and preserves other session',
+      () async {
+        final tempDir = await Directory.systemTemp.createTemp(
+          'ianvs-acp-test-',
+        );
+        final firstSeenFile = File('${tempDir.path}/first_seen');
+        final otherSeenFile = File('${tempDir.path}/other_seen');
+        final releaseLateFile = File('${tempDir.path}/release_late');
+        final agentScript = File('${tempDir.path}/fake_close_held_agent.dart');
+        final firstSeenPath = jsonEncode(firstSeenFile.path);
+        final otherSeenPath = jsonEncode(otherSeenFile.path);
+        final releaseLatePath = jsonEncode(releaseLateFile.path);
+        final lateOutcomeLiteral = jsonEncode(lateOutcome);
+        await agentScript.writeAsString('''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  Object? firstPromptId;
+  var newCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'close': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      newCount += 1;
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': newCount == 1 ? 'session-a' : 'session-b',
+        },
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      if (params['sessionId'] == 'session-a') {
+        firstPromptId = message['id'];
+        await File($firstSeenPath).writeAsString('seen');
+        unawaited(() async {
+          final release = File($releaseLatePath);
+          while (!await release.exists()) {
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+          }
+          if ($lateOutcomeLiteral == 'success') {
+            stdout.writeln(jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': firstPromptId,
+              'result': <String, dynamic>{'stopReason': 'end_turn'},
+            }));
+          } else {
+            stdout.writeln(jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': firstPromptId,
+              'error': <String, dynamic>{
+                'code': -32000,
+                'message': 'fixed late close failure',
+              },
+            }));
+          }
+        }());
+      } else {
+        await File($otherSeenPath).writeAsString('seen');
+      }
+    } else if (message['method'] == 'session/close') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+        final client = DartAcpAgentClient(
+          agentCommand: _dartExecutable(),
+          agentArgs: <String>[agentScript.path],
+        );
+
+        try {
+          await client.connect().timeout(const Duration(seconds: 5));
+          final sessionA = await client.createSession(cwd: '/workspace');
+          final sessionB = await client.createSession(cwd: '/workspace');
+          final firstEvents = client
+              .sendPrompt(sessionId: sessionA.id, prompt: 'hold a')
+              .toList();
+          await _waitForFile(firstSeenFile);
+          var otherCompleted = false;
+          final otherEvents = client
+              .sendPrompt(sessionId: sessionB.id, prompt: 'hold b')
+              .toList()
+              .whenComplete(() => otherCompleted = true);
+          await _waitForFile(otherSeenFile);
+
+          await client
+              .closeSession(sessionId: sessionA.id)
+              .timeout(const Duration(seconds: 5));
+          expect(
+            await firstEvents.timeout(const Duration(seconds: 5)),
+            isEmpty,
+          );
+          expect(otherCompleted, isFalse);
+
+          await releaseLateFile.writeAsString('release');
+          await pumpEventQueue();
+          expect(otherCompleted, isFalse);
+
+          await client.cancel().timeout(const Duration(seconds: 5));
+          expect(
+            await otherEvents.timeout(const Duration(seconds: 5)),
+            isEmpty,
+          );
+        } finally {
+          await client.dispose();
+          await tempDir.delete(recursive: true);
+        }
+      },
+    );
+  }
+
+  test(
+    'raw dispose completes every held prompt without publishing error',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final firstSeenFile = File('${tempDir.path}/first_seen');
+      final secondSeenFile = File('${tempDir.path}/second_seen');
+      final agentScript = File('${tempDir.path}/fake_dispose_held_agent.dart');
+      final firstSeenPath = jsonEncode(firstSeenFile.path);
+      final secondSeenPath = jsonEncode(secondSeenFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  var newCount = 0;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      newCount += 1;
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'session-' + newCount.toString(),
+        },
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      final target = params['sessionId'] == 'session-1'
+          ? File($firstSeenPath)
+          : File($secondSeenPath);
+      await target.writeAsString('seen');
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final first = await client.createSession(cwd: '/workspace');
+        final second = await client.createSession(cwd: '/workspace');
+        final firstEvents = client
+            .sendPrompt(sessionId: first.id, prompt: 'hold first')
+            .toList();
+        final secondEvents = client
+            .sendPrompt(sessionId: second.id, prompt: 'hold second')
+            .toList();
+        await _waitForFile(firstSeenFile);
+        await _waitForFile(secondSeenFile);
+
+        await client.dispose().timeout(const Duration(seconds: 5));
+        expect(await firstEvents.timeout(const Duration(seconds: 5)), isEmpty);
+        expect(await secondEvents.timeout(const Duration(seconds: 5)), isEmpty);
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('paused raw prompt does not block close invalidation', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final promptSeenFile = File('${tempDir.path}/prompt_seen');
+    final agentScript = File('${tempDir.path}/fake_paused_close_agent.dart');
+    final promptSeenPath = jsonEncode(promptSeenFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'close': true},
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptSeenPath).writeAsString('seen');
+    } else if (message['method'] == 'session/close') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+    StreamSubscription<AgentEvent>? subscription;
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      subscription = client
+          .sendPrompt(sessionId: session.id, prompt: 'pause close')
+          .listen((_) {});
+      await _waitForFile(promptSeenFile);
+      subscription.pause();
+
+      await client
+          .closeSession(sessionId: session.id)
+          .timeout(const Duration(seconds: 2));
+    } finally {
+      subscription?.resume();
+      await subscription?.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('paused raw prompt does not block dispose invalidation', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final promptSeenFile = File('${tempDir.path}/prompt_seen');
+    final agentScript = File('${tempDir.path}/fake_paused_dispose_agent.dart');
+    final promptSeenPath = jsonEncode(promptSeenFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptSeenPath).writeAsString('seen');
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+    StreamSubscription<AgentEvent>? subscription;
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      subscription = client
+          .sendPrompt(sessionId: session.id, prompt: 'pause dispose')
+          .listen((_) {});
+      await _waitForFile(promptSeenFile);
+      subscription.pause();
+
+      await client.dispose().timeout(const Duration(seconds: 2));
+    } finally {
+      subscription?.resume();
+      await subscription?.cancel();
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
 
   test(
     'unlistened raw prompt does not reserve or cancel an operation',
