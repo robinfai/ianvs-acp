@@ -147,8 +147,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _disposed = false;
   Future<void>? _disposeFuture;
   String? _activeSessionId;
-  final Map<String, acp.AcpSessionInputBudgetOwner>
-  _activePromptOwnersBySession = <String, acp.AcpSessionInputBudgetOwner>{};
+  final Map<String, _RawPromptOperation> _rawPromptOperationsBySession =
+      <String, _RawPromptOperation>{};
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, AcpSessionModeInfo> _modesBySession =
       <String, AcpSessionModeInfo>{};
@@ -419,6 +419,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         workspaceRoot: cwd,
         additionalDirectories: directories,
       );
+      _requireActiveClientOperation(client);
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
       _additionalDirectoriesBySession[sessionId] = directories;
@@ -445,6 +446,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         additionalDirectories: directories,
       );
       await Future<void>.delayed(Duration.zero);
+      _requireActiveClientOperation(client);
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
       _additionalDirectoriesBySession[sessionId] = directories;
@@ -673,7 +675,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   void _clearSessionState(String sessionId) {
-    _activePromptOwnersBySession.remove(sessionId);
+    _rawPromptOperationsBySession.remove(sessionId);
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
@@ -755,18 +757,64 @@ class DartAcpAgentClient implements AcpAgentClient {
     required String sessionId,
     required String prompt,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    late final StreamController<AgentEvent> controller;
+    StreamSubscription<AgentEvent>? forwarding;
+    controller = StreamController<AgentEvent>(
+      onListen: () {
+        try {
+          final client = _requireClient();
+          _activeSessionId = sessionId;
+          final operation = _RawPromptOperation(sessionId);
+          final accepted = !_rawPromptOperationsBySession.containsKey(
+            sessionId,
+          );
+          if (accepted) {
+            _rawPromptOperationsBySession[sessionId] = operation;
+          }
+          forwarding =
+              _runRawPromptOperation(
+                client: client,
+                operation: operation,
+                prompt: prompt,
+                attachments: attachments,
+                accepted: accepted,
+              ).listen(
+                controller.add,
+                onError: controller.addError,
+                onDone: controller.close,
+              );
+        } on Object catch (error, stackTrace) {
+          controller.addError(error, stackTrace);
+          unawaited(controller.close());
+        }
+      },
+      onPause: () => forwarding?.pause(),
+      onResume: () => forwarding?.resume(),
+      onCancel: () => forwarding?.cancel(),
+    );
+    return controller.stream;
+  }
+
+  Stream<AgentEvent> _runRawPromptOperation({
+    required acp.AcpClient client,
+    required _RawPromptOperation operation,
+    required String prompt,
+    required List<PromptAttachment> attachments,
+    required bool accepted,
   }) async* {
-    final client = _requireClient();
-    _activeSessionId = sessionId;
     try {
+      if (!accepted) {
+        throw StateError('An ACP prompt operation is already active.');
+      }
       final content = await _promptContentBlocks(
         prompt,
         attachments,
-        workspaceRoot: _cwdBySession[sessionId],
+        workspaceRoot: _cwdBySession[operation.sessionId],
       );
       await for (final event in _sendRawPrompt(
         client: client,
-        sessionId: sessionId,
+        operation: operation,
         content: content,
       )) {
         yield event;
@@ -779,6 +827,21 @@ class DartAcpAgentClient implements AcpAgentClient {
         metadata: details.metadata,
         timestamp: DateTime.now(),
       );
+    } finally {
+      final cancelCompletion = operation.cancelCompletion;
+      if (operation.cancelRequested &&
+          operation.owner == null &&
+          cancelCompletion != null &&
+          !cancelCompletion.isCompleted) {
+        cancelCompletion.complete();
+      }
+      if (accepted &&
+          identical(
+            _rawPromptOperationsBySession[operation.sessionId],
+            operation,
+          )) {
+        _rawPromptOperationsBySession.remove(operation.sessionId);
+      }
     }
   }
 
@@ -1330,9 +1393,10 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Stream<AgentEvent> _sendRawPrompt({
     required acp.AcpClient client,
-    required String sessionId,
+    required _RawPromptOperation operation,
     required List<Map<String, dynamic>> content,
   }) async* {
+    final sessionId = operation.sessionId;
     final events = StreamController<AgentEvent>();
     var acceptingUpdates = false;
     final terminalSubscription = client.terminalEvents.listen(
@@ -1372,7 +1436,11 @@ class DartAcpAgentClient implements AcpAgentClient {
         acp.AcpSessionInputBudgetOwner? owner;
         try {
           owner = client.beginPromptTurn(sessionId);
-          _activePromptOwnersBySession[sessionId] = owner;
+          operation.owner = owner;
+          if (operation.cancelRequested) {
+            await _cancelRawPromptOperation(client, operation);
+            return;
+          }
           final response = await client.sendRaw(
             'session/prompt',
             <String, dynamic>{'sessionId': sessionId, 'prompt': content},
@@ -1384,9 +1452,6 @@ class DartAcpAgentClient implements AcpAgentClient {
           if (!events.isClosed) events.addError(error, stackTrace);
         } finally {
           if (owner != null) {
-            if (identical(_activePromptOwnersBySession[sessionId], owner)) {
-              _activePromptOwnersBySession.remove(sessionId);
-            }
             client.endPromptTurn(owner);
           }
           if (!events.isClosed) {
@@ -2105,8 +2170,34 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _client;
     if (client == null || sessionId == null) return;
     _permissionBridge.cancelSession(sessionId);
-    final owner = _activePromptOwnersBySession[sessionId];
-    if (owner != null) await client.cancelPromptTurn(owner);
+    final operation = _rawPromptOperationsBySession[sessionId];
+    if (operation == null) return;
+    operation.cancelRequested = true;
+    final completion = operation.cancelCompletion ??= Completer<void>();
+    unawaited(_cancelRawPromptOperation(client, operation));
+    await completion.future;
+  }
+
+  Future<void> _cancelRawPromptOperation(
+    acp.AcpClient client,
+    _RawPromptOperation operation,
+  ) async {
+    final owner = operation.owner;
+    if (owner == null) return;
+    final completion = operation.cancelCompletion ??= Completer<void>();
+    if (operation.cancelSent) {
+      await completion.future;
+      return;
+    }
+    operation.cancelSent = true;
+    try {
+      await client.cancelPromptTurn(owner);
+      if (!completion.isCompleted) completion.complete();
+    } on Object catch (error, stackTrace) {
+      if (!completion.isCompleted) {
+        completion.completeError(error, stackTrace);
+      }
+    }
   }
 
   @override
@@ -2157,7 +2248,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsListSessions = false;
     _supportsResumeSession = false;
     _activeSessionId = null;
-    _activePromptOwnersBySession.clear();
+    _rawPromptOperationsBySession.clear();
     _modesBySession.clear();
     _cwdBySession.clear();
     _additionalDirectoriesBySession.clear();
@@ -2182,6 +2273,12 @@ class DartAcpAgentClient implements AcpAgentClient {
       throw StateError('Codex ACP client is not connected.');
     }
     return client;
+  }
+
+  void _requireActiveClientOperation(acp.AcpClient client) {
+    if (_disposed || !identical(_client, client)) {
+      throw StateError('ACP client operation is no longer active.');
+    }
   }
 
   static String _defaultAgentCommand() {
@@ -2305,6 +2402,16 @@ class _InteractivePermissionProvider implements acp.PermissionProvider {
 acp.AcpInputBudget _validatedInputBudget(acp.AcpInputBudget budget) {
   budget.validate();
   return budget;
+}
+
+final class _RawPromptOperation {
+  _RawPromptOperation(this.sessionId);
+
+  final String sessionId;
+  acp.AcpSessionInputBudgetOwner? owner;
+  bool cancelRequested = false;
+  bool cancelSent = false;
+  Completer<void>? cancelCompletion;
 }
 
 class _AcpPermissionBridge {

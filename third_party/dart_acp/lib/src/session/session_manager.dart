@@ -976,6 +976,11 @@ class SessionManager {
               'sessionId': sessionId,
               'prompt': content,
             });
+            final owner = promptOwner;
+            if (owner == null || !_ownsInputBudgetPhase(owner)) {
+              requestFinished = true;
+              return;
+            }
             final stop = stopReasonFromWire(
               (resp['stopReason'] as String?) ?? 'other',
             );
@@ -984,6 +989,11 @@ class SessionManager {
             _replayBuffers[sessionId]?.add(turnEnded);
             _sessionStreams[sessionId]?.add(turnEnded);
           } on Object catch (e, st) {
+            final owner = promptOwner;
+            if (owner == null || !_ownsInputBudgetPhase(owner)) {
+              requestFinished = true;
+              return;
+            }
             _log.warning('prompt error: $e');
             requestFinished = true;
             final sessionController = _sessionStreams[sessionId];
@@ -1086,6 +1096,18 @@ class SessionManager {
     _inputBudgetPhases.clear();
   }
 
+  bool _ownsInputBudgetPhase(AcpSessionInputBudgetOwner owner) {
+    if (_disposed || _isSessionClosing(owner.sessionId)) return false;
+    final phase = _inputBudgetPhases[owner.sessionId];
+    return phase != null && !phase.invalidated && identical(phase.owner, owner);
+  }
+
+  void _requireInputBudgetPhase(AcpSessionInputBudgetOwner owner) {
+    if (!_ownsInputBudgetPhase(owner)) {
+      throw StateError('ACP session input phase is no longer active.');
+    }
+  }
+
   /// Get the workspace root for a session.
   String getWorkspaceRoot(String sessionId) {
     final root = _sessionWorkspaceRoots[sessionId];
@@ -1154,7 +1176,9 @@ class SessionManager {
           workspaceRoot,
           additionalDirectories: additionalDirectories,
         );
-        return await action();
+        final result = await action();
+        _requireInputBudgetPhase(phaseOwner);
+        return result;
       } catch (_) {
         if (!hadBinding) {
           _sessionWorkspaceRoots.remove(sessionId);

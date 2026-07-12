@@ -2584,6 +2584,106 @@ Future<void> main() async {
     },
   );
 
+  for (final lateOutcome in const <String>['success', 'error']) {
+    test(
+      'stale cancelled prompt $lateOutcome cannot terminate its replacement',
+      () async {
+        final channel = StreamChannelController<String>();
+        final peer = JsonRpcPeer(channel.foreign);
+        final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+        final promptIds = <Object?>[];
+        final promptSeen = StreamController<void>.broadcast();
+        final server = channel.local.stream.listen((line) {
+          final request = jsonDecode(line) as Map<String, dynamic>;
+          if (request['method'] == 'session/resume') {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': request['id'],
+                'result': <String, dynamic>{},
+              }),
+            );
+          } else if (request['method'] == 'session/prompt') {
+            promptIds.add(request['id']);
+            promptSeen.add(null);
+          }
+        });
+        final sharedUpdates = <acp.AcpUpdate>[];
+        final sharedErrors = <Object>[];
+        StreamSubscription<acp.AcpUpdate>? shared;
+        StreamSubscription<acp.AcpUpdate>? first;
+
+        try {
+          await manager.resumeSession(
+            sessionId: 'stale-prompt',
+            workspaceRoot: '/workspace',
+          );
+          shared = manager
+              .sessionUpdates('stale-prompt')
+              .listen(sharedUpdates.add, onError: sharedErrors.add);
+          final firstSeen = promptSeen.stream.first;
+          first = manager
+              .prompt(
+                sessionId: 'stale-prompt',
+                content: const <Map<String, dynamic>>[],
+              )
+              .listen((_) {});
+          await firstSeen.timeout(const Duration(seconds: 5));
+          await first.cancel();
+          first = null;
+
+          final secondSeen = promptSeen.stream.first;
+          var replacementCompleted = false;
+          final replacement = manager
+              .prompt(
+                sessionId: 'stale-prompt',
+                content: const <Map<String, dynamic>>[],
+              )
+              .toList()
+              .whenComplete(() => replacementCompleted = true);
+          await secondSeen.timeout(const Duration(seconds: 5));
+          expect(promptIds, hasLength(2));
+
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': promptIds.first,
+              if (lateOutcome == 'success')
+                'result': <String, dynamic>{'stopReason': 'end_turn'}
+              else
+                'error': <String, dynamic>{
+                  'code': -32000,
+                  'message': 'fixed stale prompt failure',
+                },
+            }),
+          );
+          await pumpEventQueue();
+          expect(replacementCompleted, isFalse);
+          expect(sharedUpdates.whereType<acp.TurnEnded>(), isEmpty);
+          expect(sharedErrors, isEmpty);
+
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': promptIds.last,
+              'result': <String, dynamic>{'stopReason': 'end_turn'},
+            }),
+          );
+          final updates = await replacement.timeout(const Duration(seconds: 5));
+          expect(updates.whereType<acp.TurnEnded>(), hasLength(1));
+        } finally {
+          await first?.cancel();
+          await shared?.cancel();
+          await promptSeen.close();
+          await manager.dispose();
+          await peer.close();
+          await server.cancel();
+          await channel.local.sink.close();
+        }
+      },
+    );
+  }
+
   test('immediate prompt stream cancel releases its exact owner', () async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
@@ -2762,6 +2862,95 @@ Future<void> main() async {
       }
     },
   );
+
+  test('late resume response fails after the session starts closing', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final resumeId = Completer<Object?>();
+    final closeId = Completer<Object?>();
+    final server = channel.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] == 'session/resume') {
+        if (!resumeId.isCompleted) resumeId.complete(request['id']);
+      } else if (request['method'] == 'session/close') {
+        if (!closeId.isCompleted) closeId.complete(request['id']);
+      }
+    });
+
+    void respond(Object? id) {
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{},
+        }),
+      );
+    }
+
+    try {
+      final resume = manager.resumeSession(
+        sessionId: 'closing-resume',
+        workspaceRoot: '/workspace',
+      );
+      final pendingResumeId = await resumeId.future.timeout(
+        const Duration(seconds: 5),
+      );
+      final close = manager.closeSession(sessionId: 'closing-resume');
+      final pendingCloseId = await closeId.future.timeout(
+        const Duration(seconds: 5),
+      );
+      respond(pendingCloseId);
+      respond(pendingResumeId);
+
+      await expectLater(resume, throwsStateError);
+      await close.timeout(const Duration(seconds: 5));
+    } finally {
+      await manager.dispose();
+      await peer.close();
+      await server.cancel();
+      await channel.local.sink.close();
+    }
+  });
+
+  test('late load response fails after manager dispose', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+    final loadId = Completer<Object?>();
+    final server = channel.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] == 'session/load' && !loadId.isCompleted) {
+        loadId.complete(request['id']);
+      }
+    });
+
+    try {
+      final load = manager.loadSession(
+        sessionId: 'disposed-load',
+        workspaceRoot: '/workspace',
+      );
+      final pendingLoadId = await loadId.future.timeout(
+        const Duration(seconds: 5),
+      );
+      await manager.dispose();
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': pendingLoadId,
+          'result': <String, dynamic>{},
+        }),
+      );
+
+      await expectLater(load, throwsStateError);
+      expect(() => manager.getWorkspaceRoot('disposed-load'), throwsStateError);
+    } finally {
+      await manager.dispose();
+      await peer.close();
+      await server.cancel();
+      await channel.local.sink.close();
+    }
+  });
 
   test(
     'session updates drop unknown sessions but accept load-time updates after binding',
@@ -4171,6 +4360,139 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test('raw prompt immediate cancel is delivered before prompt RPC', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+    final promptSeenFile = File('${tempDir.path}/prompt_seen');
+    final agentScript = File(
+      '${tempDir.path}/fake_immediate_cancel_agent.dart',
+    );
+    final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+    final promptSeenPath = jsonEncode(promptSeenFile.path);
+    await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/cancel') {
+      await File($cancelSeenPath).writeAsString('cancelled');
+    } else if (message['method'] == 'session/prompt') {
+      await File($promptSeenPath).writeAsString('prompted');
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final promptEvents = client
+          .sendPrompt(sessionId: session.id, prompt: 'cancel immediately')
+          .toList();
+      await client.cancel();
+      await promptEvents.timeout(const Duration(seconds: 5));
+      await _waitForFile(cancelSeenFile);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(await promptSeenFile.exists(), isFalse);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test(
+    'unlistened raw prompt does not reserve or cancel an operation',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/fake_lazy_prompt_agent.dart');
+      await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        client.sendPrompt(sessionId: session.id, prompt: 'never listened');
+        await client.cancel();
+
+        final events = await client
+            .sendPrompt(sessionId: session.id, prompt: 'real prompt')
+            .toList()
+            .timeout(const Duration(seconds: 5));
+        expect(events.last.metadata['stopReason'], 'endTurn');
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test('cancelled turn does not cancel permissions in the next turn', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
