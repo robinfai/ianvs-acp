@@ -1055,6 +1055,73 @@ void main() {
     expect(overridden.omission?.observedAtLeast, 9);
   });
 
+  test('resource URI aliases preserve legacy outer and nested precedence', () {
+    final cases = <({Map<String, dynamic> input, String expected})>[
+      (
+        input: <String, dynamic>{
+          'type': 'resource',
+          'url': 'file:///outer-url',
+          'resource': <String, dynamic>{'uri': 'file:///nested-uri'},
+        },
+        expected: 'file:///nested-uri',
+      ),
+      (
+        input: <String, dynamic>{
+          'type': 'resource',
+          'path': 'file:///outer-path',
+          'resource': <String, dynamic>{
+            'url': 'file:///nested-url',
+            'uri': 'file:///nested-uri',
+          },
+        },
+        expected: 'file:///nested-uri',
+      ),
+      (
+        input: <String, dynamic>{
+          'type': 'resource',
+          'path': 'file:///outer-path',
+          'resource': <String, dynamic>{'url': 'file:///nested-url'},
+        },
+        expected: 'file:///nested-url',
+      ),
+      (
+        input: <String, dynamic>{
+          'type': 'resource',
+          'uri': 'file:///outer-uri',
+          'resource': <String, dynamic>{'uri': 'file:///nested-uri'},
+        },
+        expected: 'file:///outer-uri',
+      ),
+      (
+        input: <String, dynamic>{
+          'uri': 'file:///outer-uri',
+          'url': 'file:///outer-url',
+          'path': 'file:///outer-path',
+        },
+        expected: 'file:///outer-uri',
+      ),
+      (
+        input: <String, dynamic>{
+          'url': 'file:///outer-url',
+          'path': 'file:///outer-path',
+        },
+        expected: 'file:///outer-url',
+      ),
+      (
+        input: <String, dynamic>{'path': 'file:///outer-path'},
+        expected: 'file:///outer-path',
+      ),
+    ];
+
+    for (final testCase in cases) {
+      expect(
+        ResourceContent.fromJson(testCase.input).uri,
+        testCase.expected,
+        reason: testCase.input.toString(),
+      );
+    }
+  });
+
   test('structural field failures are fixed and retain no partial block', () {
     const canary = 'STRUCTURE_FIELD_CANARY';
     final malformed = <Map<String, dynamic>>[

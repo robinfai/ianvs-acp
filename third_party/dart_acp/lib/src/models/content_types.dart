@@ -281,15 +281,7 @@ class ResourceContent extends ContentBlock {
         ? _copyOptionalNumber(rawSize, guard, field: 'resource size')
         : _prevalidatedOptionalNumber(rawSize);
     return ResourceContent(
-      uri:
-          _copyResourceString(
-            json,
-            nested,
-            const <String>['uri', 'url', 'path'],
-            guard,
-            field: 'resource uri',
-          ) ??
-          '',
+      uri: _copyResourceUri(json, nested, guard) ?? '',
       title: _copyResourceString(
         json,
         nested,
@@ -684,6 +676,33 @@ String? _copyResourceString(
   final nestedValue = _firstNonNull(nested, fields);
   if (identical(nestedValue, _absentContentField)) return null;
   if (nestedValue is String) return nestedValue;
+  throw const FormatException('Invalid ACP content block structure.');
+}
+
+String? _copyResourceUri(
+  Map<String, dynamic> outer,
+  Map<String, dynamic>? nested,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (nested == null) {
+    return _copyOptionalString(
+      outer,
+      const <String>['uri', 'url', 'path'],
+      guard,
+      field: 'resource uri',
+    );
+  }
+
+  final outerUri = _copyOptionalString(
+    outer,
+    const <String>['uri'],
+    guard,
+    field: 'resource uri',
+  );
+  if (outerUri != null) return outerUri;
+  final nestedUri = _firstNonNull(nested, const <String>['uri', 'url', 'path']);
+  if (identical(nestedUri, _absentContentField)) return null;
+  if (nestedUri is String) return nestedUri;
   throw const FormatException('Invalid ACP content block structure.');
 }
 
