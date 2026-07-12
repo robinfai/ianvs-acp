@@ -1,5 +1,7 @@
 // Diff-related types for ACP.
 
+import '../input_budget.dart';
+
 /// Status of a diff operation.
 enum DiffStatus {
   /// Diff has been started.
@@ -58,15 +60,16 @@ class DiffChange {
   });
 
   /// Create from JSON.
-  factory DiffChange.fromJson(Map<String, dynamic> json) => DiffChange(
-    type: _changeTypeFromRaw(json['type']),
-    line: _lineFromRaw(
-      json['line'] ?? json['lineNumber'] ?? json['line_number'],
-    ),
-    content: _optionalString(json['content'] ?? json['text']),
-    oldContent: _optionalString(json['oldContent'] ?? json['old']),
-    newContent: _optionalString(json['newContent'] ?? json['new']),
-  );
+  factory DiffChange.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(budget: inputBudget, resource: 'diff_change');
+    return _diffChangeFromRaw(json, guard)!;
+  }
 
   /// Type of change (addition, deletion, modification).
   final String type;
@@ -102,23 +105,87 @@ class Diff {
     this.uri,
     this.changes = const [],
     this.description,
+    this.truncated = false,
+    this.omission,
   });
 
   /// Create from JSON.
-  factory Diff.fromJson(Map<String, dynamic> json) {
-    final uri =
-        _optionalString(json['uri']) ??
-        _optionalString(json['path']) ??
-        _optionalString(json['filePath']) ??
-        _optionalString(json['file']);
-    final changesList = _diffChangesFromRaw(json['changes'] ?? json['diff']);
+  factory Diff.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(budget: inputBudget, resource: 'diff');
+    guard.checkCollection(json, field: 'diff');
+    guard.consumeEntry(field: 'diff');
+
+    final uri = _copyOptionalAliasedString(
+      json,
+      const <String>['uri', 'path', 'filePath', 'file'],
+      guard,
+      field: 'uri',
+    );
+    final id =
+        _copyOptionalAliasedString(
+          json,
+          const <String>['id'],
+          guard,
+          field: 'id',
+        ) ??
+        uri ??
+        '';
+    final statusValue = _copyOptionalAliasedString(
+      json,
+      const <String>['status'],
+      guard,
+      field: 'status',
+    );
+    final description = _copyOptionalAliasedString(
+      json,
+      const <String>['description', 'title'],
+      guard,
+      field: 'description',
+    );
+    final rawChanges = _firstNonNull(json, const <String>['changes', 'diff']);
+    var changesList = const <DiffChange>[];
+    var truncated = false;
+    AcpInputOmission? omission;
+    if (!identical(rawChanges, _absentDiffField)) {
+      try {
+        changesList = _diffChangesFromRaw(
+          rawChanges,
+          inputBudget: inputBudget,
+          guard: guard,
+        );
+      } on AcpInputLimitExceeded catch (error) {
+        truncated = true;
+        omission = AcpInputOmission(
+          reason: AcpInputOmissionReason.inputLimit,
+          resource: _diffChangesResource,
+          truncated: false,
+          limit: error.limit,
+          observedAtLeast: error.observedAtLeast,
+        );
+      } catch (_) {
+        truncated = true;
+        omission = AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidStructure,
+          resource: _diffChangesResource,
+          truncated: false,
+        );
+      }
+    }
 
     return Diff(
-      id: _optionalString(json['id']) ?? uri ?? '',
-      status: DiffStatus.fromWire(_optionalString(json['status'])),
+      id: id,
+      status: DiffStatus.fromWire(statusValue),
       uri: uri,
-      changes: changesList,
-      description: _optionalString(json['description'] ?? json['title']),
+      changes: List<DiffChange>.unmodifiable(changesList),
+      description: description,
+      truncated: truncated,
+      omission: omission,
     );
   }
 
@@ -137,6 +204,12 @@ class Diff {
   /// Description of the diff.
   final String? description;
 
+  /// Whether the diff details were rejected as incomplete or unsafe.
+  final bool truncated;
+
+  /// Host-owned reason why diff details were omitted.
+  final AcpInputOmission? omission;
+
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -145,6 +218,33 @@ class Diff {
     if (changes.isNotEmpty) 'changes': changes.map((c) => c.toJson()).toList(),
     if (description != null) 'description': description,
   };
+}
+
+const Object _absentDiffField = Object();
+const String _diffChangesResource = 'diff_changes';
+
+Object? _firstNonNull(Map<String, dynamic> json, List<String> fields) {
+  for (final field in fields) {
+    try {
+      if (!json.containsKey(field)) continue;
+      final value = json[field];
+      if (value != null) return value;
+    } catch (_) {
+      throw const FormatException('Invalid ACP diff structure.');
+    }
+  }
+  return _absentDiffField;
+}
+
+String? _copyOptionalAliasedString(
+  Map<String, dynamic> json,
+  List<String> fields,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _firstNonNull(json, fields);
+  if (identical(value, _absentDiffField)) return null;
+  return guard.copyString(value, field: field);
 }
 
 String? _optionalString(Object? value) => value is String ? value : null;
@@ -187,43 +287,117 @@ String _changeTypeFromRaw(Object? raw) {
   };
 }
 
-int? _lineFromRaw(Object? raw) {
-  if (raw is num) return raw.toInt();
-  if (raw is String) return int.tryParse(raw.trim());
-  return null;
-}
-
-List<DiffChange> _diffChangesFromRaw(Object? raw) {
+List<DiffChange> _diffChangesFromRaw(
+  Object? raw, {
+  required AcpInputBudget inputBudget,
+  required AcpStructuredUpdateGuard guard,
+}) {
   if (raw is String) {
-    return _diffChangesFromString(raw);
+    return _diffChangesFromString(raw, inputBudget: inputBudget, guard: guard);
   }
-  if (raw is! List) return const <DiffChange>[];
-  return raw
-      .expand((item) {
-        final change = _diffChangeFromRaw(item);
-        return change == null ? const <DiffChange>[] : <DiffChange>[change];
-      })
-      .toList(growable: false);
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP diff changes structure.');
+  }
+  final reportedLength = guard.checkCollection(raw, field: 'changes');
+  guard.consumeContainerNode(field: 'changes');
+  final changes = <DiffChange>[];
+  final Iterator<Object?> iterator;
+  try {
+    iterator = raw.iterator;
+  } catch (_) {
+    throw const FormatException('Invalid ACP diff changes structure.');
+  }
+  var observedItems = 0;
+  while (true) {
+    final bool hasNext;
+    try {
+      hasNext = iterator.moveNext();
+    } catch (_) {
+      throw const FormatException('Invalid ACP diff changes structure.');
+    }
+    if (!hasNext) break;
+    observedItems += 1;
+    if (observedItems > inputBudget.maxCollectionItems) {
+      throw AcpInputLimitExceeded(
+        resource: _diffChangesResource,
+        limit: inputBudget.maxCollectionItems,
+        observedAtLeast: observedItems,
+      );
+    }
+    if (observedItems > reportedLength) {
+      throw const FormatException('Invalid ACP diff changes structure.');
+    }
+    final Object? item;
+    try {
+      item = iterator.current;
+    } catch (_) {
+      throw const FormatException('Invalid ACP diff changes structure.');
+    }
+    final change = _diffChangeFromRaw(item, guard);
+    if (change != null) changes.add(change);
+  }
+  if (observedItems != reportedLength) {
+    throw const FormatException('Invalid ACP diff changes structure.');
+  }
+  return List<DiffChange>.unmodifiable(changes);
 }
 
-List<DiffChange> _diffChangesFromString(String raw) {
-  final lines = raw.split('\n').where((line) => line.trim().isNotEmpty);
-  return lines
-      .map((line) {
-        if (line.startsWith('+') && !line.startsWith('+++')) {
-          return DiffChange(type: 'addition', content: line.substring(1));
-        }
-        if (line.startsWith('-') && !line.startsWith('---')) {
-          return DiffChange(type: 'deletion', content: line.substring(1));
-        }
-        return DiffChange(type: 'change', content: line);
-      })
-      .toList(growable: false);
+List<DiffChange> _diffChangesFromString(
+  String raw, {
+  required AcpInputBudget inputBudget,
+  required AcpStructuredUpdateGuard guard,
+}) {
+  final scanner = AcpUtf8LineBudgetCounter(
+    maxBytes: inputBudget.maxMetadataBytes,
+    maxLines: inputBudget.maxCollectionItems,
+    resource: _diffChangesResource,
+  );
+  final appended = scanner.append(raw);
+  final finished = scanner.finish();
+  final omission = appended.omission ?? finished.omission;
+  if (omission != null) {
+    throw AcpInputLimitExceeded(
+      resource: _diffChangesResource,
+      limit: omission.limit!,
+      observedAtLeast: omission.observedAtLeast!,
+    );
+  }
+
+  guard.consumeContainerNode(field: 'changes');
+  final changes = <DiffChange>[];
+  var start = 0;
+  var index = 0;
+  while (index < raw.length) {
+    final codeUnit = raw.codeUnitAt(index);
+    if (codeUnit != 0x0a && codeUnit != 0x0d) {
+      index += 1;
+      continue;
+    }
+    final line = raw.substring(start, index);
+    if (codeUnit == 0x0d &&
+        index + 1 < raw.length &&
+        raw.codeUnitAt(index + 1) == 0x0a) {
+      index += 1;
+    }
+    index += 1;
+    start = index;
+    if (line.trim().isEmpty) continue;
+    final change = _diffChangeFromRaw(line, guard);
+    if (change != null) changes.add(change);
+  }
+  final finalLine = raw.substring(start);
+  if (finalLine.trim().isNotEmpty) {
+    final change = _diffChangeFromRaw(finalLine, guard);
+    if (change != null) changes.add(change);
+  }
+  return List<DiffChange>.unmodifiable(changes);
 }
 
-DiffChange? _diffChangeFromRaw(Object? raw) {
+DiffChange? _diffChangeFromRaw(Object? raw, AcpStructuredUpdateGuard guard) {
   if (raw is String) {
-    final text = raw.trimRight();
+    guard.consumeEntry(field: 'change');
+    final bounded = guard.copyString(raw, field: 'change text');
+    final text = bounded.trimRight();
     if (text.trim().isEmpty) return null;
     if (text.startsWith('+')) {
       return DiffChange(type: 'addition', content: text.substring(1));
@@ -233,8 +407,105 @@ DiffChange? _diffChangeFromRaw(Object? raw) {
     }
     return DiffChange(type: 'change', content: text);
   }
-  if (raw is! Map) return null;
-  return DiffChange.fromJson(
-    raw.map((key, value) => MapEntry(key.toString(), value)),
+  if (raw is! Map) {
+    throw const FormatException('Invalid ACP diff change structure.');
+  }
+  guard.checkCollection(raw, field: 'change');
+  guard.consumeEntry(field: 'change');
+  final type = _copyRequiredMapString(
+    raw,
+    const <String>['type'],
+    guard,
+    field: 'change type',
+    defaultValue: 'change',
+  );
+  final lineRaw = _firstMapNonNull(raw, const <String>[
+    'line',
+    'lineNumber',
+    'line_number',
+  ]);
+  int? line;
+  if (!identical(lineRaw, _absentDiffField)) {
+    if (lineRaw is int) {
+      guard.copyScalar(lineRaw, field: 'change line');
+      line = lineRaw;
+    } else if (lineRaw is double) {
+      guard.copyScalar(lineRaw, field: 'change line');
+      line = lineRaw.toInt();
+    } else if (lineRaw is String) {
+      final bounded = guard.copyString(lineRaw, field: 'change line');
+      line = int.tryParse(bounded.trim());
+      if (line == null) {
+        throw const FormatException('Invalid ACP diff change structure.');
+      }
+    } else {
+      throw const FormatException('Invalid ACP diff change structure.');
+    }
+  }
+  final content = _copyOptionalMapString(
+    raw,
+    const <String>['content', 'text'],
+    guard,
+    field: 'change content',
+  );
+  final oldContent = _copyOptionalMapString(
+    raw,
+    const <String>['oldContent', 'old'],
+    guard,
+    field: 'change old content',
+  );
+  final newContent = _copyOptionalMapString(
+    raw,
+    const <String>['newContent', 'new'],
+    guard,
+    field: 'change new content',
+  );
+  final metadata = _firstMapNonNull(raw, const <String>[
+    '_meta',
+    'metadata',
+    'meta',
+  ]);
+  if (!identical(metadata, _absentDiffField)) {
+    guard.copyMetadata(metadata, field: 'change metadata');
+  }
+  return DiffChange(
+    type: _changeTypeFromRaw(type),
+    line: line,
+    content: content,
+    oldContent: oldContent,
+    newContent: newContent,
   );
 }
+
+Object? _firstMapNonNull(Map source, List<String> fields) {
+  for (final field in fields) {
+    try {
+      if (!source.containsKey(field)) continue;
+      final value = source[field];
+      if (value != null) return value;
+    } catch (_) {
+      throw const FormatException('Invalid ACP diff change structure.');
+    }
+  }
+  return _absentDiffField;
+}
+
+String? _copyOptionalMapString(
+  Map source,
+  List<String> fields,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _firstMapNonNull(source, fields);
+  if (identical(value, _absentDiffField)) return null;
+  return guard.copyString(value, field: field);
+}
+
+String _copyRequiredMapString(
+  Map source,
+  List<String> fields,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+  required String defaultValue,
+}) =>
+    _copyOptionalMapString(source, fields, guard, field: field) ?? defaultValue;

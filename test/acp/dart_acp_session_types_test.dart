@@ -1619,7 +1619,6 @@ Future<void> main() async {
           'old': 'old call',
           'new': 'new call',
         },
-        13,
       ],
     });
 
@@ -1701,7 +1700,6 @@ Future<void> main() async {
             'kimi-k2',
             <String, dynamic>{'id': 'glm-4.6', 'displayName': 'GLM 4.6'},
             <String, dynamic>{'value': 4, 'name': 'Four'},
-            <String, dynamic>{},
           ],
           'category': 'model',
         },
@@ -1715,8 +1713,6 @@ Future<void> main() async {
             <String, Object>{'value': false, 'label': 'Off'},
           ],
         },
-        'not-a-config-option',
-        <String, dynamic>{'name': 'Missing id', 'currentValue': 'x'},
       ],
     });
 
@@ -1743,6 +1739,986 @@ Future<void> main() async {
     expect(autoApply.currentValue, 'true');
     expect(autoApply.options.map((choice) => choice.value), ['true', 'false']);
     expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
+  });
+
+  test('diff details fail closed at collection and text boundaries', () {
+    final numericLine = Diff.fromJson(<String, dynamic>{
+      'changes': <Object?>[
+        <String, dynamic>{'type': 'addition', 'line': 1.5, 'content': 'x'},
+      ],
+    });
+    expect(numericLine.changes.single.line, 1);
+
+    final exact = Diff.fromJson(
+      <String, dynamic>{'id': 'd', 'diff': '+a\n-b'},
+      inputBudget: const AcpInputBudget(
+        maxCollectionItems: 2,
+        maxMetadataBytes: 5,
+      ),
+    );
+    expect(exact.changes.map((change) => change.content), ['a', 'b']);
+    expect(exact.truncated, isFalse);
+    expect(exact.omission, isNull);
+
+    final tooManyLines = Diff.fromJson(
+      <String, dynamic>{'id': 'd', 'diff': '+a\n-b\n+c'},
+      inputBudget: const AcpInputBudget(
+        maxCollectionItems: 2,
+        maxMetadataBytes: 8,
+      ),
+    );
+    expect(tooManyLines.id, 'd');
+    expect(tooManyLines.uri, isNull);
+    expect(tooManyLines.status, DiffStatus.started);
+    expect(tooManyLines.changes, isEmpty);
+    expect(tooManyLines.truncated, isTrue);
+    expect(tooManyLines.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(tooManyLines.omission?.truncated, isFalse);
+
+    const canary = 'DIFF_DETAIL_CANARY';
+    final invalidStructured = Diff.fromJson(<String, dynamic>{
+      'id': 'd',
+      'uri': 'u',
+      'status': 'done',
+      'changes': <Object?>[
+        <String, dynamic>{'type': 'addition', 'content': 'safe'},
+        <String, dynamic>{
+          'type': 'addition',
+          'content': <String>[canary],
+        },
+      ],
+    });
+    expect(invalidStructured.changes, isEmpty);
+    expect(invalidStructured.truncated, isTrue);
+    expect(
+      invalidStructured.omission?.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+    expect(invalidStructured.omission.toString(), isNot(contains(canary)));
+  });
+
+  test('diff structural strings share one root and reject before details', () {
+    final exact = Diff.fromJson(<String, dynamic>{
+      'id': 'é',
+      'uri': 'u',
+      'status': 'x',
+      'changes': <Object?>[],
+    }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 2));
+    expect(exact.id, 'é');
+
+    expect(
+      () => Diff.fromJson(<String, dynamic>{
+        'id': 'éx',
+        'uri': 'u',
+        'status': 'x',
+        'changes': <Object?>['DIFF_URI_CANARY'],
+      }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 2)),
+      throwsA(
+        isA<AcpInputLimitExceeded>()
+            .having((error) => error.limit, 'limit', 2)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
+            .having(
+              (error) => error.toString(),
+              'payload-free',
+              isNot(contains('DIFF_URI_CANARY')),
+            ),
+      ),
+    );
+  });
+
+  test('raw diff scanner handles CR LF CRLF and final lines at boundaries', () {
+    for (final separator in const <String>['\n', '\r', '\r\n']) {
+      final exact = Diff.fromJson(<String, dynamic>{
+        'diff': '+a$separator-b',
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+      expect(
+        exact.changes.map((change) => change.type),
+        <String>['addition', 'deletion'],
+        reason: separator.codeUnits.toString(),
+      );
+      expect(exact.omission, isNull);
+
+      final beyond = Diff.fromJson(<String, dynamic>{
+        'diff': '+a$separator-b$separator+c',
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+      expect(beyond.changes, isEmpty);
+      expect(beyond.omission?.reason, AcpInputOmissionReason.inputLimit);
+      expect(beyond.omission?.limit, 2);
+      expect(beyond.omission?.observedAtLeast, 3);
+    }
+
+    final exactBytes = Diff.fromJson(
+      <String, dynamic>{'diff': '+é\r\n-b'},
+      inputBudget: const AcpInputBudget(
+        maxCollectionItems: 2,
+        maxMetadataBytes: 7,
+      ),
+    );
+    expect(exactBytes.changes, hasLength(2));
+    final beyondBytes = Diff.fromJson(
+      <String, dynamic>{'diff': '+é\r\n-bx'},
+      inputBudget: const AcpInputBudget(
+        maxCollectionItems: 2,
+        maxMetadataBytes: 7,
+      ),
+    );
+    expect(beyondBytes.changes, isEmpty);
+    expect(beyondBytes.omission?.limit, 7);
+    expect(beyondBytes.omission?.observedAtLeast, 8);
+  });
+
+  test('plans retain only a bounded immutable display prefix', () {
+    final sourceEntry = <String, dynamic>{
+      'content': 'second',
+      'metadata': <String, Object?>{
+        'nested': <Object?>[1],
+      },
+    };
+    final plan = Plan.fromJson(<String, dynamic>{
+      'title': 'title',
+      'entries': <Object?>['first', sourceEntry, 'third'],
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+
+    expect(plan.entries.map((entry) => entry.content), ['first', 'second']);
+    expect(plan.truncated, isTrue);
+    expect(plan.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(plan.omission?.resource, 'plan_entries');
+    expect(plan.omission?.limit, 2);
+    expect(plan.omission?.observedAtLeast, 3);
+    expect(plan.omission?.truncated, isTrue);
+
+    (sourceEntry['metadata']! as Map<String, Object?>)['later'] = true;
+    expect(plan.entries[1].metadata, isNot(contains('later')));
+    expect(() => plan.entries.add(plan.entries.first), throwsUnsupportedError);
+    expect(
+      () => plan.entries[1].metadata!['later'] = true,
+      throwsUnsupportedError,
+    );
+  });
+
+  test('available commands fail closed without retaining partial input', () {
+    final exact = AvailableCommandsUpdate.fromRaw(<Map<String, dynamic>>[
+      <String, dynamic>{'name': 'one'},
+      <String, dynamic>{'name': 'two'},
+    ], inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+    expect(exact.commands.map((command) => command.name), ['one', 'two']);
+    expect(exact.omission, isNull);
+    expect(
+      () => exact.commands.add(exact.commands.first),
+      throwsUnsupportedError,
+    );
+
+    final tooMany = AvailableCommandsUpdate.fromRaw(<Map<String, dynamic>>[
+      <String, dynamic>{'name': 'one'},
+      <String, dynamic>{'name': 'two'},
+      <String, dynamic>{'name': 'COMMAND_CANARY'},
+    ], inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+    expect(tooMany.commands, isEmpty);
+    expect(tooMany.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(tooMany.omission.toString(), isNot(contains('COMMAND_CANARY')));
+
+    final malformed = AvailableCommandsUpdate.fromRaw(<Map<String, dynamic>>[
+      <String, dynamic>{'name': 'safe'},
+      <String, dynamic>{
+        'name': <String>['COMMAND_STRUCTURE_CANARY'],
+      },
+    ]);
+    expect(malformed.commands, isEmpty);
+    expect(malformed.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(
+      malformed.omission.toString(),
+      isNot(contains('COMMAND_STRUCTURE_CANARY')),
+    );
+
+    final missingName = AvailableCommandsUpdate.fromRaw(<Map<String, dynamic>>[
+      <String, dynamic>{'name': 'safe'},
+      <String, dynamic>{},
+    ]);
+    expect(missingName.commands, isEmpty);
+    expect(
+      missingName.omission?.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+  });
+
+  test('fromRaw owners validate dynamic list items without caller casts', () {
+    final canary = _UpdateToStringCanary();
+    final commands = AvailableCommandsUpdate.fromRaw(<Object?>[
+      <String, dynamic>{'name': 'safe'},
+      canary,
+    ]);
+    expect(commands.commands, isEmpty);
+    expect(commands.omission?.reason, AcpInputOmissionReason.invalidStructure);
+
+    final message = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: <Object?>[
+        canary,
+        <String, dynamic>{'text': 'good'},
+      ],
+    );
+    expect(message.text, 'good');
+    expect(
+      message.omissions.single.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+    expect(message.content.first, isA<UnknownContent>());
+    expect(canary.calls, 0);
+  });
+
+  test('structured collections count actual yielded items independently', () {
+    const canary = 'EXTRA_ITERATOR_CANARY';
+    final plan = Plan.fromJson(<String, dynamic>{
+      'entries': _ExtraYieldList<Object?>(
+        reportedLength: 2,
+        actualValues: <Object?>['', '   ', canary],
+      ),
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+    expect(plan.entries, isEmpty);
+    expect(plan.truncated, isTrue);
+    expect(plan.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(plan.omission?.limit, 2);
+    expect(plan.omission?.observedAtLeast, 3);
+    expect(plan.omission.toString(), isNot(contains(canary)));
+
+    final diff = Diff.fromJson(<String, dynamic>{
+      'changes': _ExtraYieldList<Object?>(
+        reportedLength: 1,
+        actualValues: <Object?>['   ', canary],
+      ),
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+    expect(diff.changes, isEmpty);
+    expect(diff.truncated, isTrue);
+    expect(diff.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(diff.omission?.limit, 1);
+    expect(diff.omission?.observedAtLeast, 2);
+    expect(diff.omission.toString(), isNot(contains(canary)));
+  });
+
+  test('message deltas aggregate immutable deduplicated block omissions', () {
+    final delta = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: <Map<String, dynamic>>[
+        <String, dynamic>{'type': 'text', 'text': 'ab'},
+        <String, dynamic>{
+          'type': 'resource',
+          'resource': <String, dynamic>{'uri': 'file:///r', 'text': 'cd'},
+        },
+        <String, dynamic>{
+          'type': 'image',
+          'mimeType': 'image/png',
+          'data': 'TW E',
+        },
+      ],
+      inputBudget: const AcpInputBudget(
+        maxMessageTextBytes: 1,
+        maxMarkdownFallbackBytes: 1,
+      ),
+    );
+
+    expect(delta.text, 'a');
+    expect(delta.text, isNot(contains('omitted')));
+    expect(delta.content, hasLength(3));
+    expect(delta.omissions, hasLength(2));
+    expect(
+      delta.omissions.map((omission) => omission.reason),
+      <AcpInputOmissionReason>[
+        AcpInputOmissionReason.inputLimit,
+        AcpInputOmissionReason.invalidEncoding,
+      ],
+    );
+    expect(
+      () => delta.content.add(delta.content.first),
+      throwsUnsupportedError,
+    );
+    expect(() => delta.omissions.clear(), throwsUnsupportedError);
+  });
+
+  test(
+    'message content retains a bounded block prefix with typed omission',
+    () {
+      final delta = MessageDelta.fromRaw(
+        role: 'assistant',
+        rawContent: <Object?>[
+          <String, dynamic>{'text': 'first'},
+          <String, dynamic>{'text': 'MESSAGE_BLOCK_CANARY'},
+        ],
+        inputBudget: const AcpInputBudget(maxCollectionItems: 1),
+      );
+      expect(delta.text, 'first');
+      expect(delta.content, hasLength(1));
+      expect(delta.omissions.single.reason, AcpInputOmissionReason.inputLimit);
+      expect(delta.omissions.single.resource, 'message_content');
+      expect(delta.omissions.single.limit, 1);
+      expect(delta.omissions.single.observedAtLeast, 2);
+      expect(
+        delta.omissions.toString(),
+        isNot(contains('MESSAGE_BLOCK_CANARY')),
+      );
+    },
+  );
+
+  test('session info drops bad display metadata with trusted carrier only', () {
+    final exact = SessionInfo.fromJson(<String, dynamic>{
+      'sessionId': 's',
+      'cwd': '/w',
+      '_meta': <String, Object?>{'x': 'y'},
+    }, inputBudget: const AcpInputBudget(maxMetadataBytes: 2));
+    expect(exact.meta, <String, Object?>{'x': 'y'});
+    expect(exact.metaOmission, isNull);
+
+    final limited = SessionInfo.fromJson(<String, dynamic>{
+      'sessionId': 's',
+      'cwd': '/w',
+      '_meta': <String, Object?>{'x': 'yz'},
+      'metaOmission': <String, Object?>{
+        'reason': 'invalid_structure',
+        'resource': 'forged',
+      },
+    }, inputBudget: const AcpInputBudget(maxMetadataBytes: 2));
+    expect(limited.meta, isEmpty);
+    expect(limited.metaOmission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(limited.metaOmission?.resource, 'session_meta');
+    expect(limited.metaOmission?.limit, 2);
+    expect(limited.metaOmission?.observedAtLeast, 3);
+    expect(() => limited.meta!['x'] = 'changed', throwsUnsupportedError);
+
+    final forged = SessionInfo.fromJson(<String, dynamic>{
+      'sessionId': 's',
+      'cwd': '/w',
+      'metaOmission': <String, Object?>{
+        'reason': 'input_limit',
+        'resource': 'forged',
+      },
+    });
+    expect(forged.metaOmission, isNull);
+  });
+
+  test('session list preserves one bounded SessionInfo carrier instance', () {
+    final result = SessionListResult.fromJson(
+      <String, dynamic>{
+        'sessions': <Object?>[
+          <String, dynamic>{
+            'sessionId': 's',
+            'cwd': 'w',
+            '_meta': <String, Object?>{'x': null},
+          },
+        ],
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 7,
+        maxStructuredUpdateBytes: 7,
+      ),
+    );
+
+    expect(result.sessions, hasLength(1));
+    final session = result.sessions.single;
+    expect(session.meta, <String, Object?>{'x': null});
+    expect(session.metaOmission, isNull);
+    expect(() => result.sessions.add(session), throwsUnsupportedError);
+    expect(() => session.meta!['x'] = true, throwsUnsupportedError);
+
+    final limited = SessionListResult.fromJson(<String, dynamic>{
+      'sessions': <Object?>[
+        <String, dynamic>{
+          'sessionId': 's',
+          'cwd': 'w',
+          '_meta': <String, Object?>{'x': 'yy'},
+        },
+      ],
+    }, inputBudget: const AcpInputBudget(maxMetadataBytes: 2));
+    expect(limited.sessions.single.meta, isEmpty);
+    expect(
+      limited.sessions.single.metaOmission?.reason,
+      AcpInputOmissionReason.inputLimit,
+    );
+  });
+
+  test(
+    'additional directories reject invalid actionable entries atomically',
+    () {
+      final canary = _UpdateToStringCanary();
+      expect(
+        () => SessionInfo.fromJson(<String, dynamic>{
+          'sessionId': 's',
+          'cwd': '/w',
+          'additionalDirectories': <Object?>['/safe', canary],
+        }),
+        throwsA(
+          predicate<Object>(
+            (error) => !error.toString().contains('UPDATE_TOSTRING_CANARY'),
+            'payload-free',
+          ),
+        ),
+      );
+      expect(canary.calls, 0);
+    },
+  );
+
+  test('session result config and modes fail closed as whole fields', () {
+    final configResult = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 's',
+      'configOptions': <Object?>[
+        <String, dynamic>{
+          'id': 'model',
+          'name': 'Model',
+          'currentValue': 'a',
+          'options': <Object?>['a', 'b', 'CONFIG_CANARY'],
+        },
+      ],
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+    final modesResult = SessionResult.fromJson(<String, dynamic>{
+      'currentModeId': 'code',
+      'availableModes': <Object?>[
+        <String, dynamic>{'id': 'code', 'name': 'Code'},
+        <String, dynamic>{'id': 'ask', 'name': 'Ask'},
+        <String, dynamic>{'id': 'MODE_CANARY', 'name': 'Canary'},
+      ],
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 2));
+
+    expect(configResult.sessionId, 's');
+    expect(configResult.configOptions, isEmpty);
+    expect(configResult.modes, isNull);
+    expect(configResult.omissions, hasLength(1));
+    expect(modesResult.modes, isNull);
+    expect(modesResult.omissions, hasLength(1));
+    expect(<String>[
+      ...configResult.omissions.map((omission) => omission.resource),
+      ...modesResult.omissions.map((omission) => omission.resource),
+    ], containsAll(<String>['config_options', 'session_modes']));
+    expect(configResult.omissions.toString(), isNot(contains('CONFIG_CANARY')));
+    expect(modesResult.omissions.toString(), isNot(contains('MODE_CANARY')));
+    expect(() => configResult.omissions.clear(), throwsUnsupportedError);
+
+    final forged = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 's',
+      'omissions': <Object?>[
+        <String, Object?>{'reason': 'invalid_structure'},
+      ],
+    });
+    expect(forged.omissions, isEmpty);
+  });
+
+  test(
+    'invalid config options and choices reject the whole actionable field',
+    () {
+      final invalidOption = SessionResult.fromJson(<String, dynamic>{
+        'sessionId': 's',
+        'configOptions': <Object?>[
+          <String, dynamic>{'id': 'safe', 'currentValue': 'a'},
+          <String, dynamic>{'name': 'missing id', 'currentValue': 'b'},
+        ],
+      });
+      expect(invalidOption.configOptions, isEmpty);
+      expect(
+        invalidOption.omissions.single.reason,
+        AcpInputOmissionReason.invalidStructure,
+      );
+
+      final invalidChoice = SessionResult.fromJson(<String, dynamic>{
+        'sessionId': 's',
+        'configOptions': <Object?>[
+          <String, dynamic>{
+            'id': 'model',
+            'currentValue': 'a',
+            'options': <Object?>['a', <String, dynamic>{}],
+          },
+        ],
+      });
+      expect(invalidChoice.configOptions, isEmpty);
+      expect(
+        invalidChoice.omissions.single.reason,
+        AcpInputOmissionReason.invalidStructure,
+      );
+    },
+  );
+
+  test('all structured root maps precheck length before field access', () {
+    const canary = 'ROOT_LENGTH_CANARY';
+    final parsers = <Object? Function(Map<String, dynamic>)>[
+      (json) => Plan.fromJson(json),
+      (json) => Diff.fromJson(json),
+      (json) => AvailableCommand.fromJson(json),
+      (json) => SessionInfo.fromJson(json),
+      (json) => SessionListResult.fromJson(json),
+      (json) => SessionResult.fromJson(json),
+      (json) => ToolCall.fromJson(json),
+      (json) => UsageUpdate.fromJson(json),
+    ];
+    for (final parse in parsers) {
+      expect(
+        () => parse(_ContentThrowingLengthMap(canary)),
+        throwsA(
+          predicate<Object>(
+            (error) => !error.toString().contains(canary),
+            'payload-free root length failure',
+          ),
+        ),
+      );
+    }
+
+    final unknown = UnknownUpdate.fromJson(_ContentThrowingLengthMap(canary));
+    expect(unknown.raw, isEmpty);
+    expect(unknown.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    final mode = ModeUpdate.fromJson(_ContentThrowingLengthMap(canary));
+    expect(mode.currentModeId, isEmpty);
+    expect(mode.omission?.reason, AcpInputOmissionReason.invalidStructure);
+  });
+
+  test(
+    'update wrappers precheck root before consuming the shared model node',
+    () {
+      const canary = 'WRAPPER_LENGTH_CANARY';
+      for (final parse in <void Function(AcpStructuredUpdateGuard)>[
+        (guard) => PlanUpdate.fromJson(
+          _ContentThrowingLengthMap(canary),
+          structuredGuard: guard,
+        ),
+        (guard) => DiffUpdate.fromJson(
+          _ContentThrowingLengthMap(canary),
+          structuredGuard: guard,
+        ),
+        (guard) => ToolCallUpdate.fromJson(
+          _ContentThrowingLengthMap(canary),
+          structuredGuard: guard,
+        ),
+      ]) {
+        final guard = AcpStructuredUpdateGuard(
+          budget: const AcpInputBudget(maxStructuredUpdateNodes: 1),
+          resource: 'update wrapper',
+        );
+        expect(
+          () => parse(guard),
+          throwsA(
+            predicate<Object>(
+              (error) => !error.toString().contains(canary),
+              'payload-free',
+            ),
+          ),
+        );
+        guard.consumeEntry(field: 'after failure');
+      }
+    },
+  );
+
+  test('structured iterators detect extra yields before reading current', () {
+    const canary = 'EXTRA_CURRENT_CANARY';
+    final commandsRaw = _ExtraYieldTrapList<Map<String, dynamic>>(
+      reportedLength: 1,
+      values: <Map<String, dynamic>>[
+        <String, dynamic>{'name': 'safe'},
+        <String, dynamic>{'name': canary},
+      ],
+    );
+    final commands = AvailableCommandsUpdate.fromRaw(commandsRaw);
+    expect(commands.commands, isEmpty);
+    expect(commands.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(commandsRaw.currentReads, 1);
+
+    final planRaw = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['safe', canary],
+    );
+    final plan = Plan.fromJson(<String, dynamic>{
+      'entries': planRaw,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+    expect(plan.entries.single.content, 'safe');
+    expect(plan.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(planRaw.currentReads, 1);
+
+    final diffRaw = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['+safe', '+$canary'],
+    );
+    final diff = Diff.fromJson(<String, dynamic>{
+      'changes': diffRaw,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 1));
+    expect(diff.changes, isEmpty);
+    expect(diff.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(diffRaw.currentReads, 1);
+
+    final messageRaw = _ExtraYieldTrapList<Map<String, dynamic>>(
+      reportedLength: 1,
+      values: <Map<String, dynamic>>[
+        <String, dynamic>{'text': 'safe'},
+        <String, dynamic>{'text': canary},
+      ],
+    );
+    final message = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: messageRaw,
+      inputBudget: const AcpInputBudget(maxCollectionItems: 1),
+    );
+    expect(message.text, 'safe');
+    expect(message.omissions.single.reason, AcpInputOmissionReason.inputLimit);
+    expect(message.omissions.single.resource, 'message_content');
+    expect(messageRaw.currentReads, 1);
+  });
+
+  test('plan and diff reject length mismatches below capacity limits', () {
+    final extraPlanRaw = _ExtraYieldTrapList<Object?>(
+      reportedLength: 1,
+      values: <Object?>['first', 'PLAN_EXTRA_CANARY'],
+    );
+    final extraPlan = Plan.fromJson(<String, dynamic>{
+      'entries': extraPlanRaw,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+    expect(extraPlan.entries.single.content, 'first');
+    expect(extraPlan.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(extraPlanRaw.currentReads, 1);
+
+    final shortPlanRaw = _ExtraYieldTrapList<Object?>(
+      reportedLength: 3,
+      values: <Object?>['first', 'second'],
+    );
+    final shortPlan = Plan.fromJson(<String, dynamic>{
+      'entries': shortPlanRaw,
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+    expect(shortPlan.entries, hasLength(2));
+    expect(shortPlan.omission?.reason, AcpInputOmissionReason.invalidStructure);
+
+    for (final raw in <_ExtraYieldTrapList<Object?>>[
+      _ExtraYieldTrapList<Object?>(
+        reportedLength: 1,
+        values: <Object?>['+first', '+DIFF_EXTRA_CANARY'],
+      ),
+      _ExtraYieldTrapList<Object?>(
+        reportedLength: 3,
+        values: <Object?>['+first', '+second'],
+      ),
+    ]) {
+      final diff = Diff.fromJson(<String, dynamic>{
+        'changes': raw,
+      }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+      expect(diff.changes, isEmpty);
+      expect(diff.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    }
+  });
+
+  test('a bad display block does not poison the next legal message block', () {
+    final cycle = <String, dynamic>{'type': 'future'};
+    cycle['self'] = cycle;
+    final delta = MessageDelta.fromRaw(
+      role: 'assistant',
+      rawContent: <Map<String, dynamic>>[
+        cycle,
+        <String, dynamic>{'type': 'text', 'text': 'still valid'},
+      ],
+    );
+    expect(delta.text, 'still valid');
+    expect(delta.content.first, isA<UnknownContent>());
+    expect(
+      delta.omissions.single.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+  });
+
+  test('tool behavior fields are immutable and fail closed atomically', () {
+    final rawInput = <String, Object?>{
+      'nested': <Object?>[1],
+    };
+    final normal = ToolCall.fromJson(<String, dynamic>{
+      'toolCallId': 'call',
+      'status': 'pending',
+      'title': 'Run',
+      'content': <Object?>[
+        <String, Object?>{'type': 'text', 'text': 'working'},
+      ],
+      'locations': <Object?>[
+        <String, Object?>{'path': '/a', 'line': 1},
+      ],
+      'rawInput': rawInput,
+      'rawOutput': <String, Object?>{'ok': true},
+    });
+    (rawInput['nested']! as List<Object?>).add(2);
+    expect(normal.omission, isNull);
+    expect(normal.content, hasLength(1));
+    expect(normal.locations?.single.path, '/a');
+    expect(normal.rawInput, <String, Object?>{
+      'nested': <Object?>[1],
+    });
+    expect(() => normal.content!.add('x'), throwsUnsupportedError);
+    expect(
+      () => (normal.rawInput as Map<String, Object?>)['x'] = true,
+      throwsUnsupportedError,
+    );
+
+    final over = ToolCall.fromJson(<String, dynamic>{
+      'toolCallId': 'call',
+      'status': 'pending',
+      'content': <Object?>['safe', 'two', 'three', 'TOOL_CONTENT_CANARY'],
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+    expect(over.toolCallId, 'call');
+    expect(over.content, isNull);
+    expect(over.locations, isNull);
+    expect(over.rawInput, isNull);
+    expect(over.rawOutput, isNull);
+    expect(over.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(over.omission.toString(), isNot(contains('TOOL_CONTENT_CANARY')));
+
+    const canary = 'TOOL_CYCLE_CANARY';
+    final cycle = <String, Object?>{'value': canary};
+    cycle['self'] = cycle;
+    final invalid = ToolCall.fromJson(<String, dynamic>{
+      'toolCallId': 'call',
+      'status': 'pending',
+      'rawInput': cycle,
+    });
+    expect(invalid.rawInput, isNull);
+    expect(invalid.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(invalid.omission.toString(), isNot(contains(canary)));
+
+    final invalidLocation = ToolCall.fromJson(<String, dynamic>{
+      'toolCallId': 'call',
+      'status': 'pending',
+      'locations': <Object?>['/safe', ''],
+    });
+    expect(invalidLocation.locations, isNull);
+    expect(
+      invalidLocation.omission?.reason,
+      AcpInputOmissionReason.invalidStructure,
+    );
+  });
+
+  test('tool JSON lists consume exact values without host wrapper cost', () {
+    final tool = ToolCall.fromJson(
+      <String, dynamic>{
+        'toolCallId': 'c',
+        'status': 'x',
+        'content': <Object?>[null],
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 5,
+        maxStructuredUpdateBytes: 6,
+        maxMetadataNodes: 2,
+        maxMetadataBytes: 4,
+      ),
+    );
+
+    expect(tool.omission, isNull);
+    expect(tool.content, <Object?>[null]);
+  });
+
+  test('tool merge applies the same atomic bounded behavior semantics', () {
+    final existing = ToolCall.fromJson(<String, dynamic>{
+      'toolCallId': 'call',
+      'status': 'pending',
+      'title': 'Existing',
+      'rawInput': <String, Object?>{'old': true},
+    });
+    final merged = existing.merge(<String, dynamic>{
+      'status': 'completed',
+      'content': <Object?>['safe', 'two', 'three', 'MERGE_CONTENT_CANARY'],
+      'rawOutput': <String, Object?>{'secret': 'MERGE_RAW_CANARY'},
+    }, inputBudget: const AcpInputBudget(maxCollectionItems: 3));
+
+    expect(merged.toolCallId, 'call');
+    expect(merged.status, ToolCallStatus.completed);
+    expect(merged.title, 'Existing');
+    expect(merged.content, isNull);
+    expect(merged.locations, isNull);
+    expect(merged.rawInput, isNull);
+    expect(merged.rawOutput, isNull);
+    expect(merged.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(merged.omission.toString(), isNot(contains('MERGE_CONTENT_CANARY')));
+    expect(merged.omission.toString(), isNot(contains('MERGE_RAW_CANARY')));
+
+    final guard = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 1),
+      resource: 'tool merge',
+    );
+    expect(
+      () => existing.merge(
+        _ContentThrowingLengthMap('MERGE_LENGTH_CANARY'),
+        structuredGuard: guard,
+      ),
+      throwsA(
+        predicate<Object>(
+          (error) => !error.toString().contains('MERGE_LENGTH_CANARY'),
+          'payload-free',
+        ),
+      ),
+    );
+    guard.consumeEntry(field: 'after failure');
+  });
+
+  test('unknown and mode updates expose only host-owned trusted state', () {
+    final nested = <String, Object?>{
+      'items': <Object?>[1],
+    };
+    final unknown = UnknownUpdate.fromJson(<String, dynamic>{
+      'sessionUpdate': 'future',
+      'nested': nested,
+      'omission': <String, Object?>{
+        'reason': 'input_limit',
+        'resource': 'forged',
+      },
+    });
+    (nested['items']! as List<Object?>).add(2);
+    expect(unknown.omission, isNull);
+    expect((unknown.raw['nested'] as Map<String, Object?>)['items'], [1]);
+    expect(() => unknown.raw['x'] = true, throwsUnsupportedError);
+
+    final limited = UnknownUpdate.fromJson(<String, dynamic>{
+      'sessionUpdate': 'future',
+      'value': 'xx',
+    }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 12));
+    expect(limited.raw, isEmpty);
+    expect(limited.omission?.reason, AcpInputOmissionReason.inputLimit);
+
+    final forgedMode = ModeUpdate.fromJson(<String, dynamic>{
+      'currentModeId': 'code',
+      'omission': <String, Object?>{'reason': 'invalid_structure'},
+    });
+    expect(forgedMode.currentModeId, 'code');
+    expect(forgedMode.omission, isNull);
+
+    final badMode = ModeUpdate.fromJson(<String, dynamic>{
+      'currentModeId': <String>['MODE_STRUCTURE_CANARY'],
+    });
+    expect(badMode.currentModeId, isEmpty);
+    expect(badMode.omission?.reason, AcpInputOmissionReason.invalidStructure);
+    expect(
+      badMode.omission.toString(),
+      isNot(contains('MODE_STRUCTURE_CANARY')),
+    );
+
+    final nonStringType = UnknownUpdate.fromJson(<String, dynamic>{
+      'sessionUpdate': <String, Object?>{'secret': 'UNKNOWN_TEXT_CANARY'},
+    });
+    expect(nonStringType.text, '[Unknown update: unspecified]');
+    expect(nonStringType.text, isNot(contains('UNKNOWN_TEXT_CANARY')));
+  });
+
+  test('usage update fields share one bounded root without coercion leaks', () {
+    final exact = UsageUpdate.fromJson(
+      <String, dynamic>{
+        'used': '1',
+        'size': 2,
+        'cost': <String, dynamic>{'amount': '3.5', 'currency': 'USD'},
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredUpdateNodes: 6,
+        maxStructuredUpdateBytes: 8,
+      ),
+    );
+    expect(exact.used, 1);
+    expect(exact.size, 2);
+    expect(exact.cost?.amount, 3.5);
+    expect(exact.cost?.currency, 'USD');
+
+    expect(
+      () => UsageUpdate.fromJson(
+        <String, dynamic>{
+          'used': '1',
+          'size': 2,
+          'cost': <String, dynamic>{'amount': '3.5', 'currency': 'USD'},
+        },
+        inputBudget: const AcpInputBudget(
+          maxStructuredUpdateNodes: 5,
+          maxStructuredUpdateBytes: 8,
+        ),
+      ),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+
+    final canary = _UpdateToStringCanary();
+    expect(
+      () => UsageCost.fromJson(<String, dynamic>{
+        'amount': 1,
+        'currency': canary,
+      }),
+      throwsA(
+        predicate<Object>(
+          (error) => !error.toString().contains('UPDATE_TOSTRING_CANARY'),
+          'payload-free',
+        ),
+      ),
+    );
+    expect(canary.calls, 0);
+  });
+
+  test('nested structured model factories expose the same bounded API', () {
+    const budget = AcpInputBudget(maxStructuredStringBytes: 4);
+    expect(
+      AvailableCommandInput.fromJson(<String, dynamic>{
+        'hint': 'hint',
+      }, inputBudget: budget).hint,
+      'hint',
+    );
+    expect(
+      PlanEntry.fromJson(<String, dynamic>{
+        'content': 'step',
+      }, inputBudget: budget).content,
+      'step',
+    );
+    expect(
+      DiffChange.fromJson(<String, dynamic>{
+        'type': 'add',
+      }, inputBudget: budget).type,
+      'addition',
+    );
+    expect(
+      ConfigOptionChoice.fromJson(<String, dynamic>{
+        'value': 'v',
+        'name': 'name',
+      }, inputBudget: budget).name,
+      'name',
+    );
+    expect(
+      ToolCallLocation.fromJson(<String, dynamic>{
+        'path': '/tmp',
+      }, inputBudget: budget).path,
+      '/tmp',
+    );
+    expect(
+      () => ToolCallLocation.fromJson(<String, dynamic>{}),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('standalone structured models consume one model node without reset', () {
+    for (final parse in <void Function(AcpStructuredUpdateGuard)>[
+      (guard) => Plan.fromJson(<String, dynamic>{}, structuredGuard: guard),
+      (guard) => Diff.fromJson(<String, dynamic>{}, structuredGuard: guard),
+      (guard) =>
+          SessionInfo.fromJson(<String, dynamic>{}, structuredGuard: guard),
+      (guard) => ToolCall.fromJson(<String, dynamic>{}, structuredGuard: guard),
+      (guard) =>
+          ModeUpdate.fromJson(<String, dynamic>{}, structuredGuard: guard),
+    ]) {
+      final guard = AcpStructuredUpdateGuard(
+        budget: const AcpInputBudget(maxStructuredUpdateNodes: 1),
+        resource: 'standalone model',
+      );
+      parse(guard);
+      expect(
+        () => guard.consumeEntry(field: 'beyond'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+    }
+
+    final commandGuard = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 2),
+      resource: 'standalone command',
+    );
+    AvailableCommand.fromJson(<String, dynamic>{
+      'name': 'a',
+    }, structuredGuard: commandGuard);
+    expect(
+      () => commandGuard.consumeEntry(field: 'beyond'),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
+
+    final updateGuard = AcpStructuredUpdateGuard(
+      budget: const AcpInputBudget(maxStructuredUpdateNodes: 2),
+      resource: 'plan update',
+    );
+    PlanUpdate.fromJson(<String, dynamic>{}, structuredGuard: updateGuard);
+    expect(
+      () => updateGuard.consumeEntry(field: 'beyond'),
+      throwsA(isA<AcpInputLimitExceeded>()),
+    );
   });
 }
 
@@ -1937,4 +2913,81 @@ class _ContentThrowingEntriesMap extends MapBase<String, dynamic> {
 
   @override
   dynamic remove(Object? key) => throw UnsupportedError('');
+}
+
+class _ExtraYieldList<T> extends ListBase<T> {
+  _ExtraYieldList({required this.reportedLength, required this.actualValues});
+
+  final int reportedLength;
+  final List<T> actualValues;
+
+  @override
+  int get length => reportedLength;
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable');
+
+  @override
+  T operator [](int index) => actualValues[index];
+
+  @override
+  void operator []=(int index, T value) => throw UnsupportedError('immutable');
+
+  @override
+  Iterator<T> get iterator => actualValues.iterator;
+}
+
+class _UpdateToStringCanary {
+  var calls = 0;
+
+  @override
+  String toString() {
+    calls += 1;
+    return 'UPDATE_TOSTRING_CANARY';
+  }
+}
+
+class _ExtraYieldTrapList<T> extends ListBase<T> {
+  _ExtraYieldTrapList({required this.reportedLength, required this.values});
+
+  final int reportedLength;
+  final List<T> values;
+  var currentReads = 0;
+
+  @override
+  int get length => reportedLength;
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable');
+
+  @override
+  T operator [](int index) => values[index];
+
+  @override
+  void operator []=(int index, T value) => throw UnsupportedError('immutable');
+
+  @override
+  Iterator<T> get iterator => _CurrentCountingIterator<T>(values, () {
+    currentReads += 1;
+  });
+}
+
+class _CurrentCountingIterator<T> implements Iterator<T> {
+  _CurrentCountingIterator(this.values, this.onCurrent);
+
+  final List<T> values;
+  final void Function() onCurrent;
+  var index = -1;
+
+  @override
+  T get current {
+    onCurrent();
+    return values[index];
+  }
+
+  @override
+  bool moveNext() {
+    index += 1;
+    return index < values.length;
+  }
 }

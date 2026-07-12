@@ -1838,6 +1838,11 @@ void main() {
                 value.copyMetadata(<String, Object?>{}, field: 'reentrant'),
           ),
           (
+            name: 'copyJsonValue',
+            call: (value) =>
+                value.copyJsonValue(<Object?>[], field: 'reentrant'),
+          ),
+          (
             name: 'consumeContainerNode',
             call: (value) => value.consumeContainerNode(field: 'reentrant'),
           ),
@@ -1906,6 +1911,74 @@ void main() {
       expect(empty, isEmpty);
       expect(() => empty['x'] = null, throwsUnsupportedError);
       expect(absent.copyString('a', field: 'title'), 'a');
+    });
+
+    test('copies any JSON value without injecting wrapper budget', () {
+      final source = <Object?>[
+        'é',
+        <String, Object?>{'x': null},
+      ];
+      final value = guard(
+        maxNodes: 4,
+        maxMetadataBytes: 7,
+        maxRootNodes: 4,
+        maxRootBytes: 7,
+      );
+      final copy = value.copyJsonValue(source, field: 'json value');
+
+      expect(copy, <Object?>[
+        'é',
+        <String, Object?>{'x': null},
+      ]);
+      final copiedList = copy as List<Object?>;
+      expect(() => copiedList.add(null), throwsUnsupportedError);
+      expect(
+        () => (copiedList[1] as Map<String, Object?>)['y'] = true,
+        throwsUnsupportedError,
+      );
+      expect(
+        () => value.consumeEntry(field: 'beyond exact root'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      final failed = guard(
+        maxNodes: 3,
+        maxMetadataBytes: 7,
+        maxRootNodes: 3,
+        maxRootBytes: 7,
+      );
+      expect(
+        () => failed.copyJsonValue(source, field: 'json value'),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+      expect(failed.copyScalar(null, field: 'after failure'), isNull);
+    });
+
+    test('copyJsonValue rejects malformed roots transactionally', () {
+      final cycle = <Object?>[];
+      cycle.add(cycle);
+      final invalid = <Object?>[
+        cycle,
+        <Object?, Object?>{1: null},
+        double.nan,
+        double.infinity,
+        _RetainedValueCanary(),
+        _NegativeLengthMetadataList(),
+        _NegativeLengthMetadataMap(),
+      ];
+      for (final input in invalid) {
+        final value = guard(maxRootNodes: 1, maxRootBytes: 4);
+        expect(
+          () => value.copyJsonValue(input, field: 'json value'),
+          throwsA(
+            predicate<Object>(
+              (error) => !error.toString().contains('PAYLOAD_CANARY'),
+              'payload-free',
+            ),
+          ),
+        );
+        expect(value.copyScalar(null, field: 'after failure'), isNull);
+      }
     });
 
     test('metadata nodes accept exact local and root boundaries', () {

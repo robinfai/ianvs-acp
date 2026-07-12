@@ -564,7 +564,8 @@ class AcpInputBudget {
 /// model's fields. Nested Lists and Maps each consume their own container node.
 /// The constructor's `resource` and every method's `field` must be host-owned
 /// constants and must never be derived from an untrusted ACP payload.
-/// A failed [copyMetadata] call leaves this guard's budgets unchanged.
+/// Failed [copyMetadata] and [copyJsonValue] calls leave this guard's budgets
+/// unchanged.
 /// Reentrant calls made by a metadata source are rejected.
 final class AcpStructuredUpdateGuard {
   AcpStructuredUpdateGuard({
@@ -665,13 +666,28 @@ final class AcpStructuredUpdateGuard {
     }
     _metadataCopyInProgress = true;
     try {
-      return _copyMetadataMap(value, field: field);
+      return _copyJsonValue(value, field: field) as Map<String, Object?>;
     } finally {
       _metadataCopyInProgress = false;
     }
   }
 
-  Map<String, Object?> _copyMetadataMap(Map source, {required String field}) {
+  /// Creates a detached, deeply immutable copy of any JSON-compatible value.
+  ///
+  /// The value consumes its actual scalar/container nodes and UTF-8 bytes in
+  /// the shared structured root. It also observes metadata depth, node, entry,
+  /// and byte limits. Failures are transactional and retain no partial value.
+  Object? copyJsonValue(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
+    _metadataCopyInProgress = true;
+    try {
+      return _copyJsonValue(value, field: field);
+    } finally {
+      _metadataCopyInProgress = false;
+    }
+  }
+
+  Object? _copyJsonValue(Object? source, {required String field}) {
     final maxDepth = math.min(_budget.maxJsonDepth, _budget.maxMetadataDepth);
     final entryLimit = math.min(
       _budget.maxCollectionItems,
@@ -1034,7 +1050,7 @@ final class AcpStructuredUpdateGuard {
 
     _nodes = rootNodes;
     _bytes = rootBytes;
-    return result! as Map<String, Object?>;
+    return result;
   }
 
   void consumeContainerNode({required String field}) {

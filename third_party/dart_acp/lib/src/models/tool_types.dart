@@ -1,5 +1,7 @@
 // Tool call related types for ACP.
 
+import '../input_budget.dart';
+
 /// Tool call status per latest ACP specification.
 enum ToolCallStatus {
   /// Tool call hasn't started running yet (input streaming or awaiting
@@ -120,11 +122,44 @@ class ToolCallLocation {
   const ToolCallLocation({required this.path, this.line});
 
   /// Create from JSON.
-  factory ToolCallLocation.fromJson(Map<String, dynamic> json) =>
-      ToolCallLocation(
-        path: _optionalString(json['path']) ?? '',
-        line: (json['line'] as num?)?.toInt(),
-      );
+  factory ToolCallLocation.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(
+          budget: inputBudget,
+          resource: 'tool_call_location',
+        );
+    guard.checkCollection(json, field: 'tool location');
+    guard.consumeEntry(field: 'tool location');
+    final path =
+        _boundedOptionalToolString(
+          json,
+          const <String>['path'],
+          guard,
+          field: 'tool location path',
+        ) ??
+        '';
+    if (path.isEmpty) {
+      throw const FormatException('Invalid ACP tool location.');
+    }
+    final rawLine = _firstToolValue(json, const <String>['line']);
+    int? line;
+    if (!identical(rawLine, _absentToolField)) {
+      final copied = guard.copyScalar(rawLine, field: 'tool location line');
+      if (copied is int) {
+        line = copied;
+      } else if (copied is double) {
+        line = copied.toInt();
+      } else {
+        throw const FormatException('Invalid ACP tool location line.');
+      }
+    }
+    return ToolCallLocation(path: path, line: line);
+  }
 
   /// The absolute file path being accessed or modified.
   final String path;
@@ -151,21 +186,78 @@ class ToolCall {
     this.locations,
     this.rawInput,
     this.rawOutput,
+    this.omission,
   });
 
   /// Create from JSON.
-  factory ToolCall.fromJson(Map<String, dynamic> json) => ToolCall(
-    toolCallId: _toolCallIdFromJson(json),
-    status: ToolCallStatus.fromWire(_optionalString(json['status'])),
-    title: _toolTitleFromJson(json),
-    kind: _toolKindFromJson(json) != null
-        ? ToolKind.fromWire(_toolKindFromJson(json))
-        : null,
-    content: _toolContentFromRaw(json['content']),
-    locations: _toolLocationsFromRaw(json['locations']),
-    rawInput: json['rawInput'] ?? json['raw_input'],
-    rawOutput: json['rawOutput'] ?? json['raw_output'],
-  );
+  factory ToolCall.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(budget: inputBudget, resource: 'tool_call');
+    guard.checkCollection(json, field: 'tool call');
+    guard.consumeEntry(field: 'tool call');
+    final toolCallId = _boundedToolCallId(json, guard);
+    final status = ToolCallStatus.fromWire(
+      _boundedOptionalToolString(
+        json,
+        const <String>['status'],
+        guard,
+        field: 'tool status',
+      ),
+    );
+    final title = _boundedToolTitle(json, guard);
+    final rawKind = _boundedOptionalToolString(
+      json,
+      const <String>['kind', 'toolKind', 'tool_kind'],
+      guard,
+      field: 'tool kind',
+    );
+    final kind = rawKind == null ? null : ToolKind.fromWire(rawKind.trim());
+
+    try {
+      final behavior = _boundedToolBehavior(json, inputBudget, guard);
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: status,
+        title: title,
+        kind: kind,
+        content: behavior.content,
+        locations: behavior.locations,
+        rawInput: behavior.rawInput,
+        rawOutput: behavior.rawOutput,
+      );
+    } on AcpInputLimitExceeded catch (error) {
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: status,
+        title: title,
+        kind: kind,
+        omission: AcpInputOmission(
+          reason: AcpInputOmissionReason.inputLimit,
+          resource: 'tool_behavior',
+          truncated: false,
+          limit: error.limit,
+          observedAtLeast: error.observedAtLeast,
+        ),
+      );
+    } catch (_) {
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: status,
+        title: title,
+        kind: kind,
+        omission: AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidStructure,
+          resource: 'tool_behavior',
+          truncated: false,
+        ),
+      );
+    }
+  }
 
   /// Unique identifier for this tool call within the session.
   final String toolCallId;
@@ -180,7 +272,7 @@ class ToolCall {
   final ToolKind? kind;
 
   /// Content produced by the tool call.
-  final List? content;
+  final List<Object?>? content;
 
   /// File locations affected by this tool call.
   final List<ToolCallLocation>? locations;
@@ -190,6 +282,9 @@ class ToolCall {
 
   /// Raw output returned by the tool.
   final dynamic rawOutput;
+
+  /// Host-owned reason why all behavior fields were rejected.
+  final AcpInputOmission? omission;
 
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
@@ -206,91 +301,384 @@ class ToolCall {
 
   /// Merge fields from an update into this tool call.
   /// Only non-null fields from the update will override existing values.
-  ToolCall merge(Map<String, dynamic> update) => ToolCall(
-    toolCallId: toolCallId, // ID never changes
-    status: update['status'] != null
-        ? ToolCallStatus.fromWire(_optionalString(update['status']))
-        : status,
-    title: _toolTitleFromJson(update) ?? title,
-    kind: _toolKindFromJson(update) != null
-        ? ToolKind.fromWire(_toolKindFromJson(update))
-        : kind,
-    content: update['content'] != null
-        ? _toolContentFromRaw(update['content']) ?? content
-        : content,
-    locations: update['locations'] != null
-        ? _toolLocationsFromRaw(update['locations']) ?? locations
-        : locations,
-    rawInput: update['rawInput'] ?? update['raw_input'] ?? rawInput,
-    rawOutput: update['rawOutput'] ?? update['raw_output'] ?? rawOutput,
+  ToolCall merge(
+    Map<String, dynamic> update, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard =
+        structuredGuard ??
+        AcpStructuredUpdateGuard(
+          budget: inputBudget,
+          resource: 'tool_call_update',
+        );
+    guard.checkCollection(update, field: 'tool call update');
+    guard.consumeEntry(field: 'tool call update');
+    final rawStatus = _firstToolValue(update, const <String>['status']);
+    final nextStatus = identical(rawStatus, _absentToolField)
+        ? status
+        : ToolCallStatus.fromWire(
+            guard.copyString(rawStatus, field: 'tool status'),
+          );
+    final rawTitle = _firstToolValue(update, const <String>[
+      'title',
+      'name',
+      'toolName',
+      'tool_name',
+    ]);
+    final nextTitle = identical(rawTitle, _absentToolField)
+        ? title
+        : _trimmedOptionalToolString(
+            guard.copyString(rawTitle, field: 'tool title'),
+          );
+    final rawKind = _firstToolValue(update, const <String>[
+      'kind',
+      'toolKind',
+      'tool_kind',
+    ]);
+    final nextKind = identical(rawKind, _absentToolField)
+        ? kind
+        : ToolKind.fromWire(
+            guard.copyString(rawKind, field: 'tool kind').trim(),
+          );
+    final hasBehaviorUpdate = _hasToolBehaviorUpdate(update);
+    if (!hasBehaviorUpdate) {
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: nextStatus,
+        title: nextTitle,
+        kind: nextKind,
+        content: content,
+        locations: locations,
+        rawInput: rawInput,
+        rawOutput: rawOutput,
+        omission: omission,
+      );
+    }
+    try {
+      final behavior = _boundedMergedToolBehavior(
+        update,
+        inputBudget,
+        guard,
+        existing: this,
+      );
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: nextStatus,
+        title: nextTitle,
+        kind: nextKind,
+        content: behavior.content,
+        locations: behavior.locations,
+        rawInput: behavior.rawInput,
+        rawOutput: behavior.rawOutput,
+      );
+    } on AcpInputLimitExceeded catch (error) {
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: nextStatus,
+        title: nextTitle,
+        kind: nextKind,
+        omission: AcpInputOmission(
+          reason: AcpInputOmissionReason.inputLimit,
+          resource: 'tool_behavior',
+          truncated: false,
+          limit: error.limit,
+          observedAtLeast: error.observedAtLeast,
+        ),
+      );
+    } catch (_) {
+      return ToolCall(
+        toolCallId: toolCallId,
+        status: nextStatus,
+        title: nextTitle,
+        kind: nextKind,
+        omission: AcpInputOmission(
+          reason: AcpInputOmissionReason.invalidStructure,
+          resource: 'tool_behavior',
+          truncated: false,
+        ),
+      );
+    }
+  }
+}
+
+const Object _absentToolField = Object();
+
+Object? _firstToolValue(Map source, List<String> fields) {
+  for (final field in fields) {
+    try {
+      if (!source.containsKey(field)) continue;
+      final value = source[field];
+      if (value != null) return value;
+    } catch (_) {
+      throw const FormatException('Invalid ACP tool call structure.');
+    }
+  }
+  return _absentToolField;
+}
+
+String? _boundedOptionalToolString(
+  Map source,
+  List<String> fields,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _firstToolValue(source, fields);
+  if (identical(value, _absentToolField)) return null;
+  return guard.copyString(value, field: field);
+}
+
+String _boundedToolCallId(
+  Map<String, dynamic> json,
+  AcpStructuredUpdateGuard guard,
+) =>
+    _boundedOptionalToolString(
+      json,
+      const <String>['toolCallId', 'tool_call_id', 'id', 'callId', 'call_id'],
+      guard,
+      field: 'tool call id',
+    ) ??
+    '';
+
+String? _boundedToolTitle(
+  Map<String, dynamic> json,
+  AcpStructuredUpdateGuard guard,
+) {
+  final title = _boundedOptionalToolString(
+    json,
+    const <String>['title', 'name', 'toolName', 'tool_name'],
+    guard,
+    field: 'tool title',
+  );
+  return title == null ? null : _trimmedOptionalToolString(title);
+}
+
+String? _trimmedOptionalToolString(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+({
+  List<Object?>? content,
+  List<ToolCallLocation>? locations,
+  Object? rawInput,
+  Object? rawOutput,
+})
+_boundedToolBehavior(
+  Map<String, dynamic> json,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  final rawContent = _firstToolValue(json, const <String>['content']);
+  final rawLocations = _firstToolValue(json, const <String>['locations']);
+  final rawInput = _firstToolValue(json, const <String>[
+    'rawInput',
+    'raw_input',
+  ]);
+  final rawOutput = _firstToolValue(json, const <String>[
+    'rawOutput',
+    'raw_output',
+  ]);
+  return (
+    content: identical(rawContent, _absentToolField)
+        ? null
+        : _boundedToolContent(rawContent, guard),
+    locations: identical(rawLocations, _absentToolField)
+        ? null
+        : _boundedToolLocations(rawLocations, inputBudget, guard),
+    rawInput: identical(rawInput, _absentToolField)
+        ? null
+        : _boundedToolJsonValue(rawInput, guard, field: 'tool raw input'),
+    rawOutput: identical(rawOutput, _absentToolField)
+        ? null
+        : _boundedToolJsonValue(rawOutput, guard, field: 'tool raw output'),
   );
 }
 
-String? _optionalString(Object? value) => value is String ? value : null;
-
-String? _toolTitleFromJson(Map<String, dynamic> json) {
-  for (final key in const ['title', 'name', 'toolName', 'tool_name']) {
-    final value = _optionalString(json[key]);
-    if (value != null && value.trim().isNotEmpty) return value.trim();
-  }
-  return null;
-}
-
-String? _toolKindFromJson(Map<String, dynamic> json) {
-  for (final key in const ['kind', 'toolKind', 'tool_kind']) {
-    final value = _optionalString(json[key]);
-    if (value != null && value.trim().isNotEmpty) return value.trim();
-  }
-  return null;
-}
-
-String _toolCallIdFromJson(Map<String, dynamic> json) {
-  for (final key in const [
-    'toolCallId',
-    'tool_call_id',
-    'id',
-    'callId',
-    'call_id',
+bool _hasToolBehaviorUpdate(Map<String, dynamic> update) {
+  for (final fields in const <List<String>>[
+    <String>['content'],
+    <String>['locations'],
+    <String>['rawInput', 'raw_input'],
+    <String>['rawOutput', 'raw_output'],
   ]) {
-    final value = _optionalString(json[key]);
-    if (value != null && value.isNotEmpty) return value;
+    if (!identical(_firstToolValue(update, fields), _absentToolField)) {
+      return true;
+    }
   }
-  return '';
+  return false;
 }
 
-List? _toolContentFromRaw(Object? raw) {
-  if (raw == null) return null;
-  if (raw is List) return raw;
+({
+  List<Object?>? content,
+  List<ToolCallLocation>? locations,
+  Object? rawInput,
+  Object? rawOutput,
+})
+_boundedMergedToolBehavior(
+  Map<String, dynamic> update,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard, {
+  required ToolCall existing,
+}) {
+  final rawContent = _firstToolValue(update, const <String>['content']);
+  final rawLocations = _firstToolValue(update, const <String>['locations']);
+  final rawInput = _firstToolValue(update, const <String>[
+    'rawInput',
+    'raw_input',
+  ]);
+  final rawOutput = _firstToolValue(update, const <String>[
+    'rawOutput',
+    'raw_output',
+  ]);
+  return (
+    content: identical(rawContent, _absentToolField)
+        ? existing.content
+        : _boundedToolContent(rawContent, guard),
+    locations: identical(rawLocations, _absentToolField)
+        ? existing.locations
+        : _boundedToolLocations(rawLocations, inputBudget, guard),
+    rawInput: identical(rawInput, _absentToolField)
+        ? existing.rawInput
+        : _boundedToolJsonValue(rawInput, guard, field: 'tool raw input'),
+    rawOutput: identical(rawOutput, _absentToolField)
+        ? existing.rawOutput
+        : _boundedToolJsonValue(rawOutput, guard, field: 'tool raw output'),
+  );
+}
+
+List<Object?> _boundedToolContent(Object? raw, AcpStructuredUpdateGuard guard) {
   if (raw is String) {
-    return <Map<String, dynamic>>[
-      <String, dynamic>{'type': 'text', 'text': raw},
-    ];
+    final text = guard.copyString(raw, field: 'tool content text');
+    return List<Object?>.unmodifiable(<Object?>[
+      Map<String, Object?>.unmodifiable(<String, Object?>{
+        'type': 'text',
+        'text': text,
+      }),
+    ]);
   }
   if (raw is Map) {
-    return <Map<String, dynamic>>[
-      raw.map((key, value) => MapEntry(key.toString(), value)),
-    ];
+    return List<Object?>.unmodifiable(<Object?>[
+      Map<String, Object?>.unmodifiable(
+        guard.copyMetadata(raw, field: 'tool content'),
+      ),
+    ]);
   }
-  return null;
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP tool content.');
+  }
+  final copied = guard.copyJsonValue(raw, field: 'tool content');
+  if (copied is! List<Object?>) {
+    throw const FormatException('Invalid ACP tool content.');
+  }
+  return copied;
 }
 
-List<ToolCallLocation>? _toolLocationsFromRaw(Object? raw) {
-  if (raw == null) return null;
-  final rawLocations = raw is List ? raw : <Object?>[raw];
-  final locations = rawLocations
-      .map(_toolLocationFromRaw)
-      .whereType<ToolCallLocation>()
-      .toList(growable: false);
-  return locations.isEmpty ? null : locations;
-}
-
-ToolCallLocation? _toolLocationFromRaw(Object? raw) {
-  if (raw is String) {
-    final path = raw.trim();
-    return path.isEmpty ? null : ToolCallLocation(path: path);
+List<ToolCallLocation>? _boundedToolLocations(
+  Object? raw,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  final List rawLocations;
+  if (raw is List) {
+    rawLocations = raw;
+  } else if (raw is String || raw is Map) {
+    rawLocations = <Object?>[raw];
+  } else {
+    throw const FormatException('Invalid ACP tool locations.');
   }
-  if (raw is! Map) return null;
-  return ToolCallLocation.fromJson(
-    raw.map((key, value) => MapEntry(key.toString(), value)),
+  final reportedLength = guard.checkCollection(
+    rawLocations,
+    field: 'tool locations',
   );
+  guard.consumeContainerNode(field: 'tool locations');
+  final locations = <ToolCallLocation>[];
+  final Iterator<Object?> iterator;
+  try {
+    iterator = rawLocations.iterator;
+  } catch (_) {
+    throw const FormatException('Invalid ACP tool locations.');
+  }
+  var observedItems = 0;
+  while (true) {
+    final bool hasNext;
+    try {
+      hasNext = iterator.moveNext();
+    } catch (_) {
+      throw const FormatException('Invalid ACP tool locations.');
+    }
+    if (!hasNext) break;
+    observedItems += 1;
+    if (observedItems > inputBudget.maxCollectionItems) {
+      throw AcpInputLimitExceeded(
+        resource: 'tool locations',
+        limit: inputBudget.maxCollectionItems,
+        observedAtLeast: observedItems,
+      );
+    }
+    if (observedItems > reportedLength) {
+      throw const FormatException('Invalid ACP tool locations.');
+    }
+    final Object? item;
+    try {
+      item = iterator.current;
+    } catch (_) {
+      throw const FormatException('Invalid ACP tool locations.');
+    }
+    if (item is String) {
+      guard.consumeEntry(field: 'tool location');
+      final path = guard.copyString(item, field: 'tool location path').trim();
+      if (path.isEmpty) {
+        throw const FormatException('Invalid ACP tool location.');
+      }
+      locations.add(ToolCallLocation(path: path));
+      continue;
+    }
+    if (item is! Map) {
+      throw const FormatException('Invalid ACP tool location.');
+    }
+    guard.checkCollection(item, field: 'tool location');
+    guard.consumeEntry(field: 'tool location');
+    final path =
+        _boundedOptionalToolString(
+          item,
+          const <String>['path'],
+          guard,
+          field: 'tool location path',
+        ) ??
+        '';
+    if (path.isEmpty) {
+      throw const FormatException('Invalid ACP tool location.');
+    }
+    final rawLine = _firstToolValue(item, const <String>['line']);
+    int? line;
+    if (!identical(rawLine, _absentToolField)) {
+      final copied = guard.copyScalar(rawLine, field: 'tool location line');
+      if (copied is int) {
+        line = copied;
+      } else if (copied is double) {
+        line = copied.toInt();
+      } else {
+        throw const FormatException('Invalid ACP tool location line.');
+      }
+    }
+    locations.add(ToolCallLocation(path: path, line: line));
+  }
+  if (observedItems != reportedLength) {
+    throw const FormatException('Invalid ACP tool locations.');
+  }
+  return locations.isEmpty
+      ? null
+      : List<ToolCallLocation>.unmodifiable(locations);
+}
+
+Object? _boundedToolJsonValue(
+  Object? raw,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  if (raw is Map) return guard.copyMetadata(raw, field: field);
+  if (raw is List) return guard.copyJsonValue(raw, field: field);
+  if (raw is String) return guard.copyString(raw, field: field);
+  return guard.copyScalar(raw, field: field);
 }
