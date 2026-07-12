@@ -856,10 +856,12 @@ class DartAcpAgentClient implements AcpAgentClient {
         operation: operation,
         content: content,
       )) {
-        yield event;
+        if (operation.acceptsEvents) {
+          yield event;
+        }
       }
     } catch (error) {
-      if (operation.locallyInvalidated) return;
+      if (!operation.acceptsEvents) return;
       final details = _agentErrorDetails(error);
       yield AgentEvent(
         type: AgentEventType.error,
@@ -1447,9 +1449,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     var acceptingUpdates = false;
     final terminalSubscription = client.terminalEvents.listen(
       (update) {
-        if (!acceptingUpdates ||
-            operation.locallyInvalidated ||
-            events.isClosed) {
+        if (!acceptingUpdates || !operation.acceptsEvents || events.isClosed) {
           return;
         }
         final event = _eventFromTerminalEvent(update, sessionId);
@@ -1458,7 +1458,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         }
       },
       onError: (Object error, StackTrace stackTrace) {
-        if (!operation.locallyInvalidated && !events.isClosed) {
+        if (operation.acceptsEvents && !events.isClosed) {
           events.addError(error, stackTrace);
         }
       },
@@ -1468,7 +1468,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         .listen(
           (update) {
             if (!acceptingUpdates ||
-                operation.locallyInvalidated ||
+                !operation.acceptsEvents ||
                 events.isClosed) {
               return;
             }
@@ -1482,7 +1482,7 @@ class DartAcpAgentClient implements AcpAgentClient {
             }
           },
           onError: (Object error, StackTrace stackTrace) {
-            if (!operation.locallyInvalidated && !events.isClosed) {
+            if (operation.acceptsEvents && !events.isClosed) {
               events.addError(error, stackTrace);
             }
           },
@@ -1533,11 +1533,11 @@ class DartAcpAgentClient implements AcpAgentClient {
             Error.throwWithStackTrace(error, outcome.stackTrace!);
           }
           final response = outcome.response!;
-          if (!operation.locallyInvalidated && !events.isClosed) {
+          if (operation.acceptsEvents && !events.isClosed) {
             events.add(_eventFromPromptResponse(response));
           }
         } catch (error, stackTrace) {
-          if (!operation.locallyInvalidated && !events.isClosed) {
+          if (operation.acceptsEvents && !events.isClosed) {
             events.addError(error, stackTrace);
           }
         } finally {
@@ -1550,7 +1550,9 @@ class DartAcpAgentClient implements AcpAgentClient {
         }
       }());
       await for (final event in events.stream) {
-        yield event;
+        if (operation.acceptsEvents) {
+          yield event;
+        }
       }
     } finally {
       await terminalSubscription.cancel();
@@ -2570,6 +2572,9 @@ final class _RawPromptOperation {
   bool locallyInvalidated = false;
   Completer<void>? cancelCompletion;
   final Completer<void> streamCancellation = Completer<void>();
+
+  bool get acceptsEvents =>
+      !locallyInvalidated && !cancelRequested && !finished;
 }
 
 final class _RawPromptRpcOutcome {

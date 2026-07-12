@@ -4621,6 +4621,165 @@ Future<void> main() async {
     },
   );
 
+  for (final lateError in <bool>[false, true]) {
+    final lateOutcome = lateError ? 'error' : 'success';
+    test('post-owner raw cancel quarantines replacement updates and late '
+        '$lateOutcome', () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final promptSeenFile = File('${tempDir.path}/prompt_seen');
+      final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+      final releaseResponseFile = File('${tempDir.path}/release_response');
+      final lateSentFile = File('${tempDir.path}/late_sent');
+      final agentScript = File(
+        '${tempDir.path}/fake_post_owner_cancel_agent.dart',
+      );
+      final promptSeenPath = jsonEncode(promptSeenFile.path);
+      final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+      final releaseResponsePath = jsonEncode(releaseResponseFile.path);
+      final lateSentPath = jsonEncode(lateSentFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  Object? firstPromptId;
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/cancel') {
+      await File($cancelSeenPath).writeAsString('cancelled');
+    } else if (message['method'] == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      final prompt = params['prompt'] as List<dynamic>;
+      final first = prompt.first as Map<String, dynamic>;
+      if (first['text'] == 'hold first') {
+        firstPromptId = message['id'];
+        await File($promptSeenPath).writeAsString('prompted');
+        continue;
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': params['sessionId'],
+          'update': <String, dynamic>{
+            'sessionUpdate': 'agent_message_chunk',
+            'content': <String, dynamic>{
+              'type': 'text',
+              'text': 'replacement-canary',
+            },
+          },
+        },
+      }));
+      while (!await File($releaseResponsePath).exists()) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+      if ($lateError) {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': firstPromptId,
+          'error': <String, dynamic>{
+            'code': -32000,
+            'message': 'late failure',
+          },
+        }));
+      } else {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': firstPromptId,
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        }));
+      }
+      await File($lateSentPath).writeAsString('sent');
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      final firstEvents = <AgentEvent>[];
+      final firstDone = Completer<void>();
+      final replacementEvents = <AgentEvent>[];
+      final replacementCanary = Completer<void>();
+      final replacementDone = Completer<void>();
+      StreamSubscription<AgentEvent>? first;
+      StreamSubscription<AgentEvent>? replacement;
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        first = client
+            .sendPrompt(sessionId: session.id, prompt: 'hold first')
+            .listen(
+              firstEvents.add,
+              onError: firstDone.completeError,
+              onDone: firstDone.complete,
+            );
+        await _waitForFile(promptSeenFile);
+        first.pause();
+
+        await client.cancel().timeout(const Duration(seconds: 5));
+        replacement = client
+            .sendPrompt(sessionId: session.id, prompt: 'replacement')
+            .listen(
+              (event) {
+                replacementEvents.add(event);
+                if (event.text == 'replacement-canary' &&
+                    !replacementCanary.isCompleted) {
+                  replacementCanary.complete();
+                }
+              },
+              onError: replacementDone.completeError,
+              onDone: replacementDone.complete,
+            );
+        await replacementCanary.future.timeout(const Duration(seconds: 5));
+        await releaseResponseFile.writeAsString('release');
+        await replacementDone.future.timeout(const Duration(seconds: 5));
+        expect(
+          replacementEvents.map((event) => event.text),
+          contains('replacement-canary'),
+        );
+        expect(replacementEvents.last.metadata['stopReason'], 'endTurn');
+        await _waitForFile(cancelSeenFile);
+        await _waitForFile(lateSentFile);
+
+        first.resume();
+        await firstDone.future.timeout(const Duration(seconds: 5));
+        expect(firstEvents, isEmpty);
+      } finally {
+        first?.resume();
+        await first?.cancel();
+        await replacement?.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    });
+  }
+
   test(
     'raw stream cancel before owner never sends prompt or leaks phase',
     () async {
