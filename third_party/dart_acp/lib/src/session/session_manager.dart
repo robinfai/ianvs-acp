@@ -755,7 +755,7 @@ class SessionManager implements AcpBoundedObservationSource {
     if (cwd != null) params['cwd'] = cwd;
     if (cursor != null) params['cursor'] = cursor;
     final resp = await peer.sendRaw('session/list', params);
-    return SessionListResult.fromJson(resp);
+    return SessionListResult.fromJson(resp, inputBudget: inputBudget);
   }
 
   /// Close a remote session, then release all state owned by that session.
@@ -957,10 +957,31 @@ class SessionManager implements AcpBoundedObservationSource {
       'configId': configId,
       'value': value,
     });
-    final configList = resp['configOptions'] as List<dynamic>? ?? [];
-    return configList
-        .map((c) => ConfigOption.fromJson(c as Map<String, dynamic>))
-        .toList();
+    final guard = AcpStructuredUpdateGuard(
+      budget: inputBudget,
+      resource: 'session set config option result',
+    );
+    final result = SessionResult.fromJson(
+      resp,
+      inputBudget: inputBudget,
+      structuredGuard: guard,
+    );
+    for (final omission in result.omissions) {
+      if (omission.resource != 'config_options') continue;
+      if (omission.reason == AcpInputOmissionReason.inputLimit) {
+        throw AcpInputLimitExceeded(
+          resource: 'config_options',
+          limit: omission.limit!,
+          observedAtLeast: omission.observedAtLeast!,
+        );
+      }
+      throw const FormatException('Invalid ACP config options.');
+    }
+    final configOptions = result.configOptions;
+    if (configOptions == null) {
+      throw const FormatException('Missing ACP config options.');
+    }
+    return configOptions;
   }
 
   /// Send a prompt and stream typed updates for this turn only.
@@ -1820,6 +1841,7 @@ class SessionManager implements AcpBoundedObservationSource {
         'update': parsed.raw,
       }),
       omission: parsed.omission,
+      boundedKind: kind,
     );
   }
 

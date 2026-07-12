@@ -207,6 +207,7 @@ class ConfigOption {
     required this.currentValue,
     required this.options,
     this.description,
+    this.category,
     this.group,
   });
 
@@ -245,6 +246,18 @@ class ConfigOption {
     final options = identical(rawOptions, _absentSessionField)
         ? const <ConfigOptionChoice>[]
         : _boundedConfigChoices(rawOptions, inputBudget, guard);
+    final category = _copyOptionalSessionString(
+      source,
+      const <String>['category'],
+      guard,
+      field: 'config category',
+    );
+    final group = _copyOptionalSessionString(
+      source,
+      const <String>['group'],
+      guard,
+      field: 'config group',
+    );
     return ConfigOption(
       id: id,
       name:
@@ -277,12 +290,8 @@ class ConfigOption {
         guard,
         field: 'config description',
       ),
-      group: _copyOptionalSessionString(
-        source,
-        const <String>['group', 'category'],
-        guard,
-        field: 'config group',
-      ),
+      category: category,
+      group: group ?? category,
     );
   }
 
@@ -304,6 +313,9 @@ class ConfigOption {
   /// Optional description.
   final String? description;
 
+  /// Optional category for semantic classification.
+  final String? category;
+
   /// Optional group for organization.
   final String? group;
 
@@ -315,6 +327,7 @@ class ConfigOption {
     'currentValue': currentValue,
     'options': options.map((o) => o.toJson()).toList(),
     if (description != null) 'description': description,
+    if (category != null) 'category': category,
     if (group != null) 'group': group,
   };
 
@@ -784,19 +797,37 @@ _boundedSessionModes(
   AcpInputBudget inputBudget,
   AcpStructuredUpdateGuard guard,
 ) {
-  final rawCurrent = _firstSessionValue(json, const <String>[
+  Map source = json;
+  var rawCurrent = _firstSessionValue(source, const <String>[
     'currentModeId',
     'current_mode_id',
     'modeId',
     'mode_id',
   ]);
-  final rawModes = _firstSessionValue(json, const <String>[
+  var rawModes = _firstSessionValue(source, const <String>[
     'availableModes',
     'available_modes',
   ]);
   if (identical(rawCurrent, _absentSessionField) &&
       identical(rawModes, _absentSessionField)) {
-    return null;
+    final nested = _firstSessionValue(json, const <String>['modes']);
+    if (identical(nested, _absentSessionField)) return null;
+    if (nested is! Map) {
+      throw const FormatException('Invalid ACP session modes.');
+    }
+    guard.checkCollection(nested, field: 'session modes');
+    guard.consumeEntry(field: 'session modes');
+    source = nested;
+    rawCurrent = _firstSessionValue(source, const <String>[
+      'currentModeId',
+      'current_mode_id',
+      'modeId',
+      'mode_id',
+    ]);
+    rawModes = _firstSessionValue(source, const <String>[
+      'availableModes',
+      'available_modes',
+    ]);
   }
   final currentModeId = identical(rawCurrent, _absentSessionField)
       ? null

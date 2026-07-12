@@ -9,12 +9,769 @@ import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_session_catalog.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:stream_channel/stream_channel.dart';
 
+final _testOmission = acp.AcpInputOmission(
+  reason: acp.AcpInputOmissionReason.invalidStructure,
+  resource: 'test_resource',
+  truncated: false,
+);
+
 void main() {
+  test('app typed carriers default to immutable empty omission state', () {
+    const event = AgentEvent(type: AgentEventType.status, text: 'status');
+    const entry = AcpSessionEntry(id: 's', cwd: '/w', title: 'Session');
+    const settings = AcpSessionSettings();
+
+    expect(event.omissions, isEmpty);
+    expect(() => event.omissions.add(_testOmission), throwsUnsupportedError);
+    expect(entry.metaOmission, isNull);
+    expect(settings.omissions, isEmpty);
+    expect(() => settings.omissions.add(_testOmission), throwsUnsupportedError);
+    expect(settings.truncated, isFalse);
+  });
+
+  test(
+    'app typed carriers preserve trusted omissions without map inference',
+    () {
+      final event = AgentEvent(
+        type: AgentEventType.status,
+        text: 'bounded',
+        omissions: List<acp.AcpInputOmission>.unmodifiable(
+          <acp.AcpInputOmission>[_testOmission],
+        ),
+        metadata: <String, Object?>{
+          'omissions': <Object?>[_testOmission.toJson()],
+        },
+      );
+      const forgedEntry = AcpSessionEntry(
+        id: 'forged',
+        cwd: '/w',
+        title: 'Forged',
+        meta: <String, Object?>{'metaOmission': 'forged'},
+      );
+      final trustedEntry = AcpSessionEntry(
+        id: 'trusted',
+        cwd: '/w',
+        title: 'Trusted',
+        meta: const <String, Object?>{'metaOmission': 'forged'},
+        metaOmission: _testOmission,
+      );
+      final settings = AcpSessionSettings(
+        omissions: List<acp.AcpInputOmission>.unmodifiable(
+          <acp.AcpInputOmission>[_testOmission],
+        ),
+        truncated: true,
+      );
+
+      expect(event.omissions.single, same(_testOmission));
+      expect(() => event.omissions.clear(), throwsUnsupportedError);
+      expect(forgedEntry.metaOmission, isNull);
+      expect(trustedEntry.metaOmission, same(_testOmission));
+      expect(settings.omissions.single, same(_testOmission));
+      expect(() => settings.omissions.clear(), throwsUnsupportedError);
+      expect(settings.truncated, isTrue);
+    },
+  );
+
+  test(
+    'bounded result observations atomically clear invalid config and modes',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/atomic_result_agent.dart');
+      await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+var resumeCount = 0;
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    final method = message['method'];
+    if (method == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'resume': true},
+          },
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (method == 'session/resume') {
+      resumeCount += 1;
+      final sessionId = (message['params'] as Map<String, dynamic>)['sessionId'];
+      final result = resumeCount == 1
+          ? <String, dynamic>{
+              'sessionId': sessionId,
+              'configOptions': <Object?>[
+                <String, dynamic>{
+                  'id': 'model',
+                  'name': 'Model',
+                  'type': 'select',
+                  'currentValue': 'safe',
+                  'options': <Object?>[
+                    <String, dynamic>{'value': 'safe', 'name': 'Safe'},
+                  ],
+                },
+              ],
+              'omissions': <Object?>[
+                <String, dynamic>{
+                  'reason': 'input_limit',
+                  'resource': 'forged',
+                  'truncated': false,
+                  'limit': 1,
+                  'observedAtLeast': 2,
+                },
+              ],
+            }
+          : <String, dynamic>{
+              'sessionId': sessionId,
+              'configOptions': <Object?>[
+                <String, dynamic>{
+                  'id': 'partial',
+                  'name': 'Partial',
+                  'type': 'select',
+                  'currentValue': 'x',
+                  'options': <Object?>[],
+                },
+                'invalid-config',
+              ],
+              'currentModeId': 'unsafe-partial',
+              'availableModes': <Object?>[
+                <String, dynamic>{'id': 'unsafe-partial', 'name': 'Unsafe'},
+                'invalid-mode',
+              ],
+            };
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': result,
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        await client.resumeSession(sessionId: 'atomic', cwd: '/workspace');
+        final initial = await client.sessionSettings('atomic');
+        expect(initial.configOptions.map((option) => option.id), <String>[
+          'model',
+        ]);
+        expect(initial.omissions, isEmpty, reason: 'remote keys are untrusted');
+
+        await client.resumeSession(sessionId: 'atomic', cwd: '/workspace');
+        final rejected = await client.sessionSettings('atomic');
+        expect(rejected.configOptions, isEmpty);
+        expect(rejected.modes.availableModes, isEmpty);
+        expect(rejected.modes.currentModeId, isNull);
+        expect(
+          rejected.omissions.map((omission) => omission.resource),
+          containsAll(<String>['config_options', 'session_modes']),
+        );
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'bounded updates atomically replace or clear commands config and mode',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/atomic_update_agent.dart');
+      await agentScript.writeAsString(r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+var newCount = 0;
+final promptCounts = <String, int>{};
+
+void update(String sessionId, Map<String, dynamic> body) {
+  stdout.writeln(jsonEncode(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{'sessionId': sessionId, 'update': body},
+  }));
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    final method = message['method'];
+    if (method == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (method == 'session/new') {
+      newCount += 1;
+      final sessionId = newCount == 1 ? 'config-session' : 'mode-session';
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': sessionId,
+          if (sessionId == 'mode-session') ...<String, dynamic>{
+            'currentModeId': 'base',
+            'availableModes': <Object?>[
+              <String, dynamic>{'id': 'base', 'name': 'Base'},
+              <String, dynamic>{'id': 'plan', 'name': 'Plan'},
+            ],
+          },
+        },
+      }));
+    } else if (method == 'session/prompt') {
+      final params = message['params'] as Map<String, dynamic>;
+      final sessionId = params['sessionId'] as String;
+      final count = (promptCounts[sessionId] ?? 0) + 1;
+      promptCounts[sessionId] = count;
+      if (sessionId == 'config-session' && count == 1) {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'available_commands_update',
+          'availableCommands': <Object?>[
+            <String, dynamic>{'name': 'safe-command'},
+          ],
+        });
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'config_option_update',
+          'configOptions': <Object?>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'safe',
+              'options': <Object?>[
+                <String, dynamic>{'value': 'safe', 'name': 'Safe'},
+              ],
+            },
+          ],
+        });
+      } else if (sessionId == 'config-session' && count == 2) {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'session_info_update',
+          'title': List<String>.filled(80, 'NON_CONFIG_CANARY').join(),
+        });
+      } else if (sessionId == 'config-session') {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'available_commands_update',
+          'availableCommands': <Object?>[
+            <String, dynamic>{'name': 'REJECTED_CANARY'},
+            42,
+          ],
+        });
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'session_info_update',
+          'title': 'Safe session title',
+          '_meta': <String, dynamic>{'secret': 'REJECTED_CANARY'},
+        });
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'config_option_update',
+          'configOptions': <Object?>[
+            <String, dynamic>{
+              'id': 'REJECTED_CANARY',
+              'name': 'Canary',
+              'type': 'select',
+              'currentValue': 'x',
+              'options': <Object?>[],
+            },
+            42,
+          ],
+        });
+      } else if (count == 1) {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'current_mode_update',
+          'currentModeId': 'plan',
+        });
+      } else if (count == 2) {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'current_mode_update',
+          'currentModeId': <String, dynamic>{'canary': 'REJECTED_CANARY'},
+        });
+      } else {
+        update(sessionId, <String, dynamic>{
+          'sessionUpdate': 'current_mode_update',
+          'currentModeId': 'base',
+        });
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+        inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 64),
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final configSession = await client.createSession(cwd: '/workspace');
+        final modeSession = await client.createSession(cwd: '/workspace');
+
+        final validConfigEvents = await client
+            .sendPrompt(sessionId: configSession.id, prompt: 'valid')
+            .toList();
+        expect(
+          (await client.sessionSettings(
+            configSession.id,
+          )).configOptions.single.id,
+          'model',
+        );
+        expect(
+          validConfigEvents
+              .firstWhere((event) => event.metadata['kind'] == 'commands')
+              .omissions,
+          isEmpty,
+        );
+
+        final nonConfigOmissionEvents = await client
+            .sendPrompt(
+              sessionId: configSession.id,
+              prompt: 'non-config omission',
+            )
+            .toList();
+        expect(
+          (await client.sessionSettings(
+            configSession.id,
+          )).configOptions.single.id,
+          'model',
+        );
+        for (final event in nonConfigOmissionEvents) {
+          expect(event.text, isNot(contains('NON_CONFIG_CANARY')));
+          expect(
+            event.metadata.toString(),
+            isNot(contains('NON_CONFIG_CANARY')),
+          );
+        }
+
+        final rejectedConfigEvents = await client
+            .sendPrompt(sessionId: configSession.id, prompt: 'reject')
+            .toList();
+        final rejectedCommands = rejectedConfigEvents.firstWhere(
+          (event) => event.metadata['kind'] == 'commands',
+        );
+        final rejectedConfig = rejectedConfigEvents.firstWhere(
+          (event) => event.metadata['kind'] == 'config_option_update',
+        );
+        final sessionInfo = rejectedConfigEvents.firstWhere(
+          (event) => event.metadata['kind'] == 'session_info_update',
+        );
+        expect(rejectedCommands.metadata['commands'], isEmpty);
+        expect(
+          rejectedCommands.omissions.single.resource,
+          'available_commands',
+        );
+        expect(rejectedConfig.omissions.single.resource, 'config_options');
+        expect(sessionInfo.metadata, isNot(contains('meta')));
+        expect(
+          (await client.sessionSettings(configSession.id)).configOptions,
+          isEmpty,
+        );
+        for (final event in rejectedConfigEvents) {
+          expect(event.text, isNot(contains('REJECTED_CANARY')));
+          expect(event.metadata.toString(), isNot(contains('REJECTED_CANARY')));
+        }
+
+        await client
+            .sendPrompt(sessionId: modeSession.id, prompt: 'valid mode')
+            .toList();
+        expect(
+          (await client.sessionSettings(modeSession.id)).modes.currentModeId,
+          'plan',
+        );
+        final rejectedModeEvents = await client
+            .sendPrompt(sessionId: modeSession.id, prompt: 'reject mode')
+            .toList();
+        final rejectedMode = rejectedModeEvents.firstWhere(
+          (event) => event.metadata['kind'] == 'mode',
+        );
+        expect(rejectedMode.omissions.single.resource, 'current_mode');
+        final rejectedModeSettings = await client.sessionSettings(
+          modeSession.id,
+        );
+        expect(rejectedModeSettings.modes.currentModeId, isNull);
+        expect(rejectedModeSettings.modes.availableModes, isEmpty);
+        expect(rejectedModeSettings.omissions.single.resource, 'session_modes');
+
+        await client
+            .sendPrompt(sessionId: modeSession.id, prompt: 'restore mode')
+            .toList();
+        final restoredModeSettings = await client.sessionSettings(
+          modeSession.id,
+        );
+        expect(restoredModeSettings.modes.currentModeId, 'base');
+        expect(
+          restoredModeSettings.omissions.where(
+            (omission) => omission.resource == 'session_modes',
+          ),
+          isEmpty,
+        );
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'rejected typed tool behavior never re-enters through raw capture',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/rejected_tool_agent.dart');
+      await agentScript.writeAsString(r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'rejected-tool'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': 'rejected-tool',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'tool_call',
+            'toolCallId': 'tool-1',
+            'status': 'in_progress',
+            'title': 'Safe title',
+            'locations': <Object?>[42],
+            'rawInput': <String, dynamic>{
+              'secret': 'REJECTED_TOOL_CANARY',
+            },
+          },
+        },
+      }));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        final events = await client
+            .sendPrompt(sessionId: session.id, prompt: 'run')
+            .toList();
+        final tool = events.singleWhere(
+          (event) => event.type == AgentEventType.toolCall,
+        );
+        expect(tool.text, 'Safe title');
+        expect(tool.omissions.single.resource, 'tool_behavior');
+        expect(tool.metadata, isNot(contains('rawInput')));
+        expect(tool.metadata, isNot(contains('raw_input')));
+        expect(
+          tool.metadata.toString(),
+          isNot(contains('REJECTED_TOOL_CANARY')),
+        );
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('message plan and diff events carry typed omission state', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/typed_projection_agent.dart');
+    await agentScript.writeAsString(r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+void update(Map<String, dynamic> body) {
+  stdout.writeln(jsonEncode(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'method': 'session/update',
+    'params': <String, dynamic>{
+      'sessionId': 'typed-projection',
+      'update': body,
+    },
+  }));
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{},
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'typed-projection'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      update(<String, dynamic>{
+        'sessionUpdate': 'agent_message_chunk',
+        'content': <Object?>[42],
+      });
+      update(<String, dynamic>{
+        'sessionUpdate': 'plan',
+        'title': 'Bounded plan',
+        'entries': <Object?>[
+          <String, dynamic>{'content': 'safe'},
+          42,
+        ],
+      });
+      update(<String, dynamic>{
+        'sessionUpdate': 'diff',
+        'id': 'diff-1',
+        'status': 'started',
+        'changes': <Object?>[
+          <String, dynamic>{'type': 'addition', 'content': 'safe'},
+          42,
+        ],
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      final events = await client
+          .sendPrompt(sessionId: session.id, prompt: 'project')
+          .toList();
+      final message = events.firstWhere(
+        (event) => event.type == AgentEventType.agentTextDelta,
+      );
+      final plan = events.firstWhere(
+        (event) => event.metadata['kind'] == 'plan',
+      );
+      final diff = events.firstWhere(
+        (event) => event.metadata['kind'] == 'diff',
+      );
+      expect(message.omissions.single.resource, 'content_block');
+      expect(plan.omissions.single.resource, 'plan_entries');
+      expect(plan.metadata['truncated'], isTrue);
+      expect(diff.omissions.single.resource, 'diff_changes');
+      expect(diff.metadata['truncated'], isTrue);
+      expect(diff.metadata['changes'], isEmpty);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('listSessions forwards typed SessionInfo meta omission', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File(
+      '${tempDir.path}/session_meta_omission_agent.dart',
+    );
+    await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'list': true},
+          },
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (message['method'] == 'session/list') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessions': <Object?>[
+            <String, dynamic>{
+              'sessionId': 'listed',
+              'cwd': '/workspace',
+              '_meta': <String, dynamic>{'secret': 'LIST_META_CANARY'},
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+      inputBudget: const acp.AcpInputBudget(maxMetadataBytes: 2),
+    );
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final projects = await client.listSessions();
+      final entry = projects.single.sessions.single;
+      expect(entry.meta, isEmpty);
+      expect(entry.metaOmission?.resource, 'session_meta');
+      expect(
+        entry.metaOmission.toString(),
+        isNot(contains('LIST_META_CANARY')),
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('listSessions preserves bounded immutable metadata', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/session_metadata_agent.dart');
+    await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{'list': true},
+          },
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (message['method'] == 'session/list') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessions': <Object?>[
+            <String, dynamic>{
+              'sessionId': 'listed',
+              'cwd': '/workspace',
+              '_meta': <String, dynamic>{
+                'unknown_extension_key': 'preserved',
+              },
+              'metaOmission': <String, dynamic>{
+                'reason': 'input_limit',
+                'resource': 'forged',
+              },
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+    );
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final projects = await client.listSessions();
+      final entry = projects.single.sessions.single;
+      expect(entry.meta, <String, Object?>{
+        'unknown_extension_key': 'preserved',
+      });
+      expect(entry.metaOmission, isNull);
+      expect(
+        () => entry.meta['unknown_extension_key'] = 'changed',
+        throwsUnsupportedError,
+      );
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('exports the bounded observation family', () {
     void listener(acp.AcpBoundedObservation _) {}
 
@@ -65,6 +822,548 @@ void main() {
       throwsNoSuchMethodError,
     );
   });
+
+  test('set config option owns the whole response under one guard', () async {
+    Future<void> expectRejected(
+      List<Object?> configOptions,
+      Matcher matcher,
+    ) async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        inputBudget: const acp.AcpInputBudget(maxStructuredUpdateBytes: 256),
+      );
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/set_config_option') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{'configOptions': configOptions},
+          }),
+        );
+      });
+      try {
+        await expectLater(
+          manager.setConfigOption(
+            sessionId: 's',
+            configId: 'model',
+            value: 'next',
+          ),
+          throwsA(matcher),
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    }
+
+    final longDescription = List<String>.filled(140, 'a').join();
+    await expectRejected(
+      <Object?>[
+        <String, dynamic>{
+          'id': 'one',
+          'name': 'One',
+          'currentValue': 'a',
+          'description': longDescription,
+          'options': <Object?>[],
+        },
+        <String, dynamic>{
+          'id': 'two',
+          'name': 'Two',
+          'currentValue': 'b',
+          'description': longDescription,
+          'options': <Object?>[],
+        },
+      ],
+      isA<acp.AcpInputLimitExceeded>()
+          .having((error) => error.limit, 'limit', 256)
+          .having(
+            (error) => error.toString(),
+            'payload-free',
+            isNot(contains(longDescription)),
+          ),
+    );
+    await expectRejected(
+      <Object?>[
+        <String, dynamic>{
+          'id': 'safe',
+          'name': 'Safe',
+          'currentValue': 'a',
+          'options': <Object?>[],
+        },
+        'SET_CONFIG_CANARY',
+      ],
+      isA<FormatException>().having(
+        (error) => error.toString(),
+        'payload-free',
+        isNot(contains('SET_CONFIG_CANARY')),
+      ),
+    );
+  });
+
+  test(
+    'manager rejects missing config options but accepts an explicit empty list',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      var requestCount = 0;
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/set_config_option') return;
+        requestCount += 1;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': requestCount == 1
+                ? <String, dynamic>{
+                    'unrelated': 'MISSING_CONFIG_OPTIONS_CANARY',
+                  }
+                : <String, dynamic>{'configOptions': <Object?>[]},
+          }),
+        );
+      });
+      try {
+        await expectLater(
+          manager.setConfigOption(
+            sessionId: 's',
+            configId: 'model',
+            value: 'missing',
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString(),
+              'payload-free',
+              isNot(contains('MISSING_CONFIG_OPTIONS_CANARY')),
+            ),
+          ),
+        );
+        await expectLater(
+          manager.setConfigOption(
+            sessionId: 's',
+            configId: 'model',
+            value: 'empty',
+          ),
+          completion(isEmpty),
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'config writes serialize per session without blocking other sessions',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/serialized_config_agent.dart');
+      final requestLog = File('${tempDir.path}/requests.log');
+      final releaseFirst = File('${tempDir.path}/release-first');
+      final releaseAfterFailure = File('${tempDir.path}/release-after-failure');
+      final logPath = jsonEncode(requestLog.path);
+      final releasePath = jsonEncode(releaseFirst.path);
+      final releaseAfterFailurePath = jsonEncode(releaseAfterFailure.path);
+      await agentScript.writeAsString('''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+var newCount = 0;
+
+void record(String value) {
+  File($logPath).writeAsStringSync('\$value\\n',
+      mode: FileMode.append, flush: true);
+}
+
+Future<void> waitForRelease() async {
+  while (!File($releasePath).existsSync()) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+Map<String, dynamic> options(String value) => <String, dynamic>{
+  'configOptions': <Object?>[
+    <String, dynamic>{
+      'id': 'model',
+      'name': 'Model',
+      'type': 'select',
+      'currentValue': value,
+      'category': 'model',
+      'options': <Object?>[
+        <String, dynamic>{'value': value, 'name': value},
+      ],
+    },
+  ],
+};
+
+Future<void> handleSetConfig(Map<String, dynamic> message) async {
+  final params = message['params'] as Map<String, dynamic>;
+  final sessionId = params['sessionId'] as String;
+  final value = params['value'] as String;
+  record('\$sessionId:\$value');
+  if (sessionId == 'session-1' && value == 'first') {
+    await waitForRelease();
+  } else if (value == 'after-fail') {
+    while (!File($releaseAfterFailurePath).existsSync()) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+  stdout.writeln(jsonEncode(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'id': message['id'],
+    'result': value == 'fail' ? <String, dynamic>{} : options(value),
+  }));
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    final method = message['method'];
+    if (method == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (method == 'session/new') {
+      newCount += 1;
+      final sessionId = 'session-\$newCount';
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': sessionId,
+          ...options('initial'),
+        },
+      }));
+    } else if (method == 'session/set_config_option') {
+      unawaited(handleSetConfig(message));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      Future<List<AcpConfigOption>>? first;
+      Future<List<AcpConfigOption>>? second;
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session1 = await client.createSession(cwd: '/workspace');
+        final session2 = await client.createSession(cwd: '/workspace');
+
+        first = client.setConfigOption(
+          sessionId: session1.id,
+          configId: 'model',
+          value: 'first',
+        );
+        await _waitForFile(requestLog);
+        second = client.setConfigOption(
+          sessionId: session1.id,
+          configId: 'model',
+          value: 'second',
+        );
+        final other = client.setConfigOption(
+          sessionId: session2.id,
+          configId: 'model',
+          value: 'other',
+        );
+
+        expect(
+          (await other.timeout(const Duration(seconds: 5))).single.currentValue,
+          'other',
+        );
+        final beforeRelease = await requestLog.readAsLines();
+        expect(beforeRelease, contains('session-1:first'));
+        expect(beforeRelease, contains('session-2:other'));
+        expect(beforeRelease, isNot(contains('session-1:second')));
+
+        await releaseFirst.writeAsString('release');
+        expect((await first).single.currentValue, 'first');
+        expect((await second).single.currentValue, 'second');
+        expect(
+          (await client.sessionSettings(
+            session1.id,
+          )).configOptions.single.currentValue,
+          'second',
+        );
+
+        final failed = client.setConfigOption(
+          sessionId: session1.id,
+          configId: 'model',
+          value: 'fail',
+        );
+        final afterFailure = client.setConfigOption(
+          sessionId: session1.id,
+          configId: 'model',
+          value: 'after-fail',
+        );
+        await expectLater(failed, throwsA(isA<FormatException>()));
+        final rejectedSettings = await client.sessionSettings(session1.id);
+        expect(rejectedSettings.configOptions, isEmpty);
+        expect(rejectedSettings.omissions.single.resource, 'config_options');
+        await releaseAfterFailure.writeAsString('release');
+        expect(
+          (await afterFailure.timeout(
+            const Duration(seconds: 5),
+          )).single.currentValue,
+          'after-fail',
+        );
+      } finally {
+        if (!await releaseFirst.exists()) {
+          await releaseFirst.writeAsString('release');
+        }
+        if (!await releaseAfterFailure.exists()) {
+          await releaseAfterFailure.writeAsString('release');
+        }
+        await first?.catchError((_) => const <AcpConfigOption>[]);
+        await second?.catchError((_) => const <AcpConfigOption>[]);
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'config write queues are invalidated by close logout and dispose',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File('${tempDir.path}/config_lifecycle_agent.dart');
+      final requestLog = File('${tempDir.path}/lifecycle-requests.log');
+      final seenClose = File('${tempDir.path}/seen-close');
+      final seenLogout = File('${tempDir.path}/seen-logout');
+      final seenDispose = File('${tempDir.path}/seen-dispose');
+      final releaseClose = File('${tempDir.path}/release-close');
+      final releaseLogout = File('${tempDir.path}/release-logout');
+      final logPath = jsonEncode(requestLog.path);
+      final seenClosePath = jsonEncode(seenClose.path);
+      final seenLogoutPath = jsonEncode(seenLogout.path);
+      final seenDisposePath = jsonEncode(seenDispose.path);
+      final releaseClosePath = jsonEncode(releaseClose.path);
+      final releaseLogoutPath = jsonEncode(releaseLogout.path);
+      await agentScript.writeAsString('''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+var newCount = 0;
+
+Map<String, dynamic> options(String value) => <String, dynamic>{
+  'configOptions': <Object?>[
+    <String, dynamic>{
+      'id': 'model',
+      'name': 'Model',
+      'type': 'select',
+      'currentValue': value,
+      'category': 'model',
+      'options': <Object?>[
+        <String, dynamic>{'value': value, 'name': value},
+      ],
+    },
+  ],
+};
+
+Future<void> waitFor(String path) async {
+  while (!File(path).existsSync()) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+Future<void> handleSetConfig(Map<String, dynamic> message) async {
+  final params = message['params'] as Map<String, dynamic>;
+  final sessionId = params['sessionId'] as String;
+  final value = params['value'] as String;
+  File($logPath).writeAsStringSync('\$sessionId:\$value\\n',
+      mode: FileMode.append, flush: true);
+  if (value == 'close-first') {
+    File($seenClosePath).writeAsStringSync('seen', flush: true);
+    await waitFor($releaseClosePath);
+  } else if (value == 'logout-first') {
+    File($seenLogoutPath).writeAsStringSync('seen', flush: true);
+    await waitFor($releaseLogoutPath);
+  } else if (value == 'dispose-first') {
+    File($seenDisposePath).writeAsStringSync('seen', flush: true);
+    await Completer<void>().future;
+  }
+  stdout.writeln(jsonEncode(<String, dynamic>{
+    'jsonrpc': '2.0',
+    'id': message['id'],
+    'result': value.endsWith('first') ? <String, dynamic>{} : options(value),
+  }));
+}
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    final method = message['method'];
+    if (method == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'auth': <String, dynamic>{'logout': true},
+            'sessionCapabilities': <String, dynamic>{
+              'close': true,
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Object?>[],
+        },
+      }));
+    } else if (method == 'session/new') {
+      newCount += 1;
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'lifecycle-\$newCount',
+          ...options('initial'),
+        },
+      }));
+    } else if (method == 'session/set_config_option') {
+      unawaited(handleSetConfig(message));
+    } else if (method == 'session/close' || method == 'logout') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      var disposed = false;
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+
+        final closeSession = await client.createSession(cwd: '/workspace');
+        final closeFirst = client.setConfigOption(
+          sessionId: closeSession.id,
+          configId: 'model',
+          value: 'close-first',
+        );
+        final closeFirstError = expectLater(
+          closeFirst,
+          throwsA(isA<FormatException>()),
+        );
+        await _waitForFile(seenClose);
+        final closeSecond = client.setConfigOption(
+          sessionId: closeSession.id,
+          configId: 'model',
+          value: 'close-second',
+        );
+        final closeSecondError = expectLater(
+          closeSecond.timeout(const Duration(seconds: 1)),
+          throwsA(isA<StateError>()),
+        );
+        await client.closeSession(sessionId: closeSession.id);
+        await closeSecondError;
+        await releaseClose.writeAsString('release');
+        await closeFirstError;
+        final closedSettings = await client.sessionSettings(closeSession.id);
+        expect(closedSettings.configOptions, isEmpty);
+        expect(closedSettings.omissions, isEmpty);
+
+        final logoutSession = await client.createSession(cwd: '/workspace');
+        final logoutFirst = client.setConfigOption(
+          sessionId: logoutSession.id,
+          configId: 'model',
+          value: 'logout-first',
+        );
+        final logoutFirstError = expectLater(
+          logoutFirst,
+          throwsA(isA<FormatException>()),
+        );
+        await _waitForFile(seenLogout);
+        final logoutSecond = client.setConfigOption(
+          sessionId: logoutSession.id,
+          configId: 'model',
+          value: 'logout-second',
+        );
+        final logoutSecondError = expectLater(
+          logoutSecond.timeout(const Duration(seconds: 1)),
+          throwsA(isA<StateError>()),
+        );
+        await client.logout();
+        await logoutSecondError;
+        await releaseLogout.writeAsString('release');
+        await logoutFirstError;
+        final loggedOutSettings = await client.sessionSettings(
+          logoutSession.id,
+        );
+        expect(loggedOutSettings.configOptions, isEmpty);
+        expect(loggedOutSettings.omissions, isEmpty);
+
+        final disposeSession = await client.createSession(cwd: '/workspace');
+        final disposeFirst = client.setConfigOption(
+          sessionId: disposeSession.id,
+          configId: 'model',
+          value: 'dispose-first',
+        );
+        final disposeFirstError = expectLater(disposeFirst, throwsA(anything));
+        await _waitForFile(seenDispose);
+        final disposeSecond = client.setConfigOption(
+          sessionId: disposeSession.id,
+          configId: 'model',
+          value: 'dispose-second',
+        );
+        final disposeSecondError = expectLater(
+          disposeSecond,
+          throwsA(isA<StateError>()),
+        );
+        await client.dispose().timeout(const Duration(seconds: 5));
+        disposed = true;
+        await disposeFirstError;
+        await disposeSecondError;
+
+        final requests = await requestLog.readAsLines();
+        expect(requests, contains('lifecycle-1:close-first'));
+        expect(requests, isNot(contains('lifecycle-1:close-second')));
+        expect(requests, contains('lifecycle-2:logout-first'));
+        expect(requests, isNot(contains('lifecycle-2:logout-second')));
+        expect(requests, contains('lifecycle-3:dispose-first'));
+        expect(requests, isNot(contains('lifecycle-3:dispose-second')));
+      } finally {
+        if (!await releaseClose.exists()) {
+          await releaseClose.writeAsString('release');
+        }
+        if (!await releaseLogout.exists()) {
+          await releaseLogout.writeAsString('release');
+        }
+        if (!disposed) await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test(
     'manager publishes committed session results with correct identity',
@@ -835,6 +2134,7 @@ Future<void> main() async {
     }));
   }
 }
+
 ''');
     final client = DartAcpAgentClient(
       agentCommand: _dartExecutable(),
@@ -1710,7 +3010,7 @@ Future<void> main() async {
     }
   });
 
-  test('preserves snake case tool call ids from raw session updates', () async {
+  test('preserves snake case tool call ids in typed session updates', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_snake_tool_agent.dart');
     await agentScript.writeAsString('''
@@ -1841,11 +3141,13 @@ Future<void> main() async {
         'completed',
       ]);
       expect(toolEvents[2].text, 'Bash A');
-      expect(toolEvents.first.metadata['content'], 'running A');
-      expect(
-        toolEvents.first.metadata['locations'],
-        contains('/workspace/a.dart'),
-      );
+      expect(toolEvents.first.metadata['content'], [
+        {'type': 'text', 'text': 'running A'},
+      ]);
+      expect(toolEvents.first.metadata['locations'], [
+        {'path': '/workspace/a.dart'},
+        {'path': '/workspace/b.dart', 'line': 7},
+      ]);
       expect(toolEvents[2].metadata['title'], 'Bash A');
       expect(toolEvents[2].metadata['status'], 'completed');
       expect(toolEvents[2].metadata['rawOutput'], 'a done');
@@ -1863,9 +3165,9 @@ Future<void> main() async {
           .toList();
 
       expect(reusedToolEvents, hasLength(1));
-      expect(reusedToolEvents.single.text, 'call-a');
+      expect(reusedToolEvents.single.text, 'Bash A');
       expect(reusedToolEvents.single.metadata['toolCallId'], 'call-a');
-      expect(reusedToolEvents.single.metadata['title'], isNull);
+      expect(reusedToolEvents.single.metadata['title'], 'Bash A');
       expect(reusedToolEvents.single.metadata['status'], 'pending');
       expect(
         reusedToolEvents.single.metadata['rawOutput'],
@@ -9524,7 +10826,7 @@ Future<void> main() async {
     },
   );
 
-  test('raw session result capture ignores colliding agent requests', () async {
+  test('bounded result observation ignores colliding agent requests', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File(
       '${tempDir.path}/fake_colliding_request_agent.dart',
@@ -9616,7 +10918,7 @@ Future<void> main() async {
     }
   });
 
-  test('ignores unsupported raw config option types', () async {
+  test('invalid typed config option clears the entire field', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_unknown_config_agent.dart');
     await agentScript.writeAsString('''
@@ -9701,13 +11003,8 @@ Future<void> main() async {
       final session = await client.createSession(cwd: '/workspace');
       final settings = await client.sessionSettings(session.id);
 
-      expect(settings.configOptions.map((option) => option.id), [
-        'model',
-        'read_only',
-      ]);
-      expect(settings.configOptions.first.type, 'select');
-      expect(settings.configOptions.last.type, 'boolean');
-      expect(settings.configOptions.last.currentValue, 'true');
+      expect(settings.configOptions, isEmpty);
+      expect(settings.omissions.single.resource, 'config_options');
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
@@ -9715,7 +11012,7 @@ Future<void> main() async {
   });
 
   test(
-    'caches legacy raw config option payloads from session creation',
+    'owns all-valid legacy config aliases through the bounded result',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final agentScript = File('${tempDir.path}/fake_legacy_config_agent.dart');
@@ -9772,8 +11069,6 @@ Future<void> main() async {
                 <String, Object>{'value': false, 'label': 'Off'},
               ],
             },
-            'not-a-config-option',
-            <String, dynamic>{'name': 'Missing id', 'currentValue': 'x'},
           ],
         },
       }));
@@ -9809,6 +11104,7 @@ Future<void> main() async {
           settings.configOptions.last.options.map((choice) => choice.name),
           ['On', 'Off'],
         );
+        expect(settings.omissions, isEmpty);
       } finally {
         await client.dispose();
         await tempDir.delete(recursive: true);
@@ -9816,7 +11112,7 @@ Future<void> main() async {
     },
   );
 
-  test('caches legacy modes when config options are omitted', () async {
+  test('owns nested legacy modes when config options are omitted', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_legacy_modes_agent.dart');
     await agentScript.writeAsString('''
@@ -9886,7 +11182,7 @@ Future<void> main() async {
     }
   });
 
-  test('synthesizes model config option from legacy models state', () async {
+  test('does not synthesize config options from legacy raw models', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_models_agent.dart');
     await agentScript.writeAsString('''
@@ -9946,25 +11242,15 @@ Future<void> main() async {
       final session = await client.createSession(cwd: '/workspace');
       final settings = await client.sessionSettings(session.id);
 
-      expect(settings.configOptions, hasLength(1));
-      expect(settings.modelOption?.id, 'model');
-      expect(settings.modelOption?.category, 'model');
-      expect(settings.currentModelLabel, 'Kimi K2');
-      expect(settings.modelOption?.options.map((choice) => choice.value), [
-        'kimi-k2',
-        'kimi-pro',
-      ]);
-      expect(settings.modelOption?.options.map((choice) => choice.name), [
-        'Kimi K2',
-        'Kimi Pro',
-      ]);
+      expect(settings.configOptions, isEmpty);
+      expect(settings.currentModelLabel, isNull);
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
     }
   });
 
-  test('setting synthesized model option uses session set model', () async {
+  test('setting model config uses the typed config option RPC', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final setModelParamsFile = File('${tempDir.path}/set_model_params.json');
     final setModelParamsPath = jsonEncode(setModelParamsFile.path);
@@ -10003,20 +11289,21 @@ Future<void> main() async {
           },
         },
       }));
-    } else if (message['method'] == 'session/set_model') {
+    } else if (message['method'] == 'session/set_config_option') {
+      final params = message['params'] as Map<String, dynamic>;
       await File($setModelParamsPath).writeAsString(
-        jsonEncode(message['params']),
+        jsonEncode(params),
       );
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
         'id': message['id'],
         'result': <String, dynamic>{
-          'config_options': <Map<String, dynamic>>[
+          'configOptions': <Object?>[
             <String, dynamic>{
               'id': 'model',
               'name': 'Model',
               'type': 'select',
-              'current_value': 'kimi-pro',
+              'currentValue': params['value'],
               'category': 'model',
               'options': <Map<String, dynamic>>[
                 <String, dynamic>{'value': 'kimi-k2', 'name': 'Kimi K2'},
@@ -10026,10 +11313,11 @@ Future<void> main() async {
                 },
               ],
             },
+            if (params['value'] == 'reject') 'SET_CONFIG_CANARY',
           ],
         },
       }));
-    } else if (message['method'] == 'session/set_config_option') {
+    } else if (message['method'] == 'session/set_model') {
       await File($setModelParamsPath).writeAsString(
         jsonEncode(<String, dynamic>{'wrongMethod': message['method']}),
       );
@@ -10065,11 +11353,30 @@ Future<void> main() async {
 
       expect(setModelParams, {
         'sessionId': 'session-models',
-        'modelId': 'kimi-pro',
+        'configId': 'model',
+        'value': 'kimi-pro',
       });
       expect(updatedOptions.single.currentValue, 'kimi-pro');
       expect(updatedOptions.single.options.last.name, 'Kimi Pro Updated');
       expect(settings.currentModelLabel, 'Kimi Pro Updated');
+
+      await expectLater(
+        client.setConfigOption(
+          sessionId: session.id,
+          configId: 'model',
+          value: 'reject',
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'payload-free',
+            isNot(contains('SET_CONFIG_CANARY')),
+          ),
+        ),
+      );
+      final rejectedSettings = await client.sessionSettings(session.id);
+      expect(rejectedSettings.configOptions, isEmpty);
+      expect(rejectedSettings.omissions.single.resource, 'config_options');
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
@@ -10077,7 +11384,7 @@ Future<void> main() async {
   });
 
   test(
-    'runtime config option updates clear synthesized model marker',
+    'runtime config option updates replace ignored legacy models state',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final setConfigParamsFile = File(
@@ -10216,7 +11523,7 @@ Future<void> main() async {
     },
   );
 
-  test('synthesizes legacy models returned by resume and fork', () async {
+  test('ignores legacy raw models returned by resume and fork', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final agentScript = File('${tempDir.path}/fake_resume_fork_models.dart');
     await agentScript.writeAsString('''
@@ -10301,9 +11608,9 @@ Future<void> main() async {
       final forkSettings = await client.sessionSettings(forked.id);
 
       expect(resumeEvents, isEmpty);
-      expect(resumeSettings.currentModelLabel, 'Resume Model');
+      expect(resumeSettings.currentModelLabel, isNull);
       expect(forked.id, 'session-forked');
-      expect(forkSettings.currentModelLabel, 'Fork Model');
+      expect(forkSettings.currentModelLabel, isNull);
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);
@@ -10777,11 +12084,12 @@ Future<void> main() async {
           },
           'configOptions': <Map<String, dynamic>>[
             <String, dynamic>{
-              'id': 'model',
-              'name': 'Model',
+              'id': 'temperature',
+              'name': 'Temperature',
               'type': 'select',
               'currentValue': 'gpt-5-pro',
               'category': 'model',
+              'group': 'advanced',
               'options': <Map<String, dynamic>>[
                 <String, dynamic>{
                   'value': 'gpt-5-pro',
@@ -10813,6 +12121,9 @@ Future<void> main() async {
 
       expect(events, isEmpty);
       expect(settings.configOptions, hasLength(1));
+      expect(settings.configOptions.single.category, 'model');
+      expect(settings.configOptions.single.group, 'advanced');
+      expect(settings.configOptions.single.isModelOption, isTrue);
       expect(settings.currentModelLabel, 'GPT-5 Pro');
       expect(settings.modes.currentModeId, isNull);
       expect(settings.modes.availableModes, isEmpty);

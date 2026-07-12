@@ -475,7 +475,7 @@ class TurnEnded extends AcpUpdate {
 /// Update type used for unclassified session/update payloads.
 class UnknownUpdate extends AcpUpdate {
   /// Construct with the raw notification payload.
-  const UnknownUpdate(this.raw, {this.omission});
+  const UnknownUpdate(this.raw, {this.omission, this.boundedKind});
 
   /// Create an immutable bounded snapshot of an unclassified update.
   factory UnknownUpdate.fromJson(
@@ -488,7 +488,14 @@ class UnknownUpdate extends AcpUpdate {
       guard.checkCollection(json, field: 'unknown update');
       guard.consumeEntry(field: 'unknown update');
       final copy = guard.copyMetadata(json, field: 'unknown update raw');
-      return UnknownUpdate(Map<String, dynamic>.unmodifiable(copy));
+      final rawKind = copy['sessionUpdate'];
+      final boundedKind = rawKind is String && rawKind.trim().isNotEmpty
+          ? rawKind.trim()
+          : null;
+      return UnknownUpdate(
+        Map<String, dynamic>.unmodifiable(copy),
+        boundedKind: boundedKind,
+      );
     } on AcpInputLimitExceeded catch (error) {
       return UnknownUpdate(
         const <String, dynamic>{},
@@ -518,10 +525,12 @@ class UnknownUpdate extends AcpUpdate {
   /// Host-owned reason why the raw snapshot was rejected.
   final AcpInputOmission? omission;
 
+  /// Host-owned bounded classification captured before a rejected raw copy.
+  final String? boundedKind;
+
   @override
   String get text {
-    final type = raw['sessionUpdate'];
-    return '[Unknown update: ${type is String ? type : 'unspecified'}]';
+    return '[Unknown update: ${boundedKind ?? 'unspecified'}]';
   }
 }
 

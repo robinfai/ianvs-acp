@@ -1741,6 +1741,56 @@ Future<void> main() async {
     expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
   });
 
+  test('config options preserve separately bounded category and group', () {
+    final option = ConfigOption.fromJson(<String, dynamic>{
+      'id': 'temperature',
+      'name': 'Temperature',
+      'type': 'select',
+      'currentValue': 'balanced',
+      'category': 'model',
+      'group': 'advanced',
+      'options': <Object?>['balanced'],
+    });
+
+    expect(option.category, 'model');
+    expect(option.group, 'advanced');
+    expect(option.toJson(), containsPair('category', 'model'));
+    expect(option.toJson(), containsPair('group', 'advanced'));
+
+    final categoryOnly = ConfigOption.fromJson(<String, dynamic>{
+      'id': 'category-only',
+      'currentValue': 'value',
+      'category': 'model',
+    });
+    expect(categoryOnly.category, 'model');
+    expect(categoryOnly.group, 'model');
+
+    final groupOnly = ConfigOption.fromJson(<String, dynamic>{
+      'id': 'group-only',
+      'currentValue': 'value',
+      'group': 'advanced',
+    });
+    expect(groupOnly.category, isNull);
+    expect(groupOnly.group, 'advanced');
+
+    for (final field in <String>['category', 'group']) {
+      expect(
+        () => ConfigOption.fromJson(<String, dynamic>{
+          'id': 'temperature',
+          'currentValue': 'balanced',
+          field: <String>['CONFIG_CLASSIFICATION_CANARY'],
+        }),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'payload-free',
+            isNot(contains('CONFIG_CLASSIFICATION_CANARY')),
+          ),
+        ),
+      );
+    }
+  });
+
   test('diff details fail closed at collection and text boundaries', () {
     final numericLine = Diff.fromJson(<String, dynamic>{
       'changes': <Object?>[
@@ -2370,6 +2420,40 @@ Future<void> main() async {
     expect(forged.omissions, isEmpty);
   });
 
+  test('session result owns nested legacy modes under the same guard', () {
+    final valid = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 'nested',
+      'modes': <String, dynamic>{
+        'current_mode_id': 'plan',
+        'available_modes': <Object?>[
+          <String, dynamic>{'id': 'plan', 'name': 'Plan'},
+          <String, dynamic>{'mode_id': 'act', 'display_name': 'Act'},
+        ],
+      },
+    });
+    expect(valid.modes?.currentModeId, 'plan');
+    expect(valid.modes?.availableModes, <({String id, String name})>[
+      (id: 'plan', name: 'Plan'),
+      (id: 'act', name: 'Act'),
+    ]);
+    expect(valid.omissions, isEmpty);
+    expect(() => valid.modes!.availableModes.clear(), throwsUnsupportedError);
+
+    final invalid = SessionResult.fromJson(<String, dynamic>{
+      'sessionId': 'nested-invalid',
+      'modes': <String, dynamic>{
+        'current_mode_id': 'plan',
+        'available_modes': <Object?>[
+          <String, dynamic>{'id': 'plan', 'name': 'Plan'},
+          'NESTED_MODE_CANARY',
+        ],
+      },
+    });
+    expect(invalid.modes, isNull);
+    expect(invalid.omissions.single.resource, 'session_modes');
+    expect(invalid.omissions.toString(), isNot(contains('NESTED_MODE_CANARY')));
+  });
+
   test(
     'invalid config options and choices reject the whole actionable field',
     () {
@@ -2977,6 +3061,7 @@ Future<void> main() async {
     });
     (nested['items']! as List<Object?>).add(2);
     expect(unknown.omission, isNull);
+    expect(unknown.boundedKind, 'future');
     expect((unknown.raw['nested'] as Map<String, Object?>)['items'], [1]);
     expect(() => unknown.raw['x'] = true, throwsUnsupportedError);
 
@@ -2986,6 +3071,16 @@ Future<void> main() async {
     }, inputBudget: const AcpInputBudget(maxStructuredUpdateBytes: 12));
     expect(limited.raw, isEmpty);
     expect(limited.omission?.reason, AcpInputOmissionReason.inputLimit);
+
+    final forgedKind = UnknownUpdate.fromJson(<String, dynamic>{
+      'sessionUpdate': 'future',
+      'boundedKind': 'config_option_update',
+    });
+    expect(forgedKind.boundedKind, 'future');
+    final forgedKindOnly = UnknownUpdate.fromJson(<String, dynamic>{
+      'boundedKind': 'config_option_update',
+    });
+    expect(forgedKindOnly.boundedKind, isNull);
 
     final forgedMode = ModeUpdate.fromJson(<String, dynamic>{
       'currentModeId': 'code',

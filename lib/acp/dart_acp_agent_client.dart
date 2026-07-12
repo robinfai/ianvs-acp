@@ -138,6 +138,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   acp.AcpTransport? _transport;
   acp.AcpClient? _connectingClient;
   acp.AcpTransport? _connectingTransport;
+  acp.AcpBoundedObservationListener? _boundedObservationListener;
+  acp.AcpBoundedObservationListener? _connectingBoundedObservationListener;
   AcpAgentCapabilities? _capabilities;
   final _AcpPermissionBridge _permissionBridge = _AcpPermissionBridge();
   bool _supportsLoadSession = false;
@@ -157,21 +159,18 @@ class DartAcpAgentClient implements AcpAgentClient {
       <String, List<String>>{};
   final Map<String, List<AcpConfigOption>> _configOptionsBySession =
       <String, List<AcpConfigOption>>{};
-  final Set<String> _modelConfigOptionsFromModelsBySession = <String>{};
-  final Map<String, _RawProtocolRequest> _pendingRawProtocolRequests =
-      <String, _RawProtocolRequest>{};
-  final Map<String, Map<String, dynamic>> _rawSessionResultsBySession =
-      <String, Map<String, dynamic>>{};
-  final Map<String, List<Map<String, Object?>>> _rawToolCallEventsBySession =
-      <String, List<Map<String, Object?>>>{};
-  final Map<String, Map<String, Map<String, Object?>>>
-  _rawToolCallStatesBySession = <String, Map<String, Map<String, Object?>>>{};
+  final Map<String, List<acp.AcpInputOmission>> _settingsOmissionsBySession =
+      <String, List<acp.AcpInputOmission>>{};
+  final Map<String, acp.AcpInputOmission> _configUpdateOmissionsBySession =
+      <String, acp.AcpInputOmission>{};
+  final Set<String> _boundedModesBySession = <String>{};
+  final Map<String, _ConfigOptionMutationQueue> _configMutationQueuesBySession =
+      <String, _ConfigOptionMutationQueue>{};
 
   static const int _maxEmbeddedAttachmentBytes = 256 * 1024;
   static const int _maxEmbeddedBinaryAttachmentBytes = 1024 * 1024;
   static const int _maxImageAttachmentBytes = 4 * 1024 * 1024;
   static const int _maxAudioAttachmentBytes = 8 * 1024 * 1024;
-  static const int _maxRawToolCallEventIds = 200;
   static final RegExp _promptMentionPattern = RegExp(
     r'''@("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)''',
   );
@@ -266,6 +265,12 @@ class DartAcpAgentClient implements AcpAgentClient {
         throw StateError('Codex ACP client has been disposed.');
       }
       _connectingClient = client;
+      late final acp.AcpBoundedObservationListener observationListener;
+      observationListener = (observation) {
+        _handleBoundedObservation(client, observation);
+      };
+      _connectingBoundedObservationListener = observationListener;
+      client.addBoundedObservationListener(observationListener);
       try {
         final clientCapabilities = Map<String, dynamic>.from(
           config.capabilities.toJson(),
@@ -309,16 +314,20 @@ class DartAcpAgentClient implements AcpAgentClient {
         sessionMcpServers
           ..clear()
           ..addAll(compatibleMcpServers);
-        _connectingClient = null;
-        _connectingTransport = null;
         _client = client;
         _transport = transport;
+        _boundedObservationListener = observationListener;
+        _connectingBoundedObservationListener = null;
+        _connectingClient = null;
+        _connectingTransport = null;
         _supportsLoadSession = capabilities.loadSession;
         _supportsListSessions = capabilities.session.list;
         _supportsResumeSession = capabilities.session.resume;
         _capabilities = capabilities;
       } catch (_) {
         if (identical(_connectingClient, client)) {
+          client.removeBoundedObservationListener(observationListener);
+          _connectingBoundedObservationListener = null;
           _connectingClient = null;
           _connectingTransport = null;
           await _disposeClient(client, transport);
@@ -336,8 +345,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       return WebSocketAcpTransport(
         endpoint: webSocketUrl,
         headers: agentHeaders,
-        onProtocolOut: _captureProtocolOut,
-        onProtocolIn: _captureProtocolIn,
       );
     }
     final httpUrl = agentHttpUrl;
@@ -345,8 +352,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       return StreamableHttpAcpTransport(
         endpoint: httpUrl,
         headers: agentHeaders,
-        onProtocolOut: _captureProtocolOut,
-        onProtocolIn: _captureProtocolIn,
       );
     }
     return acp.StdioTransport(
@@ -355,8 +360,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       cwd: agentCwd,
       envOverrides: envOverrides,
       logger: config.logger,
-      onProtocolOut: _captureProtocolOut,
-      onProtocolIn: _captureProtocolIn,
     );
   }
 
@@ -374,17 +377,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = sessionId;
     _cwdBySession[sessionId] = cwd;
     _additionalDirectoriesBySession[sessionId] = directories;
-    final response = _takeRawSessionResult(sessionId);
-    final configOptions = _cacheSessionResultConfigOptions(
-      sessionId: sessionId,
-      rawResponse: response,
-    );
-    if (configOptions.isEmpty) {
-      _cacheRawModes(sessionId, response['modes']);
-    } else {
-      _modesBySession.remove(sessionId);
-      _modeOverridesBySession.remove(sessionId);
-    }
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       sessionId,
@@ -414,7 +406,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     final events = <AgentEvent>[];
     final directories = _additionalDirectoriesForRequest(additionalDirectories);
     if (!_supportsLoadSession) {
-      final result = await client.resumeSession(
+      await client.resumeSession(
         sessionId: sessionId,
         workspaceRoot: cwd,
         additionalDirectories: directories,
@@ -423,12 +415,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
       _additionalDirectoriesBySession[sessionId] = directories;
-      final response = _takeRawSessionResult(sessionId);
-      _cacheSessionResult(
-        sessionId: sessionId,
-        rawResponse: response,
-        typedConfigOptions: result.configOptions,
-      );
       events.addAll(await _cacheImmediateSessionUpdates(client, sessionId));
       return events;
     }
@@ -450,10 +436,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       _activeSessionId = sessionId;
       _cwdBySession[sessionId] = cwd;
       _additionalDirectoriesBySession[sessionId] = directories;
-      final response = _takeRawSessionResult(sessionId);
-      if (response.isNotEmpty) {
-        _cacheSessionResult(sessionId: sessionId, rawResponse: response);
-      }
       return events;
     } finally {
       await subscription.cancel();
@@ -491,7 +473,8 @@ class DartAcpAgentClient implements AcpAgentClient {
                 : session.sessionId,
             additionalDirectories: session.additionalDirectories,
             updatedAt: session.updatedAt?.toLocal(),
-            meta: _metadataMap(session.meta),
+            meta: session.meta ?? const <String, Object?>{},
+            metaOmission: session.metaOmission,
           );
         }),
       );
@@ -532,21 +515,33 @@ class DartAcpAgentClient implements AcpAgentClient {
     final configOptions =
         _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
     if (configOptions.isNotEmpty) {
-      return AcpSessionSettings(configOptions: configOptions);
+      final omissions =
+          _settingsOmissionsBySession[sessionId] ??
+          const <acp.AcpInputOmission>[];
+      return AcpSessionSettings(
+        configOptions: configOptions,
+        omissions: omissions,
+        truncated: omissions.any((omission) => omission.truncated),
+      );
     }
 
-    final modes = client.sessionModes(sessionId);
+    final modes = _boundedModesBySession.contains(sessionId)
+        ? null
+        : client.sessionModes(sessionId);
     final cachedModes = _modesBySession[sessionId];
     final currentModeId =
         _modeOverridesBySession[sessionId] ??
         modes?.currentModeId ??
         cachedModes?.currentModeId;
-    final packageModes =
-        modes?.availableModes
-            .map((mode) => AcpSessionMode(id: mode.id, name: mode.name))
-            .where((mode) => mode.id.isNotEmpty)
-            .toList() ??
-        const <AcpSessionMode>[];
+    final packageModeProjection = <AcpSessionMode>[];
+    if (modes != null) {
+      for (final mode in modes.availableModes) {
+        packageModeProjection.add(AcpSessionMode(id: mode.id, name: mode.name));
+      }
+    }
+    final packageModes = List<AcpSessionMode>.unmodifiable(
+      packageModeProjection,
+    );
     final availableModes = cachedModes?.availableModes.isNotEmpty == true
         ? cachedModes!.availableModes
         : packageModes;
@@ -556,6 +551,14 @@ class DartAcpAgentClient implements AcpAgentClient {
         availableModes: availableModes,
       ),
       configOptions: configOptions,
+      omissions:
+          _settingsOmissionsBySession[sessionId] ??
+          const <acp.AcpInputOmission>[],
+      truncated:
+          _settingsOmissionsBySession[sessionId]?.any(
+            (omission) => omission.truncated,
+          ) ??
+          false,
     );
   }
 
@@ -579,41 +582,50 @@ class DartAcpAgentClient implements AcpAgentClient {
     required Object value,
   }) async {
     final client = _requireClient();
-    if (configId == 'model' &&
-        _modelConfigOptionsFromModelsBySession.contains(sessionId)) {
-      final response = await client.sendRaw('session/set_model', {
-        'sessionId': sessionId,
-        'modelId': value.toString(),
-      });
-      final rawConfigOptions = response.containsKey('configOptions')
-          ? response['configOptions']
-          : response['config_options'];
-      if ((rawConfigOptions is List && rawConfigOptions.isNotEmpty) ||
-          response.containsKey('models')) {
-        final configOptions = _cacheSessionResultConfigOptions(
+    return _runSerializedConfigMutation(sessionId, client, (queue) async {
+      late final List<acp.ConfigOption> typed;
+      try {
+        typed = await client.setConfigOption(
           sessionId: sessionId,
-          rawResponse: response,
+          configId: configId,
+          value: value.toString(),
         );
-        if (configOptions.isNotEmpty) return configOptions;
+      } on acp.AcpInputLimitExceeded catch (error) {
+        if (_isCurrentConfigMutation(sessionId, client, queue)) {
+          _rejectConfigUpdate(
+            sessionId,
+            acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.inputLimit,
+              resource: 'config_options',
+              truncated: false,
+              limit: error.limit,
+              observedAtLeast: error.observedAtLeast,
+            ),
+          );
+        }
+        rethrow;
+      } on Object {
+        if (_isCurrentConfigMutation(sessionId, client, queue)) {
+          _rejectConfigUpdate(sessionId, _invalidOmission('config_options'));
+        }
+        rethrow;
       }
-      return _applyConfigOptionOverride(sessionId, configId, value);
-    }
-    final params = <String, dynamic>{
-      'sessionId': sessionId,
-      'configId': configId,
-    };
-    if (value is bool) {
-      params['type'] = 'boolean';
-      params['value'] = value;
-    } else {
-      params['value'] = value.toString();
-    }
-    final response = await client.sendRaw('session/set_config_option', params);
-    final configOptions = response['configOptions'];
-    if (configOptions is List) {
-      return _cacheRawConfigOptions(sessionId, configOptions);
-    }
-    return _applyConfigOptionOverride(sessionId, configId, value);
+      _requireCurrentConfigMutation(sessionId, client, queue);
+      final mapped = _configOptionsFromAcpAtomically(typed);
+      if (mapped == null) {
+        _rejectConfigUpdate(sessionId, _invalidOmission('config_options'));
+        throw const FormatException('Invalid ACP config options.');
+      }
+      _configOptionsBySession[sessionId] = mapped;
+      _configUpdateOmissionsBySession.remove(sessionId);
+      _replaceSettingsOmission(
+        sessionId,
+        resource: 'config_options',
+        omission: null,
+      );
+      if (mapped.isNotEmpty) _clearModes(sessionId);
+      return mapped;
+    });
   }
 
   @override
@@ -640,12 +652,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     _activeSessionId = forkedSessionId;
     _cwdBySession[forkedSessionId] = cwd;
     _additionalDirectoriesBySession[forkedSessionId] = directories;
-    final response = _takeRawSessionResult(forkedSessionId);
-    _cacheSessionResult(
-      sessionId: forkedSessionId,
-      rawResponse: response,
-      typedConfigOptions: result.configOptions,
-    );
     final initialEvents = await _cacheImmediateSessionUpdates(
       client,
       forkedSessionId,
@@ -665,6 +671,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.session.close != true) {
       throw StateError('ACP agent does not support session/close.');
     }
+    _invalidateConfigMutationQueue(sessionId);
     _invalidateRawPromptOperation(sessionId);
     try {
       await client.closeSession(sessionId: sessionId);
@@ -676,6 +683,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   void _clearSessionState(String sessionId) {
+    _invalidateConfigMutationQueue(sessionId);
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
@@ -684,10 +692,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     _additionalDirectoriesBySession.remove(sessionId);
     _modeOverridesBySession.remove(sessionId);
     _configOptionsBySession.remove(sessionId);
-    _modelConfigOptionsFromModelsBySession.remove(sessionId);
-    _rawSessionResultsBySession.remove(sessionId);
-    _rawToolCallEventsBySession.remove(sessionId);
-    _rawToolCallStatesBySession.remove(sessionId);
+    _configUpdateOmissionsBySession.remove(sessionId);
+    _settingsOmissionsBySession.remove(sessionId);
+    _boundedModesBySession.remove(sessionId);
     _permissionBridge.cancelSession(sessionId);
   }
 
@@ -720,6 +727,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_capabilities?.auth.logout != true) {
       throw StateError('ACP agent does not support logout.');
     }
+    _invalidateAllConfigMutationQueues();
     await client.sendRaw('logout', const <String, dynamic>{});
     _activeSessionId = null;
     _modesBySession.clear();
@@ -727,9 +735,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     _additionalDirectoriesBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
-    _modelConfigOptionsFromModelsBySession.clear();
-    _rawToolCallEventsBySession.clear();
-    _rawToolCallStatesBySession.clear();
+    _configUpdateOmissionsBySession.clear();
+    _settingsOmissionsBySession.clear();
+    _boundedModesBySession.clear();
     _permissionBridge.cancelAll();
   }
 
@@ -916,6 +924,7 @@ class DartAcpAgentClient implements AcpAgentClient {
               'kind': 'thought',
               if (contentBlocks.isNotEmpty) 'contentBlocks': contentBlocks,
             },
+            omissions: update.omissions,
             timestamp: DateTime.now(),
           );
         }
@@ -925,29 +934,21 @@ class DartAcpAgentClient implements AcpAgentClient {
           metadata: hasNonTextContent
               ? <String, Object?>{'contentBlocks': contentBlocks}
               : const <String, Object?>{},
+          omissions: update.omissions,
           timestamp: DateTime.now(),
         );
       case acp.ToolCallUpdate():
         final toolCall = update.toolCall;
-        final rawToolCallState = sessionId == null
-            ? null
-            : _takeRawToolCallState(sessionId);
-        final metadata = rawToolCallState == null
-            ? <String, Object?>{'kind': 'tool', ...toolCall.toJson()}
-            : <String, Object?>{
-                'kind': 'tool',
-                ..._normalizedRawToolCallMetadata(rawToolCallState),
-              };
-        final title = metadata['title'];
-        final toolCallId = metadata['toolCallId'];
+        final metadata = _toolCallMetadata(toolCall);
         return AgentEvent(
           type: AgentEventType.toolCall,
-          text: title is String && title.trim().isNotEmpty
-              ? title
-              : toolCallId is String && toolCallId.trim().isNotEmpty
-              ? toolCallId
+          text: toolCall.title?.trim().isNotEmpty == true
+              ? toolCall.title!
+              : toolCall.toolCallId.trim().isNotEmpty
+              ? toolCall.toolCallId
               : 'Tool call',
           metadata: metadata,
+          omissions: _singleOmission(toolCall.omission),
           timestamp: DateTime.now(),
         );
       case acp.TurnEnded():
@@ -970,8 +971,11 @@ class DartAcpAgentClient implements AcpAgentClient {
             'kind': 'plan',
             'title': plan.title,
             'description': plan.description,
-            'entries': plan.entries.map((entry) => entry.toJson()).toList(),
+            'entries': _planEntryProjection(plan.entries),
+            if (plan.metadata != null) 'metadata': plan.metadata,
+            'truncated': plan.truncated,
           },
+          omissions: _singleOmission(plan.omission),
           timestamp: DateTime.now(),
         );
       case acp.DiffUpdate():
@@ -979,20 +983,34 @@ class DartAcpAgentClient implements AcpAgentClient {
         return AgentEvent(
           type: AgentEventType.status,
           text: diff.uri ?? diff.id,
-          metadata: <String, Object?>{'kind': 'diff', ...diff.toJson()},
+          metadata: <String, Object?>{
+            'kind': 'diff',
+            'id': diff.id,
+            'status': diff.status.name,
+            if (diff.uri != null) 'uri': diff.uri,
+            'changes': _diffChangeProjection(diff.changes),
+            if (diff.description != null) 'description': diff.description,
+            'truncated': diff.truncated,
+          },
+          omissions: _singleOmission(diff.omission),
           timestamp: DateTime.now(),
         );
       case acp.AvailableCommandsUpdate():
-        final commands = update.commands;
+        final commands = update.omission == null
+            ? _commandProjectionAtomically(update.commands)
+            : null;
+        final omission =
+            update.omission ??
+            (commands == null ? _invalidOmission('available_commands') : null);
+        final safeCommands = commands ?? const <Map<String, Object?>>[];
         return AgentEvent(
           type: AgentEventType.status,
-          text: commands.isEmpty
-              ? 'No available commands'
-              : commands.map((command) => command.name).join(', '),
+          text: _commandEventText(update.commands, rejected: omission != null),
           metadata: <String, Object?>{
             'kind': 'commands',
-            'commands': commands.map((command) => command.toJson()).toList(),
+            'commands': safeCommands,
           },
+          omissions: _singleOmission(omission),
           timestamp: DateTime.now(),
         );
       case acp.UsageUpdate():
@@ -1008,12 +1026,18 @@ class DartAcpAgentClient implements AcpAgentClient {
         );
       case acp.ModeUpdate():
         final updateSessionId = sessionId ?? _activeSessionId;
+        if (update.omission != null) {
+          return AgentEvent(
+            type: AgentEventType.status,
+            text: '',
+            metadata: const <String, Object?>{'kind': 'mode', 'mode': ''},
+            omissions: _singleOmission(update.omission),
+            timestamp: DateTime.now(),
+          );
+        }
         if (updateSessionId != null &&
             (_configOptionsBySession[updateSessionId]?.isNotEmpty ?? false)) {
           return null;
-        }
-        if (update.currentModeId.isNotEmpty && updateSessionId != null) {
-          _modeOverridesBySession[updateSessionId] = update.currentModeId;
         }
         return AgentEvent(
           type: AgentEventType.status,
@@ -1027,9 +1051,19 @@ class DartAcpAgentClient implements AcpAgentClient {
       case acp.UnknownUpdate():
         final kind = _unknownUpdateKind(update);
         if (kind == 'usage_update') return _usageEventFromUnknownUpdate(update);
-        final mapped = _eventFromUnknownUpdate(update);
+        final mapped = _eventFromUnknownUpdate(update, sessionId: sessionId);
         if (mapped != null) return mapped;
-        if (kind == null) return null;
+        if (kind == null) {
+          final omission = update.omission;
+          if (omission == null) return null;
+          return AgentEvent(
+            type: AgentEventType.status,
+            text: 'Unknown update omitted.',
+            metadata: const <String, Object?>{'kind': 'unknown'},
+            omissions: _singleOmission(omission),
+            timestamp: DateTime.now(),
+          );
+        }
         final text = '[Unknown update: $kind]';
         return AgentEvent(
           type: AgentEventType.status,
@@ -1040,23 +1074,24 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  AgentEvent? _eventFromUnknownUpdate(acp.UnknownUpdate update) {
+  AgentEvent? _eventFromUnknownUpdate(
+    acp.UnknownUpdate update, {
+    required String? sessionId,
+  }) {
     final raw = update.raw;
-    final sessionId = _sessionIdFromMap(raw);
     final rawBody = raw['update'];
     final body = rawBody is Map<String, dynamic> ? rawBody : raw;
 
-    final kind = body['sessionUpdate'];
+    final kind = update.boundedKind ?? body['sessionUpdate'];
     if (kind == 'config_option_update') {
-      final options = _configOptionsFromRaw(body['configOptions']);
-      if (sessionId != null) {
-        _configOptionsBySession[sessionId] = options;
-        _modelConfigOptionsFromModelsBySession.remove(sessionId);
-        if (options.isNotEmpty) {
-          _modesBySession.remove(sessionId);
-          _modeOverridesBySession.remove(sessionId);
-        }
-      }
+      final options = sessionId == null
+          ? const <AcpConfigOption>[]
+          : _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
+      final omission =
+          update.omission ??
+          (sessionId == null
+              ? _invalidOmission('config_options')
+              : _configUpdateOmissionsBySession[sessionId]);
       return AgentEvent(
         type: AgentEventType.status,
         text: 'Session config options updated.',
@@ -1064,6 +1099,7 @@ class DartAcpAgentClient implements AcpAgentClient {
           'kind': 'config_option_update',
           'configOptions': options,
         },
+        omissions: _singleOmission(omission),
         timestamp: DateTime.now(),
       );
     }
@@ -1071,7 +1107,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (kind == 'session_info_update') {
       final title = body['title'];
       final updatedAt = body['updatedAt'];
-      final meta = body['_meta'];
       return AgentEvent(
         type: AgentEventType.status,
         text: title is String && title.trim().isNotEmpty
@@ -1082,8 +1117,8 @@ class DartAcpAgentClient implements AcpAgentClient {
           if (sessionId is String) 'sessionId': sessionId,
           if (title is String) 'title': title,
           if (updatedAt is String) 'updatedAt': updatedAt,
-          if (meta is Map) 'meta': _metadataMap(meta),
         },
+        omissions: _singleOmission(update.omission),
         timestamp: DateTime.now(),
       );
     }
@@ -1131,14 +1166,16 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Map<String, Object?>? _usageCostFromRaw(Object? raw) {
     if (raw is! Map) return null;
-    final cost = _metadataMap(raw);
-    final amount = _numFromRaw(cost['amount']);
-    final currency = cost['currency']?.toString().trim() ?? '';
+    final amount = _numFromRaw(raw['amount']);
+    final rawCurrency = raw['currency'];
+    final currency = rawCurrency is String ? rawCurrency.trim() : '';
     if (amount == null || currency.isEmpty) return null;
     return <String, Object?>{'amount': amount, 'currency': currency};
   }
 
   String? _unknownUpdateKind(acp.UnknownUpdate update) {
+    final boundedKind = update.boundedKind;
+    if (boundedKind != null) return boundedKind;
     final raw = update.raw;
     final direct = _nonEmptyString(raw['sessionUpdate']);
     if (direct != null) return direct;
@@ -1148,21 +1185,27 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   List<Map<String, Object?>> _contentBlocksFromDelta(acp.MessageDelta update) {
-    return update.content.map((block) {
-      return block.toJson().map(
-        (key, value) => MapEntry(key.toString(), value as Object?),
-      );
-    }).toList();
+    final projected = <Map<String, Object?>>[];
+    for (final block in update.content) {
+      projected.add(_contentBlockProjection(block));
+    }
+    return List<Map<String, Object?>>.unmodifiable(projected);
   }
 
   String _contentBlocksLabel(List<Map<String, Object?>> blocks) {
-    final nonText = blocks.where((block) => block['type'] != 'text').toList();
-    if (nonText.isEmpty) return '';
-    if (nonText.length == 1) {
-      final type = nonText.single['type']?.toString() ?? 'content';
+    var nonTextCount = 0;
+    String? singleType;
+    for (final block in blocks) {
+      if (block['type'] == 'text') continue;
+      nonTextCount += 1;
+      singleType = block['type']?.toString();
+    }
+    if (nonTextCount == 0) return '';
+    if (nonTextCount == 1) {
+      final type = singleType ?? 'content';
       return 'Received $type content.';
     }
-    return 'Received ${nonText.length} content blocks.';
+    return 'Received $nonTextCount content blocks.';
   }
 
   Future<List<Map<String, dynamic>>> _promptContentBlocks(
@@ -1687,6 +1730,634 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
+  void _handleBoundedObservation(
+    acp.AcpClient source,
+    acp.AcpBoundedObservation observation,
+  ) {
+    if (_disposed ||
+        (!identical(_connectingClient, source) &&
+            !identical(_client, source))) {
+      return;
+    }
+    switch (observation) {
+      case acp.AcpBoundedSessionResultObservation():
+        _cacheBoundedSessionResult(observation.sessionId, observation.result);
+      case acp.AcpBoundedUpdateObservation():
+        _cacheBoundedUpdate(observation.sessionId, observation.update);
+    }
+  }
+
+  void _cacheBoundedSessionResult(String sessionId, acp.SessionResult result) {
+    final omissions = <acp.AcpInputOmission>[];
+    for (final omission in result.omissions) {
+      if (omission.resource == 'config_options' ||
+          omission.resource == 'session_modes') {
+        omissions.add(omission);
+      }
+    }
+    final configRejected = _hasOmissionResource(
+      result.omissions,
+      'config_options',
+    );
+    final modesRejected = _hasOmissionResource(
+      result.omissions,
+      'session_modes',
+    );
+
+    if (configRejected) {
+      _clearConfigOptions(sessionId);
+    } else {
+      final typedOptions = result.configOptions;
+      if (typedOptions != null) {
+        final mapped = _configOptionsFromAcpAtomically(typedOptions);
+        if (mapped == null) {
+          _clearConfigOptions(sessionId);
+          omissions.add(_invalidOmission('config_options'));
+        } else {
+          _configOptionsBySession[sessionId] = mapped;
+          _configUpdateOmissionsBySession.remove(sessionId);
+        }
+      }
+    }
+
+    if (modesRejected) {
+      _clearModes(sessionId);
+    } else {
+      final typedModes = result.modes;
+      if (typedModes != null) {
+        _boundedModesBySession.add(sessionId);
+        final mapped = _modeInfoFromAcpAtomically(typedModes);
+        if (mapped == null) {
+          _clearModes(sessionId);
+          omissions.add(_invalidOmission('session_modes'));
+        } else {
+          _modesBySession[sessionId] = mapped;
+          _modeOverridesBySession.remove(sessionId);
+        }
+      }
+    }
+
+    if (_configOptionsBySession[sessionId]?.isNotEmpty == true) {
+      _clearModes(sessionId);
+    }
+    _replaceSettingsOmissions(sessionId, omissions);
+  }
+
+  void _cacheBoundedUpdate(String sessionId, acp.AcpUpdate update) {
+    switch (update) {
+      case acp.ModeUpdate():
+        if (update.omission != null || update.currentModeId.trim().isEmpty) {
+          _clearModes(sessionId);
+          _replaceSettingsOmission(
+            sessionId,
+            resource: 'session_modes',
+            omission: update.omission == null
+                ? _invalidOmission('session_modes')
+                : _omissionForResource(update.omission!, 'session_modes'),
+          );
+          return;
+        }
+        _boundedModesBySession.add(sessionId);
+        final existing = _modesBySession[sessionId];
+        _modesBySession[sessionId] = AcpSessionModeInfo(
+          currentModeId: update.currentModeId,
+          availableModes: existing?.availableModes ?? const <AcpSessionMode>[],
+        );
+        _modeOverridesBySession[sessionId] = update.currentModeId;
+        _replaceSettingsOmission(
+          sessionId,
+          resource: 'session_modes',
+          omission: null,
+        );
+        return;
+      case acp.UnknownUpdate():
+        if (update.boundedKind != 'config_option_update') return;
+        final typedOmission = update.omission;
+        if (typedOmission != null) {
+          _rejectConfigUpdate(sessionId, typedOmission);
+          return;
+        }
+        final body = _unknownUpdateBody(update);
+        if (body == null) {
+          _rejectConfigUpdate(sessionId, _invalidOmission('config_options'));
+          return;
+        }
+        final rawOptions = body.containsKey('configOptions')
+            ? body['configOptions']
+            : body['config_options'];
+        final mapped = _configOptionsFromOwnedUnknownAtomically(rawOptions);
+        if (mapped == null) {
+          _rejectConfigUpdate(sessionId, _invalidOmission('config_options'));
+          return;
+        }
+        _configOptionsBySession[sessionId] = mapped;
+        _configUpdateOmissionsBySession.remove(sessionId);
+        _replaceSettingsOmission(
+          sessionId,
+          resource: 'config_options',
+          omission: null,
+        );
+        if (mapped.isNotEmpty) _clearModes(sessionId);
+        return;
+      default:
+        return;
+    }
+  }
+
+  Map<String, dynamic>? _unknownUpdateBody(acp.UnknownUpdate update) {
+    final rawBody = update.raw['update'];
+    if (rawBody is Map<String, dynamic>) return rawBody;
+    if (update.raw.containsKey('sessionUpdate')) return update.raw;
+    return null;
+  }
+
+  List<AcpConfigOption>? _configOptionsFromOwnedUnknownAtomically(Object? raw) {
+    if (raw is! List) return null;
+    final mapped = <AcpConfigOption>[];
+    for (final item in raw) {
+      if (item is! Map) return null;
+      final option = _configOptionFromOwnedUnknown(item);
+      if (option == null) return null;
+      mapped.add(option);
+    }
+    return List<AcpConfigOption>.unmodifiable(mapped);
+  }
+
+  AcpConfigOption? _configOptionFromOwnedUnknown(Map raw) {
+    final id = _firstNonEmptyString(raw, const <String>[
+      'id',
+      'configId',
+      'config_id',
+      'key',
+    ]);
+    final type = _configOptionType(raw['type']);
+    if (id == null || type == null) return null;
+    final currentValue = _configValueFromRaw(
+      raw['currentValue'] ??
+          raw['current_value'] ??
+          raw['value'] ??
+          raw['selectedValue'] ??
+          raw['selected'],
+      type: type,
+    );
+    if (currentValue == null) return null;
+    final rawChoices = raw['options'] ?? raw['choices'] ?? raw['values'];
+    final choices = <AcpConfigOptionChoice>[];
+    if (rawChoices != null) {
+      if (rawChoices is! List) return null;
+      for (final rawChoice in rawChoices) {
+        final choice = _configChoiceFromOwnedUnknown(rawChoice);
+        if (choice == null) return null;
+        choices.add(choice);
+      }
+    }
+    return AcpConfigOption(
+      id: id,
+      name:
+          _firstNonEmptyString(raw, const <String>['name', 'label', 'title']) ??
+          id,
+      type: type,
+      currentValue: currentValue,
+      options: List<AcpConfigOptionChoice>.unmodifiable(choices),
+      description: raw['description'] is String
+          ? raw['description'] as String
+          : null,
+      category: raw['category'] is String ? raw['category'] as String : null,
+      group: raw['group'] is String ? raw['group'] as String : null,
+    );
+  }
+
+  AcpConfigOptionChoice? _configChoiceFromOwnedUnknown(Object? raw) {
+    if (raw is String || raw is bool || raw is num) {
+      final value = raw.toString();
+      if (value.isEmpty) return null;
+      return AcpConfigOptionChoice(value: value, name: value);
+    }
+    if (raw is! Map) return null;
+    final value = _firstConfigChoiceValue(raw, const <String>[
+      'value',
+      'id',
+      'key',
+      'name',
+    ]);
+    if (value == null) return null;
+    return AcpConfigOptionChoice(
+      value: value,
+      name:
+          _firstNonEmptyString(raw, const <String>[
+            'name',
+            'label',
+            'displayName',
+          ]) ??
+          value,
+      description: raw['description'] is String
+          ? raw['description'] as String
+          : null,
+    );
+  }
+
+  String? _firstNonEmptyString(Map raw, List<String> keys) {
+    for (final key in keys) {
+      final value = raw[key];
+      if (value is String && value.trim().isNotEmpty) return value.trim();
+    }
+    return null;
+  }
+
+  String? _firstConfigChoiceValue(Map raw, List<String> keys) {
+    for (final key in keys) {
+      final value = _configChoiceValue(raw[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  void _rejectConfigUpdate(
+    String sessionId,
+    acp.AcpInputOmission eventOmission,
+  ) {
+    _clearConfigOptions(sessionId);
+    _configUpdateOmissionsBySession[sessionId] = eventOmission;
+    _replaceSettingsOmission(
+      sessionId,
+      resource: 'config_options',
+      omission: eventOmission.resource == 'config_options'
+          ? eventOmission
+          : _invalidOmission('config_options'),
+    );
+  }
+
+  List<AcpConfigOption>? _configOptionsFromAcpAtomically(
+    List<acp.ConfigOption> options,
+  ) {
+    final mapped = <AcpConfigOption>[];
+    for (final option in options) {
+      final id = option.id.trim();
+      final type = _configOptionType(option.type);
+      if (id.isEmpty || type == null) return null;
+      final currentValue = _configValueFromRaw(option.currentValue, type: type);
+      if (currentValue == null) return null;
+      final choices = <AcpConfigOptionChoice>[];
+      for (final choice in option.options) {
+        final value = choice.value.trim();
+        if (value.isEmpty) return null;
+        choices.add(
+          AcpConfigOptionChoice(
+            value: value,
+            name: choice.name.isEmpty ? value : choice.name,
+            description: choice.description,
+          ),
+        );
+      }
+      mapped.add(
+        AcpConfigOption(
+          id: id,
+          name: option.name.isEmpty ? id : option.name,
+          type: type,
+          currentValue: currentValue,
+          options: List<AcpConfigOptionChoice>.unmodifiable(choices),
+          description: option.description,
+          category: option.category,
+          group: option.group,
+        ),
+      );
+    }
+    return List<AcpConfigOption>.unmodifiable(mapped);
+  }
+
+  List<Map<String, Object?>>? _commandProjectionAtomically(
+    List<acp.AvailableCommand> commands,
+  ) {
+    final projected = <Map<String, Object?>>[];
+    for (final command in commands) {
+      final name = command.name.trim();
+      if (name.isEmpty) return null;
+      Map<String, Object?>? input;
+      final commandInput = command.input;
+      if (commandInput != null) {
+        input = Map<String, Object?>.unmodifiable(<String, Object?>{
+          if (commandInput.hint != null) 'hint': commandInput.hint,
+        });
+      }
+      projected.add(
+        Map<String, Object?>.unmodifiable(<String, Object?>{
+          'name': name,
+          if (command.description != null) 'description': command.description,
+          if (command.parameters != null) 'parameters': command.parameters,
+          'input': ?input,
+        }),
+      );
+    }
+    return List<Map<String, Object?>>.unmodifiable(projected);
+  }
+
+  Map<String, Object?> _contentBlockProjection(acp.ContentBlock block) {
+    switch (block) {
+      case acp.TextContent():
+        return Map<String, Object?>.unmodifiable(<String, Object?>{
+          'type': 'text',
+          'text': block.text,
+        });
+      case acp.ImageContent():
+        return Map<String, Object?>.unmodifiable(<String, Object?>{
+          'type': 'image',
+          'mimeType': block.mimeType,
+          'data': block.data,
+        });
+      case acp.AudioContent():
+        return Map<String, Object?>.unmodifiable(<String, Object?>{
+          'type': 'audio',
+          'mimeType': block.mimeType,
+          if (block.data != null) 'data': block.data,
+          if (block.uri != null) 'uri': block.uri,
+        });
+      case acp.ResourceContent():
+        final resource = <String, Object?>{
+          'uri': block.uri,
+          if (block.title != null) 'title': block.title,
+          if (block.mimeType != null) 'mimeType': block.mimeType,
+          if (block.size != null) 'size': block.size,
+          if (block.text != null) 'text': block.text,
+          if (block.blob != null) 'blob': block.blob,
+        };
+        if (block.embedded) {
+          return Map<String, Object?>.unmodifiable(<String, Object?>{
+            'type': 'resource',
+            'resource': Map<String, Object?>.unmodifiable(resource),
+          });
+        }
+        return Map<String, Object?>.unmodifiable(<String, Object?>{
+          'type': 'resource_link',
+          ...resource,
+        });
+      case acp.UnknownContent():
+        final omission = block.omission;
+        if (omission != null) {
+          return Map<String, Object?>.unmodifiable(<String, Object?>{
+            'type': 'omitted',
+            ..._omissionProjection(omission),
+          });
+        }
+        return block.data;
+    }
+  }
+
+  List<Map<String, Object?>> _planEntryProjection(List<acp.PlanEntry> entries) {
+    final projected = <Map<String, Object?>>[];
+    for (final entry in entries) {
+      projected.add(
+        Map<String, Object?>.unmodifiable(<String, Object?>{
+          'content': entry.content,
+          'priority': entry.priority.name,
+          'status': switch (entry.status) {
+            acp.PlanEntryStatus.inProgress => 'in_progress',
+            _ => entry.status.name,
+          },
+          if (entry.metadata != null) 'metadata': entry.metadata,
+        }),
+      );
+    }
+    return List<Map<String, Object?>>.unmodifiable(projected);
+  }
+
+  List<Map<String, Object?>> _diffChangeProjection(
+    List<acp.DiffChange> changes,
+  ) {
+    final projected = <Map<String, Object?>>[];
+    for (final change in changes) {
+      projected.add(
+        Map<String, Object?>.unmodifiable(<String, Object?>{
+          'type': change.type,
+          if (change.line != null) 'line': change.line,
+          if (change.content != null) 'content': change.content,
+          if (change.oldContent != null) 'oldContent': change.oldContent,
+          if (change.newContent != null) 'newContent': change.newContent,
+        }),
+      );
+    }
+    return List<Map<String, Object?>>.unmodifiable(projected);
+  }
+
+  Map<String, Object?> _omissionProjection(acp.AcpInputOmission omission) {
+    return <String, Object?>{
+      'reason': switch (omission.reason) {
+        acp.AcpInputOmissionReason.inputLimit => 'input_limit',
+        acp.AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
+        acp.AcpInputOmissionReason.invalidImage => 'invalid_image',
+        acp.AcpInputOmissionReason.invalidStructure => 'invalid_structure',
+      },
+      'resource': omission.resource,
+      'truncated': omission.truncated,
+      if (omission.limit != null) 'limit': omission.limit,
+      if (omission.observedAtLeast != null)
+        'observedAtLeast': omission.observedAtLeast,
+    };
+  }
+
+  Map<String, Object?> _toolCallMetadata(acp.ToolCall toolCall) {
+    List<Map<String, Object?>>? locations;
+    final typedLocations = toolCall.locations;
+    if (typedLocations != null) {
+      final projected = <Map<String, Object?>>[];
+      for (final location in typedLocations) {
+        projected.add(
+          Map<String, Object?>.unmodifiable(<String, Object?>{
+            'path': location.path,
+            if (location.line != null) 'line': location.line,
+          }),
+        );
+      }
+      locations = List<Map<String, Object?>>.unmodifiable(projected);
+    }
+    return Map<String, Object?>.unmodifiable(<String, Object?>{
+      'kind': 'tool',
+      'toolCallId': toolCall.toolCallId,
+      'status': switch (toolCall.status) {
+        acp.ToolCallStatus.inProgress => 'in_progress',
+        _ => toolCall.status.name,
+      },
+      if (toolCall.title != null) 'title': toolCall.title,
+      if (toolCall.kind != null) 'toolKind': toolCall.kind!.name,
+      if (toolCall.content != null) 'content': toolCall.content,
+      'locations': ?locations,
+      if (toolCall.rawInput != null) 'rawInput': toolCall.rawInput,
+      if (toolCall.rawOutput != null) 'rawOutput': toolCall.rawOutput,
+    });
+  }
+
+  String _commandEventText(
+    List<acp.AvailableCommand> commands, {
+    required bool rejected,
+  }) {
+    if (rejected || commands.isEmpty) return 'No available commands';
+    final buffer = StringBuffer();
+    for (var index = 0; index < commands.length; index += 1) {
+      if (index > 0) buffer.write(', ');
+      buffer.write(commands[index].name);
+    }
+    return buffer.toString();
+  }
+
+  List<acp.AcpInputOmission> _singleOmission(acp.AcpInputOmission? omission) {
+    if (omission == null) return const <acp.AcpInputOmission>[];
+    return List<acp.AcpInputOmission>.unmodifiable(<acp.AcpInputOmission>[
+      omission,
+    ]);
+  }
+
+  AcpSessionModeInfo? _modeInfoFromAcpAtomically(
+    ({String? currentModeId, List<({String id, String name})> availableModes})
+    modes,
+  ) {
+    final mapped = <AcpSessionMode>[];
+    for (final mode in modes.availableModes) {
+      final id = mode.id.trim();
+      if (id.isEmpty) return null;
+      mapped.add(
+        AcpSessionMode(id: id, name: mode.name.isEmpty ? id : mode.name),
+      );
+    }
+    final currentModeId = modes.currentModeId?.trim();
+    return AcpSessionModeInfo(
+      currentModeId: currentModeId?.isEmpty == true ? null : currentModeId,
+      availableModes: List<AcpSessionMode>.unmodifiable(mapped),
+    );
+  }
+
+  bool _hasOmissionResource(
+    List<acp.AcpInputOmission> omissions,
+    String resource,
+  ) {
+    for (final omission in omissions) {
+      if (omission.resource == resource) return true;
+    }
+    return false;
+  }
+
+  acp.AcpInputOmission _invalidOmission(String resource) {
+    return acp.AcpInputOmission(
+      reason: acp.AcpInputOmissionReason.invalidStructure,
+      resource: resource,
+      truncated: false,
+    );
+  }
+
+  acp.AcpInputOmission _omissionForResource(
+    acp.AcpInputOmission omission,
+    String resource,
+  ) {
+    return acp.AcpInputOmission(
+      reason: omission.reason,
+      resource: resource,
+      truncated: omission.truncated,
+      limit: omission.limit,
+      observedAtLeast: omission.observedAtLeast,
+    );
+  }
+
+  void _clearConfigOptions(String sessionId) {
+    _configOptionsBySession[sessionId] = const <AcpConfigOption>[];
+    _configUpdateOmissionsBySession.remove(sessionId);
+  }
+
+  void _clearModes(String sessionId) {
+    _boundedModesBySession.add(sessionId);
+    _modesBySession.remove(sessionId);
+    _modeOverridesBySession.remove(sessionId);
+  }
+
+  Future<T> _runSerializedConfigMutation<T>(
+    String sessionId,
+    acp.AcpClient client,
+    Future<T> Function(_ConfigOptionMutationQueue queue) operation,
+  ) {
+    final queue = _configMutationQueuesBySession.putIfAbsent(
+      sessionId,
+      _ConfigOptionMutationQueue.new,
+    );
+    final previous = queue.tail;
+    final completion = Completer<void>();
+    final tail = completion.future;
+    queue.tail = tail;
+
+    return (() async {
+      try {
+        await Future.any<void>(<Future<void>>[previous, queue.invalidated]);
+        _requireCurrentConfigMutation(sessionId, client, queue);
+        return await operation(queue);
+      } finally {
+        if (!completion.isCompleted) completion.complete();
+        if (_isCurrentConfigMutation(sessionId, client, queue) &&
+            identical(queue.tail, tail)) {
+          _configMutationQueuesBySession.remove(sessionId);
+        }
+      }
+    })();
+  }
+
+  bool _isCurrentConfigMutation(
+    String sessionId,
+    acp.AcpClient client,
+    _ConfigOptionMutationQueue queue,
+  ) {
+    return !_disposed &&
+        identical(_client, client) &&
+        queue.valid &&
+        identical(_configMutationQueuesBySession[sessionId], queue);
+  }
+
+  void _requireCurrentConfigMutation(
+    String sessionId,
+    acp.AcpClient client,
+    _ConfigOptionMutationQueue queue,
+  ) {
+    if (!_isCurrentConfigMutation(sessionId, client, queue)) {
+      throw StateError('ACP config option operation is no longer active.');
+    }
+  }
+
+  void _invalidateConfigMutationQueue(String sessionId) {
+    final queue = _configMutationQueuesBySession.remove(sessionId);
+    queue?.invalidate();
+  }
+
+  void _invalidateAllConfigMutationQueues() {
+    final queues = _configMutationQueuesBySession.values.toList(
+      growable: false,
+    );
+    _configMutationQueuesBySession.clear();
+    for (final queue in queues) {
+      queue.invalidate();
+    }
+  }
+
+  void _replaceSettingsOmissions(
+    String sessionId,
+    List<acp.AcpInputOmission> omissions,
+  ) {
+    if (omissions.isEmpty) {
+      _settingsOmissionsBySession.remove(sessionId);
+      return;
+    }
+    _settingsOmissionsBySession[sessionId] =
+        List<acp.AcpInputOmission>.unmodifiable(omissions);
+  }
+
+  void _replaceSettingsOmission(
+    String sessionId, {
+    required String resource,
+    required acp.AcpInputOmission? omission,
+  }) {
+    final next = <acp.AcpInputOmission>[];
+    for (final existing
+        in _settingsOmissionsBySession[sessionId] ??
+            const <acp.AcpInputOmission>[]) {
+      if (existing.resource != resource) next.add(existing);
+    }
+    if (omission != null) next.add(omission);
+    _replaceSettingsOmissions(sessionId, next);
+  }
+
   Map<String, Object?> _metadataMap(Map? raw) {
     if (raw == null) return const <String, Object?>{};
     return raw.map((key, value) => MapEntry(key.toString(), value as Object?));
@@ -1710,12 +2381,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     return trimmed.isEmpty ? null : trimmed;
   }
 
-  String? _sessionIdFromMap(Map? raw) {
-    if (raw == null) return null;
-    return _nonEmptyString(raw['sessionId']) ??
-        _nonEmptyString(raw['session_id']);
-  }
-
   Map<String, dynamic> _dynamicJsonMap(Map<String, Object?> raw) {
     return raw.map((key, value) => MapEntry(key, _dynamicJsonValue(value)));
   }
@@ -1729,88 +2394,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     if (value is List) return value.map(_dynamicJsonValue).toList();
     return value;
-  }
-
-  Map<String, dynamic>? _dynamicMap(Object? raw) {
-    if (raw is! Map) return null;
-    return raw.map((key, value) => MapEntry(key.toString(), value));
-  }
-
-  AcpConfigOption? _configOptionFromAcp(acp.ConfigOption option) {
-    final type = _configOptionType(option.type);
-    if (type == null) return null;
-    final currentValue = _configValueFromRaw(option.currentValue, type: type);
-    if (currentValue == null) return null;
-    return AcpConfigOption(
-      id: option.id,
-      name: option.name,
-      type: type,
-      currentValue: currentValue,
-      options: option.options
-          .map(
-            (choice) => AcpConfigOptionChoice(
-              value: choice.value,
-              name: choice.name,
-              description: choice.description,
-            ),
-          )
-          .toList(),
-      description: option.description,
-      group: option.group,
-    );
-  }
-
-  List<AcpConfigOption> _configOptionsFromRaw(Object? raw) {
-    if (raw is! List) return const <AcpConfigOption>[];
-    return raw
-        .whereType<Map>()
-        .map((item) => _configOptionFromRawMap(_metadataMap(item)))
-        .whereType<AcpConfigOption>()
-        .toList();
-  }
-
-  AcpConfigOption? _configOptionFromRawMap(Map<String, Object?> raw) {
-    final id =
-        _nonEmptyString(raw['id']) ??
-        _nonEmptyString(raw['configId']) ??
-        _nonEmptyString(raw['config_id']) ??
-        _nonEmptyString(raw['key']);
-    final type = _configOptionType(raw['type']);
-    if (id == null || type == null) {
-      return null;
-    }
-    final currentValue = _configValueFromRaw(
-      raw['currentValue'] ??
-          raw['current_value'] ??
-          raw['value'] ??
-          raw['selectedValue'] ??
-          raw['selected'],
-      type: type,
-    );
-    if (currentValue == null) {
-      return null;
-    }
-
-    final choices = _configChoicesFromRaw(
-      raw['options'] ?? raw['choices'] ?? raw['values'],
-    );
-
-    return AcpConfigOption(
-      id: id,
-      name:
-          _nonEmptyString(raw['name']) ??
-          _nonEmptyString(raw['label']) ??
-          _nonEmptyString(raw['title']) ??
-          id,
-      type: type,
-      currentValue: currentValue,
-      options: choices,
-      description: raw['description'] is String
-          ? raw['description'] as String
-          : null,
-      category: raw['category'] is String ? raw['category'] as String : null,
-      group: raw['group'] is String ? raw['group'] as String : null,
-    );
   }
 
   String? _configOptionType(Object? raw) {
@@ -1829,258 +2412,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     return null;
   }
 
-  List<AcpConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
-    if (raw is! List) return const <AcpConfigOptionChoice>[];
-    return raw
-        .map(_configChoiceFromRaw)
-        .whereType<AcpConfigOptionChoice>()
-        .toList();
-  }
-
-  AcpConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
-    if (raw is String || raw is bool || raw is num) {
-      final value = raw.toString();
-      return value.isEmpty
-          ? null
-          : AcpConfigOptionChoice(value: value, name: value);
-    }
-    if (raw is! Map) return null;
-    return _configChoiceFromRawMap(_metadataMap(raw));
-  }
-
-  AcpConfigOptionChoice? _configChoiceFromRawMap(Map<String, Object?> raw) {
-    final value =
-        _configChoiceValue(raw['value']) ??
-        _configChoiceValue(raw['id']) ??
-        _configChoiceValue(raw['key']) ??
-        _configChoiceValue(raw['name']);
-    if (value == null) return null;
-    return AcpConfigOptionChoice(
-      value: value,
-      name:
-          _nonEmptyString(raw['name']) ??
-          _nonEmptyString(raw['label']) ??
-          _nonEmptyString(raw['displayName']) ??
-          value,
-      description: raw['description'] is String
-          ? raw['description'] as String
-          : null,
-    );
-  }
-
   String? _configChoiceValue(Object? raw) {
     if (raw is String && raw.isNotEmpty) return raw;
     if (raw is num || raw is bool) return raw.toString();
     return null;
-  }
-
-  List<AcpConfigOption> _cacheRawConfigOptions(String sessionId, Object? raw) {
-    final mapped = _configOptionsFromRaw(raw);
-    _configOptionsBySession[sessionId] = mapped;
-    _modelConfigOptionsFromModelsBySession.remove(sessionId);
-    return mapped;
-  }
-
-  List<AcpConfigOption> _cacheConfigOptions(
-    String sessionId,
-    List<acp.ConfigOption>? options,
-  ) {
-    final mapped =
-        options
-            ?.map(_configOptionFromAcp)
-            .whereType<AcpConfigOption>()
-            .toList() ??
-        const <AcpConfigOption>[];
-    _configOptionsBySession[sessionId] = mapped;
-    _modelConfigOptionsFromModelsBySession.remove(sessionId);
-    return mapped;
-  }
-
-  void _cacheSessionResult({
-    required String sessionId,
-    required Map<String, dynamic> rawResponse,
-    List<acp.ConfigOption>? typedConfigOptions,
-  }) {
-    final configOptions = _cacheSessionResultConfigOptions(
-      sessionId: sessionId,
-      rawResponse: rawResponse,
-      typedConfigOptions: typedConfigOptions,
-    );
-    if (configOptions.isEmpty) {
-      _cacheRawModes(sessionId, rawResponse['modes']);
-    } else {
-      _modesBySession.remove(sessionId);
-      _modeOverridesBySession.remove(sessionId);
-    }
-  }
-
-  List<AcpConfigOption> _cacheSessionResultConfigOptions({
-    required String sessionId,
-    required Map<String, dynamic> rawResponse,
-    List<acp.ConfigOption>? typedConfigOptions,
-  }) {
-    final rawConfigOptions = rawResponse.containsKey('configOptions')
-        ? rawResponse['configOptions']
-        : rawResponse['config_options'];
-    if (rawConfigOptions != null) {
-      final configOptions = _cacheRawConfigOptions(sessionId, rawConfigOptions);
-      if (configOptions.isNotEmpty) return configOptions;
-    }
-    if (typedConfigOptions != null) {
-      final configOptions = _cacheConfigOptions(sessionId, typedConfigOptions);
-      if (configOptions.isNotEmpty) return configOptions;
-    }
-    final modelOption = _configOptionFromRawModels(rawResponse['models']);
-    if (modelOption != null) {
-      final configOptions = <AcpConfigOption>[modelOption];
-      _configOptionsBySession[sessionId] = configOptions;
-      _modelConfigOptionsFromModelsBySession.add(sessionId);
-      return configOptions;
-    }
-    return _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
-  }
-
-  AcpConfigOption? _configOptionFromRawModels(Object? raw) {
-    if (raw is! Map) return null;
-    final map = _metadataMap(raw);
-    final rawAvailableModels =
-        map['availableModels'] ?? map['available_models'];
-    final availableModels = rawAvailableModels is List
-        ? rawAvailableModels
-              .whereType<Map>()
-              .map((item) => _configChoiceFromRawModelMap(_metadataMap(item)))
-              .whereType<AcpConfigOptionChoice>()
-              .toList()
-        : const <AcpConfigOptionChoice>[];
-    final currentModelId =
-        _nonEmptyString(map['currentModelId']) ??
-        _nonEmptyString(map['current_model_id']) ??
-        _nonEmptyString(map['modelId']) ??
-        _nonEmptyString(map['model']);
-    final currentValue =
-        currentModelId ??
-        (availableModels.isEmpty ? null : availableModels.first.value);
-    if (currentValue == null) return null;
-
-    final options = <AcpConfigOptionChoice>[];
-    final seen = <String>{};
-    for (final choice in availableModels) {
-      if (seen.add(choice.value)) options.add(choice);
-    }
-    if (!seen.contains(currentValue)) {
-      options.add(
-        AcpConfigOptionChoice(
-          value: currentValue,
-          name: currentValue,
-          description: 'Current session model',
-        ),
-      );
-    }
-
-    return AcpConfigOption(
-      id: 'model',
-      name: 'Model',
-      type: 'select',
-      currentValue: currentValue,
-      options: options,
-      category: 'model',
-    );
-  }
-
-  AcpConfigOptionChoice? _configChoiceFromRawModelMap(
-    Map<String, Object?> raw,
-  ) {
-    final modelId =
-        _nonEmptyString(raw['modelId']) ??
-        _nonEmptyString(raw['model_id']) ??
-        _nonEmptyString(raw['id']) ??
-        _nonEmptyString(raw['value']) ??
-        _nonEmptyString(raw['model']);
-    if (modelId == null) return null;
-    return AcpConfigOptionChoice(
-      value: modelId,
-      name:
-          _nonEmptyString(raw['name']) ??
-          _nonEmptyString(raw['displayName']) ??
-          _nonEmptyString(raw['display_name']) ??
-          _nonEmptyString(raw['label']) ??
-          modelId,
-      description: _nonEmptyString(raw['description']),
-    );
-  }
-
-  Map<String, dynamic> _takeRawSessionResult(String sessionId) {
-    return _rawSessionResultsBySession.remove(sessionId) ??
-        const <String, dynamic>{};
-  }
-
-  void _cacheRawModes(String sessionId, Object? raw) {
-    final modes = _modeInfoFromRaw(raw);
-    if (modes != null) {
-      _modesBySession[sessionId] = modes;
-    }
-  }
-
-  AcpSessionModeInfo? _modeInfoFromRaw(Object? raw) {
-    if (raw is! Map) return null;
-    final map = _metadataMap(raw);
-    final currentModeId = _modeIdFromMap(map);
-    final availableModes = _availableModesFromRaw(
-      map['availableModes'] ?? map['available_modes'],
-    );
-    if (currentModeId == null && availableModes.isEmpty) return null;
-    return AcpSessionModeInfo(
-      currentModeId: currentModeId,
-      availableModes: availableModes,
-    );
-  }
-
-  String? _modeIdFromMap(Map? raw) {
-    if (raw == null) return null;
-    return _nonEmptyString(raw['currentModeId']) ??
-        _nonEmptyString(raw['current_mode_id']) ??
-        _nonEmptyString(raw['modeId']) ??
-        _nonEmptyString(raw['mode_id']);
-  }
-
-  List<AcpSessionMode> _availableModesFromRaw(Object? raw) {
-    if (raw is! List) return const <AcpSessionMode>[];
-    return raw
-        .whereType<Map>()
-        .map((item) {
-          final mode = _metadataMap(item);
-          final id =
-              _nonEmptyString(mode['id']) ??
-              _nonEmptyString(mode['modeId']) ??
-              _nonEmptyString(mode['mode_id']) ??
-              _nonEmptyString(mode['value']);
-          if (id == null) return null;
-          final name =
-              _nonEmptyString(mode['name']) ??
-              _nonEmptyString(mode['label']) ??
-              _nonEmptyString(mode['displayName']) ??
-              _nonEmptyString(mode['display_name']) ??
-              id;
-          return AcpSessionMode(id: id, name: name);
-        })
-        .whereType<AcpSessionMode>()
-        .toList();
-  }
-
-  List<AcpConfigOption> _applyConfigOptionOverride(
-    String sessionId,
-    String configId,
-    Object value,
-  ) {
-    final current =
-        _configOptionsBySession[sessionId] ?? const <AcpConfigOption>[];
-    final mapped = current.map((option) {
-      return option.id == configId
-          ? option.copyWith(currentValue: value)
-          : option;
-    }).toList();
-    _configOptionsBySession[sessionId] = mapped;
-    return mapped;
   }
 
   Future<List<AgentEvent>> _cacheImmediateSessionUpdates(
@@ -2100,160 +2435,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       await subscription.cancel();
     }
     return events;
-  }
-
-  void _captureProtocolOut(String line) {
-    try {
-      final message = jsonDecode(line);
-      if (message is! Map) return;
-      final id = _jsonRpcIdKey(message['id']);
-      final method = message['method'];
-      if (id == null || method is! String) return;
-      _pendingRawProtocolRequests[id] = _RawProtocolRequest(
-        method: method,
-        params: _dynamicMap(message['params']) ?? const <String, dynamic>{},
-      );
-    } on Object {
-      return;
-    }
-  }
-
-  void _captureProtocolIn(String line) {
-    try {
-      final message = jsonDecode(line);
-      if (message is! Map) return;
-      _captureRawToolCallSessionUpdate(message);
-      if (!message.containsKey('result') && !message.containsKey('error')) {
-        return;
-      }
-      final id = _jsonRpcIdKey(message['id']);
-      if (id == null) return;
-      final request = _pendingRawProtocolRequests.remove(id);
-      if (request == null || !_isSessionResultMethod(request.method)) return;
-      final result = _dynamicMap(message['result']);
-      if (result == null) return;
-      final sessionId =
-          _sessionIdFromMap(result) ??
-          _sessionIdFromMap(request.params) ??
-          _nonEmptyString(result['id']);
-      if (sessionId == null) return;
-      _rawSessionResultsBySession[sessionId] = result;
-    } on Object {
-      return;
-    }
-  }
-
-  void _captureRawToolCallSessionUpdate(Map message) {
-    if (message['method'] != 'session/update') return;
-    final params = _dynamicMap(message['params']);
-    if (params == null) return;
-    final sessionId = _sessionIdFromMap(params);
-    final update = _dynamicMap(params['update']);
-    if (sessionId == null || update == null) return;
-    final kind = update['sessionUpdate'];
-    if (kind != 'tool_call' && kind != 'tool_call_update') return;
-    final toolCallId = _toolCallIdFromRawMetadata(update);
-    if (toolCallId == null) return;
-
-    final states = _rawToolCallStatesBySession.putIfAbsent(
-      sessionId,
-      () => <String, Map<String, Object?>>{},
-    );
-    final rawMetadata = _metadataMap(update);
-    final existing = kind == 'tool_call' ? null : states[toolCallId];
-    states[toolCallId] = <String, Object?>{
-      ...?existing,
-      ...rawMetadata,
-      'toolCallId': toolCallId,
-    };
-
-    final rawSnapshot = Map<String, Object?>.from(states[toolCallId]!);
-    final events = _rawToolCallEventsBySession.putIfAbsent(
-      sessionId,
-      () => <Map<String, Object?>>[],
-    );
-    events.add(rawSnapshot);
-    if (events.length > _maxRawToolCallEventIds) {
-      events.removeRange(0, events.length - _maxRawToolCallEventIds);
-    }
-    if (_isTerminalRawToolCallStatus(rawSnapshot['status'])) {
-      states.remove(toolCallId);
-      if (states.isEmpty) {
-        _rawToolCallStatesBySession.remove(sessionId);
-      }
-    }
-  }
-
-  Map<String, Object?>? _takeRawToolCallState(String sessionId) {
-    final events = _rawToolCallEventsBySession[sessionId];
-    if (events == null || events.isEmpty) return null;
-    final raw = events.removeAt(0);
-    if (events.isEmpty) {
-      _rawToolCallEventsBySession.remove(sessionId);
-    }
-    return raw;
-  }
-
-  Map<String, Object?> _normalizedRawToolCallMetadata(
-    Map<String, Object?> raw,
-  ) {
-    final metadata = <String, Object?>{};
-    for (final entry in raw.entries) {
-      if (entry.key == 'sessionUpdate') continue;
-      metadata[entry.key] = entry.value;
-    }
-    final toolCallId = _toolCallIdFromRawMetadata(metadata);
-    if (toolCallId != null) {
-      metadata['toolCallId'] = toolCallId;
-    }
-    final rawInput = metadata['raw_input'];
-    if (rawInput != null && metadata['rawInput'] == null) {
-      metadata['rawInput'] = rawInput;
-    }
-    final rawOutput = metadata['raw_output'];
-    if (rawOutput != null && metadata['rawOutput'] == null) {
-      metadata['rawOutput'] = rawOutput;
-    }
-    return metadata;
-  }
-
-  String? _toolCallIdFromRawMetadata(Map raw) {
-    for (final key in const [
-      'toolCallId',
-      'tool_call_id',
-      'id',
-      'callId',
-      'call_id',
-    ]) {
-      final value = raw[key];
-      if (value is String && value.trim().isNotEmpty) {
-        return value.trim();
-      }
-    }
-    return null;
-  }
-
-  bool _isTerminalRawToolCallStatus(Object? status) {
-    if (status is! String) return false;
-    final normalized = status.trim().toLowerCase();
-    return normalized == 'completed' ||
-        normalized == 'failed' ||
-        normalized == 'cancelled' ||
-        normalized == 'rejected' ||
-        normalized == 'error' ||
-        normalized == 'applied';
-  }
-
-  String? _jsonRpcIdKey(Object? id) {
-    if (id == null) return null;
-    return jsonEncode(id);
-  }
-
-  bool _isSessionResultMethod(String method) {
-    return method == 'session/new' ||
-        method == 'session/load' ||
-        method == 'session/resume' ||
-        method == 'session/fork';
   }
 
   void _invalidateRawPromptOperation(String sessionId) {
@@ -2374,19 +2555,31 @@ class DartAcpAgentClient implements AcpAgentClient {
     final existing = _disposeFuture;
     if (existing != null) return existing;
     _disposed = true;
+    _invalidateAllConfigMutationQueues();
     final connectingClient = _connectingClient;
     final connectingTransport = _connectingTransport;
+    final connectingListener = _connectingBoundedObservationListener;
     _connectingClient = null;
     _connectingTransport = null;
-    return _disposeFuture = _disposeAll(connectingClient, connectingTransport);
+    _connectingBoundedObservationListener = null;
+    return _disposeFuture = _disposeAll(
+      connectingClient,
+      connectingTransport,
+      connectingListener,
+    );
   }
 
   Future<void> _disposeAll(
     acp.AcpClient? connectingClient,
     acp.AcpTransport? connectingTransport,
+    acp.AcpBoundedObservationListener? connectingListener,
   ) async {
     try {
-      await _disposeClient(connectingClient, connectingTransport);
+      await _disposeClient(
+        connectingClient,
+        connectingTransport,
+        connectingListener,
+      );
     } finally {
       await _disposeActiveClient(closePermissionStream: true);
     }
@@ -2396,10 +2589,13 @@ class DartAcpAgentClient implements AcpAgentClient {
     required bool closePermissionStream,
   }) async {
     _invalidateAllRawPromptOperations();
+    _invalidateAllConfigMutationQueues();
     final client = _client;
     final transport = _transport;
+    final observationListener = _boundedObservationListener;
     _client = null;
     _transport = null;
+    _boundedObservationListener = null;
     _capabilities = null;
     _supportsLoadSession = false;
     _supportsListSessions = false;
@@ -2411,17 +2607,15 @@ class DartAcpAgentClient implements AcpAgentClient {
     _additionalDirectoriesBySession.clear();
     _modeOverridesBySession.clear();
     _configOptionsBySession.clear();
-    _modelConfigOptionsFromModelsBySession.clear();
-    _pendingRawProtocolRequests.clear();
-    _rawSessionResultsBySession.clear();
-    _rawToolCallEventsBySession.clear();
-    _rawToolCallStatesBySession.clear();
+    _configUpdateOmissionsBySession.clear();
+    _settingsOmissionsBySession.clear();
+    _boundedModesBySession.clear();
     if (closePermissionStream) {
       await _permissionBridge.dispose();
     } else {
       _permissionBridge.cancelAll();
     }
-    await _disposeClient(client, transport);
+    await _disposeClient(client, transport, observationListener);
   }
 
   acp.AcpClient _requireClient() {
@@ -2506,8 +2700,12 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<void> _disposeClient(
     acp.AcpClient? client,
-    acp.AcpTransport? transport,
-  ) async {
+    acp.AcpTransport? transport, [
+    acp.AcpBoundedObservationListener? observationListener,
+  ]) async {
+    if (client != null && observationListener != null) {
+      client.removeBoundedObservationListener(observationListener);
+    }
     Object? firstError;
     StackTrace? firstStackTrace;
     try {
@@ -2529,6 +2727,19 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (cleanupError != null) {
       Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
+  }
+}
+
+final class _ConfigOptionMutationQueue {
+  Future<void> tail = Future<void>.value();
+  bool valid = true;
+  final Completer<void> _invalidation = Completer<void>();
+
+  Future<void> get invalidated => _invalidation.future;
+
+  void invalidate() {
+    valid = false;
+    if (!_invalidation.isCompleted) _invalidation.complete();
   }
 }
 
@@ -2809,11 +3020,4 @@ class _PendingPermissionRequest {
     }
     return null;
   }
-}
-
-class _RawProtocolRequest {
-  const _RawProtocolRequest({required this.method, required this.params});
-
-  final String method;
-  final Map<String, dynamic> params;
 }
