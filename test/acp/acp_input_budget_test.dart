@@ -1620,6 +1620,38 @@ void main() {
       );
     });
 
+    test('copyScalar handles native integer width at exact boundaries', () {
+      for (final testCase in const <({int input, int bytes})>[
+        (input: 0x7fffffffffffffff, bytes: 19),
+        (input: -0x8000000000000000, bytes: 20),
+      ]) {
+        expect(
+          guard(
+            maxBytes: testCase.bytes,
+          ).copyScalar(testCase.input, field: 'exact'),
+          testCase.input,
+        );
+        expect(
+          () => guard(
+            maxBytes: testCase.bytes - 1,
+          ).copyScalar(testCase.input, field: 'beyond'),
+          throwsA(
+            isA<AcpInputLimitExceeded>()
+                .having(
+                  (error) => error.resource,
+                  'resource',
+                  'ACP test update beyond bytes',
+                )
+                .having(
+                  (error) => error.observedAtLeast,
+                  'observedAtLeast',
+                  testCase.bytes,
+                ),
+          ),
+        );
+      }
+    });
+
     test(
       'copy methods reject invalid types without invoking payload methods',
       () {
@@ -1707,6 +1739,31 @@ void main() {
         throwsA(isA<FormatException>()),
       );
     });
+
+    test(
+      'checkCollection rejects negative reported lengths without iteration',
+      () {
+        final list = _NegativeLengthMetadataList();
+        final map = _NegativeLengthMetadataMap();
+        final value = guard();
+
+        for (final collection in <Object?>[list, map]) {
+          expect(
+            () => value.checkCollection(collection, field: 'items'),
+            throwsA(
+              isA<FormatException>().having(
+                (error) => error.toString(),
+                'message',
+                isNot(contains('PAYLOAD_CANARY')),
+              ),
+            ),
+          );
+        }
+        expect(list.iterationReads, 0);
+        expect(map.iterationReads, 0);
+        expect(value.copyScalar(null, field: 'afterFailure'), isNull);
+      },
+    );
 
     test('container and entry calls model nested root node ownership', () {
       final strings = guard(maxNodes: 3, maxBytes: 2);
@@ -1876,6 +1933,45 @@ void main() {
       );
     });
 
+    test('metadata handles native integer width at exact boundaries', () {
+      for (final testCase in const <({int input, int bytes})>[
+        (input: 0x7fffffffffffffff, bytes: 19),
+        (input: -0x8000000000000000, bytes: 20),
+      ]) {
+        expect(
+          guard(
+            maxMetadataBytes: testCase.bytes,
+            maxRootBytes: testCase.bytes,
+          ).copyMetadata(<String, Object?>{
+            '': testCase.input,
+          }, field: 'metadata'),
+          <String, Object?>{'': testCase.input},
+        );
+        expect(
+          () =>
+              guard(
+                maxMetadataBytes: testCase.bytes - 1,
+                maxRootBytes: testCase.bytes - 1,
+              ).copyMetadata(<String, Object?>{
+                '': testCase.input,
+              }, field: 'metadata'),
+          throwsA(
+            isA<AcpInputLimitExceeded>()
+                .having(
+                  (error) => error.resource,
+                  'resource',
+                  'ACP test update metadata metadata bytes',
+                )
+                .having(
+                  (error) => error.observedAtLeast,
+                  'observedAtLeast',
+                  testCase.bytes,
+                ),
+          ),
+        );
+      }
+    });
+
     test('typed fields and metadata share one root budget', () {
       final exact = guard(maxRootNodes: 3, maxRootBytes: 6);
       exact.copyString('a', field: 'title');
@@ -1993,6 +2089,46 @@ void main() {
         throwsA(isA<AcpInputLimitExceeded>()),
       );
       expect(huge.indexReads, 0);
+    });
+
+    test('metadata rejects negative lengths without iteration and poisons', () {
+      final rootMap = _NegativeLengthMetadataMap();
+      final rootGuard = guard();
+      expect(
+        () => rootGuard.copyMetadata(rootMap, field: 'metadata'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('PAYLOAD_CANARY')),
+          ),
+        ),
+      );
+      expect(rootMap.iterationReads, 0);
+      expect(
+        () => rootGuard.copyScalar(null, field: 'afterFailure'),
+        throwsA(isA<StateError>()),
+      );
+
+      final nestedList = _NegativeLengthMetadataList();
+      final nestedGuard = guard();
+      expect(
+        () => nestedGuard.copyMetadata(<String, Object?>{
+          'list': nestedList,
+        }, field: 'metadata'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('PAYLOAD_CANARY')),
+          ),
+        ),
+      );
+      expect(nestedList.iterationReads, 0);
+      expect(
+        () => nestedGuard.copyScalar(null, field: 'afterFailure'),
+        throwsA(isA<StateError>()),
+      );
     });
 
     test('underreported list prechecks actual nodes before current', () {
@@ -2320,4 +2456,56 @@ final class _CurrentTrapIterator<T> implements Iterator<T> {
     _moved = true;
     return true;
   }
+}
+
+final class _NegativeLengthMetadataList extends ListBase<Object?> {
+  var iterationReads = 0;
+
+  @override
+  int get length => -1;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  Iterator<Object?> get iterator {
+    iterationReads += 1;
+    throw StateError('PAYLOAD_CANARY negative list iterator');
+  }
+
+  @override
+  Object? operator [](int index) => null;
+
+  @override
+  void operator []=(int index, Object? value) =>
+      throw UnsupportedError('read only');
+}
+
+final class _NegativeLengthMetadataMap extends MapBase<Object?, Object?> {
+  var iterationReads = 0;
+
+  @override
+  int get length => -1;
+
+  @override
+  Iterable<MapEntry<Object?, Object?>> get entries {
+    iterationReads += 1;
+    throw StateError('PAYLOAD_CANARY negative map iterator');
+  }
+
+  @override
+  Iterable<Object?> get keys => const <Object?>[];
+
+  @override
+  Object? operator [](Object? key) => null;
+
+  @override
+  void operator []=(Object? key, Object? value) =>
+      throw UnsupportedError('read only');
+
+  @override
+  void clear() => throw UnsupportedError('read only');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('read only');
 }

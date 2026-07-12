@@ -562,6 +562,8 @@ class AcpInputBudget {
 /// [consumeEntry]. A `List<String>` copies each item directly with
 /// [copyString], while a `List<Model>` consumes one entry before copying that
 /// model's fields. Nested Lists and Maps each consume their own container node.
+/// The constructor's `resource` and every method's `field` must be host-owned
+/// constants and must never be derived from an untrusted ACP payload.
 final class AcpStructuredUpdateGuard {
   AcpStructuredUpdateGuard({
     required AcpInputBudget budget,
@@ -633,6 +635,11 @@ final class AcpStructuredUpdateGuard {
     } catch (_) {
       throw FormatException(
         'Invalid $_resource $field: collection length is unavailable.',
+      );
+    }
+    if (length < 0) {
+      throw FormatException(
+        'Invalid $_resource $field: collection length is negative.',
       );
     }
     if (length > _budget.maxCollectionItems) {
@@ -787,14 +794,22 @@ final class AcpStructuredUpdateGuard {
     }
 
     int readLength(Object collection) {
+      final int length;
       try {
-        if (collection is List) return collection.length;
-        return (collection as Map).length;
+        length = collection is List
+            ? collection.length
+            : (collection as Map).length;
       } catch (_) {
         throw FormatException(
           'Invalid $_resource $field: metadata collection access failed.',
         );
       }
+      if (length < 0) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection length is negative.',
+        );
+      }
+      return length;
     }
 
     List<Object?> snapshotList(List list) {
@@ -1454,6 +1469,8 @@ copyBoundedInitializeInput({
 /// One guard may copy several roots while sharing a single node and byte
 /// budget, which prevents an initialize response from multiplying the limit
 /// across capabilities, authentication methods, and agent metadata.
+/// Do not reuse a guard after any copy throws: failed operations may leave its
+/// internal node and byte counters partially advanced.
 class AcpJsonInputGuard {
   AcpJsonInputGuard({
     required this.resource,
