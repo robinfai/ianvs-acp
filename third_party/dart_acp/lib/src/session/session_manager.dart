@@ -1446,7 +1446,7 @@ class SessionManager {
   bool _storeToolCall(String sessionId, String toolCallId, ToolCall toolCall) {
     final size = AcpRetainedSizeEstimator(
       budget: inputBudget,
-    ).estimate(toolCall.toJson());
+    ).estimate(_toolCallRetainedProjection(toolCall));
     final existingCalls = _toolCalls[sessionId];
     final existingSizes = _toolCallSizes[sessionId];
     final previous = existingCalls?[toolCallId];
@@ -1454,29 +1454,31 @@ class SessionManager {
     var nextItemCount = _toolCallItemCount - (previous == null ? 0 : 1) + 1;
     var nextByteCount = _toolCallByteCount - previousSize + size;
     final evictions = <({String sessionId, String toolCallId, int size})>[];
-    for (final sessionEntry in _toolCalls.entries) {
-      for (final callEntry in sessionEntry.value.entries) {
-        if (sessionEntry.key == sessionId && callEntry.key == toolCallId) {
-          continue;
+    if (nextItemCount > maxToolCallItems || nextByteCount > maxToolCallBytes) {
+      for (final sessionEntry in _toolCalls.entries) {
+        for (final callEntry in sessionEntry.value.entries) {
+          if (sessionEntry.key == sessionId && callEntry.key == toolCallId) {
+            continue;
+          }
+          if (callEntry.value.status != ToolCallStatus.completed) continue;
+          final completedSize =
+              _toolCallSizes[sessionEntry.key]?[callEntry.key] ?? 0;
+          evictions.add((
+            sessionId: sessionEntry.key,
+            toolCallId: callEntry.key,
+            size: completedSize,
+          ));
+          nextItemCount -= 1;
+          nextByteCount -= completedSize;
+          if (nextItemCount <= maxToolCallItems &&
+              nextByteCount <= maxToolCallBytes) {
+            break;
+          }
         }
-        if (callEntry.value.status != ToolCallStatus.completed) continue;
-        final completedSize =
-            _toolCallSizes[sessionEntry.key]?[callEntry.key] ?? 0;
-        evictions.add((
-          sessionId: sessionEntry.key,
-          toolCallId: callEntry.key,
-          size: completedSize,
-        ));
-        nextItemCount -= 1;
-        nextByteCount -= completedSize;
         if (nextItemCount <= maxToolCallItems &&
             nextByteCount <= maxToolCallBytes) {
           break;
         }
-      }
-      if (nextItemCount <= maxToolCallItems &&
-          nextByteCount <= maxToolCallBytes) {
-        break;
       }
     }
 
@@ -1518,11 +1520,24 @@ class SessionManager {
   }
 
   void _routeSessionUpdate(Object? envelope) {
+    try {
+      _routeSessionUpdateIsolated(envelope);
+    } on Object {
+      // A synchronous listener or hostile envelope must not escape the route.
+    }
+  }
+
+  void _routeSessionUpdateIsolated(Object? envelope) {
     if (envelope is! Map) return;
     final json = envelope;
-    final rawSessionId = json['sessionId'] ?? json['session_id'];
-    if (rawSessionId is! String) return;
-    final sessionId = rawSessionId.trim();
+    final String sessionId;
+    try {
+      final rawSessionId = json['sessionId'] ?? json['session_id'];
+      if (rawSessionId is! String) return;
+      sessionId = rawSessionId.trim();
+    } on Object {
+      return;
+    }
     if (sessionId.isEmpty ||
         _disposed ||
         _isSessionClosing(sessionId) ||
@@ -1535,9 +1550,9 @@ class SessionManager {
     final replay = _replayBuffers[sessionId];
     if (stream == null || replay == null) return;
 
-    final rawUpdate = json['update'];
-    if (rawUpdate is! Map<String, dynamic>) return;
     try {
+      final rawUpdate = json['update'];
+      if (rawUpdate is! Map<String, dynamic>) return;
       final update = _parseSessionUpdate(
         sessionId: sessionId,
         raw: rawUpdate,
@@ -1557,11 +1572,63 @@ class SessionManager {
       }
       _recordReplay(sessionId, bounded, sizeBytes: consumed.retainedBytes);
       stream.add(bounded);
-    } on Object catch (error, stackTrace) {
+    } on AcpInputLimitExceeded catch (error) {
       if (!_ownsInputBudgetPhase(phase.owner)) return;
-      _log.warning('session update rejected by input budget');
-      stream.addError(error, stackTrace);
+      _log.warning('session update rejected');
+      final normalized = _normalizedSessionUpdateLimit(error);
+      if (normalized != null) {
+        stream.addError(normalized);
+      } else {
+        stream.addError(const FormatException('Invalid ACP session update.'));
+      }
+    } on SessionToolStateLimitException {
+      if (!_ownsInputBudgetPhase(phase.owner)) return;
+      _log.warning('session update rejected');
+      stream.addError(
+        SessionToolStateLimitException(
+          maxItems: maxToolCallItems,
+          maxBytes: maxToolCallBytes,
+        ),
+      );
+    } on Object {
+      if (!_ownsInputBudgetPhase(phase.owner)) return;
+      _log.warning('session update rejected');
+      stream.addError(const FormatException('Invalid ACP session update.'));
     }
+  }
+
+  AcpInputLimitExceeded? _normalizedSessionUpdateLimit(
+    AcpInputLimitExceeded error,
+  ) {
+    final resource = error.resource;
+    final String normalizedResource;
+    final int normalizedLimit;
+    if (resource == 'turn items') {
+      normalizedResource = 'turn items';
+      normalizedLimit = inputBudget.maxTurnItems;
+    } else if (resource == 'turn retained bytes') {
+      normalizedResource = 'turn retained bytes';
+      normalizedLimit = inputBudget.maxTurnRetainedBytes;
+    } else if (resource == 'image_data' ||
+        resource == 'audio_data' ||
+        resource == 'resource_blob' ||
+        resource == 'turn_media') {
+      normalizedResource = 'session media input';
+      normalizedLimit = inputBudget.maxEmbeddedMediaBytes;
+    } else if (resource.startsWith('session input phase ')) {
+      normalizedResource = 'session structured input';
+      normalizedLimit = inputBudget.maxStructuredUpdateNodes;
+    } else if (resource.startsWith('ACP retained state ')) {
+      normalizedResource = 'session retained state';
+      normalizedLimit = inputBudget.maxMetadataNodes;
+    } else {
+      return null;
+    }
+    return AcpInputLimitExceeded(
+      resource: normalizedResource,
+      limit: normalizedLimit,
+      observedAtLeast: normalizedLimit + 1,
+    );
   }
 
   AcpUpdate _parseSessionUpdate({
@@ -1593,34 +1660,14 @@ class SessionManager {
       );
     }
     if (kind == 'tool_call' || kind == 'tool_call_update') {
-      if (kind == 'tool_call') {
-        return ToolCallUpdate(
-          ToolCall.fromJson(
-            raw,
-            inputBudget: inputBudget,
-            structuredGuard: phase.structuredGuard,
-          ),
-        );
-      }
-      final toolCallId = ToolCall.copyRoutingId(
-        raw,
-        inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+      return ToolCallUpdate(
+        ToolCall.fromUpdateJson(
+          raw,
+          lookupExisting: (toolCallId) => _toolCalls[sessionId]?[toolCallId],
+          inputBudget: inputBudget,
+          structuredGuard: phase.structuredGuard,
+        ),
       );
-      final existing = _toolCalls[sessionId]?[toolCallId];
-      final toolCall = existing == null
-          ? ToolCall.fromJsonWithOwnedRoutingId(
-              raw,
-              toolCallId: toolCallId,
-              inputBudget: inputBudget,
-              structuredGuard: phase.structuredGuard,
-            )
-          : existing.merge(
-              raw,
-              inputBudget: inputBudget,
-              structuredGuard: phase.structuredGuard,
-            );
-      return ToolCallUpdate(toolCall);
     }
     if (kind == 'user_message_chunk' ||
         kind == 'agent_message_chunk' ||
@@ -1680,6 +1727,7 @@ class SessionManager {
     final textCheckpoint = phase.text.checkpoint();
     final thoughtCheckpoint = phase.thought.checkpoint();
     final mediaBytes = phase.mediaBytes;
+    late ({AcpUpdate update, int retainedBytes}) consumed;
     try {
       if (phase.items >= inputBudget.maxTurnItems) {
         throw AcpInputLimitExceeded(
@@ -1713,13 +1761,16 @@ class SessionManager {
       }
       phase.items += 1;
       phase.retainedBytes += retainedBytes;
-      return (update: bounded, retainedBytes: retainedBytes);
+      consumed = (update: bounded, retainedBytes: retainedBytes);
     } catch (_) {
-      phase.text.restore(textCheckpoint);
-      phase.thought.restore(thoughtCheckpoint);
+      phase.text.rollback(textCheckpoint);
+      phase.thought.rollback(thoughtCheckpoint);
       phase.mediaBytes = mediaBytes;
       rethrow;
     }
+    phase.text.commit(textCheckpoint);
+    phase.thought.commit(thoughtCheckpoint);
+    return consumed;
   }
 
   void _consumePhaseSessionResult(
@@ -1965,7 +2016,7 @@ class SessionManager {
     if (update is PlanUpdate) {
       value = update.plan.toJson();
     } else if (update is ToolCallUpdate) {
-      value = update.toolCall.toJson();
+      value = _toolCallRetainedProjection(update.toolCall);
     } else if (update is DiffUpdate) {
       value = update.diff.toJson();
     } else if (update is AvailableCommandsUpdate) {
@@ -1992,6 +2043,22 @@ class SessionManager {
     }
     return (value: value, detachedBytes: 0);
   }
+
+  Map<String, Object?> _toolCallRetainedProjection(ToolCall toolCall) =>
+      <String, Object?>{
+        'toolCallId': toolCall.toolCallId,
+        'status': toolCall.status.toWire(),
+        if (toolCall.title != null) 'title': toolCall.title,
+        if (toolCall.kind != null) 'kind': toolCall.kind!.toWire(),
+        if (toolCall.content != null) 'content': toolCall.content,
+        if (toolCall.locations != null)
+          'locations': toolCall.locations!
+              .map((location) => location.toJson())
+              .toList(),
+        if (toolCall.rawInput != null) 'rawInput': toolCall.rawInput,
+        if (toolCall.rawOutput != null) 'rawOutput': toolCall.rawOutput,
+        if (toolCall.omission != null) 'omission': toolCall.omission!.toJson(),
+      };
 
   int _trustedUtf8Length(String value) {
     var bytes = 0;

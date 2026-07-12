@@ -1,6 +1,8 @@
 import 'dart:collection';
 import 'dart:math' as math;
 
+import 'package:meta/meta.dart';
+
 const int _maxSafeBudgetInteger = 0x1fffffffffffff;
 
 /// Returns the largest Base64 length needed for [decodedByteLimit].
@@ -192,9 +194,12 @@ final class AcpTextBudgetChunk {
   final AcpInputOmission? omission;
 }
 
-/// Opaque snapshot of one [AcpUtf8LineBudgetCounter].
+/// Opaque one-shot host transaction for one [AcpUtf8LineBudgetCounter].
+///
+/// This is trusted host bookkeeping, not an untrusted-input security boundary.
+@internal
 final class AcpUtf8LineBudgetCheckpoint {
-  const AcpUtf8LineBudgetCheckpoint._({
+  AcpUtf8LineBudgetCheckpoint._({
     required Object owner,
     required int totalBytes,
     required int totalLines,
@@ -217,6 +222,7 @@ final class AcpUtf8LineBudgetCheckpoint {
   final bool _finished;
   final bool _omitted;
   final int? _pendingHighSurrogate;
+  var _active = true;
 }
 
 /// Counts UTF-8 bytes and logical lines without joining input chunks.
@@ -244,7 +250,8 @@ final class AcpUtf8LineBudgetCounter {
   var _omitted = false;
   int? _pendingHighSurrogate;
 
-  /// Captures an opaque snapshot that only this counter can restore.
+  /// Begins trusted host bookkeeping that must be committed or rolled back.
+  @internal
   AcpUtf8LineBudgetCheckpoint checkpoint() => AcpUtf8LineBudgetCheckpoint._(
     owner: _checkpointOwner,
     totalBytes: _totalBytes,
@@ -255,19 +262,33 @@ final class AcpUtf8LineBudgetCounter {
     pendingHighSurrogate: _pendingHighSurrogate,
   );
 
-  /// Restores a snapshot created by this exact counter.
-  void restore(AcpUtf8LineBudgetCheckpoint checkpoint) {
-    if (!identical(checkpoint._owner, _checkpointOwner)) {
-      throw StateError(
-        'ACP text budget checkpoint belongs to another counter.',
-      );
-    }
+  /// Commits this counter's active host transaction.
+  @internal
+  void commit(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    _requireActiveCheckpoint(checkpoint);
+    checkpoint._active = false;
+  }
+
+  /// Rolls this counter's active host transaction back exactly once.
+  @internal
+  void rollback(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    _requireActiveCheckpoint(checkpoint);
+    checkpoint._active = false;
     _totalBytes = checkpoint._totalBytes;
     _totalLines = checkpoint._totalLines;
     _previousWasCR = checkpoint._previousWasCR;
     _finished = checkpoint._finished;
     _omitted = checkpoint._omitted;
     _pendingHighSurrogate = checkpoint._pendingHighSurrogate;
+  }
+
+  void _requireActiveCheckpoint(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    if (!identical(checkpoint._owner, _checkpointOwner) ||
+        !checkpoint._active) {
+      throw StateError(
+        'ACP text budget checkpoint is not active for this counter.',
+      );
+    }
   }
 
   AcpTextBudgetChunk append(String chunk) {

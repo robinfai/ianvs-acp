@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -3497,6 +3498,172 @@ Future<void> main() async {
     },
   );
 
+  test('session update routing isolates hostile map getters', () async {
+    const canary = 'HOSTILE_SESSION_UPDATE_CANARY';
+    final uncaught = <Object>[];
+    await runZonedGuarded<Future<void>>(() async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final logger = acp.AcpConfig().logger;
+      final logs = <String>[];
+      final logSubscription = logger.onRecord.listen(
+        (record) => logs.add(record.message),
+      );
+      final manager = SessionManager(
+        config: acp.AcpConfig(logger: logger),
+        peer: peer,
+      );
+      final updatesA = <acp.AcpUpdate>[];
+      final errorsA = <Object>[];
+      final updatesB = <acp.AcpUpdate>[];
+      final errorsB = <Object>[];
+      var reentrantGetterCalled = false;
+      final subscriptionA = manager
+          .sessionUpdates('hostile-a')
+          .listen(updatesA.add, onError: errorsA.add);
+      final subscriptionB = manager
+          .sessionUpdates('hostile-b')
+          .listen(updatesB.add, onError: errorsB.add);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'hostile-a',
+          workspaceRoot: '/workspace/a',
+        );
+        await manager.resumeSession(
+          sessionId: 'hostile-b',
+          workspaceRoot: '/workspace/b',
+        );
+        await server.cancel();
+        final ownerA = manager.beginPromptTurn('hostile-a');
+        final ownerB = manager.beginPromptTurn('hostile-b');
+
+        peer.dispatchSessionUpdateForTesting(
+          _ThrowingGetterMap(
+            <String, dynamic>{'update': const <String, dynamic>{}},
+            throwKey: 'sessionId',
+            error: StateError(canary),
+          ),
+        );
+        peer.dispatchSessionUpdateForTesting(
+          _ReentrantSessionEnvelope(
+            onSessionIdRead: () {
+              reentrantGetterCalled = true;
+              peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+                'sessionId': 'hostile-b',
+                'update': <String, dynamic>{
+                  'sessionUpdate': 'current_mode_update',
+                  'currentModeId': 'reentrant-safe',
+                },
+              });
+            },
+          ),
+        );
+        peer.dispatchSessionUpdateForTesting(
+          _ThrowingGetterMap(
+            <String, dynamic>{'sessionId': 'hostile-a'},
+            throwKey: 'update',
+            error: StateError(canary),
+          ),
+        );
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-a',
+          'update': _ThrowingGetterMap(
+            const <String, dynamic>{},
+            throwKey: 'sessionUpdate',
+            error: StateError(canary),
+          ),
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-a',
+          'update': _ThrowingGetterMap(
+            const <String, dynamic>{},
+            throwKey: 'sessionUpdate',
+            error: const acp.AcpInputLimitExceeded(
+              resource: canary,
+              limit: 1,
+              observedAtLeast: 2,
+            ),
+          ),
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-a',
+          'update': _ThrowingGetterMap(
+            const <String, dynamic>{},
+            throwKey: 'sessionUpdate',
+            error: const acp.AcpInputLimitExceeded(
+              resource: 'session input phase $canary',
+              limit: 0x1fffffffffffff,
+              observedAtLeast: 0x1fffffffffffff,
+            ),
+          ),
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-b',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': 'after-hostile',
+          },
+        });
+        await pumpEventQueue();
+        manager.endPromptTurn(ownerA);
+        manager.endPromptTurn(ownerB);
+      } finally {
+        await subscriptionA.cancel();
+        await subscriptionB.cancel();
+        await manager.dispose();
+        await peer.close();
+        await logSubscription.cancel();
+        await channel.local.sink.close();
+      }
+
+      expect(errorsA, hasLength(4));
+      for (final error in errorsA.take(3)) {
+        expect(error, isA<FormatException>());
+        expect(
+          error.toString(),
+          'FormatException: Invalid ACP session update.',
+        );
+        expect(error.toString(), isNot(contains(canary)));
+      }
+      final normalizedLimit = errorsA.last as acp.AcpInputLimitExceeded;
+      expect(normalizedLimit.resource, 'session structured input');
+      expect(
+        normalizedLimit.limit,
+        const acp.AcpInputBudget().maxStructuredUpdateNodes,
+      );
+      expect(
+        normalizedLimit.observedAtLeast,
+        const acp.AcpInputBudget().maxStructuredUpdateNodes + 1,
+      );
+      expect(normalizedLimit.toString(), isNot(contains(canary)));
+      expect(errorsB, isEmpty);
+      expect(reentrantGetterCalled, isTrue);
+      expect(
+        updatesB.whereType<acp.ModeUpdate>().map(
+          (update) => update.currentModeId,
+        ),
+        ['after-hostile'],
+      );
+      expect(updatesA, isEmpty);
+      expect(logs, hasLength(4));
+      expect(logs, everyElement('session update rejected'));
+      expect(logs.toString(), isNot(contains(canary)));
+    }, (error, _) => uncaught.add(error));
+    expect(uncaught, isEmpty);
+  });
+
   test(
     'load replay update and immediate result share one structured root',
     () async {
@@ -4919,6 +5086,100 @@ Future<void> main() async {
     },
   );
 
+  test(
+    'tool state retains completed calls while still below its limits',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        maxToolCallItems: 3,
+        maxToolCallBytes: 10000,
+      );
+      final updates = <acp.AcpUpdate>[];
+      final errors = <Object>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      final subscription = manager
+          .sessionUpdates('retain-completed-tool')
+          .listen(updates.add, onError: errors.add);
+
+      void send(Map<String, dynamic> update) {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'retain-completed-tool',
+              'update': update,
+            },
+          }),
+        );
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'retain-completed-tool',
+          workspaceRoot: '/workspace',
+        );
+        var owner = manager.beginPromptTurn('retain-completed-tool');
+        send(<String, dynamic>{
+          'sessionUpdate': 'tool_call',
+          'toolCallId': 'completed-a',
+          'status': 'completed',
+          'title': 'Preserved A',
+          'content': 'preserved content',
+          'rawInput': <String, Object?>{'input': true},
+          'rawOutput': <String, Object?>{'output': true},
+        });
+        send(<String, dynamic>{
+          'sessionUpdate': 'tool_call',
+          'toolCallId': 'active-b',
+          'status': 'in_progress',
+          'title': 'Active B',
+        });
+        await pumpEventQueue();
+        expect(errors, isEmpty);
+        manager.endPromptTurn(owner);
+
+        updates.clear();
+        owner = manager.beginPromptTurn('retain-completed-tool');
+        send(<String, dynamic>{
+          'sessionUpdate': 'tool_call_update',
+          'toolCallId': 'completed-a',
+          'status': 'in_progress',
+        });
+        await pumpEventQueue();
+        final inherited = updates
+            .whereType<acp.ToolCallUpdate>()
+            .single
+            .toolCall;
+        expect(inherited.title, 'Preserved A');
+        expect(inherited.content, [containsPair('text', 'preserved content')]);
+        expect(inherited.rawInput, <String, Object?>{'input': true});
+        expect(inherited.rawOutput, <String, Object?>{'output': true});
+        expect(errors, isEmpty);
+        manager.endPromptTurn(owner);
+      } finally {
+        await subscription.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
   test('tool store rejection does not consume the owning phase', () async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
@@ -5085,6 +5346,127 @@ Future<void> main() async {
       await server.cancel();
       await channel.local.sink.close();
     }
+  });
+
+  test('omitted tool state counts omission bytes at exact limits', () async {
+    final rawTool = <String, dynamic>{
+      'toolCallId': 'omitted-tool',
+      'status': 'in_progress',
+      'locations': 42,
+    };
+    final omittedTool = acp.ToolCall.fromJson(rawTool);
+    expect(
+      omittedTool.omission?.reason,
+      acp.AcpInputOmissionReason.invalidStructure,
+    );
+    final retainedProjection = <String, Object?>{
+      'toolCallId': omittedTool.toolCallId,
+      'status': omittedTool.status.toWire(),
+      'omission': omittedTool.omission!.toJson(),
+    };
+    final exactBytes = acp.AcpRetainedSizeEstimator(
+      budget: const acp.AcpInputBudget(),
+    ).estimate(retainedProjection);
+
+    Future<void> runCase({
+      required String name,
+      required int maxToolCallBytes,
+      required int maxTurnRetainedBytes,
+      required bool succeeds,
+      required Type rejectedType,
+    }) async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(),
+        peer: peer,
+        maxToolCallBytes: maxToolCallBytes,
+        inputBudget: acp.AcpInputBudget(
+          maxTurnRetainedBytes: maxTurnRetainedBytes,
+        ),
+      );
+      final updates = <acp.AcpUpdate>[];
+      final errors = <Object>[];
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      final subscription = manager
+          .sessionUpdates(name)
+          .listen(updates.add, onError: errors.add);
+      try {
+        await manager.resumeSession(
+          sessionId: name,
+          workspaceRoot: '/workspace',
+        );
+        final owner = manager.beginPromptTurn(name);
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': name,
+              'update': <String, dynamic>{
+                'sessionUpdate': 'tool_call',
+                ...rawTool,
+              },
+            },
+          }),
+        );
+        await pumpEventQueue();
+        if (succeeds) {
+          expect(errors, isEmpty);
+          final update = updates.whereType<acp.ToolCallUpdate>().single;
+          expect(update.toolCall.omission, isNotNull);
+        } else {
+          expect(updates, isEmpty);
+          expect(errors.single.runtimeType, rejectedType);
+        }
+        manager.endPromptTurn(owner);
+      } finally {
+        await subscription.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    }
+
+    await runCase(
+      name: 'tool-store-omission-exact',
+      maxToolCallBytes: exactBytes,
+      maxTurnRetainedBytes: 1024 * 1024,
+      succeeds: true,
+      rejectedType: acp.SessionToolStateLimitException,
+    );
+    await runCase(
+      name: 'tool-store-omission-plus-one',
+      maxToolCallBytes: exactBytes - 1,
+      maxTurnRetainedBytes: 1024 * 1024,
+      succeeds: false,
+      rejectedType: acp.SessionToolStateLimitException,
+    );
+    await runCase(
+      name: 'turn-retained-omission-exact',
+      maxToolCallBytes: 1024 * 1024,
+      maxTurnRetainedBytes: exactBytes,
+      succeeds: true,
+      rejectedType: acp.AcpInputLimitExceeded,
+    );
+    await runCase(
+      name: 'turn-retained-omission-plus-one',
+      maxToolCallBytes: 1024 * 1024,
+      maxTurnRetainedBytes: exactBytes - 1,
+      succeeds: false,
+      rejectedType: acp.AcpInputLimitExceeded,
+    );
   });
 
   test(
@@ -11018,6 +11400,66 @@ class _TrackingAcpTransport implements acp.AcpTransport {
 
   @override
   Future<void> stop() async {}
+}
+
+class _ThrowingGetterMap extends MapBase<String, dynamic> {
+  _ThrowingGetterMap(
+    this._values, {
+    required this.throwKey,
+    required this.error,
+  });
+
+  final Map<String, dynamic> _values;
+  final String throwKey;
+  final Object error;
+
+  @override
+  dynamic operator [](Object? key) {
+    if (key == throwKey) throw error;
+    return _values[key];
+  }
+
+  @override
+  void operator []=(String key, dynamic value) => _values[key] = value;
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  dynamic remove(Object? key) => _values.remove(key);
+}
+
+class _ReentrantSessionEnvelope extends MapBase<String, dynamic> {
+  _ReentrantSessionEnvelope({required this.onSessionIdRead});
+
+  final void Function() onSessionIdRead;
+  var _read = false;
+
+  @override
+  dynamic operator [](Object? key) {
+    if (key == 'sessionId' && !_read) {
+      _read = true;
+      onSessionIdRead();
+      return 'unowned-reentrant-envelope';
+    }
+    return null;
+  }
+
+  @override
+  void operator []=(String key, dynamic value) =>
+      throw UnsupportedError('immutable');
+
+  @override
+  void clear() => throw UnsupportedError('immutable');
+
+  @override
+  Iterable<String> get keys => const <String>['sessionId'];
+
+  @override
+  dynamic remove(Object? key) => throw UnsupportedError('immutable');
 }
 
 class _RecordingTerminalProvider implements acp.TerminalProvider {

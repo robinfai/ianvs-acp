@@ -2898,6 +2898,71 @@ Future<void> main() async {
     guard.consumeEntry(field: 'after failure');
   });
 
+  test(
+    'tool update owning lookup consumes one root and validates identity',
+    () {
+      const existing = ToolCall(
+        toolCallId: 'call',
+        status: ToolCallStatus.pending,
+        title: 'Preserved',
+        rawInput: <String, Object?>{'safe': true},
+      );
+      String? lookedUpId;
+      final merged = ToolCall.fromUpdateJson(
+        <String, dynamic>{'toolCallId': 'call', 'status': 'completed'},
+        lookupExisting: (toolCallId) {
+          lookedUpId = toolCallId;
+          return existing;
+        },
+        inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 3),
+      );
+      expect(lookedUpId, 'call');
+      expect(merged.toolCallId, 'call');
+      expect(merged.status, ToolCallStatus.completed);
+      expect(merged.title, 'Preserved');
+      expect(merged.rawInput, <String, Object?>{'safe': true});
+
+      final created = ToolCall.fromUpdateJson(
+        <String, dynamic>{'toolCallId': 'new', 'status': 'pending'},
+        lookupExisting: (_) => null,
+        inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 3),
+      );
+      expect(created.toolCallId, 'new');
+      expect(
+        () => ToolCall.fromUpdateJson(
+          <String, dynamic>{'toolCallId': 'new', 'status': 'pending'},
+          lookupExisting: (_) => null,
+          inputBudget: const AcpInputBudget(maxStructuredUpdateNodes: 2),
+        ),
+        throwsA(isA<AcpInputLimitExceeded>()),
+      );
+
+      const canary = 'LOOKUP_ID_CANARY';
+      expect(
+        () => ToolCall.fromUpdateJson(
+          <String, dynamic>{'toolCallId': 'call', 'status': 'completed'},
+          lookupExisting: (_) => const ToolCall(
+            toolCallId: canary,
+            status: ToolCallStatus.pending,
+          ),
+        ),
+        throwsA(
+          isA<FormatException>()
+              .having(
+                (error) => error.message,
+                'message',
+                'Invalid ACP tool call lookup identity.',
+              )
+              .having(
+                (error) => error.toString(),
+                'payload-free',
+                isNot(contains(canary)),
+              ),
+        ),
+      );
+    },
+  );
+
   test('unknown and mode updates expose only host-owned trusted state', () {
     final nested = <String, Object?>{
       'items': <Object?>[1],

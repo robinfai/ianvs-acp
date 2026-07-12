@@ -201,7 +201,7 @@ class ToolCall {
     guard.checkCollection(json, field: 'tool call');
     guard.consumeEntry(field: 'tool call');
     final toolCallId = _boundedToolCallId(json, guard);
-    return _fromJsonWithOwnedRoutingId(
+    return _fromOwnedJson(
       json,
       toolCallId: toolCallId,
       inputBudget: inputBudget,
@@ -209,25 +209,10 @@ class ToolCall {
     );
   }
 
-  /// Copies the routing identifier while retaining ownership of its budget.
-  static String copyRoutingId(
+  /// Owns an update root and resolves its existing state by the bounded ID.
+  factory ToolCall.fromUpdateJson(
     Map<String, dynamic> json, {
-    AcpInputBudget inputBudget = const AcpInputBudget(),
-    AcpStructuredUpdateGuard? structuredGuard,
-  }) {
-    final guard =
-        structuredGuard ??
-        AcpStructuredUpdateGuard(
-          budget: inputBudget,
-          resource: 'tool_call_routing',
-        );
-    return _boundedToolCallId(json, guard);
-  }
-
-  /// Creates a tool call after [toolCallId] was copied by [copyRoutingId].
-  factory ToolCall.fromJsonWithOwnedRoutingId(
-    Map<String, dynamic> json, {
-    required String toolCallId,
+    required ToolCall? Function(String toolCallId) lookupExisting,
     AcpInputBudget inputBudget = const AcpInputBudget(),
     AcpStructuredUpdateGuard? structuredGuard,
   }) {
@@ -236,7 +221,15 @@ class ToolCall {
         AcpStructuredUpdateGuard(budget: inputBudget, resource: 'tool_call');
     guard.checkCollection(json, field: 'tool call');
     guard.consumeEntry(field: 'tool call');
-    return _fromJsonWithOwnedRoutingId(
+    final toolCallId = _boundedToolCallId(json, guard);
+    final existing = lookupExisting(toolCallId);
+    if (existing != null && existing.toolCallId != toolCallId) {
+      throw const FormatException('Invalid ACP tool call lookup identity.');
+    }
+    if (existing != null) {
+      return existing._mergeOwned(json, inputBudget: inputBudget, guard: guard);
+    }
+    return _fromOwnedJson(
       json,
       toolCallId: toolCallId,
       inputBudget: inputBudget,
@@ -244,7 +237,7 @@ class ToolCall {
     );
   }
 
-  static ToolCall _fromJsonWithOwnedRoutingId(
+  static ToolCall _fromOwnedJson(
     Map<String, dynamic> json, {
     required String toolCallId,
     required AcpInputBudget inputBudget,
@@ -363,6 +356,14 @@ class ToolCall {
         );
     guard.checkCollection(update, field: 'tool call update');
     guard.consumeEntry(field: 'tool call update');
+    return _mergeOwned(update, inputBudget: inputBudget, guard: guard);
+  }
+
+  ToolCall _mergeOwned(
+    Map<String, dynamic> update, {
+    required AcpInputBudget inputBudget,
+    required AcpStructuredUpdateGuard guard,
+  }) {
     final rawStatus = _firstToolValue(update, const <String>['status']);
     final nextStatus = identical(rawStatus, _absentToolField)
         ? status

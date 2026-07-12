@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:meta/meta.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 /// Alias for a JSON map used in requests/responses.
@@ -42,10 +43,20 @@ class JsonRpcPeer {
   /// Stream of raw `session/update` notifications.
   Stream<Object?> get sessionUpdates => _sessionUpdates.stream;
 
+  /// Injects a raw update for hostile-envelope route verification.
+  @visibleForTesting
+  void dispatchSessionUpdateForTesting(Object? envelope) {
+    _dispatchSessionUpdate(envelope);
+  }
+
+  void _dispatchSessionUpdate(Object? envelope) {
+    _sessionUpdates.add(envelope);
+  }
+
   void _registerClientHandlers() {
     _peer.registerMethod('session/update', (rpc.Parameters params) async {
       try {
-        _sessionUpdates.add(params.value);
+        _dispatchSessionUpdate(params.value);
       } on Object {
         // Malformed envelopes and isolated routing failures are dropped.
       }

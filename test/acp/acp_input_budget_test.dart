@@ -1,3 +1,5 @@
+// ignore_for_file: invalid_use_of_internal_member
+
 import 'dart:collection';
 
 import 'package:dart_acp/dart_acp.dart';
@@ -596,12 +598,12 @@ void main() {
       resource: 'message_text',
     );
 
-    test('checkpoint restores every streaming state', () {
+    test('checkpoint rollback restores every streaming state once', () {
       final crlf = counter(maxLines: 2);
       crlf.append('a\r');
       final crlfCheckpoint = crlf.checkpoint();
       crlf.append('\n');
-      crlf.restore(crlfCheckpoint);
+      crlf.rollback(crlfCheckpoint);
       expect(crlf.append('\n').totalLines, 2);
 
       final high = String.fromCharCode(0xd83d);
@@ -609,7 +611,7 @@ void main() {
       final surrogate = counter(maxBytes: 4);
       final surrogateCheckpoint = surrogate.checkpoint();
       surrogate.append(high);
-      surrogate.restore(surrogateCheckpoint);
+      surrogate.rollback(surrogateCheckpoint);
       final isolatedLow = surrogate.append(low);
       expect(isolatedLow.acceptedBytes, 3);
       expect(isolatedLow.totalBytes, 3);
@@ -617,31 +619,54 @@ void main() {
       final omitted = counter(maxBytes: 1);
       final omittedCheckpoint = omitted.checkpoint();
       expect(omitted.append('ab').omission, isNotNull);
-      omitted.restore(omittedCheckpoint);
+      omitted.rollback(omittedCheckpoint);
       expect(omitted.append('a').safePrefix, 'a');
 
       final finished = counter();
       final finishedCheckpoint = finished.checkpoint();
       finished.finish();
-      finished.restore(finishedCheckpoint);
+      finished.rollback(finishedCheckpoint);
       expect(finished.append('a').safePrefix, 'a');
     });
 
-    test('checkpoint cannot be forged or restored across counters', () {
+    test('checkpoint rejects cross-counter and repeated completion', () {
       final owner = counter();
       final other = counter();
       final checkpoint = owner.checkpoint();
       expect(
-        () => other.restore(checkpoint),
+        () => other.rollback(checkpoint),
         throwsA(
           isA<StateError>().having(
             (error) => error.message,
             'message',
-            'ACP text budget checkpoint belongs to another counter.',
+            'ACP text budget checkpoint is not active for this counter.',
           ),
         ),
       );
       expect(other.append('a').safePrefix, 'a');
+
+      owner.rollback(checkpoint);
+      for (final complete in <void Function()>[
+        () => owner.rollback(checkpoint),
+        () => owner.commit(checkpoint),
+      ]) {
+        expect(
+          complete,
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP text budget checkpoint is not active for this counter.',
+            ),
+          ),
+        );
+      }
+
+      final committed = owner.checkpoint();
+      owner.append('a');
+      owner.commit(committed);
+      expect(() => owner.commit(committed), throwsStateError);
+      expect(() => owner.rollback(committed), throwsStateError);
     });
 
     test('nested checkpoints restore their respective snapshots', () {
@@ -650,9 +675,9 @@ void main() {
       value.append('a');
       final inner = value.checkpoint();
       value.append('b');
-      value.restore(inner);
+      value.rollback(inner);
       expect(value.append('b').totalBytes, 2);
-      value.restore(outer);
+      value.rollback(outer);
 
       final restored = value.append('ab');
       expect(restored.safePrefix, 'ab');
