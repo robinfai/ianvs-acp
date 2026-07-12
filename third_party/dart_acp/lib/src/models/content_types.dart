@@ -21,7 +21,7 @@ sealed class ContentBlock {
     final guard = _contentGuard(inputBudget, structuredGuard);
     try {
       _consumeBlock(json, guard);
-      final type = _dispatchContentType(json, guard);
+      final type = _dispatchContentType(json, guard, inputBudget);
       return _fromJson(json, guard, inputBudget, type);
     } catch (error) {
       return UnknownContent.omitted(_blockFailureOmission(error));
@@ -465,19 +465,39 @@ String? _copyContentType(
 String? _dispatchContentType(
   Map<String, dynamic> json,
   AcpStructuredUpdateGuard guard,
+  AcpInputBudget inputBudget,
 ) {
   final raw = _firstNonNull(json, const <String>['type']);
   if (identical(raw, _absentContentField)) return null;
   if (raw is! String) {
     throw const FormatException('Invalid ACP content block structure.');
   }
-  if (raw.length > 64) return _unknownContentType;
+  // Bound normalization without consuming the shared guard. Known types are
+  // consumed below; unknown types are consumed once by the full map copy.
+  _validateContentTypeString(raw, inputBudget);
   final normalized = _normalizedType(raw);
   if (normalized == null || _knownContentTypes.contains(normalized)) {
     guard.copyString(raw, field: 'content type');
     return normalized;
   }
   return _unknownContentType;
+}
+
+void _validateContentTypeString(String raw, AcpInputBudget inputBudget) {
+  final counter = AcpUtf8LineBudgetCounter(
+    maxBytes: inputBudget.maxStructuredStringBytes,
+    maxLines: 0x1fffffffffffff,
+    resource: _contentTypeStringResource,
+  );
+  final appended = counter.append(raw);
+  final finished = counter.finish();
+  final omission = appended.omission ?? finished.omission;
+  if (omission == null) return;
+  throw AcpInputLimitExceeded(
+    resource: _contentTypeStringResource,
+    limit: omission.limit!,
+    observedAtLeast: omission.observedAtLeast!,
+  );
 }
 
 AcpInputOmission _blockFailureOmission(Object error) {
@@ -506,6 +526,8 @@ AcpInputOmission _blockFailureOmission(Object error) {
 
 const String _messageTextResource = 'message_text';
 const String _embeddedMediaResource = 'embedded_media';
+const String _contentTypeStringResource =
+    'content_block content type string bytes';
 const Object _absentContentField = Object();
 
 final class _InvalidEmbeddedMediaEncoding extends FormatException {

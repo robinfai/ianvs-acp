@@ -814,6 +814,45 @@ void main() {
     expect(byteLimit.omission?.observedAtLeast, 10);
   });
 
+  test('bounded content type dispatch preserves padded known types', () {
+    final paddedType = 'text${' ' * 61}';
+    expect(paddedType.length, 65);
+
+    final block = ContentBlock.fromJson(
+      <String, dynamic>{'type': paddedType, 'text': 'ab'},
+      inputBudget: const AcpInputBudget(
+        maxMessageTextBytes: 1,
+        maxMarkdownFallbackBytes: 1,
+      ),
+    );
+
+    expect(block, isA<TextContent>());
+    expect((block as TextContent).text, 'a');
+    expect(block.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(block.omission?.limit, 1);
+    expect(block.omission?.observedAtLeast, 2);
+  });
+
+  test('content type UTF-8 string budget accepts exact and rejects +1', () {
+    const exactType = 'text\u00a0';
+    final exact = ContentBlock.fromJson(<String, dynamic>{
+      'type': exactType,
+      'text': 'ok',
+    }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 6));
+    expect(exact, isA<TextContent>());
+    expect(exact.omission, isNull);
+
+    final beyond = ContentBlock.fromJson(<String, dynamic>{
+      'type': '$exactType ',
+      'text': 'not retained',
+    }, inputBudget: const AcpInputBudget(maxStructuredStringBytes: 6));
+    expect(beyond, isA<UnknownContent>());
+    expect(beyond.omission?.reason, AcpInputOmissionReason.inputLimit);
+    expect(beyond.omission?.limit, 6);
+    expect(beyond.omission?.observedAtLeast, 7);
+    expect(beyond.toJson().toString(), isNot(contains('not retained')));
+  });
+
   test(
     'unknown content rejects cycles, invalid keys, and non-finite values',
     () {
