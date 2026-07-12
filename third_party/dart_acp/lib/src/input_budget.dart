@@ -1,6 +1,25 @@
 import 'dart:collection';
 import 'dart:math' as math;
 
+const int _maxSafeBudgetInteger = 0x1fffffffffffff;
+
+/// Returns the largest Base64 length needed for [decodedByteLimit].
+///
+/// The calculation rejects values whose encoded result would exceed Dart's
+/// exact cross-platform integer range.
+int acpMaxBase64EncodedLength(int decodedByteLimit) {
+  _requirePositive(decodedByteLimit, 'decodedByteLimit');
+  final groups = decodedByteLimit ~/ 3 + (decodedByteLimit % 3 == 0 ? 0 : 1);
+  if (groups > _maxSafeBudgetInteger ~/ 4) {
+    throw ArgumentError.value(
+      decodedByteLimit,
+      'decodedByteLimit',
+      'Base64 encoded limit exceeds the cross-platform safe integer range',
+    );
+  }
+  return groups * 4;
+}
+
 /// Host-controlled limits for untrusted ACP input.
 class AcpInputBudget {
   const AcpInputBudget({
@@ -13,6 +32,29 @@ class AcpInputBudget {
     this.maxMetadataNodes = 8192,
     this.maxMetadataEntries = 1024,
     this.maxMetadataBytes = 512 * 1024,
+    this.maxCollectionItems = 1024,
+    this.maxStructuredUpdateNodes = 8192,
+    this.maxStructuredUpdateBytes = 1024 * 1024,
+    this.maxStructuredStringBytes = 64 * 1024,
+    this.maxMessageTextBytes = 1024 * 1024,
+    this.maxMessageTextLines = 10000,
+    this.maxMarkdownSyntaxTokens = 4096,
+    this.maxMarkdownFallbackBytes = 64 * 1024,
+    this.maxThoughtTextBytes = 512 * 1024,
+    this.maxEmbeddedMediaBytes = 8 * 1024 * 1024,
+    this.maxImageDimension = 8192,
+    this.maxImagePixels = 16777216,
+    this.maxImagePreviewPixels = 2097152,
+    this.maxConcurrentImageDecodes = 2,
+    this.maxImagePreviewPixelsGlobal = 4194304,
+    this.maxImageDecodeBytesGlobal = 32 * 1024 * 1024,
+    this.maxTurnItems = 512,
+    this.maxTurnRetainedBytes = 16 * 1024 * 1024,
+    this.maxTimelineItems = 2000,
+    this.maxTimelineBytes = 16 * 1024 * 1024,
+    this.maxUiStateBytes = 64 * 1024 * 1024,
+    this.maxMetadataPreviewBytes = 16 * 1024,
+    this.maxMetadataPreviewChars = 4096,
   });
 
   final int maxJsonDepth;
@@ -27,6 +69,30 @@ class AcpInputBudget {
   final int maxMetadataEntries;
   final int maxMetadataBytes;
 
+  final int maxCollectionItems;
+  final int maxStructuredUpdateNodes;
+  final int maxStructuredUpdateBytes;
+  final int maxStructuredStringBytes;
+  final int maxMessageTextBytes;
+  final int maxMessageTextLines;
+  final int maxMarkdownSyntaxTokens;
+  final int maxMarkdownFallbackBytes;
+  final int maxThoughtTextBytes;
+  final int maxEmbeddedMediaBytes;
+  final int maxImageDimension;
+  final int maxImagePixels;
+  final int maxImagePreviewPixels;
+  final int maxConcurrentImageDecodes;
+  final int maxImagePreviewPixelsGlobal;
+  final int maxImageDecodeBytesGlobal;
+  final int maxTurnItems;
+  final int maxTurnRetainedBytes;
+  final int maxTimelineItems;
+  final int maxTimelineBytes;
+  final int maxUiStateBytes;
+  final int maxMetadataPreviewBytes;
+  final int maxMetadataPreviewChars;
+
   /// Reject invalid dynamic budgets in debug and release builds.
   void validate() {
     _requirePositive(maxJsonDepth, 'maxJsonDepth');
@@ -38,6 +104,80 @@ class AcpInputBudget {
     _requirePositive(maxMetadataNodes, 'maxMetadataNodes');
     _requirePositive(maxMetadataEntries, 'maxMetadataEntries');
     _requirePositive(maxMetadataBytes, 'maxMetadataBytes');
+    _requirePositive(maxCollectionItems, 'maxCollectionItems');
+    _requirePositive(maxStructuredUpdateNodes, 'maxStructuredUpdateNodes');
+    _requirePositive(maxStructuredUpdateBytes, 'maxStructuredUpdateBytes');
+    _requirePositive(maxStructuredStringBytes, 'maxStructuredStringBytes');
+    _requirePositive(maxMessageTextBytes, 'maxMessageTextBytes');
+    _requirePositive(maxMessageTextLines, 'maxMessageTextLines');
+    _requirePositive(maxMarkdownSyntaxTokens, 'maxMarkdownSyntaxTokens');
+    _requirePositive(maxMarkdownFallbackBytes, 'maxMarkdownFallbackBytes');
+    _requirePositive(maxThoughtTextBytes, 'maxThoughtTextBytes');
+    _requirePositive(maxEmbeddedMediaBytes, 'maxEmbeddedMediaBytes');
+    _requirePositive(maxImageDimension, 'maxImageDimension');
+    _requirePositive(maxImagePixels, 'maxImagePixels');
+    _requirePositive(maxImagePreviewPixels, 'maxImagePreviewPixels');
+    _requirePositive(maxConcurrentImageDecodes, 'maxConcurrentImageDecodes');
+    _requirePositive(
+      maxImagePreviewPixelsGlobal,
+      'maxImagePreviewPixelsGlobal',
+    );
+    _requirePositive(maxImageDecodeBytesGlobal, 'maxImageDecodeBytesGlobal');
+    _requirePositive(maxTurnItems, 'maxTurnItems');
+    _requirePositive(maxTurnRetainedBytes, 'maxTurnRetainedBytes');
+    _requirePositive(maxTimelineItems, 'maxTimelineItems');
+    _requirePositive(maxTimelineBytes, 'maxTimelineBytes');
+    _requirePositive(maxUiStateBytes, 'maxUiStateBytes');
+    _requirePositive(maxMetadataPreviewBytes, 'maxMetadataPreviewBytes');
+    _requirePositive(maxMetadataPreviewChars, 'maxMetadataPreviewChars');
+
+    acpMaxBase64EncodedLength(maxEmbeddedMediaBytes);
+    _requireAtMost(
+      maxImagePreviewPixels,
+      maxImagePixels,
+      'maxImagePreviewPixels relative to maxImagePixels',
+    );
+    _requireAtMost(
+      maxImagePreviewPixels,
+      maxImagePreviewPixelsGlobal,
+      'maxImagePreviewPixels relative to maxImagePreviewPixelsGlobal',
+    );
+    _requireAtMost(
+      maxMarkdownFallbackBytes,
+      maxMessageTextBytes,
+      'maxMarkdownFallbackBytes relative to maxMessageTextBytes',
+    );
+    _requireAtMost(
+      maxTurnRetainedBytes,
+      maxTimelineBytes,
+      'maxTurnRetainedBytes relative to maxTimelineBytes',
+    );
+    _requireAtMost(
+      maxTimelineBytes,
+      maxUiStateBytes,
+      'maxTimelineBytes relative to maxUiStateBytes',
+    );
+
+    if (maxImagePreviewPixels > _maxSafeBudgetInteger ~/ 4) {
+      throw ArgumentError.value(
+        maxImagePreviewPixels,
+        'maxImagePreviewPixels',
+        'decoded preview bytes exceed the cross-platform safe integer range',
+      );
+    }
+    _requireSafeBudgetInteger(
+      maxImageDecodeBytesGlobal,
+      'maxImageDecodeBytesGlobal',
+    );
+    final previewBytes = maxImagePreviewPixels * 4;
+    final remainingImageDecodeBytes = maxImageDecodeBytesGlobal - previewBytes;
+    if (maxEmbeddedMediaBytes > remainingImageDecodeBytes) {
+      throw AcpInputLimitExceeded(
+        resource: 'maxEmbeddedMediaBytes after image preview reservation',
+        limit: remainingImageDecodeBytes,
+        observedAtLeast: maxEmbeddedMediaBytes,
+      );
+    }
   }
 }
 
@@ -321,6 +461,26 @@ class AcpJsonInputGuard {
 void _requirePositive(int value, String name) {
   if (value <= 0) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+}
+
+void _requireSafeBudgetInteger(int value, String name) {
+  if (value > _maxSafeBudgetInteger) {
+    throw ArgumentError.value(
+      value,
+      name,
+      'must not exceed the cross-platform safe integer range',
+    );
+  }
+}
+
+void _requireAtMost(int observed, int limit, String resource) {
+  if (observed > limit) {
+    throw AcpInputLimitExceeded(
+      resource: resource,
+      limit: limit,
+      observedAtLeast: observed,
+    );
   }
 }
 
