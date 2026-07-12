@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
@@ -57,7 +58,24 @@ const int _configOptionHostRetainedBytes = 448;
 const int _configChoiceHostRetainedBytes = 224;
 const int _inputOmissionHostRetainedBytes = 320;
 const int _sessionUsageHostRetainedBytes = 224;
+const int _sessionSettingsStateHostRetainedBytes = 512;
+const int _sessionInfoStateHostRetainedBytes = 320;
+const int _contentBlockMetadataHostRetainedBytes = 256;
+const int _contentBlockHostRetainedBytes = 320;
+const int _thoughtMetadataHostRetainedBytes = 128;
 const int _maxSafeRetainedBytes = 0x1fffffffffffff;
+
+final class _GuardedChatMetadata {
+  const _GuardedChatMetadata({
+    required this.metadata,
+    this.omission,
+    this.localOmissions = const <acp.AcpInputOmission>[],
+  });
+
+  final Map<String, Object?> metadata;
+  final acp.AcpInputOmission? omission;
+  final List<acp.AcpInputOmission> localOmissions;
+}
 
 class ChatMessage {
   factory ChatMessage({
@@ -70,17 +88,45 @@ class ChatMessage {
   }) {
     inputBudget.validate();
     final guarded = _guardChatMessageMetadata(metadata, inputBudget);
-    final boundedOmissions = _boundedChatMessageOmissions(
+    var boundedOmissions = _boundedChatMessageOmissions(
       omissions,
       guarded.omission,
       inputBudget.maxCollectionItems,
     );
+    for (final omission in guarded.localOmissions) {
+      boundedOmissions = _boundedChatMessageOmissions(
+        boundedOmissions,
+        omission,
+        inputBudget.maxCollectionItems,
+      );
+    }
     return ChatMessage._(
       role: role,
       text: text,
       timestamp: timestamp ?? DateTime.now(),
       metadata: guarded.metadata,
       omissions: boundedOmissions,
+      maxOmissions: inputBudget.maxCollectionItems,
+      inputBudget: inputBudget,
+      frozen: false,
+    );
+  }
+
+  factory ChatMessage._guarded({
+    required ChatMessageRole role,
+    required String text,
+    DateTime? timestamp,
+    required Map<String, Object?> metadata,
+    required List<acp.AcpInputOmission> omissions,
+    required acp.AcpInputBudget inputBudget,
+  }) {
+    inputBudget.validate();
+    return ChatMessage._(
+      role: role,
+      text: text,
+      timestamp: timestamp ?? DateTime.now(),
+      metadata: metadata,
+      omissions: List<acp.AcpInputOmission>.unmodifiable(omissions),
       maxOmissions: inputBudget.maxCollectionItems,
       inputBudget: inputBudget,
       frozen: false,
@@ -227,18 +273,26 @@ class ChatMessage {
     final copiedAcceptedUtf8Bytes =
         appended.acceptedBytes + finished.acceptedBytes;
     final textOmission = appended.omission ?? finished.omission;
-    final guarded = _guardChatMessageMetadata(metadata, inputBudget);
-    final textBoundedOmissions = _boundedChatMessageOmissions(
+    final guarded = _guardOwnedChatMessageMetadata(metadata, inputBudget);
+    var copiedBoundedOmissions = _boundedChatMessageOmissions(
       _omissions,
       textOmission,
       inputBudget.maxCollectionItems,
     );
-    final copiedOmissions = List<acp.AcpInputOmission>.unmodifiable(
-      _boundedChatMessageOmissions(
-        textBoundedOmissions,
-        guarded.omission,
+    copiedBoundedOmissions = _boundedChatMessageOmissions(
+      copiedBoundedOmissions,
+      guarded.omission,
+      inputBudget.maxCollectionItems,
+    );
+    for (final omission in guarded.localOmissions) {
+      copiedBoundedOmissions = _boundedChatMessageOmissions(
+        copiedBoundedOmissions,
+        omission,
         inputBudget.maxCollectionItems,
-      ).map(_copyInputOmission),
+      );
+    }
+    final copiedOmissions = List<acp.AcpInputOmission>.unmodifiable(
+      copiedBoundedOmissions.map(_copyInputOmission),
     );
     return ChatMessage._(
       role: role,
@@ -255,7 +309,7 @@ class ChatMessage {
   }
 
   ChatMessage _copyWithFrozenState({required bool frozen}) {
-    final copiedMetadata = _guardChatMessageMetadata(
+    final copiedMetadata = _guardOwnedChatMessageMetadata(
       metadata,
       _inputBudget,
     ).metadata;
@@ -316,8 +370,20 @@ int _estimateChatMetadataRetainedBytes(
   acp.AcpRetainedSizeEstimator estimator,
   Map<String, Object?> metadata,
 ) {
+  final kind = metadata['kind'];
+  if (metadata.length == 1 && kind is String && kind == 'thought') {
+    return _thoughtMetadataHostRetainedBytes;
+  }
+  final contentBlocks = metadata['contentBlocks'];
+  if (contentBlocks is List) {
+    return _estimateContentBlockMetadataRetainedBytes(
+      estimator,
+      metadata,
+      contentBlocks,
+    );
+  }
   final options = metadata['configOptions'];
-  if (metadata['kind'] != 'config_option_update' || options is! List) {
+  if (kind is! String || kind != 'config_option_update' || options is! List) {
     return estimator.estimate(metadata);
   }
   final typedOptions = options.whereType<AcpConfigOption>().toList(
@@ -325,6 +391,121 @@ int _estimateChatMetadataRetainedBytes(
   );
   var retained = _typedConfigMetadataHostRetainedBytes;
   return _addConfigOptionsRetainedBytes(retained, estimator, typedOptions);
+}
+
+int _estimateContentBlockMetadataRetainedBytes(
+  acp.AcpRetainedSizeEstimator estimator,
+  Map<String, Object?> metadata,
+  List contentBlocks,
+) {
+  var retained = _addRetainedListHostBytes(
+    _contentBlockMetadataHostRetainedBytes,
+    contentBlocks.length,
+  );
+  for (final entry in metadata.entries) {
+    if (entry.key == 'contentBlocks' ||
+        (entry.key == 'kind' &&
+            entry.value is String &&
+            entry.value == 'thought')) {
+      continue;
+    }
+    retained = _addDynamicRetainedEntry(
+      retained,
+      estimator,
+      entry.key,
+      entry.value,
+    );
+  }
+  for (final rawBlock in contentBlocks) {
+    if (rawBlock is! Map<String, Object?>) {
+      throw const FormatException('Invalid retained content block.');
+    }
+    final rawType = rawBlock['type'];
+    if (rawType is! String) {
+      throw const FormatException('Invalid retained content block type.');
+    }
+    final type = rawType;
+    if (type != 'image' &&
+        type != 'audio' &&
+        type != 'resource' &&
+        type != 'omitted') {
+      retained = _addEstimatedRetainedBytes(retained, estimator, rawBlock);
+      continue;
+    }
+    retained = _checkedRetainedAdd(retained, _contentBlockHostRetainedBytes);
+    if (type == 'image' || type == 'audio') {
+      final mimeType = rawBlock['mimeType'];
+      if (mimeType != null) {
+        retained = _addEstimatedRetainedBytes(retained, estimator, mimeType);
+      }
+      final data = rawBlock['data'];
+      if (data is String) {
+        // ACP Base64 is ASCII, so encoded code units equal retained UTF-8 bytes.
+        retained = _checkedRetainedAdd(retained, data.length);
+      }
+      final uri = rawBlock['uri'];
+      if (uri != null) {
+        retained = _addEstimatedRetainedBytes(retained, estimator, uri);
+      }
+      continue;
+    }
+    if (type == 'resource') {
+      final resource = rawBlock['resource'];
+      if (resource is! Map<String, Object?>) {
+        throw const FormatException('Invalid retained resource block.');
+      }
+      retained = _checkedRetainedAdd(retained, _contentBlockHostRetainedBytes);
+      for (final entry in resource.entries) {
+        retained = _checkedRetainedAdd(retained, _retainedListItemHostBytes);
+        retained = _addEstimatedRetainedBytes(retained, estimator, entry.key);
+        if (entry.key == 'blob' && entry.value is String) {
+          retained = _checkedRetainedAdd(
+            retained,
+            (entry.value! as String).length,
+          );
+        } else {
+          retained = _addEstimatedRetainedBytes(
+            retained,
+            estimator,
+            entry.value,
+          );
+        }
+      }
+      continue;
+    }
+    if (type == 'omitted') {
+      final resource = rawBlock['resource'];
+      if (resource is String) {
+        retained = _checkedRetainedAdd(retained, utf8.encode(resource).length);
+      }
+      for (final key in const <String>['limit', 'observedAtLeast']) {
+        if (rawBlock[key] != null) {
+          retained = _addEstimatedRetainedBytes(
+            retained,
+            estimator,
+            rawBlock[key],
+          );
+        }
+      }
+      continue;
+    }
+    for (final entry in rawBlock.entries) {
+      if (entry.key == 'type') continue;
+      retained = _addEstimatedRetainedBytes(retained, estimator, entry.value);
+    }
+  }
+  return retained;
+}
+
+int _addDynamicRetainedEntry(
+  int retained,
+  acp.AcpRetainedSizeEstimator estimator,
+  String key,
+  Object? value,
+) {
+  retained = _checkedRetainedAdd(retained, _retainedListItemHostBytes);
+  retained = _addEstimatedRetainedBytes(retained, estimator, key);
+  return _addEstimatedRetainedBytes(retained, estimator, value);
 }
 
 int _checkedRetainedAdd(int current, int increment) {
@@ -369,10 +550,12 @@ int _addInputOmissionsRetainedBytes(
   retained = _addRetainedListHostBytes(retained, omissions.length);
   for (final omission in omissions) {
     retained = _checkedRetainedAdd(retained, _inputOmissionHostRetainedBytes);
-    retained = _addEstimatedRetainedBytes(
+    // Omission resources are typed host labels. Their actual retained UTF-8
+    // bytes count, but host-fixed labels must not consume the untrusted
+    // maxStructuredStringBytes budget.
+    retained = _checkedRetainedAdd(
       retained,
-      estimator,
-      omission.resource,
+      utf8.encode(omission.resource).length,
     );
     if (omission.reason == acp.AcpInputOmissionReason.inputLimit) {
       retained = _addEstimatedRetainedBytes(
@@ -426,14 +609,44 @@ int _addConfigOptionsRetainedBytes(
   return retained;
 }
 
-({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
-_guardChatMessageMetadata(
+_GuardedChatMetadata _guardChatMessageMetadata(
   Map<String, Object?> metadata,
   acp.AcpInputBudget budget,
-) {
+) => _guardChatMessageMetadataImpl(metadata, budget);
+
+_GuardedChatMetadata _guardOwnedChatMessageMetadata(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget,
+) => _guardChatMessageMetadataImpl(
+  metadata,
+  budget,
+  preserveOwnedOmittedProjections: true,
+);
+
+_GuardedChatMetadata _guardChatMessageMetadataImpl(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget, {
+  bool preserveOwnedOmittedProjections = false,
+}) {
   final snapshot = _snapshotChatMessageMetadata(metadata, budget);
   final stableMetadata = snapshot.metadata;
   if (stableMetadata == null) return _invalidChatMessageMetadata();
+  if (stableMetadata['contentBlocks'] is List) {
+    if (snapshot.limit case final limit?) {
+      return _limitedChatMessageMetadata(limit);
+    }
+    try {
+      return _copyContentBlockMetadata(
+        stableMetadata,
+        budget,
+        preserveOwnedOmittedProjections: preserveOwnedOmittedProjections,
+      );
+    } on acp.AcpInputLimitExceeded catch (error) {
+      return _limitedChatMessageMetadata(error);
+    } on Object {
+      return _invalidChatMessageMetadata();
+    }
+  }
   final typed = _guardRecognizedTypedConfigUpdateMetadata(
     stableMetadata,
     budget,
@@ -459,12 +672,297 @@ _guardChatMessageMetadata(
       budget: budget,
       resource: 'chat message metadata',
     ).copyMetadata(stableMetadata, field: 'metadata');
-    return (metadata: guarded, omission: null);
+    return _GuardedChatMetadata(metadata: guarded);
   } on acp.AcpInputLimitExceeded catch (error) {
     return _limitedChatMessageMetadata(error);
   } on Object {
     return _invalidChatMessageMetadata();
   }
+}
+
+_GuardedChatMetadata _copyContentBlockMetadata(
+  Map<String, Object?> metadata,
+  acp.AcpInputBudget budget, {
+  bool preserveOwnedOmittedProjections = false,
+}) {
+  final rawBlocks = metadata['contentBlocks'];
+  if (rawBlocks is! List) {
+    throw const FormatException('Invalid content blocks.');
+  }
+  final guard = acp.AcpStructuredUpdateGuard(
+    budget: budget,
+    resource: 'chat content blocks',
+  );
+  guard.consumeContainerNode(field: 'metadata');
+  final copiedMetadata = <String, Object?>{};
+  for (final entry in metadata.entries) {
+    if (entry.key == 'contentBlocks') continue;
+    guard.consumeEntry(field: 'metadata entry');
+    if (entry.key == 'kind' &&
+        entry.value is String &&
+        entry.value == 'thought') {
+      copiedMetadata['kind'] = 'thought';
+      continue;
+    }
+    guard.copyString(entry.key, field: 'metadata key');
+    copiedMetadata[entry.key] = guard.copyJsonValue(
+      entry.value,
+      field: 'metadata value',
+    );
+  }
+  final blockCount = guard.checkCollection(rawBlocks, field: 'content blocks');
+  guard.consumeContainerNode(field: 'content blocks');
+  final copiedBlocks = <Map<String, Object?>>[];
+  final localOmissions = <acp.AcpInputOmission>[];
+  void addLocalOmission(acp.AcpInputOmission omission) {
+    if (localOmissions.any(
+      (existing) =>
+          existing.resource == omission.resource &&
+          existing.reason == omission.reason,
+    )) {
+      return;
+    }
+    localOmissions.add(omission);
+  }
+
+  for (var index = 0; index < blockCount; index += 1) {
+    final rawBlock = rawBlocks[index];
+    if (rawBlock is! Map<String, Object?>) {
+      throw const FormatException('Invalid content block.');
+    }
+    guard.consumeEntry(field: 'content block');
+    final rawType = rawBlock['type'];
+    if (rawType is! String) {
+      throw const FormatException('Invalid content block type.');
+    }
+    final type = rawType;
+    if (type == 'image' || type == 'audio') {
+      final copied = <String, Object?>{'type': type};
+      final mimeType = rawBlock['mimeType'];
+      if (mimeType != null) {
+        copied['mimeType'] = guard.copyString(
+          mimeType,
+          field: 'media mime type',
+        );
+      }
+      final data = rawBlock['data'];
+      if (data != null) {
+        if (data is! String) {
+          final blockOmission = acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: type == 'image' ? 'image_data' : 'audio_data',
+            truncated: false,
+          );
+          addLocalOmission(blockOmission);
+          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
+          continue;
+        }
+        try {
+          acp.scanAcpBase64(
+            data,
+            maxDecodedBytes: budget.maxEmbeddedMediaBytes,
+            resource: type == 'image' ? 'image_data' : 'audio_data',
+          );
+          copied['data'] = data;
+        } on acp.AcpInputLimitExceeded catch (error) {
+          final blockOmission = acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.inputLimit,
+            resource: type == 'image' ? 'image_data' : 'audio_data',
+            truncated: false,
+            limit: error.limit,
+            observedAtLeast: error.observedAtLeast,
+          );
+          addLocalOmission(blockOmission);
+          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
+          continue;
+        } on FormatException {
+          final blockOmission = acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidEncoding,
+            resource: type == 'image' ? 'image_data' : 'audio_data',
+            truncated: false,
+          );
+          addLocalOmission(blockOmission);
+          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
+          continue;
+        }
+      }
+      final uri = rawBlock['uri'];
+      if (uri != null) {
+        copied['uri'] = guard.copyString(uri, field: 'audio uri');
+      }
+      copiedBlocks.add(Map<String, Object?>.unmodifiable(copied));
+      continue;
+    }
+    if (type == 'resource') {
+      final rawResource = rawBlock['resource'];
+      if (rawResource is! Map<String, Object?>) {
+        throw const FormatException('Invalid resource content block.');
+      }
+      final snapshot = _snapshotChatMessageMetadata(rawResource, budget);
+      final stableResource = snapshot.metadata;
+      if (stableResource == null) {
+        throw const FormatException('Invalid resource content block map.');
+      }
+      if (snapshot.limit case final limit?) throw limit;
+      guard.consumeContainerNode(field: 'resource');
+      final resource = <String, Object?>{};
+      acp.AcpInputOmission? blockOmission;
+      for (final entry in stableResource.entries) {
+        guard.consumeEntry(field: 'resource field');
+        final copiedKey = guard.copyString(entry.key, field: 'resource key');
+        if (copiedKey == 'blob' && entry.value != null) {
+          final blob = entry.value;
+          if (blob is! String) {
+            blockOmission = acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.invalidStructure,
+              resource: 'resource_blob',
+              truncated: false,
+            );
+            break;
+          }
+          try {
+            acp.scanAcpBase64(
+              blob,
+              maxDecodedBytes: budget.maxEmbeddedMediaBytes,
+              resource: 'resource_blob',
+            );
+            resource[copiedKey] = blob;
+          } on acp.AcpInputLimitExceeded catch (error) {
+            blockOmission = acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.inputLimit,
+              resource: 'resource_blob',
+              truncated: false,
+              limit: error.limit,
+              observedAtLeast: error.observedAtLeast,
+            );
+            break;
+          } on FormatException {
+            blockOmission = acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.invalidEncoding,
+              resource: 'resource_blob',
+              truncated: false,
+            );
+            break;
+          }
+        } else if (entry.value is String) {
+          resource[copiedKey] = guard.copyString(
+            entry.value,
+            field: 'resource string',
+          );
+        } else {
+          resource[copiedKey] = guard.copyScalar(
+            entry.value,
+            field: 'resource scalar',
+          );
+        }
+      }
+      if (blockOmission != null) {
+        addLocalOmission(blockOmission);
+        copiedBlocks.add(_mediaOmissionProjection(blockOmission));
+      } else {
+        copiedBlocks.add(
+          Map<String, Object?>.unmodifiable(<String, Object?>{
+            'type': 'resource',
+            'resource': Map<String, Object?>.unmodifiable(resource),
+          }),
+        );
+      }
+      continue;
+    }
+    if (type == 'omitted') {
+      copiedBlocks.add(
+        preserveOwnedOmittedProjections
+            ? _copyOwnedOmittedProjection(rawBlock)
+            : _externalOmittedProjection(),
+      );
+      continue;
+    }
+    copiedBlocks.add(
+      guard.copyJsonValue(rawBlock, field: 'content block')!
+          as Map<String, Object?>,
+    );
+  }
+  if (rawBlocks.length != blockCount) {
+    throw const FormatException('Invalid content block count.');
+  }
+  copiedMetadata['contentBlocks'] = List<Map<String, Object?>>.unmodifiable(
+    copiedBlocks,
+  );
+  return _GuardedChatMetadata(
+    metadata: Map<String, Object?>.unmodifiable(copiedMetadata),
+    localOmissions: List<acp.AcpInputOmission>.unmodifiable(localOmissions),
+  );
+}
+
+Map<String, Object?> _externalOmittedProjection() {
+  return Map<String, Object?>.unmodifiable(<String, Object?>{
+    'type': 'omitted',
+    'reason': 'invalid_structure',
+    'resource': 'external_omitted',
+    'truncated': false,
+  });
+}
+
+Map<String, Object?> _copyOwnedOmittedProjection(
+  Map<String, Object?> rawBlock,
+) {
+  final resource = rawBlock['resource'];
+  final reason = rawBlock['reason'];
+  final truncated = rawBlock['truncated'];
+  final limit = rawBlock['limit'];
+  final observedAtLeast = rawBlock['observedAtLeast'];
+  final knownResource =
+      resource == 'image_data' ||
+      resource == 'audio_data' ||
+      resource == 'resource_blob' ||
+      resource == 'turn_media' ||
+      resource == 'external_omitted';
+  final knownReason =
+      reason == 'input_limit' ||
+      reason == 'invalid_encoding' ||
+      reason == 'invalid_image' ||
+      reason == 'invalid_structure';
+  final validCapacity = reason == 'input_limit'
+      ? limit is int && observedAtLeast is int
+      : limit == null && observedAtLeast == null;
+  if (!knownResource || !knownReason || truncated is! bool || !validCapacity) {
+    return _externalOmittedProjection();
+  }
+  return Map<String, Object?>.unmodifiable(<String, Object?>{
+    'type': 'omitted',
+    'reason': reason,
+    'resource': resource,
+    'truncated': truncated,
+    'limit': ?limit,
+    'observedAtLeast': ?observedAtLeast,
+  });
+}
+
+Map<String, Object?> _mediaOmissionProjection(acp.AcpInputOmission omission) {
+  return Map<String, Object?>.unmodifiable(<String, Object?>{
+    'type': 'omitted',
+    'reason': switch (omission.reason) {
+      acp.AcpInputOmissionReason.inputLimit => 'input_limit',
+      acp.AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
+      acp.AcpInputOmissionReason.invalidImage => 'invalid_image',
+      acp.AcpInputOmissionReason.invalidStructure => 'invalid_structure',
+    },
+    'resource': omission.resource,
+    'truncated': omission.truncated,
+    if (omission.limit != null) 'limit': omission.limit,
+    if (omission.observedAtLeast != null)
+      'observedAtLeast': omission.observedAtLeast,
+  });
+}
+
+int _validatedAcpBase64DecodedBytes(String encoded) {
+  if (encoded.isEmpty) return 0;
+  var padding = 0;
+  if (encoded.codeUnitAt(encoded.length - 1) == 0x3d) padding += 1;
+  if (encoded.length > 1 && encoded.codeUnitAt(encoded.length - 2) == 0x3d) {
+    padding += 1;
+  }
+  return encoded.length ~/ 4 * 3 - padding;
 }
 
 ({Map<String, Object?>? metadata, acp.AcpInputLimitExceeded? limit})
@@ -531,8 +1029,9 @@ _snapshotChatMessageMetadata(
   );
 }
 
-({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
-_limitedChatMessageMetadata(acp.AcpInputLimitExceeded error) => (
+_GuardedChatMetadata _limitedChatMessageMetadata(
+  acp.AcpInputLimitExceeded error,
+) => _GuardedChatMetadata(
   metadata: const <String, Object?>{},
   omission: acp.AcpInputOmission(
     reason: acp.AcpInputOmissionReason.inputLimit,
@@ -543,8 +1042,7 @@ _limitedChatMessageMetadata(acp.AcpInputLimitExceeded error) => (
   ),
 );
 
-({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
-_invalidChatMessageMetadata() => (
+_GuardedChatMetadata _invalidChatMessageMetadata() => _GuardedChatMetadata(
   metadata: const <String, Object?>{},
   omission: acp.AcpInputOmission(
     reason: acp.AcpInputOmissionReason.invalidStructure,
@@ -553,8 +1051,7 @@ _invalidChatMessageMetadata() => (
   ),
 );
 
-({Map<String, Object?> metadata, acp.AcpInputOmission? omission})?
-_guardRecognizedTypedConfigUpdateMetadata(
+_GuardedChatMetadata? _guardRecognizedTypedConfigUpdateMetadata(
   Map<String, Object?> metadata,
   acp.AcpInputBudget budget,
 ) {
@@ -562,7 +1059,7 @@ _guardRecognizedTypedConfigUpdateMetadata(
   try {
     final copied = _copyTypedConfigUpdateMetadata(metadata, budget);
     if (copied == null) return null;
-    return (metadata: copied, omission: null);
+    return _GuardedChatMetadata(metadata: copied);
   } on acp.AcpInputLimitExceeded catch (error) {
     return _failedTypedConfigUpdateMetadata(
       acp.AcpInputOmission(
@@ -601,14 +1098,18 @@ bool _isRecognizedTypedConfigUpdateMetadata(Map<String, Object?> metadata) {
         return false;
       }
     }
-    return count == 2 && kind == 'config_option_update' && options is List;
+    return count == 2 &&
+        kind is String &&
+        kind == 'config_option_update' &&
+        options is List;
   } on Object {
     return false;
   }
 }
 
-({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
-_failedTypedConfigUpdateMetadata(acp.AcpInputOmission omission) => (
+_GuardedChatMetadata _failedTypedConfigUpdateMetadata(
+  acp.AcpInputOmission omission,
+) => _GuardedChatMetadata(
   metadata: const <String, Object?>{
     'kind': 'config_option_update',
     'configOptions': <AcpConfigOption>[],
@@ -666,6 +1167,7 @@ Map<String, Object?>? _copyTypedConfigUpdateMetadata(
     );
   }
   if (observedEntries != metadataLength ||
+      rawKind is! String ||
       rawKind != 'config_option_update' ||
       rawOptions is! List) {
     return null;
@@ -1486,7 +1988,13 @@ int _addSessionUsageRetainedBytes(
 
 class _TurnBudgetState {
   _TurnBudgetState(acp.AcpInputBudget budget)
-    : text = acp.AcpUtf8LineBudgetCounter(
+    : maxItems = budget.maxTurnItems,
+      maxRetainedBytes = budget.maxTurnRetainedBytes,
+      normalItemLimit = budget.maxTurnItems > 1 ? budget.maxTurnItems - 1 : 0,
+      normalRetainedByteLimit = budget.maxTurnRetainedBytes > 1024
+          ? budget.maxTurnRetainedBytes - 1024
+          : 0,
+      text = acp.AcpUtf8LineBudgetCounter(
         maxBytes: budget.maxMessageTextBytes,
         maxLines: budget.maxMessageTextLines,
         resource: 'message text',
@@ -1497,8 +2005,29 @@ class _TurnBudgetState {
         resource: 'thought text',
       );
 
+  final int maxItems;
+  final int maxRetainedBytes;
+  final int normalItemLimit;
+  final int normalRetainedByteLimit;
   final acp.AcpUtf8LineBudgetCounter text;
   final acp.AcpUtf8LineBudgetCounter thought;
+  int items = 0;
+  int retainedBytes = 0;
+  bool overflowed = false;
+  bool overflowMarkerPublished = false;
+  bool textRootDrained = false;
+  bool thoughtRootDrained = false;
+  bool textCounterTouched = false;
+  bool thoughtCounterTouched = false;
+  bool mediaRootDrained = false;
+  final Set<String> mediaOmissionKeys = <String>{};
+  int mediaBytes = 0;
+  int commandStateRetainedBytes = 0;
+  int settingsStateRetainedBytes = 0;
+  int sessionInfoStateRetainedBytes = 0;
+  int usageStateRetainedBytes = 0;
+  final Map<ChatMessage, int> messageRetainedBytes =
+      HashMap<ChatMessage, int>.identity();
   ChatMessage? textTarget;
   ChatMessage? thoughtTarget;
   _PendingHighSurrogate? textPendingHigh;
@@ -1511,6 +2040,31 @@ class _PendingHighSurrogate {
 
   final ChatMessage target;
   final int codeUnit;
+}
+
+class _TurnTextAppend {
+  const _TurnTextAppend({
+    required this.target,
+    required this.text,
+    required this.acceptedUtf8Bytes,
+  });
+
+  final ChatMessage target;
+  final String text;
+  final int acceptedUtf8Bytes;
+}
+
+class _TurnMessageProjection {
+  _TurnMessageProjection({
+    required this.message,
+    required this.previousRetained,
+  }) : acceptedUtf8Bytes = message.acceptedUtf8Bytes,
+       omissions = <acp.AcpInputOmission>[...message.omissions];
+
+  final ChatMessage message;
+  final int previousRetained;
+  int acceptedUtf8Bytes;
+  final List<acp.AcpInputOmission> omissions;
 }
 
 class ChatController extends ChangeNotifier {
@@ -1581,6 +2135,16 @@ class ChatController extends ChangeNotifier {
   int _nextPermissionRequestGeneration = 0;
   _TurnBudgetState? _turnBudget;
   bool _streamingNotificationPending = false;
+  bool _trackingAgentEvent = false;
+  bool _suppressAgentEventProjection = false;
+  bool _eventPayloadAccepted = false;
+  String _eventAcceptedText = '';
+  bool _eventHasMessageProjection = false;
+  Map<String, Object?> _eventAcceptedMetadata = const <String, Object?>{};
+  List<acp.AcpInputOmission> _eventAcceptedOmissions =
+      const <acp.AcpInputOmission>[];
+  acp.AcpInputOmission? _eventAcceptedTextOmission;
+  acp.AcpInputOmission? _eventRootOmission;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -1596,6 +2160,19 @@ class ChatController extends ChangeNotifier {
   bool get supportsAuthLogout => capabilities?.auth.logout == true;
 
   bool get hasPermissionReviewer => permissionReviewer != null;
+
+  @visibleForTesting
+  int get debugCurrentTurnItems => _turnBudget?.items ?? 0;
+
+  @visibleForTesting
+  int get debugCurrentTurnRetainedBytes => _turnBudget?.retainedBytes ?? 0;
+
+  @visibleForTesting
+  bool get debugTurnOverflowed => _turnBudget?.overflowed ?? false;
+
+  @visibleForTesting
+  bool get debugTurnTextCounterTouched =>
+      _turnBudget?.textCounterTouched ?? false;
 
   String? get currentModelValue => sessionSettings.modelOption?.currentValue;
 
@@ -2242,7 +2819,7 @@ class ChatController extends ChangeNotifier {
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
         .toList();
-    messages.add(
+    _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.user,
         text: prompt,
@@ -2687,22 +3264,219 @@ class ChatController extends ChangeNotifier {
   }
 
   AgentEvent _safeAgentEvent(AgentEvent event) {
-    final guarded = _guardChatMessageMetadata(event.metadata, inputBudget);
+    final snapshot = _snapshotChatMessageMetadata(event.metadata, inputBudget);
+    final stableMetadata = snapshot.metadata;
+    final guarded = stableMetadata == null
+        ? _invalidChatMessageMetadata()
+        : _guardChatMessageMetadata(stableMetadata, inputBudget);
+    final rawKindValue = stableMetadata?['kind'];
+    final rawKind = rawKindValue is String ? rawKindValue : null;
+    final behaviorKind =
+        rawKind == 'commands' ||
+            rawKind == 'config_option_update' ||
+            rawKind == 'mode' ||
+            rawKind == 'usage_update' ||
+            rawKind == 'session_info_update'
+        ? rawKind as String
+        : null;
+    final behaviorRejected = behaviorKind != null && guarded.omission != null;
+    final behaviorRejectedAll =
+        event.type == AgentEventType.status &&
+        guarded.omission != null &&
+        behaviorKind == null &&
+        rawKind == null;
+    final thoughtMetadataRejected =
+        event.type == AgentEventType.status &&
+        rawKind == 'thought' &&
+        guarded.omission != null;
+    final invalidUsageCost =
+        rawKind == 'usage_update' &&
+        guarded.omission == null &&
+        !_usageCostFromObject(guarded.metadata['cost']).valid;
+    var safeMetadata = thoughtMetadataRejected
+        ? const <String, Object?>{'kind': 'thought'}
+        : behaviorRejected || behaviorRejectedAll
+        ? Map<String, Object?>.unmodifiable(<String, Object?>{
+            if (behaviorKind == 'config_option_update') ...guarded.metadata,
+            if (behaviorKind != null && behaviorKind != 'config_option_update')
+              'kind': behaviorKind,
+            if (behaviorRejected) '_behaviorRejected': true,
+            if (behaviorRejectedAll) '_behaviorRejectedAll': true,
+          })
+        : guarded.metadata;
+    if (invalidUsageCost) {
+      safeMetadata = Map<String, Object?>.unmodifiable(<String, Object?>{
+        ...safeMetadata,
+        '_invalidUsageCost': true,
+      });
+    }
+    final media = _sanitizeEventMedia(safeMetadata);
+    safeMetadata = media.metadata;
+    final safeKind = safeMetadata['kind'];
+    final guardsDisplayText =
+        event.type == AgentEventType.userMessage ||
+        event.type == AgentEventType.toolCall ||
+        (event.type == AgentEventType.status &&
+            safeKind != 'thought' &&
+            safeKind != 'usage_update' &&
+            safeKind != 'session_info_update');
+    final displayText = guardsDisplayText
+        ? _boundedLocalDisplayText(event.text, resource: 'display text')
+        : (text: event.text, omission: null);
+    var guardedOmissions = _boundedChatMessageOmissions(
+      event.omissions,
+      _dedupeTurnMediaOmission(guarded.omission),
+      inputBudget.maxCollectionItems,
+    );
+    for (final omission in guarded.localOmissions) {
+      guardedOmissions = _boundedChatMessageOmissions(
+        guardedOmissions,
+        _dedupeTurnMediaOmission(omission),
+        inputBudget.maxCollectionItems,
+      );
+    }
+    guardedOmissions = _boundedChatMessageOmissions(
+      guardedOmissions,
+      displayText.omission,
+      inputBudget.maxCollectionItems,
+    );
     return AgentEvent(
       type: event.type,
-      text: event.text,
+      text: behaviorRejected || behaviorRejectedAll ? '' : displayText.text,
       timestamp: event.timestamp,
-      metadata: guarded.metadata,
+      metadata: safeMetadata,
       omissions: _boundedChatMessageOmissions(
-        event.omissions,
-        guarded.omission,
+        guardedOmissions,
+        media.omission,
         inputBudget.maxCollectionItems,
       ),
     );
   }
 
+  acp.AcpInputOmission? _dedupeTurnMediaOmission(
+    acp.AcpInputOmission? omission,
+  ) {
+    if (omission == null) return null;
+    if (omission.resource != 'image_data' &&
+        omission.resource != 'audio_data' &&
+        omission.resource != 'resource_blob' &&
+        omission.resource != 'turn_media') {
+      return omission;
+    }
+    final turnBudget = _ensureTurnBudget();
+    final key = '${omission.reason.name}\u0000${omission.resource}';
+    return turnBudget.mediaOmissionKeys.add(key) ? omission : null;
+  }
+
+  ({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+  _sanitizeEventMedia(Map<String, Object?> metadata) {
+    final rawBlocks = metadata['contentBlocks'];
+    if (rawBlocks is! List) return (metadata: metadata, omission: null);
+    final turnBudget = _ensureTurnBudget();
+    final blocks = <Object?>[];
+    acp.AcpInputOmission? omission;
+    var changed = false;
+    for (final rawBlock in rawBlocks) {
+      if (rawBlock is! Map<String, Object?>) {
+        blocks.add(rawBlock);
+        continue;
+      }
+      final type = rawBlock['type'];
+      Object? encoded;
+      String? resource;
+      if (type == 'image') {
+        encoded = rawBlock['data'];
+        resource = 'image_data';
+      } else if (type == 'audio' && rawBlock['data'] != null) {
+        encoded = rawBlock['data'];
+        resource = 'audio_data';
+      } else if (type == 'resource') {
+        final nested = rawBlock['resource'];
+        if (nested is Map<String, Object?> && nested['blob'] != null) {
+          encoded = nested['blob'];
+          resource = 'resource_blob';
+        }
+      }
+      if (resource == null) {
+        blocks.add(rawBlock);
+        continue;
+      }
+      if (turnBudget.mediaRootDrained) {
+        changed = true;
+        final drainedOmission = acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.inputLimit,
+          resource: 'turn_media',
+          truncated: false,
+          limit: inputBudget.maxEmbeddedMediaBytes,
+          observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
+        );
+        blocks.add(_mediaOmissionProjection(drainedOmission));
+        omission ??= acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.inputLimit,
+          resource: 'turn_media',
+          truncated: false,
+          limit: inputBudget.maxEmbeddedMediaBytes,
+          observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
+        );
+        continue;
+      }
+      if (encoded is! String) {
+        changed = true;
+        final invalid = acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.invalidStructure,
+          resource: resource,
+          truncated: false,
+        );
+        blocks.add(_mediaOmissionProjection(invalid));
+        omission ??= invalid;
+        continue;
+      }
+      // The content-block guard immediately before this phase already scanned
+      // and detached this Base64 string. Count the validated encoding in O(1)
+      // here so aggregate admission does not scan the same payload again.
+      final decodedBytes = _validatedAcpBase64DecodedBytes(encoded);
+      if (decodedBytes >
+          inputBudget.maxEmbeddedMediaBytes - turnBudget.mediaBytes) {
+        turnBudget.mediaRootDrained = true;
+        changed = true;
+        final aggregate = acp.AcpInputOmission(
+          reason: acp.AcpInputOmissionReason.inputLimit,
+          resource: 'turn_media',
+          truncated: false,
+          limit: inputBudget.maxEmbeddedMediaBytes,
+          observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
+        );
+        blocks.add(_mediaOmissionProjection(aggregate));
+        omission ??= aggregate;
+        continue;
+      }
+      turnBudget.mediaBytes += decodedBytes;
+      blocks.add(rawBlock);
+    }
+    if (!changed) return (metadata: metadata, omission: null);
+    omission = _dedupeTurnMediaOmission(omission);
+    return (
+      metadata: Map<String, Object?>.unmodifiable(<String, Object?>{
+        ...metadata,
+        'contentBlocks': List<Object?>.unmodifiable(blocks),
+      }),
+      omission: omission,
+    );
+  }
+
   void _handleAgentEvent(AgentEvent event, {bool notify = true}) {
     if (_isDisposed) return;
+    final startsNewTurn = event.type == AgentEventType.userMessage;
+    if (startsNewTurn) {
+      if (notify) {
+        _materializeTurnTargets();
+        _flushStreamingNotification();
+        if (_isDisposed) return;
+      }
+      // A replayed/live user message is the next turn. Release the previous
+      // counters before inspecting any media carried by the new message.
+      _finishTurnBudget();
+    }
     event = _safeAgentEvent(event);
     if (_isDisposed) return;
     final coalescesNotification =
@@ -2714,54 +3488,63 @@ class ChatController extends ChangeNotifier {
         : _turnBudget?.thoughtTarget;
     final coalescedRevisionBefore = coalescedTargetBefore?.revision;
     final messageCountBefore = messages.length;
-    if (notify && !coalescesNotification) {
+    if (notify && !coalescesNotification && !startsNewTurn) {
       _materializeTurnTargets();
       _flushStreamingNotification();
       if (_isDisposed) return;
     }
-    if (event.type == AgentEventType.userMessage) {
-      _finishTurnBudget();
-    }
-    _notifyAgentEventObservers(event);
-    switch (event.type) {
-      case AgentEventType.userMessage:
-        messages.add(
-          ChatMessage(
-            role: ChatMessageRole.user,
-            text: event.text,
+    _beginAgentEventProjection();
+    late final AgentEvent observedEvent;
+    try {
+      switch (event.type) {
+        case AgentEventType.userMessage:
+          _addTurnMessage(
+            ChatMessage(
+              role: ChatMessageRole.user,
+              text: event.text,
+              metadata: event.metadata,
+              omissions: event.omissions,
+              inputBudget: inputBudget,
+            ),
+          );
+        case AgentEventType.agentTextDelta:
+          _appendText(
+            ChatMessageRole.assistant,
+            event.text,
             metadata: event.metadata,
             omissions: event.omissions,
-            inputBudget: inputBudget,
-          ),
-        );
-      case AgentEventType.agentTextDelta:
-        _appendText(
-          ChatMessageRole.assistant,
-          event.text,
-          metadata: event.metadata,
-          omissions: event.omissions,
-        );
-      case AgentEventType.agentTextDone:
-        _appendTurnStatus(event);
-        _finishStreaming(notify: false);
-      case AgentEventType.toolCall:
-        _appendToolCall(event);
-      case AgentEventType.error:
-        final message = _messageForAgentError(event);
-        lastError = message;
-        messages.add(
-          ChatMessage(
+          );
+        case AgentEventType.agentTextDone:
+          _appendTurnStatus(event);
+          _finishStreaming(notify: false, suppressProjection: true);
+        case AgentEventType.toolCall:
+          _appendToolCall(event);
+        case AgentEventType.error:
+          final boundedError = _boundedLocalErrorText(
+            _messageForAgentError(event),
+          );
+          final errorMessage = ChatMessage(
             role: ChatMessageRole.error,
-            text: message,
-            omissions: event.omissions,
+            text: boundedError.text,
+            omissions: _boundedChatMessageOmissions(
+              event.omissions,
+              boundedError.omission,
+              inputBudget.maxCollectionItems,
+            ),
             inputBudget: inputBudget,
-          ),
-        );
-        status = ConnectionStatus.error;
-        _finishStreaming(notify: false);
-      case AgentEventType.status:
-        _appendStatus(event);
+          );
+          final accepted = _addTurnMessage(errorMessage);
+          lastError = accepted ? errorMessage.text : null;
+          status = ConnectionStatus.error;
+          _finishStreaming(notify: false, suppressProjection: true);
+        case AgentEventType.status:
+          _appendStatus(event);
+      }
+      observedEvent = _finishAgentEventProjection(event);
+    } finally {
+      _trackingAgentEvent = false;
     }
+    _notifyAgentEventObservers(observedEvent);
     if (notify) {
       if (coalescesNotification) {
         final coalescedTargetAfter = event.type == AgentEventType.agentTextDelta
@@ -2778,10 +3561,102 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  void _beginAgentEventProjection() {
+    _trackingAgentEvent = true;
+    _eventPayloadAccepted = false;
+    _eventAcceptedText = '';
+    _eventHasMessageProjection = false;
+    _eventAcceptedMetadata = const <String, Object?>{};
+    _eventAcceptedOmissions = const <acp.AcpInputOmission>[];
+    _eventAcceptedTextOmission = null;
+    _eventRootOmission = null;
+  }
+
+  AgentEvent _finishAgentEventProjection(AgentEvent event) {
+    final isTextEvent =
+        event.type == AgentEventType.agentTextDelta ||
+        (event.type == AgentEventType.status &&
+            event.metadata['kind'] == 'thought');
+    final acceptedMetadata = _eventPayloadAccepted
+        ? Map<String, Object?>.unmodifiable(<String, Object?>{
+            for (final entry in event.metadata.entries)
+              if (!entry.key.startsWith('_behavior')) entry.key: entry.value,
+          })
+        : const <String, Object?>{};
+    final behaviorProjection =
+        event.metadata['_invalidUsageCost'] != true &&
+        (event.metadata['_behaviorRejected'] == true ||
+            event.metadata['_behaviorRejectedAll'] == true);
+    final projectedText = isTextEvent
+        ? _eventAcceptedText
+        : !_eventPayloadAccepted || behaviorProjection
+        ? ''
+        : _eventHasMessageProjection
+        ? _eventAcceptedText
+        : event.text;
+    final projectedMetadata = !_eventPayloadAccepted
+        ? const <String, Object?>{}
+        : behaviorProjection
+        ? acceptedMetadata
+        : _eventHasMessageProjection
+        ? _eventAcceptedMetadata
+        : acceptedMetadata;
+    final acceptedOmissions = _eventHasMessageProjection
+        ? _eventAcceptedOmissions
+        : event.omissions;
+    final projected = AgentEvent(
+      type: event.type,
+      text: projectedText,
+      timestamp: event.timestamp,
+      metadata: projectedMetadata,
+      omissions: _boundedChatMessageOmissions(
+        _boundedChatMessageOmissions(
+          acceptedOmissions,
+          _eventAcceptedTextOmission,
+          inputBudget.maxCollectionItems,
+        ),
+        _eventRootOmission,
+        inputBudget.maxCollectionItems,
+      ),
+    );
+    _trackingAgentEvent = false;
+    return projected;
+  }
+
+  void _markAgentEventAccepted({String text = ''}) {
+    if (!_trackingAgentEvent || _suppressAgentEventProjection) return;
+    _eventPayloadAccepted = true;
+    if (text.isNotEmpty) _eventAcceptedText += text;
+  }
+
+  void _markAgentEventMessageAccepted(ChatMessage message) {
+    if (!_trackingAgentEvent || _suppressAgentEventProjection) return;
+    _eventPayloadAccepted = true;
+    _eventHasMessageProjection = true;
+    _eventAcceptedText = message.text;
+    _eventAcceptedMetadata = message.metadata;
+    _eventAcceptedOmissions = message.omissions;
+  }
+
+  void _markAgentEventProjectionAccepted({
+    required String text,
+    required Map<String, Object?> metadata,
+    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+  }) {
+    if (!_trackingAgentEvent || _suppressAgentEventProjection) return;
+    _eventPayloadAccepted = true;
+    _eventHasMessageProjection = true;
+    _eventAcceptedText = text;
+    _eventAcceptedMetadata = Map<String, Object?>.unmodifiable(metadata);
+    _eventAcceptedOmissions = List<acp.AcpInputOmission>.unmodifiable(
+      omissions,
+    );
+  }
+
   void _appendToolCall(AgentEvent event) {
     final toolCallId = _toolCallIdFromMetadata(event.metadata);
     if (toolCallId.isEmpty) {
-      messages.add(
+      _addTurnMessage(
         ChatMessage(
           role: ChatMessageRole.tool,
           text: event.text,
@@ -2801,18 +3676,21 @@ class ChatController extends ChangeNotifier {
         continue;
       }
 
-      messages[index] = ChatMessage(
-        role: ChatMessageRole.tool,
-        text: event.text.trim().isEmpty ? message.text : event.text,
-        timestamp: message.timestamp,
-        metadata: _mergeMetadata(message.metadata, event.metadata),
-        omissions: [...message.omissions, ...event.omissions],
-        inputBudget: inputBudget,
+      _replaceTurnMessage(
+        index,
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: event.text.trim().isEmpty ? message.text : event.text,
+          timestamp: message.timestamp,
+          metadata: _mergeMetadata(message.metadata, event.metadata),
+          omissions: [...message.omissions, ...event.omissions],
+          inputBudget: inputBudget,
+        ),
       );
       return;
     }
 
-    messages.add(
+    _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.tool,
         text: event.text,
@@ -3288,6 +4166,374 @@ class ChatController extends ChangeNotifier {
     return _turnBudget ??= _TurnBudgetState(inputBudget);
   }
 
+  bool _addTurnMessage(ChatMessage message) {
+    final turnBudget = _ensureTurnBudget();
+    final retainedBytes = message.retainedBytes;
+    if (turnBudget.items >= turnBudget.normalItemLimit) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'turn items',
+        limit: turnBudget.normalItemLimit,
+        observedAtLeast: turnBudget.normalItemLimit + 1,
+      );
+      return false;
+    }
+    if (retainedBytes >
+        turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'turn retained bytes',
+        limit: turnBudget.normalRetainedByteLimit,
+        observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+      );
+      return false;
+    }
+    messages.add(message);
+    turnBudget.items += 1;
+    turnBudget.retainedBytes += retainedBytes;
+    turnBudget.messageRetainedBytes[message] = retainedBytes;
+    _markAgentEventMessageAccepted(message);
+    return true;
+  }
+
+  bool _replaceTurnMessage(int index, ChatMessage replacement) {
+    final turnBudget = _ensureTurnBudget();
+    final previous = messages[index];
+    final previousRetained = turnBudget.messageRetainedBytes[previous];
+    final replacementRetained = replacement.retainedBytes;
+    if (previousRetained == null) {
+      if (turnBudget.items >= turnBudget.normalItemLimit) {
+        _recordTurnOverflow(
+          turnBudget,
+          resource: 'turn items',
+          limit: turnBudget.normalItemLimit,
+          observedAtLeast: turnBudget.normalItemLimit + 1,
+        );
+        return false;
+      }
+      if (replacementRetained >
+          turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
+        _recordTurnOverflow(
+          turnBudget,
+          resource: 'turn retained bytes',
+          limit: turnBudget.normalRetainedByteLimit,
+          observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+        );
+        return false;
+      }
+      messages[index] = replacement;
+      turnBudget.items += 1;
+      turnBudget.retainedBytes += replacementRetained;
+      turnBudget.messageRetainedBytes[replacement] = replacementRetained;
+      _markAgentEventMessageAccepted(replacement);
+      return true;
+    }
+    final delta = replacementRetained - previousRetained;
+    if (delta > 0 &&
+        delta > turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'turn retained bytes',
+        limit: turnBudget.normalRetainedByteLimit,
+        observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+      );
+      return false;
+    }
+    messages[index] = replacement;
+    turnBudget.messageRetainedBytes.remove(previous);
+    turnBudget.messageRetainedBytes[replacement] = replacementRetained;
+    turnBudget.retainedBytes += delta;
+    _markAgentEventMessageAccepted(replacement);
+    return true;
+  }
+
+  bool _replaceTurnCommands(
+    List<Map<String, Object?>> commands, {
+    bool markAccepted = true,
+  }) {
+    final copied = _copyAvailableCommands(commands, inputBudget);
+    final nextRetained = copied.isEmpty
+        ? 0
+        : acp.AcpRetainedSizeEstimator(budget: inputBudget).estimate(copied);
+    final turnBudget = _ensureTurnBudget();
+    return _replaceTurnState(
+      turnBudget,
+      previousRetained: turnBudget.commandStateRetainedBytes,
+      nextRetained: nextRetained,
+      commit: () {
+        availableCommands = copied;
+        turnBudget.commandStateRetainedBytes = nextRetained;
+      },
+      clear: () {
+        availableCommands = const <Map<String, Object?>>[];
+        turnBudget.commandStateRetainedBytes = 0;
+      },
+      markAccepted: markAccepted,
+    );
+  }
+
+  bool _replaceTurnSettings(
+    AcpSessionSettings settings, {
+    bool markAccepted = true,
+  }) {
+    final copied = _copySessionSettings(settings, inputBudget);
+    final hasState =
+        copied.modes.currentModeId != null ||
+        copied.modes.availableModes.isNotEmpty ||
+        copied.configOptions.isNotEmpty ||
+        copied.omissions.isNotEmpty ||
+        copied.truncated;
+    final nextRetained = hasState
+        ? _addSessionSettingsRetainedBytes(
+            _sessionSettingsStateHostRetainedBytes,
+            acp.AcpRetainedSizeEstimator(budget: inputBudget),
+            copied,
+          )
+        : 0;
+    final turnBudget = _ensureTurnBudget();
+    return _replaceTurnState(
+      turnBudget,
+      previousRetained: turnBudget.settingsStateRetainedBytes,
+      nextRetained: nextRetained,
+      commit: () {
+        sessionSettings = copied;
+        turnBudget.settingsStateRetainedBytes = nextRetained;
+      },
+      clear: () {
+        sessionSettings = const AcpSessionSettings();
+        turnBudget.settingsStateRetainedBytes = 0;
+      },
+      markAccepted: markAccepted,
+    );
+  }
+
+  bool _replaceTurnState(
+    _TurnBudgetState turnBudget, {
+    required int previousRetained,
+    required int nextRetained,
+    required VoidCallback commit,
+    required VoidCallback clear,
+    bool clearOnFailure = true,
+    bool markAccepted = true,
+  }) {
+    final previousItems = previousRetained == 0 ? 0 : 1;
+    final nextItems = nextRetained == 0 ? 0 : 1;
+    final retainedWithoutPrevious = turnBudget.retainedBytes - previousRetained;
+    final itemsWithoutPrevious = turnBudget.items - previousItems;
+    final itemOverflow =
+        nextItems > turnBudget.normalItemLimit - itemsWithoutPrevious;
+    final retainedOverflow =
+        nextRetained >
+        turnBudget.normalRetainedByteLimit - retainedWithoutPrevious;
+    if (itemOverflow || retainedOverflow) {
+      if (clearOnFailure) {
+        turnBudget.items = itemsWithoutPrevious;
+        turnBudget.retainedBytes = retainedWithoutPrevious;
+        clear();
+      }
+      _recordTurnOverflow(
+        turnBudget,
+        resource: itemOverflow ? 'turn items' : 'turn retained bytes',
+        limit: itemOverflow
+            ? turnBudget.normalItemLimit
+            : turnBudget.normalRetainedByteLimit,
+        observedAtLeast:
+            (itemOverflow
+                ? turnBudget.normalItemLimit
+                : turnBudget.normalRetainedByteLimit) +
+            1,
+      );
+      return false;
+    }
+    turnBudget.items = itemsWithoutPrevious + nextItems;
+    turnBudget.retainedBytes = retainedWithoutPrevious + nextRetained;
+    commit();
+    if (markAccepted) _markAgentEventAccepted();
+    return true;
+  }
+
+  void _clearTurnCommandState() {
+    final turnBudget = _ensureTurnBudget();
+    final retained = turnBudget.commandStateRetainedBytes;
+    if (retained > 0) {
+      turnBudget.commandStateRetainedBytes = 0;
+      turnBudget.retainedBytes -= retained;
+      turnBudget.items -= 1;
+    }
+    availableCommands = const <Map<String, Object?>>[];
+    _resetAgentEventAcceptedProjection();
+  }
+
+  void _clearTurnSettingsState() {
+    final turnBudget = _ensureTurnBudget();
+    final retained = turnBudget.settingsStateRetainedBytes;
+    if (retained > 0) {
+      turnBudget.settingsStateRetainedBytes = 0;
+      turnBudget.retainedBytes -= retained;
+      turnBudget.items -= 1;
+    }
+    sessionSettings = const AcpSessionSettings();
+    _resetAgentEventAcceptedProjection();
+  }
+
+  void _resetAgentEventAcceptedProjection() {
+    if (!_trackingAgentEvent) return;
+    _eventPayloadAccepted = false;
+    _eventAcceptedText = '';
+    _eventHasMessageProjection = false;
+    _eventAcceptedMetadata = const <String, Object?>{};
+    _eventAcceptedOmissions = const <acp.AcpInputOmission>[];
+    _eventAcceptedTextOmission = null;
+  }
+
+  ({AcpSessionUsage? usage, String? invalidResource}) _replaceTurnUsage(
+    Map<String, Object?> metadata,
+  ) {
+    final used = _intFromObject(metadata['used']);
+    final size = _intFromObject(metadata['size']);
+    if (used == null || size == null || used < 0 || size <= 0) {
+      return (usage: null, invalidResource: 'usage values');
+    }
+    final costResult = _usageCostFromObject(metadata['cost']);
+    if (!costResult.valid) {
+      return (usage: null, invalidResource: 'usage cost');
+    }
+    final next = AcpSessionUsage(used: used, size: size, cost: costResult.cost);
+    final retained = _addSessionUsageRetainedBytes(
+      0,
+      acp.AcpRetainedSizeEstimator(budget: inputBudget),
+      next,
+    );
+    final turnBudget = _ensureTurnBudget();
+    final accepted = _replaceTurnState(
+      turnBudget,
+      previousRetained: turnBudget.usageStateRetainedBytes,
+      nextRetained: retained,
+      commit: () {
+        sessionUsage = next;
+        turnBudget.usageStateRetainedBytes = retained;
+      },
+      clear: () {},
+      clearOnFailure: false,
+    );
+    return (usage: accepted ? next : null, invalidResource: null);
+  }
+
+  AgentSession? _replaceTurnSessionInfo(Map<String, Object?> metadata) {
+    final session = currentSession;
+    if (session == null) return null;
+    final sessionId = metadata['sessionId'];
+    if (sessionId is String &&
+        sessionId.isNotEmpty &&
+        sessionId != session.id) {
+      return null;
+    }
+    final rawTitle = metadata['title'];
+    final title = rawTitle is String && rawTitle.trim().isNotEmpty
+        ? rawTitle.trim()
+        : null;
+    final updatedAtRaw = metadata['updatedAt'];
+    final updatedAt = updatedAtRaw is String
+        ? DateTime.tryParse(updatedAtRaw)?.toLocal()
+        : null;
+    final updated = session.copyWith(title: title, updatedAt: updatedAt);
+    final estimator = acp.AcpRetainedSizeEstimator(budget: inputBudget);
+    var retained = _sessionInfoStateHostRetainedBytes;
+    if (updated.title != null) {
+      retained = _addEstimatedRetainedBytes(retained, estimator, updated.title);
+    }
+    if (updated.updatedAt != null) {
+      retained = _addEstimatedRetainedBytes(
+        retained,
+        estimator,
+        updated.updatedAt!.toIso8601String(),
+      );
+    }
+    final turnBudget = _ensureTurnBudget();
+    final accepted = _replaceTurnState(
+      turnBudget,
+      previousRetained: turnBudget.sessionInfoStateRetainedBytes,
+      nextRetained: retained,
+      commit: () {
+        currentSession = updated;
+        _upsertSession(updated);
+        turnBudget.sessionInfoStateRetainedBytes = retained;
+      },
+      clear: () {},
+      clearOnFailure: false,
+    );
+    return accepted ? updated : null;
+  }
+
+  void _recordTurnOverflow(
+    _TurnBudgetState turnBudget, {
+    required String resource,
+    required int limit,
+    required int observedAtLeast,
+  }) {
+    turnBudget.overflowed = true;
+    final omission = acp.AcpInputOmission(
+      reason: acp.AcpInputOmissionReason.inputLimit,
+      resource: resource,
+      truncated: false,
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+    if (_trackingAgentEvent && !_suppressAgentEventProjection) {
+      _eventRootOmission ??= omission;
+    }
+    if (turnBudget.overflowMarkerPublished) return;
+    ChatMessage? target;
+    for (var index = messages.length - 1; index >= 0; index -= 1) {
+      final candidate = messages[index];
+      if (turnBudget.messageRetainedBytes.containsKey(candidate)) {
+        target = candidate;
+        break;
+      }
+    }
+    if (target != null &&
+        target.omissions.length < inputBudget.maxCollectionItems &&
+        !target.omissions.any(
+          (existing) =>
+              existing.resource == omission.resource &&
+              existing.reason == omission.reason,
+        )) {
+      final previousRetained = turnBudget.messageRetainedBytes[target]!;
+      final nextRetained = _estimateChatMessageRetainedBytes(
+        metadata: target.metadata,
+        omissions: <acp.AcpInputOmission>[...target.omissions, omission],
+        acceptedUtf8Bytes: target.acceptedUtf8Bytes,
+        inputBudget: inputBudget,
+      );
+      final delta = nextRetained - previousRetained;
+      if (delta >= 0 &&
+          delta <= turnBudget.maxRetainedBytes - turnBudget.retainedBytes &&
+          target.addOmission(omission)) {
+        turnBudget.retainedBytes += delta;
+        turnBudget.messageRetainedBytes[target] = nextRetained;
+        turnBudget.materializationTargets.add(target);
+        turnBudget.overflowMarkerPublished = true;
+        return;
+      }
+    }
+    final marker = ChatMessage(
+      role: ChatMessageRole.status,
+      text: '',
+      omissions: <acp.AcpInputOmission>[omission],
+      inputBudget: inputBudget,
+    );
+    final markerRetained = marker.retainedBytes;
+    if (turnBudget.items < turnBudget.maxItems &&
+        markerRetained <=
+            turnBudget.maxRetainedBytes - turnBudget.retainedBytes) {
+      messages.add(marker);
+      turnBudget.items += 1;
+      turnBudget.retainedBytes += markerRetained;
+      turnBudget.messageRetainedBytes[marker] = markerRetained;
+      turnBudget.overflowMarkerPublished = true;
+    }
+  }
+
   void _appendTextToMessage(ChatMessage target, String chunk) {
     final turnBudget = _ensureTurnBudget();
     _appendBudgetedChunk(
@@ -3315,6 +4561,14 @@ class ChatController extends ChangeNotifier {
     required bool thought,
   }) {
     final counter = thought ? turnBudget.thought : turnBudget.text;
+    if (thought ? turnBudget.thoughtRootDrained : turnBudget.textRootDrained) {
+      return;
+    }
+    if (thought) {
+      turnBudget.thoughtCounterTouched = true;
+    } else {
+      turnBudget.textCounterTouched = true;
+    }
     final pending = thought
         ? turnBudget.thoughtPendingHigh
         : turnBudget.textPendingHigh;
@@ -3325,6 +4579,7 @@ class ChatController extends ChangeNotifier {
     }
 
     final accepted = counter.append(chunk);
+    final parts = <_TurnTextAppend>[];
     if (pending != null &&
         !identical(pending.target, target) &&
         accepted.safePrefix.isNotEmpty) {
@@ -3335,39 +4590,65 @@ class ChatController extends ChangeNotifier {
       final resolvedPrefix = pairsWithLow
           ? String.fromCharCodes(<int>[pending.codeUnit, chunk.codeUnitAt(0)])
           : String.fromCharCode(pending.codeUnit);
-      _appendAcceptedToTarget(
-        turnBudget,
-        pending.target,
-        resolvedPrefix,
-        resolvedBytes,
+      parts.add(
+        _TurnTextAppend(
+          target: pending.target,
+          text: resolvedPrefix,
+          acceptedUtf8Bytes: resolvedBytes,
+        ),
       );
-      _appendAcceptedToTarget(
-        turnBudget,
-        target,
-        accepted.safePrefix.substring(resolvedCodeUnits),
-        accepted.acceptedBytes - resolvedBytes,
+      parts.add(
+        _TurnTextAppend(
+          target: target,
+          text: accepted.safePrefix.substring(resolvedCodeUnits),
+          acceptedUtf8Bytes: accepted.acceptedBytes - resolvedBytes,
+        ),
       );
     } else {
-      _appendAcceptedToTarget(
-        turnBudget,
-        target,
-        accepted.safePrefix,
-        accepted.acceptedBytes,
+      parts.add(
+        _TurnTextAppend(
+          target: target,
+          text: accepted.safePrefix,
+          acceptedUtf8Bytes: accepted.acceptedBytes,
+        ),
       );
     }
 
-    if (accepted.omission case final omission?) {
-      final omissionTarget = pending != null && accepted.safePrefix.isEmpty
-          ? pending.target
-          : target;
-      if (omissionTarget.addOmission(omission)) {
-        turnBudget.materializationTargets.add(omissionTarget);
+    final omissionTarget = accepted.omission == null
+        ? null
+        : pending != null && accepted.safePrefix.isEmpty
+        ? pending.target
+        : target;
+    if (!_applyTurnTextMutation(
+      turnBudget,
+      parts: parts,
+      omissionTarget: omissionTarget,
+      omission: accepted.omission,
+    )) {
+      if (thought) {
+        turnBudget.thoughtRootDrained = true;
+        turnBudget.thoughtPendingHigh = null;
+      } else {
+        turnBudget.textRootDrained = true;
+        turnBudget.textPendingHigh = null;
       }
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'turn retained bytes',
+        limit: turnBudget.normalRetainedByteLimit,
+        observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+      );
+      return;
     }
 
     final _PendingHighSurrogate? nextPending;
     if (accepted.omission != null) {
       nextPending = null;
+      if (thought) {
+        turnBudget.thoughtRootDrained = true;
+      } else {
+        turnBudget.textRootDrained = true;
+      }
     } else if (chunk.isEmpty) {
       nextPending = pending;
     } else {
@@ -3383,16 +4664,90 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  void _appendAcceptedToTarget(
-    _TurnBudgetState turnBudget,
-    ChatMessage target,
-    String text,
-    int acceptedUtf8Bytes,
-  ) {
-    final revision = target.revision;
-    target.appendAcceptedText(text, acceptedUtf8Bytes: acceptedUtf8Bytes);
-    if (target.revision != revision) {
-      turnBudget.materializationTargets.add(target);
+  bool _applyTurnTextMutation(
+    _TurnBudgetState turnBudget, {
+    required List<_TurnTextAppend> parts,
+    ChatMessage? omissionTarget,
+    acp.AcpInputOmission? omission,
+  }) {
+    final projections = HashMap<ChatMessage, _TurnMessageProjection>.identity();
+    _TurnMessageProjection projectionFor(ChatMessage message) {
+      return projections.putIfAbsent(message, () {
+        final retained = turnBudget.messageRetainedBytes[message];
+        if (retained == null) {
+          throw StateError('Turn message is not owned by the active ledger.');
+        }
+        return _TurnMessageProjection(
+          message: message,
+          previousRetained: retained,
+        );
+      });
+    }
+
+    try {
+      for (final part in parts) {
+        projectionFor(part.target).acceptedUtf8Bytes += part.acceptedUtf8Bytes;
+      }
+      if (omissionTarget != null && omission != null) {
+        final projection = projectionFor(omissionTarget);
+        final duplicate = projection.omissions.any(
+          (existing) =>
+              existing.resource == omission.resource &&
+              existing.reason == omission.reason,
+        );
+        if (!duplicate &&
+            projection.omissions.length < inputBudget.maxCollectionItems) {
+          projection.omissions.add(omission);
+        }
+      }
+      var totalDelta = 0;
+      final nextRetained = HashMap<ChatMessage, int>.identity();
+      for (final projection in projections.values) {
+        final retained = _estimateChatMessageRetainedBytes(
+          metadata: projection.message.metadata,
+          omissions: projection.omissions,
+          acceptedUtf8Bytes: projection.acceptedUtf8Bytes,
+          inputBudget: inputBudget,
+        );
+        final delta = retained - projection.previousRetained;
+        if (delta < 0) return false;
+        totalDelta = _checkedRetainedAdd(totalDelta, delta);
+        nextRetained[projection.message] = retained;
+      }
+      if (totalDelta >
+          turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
+        return false;
+      }
+      for (final part in parts) {
+        final revision = part.target.revision;
+        part.target.appendAcceptedText(
+          part.text,
+          acceptedUtf8Bytes: part.acceptedUtf8Bytes,
+        );
+        if (part.target.revision != revision) {
+          turnBudget.materializationTargets.add(part.target);
+        }
+      }
+      if (omissionTarget != null && omission != null) {
+        if (omissionTarget.addOmission(omission)) {
+          turnBudget.materializationTargets.add(omissionTarget);
+        }
+      }
+      turnBudget.retainedBytes += totalDelta;
+      for (final entry in nextRetained.entries) {
+        turnBudget.messageRetainedBytes[entry.key] = entry.value;
+      }
+      if (_trackingAgentEvent) {
+        for (final part in parts) {
+          _markAgentEventAccepted(text: part.text);
+        }
+        if (!_suppressAgentEventProjection) {
+          _eventAcceptedTextOmission ??= omission;
+        }
+      }
+      return true;
+    } on Object {
+      return false;
     }
   }
 
@@ -3422,16 +4777,25 @@ class ChatController extends ChangeNotifier {
     acp.AcpTextBudgetChunk finished,
   ) {
     if (target == null) return;
-    _appendAcceptedToTarget(
+    final applied = _applyTurnTextMutation(
       turnBudget,
-      target,
-      finished.safePrefix,
-      finished.acceptedBytes,
+      parts: <_TurnTextAppend>[
+        _TurnTextAppend(
+          target: target,
+          text: finished.safePrefix,
+          acceptedUtf8Bytes: finished.acceptedBytes,
+        ),
+      ],
+      omissionTarget: finished.omission == null ? null : target,
+      omission: finished.omission,
     );
-    if (finished.omission case final omission?) {
-      if (target.addOmission(omission)) {
-        turnBudget.materializationTargets.add(target);
-      }
+    if (!applied) {
+      _recordTurnOverflow(
+        turnBudget,
+        resource: 'turn retained bytes',
+        limit: turnBudget.normalRetainedByteLimit,
+        observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+      );
     }
   }
 
@@ -3445,43 +4809,180 @@ class ChatController extends ChangeNotifier {
     final ChatMessage target;
     if (metadata.isEmpty && lastMessage != null && lastMessage.role == role) {
       target = lastMessage;
+      final turnBudget = _ensureTurnBudget();
       for (final omission in omissions) {
-        target.addOmission(omission);
+        final applied = _applyTurnTextMutation(
+          turnBudget,
+          parts: const <_TurnTextAppend>[],
+          omissionTarget: target,
+          omission: omission,
+        );
+        if (!applied) {
+          turnBudget.textRootDrained = true;
+          _recordTurnOverflow(
+            turnBudget,
+            resource: 'turn retained bytes',
+            limit: turnBudget.normalRetainedByteLimit,
+            observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+          );
+          return;
+        }
       }
     } else {
-      target = ChatMessage(
+      target = ChatMessage._guarded(
         role: role,
         text: '',
         metadata: metadata,
         omissions: omissions,
         inputBudget: inputBudget,
       );
-      messages.add(target);
+      if (!_addTurnMessage(target)) {
+        final turnBudget = _ensureTurnBudget();
+        turnBudget.textRootDrained = true;
+        return;
+      }
     }
     _appendTextToMessage(target, text);
   }
 
   void _appendStatus(AgentEvent event) {
     final kind = event.metadata['kind'];
+    final behaviorRejected = event.metadata['_behaviorRejected'] == true;
+    if (event.metadata['_behaviorRejectedAll'] == true) {
+      _replaceTurnCommands(const <Map<String, Object?>>[], markAccepted: false);
+      _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+      _resetAgentEventAcceptedProjection();
+      _appendBehaviorFailureMarker(event.omissions);
+      return;
+    }
     if (kind == 'mode') {
-      final mode = event.metadata['mode'];
-      if (mode is String && mode.isNotEmpty) {
-        sessionSettings = sessionSettings.withCurrentMode(mode);
+      if (behaviorRejected) {
+        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _resetAgentEventAcceptedProjection();
+        _appendBehaviorFailureMarker(event.omissions);
+        return;
       }
+      final mode = event.metadata['mode'];
+      if (mode is! String || mode.isEmpty) {
+        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _resetAgentEventAcceptedProjection();
+        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+          ...event.omissions,
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: 'session mode',
+            truncated: false,
+          ),
+        ]);
+        return;
+      }
+      final settingsAccepted = _replaceTurnSettings(
+        sessionSettings.withCurrentMode(mode),
+      );
+      if (!settingsAccepted || !_replaceStatusMessage(event)) {
+        _clearTurnSettingsState();
+        _appendBehaviorFailureMarker(event.omissions);
+      }
+      return;
     }
     if (kind == 'config_option_update') {
+      if (behaviorRejected) {
+        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _resetAgentEventAcceptedProjection();
+        _appendBehaviorFailureMarker(event.omissions);
+        return;
+      }
       final options = event.metadata['configOptions'];
-      if (options is List<AcpConfigOption>) {
-        sessionSettings = sessionSettings.withPreferredConfigOptions(options);
+      if (options is! List<AcpConfigOption>) {
+        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _resetAgentEventAcceptedProjection();
+        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+          ...event.omissions,
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: 'config options',
+            truncated: false,
+          ),
+        ]);
+        return;
+      }
+      final settingsAccepted = _replaceTurnSettings(
+        sessionSettings.withPreferredConfigOptions(options),
+      );
+      if (!settingsAccepted || !_replaceStatusMessage(event)) {
+        _clearTurnSettingsState();
+        _appendBehaviorFailureMarker(event.omissions);
       }
       return;
     }
     if (kind == 'session_info_update') {
-      _applySessionInfoUpdate(event.metadata);
+      if (behaviorRejected) {
+        _appendBehaviorFailureMarker(event.omissions);
+        return;
+      }
+      final updated = _replaceTurnSessionInfo(event.metadata);
+      if (updated != null) {
+        _markAgentEventProjectionAccepted(
+          text: '',
+          metadata: <String, Object?>{
+            'kind': 'session_info_update',
+            'sessionId': updated.id,
+            if (updated.title != null) 'title': updated.title,
+            if (updated.updatedAt != null)
+              'updatedAt': updated.updatedAt!.toIso8601String(),
+          },
+          omissions: event.omissions,
+        );
+      }
       return;
     }
     if (kind == 'usage_update') {
-      _applyUsageUpdate(event.metadata);
+      if (behaviorRejected) {
+        if (event.metadata['_invalidUsageCost'] == true) {
+          _resetAgentEventAcceptedProjection();
+          _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+            ...event.omissions,
+            acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.invalidStructure,
+              resource: 'usage cost',
+              truncated: false,
+            ),
+          ]);
+        } else {
+          _appendBehaviorFailureMarker(event.omissions);
+        }
+        return;
+      }
+      final usageResult = _replaceTurnUsage(event.metadata);
+      if (usageResult.invalidResource case final invalidResource?) {
+        _resetAgentEventAcceptedProjection();
+        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+          ...event.omissions,
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: invalidResource,
+            truncated: false,
+          ),
+        ]);
+        return;
+      }
+      final usage = usageResult.usage;
+      if (usage != null) {
+        _markAgentEventProjectionAccepted(
+          text: '',
+          metadata: <String, Object?>{
+            'kind': 'usage_update',
+            'used': usage.used,
+            'size': usage.size,
+            if (usage.cost case final cost?)
+              'cost': <String, Object?>{
+                'amount': cost.amount,
+                'currency': cost.currency,
+              },
+          },
+          omissions: event.omissions,
+        );
+      }
       return;
     }
     if (kind == 'terminal') {
@@ -3490,7 +4991,38 @@ class ChatController extends ChangeNotifier {
     }
     if (kind == 'plan' || kind == 'commands') {
       if (kind == 'commands') {
-        availableCommands = _commandsFromMetadata(event.metadata['commands']);
+        if (behaviorRejected) {
+          _replaceTurnCommands(
+            const <Map<String, Object?>>[],
+            markAccepted: false,
+          );
+          _resetAgentEventAcceptedProjection();
+          _appendBehaviorFailureMarker(event.omissions);
+          return;
+        }
+        final commands = _commandsFromMetadata(event.metadata['commands']);
+        if (commands == null) {
+          _replaceTurnCommands(
+            const <Map<String, Object?>>[],
+            markAccepted: false,
+          );
+          _resetAgentEventAcceptedProjection();
+          _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+            ...event.omissions,
+            acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.invalidStructure,
+              resource: 'commands',
+              truncated: false,
+            ),
+          ]);
+          return;
+        }
+        final commandsAccepted = _replaceTurnCommands(commands);
+        if (!commandsAccepted || !_replaceStatusMessage(event)) {
+          _clearTurnCommandState();
+          _appendBehaviorFailureMarker(event.omissions);
+        }
+        return;
       }
       _replaceStatusMessage(event);
       return;
@@ -3500,25 +5032,45 @@ class ChatController extends ChangeNotifier {
         lastMessage != null &&
         lastMessage.role == ChatMessageRole.status &&
         lastMessage.metadata['kind'] == 'thought') {
+      final turnBudget = _ensureTurnBudget();
       for (final omission in event.omissions) {
-        lastMessage.addOmission(omission);
+        final applied = _applyTurnTextMutation(
+          turnBudget,
+          parts: const <_TurnTextAppend>[],
+          omissionTarget: lastMessage,
+          omission: omission,
+        );
+        if (!applied) {
+          turnBudget.thoughtRootDrained = true;
+          _recordTurnOverflow(
+            turnBudget,
+            resource: 'turn retained bytes',
+            limit: turnBudget.normalRetainedByteLimit,
+            observedAtLeast: turnBudget.normalRetainedByteLimit + 1,
+          );
+          return;
+        }
       }
       _appendThoughtToMessage(lastMessage, event.text);
       return;
     }
     if (kind == 'thought') {
-      final message = ChatMessage(
+      final message = ChatMessage._guarded(
         role: ChatMessageRole.status,
         text: '',
         metadata: event.metadata,
         omissions: event.omissions,
         inputBudget: inputBudget,
       );
-      messages.add(message);
+      if (!_addTurnMessage(message)) {
+        final turnBudget = _ensureTurnBudget();
+        turnBudget.thoughtRootDrained = true;
+        return;
+      }
       _appendThoughtToMessage(message, event.text);
       return;
     }
-    messages.add(
+    _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.status,
         text: event.text,
@@ -3529,10 +5081,21 @@ class ChatController extends ChangeNotifier {
     );
   }
 
+  void _appendBehaviorFailureMarker(List<acp.AcpInputOmission> omissions) {
+    _addTurnMessage(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: '',
+        omissions: omissions,
+        inputBudget: inputBudget,
+      ),
+    );
+  }
+
   void _upsertTerminalStatusMessage(AgentEvent event) {
     final terminalId = event.metadata['terminalId'];
     if (terminalId is! String || terminalId.trim().isEmpty) {
-      messages.add(
+      _addTurnMessage(
         ChatMessage(
           role: ChatMessageRole.status,
           text: event.text,
@@ -3550,7 +5113,7 @@ class ChatController extends ChangeNotifier {
           item.metadata['terminalId'] == terminalId;
     });
     if (index == -1) {
-      messages.add(
+      _addTurnMessage(
         ChatMessage(
           role: ChatMessageRole.status,
           text: event.text,
@@ -3569,12 +5132,15 @@ class ChatController extends ChangeNotifier {
             previous.metadata['status'] == 'failed')) {
       metadata['status'] = previous.metadata['status'];
     }
-    messages[index] = ChatMessage(
-      role: ChatMessageRole.status,
-      text: _terminalStatusText(event.text, previous.text),
-      metadata: metadata,
-      omissions: [...previous.omissions, ...event.omissions],
-      inputBudget: inputBudget,
+    _replaceTurnMessage(
+      index,
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: _terminalStatusText(event.text, previous.text),
+        metadata: metadata,
+        omissions: [...previous.omissions, ...event.omissions],
+        inputBudget: inputBudget,
+      ),
     );
   }
 
@@ -3589,7 +5155,7 @@ class ChatController extends ChangeNotifier {
     return text;
   }
 
-  void _replaceStatusMessage(AgentEvent event) {
+  bool _replaceStatusMessage(AgentEvent event) {
     final kind = event.metadata['kind'];
     final message = ChatMessage(
       role: ChatMessageRole.status,
@@ -3603,20 +5169,31 @@ class ChatController extends ChangeNotifier {
           item.metadata['kind'] == kind;
     });
     if (index == -1) {
-      messages.add(message);
-    } else {
-      messages[index] = message;
+      return _addTurnMessage(message);
     }
+    return _replaceTurnMessage(index, message);
   }
 
-  List<Map<String, Object?>> _commandsFromMetadata(Object? raw) {
-    if (raw is! List) return const <Map<String, Object?>>[];
-    return raw
-        .whereType<Map>()
-        .map(
-          (item) => item.map((key, value) => MapEntry(key.toString(), value)),
-        )
-        .toList(growable: false);
+  List<Map<String, Object?>>? _commandsFromMetadata(Object? raw) {
+    if (raw is! List) return null;
+    try {
+      final commands = <Map<String, Object?>>[];
+      final length = raw.length;
+      if (length > inputBudget.maxCollectionItems) {
+        return null;
+      }
+      for (var index = 0; index < length; index += 1) {
+        final command = raw[index];
+        if (command is! Map<String, Object?>) {
+          return null;
+        }
+        commands.add(command);
+      }
+      if (raw.length != length) return null;
+      return _copyAvailableCommands(commands, inputBudget);
+    } on Object {
+      return null;
+    }
   }
 
   String _stringFromMap(Map<String, Object?> map, String key) {
@@ -3642,59 +5219,38 @@ class ChatController extends ChangeNotifier {
     return '';
   }
 
-  void _applyUsageUpdate(Map<String, Object?> metadata) {
-    final used = _intFromObject(metadata['used']);
-    final size = _intFromObject(metadata['size']);
-    if (used == null || size == null || used < 0 || size <= 0) return;
-    sessionUsage = AcpSessionUsage(
-      used: used,
-      size: size,
-      cost: _usageCostFromObject(metadata['cost']),
+  ({AcpSessionUsageCost? cost, bool valid}) _usageCostFromObject(Object? raw) {
+    if (raw == null) return (cost: null, valid: true);
+    if (raw is! Map<String, Object?>) return (cost: null, valid: false);
+    final amount = _finiteNumFromObject(raw['amount']);
+    final rawCurrency = raw['currency'];
+    if (amount == null || rawCurrency is! String) {
+      return (cost: null, valid: false);
+    }
+    final currency = rawCurrency.trim();
+    if (currency.isEmpty) return (cost: null, valid: false);
+    return (
+      cost: AcpSessionUsageCost(amount: amount, currency: currency),
+      valid: true,
     );
   }
 
-  AcpSessionUsageCost? _usageCostFromObject(Object? raw) {
-    if (raw is! Map) return null;
-    final mapped = raw.map((key, value) => MapEntry(key.toString(), value));
-    final amount = _numFromObject(mapped['amount']);
-    final currency = mapped['currency']?.toString().trim() ?? '';
-    if (amount == null || currency.isEmpty) return null;
-    return AcpSessionUsageCost(amount: amount, currency: currency);
-  }
-
   int? _intFromObject(Object? raw) {
-    if (raw is num) return raw.toInt();
+    if (raw is num) return raw.isFinite ? raw.toInt() : null;
     if (raw is String) return int.tryParse(raw.trim());
     return null;
   }
 
-  num? _numFromObject(Object? raw) {
-    if (raw is num) return raw;
-    if (raw is String) return num.tryParse(raw.trim());
-    return null;
-  }
-
-  void _applySessionInfoUpdate(Map<String, Object?> metadata) {
-    final session = currentSession;
-    if (session == null) return;
-    final sessionId = metadata['sessionId'];
-    if (sessionId is String &&
-        sessionId.isNotEmpty &&
-        sessionId != session.id) {
-      return;
+  num? _finiteNumFromObject(Object? raw) {
+    final num? parsed;
+    if (raw is num) {
+      parsed = raw;
+    } else if (raw is String) {
+      parsed = num.tryParse(raw.trim());
+    } else {
+      parsed = null;
     }
-
-    final rawTitle = metadata['title'];
-    final title = rawTitle is String && rawTitle.trim().isNotEmpty
-        ? rawTitle.trim()
-        : null;
-    final updatedAtRaw = metadata['updatedAt'];
-    final updatedAt = updatedAtRaw is String
-        ? DateTime.tryParse(updatedAtRaw)?.toLocal()
-        : null;
-    final updatedSession = session.copyWith(title: title, updatedAt: updatedAt);
-    currentSession = updatedSession;
-    _upsertSession(updatedSession);
+    return parsed?.isFinite == true ? parsed : null;
   }
 
   void _upsertSession(AgentSession session) {
@@ -3840,12 +5396,31 @@ class ChatController extends ChangeNotifier {
   void _appendTurnStatus(AgentEvent event) {
     final stopReason = event.metadata['stopReason'];
     if (stopReason is! String || stopReason.isEmpty) return;
-    messages.add(
+    final canonicalStopReason = switch (stopReason) {
+      'endTurn' ||
+      'maxTokens' ||
+      'maxTurnRequests' ||
+      'cancelled' ||
+      'refusal' => stopReason,
+      _ => 'unknown',
+    };
+    final display = _boundedLocalDisplayText(
+      _stopReasonLabel(canonicalStopReason),
+      resource: 'display text',
+    );
+    _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.status,
-        text: _stopReasonLabel(stopReason),
-        metadata: <String, Object?>{'kind': 'turn', 'stopReason': stopReason},
-        omissions: event.omissions,
+        text: display.text,
+        metadata: <String, Object?>{
+          'kind': 'turn',
+          'stopReason': canonicalStopReason,
+        },
+        omissions: _boundedChatMessageOmissions(
+          event.omissions,
+          display.omission,
+          inputBudget.maxCollectionItems,
+        ),
         inputBudget: inputBudget,
       ),
     );
@@ -3858,12 +5433,18 @@ class ChatController extends ChangeNotifier {
       'maxTurnRequests' => 'Turn stopped after too many model requests.',
       'cancelled' => 'Turn cancelled.',
       'refusal' => 'Agent refused to continue.',
-      _ => 'Turn ended: $stopReason',
+      _ => 'Turn ended for an unrecognized reason.',
     };
   }
 
-  void _finishStreaming({bool notify = true}) {
-    _finishTurnBudget();
+  void _finishStreaming({bool notify = true, bool suppressProjection = false}) {
+    final previousProjectionSuppression = _suppressAgentEventProjection;
+    if (suppressProjection) _suppressAgentEventProjection = true;
+    try {
+      _finishTurnBudget();
+    } finally {
+      _suppressAgentEventProjection = previousProjectionSuppression;
+    }
     if (!isStreaming) return;
     isStreaming = false;
     _cancelPendingPermissionRequestAfterPromptEnd();
@@ -3881,14 +5462,14 @@ class ChatController extends ChangeNotifier {
 
   void _setError(Object error) {
     _finishTurnBudget();
-    lastError = _messageForError(error);
+    lastError = _boundedLocalErrorText(_messageForError(error)).text;
     status = ConnectionStatus.error;
     isStreaming = false;
     _notifyListeners();
   }
 
   void _setActionError(Object error) {
-    lastError = _messageForError(error);
+    lastError = _boundedLocalErrorText(_messageForError(error)).text;
     if (status == ConnectionStatus.error) {
       status = currentSession == null
           ? ConnectionStatus.connected
@@ -3903,6 +5484,27 @@ class ChatController extends ChangeNotifier {
       return _authRequiredMessage();
     }
     return event.text;
+  }
+
+  ({String text, acp.AcpInputOmission? omission}) _boundedLocalErrorText(
+    String raw,
+  ) => _boundedLocalDisplayText(raw, resource: 'error text');
+
+  ({String text, acp.AcpInputOmission? omission}) _boundedLocalDisplayText(
+    String raw, {
+    required String resource,
+  }) {
+    final counter = acp.AcpUtf8LineBudgetCounter(
+      maxBytes: inputBudget.maxMessageTextBytes,
+      maxLines: inputBudget.maxMessageTextLines,
+      resource: resource,
+    );
+    final appended = counter.append(raw);
+    final finished = counter.finish();
+    return (
+      text: '${appended.safePrefix}${finished.safePrefix}',
+      omission: appended.omission ?? finished.omission,
+    );
   }
 
   String _messageForError(Object error) {

@@ -7,6 +7,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_acp/acp/acp_session_usage.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -156,9 +157,410 @@ void main() {
       expect(frozen.retainedBytes, appended);
       expect(thawed.retainedBytes, appended);
     });
+
+    test(
+      'media retained bytes survive freeze thaw and archive restore exactly',
+      () {
+        const budget = acp.AcpInputBudget(
+          maxEmbeddedMediaBytes: 1,
+          maxStructuredStringBytes: 1,
+        );
+        ChatMessage image(String data) => ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '',
+          metadata: <String, Object?>{
+            'contentBlocks': <Object?>[
+              <String, Object?>{'type': 'image', 'data': data},
+            ],
+          },
+          inputBudget: budget,
+        );
+
+        final empty = image('');
+        final active = image('YQ==');
+        expect(active.retainedBytes, empty.retainedBytes + 4);
+        final frozen = active.freeze();
+        final thawed = frozen.thaw();
+        expect(frozen.retainedBytes, active.retainedBytes);
+        expect(thawed.retainedBytes, active.retainedBytes);
+        expect(thawed.metadata.toString(), contains('YQ=='));
+
+        final snapshot = ArchivedSessionSnapshot(
+          session: AgentSession(
+            id: 's',
+            cwd: 'w',
+            createdAt: DateTime(2026, 7, 13),
+          ),
+          wasCurrent: true,
+          messages: <ChatMessage>[active],
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+          inputBudget: budget,
+        );
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: 'w',
+          inputBudget: budget,
+        );
+        addTearDown(controller.dispose);
+        controller.restoreArchivedSessionLocally(snapshot);
+
+        expect(
+          controller.messages.single.metadata.toString(),
+          contains('YQ=='),
+        );
+        expect(controller.messages.single.retainedBytes, active.retainedBytes);
+      },
+    );
+
+    test('owned media omission provenance survives internal copies only', () {
+      const canary = 'SECRET_OWNED_MEDIA_OMISSION';
+      const budget = acp.AcpInputBudget(maxStructuredStringBytes: 1);
+      final owned = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: '',
+        metadata: const <String, Object?>{
+          'contentBlocks': <Object?>[
+            <String, Object?>{'type': 'image', 'data': canary},
+            <String, Object?>{'type': 'audio', 'data': canary},
+            <String, Object?>{
+              'type': 'resource',
+              'resource': <String, Object?>{'blob': canary},
+            },
+          ],
+        },
+      );
+      final forged = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: '',
+        metadata: const <String, Object?>{
+          'contentBlocks': <Object?>[
+            <String, Object?>{
+              'type': 'omitted',
+              'reason': 'invalid_encoding',
+              'resource': 'image_data',
+              'truncated': false,
+            },
+          ],
+        },
+      );
+
+      List<Object?> resources(ChatMessage message) =>
+          (message.metadata['contentBlocks']! as List)
+              .map((block) => (block as Map)['resource'])
+              .toList(growable: false);
+
+      expect(resources(owned), <Object?>[
+        'image_data',
+        'audio_data',
+        'resource_blob',
+      ]);
+      expect(owned.omissions.map((omission) => omission.resource), <String>[
+        'image_data',
+        'audio_data',
+        'resource_blob',
+      ]);
+      final retained = owned.retainedBytes;
+      final frozen = owned.freeze();
+      final thawed = frozen.thaw();
+      expect(resources(frozen), <Object?>[
+        'image_data',
+        'audio_data',
+        'resource_blob',
+      ]);
+      expect(resources(thawed), resources(owned));
+      expect(
+        frozen.omissions.map((item) => item.resource),
+        owned.omissions.map((item) => item.resource),
+      );
+      expect(frozen.retainedBytes, retained);
+      expect(thawed.retainedBytes, retained);
+
+      expect(resources(forged), <Object?>['external_omitted']);
+      expect(forged.omissions, isEmpty);
+      expect(resources(forged.freeze()), <Object?>['external_omitted']);
+      expect(resources(forged.freeze().thaw()), <Object?>['external_omitted']);
+      expect(forged.freeze().omissions, isEmpty);
+
+      final snapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 's',
+          cwd: 'w',
+          createdAt: DateTime(2026, 7, 13),
+        ),
+        wasCurrent: true,
+        messages: <ChatMessage>[owned, forged],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: 'w',
+        inputBudget: budget,
+      );
+      addTearDown(controller.dispose);
+      controller.restoreArchivedSessionLocally(snapshot);
+
+      expect(resources(controller.messages[0]), resources(owned));
+      expect(
+        controller.messages[0].omissions.map((item) => item.resource),
+        owned.omissions.map((item) => item.resource),
+      );
+      expect(controller.messages[0].retainedBytes, retained);
+      expect(resources(controller.messages[1]), <Object?>['external_omitted']);
+      expect(controller.messages[1].omissions, isEmpty);
+    });
   });
 
   group('ChatMessage guarded metadata and omissions', () {
+    test(
+      'content block retained bytes count every dynamic key and kind',
+      () async {
+        ChatMessage message(Map<String, Object?> metadata) => ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '',
+          metadata: metadata,
+        );
+
+        final pairs = <(ChatMessage, ChatMessage)>[
+          (
+            message(<String, Object?>{'contentBlocks': <Object?>[], 'a': 'v'}),
+            message(<String, Object?>{
+              'contentBlocks': <Object?>[],
+              'aaaa': 'v',
+            }),
+          ),
+          (
+            message(<String, Object?>{
+              'contentBlocks': <Object?>[],
+              'kind': 'x',
+            }),
+            message(<String, Object?>{
+              'contentBlocks': <Object?>[],
+              'kind': 'xxxx',
+            }),
+          ),
+          (
+            message(const <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{'type': 'x', 'a': 'v'},
+              ],
+            }),
+            message(const <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{'type': 'xxxx', 'a': 'v'},
+              ],
+            }),
+          ),
+          (
+            message(const <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'resource',
+                  'resource': <String, Object?>{'a': 'v'},
+                },
+              ],
+            }),
+            message(const <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'resource',
+                  'resource': <String, Object?>{'aaaa': 'v'},
+                },
+              ],
+            }),
+          ),
+        ];
+        for (final pair in pairs) {
+          expect(pair.$2.retainedBytes - pair.$1.retainedBytes, 3);
+          expect(pair.$1.freeze().retainedBytes, pair.$1.retainedBytes);
+          expect(pair.$2.freeze().thaw().retainedBytes, pair.$2.retainedBytes);
+        }
+
+        final userRetained = ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'u',
+        ).retainedBytes;
+        final small = pairs.first.$1;
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnRetainedBytes: userRetained + small.retainedBytes + 1024,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: '',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[],
+              'aaaa': 'v',
+            },
+          ),
+        );
+
+        expect(
+          controller.messages.where(
+            (item) => item.metadata.containsKey('aaaa'),
+          ),
+          isEmpty,
+        );
+        final dynamic debug = controller;
+        expect(debug.debugTurnOverflowed, isTrue);
+      },
+    );
+
+    test('content block hostile kind never invokes equality', () {
+      final hostileKind = _ThrowingEqualityValue();
+
+      final message = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: '',
+        metadata: <String, Object?>{
+          'contentBlocks': <Object?>[],
+          'kind': hostileKind,
+        },
+      );
+
+      expect(hostileKind.equalityCalls, 0);
+      expect(message.metadata, isEmpty);
+      expect(
+        message.omissions.single.reason,
+        acp.AcpInputOmissionReason.invalidStructure,
+      );
+    });
+
+    test('content block hostile type never invokes equality', () {
+      const canary = 'SECRET_HOSTILE_CONTENT_BLOCK_TYPE';
+      for (final dynamic hostileType in <Object>[
+        _ThrowingEqualityValue(),
+        _TrueEqualityValue(),
+      ]) {
+        late final ChatMessage message;
+        expect(
+          () => message = ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: '',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': hostileType,
+                  'data': 'AAAA',
+                  'secret': canary,
+                },
+              ],
+            },
+          ),
+          returnsNormally,
+        );
+
+        expect(hostileType.equalityCalls, 0);
+        expect(message.metadata, isEmpty);
+        expect(message.metadata.toString(), isNot(contains(canary)));
+        expect(
+          message.omissions.single.reason,
+          acp.AcpInputOmissionReason.invalidStructure,
+        );
+      }
+    });
+
+    test('typed config hostile kind never invokes equality', () {
+      for (final dynamic hostileKind in <Object>[
+        _ThrowingEqualityValue(),
+        _TrueEqualityValue(),
+      ]) {
+        final message = ChatMessage(
+          role: ChatMessageRole.status,
+          text: '',
+          metadata: <String, Object?>{
+            'kind': hostileKind,
+            'configOptions': <AcpConfigOption>[],
+          },
+        );
+
+        expect(hostileKind.equalityCalls, 0);
+        expect(message.metadata, isEmpty);
+        expect(
+          message.omissions.single.reason,
+          acp.AcpInputOmissionReason.invalidStructure,
+        );
+      }
+    });
+
+    test('resource blocks snapshot nested entries and guard dynamic keys', () {
+      ChatMessage resource(
+        Map<String, Object?> nested,
+        acp.AcpInputBudget budget,
+      ) => ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: '',
+        metadata: <String, Object?>{
+          'contentBlocks': <Object?>[
+            <String, Object?>{'type': 'resource', 'resource': nested},
+          ],
+        },
+        inputBudget: budget,
+      );
+
+      const entryBudget = acp.AcpInputBudget(
+        maxCollectionItems: 2,
+        maxMetadataEntries: 2,
+      );
+      final exact = resource(<String, Object?>{
+        'uri': 'u',
+        'title': 't',
+      }, entryBudget);
+      expect(exact.metadata['contentBlocks'], isNotEmpty);
+      expect(exact.omissions, isEmpty);
+
+      const canary = 'SECRET_RESOURCE_KEY_CANARY';
+      final plusOne = resource(<String, Object?>{
+        'uri': 'u',
+        'title': 't',
+        'x': canary,
+      }, entryBudget);
+      expect(plusOne.metadata, isEmpty);
+      expect(plusOne.metadata.toString(), isNot(contains(canary)));
+      expect(plusOne.omissions, hasLength(1));
+
+      final longKey = resource(<String, Object?>{
+        canary: 'v',
+      }, const acp.AcpInputBudget(maxStructuredStringBytes: 4));
+      expect(longKey.metadata, isEmpty);
+      expect(longKey.metadata.toString(), isNot(contains(canary)));
+
+      final stateful = resource(
+        _ReportedLengthResourceMap(canary),
+        const acp.AcpInputBudget(),
+      );
+      expect(stateful.metadata, isEmpty);
+      expect(stateful.metadata.toString(), isNot(contains(canary)));
+
+      final throwing = resource(
+        _ThrowingMetadataMap(canary),
+        const acp.AcpInputBudget(),
+      );
+      expect(throwing.metadata, isEmpty);
+      expect(throwing.metadata.toString(), isNot(contains(canary)));
+    });
+
     test('metadata is defensively copied and deeply immutable', () {
       final nested = <String, Object?>{'value': 'original'};
       final items = <Object?>[nested];
@@ -483,7 +885,9 @@ void main() {
         (message) => message.role == ChatMessageRole.tool,
       );
       final ordinaryStatusIndex = controller.messages.indexWhere(
-        (message) => message.text == 'ordinary status boundary',
+        (message) =>
+            message.role == ChatMessageRole.status &&
+            message.metadata['kind'] != 'thought',
       );
       expect(
         controller.messages.indexOf(textMessages.first),
@@ -502,8 +906,10 @@ void main() {
         greaterThan(ordinaryStatusIndex),
       );
       expect(
-        controller.messages.expand((message) => message.omissions),
-        isEmpty,
+        controller.messages
+            .expand((message) => message.omissions)
+            .where((omission) => omission.resource == 'display text'),
+        hasLength(2),
       );
     });
 
@@ -740,6 +1146,262 @@ void main() {
     );
 
     test(
+      'done and error flush pending text without borrowing its projection',
+      () async {
+        const canary = 'DONE_EVENT_TEXT_CANARY_MUST_NOT_APPEAR';
+        final high = String.fromCharCode(0xd83d);
+
+        Future<void> verify({required bool error}) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(client: fake, cwd: '/workspace');
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          fake.emit(
+            AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+          );
+          fake.emit(
+            error
+                ? const AgentEvent(type: AgentEventType.error, text: 'boom')
+                : const AgentEvent(
+                    type: AgentEventType.agentTextDone,
+                    text: canary,
+                  ),
+          );
+
+          final assistant = controller.messages.singleWhere(
+            (message) => message.role == ChatMessageRole.assistant,
+          );
+          expect(assistant.text, high);
+          expect(assistant.acceptedUtf8Bytes, 3);
+          expect(observed, hasLength(2));
+          expect(observed.last.text, error ? 'boom' : '');
+          expect(observed.last.metadata, isEmpty);
+          expect(observed.last.text, isNot(contains(high)));
+          expect(observed.last.toString(), isNot(contains(canary)));
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        await verify(error: false);
+        await verify(error: true);
+      },
+    );
+
+    test(
+      'turn finish omissions never borrow the terminal projection',
+      () async {
+        final high = String.fromCharCode(0xd83d);
+
+        final omissionFake = _ControlledPromptAgentClient();
+        final omissionController = ChatController(
+          client: omissionFake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 2,
+            maxMarkdownFallbackBytes: 2,
+          ),
+        );
+        await omissionController.newSession();
+        await omissionController.sendPrompt('u');
+        final omissionObserved = <AgentEvent>[];
+        omissionController.addAgentEventObserver(
+          (_, event) => omissionObserved.add(event),
+        );
+        omissionFake.emit(
+          AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+        );
+        omissionFake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDone, text: ''),
+        );
+
+        final omittedAssistant = omissionController.messages.singleWhere(
+          (message) => message.role == ChatMessageRole.assistant,
+        );
+        expect(
+          omittedAssistant.omissions.where(
+            (omission) => omission.resource == 'message text',
+          ),
+          hasLength(1),
+        );
+        expect(
+          omissionObserved.last.omissions.where(
+            (omission) => omission.resource == 'message text',
+          ),
+          isEmpty,
+        );
+        omissionController.dispose();
+        await omissionController.disposalComplete;
+
+        final measuringFake = _ControlledPromptAgentClient();
+        final measuring = ChatController(
+          client: measuringFake,
+          cwd: '/workspace',
+        );
+        await measuring.newSession();
+        await measuring.sendPrompt('u');
+        measuringFake.emit(
+          AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+        );
+        final dynamic measuringDebug = measuring;
+        final pendingRetained =
+            measuringDebug.debugCurrentTurnRetainedBytes as int;
+        measuring.dispose();
+        await measuring.disposalComplete;
+        final errorRetained = ChatMessage(
+          role: ChatMessageRole.error,
+          text: 'boom',
+        ).retainedBytes;
+
+        Future<void> verifyRetainedOverflow({required bool error}) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: acp.AcpInputBudget(
+              maxTurnRetainedBytes:
+                  pendingRetained + (error ? errorRetained : 0) + 1024,
+            ),
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+          fake.emit(
+            AgentEvent(type: AgentEventType.agentTextDelta, text: high),
+          );
+          fake.emit(
+            error
+                ? const AgentEvent(type: AgentEventType.error, text: 'boom')
+                : const AgentEvent(
+                    type: AgentEventType.agentTextDone,
+                    text: '',
+                  ),
+          );
+
+          expect(
+            controller.messages
+                .expand((message) => message.omissions)
+                .where(
+                  (omission) => omission.resource == 'turn retained bytes',
+                ),
+            hasLength(1),
+          );
+          expect(
+            observed.last.omissions.where(
+              (omission) => omission.resource == 'turn retained bytes',
+            ),
+            isEmpty,
+          );
+          expect(observed.last.text, error ? 'boom' : '');
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        await verifyRetainedOverflow(error: false);
+        await verifyRetainedOverflow(error: true);
+      },
+    );
+
+    test(
+      'unknown stop reason is a bounded projection with exact root accounting',
+      () async {
+        const canary = 'SECRET_UNKNOWN_STOP_REASON_CANARY_MUST_NOT_APPEAR';
+        const stopReason = '$canary-suffix';
+        const baseBudget = acp.AcpInputBudget(
+          maxStructuredStringBytes: 256,
+          maxMessageTextBytes: 16,
+          maxMarkdownFallbackBytes: 16,
+        );
+
+        Future<({ChatController controller, List<AgentEvent> observed})> run(
+          acp.AcpInputBudget budget,
+        ) async {
+          final controller = ChatController(
+            client: FakeAgentClient(
+              resumeEvents: const <AgentEvent>[
+                AgentEvent(
+                  type: AgentEventType.agentTextDone,
+                  text: canary,
+                  metadata: <String, Object?>{
+                    'kind': 'turn',
+                    'stopReason': stopReason,
+                  },
+                ),
+              ],
+            ),
+            cwd: '/workspace',
+            inputBudget: budget,
+          );
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+          await controller.resumeSession('resume');
+          return (controller: controller, observed: observed);
+        }
+
+        final baseline = await run(baseBudget);
+        final retained = baseline.controller.messages.single.retainedBytes;
+        expect(baseline.controller.messages.single.text.length, lessThan(30));
+        baseline.controller.dispose();
+        await baseline.controller.disposalComplete;
+
+        for (final delta in const <int>[0, -1]) {
+          final result = await run(
+            acp.AcpInputBudget(
+              maxStructuredStringBytes: 256,
+              maxMessageTextBytes: 16,
+              maxMarkdownFallbackBytes: 16,
+              maxTurnRetainedBytes: retained + 1024 + delta,
+            ),
+          );
+          final accepted = delta == 0;
+          expect(result.controller.messages, hasLength(1));
+          expect(
+            result.controller.messages.single.metadata,
+            accepted
+                ? const <String, Object?>{
+                    'kind': 'turn',
+                    'stopReason': 'unknown',
+                  }
+                : isEmpty,
+          );
+          expect(result.observed, hasLength(1));
+          expect(result.observed.single.text, accepted ? isNotEmpty : isEmpty);
+          expect(
+            result.observed.single.metadata,
+            accepted
+                ? const <String, Object?>{
+                    'kind': 'turn',
+                    'stopReason': 'unknown',
+                  }
+                : isEmpty,
+          );
+          expect(
+            <Object?>[
+              ...result.controller.messages.map(
+                (message) => <Object?>[message.text, message.metadata],
+              ),
+              result.observed.single,
+            ].toString(),
+            isNot(contains(canary)),
+          );
+          expect(
+            result.observed.single.omissions.where(
+              (omission) =>
+                  omission.resource ==
+                  (accepted ? 'display text' : 'turn retained bytes'),
+            ),
+            hasLength(1),
+          );
+          result.controller.dispose();
+          await result.controller.disposalComplete;
+        }
+      },
+    );
+
+    test(
       'CRLF and limits aggregate across text tool and status messages',
       () async {
         const textCanary = 'TEXT_BUDGET_CANARY_MUST_NOT_APPEAR';
@@ -824,6 +1486,101 @@ void main() {
       },
     );
 
+    test(
+      'thought metadata failures preserve the thought counter and drain',
+      () async {
+        const canary = 'SECRET_THOUGHT_METADATA_CANARY';
+
+        Future<void> verify({
+          required acp.AcpInputBudget budget,
+          required Map<String, Object?> metadata,
+          required acp.AcpInputOmissionReason metadataReason,
+        }) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: budget,
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          fake.emit(
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'a$canary',
+              metadata: metadata,
+            ),
+          );
+          fake.emit(
+            const AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{'kind': 'thought'},
+            ),
+          );
+
+          final thought = controller.messages.singleWhere(
+            (message) => message.metadata['kind'] == 'thought',
+          );
+          expect(thought.text, 'a');
+          expect(
+            thought.omissions.where(
+              (omission) =>
+                  omission.resource == 'chat message metadata' &&
+                  omission.reason == metadataReason,
+            ),
+            hasLength(1),
+          );
+          expect(
+            thought.omissions.where(
+              (omission) => omission.resource == 'thought text',
+            ),
+            hasLength(1),
+          );
+          expect(observed.first.metadata['kind'], 'thought');
+          expect(observed.first.text, 'a');
+          expect(
+            observed.map((event) => event.text).join(),
+            isNot(contains(canary)),
+          );
+          expect(
+            controller.messages
+                .expand((message) => message.omissions)
+                .where((omission) => omission.resource == 'thought text'),
+            hasLength(1),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        await verify(
+          budget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 100,
+            maxThoughtTextBytes: 1,
+            maxMarkdownFallbackBytes: 100,
+          ),
+          metadata: <String, Object?>{
+            'kind': 'thought',
+            'bad': _CanaryPayload(),
+          },
+          metadataReason: acp.AcpInputOmissionReason.invalidStructure,
+        );
+        await verify(
+          budget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 100,
+            maxThoughtTextBytes: 1,
+            maxMarkdownFallbackBytes: 100,
+            maxStructuredStringBytes: 1,
+          ),
+          metadata: const <String, Object?>{'kind': 'thought', 'bad': canary},
+          metadataReason: acp.AcpInputOmissionReason.inputLimit,
+        );
+      },
+    );
+
     List<AgentEvent> twoTurnEvents() => const <AgentEvent>[
       AgentEvent(type: AgentEventType.userMessage, text: 'user one'),
       AgentEvent(type: AgentEventType.agentTextDelta, text: 'a'),
@@ -841,7 +1598,10 @@ void main() {
       ),
     ];
 
-    void expectTwoTurns(ChatController controller) {
+    void expectTwoTurns(
+      ChatController controller, {
+      required int expectedDisplayOmissions,
+    }) {
       expect(
         controller.messages
             .where((message) => message.role == ChatMessageRole.assistant)
@@ -855,8 +1615,10 @@ void main() {
         ['x', 'y'],
       );
       expect(
-        controller.messages.expand((message) => message.omissions),
-        isEmpty,
+        controller.messages
+            .expand((message) => message.omissions)
+            .where((omission) => omission.resource == 'display text'),
+        hasLength(expectedDisplayOmissions),
       );
     }
 
@@ -878,7 +1640,7 @@ void main() {
 
         await controller.resumeSession('two-turn-replay');
 
-        expectTwoTurns(controller);
+        expectTwoTurns(controller, expectedDisplayOmissions: 2);
       },
     );
 
@@ -892,7 +1654,7 @@ void main() {
 
       await controller.newSession();
 
-      expectTwoTurns(controller);
+      expectTwoTurns(controller, expectedDisplayOmissions: 2);
     });
 
     test('fork initial user messages begin new turn budgets', () async {
@@ -906,7 +1668,7 @@ void main() {
 
       await controller.forkCurrentSession();
 
-      expectTwoTurns(controller);
+      expectTwoTurns(controller, expectedDisplayOmissions: 2);
     });
 
     test(
@@ -962,7 +1724,7 @@ void main() {
 
         expect(observedAssistantText, ['a']);
         expect(notifications, 3);
-        expectTwoTurns(controller);
+        expectTwoTurns(controller, expectedDisplayOmissions: 1);
       },
     );
   });
@@ -1442,6 +2204,1908 @@ void main() {
     );
   });
 
+  group('ChatController turn root ledger', () {
+    test('ordinary events cannot consume the reserved overflow item', () async {
+      const canary = 'SECRET_TURN_ITEM_CANARY';
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      final dynamic debug = controller;
+
+      expect(debug.debugCurrentTurnItems, 1);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: canary),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(debug.debugCurrentTurnItems, 1);
+      expect(debug.debugTurnOverflowed, isTrue);
+      expect(debug.debugTurnTextCounterTouched, isFalse);
+      expect(
+        controller.messages.map((message) => message.text).join(),
+        isNot(contains(canary)),
+      );
+      final overflowOmissions = controller.messages
+          .expand((message) => message.omissions)
+          .where((omission) => omission.resource == 'turn items');
+      expect(overflowOmissions, hasLength(1));
+
+      await fake.finishPrompt();
+      expect(debug.debugCurrentTurnItems, 0);
+      expect(debug.debugCurrentTurnRetainedBytes, 0);
+      expect(debug.debugTurnOverflowed, isFalse);
+    });
+
+    test('ordinary item capacity admits exact and rejects plus one', () async {
+      const canary = 'SECRET_ORDINARY_ITEM_PLUS_ONE';
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxTurnItems: 3),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      final dynamic debug = controller;
+
+      fake.emit(const AgentEvent(type: AgentEventType.toolCall, text: 'exact'));
+      expect(debug.debugCurrentTurnItems, 2);
+      fake.emit(const AgentEvent(type: AgentEventType.status, text: canary));
+
+      expect(debug.debugCurrentTurnItems, 2);
+      expect(debug.debugCurrentTurnItems, lessThanOrEqualTo(3));
+      expect(
+        controller.messages.map((message) => message.text).join(),
+        isNot(contains(canary)),
+      );
+      expect(
+        controller.messages
+            .expand((message) => message.omissions)
+            .where((omission) => omission.resource == 'turn items'),
+        hasLength(1),
+      );
+    });
+
+    test(
+      'agent observers receive only the root-admitted text projection',
+      () async {
+        const canary = 'SECRET_REJECTED_OBSERVER_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: canary,
+            metadata: <String, Object?>{'safe': 'metadata'},
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(observed, hasLength(1));
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'turn items',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('agent observers receive only the accepted text prefix', () async {
+      const canary = 'SECRET_TEXT_SUFFIX_CANARY';
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMessageTextBytes: 3,
+          maxMarkdownFallbackBytes: 3,
+        ),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      final observed = <AgentEvent>[];
+      controller.addAgentEventObserver((_, event) => observed.add(event));
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text: 'abc$canary',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(observed.single.text, 'abc');
+      expect(observed.single.text, isNot(contains(canary)));
+      expect(
+        observed.single.omissions.where(
+          (omission) => omission.resource == 'message text',
+        ),
+        hasLength(1),
+      );
+    });
+
+    test(
+      'error text budget bounds message lastError and observer together',
+      () async {
+        const canary = 'SECRET_ERROR_SUFFIX_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 4,
+            maxMarkdownFallbackBytes: 4,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.error, text: 'safe$canary'),
+        );
+
+        final error = controller.messages.singleWhere(
+          (message) => message.role == ChatMessageRole.error,
+        );
+        expect(error.text, 'safe');
+        expect(controller.lastError, 'safe');
+        expect(observed.single.text, 'safe');
+        expect(
+          <Object?>[
+            error.text,
+            controller.lastError,
+            observed.single.text,
+          ].join(),
+          isNot(contains(canary)),
+        );
+        expect(
+          error.omissions.where(
+            (omission) => omission.resource == 'error text',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('live user media starts a fresh aggregate before scanning', () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 1),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+
+      AgentEvent mediaUser(String data) => AgentEvent(
+        type: AgentEventType.userMessage,
+        text: 'replay',
+        metadata: <String, Object?>{
+          'contentBlocks': <Object?>[
+            <String, Object?>{'type': 'image', 'data': data},
+          ],
+        },
+      );
+
+      fake.emit(mediaUser('YQ=='));
+      fake.emit(mediaUser('Yg=='));
+
+      final retained = controller.messages
+          .map((message) => message.metadata)
+          .toList(growable: false)
+          .toString();
+      expect(retained, contains('YQ=='));
+      expect(retained, contains('Yg=='));
+      expect(
+        controller.messages
+            .expand((message) => message.omissions)
+            .where((omission) => omission.resource == 'turn_media'),
+        isEmpty,
+      );
+    });
+
+    test(
+      'streaming text uses normal retained bytes but not the reserve',
+      () async {
+        const canary = 'SECRET_TURN_RETAINED_CANARY';
+        final userRetained = ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'u',
+        ).retainedBytes;
+        final emptyAssistantRetained = ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '',
+        ).retainedBytes;
+        final maxTurnRetainedBytes =
+            userRetained + emptyAssistantRetained + 4 + 1024;
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnRetainedBytes: maxTurnRetainedBytes,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'abcd'),
+        );
+        final normalExact = userRetained + emptyAssistantRetained + 4;
+        final dynamic debug = controller;
+        expect(debug.debugCurrentTurnRetainedBytes, normalExact);
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: 'e'),
+        );
+        final afterOverflow = debug.debugCurrentTurnRetainedBytes as int;
+        expect(afterOverflow, greaterThan(normalExact));
+        expect(
+          afterOverflow,
+          controller.messages.fold<int>(
+            0,
+            (total, message) => total + message.retainedBytes,
+          ),
+        );
+        expect(afterOverflow, lessThanOrEqualTo(maxTurnRetainedBytes));
+        fake.emit(
+          const AgentEvent(type: AgentEventType.agentTextDelta, text: canary),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final assistant = controller.messages.singleWhere(
+          (message) => message.role == ChatMessageRole.assistant,
+        );
+        expect(assistant.text, 'abcd');
+        expect(
+          controller.messages.map((message) => message.text).join(),
+          isNot(contains(canary)),
+        );
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where((omission) => omission.resource == 'turn retained bytes'),
+          hasLength(1),
+        );
+        expect(debug.debugCurrentTurnRetainedBytes, afterOverflow);
+        expect(debug.debugTurnOverflowed, isTrue);
+      },
+    );
+
+    test(
+      'same tool id replacement updates bytes without consuming an item',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final dynamic debug = controller;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'a',
+            metadata: <String, Object?>{'toolCallId': 'same-tool'},
+          ),
+        );
+        final firstBytes = debug.debugCurrentTurnRetainedBytes as int;
+        expect(debug.debugCurrentTurnItems, 2);
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'a longer safe value',
+            metadata: <String, Object?>{'toolCallId': 'same-tool'},
+          ),
+        );
+
+        expect(debug.debugCurrentTurnItems, 2);
+        expect(debug.debugCurrentTurnRetainedBytes, greaterThan(firstBytes));
+        expect(
+          controller.messages.where(
+            (message) => message.role == ChatMessageRole.tool,
+          ),
+          hasLength(1),
+        );
+        expect(
+          controller.messages
+              .singleWhere((message) => message.role == ChatMessageRole.tool)
+              .text,
+          'a longer safe value',
+        );
+      },
+    );
+
+    test(
+      'rejected tool replacement keeps old safe state and observer projection',
+      () async {
+        const canary = 'SECRET_REJECTED_TOOL_UPDATE_CANARY';
+        const metadata = <String, Object?>{'toolCallId': 'bounded-tool'};
+        final userRetained = ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'u',
+        ).retainedBytes;
+        final toolRetained = ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'safe',
+          metadata: metadata,
+        ).retainedBytes;
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnRetainedBytes: userRetained + toolRetained + 1024,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'safe',
+            metadata: metadata,
+          ),
+        );
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.toolCall,
+            text: 'safe$canary',
+            metadata: metadata,
+          ),
+        );
+
+        final tool = controller.messages.singleWhere(
+          (message) => message.role == ChatMessageRole.tool,
+        );
+        expect(tool.text, 'safe');
+        expect(observed, hasLength(2));
+        expect(observed.first.text, 'safe');
+        expect(observed.last.text, isEmpty);
+        expect(observed.last.metadata, isEmpty);
+        expect(observed.last.text, isNot(contains(canary)));
+        expect(
+          observed.last.omissions.where(
+            (omission) => omission.resource == 'turn retained bytes',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'rejected status replacement keeps old safe state and observer projection',
+      () async {
+        const canary = 'SECRET_REJECTED_STATUS_UPDATE_CANARY';
+        const metadata = <String, Object?>{
+          'kind': 'plan',
+          'id': 'bounded-plan',
+        };
+        final userRetained = ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'u',
+        ).retainedBytes;
+        final statusRetained = ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'safe',
+          metadata: metadata,
+        ).retainedBytes;
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnRetainedBytes: userRetained + statusRetained + 1024,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'safe',
+            metadata: metadata,
+          ),
+        );
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'safe$canary',
+            metadata: metadata,
+          ),
+        );
+
+        final plan = controller.messages.singleWhere(
+          (message) => message.metadata['kind'] == 'plan',
+        );
+        expect(plan.text, 'safe');
+        expect(observed, hasLength(2));
+        expect(observed.first.text, 'safe');
+        expect(observed.last.text, isEmpty);
+        expect(observed.last.metadata, isEmpty);
+        expect(observed.last.text, isNot(contains(canary)));
+      },
+    );
+
+    test(
+      'non-streaming display events retain and observe only their safe prefix',
+      () async {
+        const canary = 'SECRET_NON_STREAMING_DISPLAY_CANARY';
+        final cases = <({AgentEvent event, String expected})>[
+          (
+            event: const AgentEvent(
+              type: AgentEventType.userMessage,
+              text: 'safe$canary',
+            ),
+            expected: 'safe',
+          ),
+          (
+            event: const AgentEvent(
+              type: AgentEventType.toolCall,
+              text: 'safe$canary',
+            ),
+            expected: 'safe',
+          ),
+          (
+            event: const AgentEvent(
+              type: AgentEventType.status,
+              text: '你a$canary',
+            ),
+            expected: '你a',
+          ),
+          (
+            event: const AgentEvent(
+              type: AgentEventType.status,
+              text: 'safe$canary',
+              metadata: <String, Object?>{
+                'kind': 'terminal',
+                'terminalId': 'bounded',
+              },
+            ),
+            expected: 'safe',
+          ),
+          (
+            event: const AgentEvent(
+              type: AgentEventType.status,
+              text: 'safe$canary',
+              metadata: <String, Object?>{'kind': 'plan'},
+            ),
+            expected: 'safe',
+          ),
+          (
+            event: const AgentEvent(
+              type: AgentEventType.status,
+              text: 'safe$canary',
+              metadata: <String, Object?>{'kind': 'diff'},
+            ),
+            expected: 'safe',
+          ),
+        ];
+
+        for (final testCase in cases) {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: const acp.AcpInputBudget(
+              maxMessageTextBytes: 4,
+              maxMarkdownFallbackBytes: 4,
+            ),
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          fake.emit(testCase.event);
+
+          final retained = controller.messages.last;
+          expect(retained.text, testCase.expected);
+          expect(observed.single.text, testCase.expected);
+          expect(retained.text, isNot(contains(canary)));
+          expect(observed.single.text, isNot(contains(canary)));
+          expect(
+            retained.omissions.where(
+              (omission) => omission.resource == 'display text',
+            ),
+            hasLength(1),
+          );
+          final dynamic debug = controller;
+          expect(
+            debug.debugCurrentTurnRetainedBytes,
+            testCase.event.type == AgentEventType.userMessage
+                ? retained.retainedBytes
+                : controller.messages.fold<int>(
+                    0,
+                    (total, message) => total + message.retainedBytes,
+                  ),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+      },
+    );
+
+    test('non-streaming display text counts CR LF and CRLF exactly', () async {
+      const canary = 'SECRET_DISPLAY_LINE_CANARY';
+      for (final separator in const <String>['\r', '\n', '\r\n']) {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxMessageTextBytes: 128,
+            maxMessageTextLines: 2,
+            maxMarkdownFallbackBytes: 128,
+          ),
+        );
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'a${separator}b$separator$canary',
+          ),
+        );
+
+        expect(controller.messages.last.text, 'a${separator}b');
+        expect(observed.single.text, 'a${separator}b');
+        expect(observed.single.text, isNot(contains(canary)));
+        controller.dispose();
+        await controller.disposalComplete;
+      }
+    });
+
+    test('plan diff commands and settings consume turn items', () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      final dynamic debug = controller;
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.status,
+          text: 'plan',
+          metadata: <String, Object?>{'kind': 'plan', 'title': 'plan'},
+        ),
+      );
+      expect(debug.debugCurrentTurnItems, 2);
+      final planBytes = debug.debugCurrentTurnRetainedBytes as int;
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.status,
+          text: 'diff',
+          metadata: <String, Object?>{'kind': 'diff', 'id': 'd'},
+        ),
+      );
+      expect(debug.debugCurrentTurnItems, 3);
+      expect(debug.debugCurrentTurnRetainedBytes, greaterThan(planBytes));
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.status,
+          text: 'commands',
+          metadata: <String, Object?>{
+            'kind': 'commands',
+            'commands': <Object?>[
+              <String, Object?>{'name': 'review'},
+            ],
+          },
+        ),
+      );
+      expect(debug.debugCurrentTurnItems, 5);
+      expect(controller.availableCommands.single['name'], 'review');
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.status,
+          text: 'settings',
+          metadata: <String, Object?>{
+            'kind': 'config_option_update',
+            'configOptions': <AcpConfigOption>[
+              AcpConfigOption(
+                id: 'mode',
+                name: 'Mode',
+                type: 'select',
+                currentValue: 'safe',
+                options: <AcpConfigOptionChoice>[],
+              ),
+            ],
+          },
+        ),
+      );
+      expect(debug.debugCurrentTurnItems, 7);
+      expect(controller.sessionSettings.configOptions.single.id, 'mode');
+    });
+
+    test(
+      'usage and session info updates replace their root state item',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final dynamic debug = controller;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: '',
+            metadata: <String, Object?>{
+              'kind': 'usage_update',
+              'used': 1,
+              'size': 10,
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 2);
+        final firstUsageBytes = debug.debugCurrentTurnRetainedBytes as int;
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: '',
+            metadata: <String, Object?>{
+              'kind': 'usage_update',
+              'used': 2,
+              'size': 10,
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 2);
+        expect(debug.debugCurrentTurnRetainedBytes, firstUsageBytes);
+        expect(controller.sessionUsage?.used, 2);
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: '',
+            metadata: <String, Object?>{
+              'kind': 'session_info_update',
+              'sessionId': controller.currentSession!.id,
+              'title': 'one',
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 3);
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: '',
+            metadata: <String, Object?>{
+              'kind': 'session_info_update',
+              'sessionId': controller.currentSession!.id,
+              'title': 'two',
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 3);
+        expect(controller.currentSession?.title, 'two');
+      },
+    );
+
+    test(
+      'usage retained overflow preserves old safe state and observer projection',
+      () async {
+        const canary = 'SECRET_USAGE_COST_CANARY';
+        AgentEvent usage({String? currency}) => AgentEvent(
+          type: AgentEventType.status,
+          text: 'usage',
+          metadata: <String, Object?>{
+            'kind': 'usage_update',
+            'used': 1,
+            'size': 10,
+            if (currency != null)
+              'cost': <String, Object?>{'amount': 1, 'currency': currency},
+          },
+        );
+
+        final measuringFake = _ControlledPromptAgentClient();
+        final measuring = ChatController(
+          client: measuringFake,
+          cwd: '/workspace',
+        );
+        await measuring.newSession();
+        await measuring.sendPrompt('u');
+        measuringFake.emit(usage());
+        final dynamic measuringDebug = measuring;
+        final exactRetained =
+            measuringDebug.debugCurrentTurnRetainedBytes as int;
+        measuring.dispose();
+        await measuring.disposalComplete;
+
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnRetainedBytes: exactRetained + 1024,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(usage());
+        fake.emit(usage(currency: canary));
+
+        expect(controller.sessionUsage?.cost, isNull);
+        expect(observed, hasLength(2));
+        expect(observed.last.text, isEmpty);
+        expect(observed.last.metadata, isEmpty);
+        expect(observed.last.toString(), isNot(contains(canary)));
+        expect(
+          observed.last.omissions.where(
+            (omission) => omission.resource == 'turn retained bytes',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('invalid usage cost is atomic finite and payload-free', () async {
+      const canary = 'SECRET_INVALID_USAGE_COST';
+      final invalidCosts = <Object?>[
+        <String, Object?>{
+          'amount': 1,
+          'currency': <String, Object?>{'secret': canary},
+        },
+        <String, Object?>{
+          'amount': 1,
+          'currency': <Object?>[canary],
+        },
+        const <String, Object?>{'amount': 'NaN', 'currency': 'USD'},
+        const <String, Object?>{'amount': 'Infinity', 'currency': 'USD'},
+        const <String, Object?>{'amount': double.nan, 'currency': 'USD'},
+        const <String, Object?>{'amount': double.infinity, 'currency': 'USD'},
+      ];
+
+      Future<void> verify(Object? cost, {required bool markerFits}) async {
+        final amount = cost is Map<String, Object?> ? cost['amount'] : null;
+        final metadataGuardRejects = amount is num && !amount.isFinite;
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(maxTurnItems: markerFits ? 512 : 2),
+        );
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        controller.sessionUsage = const AcpSessionUsage(used: 2, size: 10);
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        expect(
+          () => fake.emit(
+            AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{
+                'kind': 'usage_update',
+                'used': 3,
+                'size': 10,
+                'cost': cost,
+              },
+            ),
+          ),
+          returnsNormally,
+        );
+
+        expect(controller.sessionUsage?.used, 2);
+        expect(controller.sessionUsage?.cost, isNull);
+        expect(
+          controller.messages
+              .map((message) => <Object?>[message.text, message.metadata])
+              .toString(),
+          isNot(contains(canary)),
+        );
+        expect(observed.single.text, isEmpty, reason: 'cost: $cost');
+        expect(
+          observed.single.metadata,
+          metadataGuardRejects && markerFits
+              ? const <String, Object?>{'kind': 'usage_update'}
+              : isEmpty,
+          reason: 'cost: $cost',
+        );
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) =>
+                omission.resource ==
+                (markerFits
+                    ? metadataGuardRejects
+                          ? 'chat message metadata'
+                          : 'usage cost'
+                    : 'turn items'),
+          ),
+          hasLength(1),
+        );
+        controller.dispose();
+        await controller.disposalComplete;
+      }
+
+      for (final cost in invalidCosts) {
+        await verify(cost, markerFits: true);
+      }
+      await verify(invalidCosts.first, markerFits: false);
+    });
+
+    test(
+      'usage cost guard owns nested carriers before strict inspection',
+      () async {
+        const canary = 'SECRET_THROWING_USAGE_COST_INDEX';
+        final cost = _ThrowingIndexUsageCostMap(canary);
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        controller.sessionUsage = const AcpSessionUsage(used: 2, size: 10);
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        expect(
+          () => fake.emit(
+            AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{
+                'kind': 'usage_update',
+                'used': 3,
+                'size': 10,
+                'cost': cost,
+              },
+            ),
+          ),
+          returnsNormally,
+        );
+
+        expect(cost.indexReads, 0);
+        expect(controller.sessionUsage?.used, 2);
+        expect(controller.sessionUsage?.cost, isNull);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'usage cost',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'invalid usage values use a distinct payload-free diagnosis',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        controller.sessionUsage = const AcpSessionUsage(used: 2, size: 10);
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'invalid usage',
+            metadata: <String, Object?>{
+              'kind': 'usage_update',
+              'used': 'invalid',
+              'size': 10,
+            },
+          ),
+        );
+
+        expect(controller.sessionUsage?.used, 2);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'usage values',
+          ),
+          hasLength(1),
+        );
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'usage cost',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'usage and session info metadata guard failures stay specialized and payload-free',
+      () async {
+        const canary = 'SECRET_STATE_METADATA_GUARD_CANARY';
+
+        Future<void> verify({
+          required String kind,
+          required acp.AcpInputBudget budget,
+          required Map<String, Object?> metadata,
+          required acp.AcpInputOmissionReason reason,
+        }) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: budget,
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          controller.sessionUsage = const AcpSessionUsage(used: 2, size: 10);
+          controller.currentSession = controller.currentSession!.copyWith(
+            title: 'old',
+          );
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          expect(
+            () => fake.emit(
+              AgentEvent(
+                type: AgentEventType.status,
+                text: canary,
+                metadata: metadata,
+              ),
+            ),
+            returnsNormally,
+          );
+
+          expect(controller.sessionUsage?.used, 2);
+          expect(controller.currentSession?.title, 'old');
+          expect(
+            controller.messages.map((message) => message.text).join(),
+            isNot(contains(canary)),
+          );
+          expect(observed.single.text, isEmpty);
+          expect(observed.single.metadata['kind'], kind);
+          expect(observed.single.metadata.toString(), isNot(contains(canary)));
+          expect(
+            observed.single.omissions.where(
+              (omission) => omission.reason == reason,
+            ),
+            hasLength(1),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        for (final kind in const <String>[
+          'usage_update',
+          'session_info_update',
+        ]) {
+          await verify(
+            kind: kind,
+            budget: const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+            metadata: <String, Object?>{'kind': kind, 'value': canary},
+            reason: acp.AcpInputOmissionReason.inputLimit,
+          );
+          await verify(
+            kind: kind,
+            budget: const acp.AcpInputBudget(),
+            metadata: <String, Object?>{
+              'kind': kind,
+              'value': _CanaryPayload(),
+            },
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+          );
+        }
+      },
+    );
+
+    test(
+      'replacing a prior-turn status admits it into the current ledger',
+      () async {
+        final first = _ControlledPromptAgentClient();
+        final controller = ChatController(client: first, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('first');
+        first.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'old plan',
+            metadata: <String, Object?>{'kind': 'plan'},
+          ),
+        );
+        await first.finishPrompt();
+
+        final second = _ControlledPromptAgentClient();
+        final replacement = ChatController(client: second, cwd: '/workspace');
+        addTearDown(replacement.dispose);
+        replacement.currentSession = controller.currentSession;
+        replacement.sessions.addAll(controller.sessions);
+        replacement.messages.addAll(
+          controller.messages.map((message) => message.thaw()),
+        );
+        await replacement.sendPrompt('second');
+        second.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'new plan',
+            metadata: <String, Object?>{'kind': 'plan'},
+          ),
+        );
+
+        expect(
+          replacement.messages
+              .singleWhere((message) => message.metadata['kind'] == 'plan')
+              .text,
+          'new plan',
+        );
+        final dynamic debug = replacement;
+        expect(debug.debugCurrentTurnItems, 2);
+      },
+    );
+
+    test(
+      'hostile commands clear old state without retaining payload',
+      () async {
+        const smallCommands = AgentEvent(
+          type: AgentEventType.status,
+          text: 'commands',
+          metadata: <String, Object?>{
+            'kind': 'commands',
+            'commands': <Object?>[
+              <String, Object?>{'name': 'safe'},
+            ],
+          },
+        );
+        const canary = 'SECRET_COMMAND_ROOT_CANARY';
+        final payload = _CanaryPayload();
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        fake.emit(smallCommands);
+        expect(controller.availableCommands.single['name'], 'safe');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: <String, Object?>{
+              'kind': 'commands',
+              'commands': <Object?>[
+                <String, Object?>{'name': 'unsafe', 'payload': payload},
+              ],
+            },
+          ),
+        );
+
+        expect(controller.availableCommands, isEmpty);
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where(
+                (omission) =>
+                    omission.resource == 'chat message metadata' &&
+                    omission.reason ==
+                        acp.AcpInputOmissionReason.invalidStructure,
+              ),
+          hasLength(1),
+        );
+        expect(
+          controller.messages.map((message) => message.text).join(),
+          isNot(contains(canary)),
+        );
+        expect(
+          controller.messages.map((message) => message.metadata).toString(),
+          isNot(contains(canary)),
+        );
+        expect(payload.toStringCalls, 0);
+        expect(observed.single.text, isNot(contains(canary)));
+        expect(observed.single.metadata.toString(), isNot(contains(canary)));
+      },
+    );
+
+    test(
+      'structurally invalid commands fail closed with a typed marker',
+      () async {
+        const canary = 'SECRET_INVALID_COMMAND_STRUCTURE';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: <String, Object?>{
+              'kind': 'commands',
+              'commands': <Object?>[
+                <Object?>[canary],
+              ],
+            },
+          ),
+        );
+
+        expect(controller.availableCommands, isEmpty);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) => omission.resource == 'commands',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'invalid command and mode clears are never accepted as event payload',
+      () async {
+        const canary = 'SECRET_INVALID_CLEAR_PAYLOAD';
+
+        Future<void> verify({
+          required bool commands,
+          required bool ledgerTracked,
+        }) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: acp.AcpInputBudget(
+              maxTurnItems: ledgerTracked ? 512 : 2,
+            ),
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+
+          if (ledgerTracked) {
+            fake.emit(
+              commands
+                  ? const AgentEvent(
+                      type: AgentEventType.status,
+                      text: 'old commands',
+                      metadata: <String, Object?>{
+                        'kind': 'commands',
+                        'commands': <Object?>[
+                          <String, Object?>{'name': 'old'},
+                        ],
+                      },
+                    )
+                  : const AgentEvent(
+                      type: AgentEventType.status,
+                      text: 'old mode',
+                      metadata: <String, Object?>{
+                        'kind': 'mode',
+                        'mode': 'old',
+                      },
+                    ),
+            );
+          } else if (commands) {
+            controller.availableCommands = const <Map<String, Object?>>[
+              <String, Object?>{'name': 'old'},
+            ];
+          } else {
+            controller.sessionSettings = const AcpSessionSettings(
+              modes: AcpSessionModeInfo(currentModeId: 'old'),
+            );
+          }
+          expect(
+            commands
+                ? controller.availableCommands
+                : controller.sessionSettings.modes.currentModeId,
+            isNot(isEmpty),
+          );
+
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+          fake.emit(
+            commands
+                ? const AgentEvent(
+                    type: AgentEventType.status,
+                    text: canary,
+                    metadata: <String, Object?>{
+                      'kind': 'commands',
+                      'commands': <Object?>[
+                        <Object?>[canary],
+                      ],
+                    },
+                  )
+                : const AgentEvent(
+                    type: AgentEventType.status,
+                    text: canary,
+                    metadata: <String, Object?>{'kind': 'mode', 'mode': ''},
+                  ),
+          );
+
+          expect(controller.availableCommands, isEmpty);
+          expect(controller.sessionSettings.modes.currentModeId, isNull);
+          expect(observed.single.text, isEmpty);
+          expect(observed.single.metadata, isEmpty);
+          expect(observed.single.toString(), isNot(contains(canary)));
+          expect(
+            observed.single.omissions.where(
+              (omission) =>
+                  omission.resource ==
+                  (ledgerTracked
+                      ? commands
+                            ? 'commands'
+                            : 'session mode'
+                      : 'turn items'),
+            ),
+            hasLength(1),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        for (final commands in const <bool>[true, false]) {
+          await verify(commands: commands, ledgerTracked: true);
+          await verify(commands: commands, ledgerTracked: false);
+        }
+      },
+    );
+
+    test('invalid config clears are never accepted as event payload', () async {
+      const canary = 'SECRET_INVALID_CONFIG_CLEAR_PAYLOAD';
+
+      Future<void> verify(bool ledgerTracked) async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: acp.AcpInputBudget(
+            maxTurnItems: ledgerTracked ? 512 : 2,
+          ),
+        );
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        const oldOption = AcpConfigOption(
+          id: 'old',
+          name: 'Old',
+          type: 'select',
+          currentValue: 'on',
+          options: <AcpConfigOptionChoice>[],
+        );
+        if (ledgerTracked) {
+          fake.emit(
+            const AgentEvent(
+              type: AgentEventType.status,
+              text: 'old config',
+              metadata: <String, Object?>{
+                'kind': 'config_option_update',
+                'configOptions': <AcpConfigOption>[oldOption],
+              },
+            ),
+          );
+        } else {
+          controller.sessionSettings = const AcpSessionSettings(
+            configOptions: <AcpConfigOption>[oldOption],
+          );
+        }
+        expect(controller.sessionSettings.configOptions, isNotEmpty);
+
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: <String, Object?>{
+              'kind': 'config_option_update',
+              'configOptions': canary,
+            },
+          ),
+        );
+
+        expect(controller.sessionSettings.configOptions, isEmpty);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          observed.single.omissions.where(
+            (omission) =>
+                omission.resource ==
+                (ledgerTracked ? 'config options' : 'turn items'),
+          ),
+          hasLength(1),
+        );
+        controller.dispose();
+        await controller.disposalComplete;
+      }
+
+      await verify(true);
+      await verify(false);
+    });
+
+    test(
+      'commands rollback is payload-free whether the failure marker fits or not',
+      () async {
+        const canary = 'SECRET_COMMAND_ROLLBACK_CANARY';
+
+        Future<void> verify(int maxTurnItems) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: acp.AcpInputBudget(maxTurnItems: maxTurnItems),
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          fake.emit(
+            const AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{
+                'kind': 'commands',
+                'commands': <Object?>[
+                  <String, Object?>{'name': canary},
+                ],
+              },
+            ),
+          );
+
+          expect(controller.availableCommands, isEmpty);
+          expect(observed.single.text, isEmpty);
+          expect(observed.single.metadata, isEmpty);
+          expect(observed.single.toString(), isNot(contains(canary)));
+          expect(
+            observed.single.omissions.where(
+              (omission) => omission.resource == 'turn items',
+            ),
+            hasLength(1),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        await verify(3);
+        await verify(2);
+      },
+    );
+
+    test(
+      'settings rollback is payload-free whether the failure marker fits or not',
+      () async {
+        const canary = 'SECRET_SETTINGS_ROLLBACK_CANARY';
+
+        Future<void> verify(int maxTurnItems) async {
+          final fake = _ControlledPromptAgentClient();
+          final controller = ChatController(
+            client: fake,
+            cwd: '/workspace',
+            inputBudget: acp.AcpInputBudget(maxTurnItems: maxTurnItems),
+          );
+          await controller.newSession();
+          await controller.sendPrompt('u');
+          final observed = <AgentEvent>[];
+          controller.addAgentEventObserver((_, event) => observed.add(event));
+
+          fake.emit(
+            const AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{
+                'kind': 'config_option_update',
+                'configOptions': <AcpConfigOption>[
+                  AcpConfigOption(
+                    id: 'mode',
+                    name: canary,
+                    type: 'select',
+                    currentValue: 'safe',
+                    options: <AcpConfigOptionChoice>[],
+                  ),
+                ],
+              },
+            ),
+          );
+
+          expect(controller.sessionSettings.configOptions, isEmpty);
+          expect(observed.single.text, isEmpty);
+          expect(observed.single.metadata, isEmpty);
+          expect(observed.single.toString(), isNot(contains(canary)));
+          expect(
+            observed.single.omissions.where(
+              (omission) => omission.resource == 'turn items',
+            ),
+            hasLength(1),
+          );
+          controller.dispose();
+          await controller.disposalComplete;
+        }
+
+        await verify(3);
+        await verify(2);
+      },
+    );
+
+    test(
+      'unknown hostile behavior clears commands and settings without observation payload',
+      () async {
+        const canary = 'SECRET_UNKNOWN_BEHAVIOR_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        controller.availableCommands = const <Map<String, Object?>>[
+          <String, Object?>{'name': 'old'},
+        ];
+        controller.sessionSettings = const AcpSessionSettings(
+          configOptions: <AcpConfigOption>[
+            AcpConfigOption(
+              id: 'old',
+              name: 'Old',
+              type: 'select',
+              currentValue: 'on',
+              options: <AcpConfigOptionChoice>[],
+            ),
+          ],
+        );
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: _ThrowingMetadataMap(canary),
+          ),
+        );
+
+        expect(controller.availableCommands, isEmpty);
+        expect(controller.sessionSettings.configOptions, isEmpty);
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+      },
+    );
+
+    test('hostile non-string kind never invokes equality', () async {
+      const canary = 'SECRET_HOSTILE_KIND_EQUALITY';
+      final hostileKind = _ThrowingEqualityValue();
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      controller.availableCommands = const <Map<String, Object?>>[
+        <String, Object?>{'name': 'old'},
+      ];
+      controller.sessionSettings = const AcpSessionSettings(
+        configOptions: <AcpConfigOption>[
+          AcpConfigOption(
+            id: 'old',
+            name: 'Old',
+            type: 'select',
+            currentValue: 'on',
+            options: <AcpConfigOptionChoice>[],
+          ),
+        ],
+      );
+      final observed = <AgentEvent>[];
+      controller.addAgentEventObserver((_, event) => observed.add(event));
+
+      expect(
+        () => fake.emit(
+          AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: <String, Object?>{'kind': hostileKind, 'payload': canary},
+          ),
+        ),
+        returnsNormally,
+      );
+
+      expect(hostileKind.equalityCalls, 0);
+      expect(controller.availableCommands, isEmpty);
+      expect(controller.sessionSettings.configOptions, isEmpty);
+      expect(observed.single.text, isEmpty);
+      expect(observed.single.metadata, isEmpty);
+      expect(observed.single.toString(), isNot(contains(canary)));
+      expect(
+        observed.single.omissions.where(
+          (omission) =>
+              omission.reason == acp.AcpInputOmissionReason.invalidStructure,
+        ),
+        hasLength(1),
+      );
+    });
+
+    test(
+      'host fixed overflow resources survive a one-byte string budget',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxTurnItems: 2,
+            maxStructuredStringBytes: 1,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+
+        expect(
+          () => fake.emit(
+            const AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: 'SECRET_FIXED_RESOURCE_CANARY',
+            ),
+          ),
+          returnsNormally,
+        );
+
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where((omission) => omission.resource == 'turn items'),
+          hasLength(1),
+        );
+        expect(
+          controller.messages.map((message) => message.text).join(),
+          isNot(contains('SECRET_FIXED_RESOURCE_CANARY')),
+        );
+      },
+    );
+
+    test(
+      'injected media enforces aggregate exact plus one and drains',
+      () async {
+        const canary = 'SECRET_MEDIA_DRAIN_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 1),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+
+        AgentEvent image(String data) => AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text: 'image',
+          metadata: <String, Object?>{
+            'contentBlocks': <Object?>[
+              <String, Object?>{
+                'type': 'image',
+                'mimeType': 'image/png',
+                'data': data,
+              },
+            ],
+          },
+        );
+
+        fake.emit(image('YQ=='));
+        fake.emit(image('YQ=='));
+        fake.emit(image(canary));
+
+        final metadataText = controller.messages
+            .map((message) => message.metadata)
+            .toString();
+        expect('YQ=='.allMatches(metadataText), hasLength(1));
+        expect(metadataText, isNot(contains(canary)));
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where((omission) => omission.resource == 'turn_media'),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'audio and resource blobs share media bytes and invalid input is hidden',
+      () async {
+        const canary = 'SECRET_INVALID_MEDIA_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 2),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        AgentEvent media(Map<String, Object?> block) => AgentEvent(
+          type: AgentEventType.agentTextDelta,
+          text: 'media',
+          metadata: <String, Object?>{
+            'contentBlocks': <Object?>[block],
+          },
+        );
+
+        fake.emit(
+          media(const <String, Object?>{
+            'type': 'image',
+            'mimeType': 'image/png',
+            'data': canary,
+          }),
+        );
+        fake.emit(
+          media(const <String, Object?>{
+            'type': 'audio',
+            'mimeType': 'audio/wav',
+            'data': 'YQ==',
+          }),
+        );
+        fake.emit(
+          media(const <String, Object?>{
+            'type': 'resource',
+            'resource': <String, Object?>{
+              'uri': 'file:///safe',
+              'blob': 'Yg==',
+            },
+          }),
+        );
+        fake.emit(
+          media(const <String, Object?>{
+            'type': 'image',
+            'mimeType': 'image/png',
+            'data': 'Yw==',
+          }),
+        );
+        fake.emit(
+          media(const <String, Object?>{
+            'type': 'audio',
+            'mimeType': 'audio/wav',
+            'data': canary,
+          }),
+        );
+
+        final retainedMetadata = controller.messages
+            .map((message) => message.metadata)
+            .toList(growable: false)
+            .toString();
+        expect(retainedMetadata, contains('YQ=='));
+        expect(retainedMetadata, contains('Yg=='));
+        expect(retainedMetadata, isNot(contains(canary)));
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where(
+                (omission) =>
+                    omission.resource == 'image_data' &&
+                    omission.reason ==
+                        acp.AcpInputOmissionReason.invalidEncoding,
+              ),
+          hasLength(1),
+        );
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where((omission) => omission.resource == 'turn_media'),
+          hasLength(1),
+        );
+        expect(
+          observed.map((event) => event.metadata).toString(),
+          isNot(contains(canary)),
+        );
+      },
+    );
+
+    test(
+      'media payload is independent from the structured string budget',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(
+            maxEmbeddedMediaBytes: 1,
+            maxStructuredStringBytes: 1,
+          ),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'i',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'image',
+                  'mimeType': 'i',
+                  'data': 'YQ==',
+                },
+              ],
+            },
+          ),
+        );
+
+        final image = controller.messages.singleWhere(
+          (message) => message.metadata['contentBlocks'] != null,
+        );
+        expect(image.metadata.toString(), contains('YQ=='));
+        expect(image.omissions, isEmpty);
+      },
+    );
+
+    test(
+      'forged media omission drops extra payload and bad blocks keep their own resource',
+      () async {
+        const canary = 'SECRET_FORGED_OMISSION_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'media',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'omitted',
+                  'reason': 'invalid_encoding',
+                  'resource': 'image_data',
+                  'truncated': false,
+                  'extra': canary,
+                },
+                <String, Object?>{'type': 'image', 'data': canary},
+                <String, Object?>{'type': 'audio', 'data': canary},
+              ],
+            },
+          ),
+        );
+
+        final message = controller.messages.last;
+        final blocks = message.metadata['contentBlocks']! as List;
+        expect(message.metadata.toString(), isNot(contains(canary)));
+        expect(blocks[0], isNot(contains('extra')));
+        expect((blocks[1] as Map)['resource'], 'image_data');
+        expect((blocks[2] as Map)['resource'], 'audio_data');
+        expect(
+          message.omissions.map((omission) => omission.resource),
+          containsAll(<String>['image_data', 'audio_data']),
+        );
+      },
+    );
+
+    test(
+      'forged omitted blocks never create trusted typed omissions',
+      () async {
+        const canary = 'SECRET_FORGED_TYPED_OMISSION';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'forged',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'omitted',
+                  'reason': 'invalid_encoding',
+                  'resource': 'image_data',
+                  'truncated': false,
+                  'extra': canary,
+                },
+              ],
+            },
+          ),
+        );
+
+        final message = controller.messages.last;
+        expect(message.metadata.toString(), isNot(contains(canary)));
+        expect(message.omissions, isEmpty);
+        expect(observed.single.omissions, isEmpty);
+      },
+    );
+
+    test('malformed forged omitted capacity fields never throw', () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+
+      expect(
+        () => fake.emit(
+          const AgentEvent(
+            type: AgentEventType.agentTextDelta,
+            text: 'forged',
+            metadata: <String, Object?>{
+              'contentBlocks': <Object?>[
+                <String, Object?>{
+                  'type': 'omitted',
+                  'reason': 'input_limit',
+                  'resource': 'image_data',
+                  'truncated': false,
+                },
+                <String, Object?>{
+                  'type': 'omitted',
+                  'reason': 'invalid_encoding',
+                  'resource': 'audio_data',
+                  'truncated': false,
+                  'limit': 1,
+                  'observedAtLeast': 2,
+                },
+                <String, Object?>{
+                  'type': 'omitted',
+                  'reason': 42,
+                  'resource': <Object?>[],
+                  'truncated': 'no',
+                },
+              ],
+            },
+          ),
+        ),
+        returnsNormally,
+      );
+      expect(controller.messages.last.omissions, isEmpty);
+    });
+  });
+
   group('ChatController turn budget terminal lifecycle', () {
     Future<
       ({
@@ -1476,6 +4140,204 @@ void main() {
       expect(state.target.revision, 1);
       state.controller.dispose();
       expect(state.target.revision, 1);
+    });
+
+    test(
+      'terminal overflow omission attaches to an owned turn target',
+      () async {
+        const canary = 'SECRET_TERMINAL_OVERFLOW_CANARY';
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(
+          client: fake,
+          cwd: '/workspace',
+          inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+        );
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final observed = <AgentEvent>[];
+        controller.addAgentEventObserver((_, event) => observed.add(event));
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: canary,
+            metadata: <String, Object?>{
+              'kind': 'terminal',
+              'terminalId': 't',
+              'status': 'completed',
+            },
+          ),
+        );
+
+        expect(
+          controller.messages.where(
+            (message) => message.metadata['kind'] == 'terminal',
+          ),
+          isEmpty,
+        );
+        expect(observed.single.text, isEmpty);
+        expect(observed.single.metadata, isEmpty);
+        expect(observed.single.toString(), isNot(contains(canary)));
+        expect(
+          controller.messages
+              .expand((message) => message.omissions)
+              .where((omission) => omission.resource == 'turn items'),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('no-target terminal uses one payload-free reserved marker', () async {
+      const canary = 'SECRET_NO_TARGET_TERMINAL_CANARY';
+      final controller = ChatController(
+        client: FakeAgentClient(
+          createSessionEvents: const <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.status,
+              text: canary,
+              metadata: <String, Object?>{
+                'kind': 'terminal',
+                'terminalId': 'initial',
+                'status': 'completed',
+              },
+            ),
+          ],
+        ),
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxTurnItems: 1),
+      );
+      addTearDown(controller.dispose);
+      final dynamic debug = controller;
+      late AgentEvent observed;
+      var itemsDuringObservation = -1;
+      var retainedDuringObservation = -1;
+      controller.addAgentEventObserver((_, event) {
+        observed = event;
+        itemsDuringObservation = debug.debugCurrentTurnItems as int;
+        retainedDuringObservation = debug.debugCurrentTurnRetainedBytes as int;
+      });
+
+      await controller.newSession();
+
+      expect(itemsDuringObservation, 1);
+      expect(retainedDuringObservation, greaterThan(0));
+      expect(
+        retainedDuringObservation,
+        lessThanOrEqualTo(const acp.AcpInputBudget().maxTurnRetainedBytes),
+      );
+      expect(controller.messages, hasLength(1));
+      final marker = controller.messages.single;
+      expect(marker.role, ChatMessageRole.status);
+      expect(marker.text, isEmpty);
+      expect(marker.metadata, isEmpty);
+      expect(marker.omissions, hasLength(1));
+      expect(marker.omissions.single.resource, 'turn items');
+      expect(observed.text, isEmpty);
+      expect(observed.metadata, isEmpty);
+      expect(observed.toString(), isNot(contains(canary)));
+    });
+
+    test(
+      'same terminal id lifecycle replaces in place and recomputes delta',
+      () async {
+        final fake = _ControlledPromptAgentClient();
+        final controller = ChatController(client: fake, cwd: '/workspace');
+        addTearDown(controller.dispose);
+        await controller.newSession();
+        await controller.sendPrompt('u');
+        final dynamic debug = controller;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'a',
+            metadata: <String, Object?>{
+              'kind': 'terminal',
+              'terminalId': 'same',
+              'status': 'running',
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 2);
+        final firstBytes = debug.debugCurrentTurnRetainedBytes as int;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'completed safely',
+            metadata: <String, Object?>{
+              'kind': 'terminal',
+              'terminalId': 'same',
+              'status': 'completed',
+            },
+          ),
+        );
+        expect(debug.debugCurrentTurnItems, 2);
+        expect(debug.debugCurrentTurnRetainedBytes, greaterThan(firstBytes));
+        final completedBytes = debug.debugCurrentTurnRetainedBytes as int;
+
+        fake.emit(
+          const AgentEvent(
+            type: AgentEventType.status,
+            text: 'Terminal released.',
+            metadata: <String, Object?>{
+              'kind': 'terminal',
+              'terminalId': 'same',
+              'status': 'released',
+            },
+          ),
+        );
+
+        expect(debug.debugCurrentTurnItems, 2);
+        expect(debug.debugCurrentTurnRetainedBytes, completedBytes);
+        final terminal = controller.messages.singleWhere(
+          (message) => message.metadata['kind'] == 'terminal',
+        );
+        expect(terminal.text, 'completed safely');
+        expect(terminal.metadata['status'], 'completed');
+      },
+    );
+
+    test('terminal overflow stays typed-only when no marker can fit', () async {
+      const canary = 'SECRET_TERMINAL_TYPED_ONLY_CANARY';
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(maxTurnRetainedBytes: 1),
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      await controller.sendPrompt('u');
+      final observed = <AgentEvent>[];
+      controller.addAgentEventObserver((_, event) => observed.add(event));
+
+      fake.emit(
+        const AgentEvent(
+          type: AgentEventType.status,
+          text: canary,
+          metadata: <String, Object?>{
+            'kind': 'terminal',
+            'terminalId': 't',
+            'status': 'completed',
+          },
+        ),
+      );
+
+      final dynamic debug = controller;
+      expect(debug.debugTurnOverflowed, isTrue);
+      expect(debug.debugCurrentTurnRetainedBytes, 0);
+      expect(controller.messages, isEmpty);
+      expect(observed.single.text, isEmpty);
+      expect(observed.single.metadata, isEmpty);
+      expect(observed.single.toString(), isNot(contains(canary)));
+      expect(
+        observed.single.omissions.where(
+          (omission) => omission.resource == 'turn retained bytes',
+        ),
+        hasLength(1),
+      );
     });
 
     test('reconnect finishes pending text before releasing the turn', () async {
@@ -7490,6 +10352,88 @@ class _LateEventSubscription implements StreamSubscription<AgentEvent> {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _ReportedLengthResourceMap extends MapBase<String, Object?> {
+  _ReportedLengthResourceMap(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => 1;
+
+  @override
+  Iterable<String> get keys => <String>['uri', canary];
+
+  @override
+  Object? operator [](Object? key) => key == 'uri' ? 'u' : canary;
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
+}
+
+class _ThrowingEqualityValue {
+  int equalityCalls = 0;
+
+  @override
+  bool operator ==(Object other) {
+    equalityCalls += 1;
+    throw StateError('hostile equality');
+  }
+
+  @override
+  int get hashCode => 0;
+}
+
+class _TrueEqualityValue {
+  int equalityCalls = 0;
+
+  @override
+  bool operator ==(Object other) {
+    equalityCalls += 1;
+    return true;
+  }
+
+  @override
+  int get hashCode => 0;
+}
+
+class _ThrowingIndexUsageCostMap extends MapBase<String, Object?> {
+  _ThrowingIndexUsageCostMap(this.canary);
+
+  final String canary;
+  int indexReads = 0;
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries =>
+      <MapEntry<String, Object?>>[
+        const MapEntry<String, Object?>('amount', 1),
+        MapEntry<String, Object?>('currency', <Object?>[canary]),
+      ];
+
+  @override
+  Iterable<String> get keys => const <String>['amount', 'currency'];
+
+  @override
+  Object? operator [](Object? key) {
+    indexReads += 1;
+    throw StateError(canary);
+  }
+
+  @override
+  void operator []=(String key, Object? value) => throw UnsupportedError('');
+
+  @override
+  void clear() => throw UnsupportedError('');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('');
 }
 
 class _ThrowingMetadataMap implements Map<String, Object?> {
