@@ -5,6 +5,7 @@ import 'config.dart';
 import 'content/content_builder.dart';
 import 'extensions.dart';
 import 'input_budget.dart';
+import 'models/bounded_observation.dart';
 import 'models/session_types.dart';
 import 'models/terminal_events.dart';
 import 'models/updates.dart';
@@ -15,7 +16,7 @@ import 'transport/transport.dart';
 
 /// High-level ACP client that manages transport, session lifecycle,
 /// and streams updates from the agent.
-class AcpClient {
+class AcpClient implements AcpBoundedObservationSource {
   /// Private constructor - use [AcpClient.start] to create instances.
   AcpClient._({required this.config, required AcpTransport transport})
     : _transport = transport;
@@ -75,6 +76,15 @@ class AcpClient {
   final AcpTransport _transport;
   late final JsonRpcPeer _peer;
   late final SessionManager _sessionManager;
+
+  @override
+  void addBoundedObservationListener(AcpBoundedObservationListener listener) =>
+      _sessionManager.addBoundedObservationListener(listener);
+
+  @override
+  void removeBoundedObservationListener(
+    AcpBoundedObservationListener listener,
+  ) => _sessionManager.removeBoundedObservationListener(listener);
 
   /// Dispose the transport and release resources.
   Future<void> dispose() async {

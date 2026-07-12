@@ -15,6 +15,618 @@ import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 void main() {
+  test('exports the bounded observation family', () {
+    void listener(acp.AcpBoundedObservation _) {}
+
+    acp.AcpBoundedObservation? observation;
+
+    expect(listener, isA<acp.AcpBoundedObservationListener>());
+    expect(observation, isNull);
+    expect(
+      acp.AcpBoundedSessionOperation.values,
+      <acp.AcpBoundedSessionOperation>[
+        acp.AcpBoundedSessionOperation.newSession,
+        acp.AcpBoundedSessionOperation.loadSession,
+        acp.AcpBoundedSessionOperation.resumeSession,
+        acp.AcpBoundedSessionOperation.forkSession,
+      ],
+    );
+
+    const result = acp.SessionResult(sessionId: 'public-session');
+    const resultObservation = acp.AcpBoundedSessionResultObservation(
+      operation: acp.AcpBoundedSessionOperation.resumeSession,
+      sessionId: 'public-session',
+      result: result,
+    );
+    const update = acp.UsageUpdate(used: 1, size: 2);
+    const updateObservation = acp.AcpBoundedUpdateObservation(
+      sessionId: 'public-session',
+      update: update,
+    );
+
+    expect(
+      resultObservation.operation,
+      acp.AcpBoundedSessionOperation.resumeSession,
+    );
+    expect(resultObservation.sessionId, 'public-session');
+    expect(identical(resultObservation.result, result), isTrue);
+    expect(updateObservation.sessionId, 'public-session');
+    expect(identical(updateObservation.update, update), isTrue);
+    expect(resultObservation, isNot(isA<Map<Object?, Object?>>()));
+    expect(updateObservation, isNot(isA<Map<Object?, Object?>>()));
+    expect(() => (resultObservation as dynamic).raw, throwsNoSuchMethodError);
+    expect(() => (updateObservation as dynamic).raw, throwsNoSuchMethodError);
+    expect(
+      () => (resultObservation as dynamic).toJson(),
+      throwsNoSuchMethodError,
+    );
+    expect(
+      () => (updateObservation as dynamic).toJson(),
+      throwsNoSuchMethodError,
+    );
+  });
+
+  test(
+    'manager publishes committed session results with correct identity',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final observations = <acp.AcpBoundedSessionResultObservation>[];
+      void listener(acp.AcpBoundedObservation observation) {
+        if (observation is acp.AcpBoundedSessionResultObservation) {
+          observations.add(observation);
+        }
+      }
+
+      manager.addBoundedObservationListener(listener);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        final method = request['method'];
+        final params = request['params'] as Map<String, dynamic>? ?? const {};
+        final result = switch (method) {
+          'session/new' => <String, dynamic>{'sessionId': 'new-observed'},
+          'session/load' => <String, dynamic>{
+            'sessionId': params['sessionId'],
+            'currentModeId': 'load-mode',
+            'availableModes': <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'load-mode', 'name': 'Load mode'},
+            ],
+          },
+          'session/resume' => <String, dynamic>{
+            'sessionId': params['sessionId'],
+            'currentModeId': 'resume-mode',
+            'availableModes': <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'resume-mode', 'name': 'Resume mode'},
+            ],
+          },
+          'session/fork' => <String, dynamic>{'sessionId': 'fork-observed'},
+          _ => null,
+        };
+        if (result == null) return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': result,
+          }),
+        );
+      });
+      try {
+        final newId = await manager.newSession(workspaceRoot: '/workspace/new');
+        expect(newId, 'new-observed');
+        expect(
+          observations.single.operation,
+          acp.AcpBoundedSessionOperation.newSession,
+        );
+        expect(observations.single.sessionId, newId);
+        expect(manager.getWorkspaceRoot(newId), '/workspace/new');
+
+        final resumeResult = await manager.resumeSession(
+          sessionId: 'resume-observed',
+          workspaceRoot: '/workspace/resume',
+        );
+        final resumeObservation = observations.last;
+        expect(
+          resumeObservation.operation,
+          acp.AcpBoundedSessionOperation.resumeSession,
+        );
+        expect(resumeObservation.sessionId, 'resume-observed');
+        expect(identical(resumeObservation.result, resumeResult), isTrue);
+        expect(
+          manager.sessionModes('resume-observed')?.currentModeId,
+          'resume-mode',
+        );
+
+        await manager.loadSession(
+          sessionId: 'load-observed',
+          workspaceRoot: '/workspace/load',
+        );
+        final loadObservation = observations.last;
+        expect(
+          loadObservation.operation,
+          acp.AcpBoundedSessionOperation.loadSession,
+        );
+        expect(loadObservation.sessionId, 'load-observed');
+        expect(loadObservation.result.sessionId, 'load-observed');
+        expect(loadObservation.result.modes?.currentModeId, 'load-mode');
+        expect(
+          manager.sessionModes('load-observed')?.currentModeId,
+          'load-mode',
+        );
+
+        final forkResult = await manager.forkSession(
+          sessionId: 'resume-observed',
+        );
+        final forkObservation = observations.last;
+        expect(
+          forkObservation.operation,
+          acp.AcpBoundedSessionOperation.forkSession,
+        );
+        expect(forkObservation.sessionId, 'fork-observed');
+        expect(identical(forkObservation.result, forkResult), isTrue);
+        expect(manager.getWorkspaceRoot('fork-observed'), '/workspace/resume');
+      } finally {
+        manager.removeBoundedObservationListener(listener);
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'bounded update observation shares the committed stream instance',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final observations = <acp.AcpBoundedUpdateObservation>[];
+      void listener(acp.AcpBoundedObservation observation) {
+        if (observation is acp.AcpBoundedUpdateObservation) {
+          observations.add(observation);
+        }
+      }
+
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      StreamSubscription<acp.AcpUpdate>? updateSubscription;
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'update-observed',
+          workspaceRoot: '/workspace',
+        );
+        manager.addBoundedObservationListener(listener);
+        final streamed = <acp.AcpUpdate>[];
+        updateSubscription = manager
+            .sessionUpdates('update-observed')
+            .listen(streamed.add);
+        final owner = manager.beginPromptTurn('update-observed');
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'update-observed',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': 'same-instance',
+          },
+        });
+        await pumpEventQueue();
+        manager.endPromptTurn(owner);
+
+        expect(observations, hasLength(1));
+        expect(observations.single.sessionId, 'update-observed');
+        expect(streamed, hasLength(1));
+        expect(identical(observations.single.update, streamed.single), isTrue);
+        final replayed = await manager.sessionUpdates('update-observed').first;
+        expect(identical(observations.single.update, replayed), isTrue);
+      } finally {
+        manager.removeBoundedObservationListener(listener);
+        await updateSubscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'setup publishes before handing its serialized session to the next setup',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final events = <String>[];
+      final ownerWasActive = <bool>[];
+      void listener(acp.AcpBoundedObservation observation) {
+        if (observation is acp.AcpBoundedSessionResultObservation) {
+          events.add('observation-${observation.result.meta?['sequence']}');
+          try {
+            final unexpected = manager.beginPromptTurn(observation.sessionId);
+            ownerWasActive.add(false);
+            manager.endPromptTurn(unexpected);
+          } on StateError {
+            ownerWasActive.add(true);
+          }
+        }
+      }
+
+      manager.addBoundedObservationListener(listener);
+      var requests = 0;
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        requests += 1;
+        events.add('request-$requests');
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{
+              'sessionId': 'serialized-observation',
+              '_meta': <String, dynamic>{'sequence': requests},
+            },
+          }),
+        );
+      });
+
+      try {
+        final first = manager.resumeSession(
+          sessionId: 'serialized-observation',
+          workspaceRoot: '/workspace',
+        );
+        final second = manager.resumeSession(
+          sessionId: 'serialized-observation',
+          workspaceRoot: '/workspace',
+        );
+        await Future.wait(<Future<acp.SessionResult>>[first, second]);
+
+        expect(events, <String>[
+          'request-1',
+          'observation-1',
+          'request-2',
+          'observation-2',
+        ]);
+        expect(ownerWasActive, <bool>[true, true]);
+      } finally {
+        manager.removeBoundedObservationListener(listener);
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'bounded listeners are synchronous snapshot isolated and not replayed',
+    () async {
+      const canary = 'bounded-listener-canary';
+      final logger = acp.AcpConfig().logger;
+      final records = <String>[];
+      final logSubscription = logger.onRecord.listen(
+        (record) => records.add(record.message),
+      );
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(logger: logger),
+        peer: peer,
+      );
+      final calls = <String>[];
+      late acp.AcpBoundedObservationListener selfRemoving;
+      void addedDuringPublish(acp.AcpBoundedObservation _) =>
+          calls.add('added');
+      selfRemoving = (_) {
+        calls.add('self');
+        manager.removeBoundedObservationListener(selfRemoving);
+        manager.addBoundedObservationListener(addedDuringPublish);
+      };
+      void throwing(acp.AcpBoundedObservation _) {
+        calls.add('throwing');
+        throw StateError(canary);
+      }
+
+      void last(acp.AcpBoundedObservation _) => calls.add('last');
+      StreamSubscription<acp.AcpUpdate>? snapshotSubscription;
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'before-listener',
+          workspaceRoot: '/workspace',
+        );
+        manager.addBoundedObservationListener(selfRemoving);
+        manager.addBoundedObservationListener(throwing);
+        manager.addBoundedObservationListener(last);
+        await pumpEventQueue();
+        expect(calls, isEmpty, reason: 'old observations must not replay');
+
+        await manager.resumeSession(
+          sessionId: 'snapshot-listener',
+          workspaceRoot: '/workspace',
+        );
+        expect(calls, <String>['self', 'throwing', 'last']);
+        expect(records, contains('bounded observation listener failed'));
+        expect(records.join('\n'), isNot(contains(canary)));
+
+        calls.clear();
+        await manager.resumeSession(
+          sessionId: 'after-snapshot',
+          workspaceRoot: '/workspace',
+        );
+        expect(calls, <String>['throwing', 'last', 'added']);
+
+        final streamed = <acp.AcpUpdate>[];
+        snapshotSubscription = manager
+            .sessionUpdates('after-snapshot')
+            .listen(streamed.add);
+        await pumpEventQueue();
+        calls.clear();
+        final owner = manager.beginPromptTurn('after-snapshot');
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'after-snapshot',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': 'listener-isolated',
+          },
+        });
+        await pumpEventQueue();
+        manager.endPromptTurn(owner);
+        expect(calls, <String>['throwing', 'last', 'added']);
+        expect(streamed, hasLength(1));
+
+        await manager.dispose();
+        calls.clear();
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'after-snapshot',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': canary,
+          },
+        });
+        expect(calls, isEmpty);
+      } finally {
+        await snapshotSubscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+        await logSubscription.cancel();
+      }
+    },
+  );
+
+  test('AcpClient proxies bounded observations and listener removal', () async {
+    final transport = _TrackingAcpTransport();
+    final client = await acp.AcpClient.start(
+      config: acp.AcpConfig(),
+      transport: transport,
+    );
+    final observations = <acp.AcpBoundedObservation>[];
+    void listener(acp.AcpBoundedObservation observation) {
+      observations.add(observation);
+    }
+
+    var newRequests = 0;
+    final server = transport._controller.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] != 'session/new') return;
+      newRequests += 1;
+      transport._controller.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': request['id'],
+          'result': <String, dynamic>{
+            'sessionId': 'client-observed-$newRequests',
+          },
+        }),
+      );
+    });
+
+    try {
+      expect(client, isA<acp.AcpBoundedObservationSource>());
+      client.addBoundedObservationListener(listener);
+      final first = await client.newSession('/workspace/first');
+      expect(first, 'client-observed-1');
+      expect(observations, hasLength(1));
+      expect(
+        (observations.single as acp.AcpBoundedSessionResultObservation)
+            .sessionId,
+        first,
+      );
+
+      client.removeBoundedObservationListener(listener);
+      final second = await client.newSession('/workspace/second');
+      expect(second, 'client-observed-2');
+      expect(observations, hasLength(1));
+    } finally {
+      await client.dispose();
+      await server.cancel();
+      await transport._controller.local.sink.close();
+    }
+  });
+
+  test(
+    'rejected unknown and unowned updates do not publish observations',
+    () async {
+      const canary = 'rejected-observation-canary';
+      final logger = acp.AcpConfig().logger;
+      final records = <String>[];
+      final logSubscription = logger.onRecord.listen(
+        (record) => records.add(record.message),
+      );
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(
+        config: acp.AcpConfig(logger: logger),
+        peer: peer,
+      );
+      final observations = <acp.AcpBoundedObservation>[];
+      final streamErrors = <Object>[];
+      void listener(acp.AcpBoundedObservation observation) {
+        observations.add(observation);
+      }
+
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      });
+      StreamSubscription<acp.AcpUpdate>? updateSubscription;
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'rejection-known',
+          workspaceRoot: '/workspace',
+        );
+        manager.addBoundedObservationListener(listener);
+        updateSubscription = manager
+            .sessionUpdates('rejection-known')
+            .listen((_) {}, onError: streamErrors.add);
+        await pumpEventQueue();
+
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'unknown-session',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': canary,
+          },
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'rejection-known',
+          'update': <String, dynamic>{
+            'sessionUpdate': 'current_mode_update',
+            'currentModeId': canary,
+          },
+        });
+
+        final owner = manager.beginPromptTurn('rejection-known');
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'rejection-known',
+          'update': _ThrowingGetterMap(
+            <String, dynamic>{'sessionUpdate': 'current_mode_update'},
+            throwKey: 'sessionUpdate',
+            error: StateError(canary),
+          ),
+        });
+        await pumpEventQueue();
+        manager.endPromptTurn(owner);
+
+        expect(observations, isEmpty);
+        expect(streamErrors, hasLength(1));
+        expect(streamErrors.join('\n'), isNot(contains(canary)));
+        expect(records, contains('session update rejected'));
+        expect(records.join('\n'), isNot(contains(canary)));
+      } finally {
+        manager.removeBoundedObservationListener(listener);
+        await updateSubscription?.cancel();
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+        await logSubscription.cancel();
+      }
+    },
+  );
+
+  test(
+    'rolled back and late session results do not publish observations',
+    () async {
+      const canary = 'failed-result-observation-canary';
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final observations = <acp.AcpBoundedObservation>[];
+      final lateNewId = Completer<Object?>();
+      void listener(acp.AcpBoundedObservation observation) {
+        observations.add(observation);
+      }
+
+      manager.addBoundedObservationListener(listener);
+      final server = channel.local.stream.listen((line) {
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        if (request['method'] == 'session/resume') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{'sessionId': canary},
+            }),
+          );
+        } else if (request['method'] == 'session/new' &&
+            !lateNewId.isCompleted) {
+          lateNewId.complete(request['id']);
+        }
+      });
+
+      try {
+        Object? rollbackError;
+        try {
+          await manager.resumeSession(
+            sessionId: 'rollback-observed',
+            workspaceRoot: '/workspace',
+          );
+        } catch (error) {
+          rollbackError = error;
+        }
+        expect(rollbackError, isA<FormatException>());
+        expect(rollbackError.toString(), isNot(contains(canary)));
+        expect(observations, isEmpty);
+        expect(
+          () => manager.getWorkspaceRoot('rollback-observed'),
+          throwsStateError,
+        );
+
+        final pending = manager.newSession(workspaceRoot: '/workspace');
+        final requestId = await lateNewId.future.timeout(
+          const Duration(seconds: 5),
+        );
+        await manager.dispose();
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': requestId,
+            'result': <String, dynamic>{'sessionId': canary},
+          }),
+        );
+        await expectLater(pending, throwsStateError);
+        expect(observations, isEmpty);
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
   test('pins the default Codex ACP adapter version', () {
     final client = DartAcpAgentClient(agentCommand: 'unused');
 
@@ -6409,7 +7021,6 @@ Future<void> main() async {
           ),
         );
       });
-
       try {
         await client.connect().timeout(const Duration(seconds: 5));
         await client.createSession(cwd: workspace.path);

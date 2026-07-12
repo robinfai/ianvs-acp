@@ -3,6 +3,7 @@ export 'src/capabilities.dart';
 export 'src/config.dart';
 export 'src/extensions.dart';
 export 'src/input_budget.dart' hide AcpUtf8LineBudgetCheckpoint;
+export 'src/models/bounded_observation.dart';
 export 'src/models/command_types.dart';
 export 'src/models/content_types.dart';
 export 'src/models/diff_types.dart';

@@ -7,6 +7,7 @@ import '../capabilities.dart';
 import '../config.dart';
 import '../extensions.dart';
 import '../input_budget.dart';
+import '../models/bounded_observation.dart';
 import '../models/content_types.dart';
 import '../models/session_types.dart';
 import '../models/terminal_events.dart';
@@ -481,7 +482,7 @@ final class _GeneratedSessionRegistration {
 }
 
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
-class SessionManager {
+class SessionManager implements AcpBoundedObservationSource {
   /// Create a [SessionManager] with [config] and [peer].
   SessionManager({
     required this.config,
@@ -504,6 +505,7 @@ class SessionManager {
         'must be at least $minimumSessionReplayBytes bytes',
       );
     }
+    _boundedObservationListeners = <AcpBoundedObservationListener>{};
     // Wire client-side handlers
     peer.onReadTextFile = _onReadTextFile;
     peer.onWriteTextFile = _onWriteTextFile;
@@ -528,6 +530,7 @@ class SessionManager {
   final int maxToolCallItems;
   final int maxToolCallBytes;
   final AcpInputBudget inputBudget;
+  late final Set<AcpBoundedObservationListener> _boundedObservationListeners;
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
   final Map<String, _ReplayBuffer> _replayBuffers = {};
@@ -570,6 +573,7 @@ class SessionManager {
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     _disposed = true;
+    _boundedObservationListeners.clear();
     _invalidateAllInputBudgetPhases();
     _invalidateAllRequestInputBudgetPhases();
     final terminalProvider = config.terminalProvider;
@@ -687,6 +691,11 @@ class SessionManager {
         await _rollbackGeneratedSession(registration);
         rethrow;
       }
+      _publishSessionResultObservation(
+        operation: AcpBoundedSessionOperation.newSession,
+        sessionId: id,
+        result: result,
+      );
       return id;
     } finally {
       _endRequestInputBudgetPhase(requestPhase);
@@ -723,7 +732,14 @@ class SessionManager {
         await Future<void>.delayed(Duration.zero);
         return result;
       },
-      commit: (result) => _commitSessionResultModes(sessionId, result),
+      commit: (result) {
+        _commitSessionResultModes(sessionId, result);
+        _publishSessionResultObservation(
+          operation: AcpBoundedSessionOperation.loadSession,
+          sessionId: sessionId,
+          result: result,
+        );
+      },
     );
   }
 
@@ -826,7 +842,7 @@ class SessionManager {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
   }) async {
-    return _runSessionSetup<SessionResult>(
+    final result = await _runSessionSetup<SessionResult>(
       sessionId: sessionId,
       workspaceRoot: workspaceRoot,
       additionalDirectories: additionalDirectories,
@@ -850,8 +866,16 @@ class SessionManager {
         await Future<void>.delayed(Duration.zero);
         return result;
       },
-      commit: (result) => _commitSessionResultModes(sessionId, result),
+      commit: (result) {
+        _commitSessionResultModes(sessionId, result);
+        _publishSessionResultObservation(
+          operation: AcpBoundedSessionOperation.resumeSession,
+          sessionId: sessionId,
+          result: result,
+        );
+      },
     );
+    return result;
   }
 
   /// Fork an existing session to create a new independent session.
@@ -909,6 +933,11 @@ class SessionManager {
         await _rollbackGeneratedSession(registration);
         rethrow;
       }
+      _publishSessionResultObservation(
+        operation: AcpBoundedSessionOperation.forkSession,
+        sessionId: newId,
+        result: result,
+      );
       return result;
     } finally {
       _endRequestInputBudgetPhase(requestPhase);
@@ -1572,6 +1601,7 @@ class SessionManager {
       }
       _recordReplay(sessionId, bounded, sizeBytes: consumed.retainedBytes);
       stream.add(bounded);
+      _publishUpdateObservation(sessionId: sessionId, update: bounded);
     } on AcpInputLimitExceeded catch (error) {
       if (!_ownsInputBudgetPhase(phase.owner)) return;
       _log.warning('session update rejected');
@@ -1594,6 +1624,55 @@ class SessionManager {
       if (!_ownsInputBudgetPhase(phase.owner)) return;
       _log.warning('session update rejected');
       stream.addError(const FormatException('Invalid ACP session update.'));
+    }
+  }
+
+  @override
+  void addBoundedObservationListener(AcpBoundedObservationListener listener) {
+    if (_disposed) return;
+    _boundedObservationListeners.add(listener);
+  }
+
+  @override
+  void removeBoundedObservationListener(
+    AcpBoundedObservationListener listener,
+  ) {
+    _boundedObservationListeners.remove(listener);
+  }
+
+  void _publishSessionResultObservation({
+    required AcpBoundedSessionOperation operation,
+    required String sessionId,
+    required SessionResult result,
+  }) {
+    if (_boundedObservationListeners.isEmpty) return;
+    _publishBoundedObservation(
+      AcpBoundedSessionResultObservation(
+        operation: operation,
+        sessionId: sessionId,
+        result: result,
+      ),
+    );
+  }
+
+  void _publishUpdateObservation({
+    required String sessionId,
+    required AcpUpdate update,
+  }) {
+    if (_boundedObservationListeners.isEmpty) return;
+    _publishBoundedObservation(
+      AcpBoundedUpdateObservation(sessionId: sessionId, update: update),
+    );
+  }
+
+  void _publishBoundedObservation(AcpBoundedObservation observation) {
+    final listeners = _boundedObservationListeners.toList(growable: false);
+    for (final listener in listeners) {
+      try {
+        listener(observation);
+      } on Object {
+        _log.warning('bounded observation listener failed');
+      }
     }
   }
 
