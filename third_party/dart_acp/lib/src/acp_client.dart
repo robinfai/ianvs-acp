@@ -138,18 +138,16 @@ class AcpClient {
       _sessionManager.sessionUpdates(sessionId);
 
   /// Mark a raw `session/prompt` request as active.
-  void beginPromptTurn(String sessionId) {
-    _sessionManager.beginPromptTurn(sessionId);
-  }
+  AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) =>
+      _sessionManager.beginPromptTurn(sessionId);
 
   /// Clear turn-local state after a raw `session/prompt` request completes.
-  void endPromptTurn(String sessionId) {
-    _sessionManager.endPromptTurn(sessionId);
-  }
+  void endPromptTurn(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.endPromptTurn(owner);
 
-  /// Cancel the current turn for the given session.
-  Future<void> cancel({required String sessionId}) async =>
-      _sessionManager.cancel(sessionId: sessionId);
+  /// Cancel the current turn only while [owner] still owns it.
+  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.cancelPromptTurn(owner);
 
   /// Terminal events stream for UI.
   Stream<TerminalEvent> get terminalEvents => _sessionManager.terminalEvents;

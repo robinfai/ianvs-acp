@@ -523,6 +523,32 @@ Json? _availableCommandFromRaw(Object? raw) {
   return raw.map((key, value) => MapEntry(key.toString(), value));
 }
 
+/// Opaque identity for one session input-budget phase.
+final class AcpSessionInputBudgetOwner {
+  const AcpSessionInputBudgetOwner._(this.sessionId, this.generation);
+
+  final String sessionId;
+  final int generation;
+}
+
+final class _SessionInputBudgetPhase {
+  _SessionInputBudgetPhase({
+    required this.owner,
+    required this.structuredGuard,
+    required this.text,
+    required this.thought,
+  });
+
+  final AcpSessionInputBudgetOwner owner;
+  final AcpStructuredUpdateGuard structuredGuard;
+  final AcpUtf8LineBudgetCounter text;
+  final AcpUtf8LineBudgetCounter thought;
+  int mediaBytes = 0;
+  int items = 0;
+  int retainedBytes = 0;
+  bool invalidated = false;
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager {
   /// Create a [SessionManager] with [config] and [peer].
@@ -574,8 +600,10 @@ class SessionManager {
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
   final Map<String, _ReplayBuffer> _replayBuffers = {};
-  final Set<String> _activePromptSessions = <String>{};
-  final Set<String> _cancelledPromptSessions = <String>{};
+  final Map<String, _SessionInputBudgetPhase> _inputBudgetPhases =
+      <String, _SessionInputBudgetPhase>{};
+  final Map<String, AcpSessionInputBudgetOwner> _cancelledPromptOwners =
+      <String, AcpSessionInputBudgetOwner>{};
   final StreamController<TerminalEvent> _terminalEvents =
       StreamController<TerminalEvent>.broadcast();
   // Track tool calls by session and tool call ID for proper merging
@@ -589,6 +617,8 @@ class SessionManager {
   final Map<String, Future<void>> _sessionSetupTails = {};
   final Map<String, Set<Object>> _sessionClosingOwners =
       <String, Set<Object>>{};
+  var _nextInputBudgetGeneration = 0;
+  var _disposed = false;
 
   _ReplayBuffer _newReplayBuffer() =>
       _ReplayBuffer(maxItems: maxReplayItems, maxBytes: maxReplayBytes);
@@ -604,6 +634,8 @@ class SessionManager {
 
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
+    _disposed = true;
+    _invalidateAllInputBudgetPhases();
     final terminalProvider = config.terminalProvider;
     final terminals = _terminals.values.toList(growable: false);
     _terminals.clear();
@@ -637,8 +669,7 @@ class SessionManager {
     _toolCallSizes.clear();
     _toolCallItemCount = 0;
     _toolCallByteCount = 0;
-    _activePromptSessions.clear();
-    _cancelledPromptSessions.clear();
+    _cancelledPromptOwners.clear();
     _sessionWorkspaceRoots.clear();
     _sessionAdditionalDirectories.clear();
     _sessionModes.clear();
@@ -775,8 +806,8 @@ class SessionManager {
         await cleanup('modes', () => _sessionModes.remove(sessionId));
         await cleanup('toolCalls', () => _removeToolCalls(sessionId));
         await cleanup('prompt', () {
-          _activePromptSessions.remove(sessionId);
-          _cancelledPromptSessions.remove(sessionId);
+          _invalidateInputBudgetPhase(sessionId);
+          _cancelledPromptOwners.remove(sessionId);
         });
         await cleanup('terminals', () => _releaseSessionTerminals(sessionId));
 
@@ -792,6 +823,8 @@ class SessionManager {
   }
 
   Object _beginSessionClose(String sessionId) {
+    _invalidateInputBudgetPhase(sessionId);
+    _cancelledPromptOwners.remove(sessionId);
     final owner = Object();
     _sessionClosingOwners.putIfAbsent(sessionId, () => <Object>{}).add(owner);
     return owner;
@@ -905,6 +938,8 @@ class SessionManager {
     final base = _sessionStreams[sessionId]!.stream;
     late final StreamController<AcpUpdate> controller;
     StreamSubscription<AcpUpdate>? subscription;
+    AcpSessionInputBudgetOwner? promptOwner;
+    var requestFinished = false;
     controller = StreamController<AcpUpdate>(
       onListen: () {
         subscription = base.listen(
@@ -926,7 +961,16 @@ class SessionManager {
         );
 
         unawaited(() async {
-          beginPromptTurn(sessionId);
+          try {
+            promptOwner = beginPromptTurn(sessionId);
+          } on Object catch (error, stackTrace) {
+            await subscription?.cancel();
+            if (!controller.isClosed) {
+              controller.addError(error, stackTrace);
+              _closeControllerWithoutWaiting(controller);
+            }
+            return;
+          }
           try {
             final resp = await peer.prompt({
               'sessionId': sessionId,
@@ -936,44 +980,110 @@ class SessionManager {
               (resp['stopReason'] as String?) ?? 'other',
             );
             final turnEnded = TurnEnded(stop);
+            requestFinished = true;
             _replayBuffers[sessionId]?.add(turnEnded);
-            _sessionStreams[sessionId]!.add(turnEnded);
+            _sessionStreams[sessionId]?.add(turnEnded);
           } on Object catch (e, st) {
             _log.warning('prompt error: $e');
-            // Surface error to listeners so UIs can react
-            _sessionStreams[sessionId]!.addError(e, st);
-            // Send TurnEnded with 'other' stop reason to properly close the stream
+            requestFinished = true;
+            final sessionController = _sessionStreams[sessionId];
+            sessionController?.addError(e, st);
             const turnEnded = TurnEnded(StopReason.other);
             _replayBuffers[sessionId]?.add(turnEnded);
-            _sessionStreams[sessionId]!.add(turnEnded);
+            sessionController?.add(turnEnded);
           } finally {
-            endPromptTurn(sessionId);
+            final owner = promptOwner;
+            if (owner != null) endPromptTurn(owner);
           }
         }());
       },
-      onCancel: () => subscription?.cancel(),
+      onCancel: () async {
+        await subscription?.cancel();
+        final owner = promptOwner;
+        if (owner != null && !requestFinished) {
+          try {
+            await cancelPromptTurn(owner);
+          } on StateError {
+            // The exact phase already ended or was invalidated by close/dispose.
+          }
+        }
+      },
     );
     return controller.stream;
   }
 
   /// Mark [sessionId] as having an active prompt turn.
-  void beginPromptTurn(String sessionId) {
-    _activePromptSessions.add(sessionId);
-    _cancelledPromptSessions.remove(sessionId);
-  }
-
-  /// Clear all turn-local state for [sessionId].
-  void endPromptTurn(String sessionId) {
-    _activePromptSessions.remove(sessionId);
-    _cancelledPromptSessions.remove(sessionId);
-  }
-
-  /// Cancel the current turn for a session.
-  Future<void> cancel({required String sessionId}) async {
-    if (_activePromptSessions.contains(sessionId)) {
-      _cancelledPromptSessions.add(sessionId);
+  AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) {
+    if (_disposed) throw StateError('Session manager is disposed.');
+    if (_isSessionClosing(sessionId)) {
+      throw StateError('Session is closing or closed.');
     }
-    await peer.cancel({'sessionId': sessionId});
+    if (_sessionSetupTails.containsKey(sessionId)) {
+      throw StateError('Session setup is already active.');
+    }
+    return _beginInputBudgetPhase(sessionId);
+  }
+
+  /// Clear turn-local state only when [owner] still owns the phase.
+  void endPromptTurn(AcpSessionInputBudgetOwner owner) {
+    final phase = _inputBudgetPhases[owner.sessionId];
+    if (phase == null || !identical(phase.owner, owner)) return;
+    phase.invalidated = true;
+    _inputBudgetPhases.remove(owner.sessionId);
+  }
+
+  /// Cancel the phase owned by [owner], rejecting stale owners locally.
+  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) async {
+    final phase = _inputBudgetPhases[owner.sessionId];
+    if (phase == null || !identical(phase.owner, owner)) {
+      throw StateError('ACP prompt phase owner is no longer active.');
+    }
+    phase.invalidated = true;
+    _inputBudgetPhases.remove(owner.sessionId);
+    _cancelledPromptOwners[owner.sessionId] = owner;
+    await peer.cancel({'sessionId': owner.sessionId});
+  }
+
+  AcpSessionInputBudgetOwner _beginInputBudgetPhase(String sessionId) {
+    if (_disposed) throw StateError('Session manager is disposed.');
+    if (_inputBudgetPhases.containsKey(sessionId)) {
+      throw StateError('Session input phase is already active.');
+    }
+    final owner = AcpSessionInputBudgetOwner._(
+      sessionId,
+      ++_nextInputBudgetGeneration,
+    );
+    _inputBudgetPhases[sessionId] = _SessionInputBudgetPhase(
+      owner: owner,
+      structuredGuard: AcpStructuredUpdateGuard(
+        budget: inputBudget,
+        resource: 'session input phase',
+      ),
+      text: AcpUtf8LineBudgetCounter(
+        maxBytes: inputBudget.maxMessageTextBytes,
+        maxLines: inputBudget.maxMessageTextLines,
+        resource: 'message text',
+      ),
+      thought: AcpUtf8LineBudgetCounter(
+        maxBytes: inputBudget.maxThoughtTextBytes,
+        maxLines: inputBudget.maxMessageTextLines,
+        resource: 'thought text',
+      ),
+    );
+    _cancelledPromptOwners.remove(sessionId);
+    return owner;
+  }
+
+  void _invalidateInputBudgetPhase(String sessionId) {
+    final phase = _inputBudgetPhases.remove(sessionId);
+    if (phase != null) phase.invalidated = true;
+  }
+
+  void _invalidateAllInputBudgetPhases() {
+    for (final phase in _inputBudgetPhases.values) {
+      phase.invalidated = true;
+    }
+    _inputBudgetPhases.clear();
   }
 
   /// Get the workspace root for a session.
@@ -1027,6 +1137,7 @@ class SessionManager {
       if (_isSessionClosing(sessionId)) {
         throw StateError('Session is closing or closed.');
       }
+      final phaseOwner = _beginInputBudgetPhase(sessionId);
       final hadStream = _sessionStreams.containsKey(sessionId);
       final hadReplay = _replayBuffers.containsKey(sessionId);
       final hadBinding = _sessionWorkspaceRoots.containsKey(sessionId);
@@ -1062,6 +1173,8 @@ class SessionManager {
           }
         }
         rethrow;
+      } finally {
+        endPromptTurn(phaseOwner);
       }
     });
   }
@@ -1073,7 +1186,11 @@ class SessionManager {
     ({String? currentModeId, List<({String id, String name})> availableModes})?
     modes,
   }) {
+    if (_disposed) {
+      return Future<void>.error(StateError('Session manager is disposed.'));
+    }
     return _runSerializedSessionMutation(sessionId, () async {
+      if (_disposed) throw StateError('Session manager is disposed.');
       if (_isSessionClosing(sessionId)) {
         throw StateError('Session is closing or closed.');
       }
@@ -1472,7 +1589,7 @@ class SessionManager {
 
   Future<Json> _onRequestPermission(Json req) async {
     final reqSessionId = _requireKnownSessionId(req);
-    if (_cancelledPromptSessions.contains(reqSessionId)) {
+    if (_cancelledPromptOwners.containsKey(reqSessionId)) {
       return {
         'outcome': {'outcome': 'cancelled'},
       };

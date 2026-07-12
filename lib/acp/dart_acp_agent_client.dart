@@ -64,8 +64,9 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.maxSessionReplayBytes = 16 * 1024 * 1024,
     this.maxSessionToolCallItems = 512,
     this.maxSessionToolCallBytes = 8 * 1024 * 1024,
-    this.inputBudget = const acp.AcpInputBudget(),
-  }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
+    acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
+  }) : inputBudget = _validatedInputBudget(inputBudget),
+       agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
@@ -146,6 +147,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _disposed = false;
   Future<void>? _disposeFuture;
   String? _activeSessionId;
+  final Map<String, acp.AcpSessionInputBudgetOwner>
+  _activePromptOwnersBySession = <String, acp.AcpSessionInputBudgetOwner>{};
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, AcpSessionModeInfo> _modesBySession =
       <String, AcpSessionModeInfo>{};
@@ -670,6 +673,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   void _clearSessionState(String sessionId) {
+    _activePromptOwnersBySession.remove(sessionId);
     if (_activeSessionId == sessionId) {
       _activeSessionId = null;
     }
@@ -1365,8 +1369,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       await Future<void>.delayed(Duration.zero);
       acceptingUpdates = true;
       unawaited(() async {
-        client.beginPromptTurn(sessionId);
+        acp.AcpSessionInputBudgetOwner? owner;
         try {
+          owner = client.beginPromptTurn(sessionId);
+          _activePromptOwnersBySession[sessionId] = owner;
           final response = await client.sendRaw(
             'session/prompt',
             <String, dynamic>{'sessionId': sessionId, 'prompt': content},
@@ -1377,7 +1383,12 @@ class DartAcpAgentClient implements AcpAgentClient {
         } catch (error, stackTrace) {
           if (!events.isClosed) events.addError(error, stackTrace);
         } finally {
-          client.endPromptTurn(sessionId);
+          if (owner != null) {
+            if (identical(_activePromptOwnersBySession[sessionId], owner)) {
+              _activePromptOwnersBySession.remove(sessionId);
+            }
+            client.endPromptTurn(owner);
+          }
           if (!events.isClosed) {
             await events.close();
           }
@@ -2094,7 +2105,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     final client = _client;
     if (client == null || sessionId == null) return;
     _permissionBridge.cancelSession(sessionId);
-    await client.cancel(sessionId: sessionId);
+    final owner = _activePromptOwnersBySession[sessionId];
+    if (owner != null) await client.cancelPromptTurn(owner);
   }
 
   @override
@@ -2145,6 +2157,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _supportsListSessions = false;
     _supportsResumeSession = false;
     _activeSessionId = null;
+    _activePromptOwnersBySession.clear();
     _modesBySession.clear();
     _cwdBySession.clear();
     _additionalDirectoriesBySession.clear();
@@ -2287,6 +2300,11 @@ class _InteractivePermissionProvider implements acp.PermissionProvider {
     }
     return bridge.request(options);
   }
+}
+
+acp.AcpInputBudget _validatedInputBudget(acp.AcpInputBudget budget) {
+  budget.validate();
+  return budget;
 }
 
 class _AcpPermissionBridge {

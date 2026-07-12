@@ -16,6 +16,7 @@ export 'src/providers/permission_provider.dart';
 export 'src/providers/terminal_provider.dart';
 export 'src/session/session_manager.dart'
     show
+        AcpSessionInputBudgetOwner,
         minimumSessionReplayBytes,
         SessionCloseCleanupException,
         SessionToolStateLimitException;
