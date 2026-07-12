@@ -691,6 +691,136 @@ void main() {
       },
     );
 
+    final high = String.fromCharCode(0xd800);
+    final low = String.fromCharCode(0xdc00);
+    final surrogatePairCases =
+        <
+          ({
+            String name,
+            AcpTextBudgetChunk Function(AcpUtf8LineBudgetCounter counter) run,
+          })
+        >[
+          (name: 'same chunk', run: (value) => value.append('$high$low')),
+          (
+            name: 'across chunks',
+            run: (value) {
+              final pending = value.append(high);
+              expect(pending.safePrefix, isEmpty);
+              expect(pending.acceptedBytes, 0);
+              expect(pending.totalBytes, 0);
+              return value.append(low);
+            },
+          ),
+        ];
+
+    for (final testCase in surrogatePairCases) {
+      test('surrogate pair ${testCase.name} accepts exact four bytes', () {
+        final value = counter(maxBytes: 4);
+        final result = testCase.run(value);
+
+        expect(result.safePrefix, '$high$low');
+        expect(result.acceptedBytes, 4);
+        expect(result.totalBytes, 4);
+        expect(result.omission, isNull);
+      });
+
+      test('surrogate pair ${testCase.name} rejects a three-byte limit', () {
+        final value = counter(maxBytes: 3);
+        final result = testCase.run(value);
+
+        expect(result.safePrefix, isEmpty);
+        expect(result.acceptedBytes, 0);
+        expect(result.totalBytes, 0);
+        expect(result.omission?.limit, 3);
+        expect(result.omission?.observedAtLeast, 4);
+
+        final drained = value.append('PAYLOAD_CANARY_MUST_NOT_APPEAR');
+        expect(drained.safePrefix, isEmpty);
+        expect(drained.acceptedBytes, 0);
+        expect(drained.totalBytes, 0);
+        expect(drained.omission, isNull);
+      });
+    }
+
+    test('isolated high confirmed by a non-low accepts exact three bytes', () {
+      final value = counter(maxBytes: 3);
+      expect(value.append(high).safePrefix, isEmpty);
+
+      // A second high is a non-low code unit and remains pending itself, so
+      // this return isolates the first high without consuming another byte.
+      final result = value.append(high);
+      expect(result.safePrefix, high);
+      expect(result.acceptedBytes, 3);
+      expect(result.totalBytes, 3);
+      expect(result.omission, isNull);
+    });
+
+    test('isolated high confirmed by a non-low rejects a two-byte limit', () {
+      final value = counter(maxBytes: 2);
+      expect(value.append(high).safePrefix, isEmpty);
+
+      final result = value.append(high);
+      expect(result.safePrefix, isEmpty);
+      expect(result.acceptedBytes, 0);
+      expect(result.totalBytes, 0);
+      expect(result.omission?.limit, 2);
+      expect(result.omission?.observedAtLeast, 3);
+
+      final drained = value.append('PAYLOAD_CANARY_MUST_NOT_APPEAR');
+      expect(drained.safePrefix, isEmpty);
+      expect(drained.acceptedBytes, 0);
+      expect(drained.totalBytes, 0);
+      expect(drained.omission, isNull);
+    });
+
+    for (final maxBytes in const <int>[3, 2]) {
+      test('isolated high at finish with maxBytes $maxBytes', () {
+        final value = counter(maxBytes: maxBytes);
+        expect(value.append(high).safePrefix, isEmpty);
+
+        final result = value.finish();
+        final accepted = maxBytes == 3;
+        expect(result.safePrefix, accepted ? high : isEmpty);
+        expect(result.acceptedBytes, accepted ? 3 : 0);
+        expect(result.totalBytes, accepted ? 3 : 0);
+        if (accepted) {
+          expect(result.omission, isNull);
+        } else {
+          expect(result.omission?.limit, 2);
+          expect(result.omission?.observedAtLeast, 3);
+        }
+
+        final repeated = value.finish();
+        expect(repeated.safePrefix, isEmpty);
+        expect(repeated.acceptedBytes, 0);
+        expect(repeated.totalBytes, accepted ? 3 : 0);
+        expect(repeated.omission, isNull);
+      });
+    }
+
+    for (final maxBytes in const <int>[3, 2]) {
+      test('isolated low with maxBytes $maxBytes', () {
+        final value = counter(maxBytes: maxBytes);
+        final result = value.append(low);
+        final accepted = maxBytes == 3;
+
+        expect(result.safePrefix, accepted ? low : isEmpty);
+        expect(result.acceptedBytes, accepted ? 3 : 0);
+        expect(result.totalBytes, accepted ? 3 : 0);
+        if (accepted) {
+          expect(result.omission, isNull);
+        } else {
+          expect(result.omission?.limit, 2);
+          expect(result.omission?.observedAtLeast, 3);
+          final drained = value.append('PAYLOAD_CANARY_MUST_NOT_APPEAR');
+          expect(drained.safePrefix, isEmpty);
+          expect(drained.acceptedBytes, 0);
+          expect(drained.totalBytes, 0);
+          expect(drained.omission, isNull);
+        }
+      });
+    }
+
     test('counts empty, ordinary, CR, LF, and CRLF text lines', () {
       expect(counter().finish().totalLines, 0);
       expect(counter().append('abc').totalLines, 1);
@@ -702,6 +832,74 @@ void main() {
       expect(splitCrLf.append('a\r').totalLines, 2);
       expect(splitCrLf.append('\nb').totalLines, 2);
     });
+
+    final newlineCases =
+        <({String name, List<String> chunks, List<String> exactPrefixes})>[
+          (
+            name: 'CR',
+            chunks: <String>['a\rb'],
+            exactPrefixes: <String>['a\rb'],
+          ),
+          (
+            name: 'LF',
+            chunks: <String>['a\nb'],
+            exactPrefixes: <String>['a\nb'],
+          ),
+          (
+            name: 'same-chunk CRLF',
+            chunks: <String>['a\r\nb'],
+            exactPrefixes: <String>['a\r\nb'],
+          ),
+          (
+            name: 'cross-chunk CRLF',
+            chunks: <String>['a\r', '\nb'],
+            exactPrefixes: <String>['a\r', '\nb'],
+          ),
+        ];
+
+    for (final testCase in newlineCases) {
+      test('${testCase.name} accepts the exact two-line boundary', () {
+        final value = counter(maxLines: 2);
+        final results = <AcpTextBudgetChunk>[];
+        for (final chunk in testCase.chunks) {
+          results.add(value.append(chunk));
+        }
+
+        expect(
+          results.map((result) => result.safePrefix).toList(),
+          testCase.exactPrefixes,
+        );
+        expect(results.last.totalLines, 2);
+        expect(results.every((result) => result.omission == null), isTrue);
+      });
+
+      test(
+        '${testCase.name} rejects the first line beyond a one-line limit',
+        () {
+          final value = counter(maxLines: 1);
+          final results = <AcpTextBudgetChunk>[];
+          for (final chunk in testCase.chunks) {
+            results.add(value.append(chunk));
+          }
+
+          expect(results.first.safePrefix, 'a');
+          expect(results.first.totalLines, 1);
+          expect(results.first.omission?.limit, 1);
+          expect(results.first.omission?.observedAtLeast, 2);
+          for (final drained in results.skip(1)) {
+            expect(drained.safePrefix, isEmpty);
+            expect(drained.totalLines, 1);
+            expect(drained.omission, isNull);
+          }
+
+          final drained = value.append('PAYLOAD_CANARY_MUST_NOT_APPEAR');
+          expect(drained.safePrefix, isEmpty);
+          expect(drained.acceptedBytes, 0);
+          expect(drained.totalLines, 1);
+          expect(drained.omission, isNull);
+        },
+      );
+    }
 
     test('enforces leading and trailing newline line boundaries', () {
       final exact = counter(maxLines: 3).append('\na\n');
