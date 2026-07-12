@@ -3602,8 +3602,32 @@ Future<void> main() async {
           'update': _ThrowingGetterMap(
             const <String, dynamic>{},
             throwKey: 'sessionUpdate',
+            error: acp.AcpInputLimitExceeded(
+              resource: 'session input phase ${'x' * 300} nodes',
+              limit: 0x1fffffffffffff,
+              observedAtLeast: 0x1fffffffffffff,
+            ),
+          ),
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-a',
+          'update': _ThrowingGetterMap(
+            const <String, dynamic>{},
+            throwKey: 'sessionUpdate',
             error: const acp.AcpInputLimitExceeded(
               resource: 'session input phase $canary',
+              limit: 0x1fffffffffffff,
+              observedAtLeast: 0x1fffffffffffff,
+            ),
+          ),
+        });
+        peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+          'sessionId': 'hostile-a',
+          'update': _ThrowingGetterMap(
+            const <String, dynamic>{},
+            throwKey: 'sessionUpdate',
+            error: const acp.AcpInputLimitExceeded(
+              resource: 'session input phase $canary string bytes',
               limit: 0x1fffffffffffff,
               observedAtLeast: 0x1fffffffffffff,
             ),
@@ -3628,8 +3652,8 @@ Future<void> main() async {
         await channel.local.sink.close();
       }
 
-      expect(errorsA, hasLength(4));
-      for (final error in errorsA.take(3)) {
+      expect(errorsA, hasLength(6));
+      for (final error in errorsA.take(5)) {
         expect(error, isA<FormatException>());
         expect(
           error.toString(),
@@ -3638,14 +3662,14 @@ Future<void> main() async {
         expect(error.toString(), isNot(contains(canary)));
       }
       final normalizedLimit = errorsA.last as acp.AcpInputLimitExceeded;
-      expect(normalizedLimit.resource, 'session structured input');
+      expect(normalizedLimit.resource, 'session structured string bytes');
       expect(
         normalizedLimit.limit,
-        const acp.AcpInputBudget().maxStructuredUpdateNodes,
+        const acp.AcpInputBudget().maxStructuredStringBytes,
       );
       expect(
         normalizedLimit.observedAtLeast,
-        const acp.AcpInputBudget().maxStructuredUpdateNodes + 1,
+        const acp.AcpInputBudget().maxStructuredStringBytes + 1,
       );
       expect(normalizedLimit.toString(), isNot(contains(canary)));
       expect(errorsB, isEmpty);
@@ -3657,11 +3681,67 @@ Future<void> main() async {
         ['after-hostile'],
       );
       expect(updatesA, isEmpty);
-      expect(logs, hasLength(4));
+      expect(logs, hasLength(6));
       expect(logs, everyElement('session update rejected'));
       expect(logs.toString(), isNot(contains(canary)));
     }, (error, _) => uncaught.add(error));
     expect(uncaught, isEmpty);
+  });
+
+  test('session update reports the real structured byte limit', () async {
+    final channel = StreamChannelController<String>();
+    final peer = JsonRpcPeer(channel.foreign);
+    final manager = SessionManager(
+      config: acp.AcpConfig(),
+      peer: peer,
+      inputBudget: const acp.AcpInputBudget(maxStructuredUpdateBytes: 5),
+    );
+    final updates = <acp.AcpUpdate>[];
+    final errors = <Object>[];
+    final subscription = manager
+        .sessionUpdates('structured-byte-limit')
+        .listen(updates.add, onError: errors.add);
+    final server = channel.local.stream.listen((line) {
+      final request = jsonDecode(line) as Map<String, dynamic>;
+      if (request['method'] != 'session/resume') return;
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': request['id'],
+          'result': <String, dynamic>{},
+        }),
+      );
+    });
+
+    try {
+      await manager.resumeSession(
+        sessionId: 'structured-byte-limit',
+        workspaceRoot: '/workspace',
+      );
+      await server.cancel();
+      final owner = manager.beginPromptTurn('structured-byte-limit');
+      peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+        'sessionId': 'structured-byte-limit',
+        'update': <String, dynamic>{
+          'sessionUpdate': 'plan',
+          'title': 'ab',
+          'entries': const <Object?>[],
+        },
+      });
+      await pumpEventQueue();
+      manager.endPromptTurn(owner);
+    } finally {
+      await subscription.cancel();
+      await manager.dispose();
+      await peer.close();
+      await channel.local.sink.close();
+    }
+
+    expect(updates, isEmpty);
+    final error = errors.single as acp.AcpInputLimitExceeded;
+    expect(error.resource, 'session structured bytes');
+    expect(error.limit, 5);
+    expect(error.observedAtLeast, 6);
   });
 
   test(

@@ -242,6 +242,8 @@ final class AcpUtf8LineBudgetCounter {
   final int _maxLines;
   final String _resource;
   final Object _checkpointOwner = Object();
+  final List<AcpUtf8LineBudgetCheckpoint> _activeCheckpoints =
+      <AcpUtf8LineBudgetCheckpoint>[];
 
   var _totalBytes = 0;
   var _totalLines = 0;
@@ -252,20 +254,25 @@ final class AcpUtf8LineBudgetCounter {
 
   /// Begins trusted host bookkeeping that must be committed or rolled back.
   @internal
-  AcpUtf8LineBudgetCheckpoint checkpoint() => AcpUtf8LineBudgetCheckpoint._(
-    owner: _checkpointOwner,
-    totalBytes: _totalBytes,
-    totalLines: _totalLines,
-    previousWasCR: _previousWasCR,
-    finished: _finished,
-    omitted: _omitted,
-    pendingHighSurrogate: _pendingHighSurrogate,
-  );
+  AcpUtf8LineBudgetCheckpoint checkpoint() {
+    final checkpoint = AcpUtf8LineBudgetCheckpoint._(
+      owner: _checkpointOwner,
+      totalBytes: _totalBytes,
+      totalLines: _totalLines,
+      previousWasCR: _previousWasCR,
+      finished: _finished,
+      omitted: _omitted,
+      pendingHighSurrogate: _pendingHighSurrogate,
+    );
+    _activeCheckpoints.add(checkpoint);
+    return checkpoint;
+  }
 
   /// Commits this counter's active host transaction.
   @internal
   void commit(AcpUtf8LineBudgetCheckpoint checkpoint) {
     _requireActiveCheckpoint(checkpoint);
+    _activeCheckpoints.removeLast();
     checkpoint._active = false;
   }
 
@@ -273,6 +280,7 @@ final class AcpUtf8LineBudgetCounter {
   @internal
   void rollback(AcpUtf8LineBudgetCheckpoint checkpoint) {
     _requireActiveCheckpoint(checkpoint);
+    _activeCheckpoints.removeLast();
     checkpoint._active = false;
     _totalBytes = checkpoint._totalBytes;
     _totalLines = checkpoint._totalLines;
@@ -284,9 +292,11 @@ final class AcpUtf8LineBudgetCounter {
 
   void _requireActiveCheckpoint(AcpUtf8LineBudgetCheckpoint checkpoint) {
     if (!identical(checkpoint._owner, _checkpointOwner) ||
-        !checkpoint._active) {
+        !checkpoint._active ||
+        _activeCheckpoints.isEmpty ||
+        !identical(_activeCheckpoints.last, checkpoint)) {
       throw StateError(
-        'ACP text budget checkpoint is not active for this counter.',
+        'ACP text budget checkpoint is not current for this counter.',
       );
     }
   }

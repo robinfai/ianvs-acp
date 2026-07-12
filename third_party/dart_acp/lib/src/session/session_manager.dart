@@ -1601,6 +1601,7 @@ class SessionManager {
     AcpInputLimitExceeded error,
   ) {
     final resource = error.resource;
+    if (resource.length > 256) return null;
     final String normalizedResource;
     final int normalizedLimit;
     if (resource == 'turn items') {
@@ -1615,12 +1616,36 @@ class SessionManager {
         resource == 'turn_media') {
       normalizedResource = 'session media input';
       normalizedLimit = inputBudget.maxEmbeddedMediaBytes;
-    } else if (resource.startsWith('session input phase ')) {
-      normalizedResource = 'session structured input';
+    } else if (resource.startsWith('session input phase ') &&
+        resource.endsWith(' string bytes')) {
+      normalizedResource = 'session structured string bytes';
+      normalizedLimit = inputBudget.maxStructuredStringBytes;
+    } else if (resource.startsWith('session input phase ') &&
+        resource.endsWith(' nodes')) {
+      normalizedResource = 'session structured nodes';
       normalizedLimit = inputBudget.maxStructuredUpdateNodes;
-    } else if (resource.startsWith('ACP retained state ')) {
-      normalizedResource = 'session retained state';
+    } else if (resource.startsWith('session input phase ') &&
+        resource.endsWith(' bytes')) {
+      normalizedResource = 'session structured bytes';
+      normalizedLimit = inputBudget.maxStructuredUpdateBytes;
+    } else if (resource == 'ACP retained state nodes') {
+      normalizedResource = 'session retained nodes';
       normalizedLimit = inputBudget.maxMetadataNodes;
+    } else if (resource == 'ACP retained state depth') {
+      normalizedResource = 'session retained depth';
+      normalizedLimit = inputBudget.maxMetadataDepth;
+    } else if (resource == 'ACP retained state string bytes') {
+      normalizedResource = 'session retained string bytes';
+      normalizedLimit = inputBudget.maxStructuredStringBytes;
+    } else if (resource == 'ACP retained state collection items') {
+      normalizedResource = 'session retained collection items';
+      normalizedLimit = inputBudget.maxCollectionItems;
+    } else if (resource == 'ACP retained state map entries') {
+      normalizedResource = 'session retained map entries';
+      normalizedLimit =
+          inputBudget.maxCollectionItems < inputBudget.maxMetadataEntries
+          ? inputBudget.maxCollectionItems
+          : inputBudget.maxMetadataEntries;
     } else {
       return null;
     }

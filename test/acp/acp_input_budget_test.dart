@@ -639,7 +639,7 @@ void main() {
           isA<StateError>().having(
             (error) => error.message,
             'message',
-            'ACP text budget checkpoint is not active for this counter.',
+            'ACP text budget checkpoint is not current for this counter.',
           ),
         ),
       );
@@ -656,7 +656,7 @@ void main() {
             isA<StateError>().having(
               (error) => error.message,
               'message',
-              'ACP text budget checkpoint is not active for this counter.',
+              'ACP text budget checkpoint is not current for this counter.',
             ),
           ),
         );
@@ -682,6 +682,37 @@ void main() {
       final restored = value.append('ab');
       expect(restored.safePrefix, 'ab');
       expect(restored.totalBytes, 2);
+    });
+
+    test('nested checkpoints enforce LIFO without consuming outer tokens', () {
+      for (final commitOuter in <bool>[false, true]) {
+        final value = counter(maxBytes: 2);
+        final outer = value.checkpoint();
+        value.append('a');
+        final inner = value.checkpoint();
+        value.append('b');
+
+        void finishOuter() {
+          if (commitOuter) {
+            value.commit(outer);
+          } else {
+            value.rollback(outer);
+          }
+        }
+
+        expect(
+          finishOuter,
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP text budget checkpoint is not current for this counter.',
+            ),
+          ),
+        );
+        value.rollback(inner);
+        finishOuter();
+      }
     });
 
     test('accepts exact ASCII and multi-byte UTF-8 boundaries', () {
