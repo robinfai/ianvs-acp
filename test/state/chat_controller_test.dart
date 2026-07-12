@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
@@ -77,6 +78,83 @@ void main() {
       expect(text.substring(99974), 'efghijklmnopqrstuvwxyzabcd');
       expect(message.revision, 100000);
       expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)));
+    });
+
+    test('freeze and thaw preserve value without sharing mutable state', () {
+      final omission = acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.inputLimit,
+        resource: 'message text',
+        truncated: true,
+        limit: 4,
+        observedAtLeast: 5,
+      );
+      final active = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'seed',
+        timestamp: DateTime(2026, 7, 12, 10),
+        metadata: const <String, Object?>{
+          'nested': <String, Object?>{
+            'items': <Object?>['safe'],
+          },
+        },
+        omissions: <acp.AcpInputOmission>[omission],
+      );
+      active.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+      final retainedBeforeFreeze = active.retainedBytes;
+
+      final frozen = active.freeze();
+      final firstThaw = frozen.thaw();
+      final secondThaw = frozen.thaw();
+
+      expect(frozen, isNot(same(active)));
+      expect(firstThaw, isNot(same(secondThaw)));
+      expect(firstThaw.metadata, isNot(same(secondThaw.metadata)));
+      expect(firstThaw.omissions, isNot(same(secondThaw.omissions)));
+      expect(firstThaw.text, 'seed!');
+      expect(firstThaw.role, active.role);
+      expect(firstThaw.timestamp, active.timestamp);
+      expect(firstThaw.revision, active.revision);
+      expect(firstThaw.acceptedUtf8Bytes, active.acceptedUtf8Bytes);
+      expect(firstThaw.retainedBytes, retainedBeforeFreeze);
+      expect(frozen.retainedBytes, retainedBeforeFreeze);
+
+      expect(() => frozen.text = 'changed', throwsStateError);
+      expect(
+        () => frozen.appendAcceptedText('x', acceptedUtf8Bytes: 1),
+        throwsStateError,
+      );
+      expect(() => frozen.addOmission(omission), throwsStateError);
+      expect(frozen.text, 'seed!');
+      expect(frozen.revision, active.revision);
+
+      firstThaw.appendAcceptedText(' first', acceptedUtf8Bytes: 6);
+      secondThaw.text = 'second';
+      expect(firstThaw.text, 'seed! first');
+      expect(secondThaw.text, 'second');
+      expect(frozen.text, 'seed!');
+    });
+
+    test('retained bytes are stable until an active mutation', () {
+      final message = ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'abc',
+        metadata: const <String, Object?>{
+          'items': <Object?>[1, true, null],
+        },
+      );
+
+      final initial = message.retainedBytes;
+      expect(message.retainedBytes, initial);
+
+      message.appendAcceptedText('d', acceptedUtf8Bytes: 1);
+      final appended = message.retainedBytes;
+      expect(appended, greaterThan(initial));
+      expect(message.retainedBytes, appended);
+
+      final frozen = message.freeze();
+      final thawed = frozen.thaw();
+      expect(frozen.retainedBytes, appended);
+      expect(thawed.retainedBytes, appended);
     });
   });
 
@@ -1430,6 +1508,25 @@ void main() {
     });
 
     test(
+      'archive finishes pending text before freezing the snapshot',
+      () async {
+        final state = await pendingHighSurrogate();
+        addTearDown(state.controller.dispose);
+        state.controller.isStreaming = false;
+
+        final snapshot = state.controller.archiveSessionLocally(
+          state.controller.currentSession!.id,
+        );
+
+        expect(snapshot, isNotNull);
+        expect(snapshot!.messages.last.text, state.high);
+        expect(snapshot.messages.last.revision, 1);
+        expect(snapshot.messages.last.acceptedUtf8Bytes, 3);
+        expect(() => snapshot.messages.last.text = 'no', throwsStateError);
+      },
+    );
+
+    test(
       'dispose finishes pending text and suppresses double finish',
       () async {
         final state = await pendingHighSurrogate();
@@ -1902,6 +1999,1039 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
   });
 
+  test('public archive snapshot owns deeply immutable frozen state', () {
+    final directories = <String>['/workspace/shared'];
+    final sourceMessage = ChatMessage(
+      role: ChatMessageRole.assistant,
+      text: 'original',
+      metadata: const <String, Object?>{
+        'nested': <String, Object?>{
+          'items': <Object?>['safe'],
+        },
+      },
+    );
+    final commandPayload = <Object?>['safe'];
+    final commands = <Map<String, Object?>>[
+      <String, Object?>{'name': 'review', 'payload': commandPayload},
+    ];
+    final modes = <AcpSessionMode>[
+      const AcpSessionMode(id: 'ask', name: 'Ask'),
+    ];
+    final choices = <AcpConfigOptionChoice>[
+      const AcpConfigOptionChoice(value: 'on', name: 'On'),
+    ];
+    final options = <AcpConfigOption>[
+      AcpConfigOption(
+        id: 'approval',
+        name: 'Approval',
+        type: 'select',
+        currentValue: 'on',
+        options: choices,
+      ),
+    ];
+    final settings = AcpSessionSettings(
+      modes: AcpSessionModeInfo(currentModeId: 'ask', availableModes: modes),
+      configOptions: options,
+    );
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'session-a',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 12, 10),
+        additionalDirectories: directories,
+      ),
+      wasCurrent: true,
+      messages: <ChatMessage>[sourceMessage],
+      availableCommands: commands,
+      lastLatency: const Duration(milliseconds: 10),
+      lastError: null,
+      sessionSettings: settings,
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: 7,
+    );
+    final retained = snapshot.retainedBytes;
+
+    sourceMessage.text = 'changed';
+    commandPayload.add('changed');
+    commands.clear();
+    directories.clear();
+    modes.clear();
+    choices.clear();
+    options.clear();
+
+    expect(snapshot.messages.single.text, 'original');
+    expect(() => snapshot.messages.single.text = 'no', throwsStateError);
+    expect(snapshot.availableCommands.single['name'], 'review');
+    expect(snapshot.availableCommands.single['payload'], ['safe']);
+    expect(snapshot.session.additionalDirectories, ['/workspace/shared']);
+    expect(snapshot.sessionSettings.modes.availableModes.single.id, 'ask');
+    expect(
+      snapshot.sessionSettings.configOptions.single.options.single.value,
+      'on',
+    );
+    expect(snapshot.retainedBytes, retained);
+    expect(() => snapshot.messages.clear(), throwsUnsupportedError);
+    expect(() => snapshot.availableCommands.clear(), throwsUnsupportedError);
+    expect(
+      () => (snapshot.availableCommands.single['payload']! as List<Object?>)
+          .add('no'),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => snapshot.sessionSettings.modes.availableModes.clear(),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => snapshot.sessionSettings.configOptions.single.options.clear(),
+      throwsUnsupportedError,
+    );
+  });
+
+  test('archive snapshot remains subclass-compatible and defensive', () {
+    final source = ChatMessage(
+      role: ChatMessageRole.assistant,
+      text: 'subclass original',
+    );
+    final messages = <ChatMessage>[source];
+
+    final snapshot = _ArchivedSessionSnapshotSubclass(messages: messages);
+    source.text = 'source changed';
+    messages.clear();
+
+    expect(snapshot.messages, hasLength(1));
+    expect(snapshot.messages.single.text, 'subclass original');
+    expect(snapshot.messages.single, isNot(same(source)));
+    expect(() => snapshot.messages.single.text = 'no', throwsStateError);
+  });
+
+  test(
+    'restore reapplies the receiving controller input budget to messages',
+    () {
+      final source = ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'wide original',
+        metadata: const <String, Object?>{'first': 'a', 'second': 'b'},
+        omissions: <acp.AcpInputOmission>[
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidStructure,
+            resource: 'first original omission',
+            truncated: false,
+          ),
+          acp.AcpInputOmission(
+            reason: acp.AcpInputOmissionReason.invalidEncoding,
+            resource: 'second original omission',
+            truncated: false,
+          ),
+        ],
+      );
+      final archived = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'rebudgeted-session',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 12),
+        ),
+        wasCurrent: true,
+        messages: <ChatMessage>[source],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+      final archivedRetained = archived.messages.single.retainedBytes;
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMetadataEntries: 1,
+          maxCollectionItems: 3,
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      controller.restoreArchivedSessionLocally(archived);
+
+      final active = controller.messages.single;
+      expect(archived.messages.single.metadata, <String, Object?>{
+        'first': 'a',
+        'second': 'b',
+      });
+      expect(archived.messages.single.omissions, hasLength(2));
+      expect(archived.messages.single.text, 'wide original');
+      expect(archived.messages.single.retainedBytes, archivedRetained);
+      expect(active, isNot(same(archived.messages.single)));
+      expect(active.metadata, isEmpty);
+      expect(active.omissions, hasLength(3));
+      expect(active.omissions.first.resource, 'first original omission');
+      expect(
+        active.omissions.map((omission) => omission.resource),
+        contains('chat message metadata'),
+      );
+      expect(
+        active.omissions
+            .singleWhere(
+              (omission) => omission.resource == 'chat message metadata',
+            )
+            .reason,
+        acp.AcpInputOmissionReason.inputLimit,
+      );
+      expect(
+        active.omissions.map((omission) => omission.resource),
+        contains('second original omission'),
+      );
+      final activeRetained = active.retainedBytes;
+      active.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+      expect(active.retainedBytes, greaterThan(activeRetained));
+      expect(archived.messages.single.text, 'wide original');
+      expect(archived.messages.single.retainedBytes, archivedRetained);
+    },
+  );
+
+  test('restore reapplies target text byte and thought budgets', () {
+    final high = String.fromCharCode(0xd83d);
+    final archived = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'rebudgeted-text-session',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 13, 13),
+      ),
+      wasCurrent: true,
+      messages: <ChatMessage>[
+        ChatMessage(role: ChatMessageRole.assistant, text: 'abcd'),
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'abcde',
+          metadata: const <String, Object?>{'first': 'a', 'second': 'b'},
+          omissions: <acp.AcpInputOmission>[
+            acp.AcpInputOmission(
+              reason: acp.AcpInputOmissionReason.invalidStructure,
+              resource: 'trusted original omission',
+              truncated: false,
+            ),
+          ],
+        ),
+        ChatMessage(role: ChatMessageRole.assistant, text: high),
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'abc',
+          metadata: const <String, Object?>{'kind': 'thought'},
+        ),
+      ],
+      availableCommands: const <Map<String, Object?>>[],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+    );
+    final archivedTexts = archived.messages
+        .map((message) => message.text)
+        .toList(growable: false);
+    final archivedRetained = archived.messages
+        .map((message) => message.retainedBytes)
+        .toList(growable: false);
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      inputBudget: const acp.AcpInputBudget(
+        maxMessageTextBytes: 4,
+        maxThoughtTextBytes: 2,
+        maxMarkdownFallbackBytes: 4,
+        maxMetadataEntries: 1,
+        maxCollectionItems: 3,
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    controller.restoreArchivedSessionLocally(archived);
+
+    final exact = controller.messages[0];
+    final overflow = controller.messages[1];
+    final pending = controller.messages[2];
+    final thought = controller.messages[3];
+    expect(exact.text, 'abcd');
+    expect(exact.acceptedUtf8Bytes, 4);
+    expect(
+      exact.omissions.map((omission) => omission.resource),
+      isNot(contains('message text')),
+    );
+    expect(overflow.text, 'abcd');
+    expect(overflow.acceptedUtf8Bytes, 4);
+    expect(overflow.metadata, isEmpty);
+    expect(overflow.omissions, hasLength(3));
+    expect(overflow.omissions.first.resource, 'trusted original omission');
+    expect(overflow.omissions.map((omission) => omission.resource), <String>[
+      'trusted original omission',
+      'message text',
+      'chat message metadata',
+    ]);
+    expect(pending.text, high);
+    expect(pending.acceptedUtf8Bytes, 3);
+    expect(thought.text, 'ab');
+    expect(thought.acceptedUtf8Bytes, 2);
+    expect(thought.omissions.single.resource, 'thought text');
+    final overflowRetained = overflow.retainedBytes;
+    overflow.appendAcceptedText('!', acceptedUtf8Bytes: 1);
+    expect(overflow.retainedBytes, greaterThan(overflowRetained));
+    expect(archived.messages.map((message) => message.text), archivedTexts);
+    expect(
+      archived.messages.map((message) => message.retainedBytes),
+      archivedRetained,
+    );
+    expect(archived.messages[1].metadata, hasLength(2));
+    expect(archived.messages[1].omissions, hasLength(1));
+  });
+
+  test('restore reads wasCurrent before any observable mutation', () {
+    const canary = 'SECRET_WAS_CURRENT_CANARY';
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    final activeSession = AgentSession(
+      id: 'active-before-restore',
+      cwd: '/workspace',
+      createdAt: DateTime(2026, 7, 13, 14),
+    );
+    controller.currentSession = activeSession;
+    controller.sessions.add(activeSession);
+    controller.messages.add(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'active untouched'),
+    );
+    final hostile = _ThrowingWasCurrentArchivedSnapshot(canary: canary);
+
+    expect(
+      () => controller.restoreArchivedSessionLocally(hostile),
+      throwsA(
+        isA<StateError>().having((error) => error.message, 'message', canary),
+      ),
+    );
+
+    expect(hostile.wasCurrentReads, 1);
+    expect(controller.currentSession, same(activeSession));
+    expect(controller.sessions, <AgentSession>[activeSession]);
+    expect(controller.messages.single.text, 'active untouched');
+    expect(controller.lastError, isNull);
+    expect(
+      controller.sessions.map((session) => session.id),
+      isNot(contains('hostile-was-current')),
+    );
+  });
+
+  test('restore reads a stateful wasCurrent getter exactly once', () {
+    final snapshot = _StatefulWasCurrentArchivedSnapshot();
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    controller.restoreArchivedSessionLocally(snapshot);
+
+    expect(snapshot.wasCurrentReads, 1);
+    expect(controller.currentSession?.id, 'stateful-was-current');
+  });
+
+  test(
+    'snapshot commands and settings fail safe without stringifying payloads',
+    () {
+      final canary = _CanaryPayload();
+      final hostileModes = _ThrowingReadList<AcpSessionMode>();
+      final snapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'session-hostile',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 12, 11),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: <Map<String, Object?>>[
+          <String, Object?>{'name': 'unsafe', 'payload': canary},
+        ],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: AcpSessionSettings(
+          modes: AcpSessionModeInfo(availableModes: hostileModes),
+          configOptions: const <AcpConfigOption>[
+            AcpConfigOption(
+              id: 'partial',
+              name: 'Must not survive',
+              type: 'boolean',
+              currentValue: 'true',
+              options: <AcpConfigOptionChoice>[],
+            ),
+          ],
+        ),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+
+      expect(snapshot.availableCommands, isEmpty);
+      expect(snapshot.sessionSettings.modes.availableModes, isEmpty);
+      expect(snapshot.sessionSettings.configOptions, isEmpty);
+      expect(canary.toStringCalls, 0);
+
+      final hostileOptions = _ThrowingReadList<AcpConfigOption>();
+      final optionsSnapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'session-hostile-options',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 12, 11),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: AcpSessionSettings(
+          modes: const AcpSessionModeInfo(
+            currentModeId: 'ask',
+            availableModes: <AcpSessionMode>[
+              AcpSessionMode(id: 'ask', name: 'Must not survive'),
+            ],
+          ),
+          configOptions: hostileOptions,
+        ),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+      expect(optionsSnapshot.sessionSettings.modes.availableModes, isEmpty);
+      expect(optionsSnapshot.sessionSettings.configOptions, isEmpty);
+    },
+  );
+
+  test('snapshot settings budget counts only dynamic option strings', () {
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'a',
+        cwd: 'b',
+        createdAt: DateTime(2026, 7, 13, 9),
+      ),
+      wasCurrent: false,
+      messages: const <ChatMessage>[],
+      availableCommands: const <Map<String, Object?>>[],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(
+        configOptions: <AcpConfigOption>[
+          AcpConfigOption(
+            id: 'i',
+            name: 'n',
+            type: 't',
+            currentValue: 'v',
+            options: <AcpConfigOptionChoice>[],
+          ),
+        ],
+      ),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+      inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+    );
+
+    expect(snapshot.sessionSettings.configOptions, hasLength(1));
+    expect(snapshot.sessionSettings.configOptions.single.id, 'i');
+    expect(snapshot.sessionSettings.configOptions.single.name, 'n');
+    expect(snapshot.sessionSettings.configOptions.single.type, 't');
+    expect(snapshot.sessionSettings.configOptions.single.currentValue, 'v');
+  });
+
+  test('snapshot settings typed scalars share one root byte budget', () {
+    final omission = acp.AcpInputOmission(
+      reason: acp.AcpInputOmissionReason.inputLimit,
+      resource: 'r',
+      truncated: true,
+      limit: 1,
+      observedAtLeast: 2,
+    );
+
+    ArchivedSessionSnapshot snapshot(int maxBytes) {
+      return ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'a',
+          cwd: 'b',
+          createdAt: DateTime(2026, 7, 13, 9, 30),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: AcpSessionSettings(
+          omissions: <acp.AcpInputOmission>[omission],
+          truncated: true,
+        ),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: acp.AcpInputBudget(maxStructuredUpdateBytes: maxBytes),
+      );
+    }
+
+    final exact = snapshot(11);
+    final overflow = snapshot(10);
+
+    expect(exact.sessionSettings.omissions, hasLength(1));
+    expect(exact.sessionSettings.truncated, isTrue);
+    expect(overflow.sessionSettings.omissions, isEmpty);
+    expect(overflow.sessionSettings.truncated, isFalse);
+  });
+
+  test('stateful settings collection lengths fail closed without partials', () {
+    const canary = 'SECRET_SETTINGS_LENGTH_CANARY';
+    const choice = AcpConfigOptionChoice(value: 'v', name: 'n');
+    final option = AcpConfigOption(
+      id: 'i',
+      name: 'n',
+      type: 't',
+      currentValue: 'v',
+      options: const <AcpConfigOptionChoice>[],
+    );
+
+    ArchivedSessionSnapshot snapshot(AcpSessionSettings settings) {
+      return ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'a',
+          cwd: 'b',
+          createdAt: DateTime(2026, 7, 13, 9, 45),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: settings,
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+    }
+
+    final optionsSnapshot = snapshot(
+      AcpSessionSettings(
+        modes: const AcpSessionModeInfo(
+          availableModes: <AcpSessionMode>[
+            AcpSessionMode(id: 'partial', name: 'Must not survive'),
+          ],
+        ),
+        configOptions: _GrowingLengthList<AcpConfigOption>(option, canary),
+      ),
+    );
+    final choicesSnapshot = snapshot(
+      AcpSessionSettings(
+        modes: const AcpSessionModeInfo(
+          availableModes: <AcpSessionMode>[
+            AcpSessionMode(id: 'partial', name: 'Must not survive'),
+          ],
+        ),
+        configOptions: <AcpConfigOption>[
+          AcpConfigOption(
+            id: 'i',
+            name: 'n',
+            type: 't',
+            currentValue: 'v',
+            options: _GrowingLengthList<AcpConfigOptionChoice>(choice, canary),
+          ),
+        ],
+      ),
+    );
+
+    expect(optionsSnapshot.sessionSettings.modes.availableModes, isEmpty);
+    expect(optionsSnapshot.sessionSettings.configOptions, isEmpty);
+    expect(choicesSnapshot.sessionSettings.modes.availableModes, isEmpty);
+    expect(choicesSnapshot.sessionSettings.configOptions, isEmpty);
+    expect(optionsSnapshot.sessionSettings.toString(), isNot(contains(canary)));
+    expect(choicesSnapshot.sessionSettings.toString(), isNot(contains(canary)));
+  });
+
+  test('initial events share one root byte budget and fail closed', () {
+    ArchivedSessionSnapshot snapshot(
+      List<AgentEvent> events, {
+      int maxBytes = 8,
+    }) {
+      return ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'a',
+          cwd: 'b',
+          createdAt: DateTime(2026, 7, 13, 10),
+          initialEvents: events,
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: acp.AcpInputBudget(maxStructuredUpdateBytes: maxBytes),
+      );
+    }
+
+    final exact = snapshot(const <AgentEvent>[
+      AgentEvent(type: AgentEventType.status, text: '12345678'),
+    ]);
+    final overflow = snapshot(const <AgentEvent>[
+      AgentEvent(type: AgentEventType.status, text: '12345678'),
+      AgentEvent(
+        type: AgentEventType.status,
+        text: 'abcdefgh',
+        metadata: <String, Object?>{'secret': 'SECRET_EVENT_CANARY'},
+      ),
+    ]);
+    final timestamp = DateTime.fromMicrosecondsSinceEpoch(1);
+    final timestampExact = snapshot(<AgentEvent>[
+      AgentEvent(
+        type: AgentEventType.status,
+        text: '12345678',
+        timestamp: timestamp,
+      ),
+    ], maxBytes: 9);
+    final timestampOverflow = snapshot(<AgentEvent>[
+      AgentEvent(
+        type: AgentEventType.status,
+        text: '12345678',
+        timestamp: timestamp,
+      ),
+    ]);
+
+    expect(exact.session.initialEvents, hasLength(1));
+    expect(exact.session.initialEvents.single.text, '12345678');
+    expect(overflow.session.initialEvents, isEmpty);
+    expect(timestampExact.session.initialEvents.single.timestamp, timestamp);
+    expect(timestampOverflow.session.initialEvents, isEmpty);
+    expect(
+      overflow.session.initialEvents.toString(),
+      isNot(contains('SECRET_EVENT_CANARY')),
+    );
+  });
+
+  test('session snapshot clears directories when initial events fail', () {
+    const canary = 'SECRET_EVENT_ROOT_CANARY';
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'a',
+        cwd: 'b',
+        createdAt: DateTime(2026, 7, 13, 10, 30),
+        additionalDirectories: const <String>['/safe'],
+        initialEvents: const <AgentEvent>[
+          AgentEvent(type: AgentEventType.status, text: '12345678'),
+          AgentEvent(
+            type: AgentEventType.status,
+            text: 'abcdefgh',
+            metadata: <String, Object?>{'secret': canary},
+          ),
+        ],
+      ),
+      wasCurrent: false,
+      messages: const <ChatMessage>[],
+      availableCommands: const <Map<String, Object?>>[],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+      inputBudget: const acp.AcpInputBudget(maxStructuredUpdateBytes: 20),
+    );
+
+    expect(snapshot.session.additionalDirectories, isEmpty);
+    expect(snapshot.session.initialEvents, isEmpty);
+    expect(snapshot.session.initialEvents.toString(), isNot(contains(canary)));
+  });
+
+  test('session snapshot clears events when directories are hostile', () {
+    const canary = 'SECRET_DIRECTORIES_CANARY';
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'a',
+        cwd: 'b',
+        createdAt: DateTime(2026, 7, 13, 11),
+        additionalDirectories: _ThrowingStringList(canary),
+        initialEvents: const <AgentEvent>[
+          AgentEvent(type: AgentEventType.status, text: 'safe'),
+        ],
+      ),
+      wasCurrent: false,
+      messages: const <ChatMessage>[],
+      availableCommands: const <Map<String, Object?>>[],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+    );
+
+    expect(snapshot.session.additionalDirectories, isEmpty);
+    expect(snapshot.session.initialEvents, isEmpty);
+    expect(
+      snapshot.session.additionalDirectories.toString(),
+      isNot(contains(canary)),
+    );
+  });
+
+  test(
+    'session snapshot rejects changing event omission length atomically',
+    () {
+      const canary = 'SECRET_EVENT_OMISSION_LENGTH_CANARY';
+      final omission = acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.invalidStructure,
+        resource: 'safe',
+        truncated: false,
+      );
+      final snapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'a',
+          cwd: 'b',
+          createdAt: DateTime(2026, 7, 13, 11, 30),
+          additionalDirectories: const <String>['/safe'],
+          initialEvents: <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'safe',
+              omissions: _GrowingLengthList<acp.AcpInputOmission>(
+                omission,
+                canary,
+              ),
+            ),
+          ],
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+
+      expect(snapshot.session.additionalDirectories, isEmpty);
+      expect(snapshot.session.initialEvents, isEmpty);
+      expect(
+        snapshot.session.initialEvents.toString(),
+        isNot(contains(canary)),
+      );
+    },
+  );
+
+  test('hostile public message list fails closed without leaking payload', () {
+    const canary = 'SECRET_MESSAGES_CANARY';
+    final hostileMessages = _ThrowingChatMessageList(canary);
+
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'hostile-messages',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 13, 11),
+      ),
+      wasCurrent: false,
+      messages: hostileMessages,
+      availableCommands: const <Map<String, Object?>>[],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+    );
+
+    expect(snapshot.messages, isEmpty);
+    expect(snapshot.messages.toString(), isNot(contains(canary)));
+  });
+
+  test(
+    'snapshot owns initial event carriers and counts dynamic session state',
+    () {
+      final eventNested = <String, Object?>{'value': 'original'};
+      final eventMetadata = <String, Object?>{'nested': eventNested};
+      final initialEvents = <AgentEvent>[
+        AgentEvent(
+          type: AgentEventType.status,
+          text: 'initial',
+          metadata: eventMetadata,
+        ),
+      ];
+      final directories = <String>['/short'];
+
+      ArchivedSessionSnapshot buildSnapshot({
+        required String id,
+        required String cwd,
+        required String title,
+        required List<String> additionalDirectories,
+        required List<AgentEvent> events,
+        required String? lastError,
+      }) {
+        return ArchivedSessionSnapshot(
+          session: AgentSession(
+            id: id,
+            cwd: cwd,
+            createdAt: DateTime(2026, 7, 12, 12),
+            additionalDirectories: additionalDirectories,
+            title: title,
+            initialEvents: events,
+          ),
+          wasCurrent: true,
+          messages: const <ChatMessage>[],
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: const Duration(milliseconds: 4),
+          lastError: lastError,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: 3,
+        );
+      }
+
+      final short = buildSnapshot(
+        id: 'short',
+        cwd: '/a',
+        title: 'a',
+        additionalDirectories: directories,
+        events: initialEvents,
+        lastError: null,
+      );
+      final long = buildSnapshot(
+        id: 'long',
+        cwd: '/workspace/${'deep/' * 20}',
+        title: 'A much longer retained session title',
+        additionalDirectories: <String>['/workspace/${'shared/' * 20}'],
+        events: initialEvents,
+        lastError: 'A long retained error ${'detail ' * 20}',
+      );
+      final retained = short.retainedBytes;
+
+      eventNested['value'] = 'changed';
+      eventMetadata.clear();
+      initialEvents.clear();
+      directories.clear();
+
+      expect(short.session.initialEvents.single.text, 'initial');
+      expect(
+        (short.session.initialEvents.single.metadata['nested']!
+            as Map<String, Object?>)['value'],
+        'original',
+      );
+      expect(short.retainedBytes, retained);
+      expect(long.retainedBytes, greaterThan(short.retainedBytes));
+      expect(
+        () => short.session.initialEvents.single.metadata['late'] = true,
+        throwsUnsupportedError,
+      );
+      expect(
+        () =>
+            (short.session.initialEvents.single.metadata['nested']!
+                    as Map<String, Object?>)['late'] =
+                true,
+        throwsUnsupportedError,
+      );
+      expect(() => short.session.initialEvents.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test('two controllers restore independent active copies of one snapshot', () {
+    final omission = acp.AcpInputOmission(
+      reason: acp.AcpInputOmissionReason.inputLimit,
+      resource: 'message text',
+      truncated: true,
+      limit: 4,
+      observedAtLeast: 5,
+    );
+    final snapshot = ArchivedSessionSnapshot(
+      session: AgentSession(
+        id: 'shared-archive',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 12, 13),
+      ),
+      wasCurrent: true,
+      messages: <ChatMessage>[
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'shared',
+          metadata: const <String, Object?>{
+            'nested': <String, Object?>{'value': 'safe'},
+          },
+          omissions: <acp.AcpInputOmission>[omission],
+        ),
+      ],
+      availableCommands: const <Map<String, Object?>>[
+        <String, Object?>{'name': 'review'},
+      ],
+      lastLatency: null,
+      lastError: null,
+      sessionSettings: const AcpSessionSettings(
+        modes: AcpSessionModeInfo(
+          currentModeId: 'ask',
+          availableModes: <AcpSessionMode>[
+            AcpSessionMode(id: 'ask', name: 'Ask'),
+          ],
+        ),
+      ),
+      sessionUsage: null,
+      sessionSettingsLoading: false,
+      status: app_state.ConnectionStatus.sessionReady,
+      activeSessionSettingsLoadId: null,
+    );
+    final first = ChatController(client: FakeAgentClient(), cwd: '/workspace');
+    final second = ChatController(client: FakeAgentClient(), cwd: '/workspace');
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+
+    first.restoreArchivedSessionLocally(snapshot);
+    second.restoreArchivedSessionLocally(snapshot);
+
+    expect(first.messages.single, isNot(same(second.messages.single)));
+    expect(
+      first.messages.single.metadata,
+      isNot(same(second.messages.single.metadata)),
+    );
+    expect(
+      first.messages.single.omissions,
+      isNot(same(second.messages.single.omissions)),
+    );
+    expect(first.availableCommands, isNot(same(second.availableCommands)));
+    expect(first.sessionSettings, isNot(same(second.sessionSettings)));
+    first.messages.single.appendAcceptedText(' first', acceptedUtf8Bytes: 6);
+    first.availableCommands = const <Map<String, Object?>>[];
+    first.sessionSettings = const AcpSessionSettings();
+
+    expect(first.messages.single.text, 'shared first');
+    expect(second.messages.single.text, 'shared');
+    expect(snapshot.messages.single.text, 'shared');
+    expect(second.availableCommands.single['name'], 'review');
+    expect(snapshot.availableCommands.single['name'], 'review');
+    expect(second.sessionSettings.modes.currentModeId, 'ask');
+    expect(snapshot.sessionSettings.modes.currentModeId, 'ask');
+  });
+
+  test(
+    'empty snapshots work with one collection item and metadata node',
+    () async {
+      const budget = acp.AcpInputBudget(
+        maxCollectionItems: 1,
+        maxMetadataNodes: 1,
+      );
+      final session = AgentSession(
+        id: 'tiny-budget',
+        cwd: '/workspace',
+        createdAt: DateTime(2026, 7, 12, 14),
+      );
+      final snapshot = ArchivedSessionSnapshot(
+        session: session,
+        wasCurrent: true,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: budget,
+      );
+      expect(snapshot.retainedBytes, greaterThan(0));
+      final fixedLabelSnapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'a',
+          cwd: 'b',
+          createdAt: DateTime(2026, 7, 12, 14),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: const acp.AcpInputBudget(
+          maxCollectionItems: 1,
+          maxMetadataNodes: 1,
+          maxStructuredStringBytes: 1,
+        ),
+      );
+      expect(fixedLabelSnapshot.retainedBytes, greaterThan(0));
+      final boundedDirectoriesSnapshot = ArchivedSessionSnapshot(
+        session: AgentSession(
+          id: 'bounded-directories',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 12, 14),
+          additionalDirectories: const <String>['/one', '/two'],
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+        inputBudget: budget,
+      );
+      expect(boundedDirectoriesSnapshot.session.additionalDirectories, isEmpty);
+
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: budget,
+      );
+      addTearDown(controller.dispose);
+      await controller.connect();
+      controller.currentSession = session;
+      controller.sessions.add(session);
+      controller.status = app_state.ConnectionStatus.sessionReady;
+
+      final archived = controller.archiveSessionLocally(session.id);
+
+      expect(archived, isNotNull);
+      expect(archived!.retainedBytes, greaterThan(0));
+      controller.restoreArchivedSessionLocally(archived);
+      expect(controller.currentSession?.id, session.id);
+
+      final other = AgentSession(
+        id: 'tiny-budget-other',
+        cwd: '/workspace/other',
+        createdAt: DateTime(2026, 7, 12, 15),
+      );
+      controller.sessions.add(other);
+      await controller.resumeSession(other.id, cwd: other.cwd);
+      expect(controller.lastError, isNull);
+      expect(controller.currentSession?.id, other.id);
+      await controller.resumeSession(session.id);
+      expect(controller.currentSession?.id, session.id);
+      expect(controller.messages, isEmpty);
+    },
+  );
+
   test('sending after local archive starts a new session', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(
@@ -1962,6 +3092,72 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'inactive archive uses its own snapshot and undo restores it later',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession(cwd: '/workspace/first');
+      final firstSession = controller.currentSession!;
+      controller.messages.add(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'first-only'),
+      );
+      controller.availableCommands = <Map<String, Object?>>[
+        <String, Object?>{'name': 'first-command'},
+      ];
+
+      await controller.resumeSession(
+        'second-session',
+        cwd: '/workspace/second',
+      );
+      final secondSession = controller.currentSession!;
+      controller.messages.add(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'second-only'),
+      );
+
+      final archived = controller.archiveSessionLocally(firstSession.id)!;
+
+      expect(controller.currentSession?.id, secondSession.id);
+      expect(
+        archived.messages.map((message) => message.text),
+        contains('first-only'),
+      );
+      expect(
+        archived.messages.map((message) => message.text),
+        isNot(contains('second-only')),
+      );
+      expect(archived.availableCommands.single['name'], 'first-command');
+
+      controller.restoreArchivedSessionLocally(archived);
+      controller.messages.last.text = 'second-mutated';
+      await controller.resumeSession(firstSession.id);
+
+      expect(controller.currentSession?.id, firstSession.id);
+      expect(
+        controller.messages.map((message) => message.text),
+        contains('first-only'),
+      );
+      expect(
+        controller.messages.map((message) => message.text),
+        isNot(contains('second-mutated')),
+      );
+      expect(controller.availableCommands.single['name'], 'first-command');
+      expect(
+        () => controller.messages.last.text = 'active mutation',
+        returnsNormally,
+      );
+      expect(
+        archived.messages.map((message) => message.text),
+        isNot(contains('active mutation')),
+      );
+    },
+  );
 
   test('session catalog preserves local sidebar metadata', () async {
     final controller = ChatController(
@@ -6400,6 +7596,184 @@ class _StatefulConfigOptionsList implements List<Object?> {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _CanaryPayload {
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    return 'SNAPSHOT_PAYLOAD_CANARY';
+  }
+}
+
+class _ThrowingReadList<T> extends ListBase<T> {
+  @override
+  int get length => 1;
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed');
+
+  @override
+  T operator [](int index) {
+    throw const FormatException('hostile settings list access');
+  }
+
+  @override
+  void operator []=(int index, T value) {
+    throw UnsupportedError('fixed');
+  }
+}
+
+class _ThrowingChatMessageList extends ListBase<ChatMessage> {
+  _ThrowingChatMessageList(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => 1;
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed');
+
+  @override
+  ChatMessage operator [](int index) => throw StateError(canary);
+
+  @override
+  void operator []=(int index, ChatMessage value) {
+    throw UnsupportedError('fixed');
+  }
+}
+
+class _ThrowingStringList extends ListBase<String> {
+  _ThrowingStringList(this.canary);
+
+  final String canary;
+
+  @override
+  int get length => 1;
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed');
+
+  @override
+  String operator [](int index) => throw StateError(canary);
+
+  @override
+  void operator []=(int index, String value) {
+    throw UnsupportedError('fixed');
+  }
+}
+
+class _GrowingLengthList<T> extends ListBase<T> {
+  _GrowingLengthList(this.seed, this.canary);
+
+  final T seed;
+  final String canary;
+  int lengthReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    return lengthReads == 1 ? 1 : 2;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed');
+
+  @override
+  T operator [](int index) {
+    if (index == 0) return seed;
+    throw StateError(canary);
+  }
+
+  @override
+  void operator []=(int index, T value) {
+    throw UnsupportedError('fixed');
+  }
+}
+
+class _ArchivedSessionSnapshotSubclass extends ArchivedSessionSnapshot {
+  _ArchivedSessionSnapshotSubclass({required super.messages})
+    : super(
+        session: AgentSession(
+          id: 'subclass-session',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 12, 30),
+        ),
+        wasCurrent: false,
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+}
+
+class _ThrowingWasCurrentArchivedSnapshot extends ArchivedSessionSnapshot {
+  _ThrowingWasCurrentArchivedSnapshot({required this.canary})
+    : super(
+        session: AgentSession(
+          id: 'hostile-was-current',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 14, 30),
+        ),
+        wasCurrent: false,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+
+  final String canary;
+  int wasCurrentReads = 0;
+
+  @override
+  bool get wasCurrent {
+    wasCurrentReads += 1;
+    throw StateError(canary);
+  }
+}
+
+class _StatefulWasCurrentArchivedSnapshot extends ArchivedSessionSnapshot {
+  _StatefulWasCurrentArchivedSnapshot()
+    : super(
+        session: AgentSession(
+          id: 'stateful-was-current',
+          cwd: '/workspace',
+          createdAt: DateTime(2026, 7, 13, 15),
+        ),
+        wasCurrent: true,
+        messages: const <ChatMessage>[],
+        availableCommands: const <Map<String, Object?>>[],
+        lastLatency: null,
+        lastError: null,
+        sessionSettings: const AcpSessionSettings(),
+        sessionUsage: null,
+        sessionSettingsLoading: false,
+        status: app_state.ConnectionStatus.sessionReady,
+        activeSessionSettingsLoadId: null,
+      );
+
+  int wasCurrentReads = 0;
+
+  @override
+  bool get wasCurrent {
+    wasCurrentReads += 1;
+    if (wasCurrentReads > 1) {
+      throw StateError('wasCurrent read more than once');
+    }
+    return true;
+  }
 }
 
 AcpSessionSettings _settingsWithMode(String modeId) {
