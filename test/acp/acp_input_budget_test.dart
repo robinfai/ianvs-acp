@@ -1995,6 +1995,74 @@ void main() {
       expect(huge.indexReads, 0);
     });
 
+    test('underreported list prechecks actual nodes before current', () {
+      final list = _UnderreportedCurrentTrapList();
+      final value = guard(maxNodes: 2, maxRootNodes: 2);
+      Object? failure;
+
+      try {
+        value.copyMetadata(<String, Object?>{'list': list}, field: 'metadata');
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(
+        failure,
+        isA<AcpInputLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'ACP test update metadata metadata nodes',
+            )
+            .having((error) => error.limit, 'limit', 2)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
+            .having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
+      );
+      expect(list.currentReads, 0);
+      expect(
+        () => value.copyScalar(null, field: 'afterFailure'),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('underreported map prechecks actual nodes before current or key', () {
+      final source = _UnderreportedCurrentTrapMap();
+      final value = guard(maxNodes: 1, maxRootNodes: 1);
+      Object? failure;
+
+      try {
+        value.copyMetadata(source, field: 'metadata');
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(
+        failure,
+        isA<AcpInputLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'ACP test update metadata metadata nodes',
+            )
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2)
+            .having(
+              (error) => error.toString(),
+              'message',
+              isNot(contains('PAYLOAD_CANARY')),
+            ),
+      );
+      expect(source.currentOrKeyReads, 0);
+      expect(
+        () => value.copyScalar(null, field: 'afterFailure'),
+        throwsA(isA<StateError>()),
+      );
+    });
+
     test('metadata failure poisons the guard with a fixed state error', () {
       final value = guard();
       expect(
@@ -2173,4 +2241,83 @@ final class _ThrowingMetadataList extends ListBase<Object?> {
   @override
   void operator []=(int index, Object? value) =>
       throw UnsupportedError('read only');
+}
+
+final class _UnderreportedCurrentTrapList extends ListBase<Object?> {
+  var currentReads = 0;
+
+  @override
+  int get length => 0;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  Iterator<Object?> get iterator => _CurrentTrapIterator<Object?>(() {
+    currentReads += 1;
+    throw StateError('PAYLOAD_CANARY list current');
+  });
+
+  @override
+  Object? operator [](int index) => null;
+
+  @override
+  void operator []=(int index, Object? value) =>
+      throw UnsupportedError('read only');
+}
+
+final class _UnderreportedCurrentTrapMap extends MapBase<Object?, Object?> {
+  var currentOrKeyReads = 0;
+
+  @override
+  int get length => 0;
+
+  @override
+  Iterable<MapEntry<Object?, Object?>> get entries =>
+      _CurrentTrapIterable<MapEntry<Object?, Object?>>(() {
+        currentOrKeyReads += 1;
+        throw StateError('PAYLOAD_CANARY map current or key');
+      });
+
+  @override
+  Iterable<Object?> get keys => const <Object?>[];
+
+  @override
+  Object? operator [](Object? key) => null;
+
+  @override
+  void operator []=(Object? key, Object? value) =>
+      throw UnsupportedError('read only');
+
+  @override
+  void clear() => throw UnsupportedError('read only');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('read only');
+}
+
+final class _CurrentTrapIterable<T> extends Iterable<T> {
+  _CurrentTrapIterable(this._readCurrent);
+
+  final T Function() _readCurrent;
+
+  @override
+  Iterator<T> get iterator => _CurrentTrapIterator<T>(_readCurrent);
+}
+
+final class _CurrentTrapIterator<T> implements Iterator<T> {
+  _CurrentTrapIterator(this._readCurrent);
+
+  final T Function() _readCurrent;
+  var _moved = false;
+
+  @override
+  T get current => _readCurrent();
+
+  @override
+  bool moveNext() {
+    if (_moved) return false;
+    _moved = true;
+    return true;
+  }
 }

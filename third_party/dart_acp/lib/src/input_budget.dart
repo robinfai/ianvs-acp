@@ -825,6 +825,7 @@ final class AcpStructuredUpdateGuard {
             observedAtLeast: entryLimit + 1,
           );
         }
+        precheckChildren(values.length + 1);
         try {
           values.add(iterator.current);
         } catch (_) {
@@ -863,6 +864,7 @@ final class AcpStructuredUpdateGuard {
             observedAtLeast: entryLimit + 1,
           );
         }
+        precheckChildren(entries.length + 1);
         final MapEntry<Object?, Object?> entry;
         try {
           entry = iterator.current;
