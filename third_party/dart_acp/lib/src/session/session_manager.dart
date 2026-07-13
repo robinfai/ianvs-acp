@@ -498,6 +498,44 @@ final class _GeneratedSessionRegistration {
   final Object identity;
 }
 
+enum _TerminalLeaseState { reserved, creating, active, released }
+
+final class _TerminalQuotaLease {
+  _TerminalQuotaLease(this.owner, this.sessionId);
+
+  final SessionManager owner;
+  final String sessionId;
+  var state = _TerminalLeaseState.reserved;
+  var revoked = false;
+
+  void markCreating() {
+    if (state != _TerminalLeaseState.reserved || revoked) {
+      throw StateError('Terminal session is closing or closed.');
+    }
+    state = _TerminalLeaseState.creating;
+  }
+
+  void markActive() {
+    if (state != _TerminalLeaseState.creating || revoked) {
+      throw StateError('Terminal session is closing or closed.');
+    }
+    state = _TerminalLeaseState.active;
+    owner._pendingTerminalLeases.remove(this);
+  }
+
+  void revoke() {
+    if (state == _TerminalLeaseState.released) return;
+    revoked = true;
+    if (state == _TerminalLeaseState.reserved) release();
+  }
+
+  void release() {
+    if (state == _TerminalLeaseState.released) return;
+    state = _TerminalLeaseState.released;
+    owner._releaseTerminalLease(this);
+  }
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager implements AcpBoundedObservationSource {
   /// Create a [SessionManager] with [config] and [peer].
@@ -509,11 +547,17 @@ class SessionManager implements AcpBoundedObservationSource {
     this.maxToolCallItems = 512,
     this.maxToolCallBytes = 8 * 1024 * 1024,
     this.inputBudget = const AcpInputBudget(),
+    this.maxTerminalHandles = defaultMaxTerminalHandles,
+    this.maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
   }) : assert(maxReplayItems > 0),
        assert(maxReplayBytes > 0),
        assert(maxToolCallItems > 0),
        assert(maxToolCallBytes > 0),
        _log = config.logger {
+    validateTerminalHandleLimits(
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+    );
     inputBudget.validate();
     if (maxReplayBytes < minimumSessionReplayBytes) {
       throw ArgumentError.value(
@@ -547,6 +591,8 @@ class SessionManager implements AcpBoundedObservationSource {
   final int maxToolCallItems;
   final int maxToolCallBytes;
   final AcpInputBudget inputBudget;
+  final int maxTerminalHandles;
+  final int maxTerminalHandlesPerSession;
   late final Set<AcpBoundedObservationListener> _boundedObservationListeners;
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
@@ -573,6 +619,12 @@ class SessionManager implements AcpBoundedObservationSource {
   final Map<String, Future<void>> _sessionSetupTails = {};
   final Map<String, Set<Object>> _sessionClosingOwners =
       <String, Set<Object>>{};
+  final Set<_TerminalQuotaLease> _terminalLeases = <_TerminalQuotaLease>{};
+  final Set<_TerminalQuotaLease> _pendingTerminalLeases =
+      <_TerminalQuotaLease>{};
+  final Map<String, int> _terminalLeaseCountBySession = <String, int>{};
+  final Map<String, _TerminalQuotaLease> _terminalLeasesByTerminalId =
+      <String, _TerminalQuotaLease>{};
   var _nextInputBudgetGeneration = 0;
   var _disposed = false;
 
@@ -591,24 +643,38 @@ class SessionManager implements AcpBoundedObservationSource {
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     _disposed = true;
+    _revokeTerminalLeases();
     _boundedObservationListeners.clear();
     _invalidateAllInputBudgetPhases();
     _invalidateAllRequestInputBudgetPhases();
     final terminalProvider = config.terminalProvider;
-    final terminals = _terminals.values.toList(growable: false);
+    final terminals = _terminals.entries
+        .map(
+          (entry) => (
+            handle: entry.value,
+            lease: _terminalLeasesByTerminalId.remove(entry.key),
+          ),
+        )
+        .toList(growable: false);
     _terminals.clear();
     _terminalSessions.clear();
     var terminalReleaseFailures = 0;
     if (terminalProvider != null) {
       await Future.wait<void>(
-        terminals.map((handle) async {
+        terminals.map((record) async {
           try {
-            await terminalProvider.release(handle);
+            await terminalProvider.release(record.handle);
           } on Object {
             terminalReleaseFailures += 1;
+          } finally {
+            record.lease?.release();
           }
         }),
       );
+    } else {
+      for (final record in terminals) {
+        record.lease?.release();
+      }
     }
     if (terminalReleaseFailures > 0) {
       _log.warning(
@@ -844,6 +910,7 @@ class SessionManager implements AcpBoundedObservationSource {
     _cancelledPromptOwners.remove(sessionId);
     final owner = Object();
     _sessionClosingOwners.putIfAbsent(sessionId, () => <Object>{}).add(owner);
+    _revokeTerminalLeases(sessionId: sessionId);
     return owner;
   }
 
@@ -1414,6 +1481,7 @@ class SessionManager implements AcpBoundedObservationSource {
       _cancelledPromptOwners.containsKey(sessionId) ||
       _sessionClosingOwners.containsKey(sessionId) ||
       _terminalSessions.containsValue(sessionId) ||
+      _terminalLeases.any((lease) => lease.sessionId == sessionId) ||
       _generatedSessionRegistrationOwners.containsKey(sessionId);
 
   void _commitSessionResultModes(String sessionId, SessionResult result) {
@@ -2449,6 +2517,54 @@ class SessionManager implements AcpBoundedObservationSource {
     return sessionId;
   }
 
+  _TerminalQuotaLease _reserveTerminalLease(String sessionId) {
+    if (_terminalLeases.length >= maxTerminalHandles) {
+      throw TerminalHandleLimitException(
+        reason: TerminalHandleLimitReason.global,
+        limit: maxTerminalHandles,
+      );
+    }
+    final sessionCount = _terminalLeaseCountBySession[sessionId] ?? 0;
+    if (sessionCount >= maxTerminalHandlesPerSession) {
+      throw TerminalHandleLimitException(
+        reason: TerminalHandleLimitReason.session,
+        limit: maxTerminalHandlesPerSession,
+      );
+    }
+    final lease = _TerminalQuotaLease(this, sessionId);
+    _terminalLeases.add(lease);
+    _pendingTerminalLeases.add(lease);
+    _terminalLeaseCountBySession[sessionId] = sessionCount + 1;
+    return lease;
+  }
+
+  void _releaseTerminalLease(_TerminalQuotaLease lease) {
+    _pendingTerminalLeases.remove(lease);
+    if (!_terminalLeases.remove(lease)) return;
+    final sessionCount = _terminalLeaseCountBySession[lease.sessionId];
+    if (sessionCount == null || sessionCount <= 1) {
+      _terminalLeaseCountBySession.remove(lease.sessionId);
+    } else {
+      _terminalLeaseCountBySession[lease.sessionId] = sessionCount - 1;
+    }
+  }
+
+  void _requireUsableTerminalLease(_TerminalQuotaLease lease) {
+    if (_disposed ||
+        lease.revoked ||
+        lease.state == _TerminalLeaseState.released ||
+        _isSessionClosing(lease.sessionId) ||
+        !_sessionWorkspaceRoots.containsKey(lease.sessionId)) {
+      throw StateError('Terminal session is closing or closed.');
+    }
+  }
+
+  void _revokeTerminalLeases({String? sessionId}) {
+    for (final lease in _pendingTerminalLeases.toList(growable: false)) {
+      if (sessionId == null || lease.sessionId == sessionId) lease.revoke();
+    }
+  }
+
   final Map<String, TerminalProcessHandle> _terminals = {};
   final Map<String, String> _terminalSessions = {};
 
@@ -2456,6 +2572,9 @@ class SessionManager implements AcpBoundedObservationSource {
     final provider = config.terminalProvider;
     if (provider == null) {
       throw Exception('Terminal not supported');
+    }
+    if (_disposed) {
+      throw StateError('Terminal session is closing or closed.');
     }
     final sessionId = _requireKnownSessionId(req);
     final cmd = req['command'] as String;
@@ -2491,79 +2610,116 @@ class SessionManager implements AcpBoundedObservationSource {
       permissionMetadata['envKeys'] = env.keys.toList()..sort();
     }
 
-    // Enforce permission for execute/terminal usage. If policy denies, reject
-    // terminal creation so the agent cannot bypass FS jail via shell.
-    final execOutcome = await config.permissionProvider.request(
-      PermissionOptions(
-        title: 'Create terminal',
-        rationale: 'Agent requested to execute commands',
-        options: const ['allow', 'deny'],
-        sessionId: sessionId,
-        toolName: 'terminal',
-        toolKind: 'execute',
-        metadata: permissionMetadata,
-        transientPolicyContext: <String, Object?>{
-          if (env.isNotEmpty)
-            'environment': Map<String, String>.unmodifiable(env),
-        },
-      ),
-    );
-    if (execOutcome.outcome != PermissionOutcome.allow) {
-      throw Exception('Permission denied');
-    }
-    var cwd = requestedCwd;
-    // Enforce workspace jail for terminal working directory unless yolo
-    if (!config.allowReadOutsideWorkspace) {
-      final jail = WorkspaceJail(
-        workspaceRoot: workspaceRoot,
-        additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
-      );
-      if (cwd != null) {
-        try {
-          final resolved = await jail.resolveForgiving(cwd);
-          final within = await jail.isWithinWorkspace(resolved);
-          if (!within) {
-            cwd = workspaceRoot;
-          }
-        } on Exception catch (_) {
-          cwd = workspaceRoot;
-        }
-      } else {
-        cwd = workspaceRoot;
-      }
+    late final _TerminalQuotaLease lease;
+    try {
+      lease = _reserveTerminalLease(sessionId);
+    } on TerminalHandleLimitException {
+      throw _PayloadFreeRpcException(-32001, 'Terminal handle limit exceeded.');
     }
 
-    final handle = await provider.create(
-      sessionId: sessionId,
-      command: cmd,
-      args: args,
-      cwd: cwd,
-      env: env.isEmpty ? null : env,
-      outputByteLimit: outputByteLimit,
-    );
-    return _runSerializedSessionMutation(sessionId, () async {
-      if (_isSessionClosing(sessionId) ||
-          !_sessionWorkspaceRoots.containsKey(sessionId)) {
-        try {
-          await provider.release(handle);
-        } on Object {
-          // Rejected handles must never become managed terminal state.
-        }
-        throw StateError('Terminal session is closing or closed.');
+    var registered = false;
+    try {
+      // Enforce permission for execute/terminal usage. If policy denies,
+      // reject creation so the agent cannot bypass the FS jail via shell.
+      final execOutcome = await config.permissionProvider.request(
+        PermissionOptions(
+          title: 'Create terminal',
+          rationale: 'Agent requested to execute commands',
+          options: const ['allow', 'deny'],
+          sessionId: sessionId,
+          toolName: 'terminal',
+          toolKind: 'execute',
+          metadata: permissionMetadata,
+          transientPolicyContext: <String, Object?>{
+            if (env.isNotEmpty)
+              'environment': Map<String, String>.unmodifiable(env),
+          },
+        ),
+      );
+      if (execOutcome.outcome != PermissionOutcome.allow) {
+        throw Exception('Permission denied');
       }
-      _terminals[handle.terminalId] = handle;
-      _terminalSessions[handle.terminalId] = sessionId;
-      _terminalEvents.add(
-        TerminalCreated(
-          terminalId: handle.terminalId,
+      _requireUsableTerminalLease(lease);
+      var cwd = requestedCwd;
+      // Enforce workspace jail for terminal working directory unless yolo.
+      if (!config.allowReadOutsideWorkspace) {
+        final jail = WorkspaceJail(
+          workspaceRoot: workspaceRoot,
+          additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
+        );
+        if (cwd != null) {
+          try {
+            final resolved = await jail.resolveForgiving(cwd);
+            final within = await jail.isWithinWorkspace(resolved);
+            if (!within) {
+              cwd = workspaceRoot;
+            }
+          } on Exception catch (_) {
+            cwd = workspaceRoot;
+          }
+        } else {
+          cwd = workspaceRoot;
+        }
+      }
+      _requireUsableTerminalLease(lease);
+      lease.markCreating();
+      late final TerminalProcessHandle handle;
+      try {
+        handle = await provider.create(
           sessionId: sessionId,
           command: cmd,
           args: args,
           cwd: cwd,
-        ),
-      );
-      return {'terminalId': handle.terminalId};
-    });
+          env: env.isEmpty ? null : env,
+          outputByteLimit: outputByteLimit,
+        );
+      } on TerminalHandleLimitException {
+        throw _PayloadFreeRpcException(
+          -32001,
+          'Terminal handle limit exceeded.',
+        );
+      }
+      return await _runSerializedSessionMutation(sessionId, () async {
+        if (_disposed ||
+            lease.revoked ||
+            _isSessionClosing(sessionId) ||
+            !_sessionWorkspaceRoots.containsKey(sessionId)) {
+          try {
+            await provider.release(handle);
+          } on Object {
+            // Rejected handles must never become managed terminal state.
+          }
+          throw StateError('Terminal session is closing or closed.');
+        }
+        if (_terminals.containsKey(handle.terminalId)) {
+          try {
+            await provider.release(handle);
+          } on Object {
+            // Duplicate handles are rejected without replacing ownership.
+          }
+          throw StateError(
+            'Terminal provider returned a duplicate terminalId.',
+          );
+        }
+        lease.markActive();
+        registered = true;
+        _terminals[handle.terminalId] = handle;
+        _terminalSessions[handle.terminalId] = sessionId;
+        _terminalLeasesByTerminalId[handle.terminalId] = lease;
+        _terminalEvents.add(
+          TerminalCreated(
+            terminalId: handle.terminalId,
+            sessionId: sessionId,
+            command: cmd,
+            args: args,
+            cwd: cwd,
+          ),
+        );
+        return {'terminalId': handle.terminalId};
+      });
+    } finally {
+      if (!registered) lease.release();
+    }
   }
 
   Future<Json> _onTerminalOutput(Json req) async {
@@ -2642,8 +2798,13 @@ class SessionManager implements AcpBoundedObservationSource {
     final termId = req['terminalId'] as String;
     final handle = _terminals.remove(termId);
     _terminalSessions.remove(termId);
-    if (provider != null && handle != null) {
-      await provider.release(handle);
+    final lease = _terminalLeasesByTerminalId.remove(termId);
+    try {
+      if (provider != null && handle != null) {
+        await provider.release(handle);
+      }
+    } finally {
+      lease?.release();
     }
     _terminalEvents.add(TerminalReleased(terminalId: termId));
     return null;
@@ -2682,8 +2843,13 @@ class SessionManager implements AcpBoundedObservationSource {
     final provider = config.terminalProvider;
     final handle = _terminals.remove(terminalId);
     _terminalSessions.remove(terminalId);
-    if (provider != null && handle != null) {
-      await provider.release(handle);
+    final lease = _terminalLeasesByTerminalId.remove(terminalId);
+    try {
+      if (provider != null && handle != null) {
+        await provider.release(handle);
+      }
+    } finally {
+      lease?.release();
     }
   }
 
@@ -2697,11 +2863,15 @@ class SessionManager implements AcpBoundedObservationSource {
     for (final terminalId in terminalIds) {
       final handle = _terminals.remove(terminalId);
       _terminalSessions.remove(terminalId);
-      if (provider == null || handle == null) continue;
+      final lease = _terminalLeasesByTerminalId.remove(terminalId);
       try {
-        await provider.release(handle);
+        if (provider != null && handle != null) {
+          await provider.release(handle);
+        }
       } on Object catch (error) {
         failures.add(error);
+      } finally {
+        lease?.release();
       }
     }
     if (failures.isNotEmpty) {

@@ -8257,6 +8257,528 @@ Future<void> main() async {
     },
   );
 
+  group('terminal handle manager admission', () {
+    test('terminal handle limits reject invalid manager configuration', () {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+
+      expect(
+        () => SessionManager(
+          config: acp.AcpConfig(),
+          peer: peer,
+          maxTerminalHandles: 0,
+        ),
+        throwsArgumentError,
+      );
+      expect(peer.onTerminalCreate, isNull);
+      expect(
+        () => SessionManager(
+          config: acp.AcpConfig(),
+          peer: peer,
+          maxTerminalHandlesPerSession: 0,
+        ),
+        throwsArgumentError,
+      );
+      expect(peer.onTerminalCreate, isNull);
+      expect(
+        () => SessionManager(
+          config: acp.AcpConfig(),
+          peer: peer,
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 2,
+        ),
+        throwsArgumentError,
+      );
+      expect(peer.onTerminalCreate, isNull);
+      expect(peer.onReadTextFile, isNull);
+      expect(peer.onRequestPermission, isNull);
+      unawaited(peer.close());
+      unawaited(channel.local.sink.close());
+    });
+
+    test(
+      'terminal handle quota enforces per session and global boundaries',
+      () async {
+        var permissionCalls = 0;
+        final provider = _RecordingTerminalProvider();
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async {
+              permissionCalls += 1;
+              return const acp.PermissionDecision.allow();
+            },
+          ),
+          maxTerminalHandles: 2,
+          maxTerminalHandlesPerSession: 1,
+        );
+        final logs = <String>[];
+        final logSubscription = harness.manager.config.logger.onRecord.listen(
+          (record) => logs.add(record.message),
+        );
+
+        try {
+          await harness.resume('session-a');
+          await harness.resume('session-b');
+          await harness.resume('session-c');
+          final first = await harness.createTerminal(
+            id: 'terminal-handle-first',
+            sessionId: 'session-a',
+          );
+          expect(first, contains('result'));
+          final sessionOverflow = await harness.createTerminal(
+            id: 'terminal-handle-session-overflow',
+            sessionId: 'session-a',
+            command: 'session-command-canary',
+            envValue: 'session-env-canary',
+          );
+          _expectTerminalHandleLimit(sessionOverflow);
+          final second = await harness.createTerminal(
+            id: 'terminal-handle-second',
+            sessionId: 'session-b',
+          );
+          expect(second, contains('result'));
+          final globalOverflow = await harness.createTerminal(
+            id: 'terminal-handle-global-overflow',
+            sessionId: 'session-c',
+            command: 'global-command-canary',
+            envValue: 'global-env-canary',
+          );
+          _expectTerminalHandleLimit(globalOverflow);
+          expect(provider.createCalls, 2);
+          expect(permissionCalls, 2);
+          final joinedLogs = logs.join('\n');
+          expect(joinedLogs, isNot(contains('session-command-canary')));
+          expect(joinedLogs, isNot(contains('session-env-canary')));
+          expect(joinedLogs, isNot(contains('global-command-canary')));
+          expect(joinedLogs, isNot(contains('global-env-canary')));
+        } finally {
+          await logSubscription.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle quota is reserved before requesting permission',
+      () async {
+        final permissionBarrier = Completer<acp.PermissionDecision>();
+        final permissionStarted = Completer<void>();
+        var permissionCalls = 0;
+        final provider = _RecordingTerminalProvider();
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) {
+              permissionCalls += 1;
+              if (!permissionStarted.isCompleted) permissionStarted.complete();
+              return permissionBarrier.future;
+            },
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          final first = harness.createTerminal(
+            id: 'terminal-handle-permission-pending',
+            sessionId: 'session-a',
+          );
+          await permissionStarted.future.timeout(const Duration(seconds: 5));
+          final overflow = await harness.createTerminal(
+            id: 'terminal-handle-permission-overflow',
+            sessionId: 'session-a',
+          );
+          _expectTerminalHandleLimit(overflow);
+          expect(permissionCalls, 1);
+          expect(provider.createCalls, 0);
+
+          permissionBarrier.complete(const acp.PermissionDecision.allow());
+          expect(await first, contains('result'));
+        } finally {
+          if (!permissionBarrier.isCompleted) {
+            permissionBarrier.complete(const acp.PermissionDecision.deny());
+          }
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle quota counts provider creates that are pending',
+      () async {
+        final firstBarrier = Completer<void>();
+        final secondBarrier = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          createBarriers: <int, Completer<void>>{
+            1: firstBarrier,
+            2: secondBarrier,
+          },
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 2,
+          maxTerminalHandlesPerSession: 2,
+        );
+
+        try {
+          await harness.resume('session-a');
+          await harness.resume('session-b');
+          await harness.resume('session-c');
+          final first = harness.createTerminal(
+            id: 'terminal-handle-provider-first',
+            sessionId: 'session-a',
+          );
+          final second = harness.createTerminal(
+            id: 'terminal-handle-provider-second',
+            sessionId: 'session-b',
+          );
+          await _waitForTerminalTestCondition(() => provider.createCalls == 2);
+          final overflow = await harness.createTerminal(
+            id: 'terminal-handle-provider-overflow',
+            sessionId: 'session-c',
+          );
+          _expectTerminalHandleLimit(overflow);
+          expect(provider.createCalls, 2);
+
+          firstBarrier.complete();
+          secondBarrier.complete();
+          expect(await first, contains('result'));
+          expect(await second, contains('result'));
+        } finally {
+          if (!firstBarrier.isCompleted) firstBarrier.complete();
+          if (!secondBarrier.isCompleted) secondBarrier.complete();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle permission and create failures roll back quota',
+      () async {
+        var permissionCall = 0;
+        final provider = _RecordingTerminalProvider(
+          failCreateCalls: const <int>{1},
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async {
+              permissionCall += 1;
+              return switch (permissionCall) {
+                1 => const acp.PermissionDecision.deny(),
+                2 => const acp.PermissionDecision.cancelled(),
+                3 => throw StateError('permission-provider-canary'),
+                _ => const acp.PermissionDecision.allow(),
+              };
+            },
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          for (var attempt = 1; attempt <= 4; attempt += 1) {
+            final response = await harness.createTerminal(
+              id: 'terminal-handle-rollback-$attempt',
+              sessionId: 'session-a',
+            );
+            expect(response, contains('error'));
+          }
+          final retried = await harness.createTerminal(
+            id: 'terminal-handle-rollback-retried',
+            sessionId: 'session-a',
+          );
+          expect(retried, contains('result'));
+          expect(permissionCall, 5);
+          expect(provider.createCalls, 2);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle provider quota error is payload free and reusable',
+      () async {
+        final provider = _RecordingTerminalProvider(
+          failLimitCalls: const <int>{2},
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 2,
+          maxTerminalHandlesPerSession: 2,
+        );
+
+        try {
+          await harness.resume('provider-limit-session-canary');
+          final first = await harness.createTerminal(
+            id: 'terminal-handle-provider-limit-first',
+            sessionId: 'provider-limit-session-canary',
+          );
+          expect(first, contains('result'));
+
+          final rejected = await harness.createTerminal(
+            id: 'terminal-handle-provider-limit-rejected',
+            sessionId: 'provider-limit-session-canary',
+            command: 'provider-limit-command-canary',
+            envValue: 'provider-limit-env-canary',
+          );
+          expect(rejected['error'], <String, dynamic>{
+            'code': -32001,
+            'message': 'Terminal handle limit exceeded.',
+          });
+          final serialized = rejected.toString();
+          expect(serialized, isNot(contains('data')));
+          expect(serialized, isNot(contains('provider-limit-session-canary')));
+          expect(serialized, isNot(contains('provider-limit-command-canary')));
+          expect(serialized, isNot(contains('provider-limit-env-canary')));
+
+          final retried = await harness.createTerminal(
+            id: 'terminal-handle-provider-limit-retried',
+            sessionId: 'provider-limit-session-canary',
+          );
+          expect(retried, contains('result'));
+          expect(provider.createCalls, 3);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('terminal handle close revokes a permission pending lease', () async {
+      final firstPermission = Completer<acp.PermissionDecision>();
+      final permissionStarted = Completer<void>();
+      var permissionCalls = 0;
+      final provider = _RecordingTerminalProvider();
+      final harness = _TerminalAdmissionHarness(
+        provider: provider,
+        permissionProvider: acp.DefaultPermissionProvider(
+          onRequest: (_) {
+            permissionCalls += 1;
+            if (permissionCalls == 1) {
+              permissionStarted.complete();
+              return firstPermission.future;
+            }
+            return Future<acp.PermissionDecision>.value(
+              const acp.PermissionDecision.allow(),
+            );
+          },
+        ),
+        maxTerminalHandles: 1,
+        maxTerminalHandlesPerSession: 1,
+      );
+
+      try {
+        await harness.resume('session-a');
+        await harness.resume('session-b');
+        final late = harness.createTerminal(
+          id: 'terminal-handle-permission-late',
+          sessionId: 'session-a',
+        );
+        await permissionStarted.future.timeout(const Duration(seconds: 5));
+        await harness.manager.closeSession(sessionId: 'session-a');
+        final replacement = await harness.createTerminal(
+          id: 'terminal-handle-permission-replacement',
+          sessionId: 'session-b',
+        );
+        expect(replacement, contains('result'));
+
+        firstPermission.complete(const acp.PermissionDecision.allow());
+        final lateResponse = await late;
+        expect(lateResponse, contains('error'));
+        expect(lateResponse.toString(), contains('closing or closed'));
+        expect(provider.createCalls, 1);
+      } finally {
+        if (!firstPermission.isCompleted) {
+          firstPermission.complete(const acp.PermissionDecision.deny());
+        }
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'terminal handle close retains a creating lease until late release',
+      () async {
+        final createBarrier = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          createBarriers: <int, Completer<void>>{1: createBarrier},
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          await harness.resume('session-b');
+          final late = harness.createTerminal(
+            id: 'terminal-handle-create-late',
+            sessionId: 'session-a',
+          );
+          await _waitForTerminalTestCondition(() => provider.createCalls == 1);
+          await harness.manager.closeSession(sessionId: 'session-a');
+          final blocked = await harness.createTerminal(
+            id: 'terminal-handle-create-blocked',
+            sessionId: 'session-b',
+          );
+          _expectTerminalHandleLimit(blocked);
+          expect(provider.createCalls, 1);
+
+          createBarrier.complete();
+          final lateResponse = await late;
+          expect(lateResponse, contains('error'));
+          expect(provider.releaseAttempts, ['terminal-1']);
+          final replacement = await harness.createTerminal(
+            id: 'terminal-handle-create-replacement',
+            sessionId: 'session-b',
+          );
+          expect(replacement, contains('result'));
+        } finally {
+          if (!createBarrier.isCompleted) createBarrier.complete();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle duplicate id releases new ownership without overwrite',
+      () async {
+        final provider = _RecordingTerminalProvider(
+          terminalIdsByCall: const <int, String>{
+            1: 'duplicate-terminal',
+            2: 'duplicate-terminal',
+          },
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 2,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          await harness.resume('session-b');
+          final original = await harness.createTerminal(
+            id: 'terminal-handle-duplicate-original',
+            sessionId: 'session-a',
+          );
+          expect(original, contains('result'));
+          final duplicate = await harness.createTerminal(
+            id: 'terminal-handle-duplicate-new',
+            sessionId: 'session-b',
+          );
+          expect(duplicate, contains('error'));
+          expect(duplicate.toString(), contains('duplicate terminalId'));
+          expect(provider.releaseAttempts, ['duplicate-terminal']);
+
+          await harness.manager.releaseTerminal('duplicate-terminal');
+          expect(provider.releaseAttempts, <String>[
+            'duplicate-terminal',
+            'duplicate-terminal',
+          ]);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle release failure still returns manager quota',
+      () async {
+        final provider = _RecordingTerminalProvider(
+          failReleaseIds: const <String>{'terminal-1'},
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          final first = await harness.createTerminal(
+            id: 'terminal-handle-release-first',
+            sessionId: 'session-a',
+          );
+          final terminalId =
+              (first['result'] as Map<String, dynamic>)['terminalId'] as String;
+          await expectLater(
+            harness.manager.releaseTerminal(terminalId),
+            throwsStateError,
+          );
+          final replacement = await harness.createTerminal(
+            id: 'terminal-handle-release-replacement',
+            sessionId: 'session-a',
+          );
+          expect(replacement, contains('result'));
+          expect(provider.createCalls, 2);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle dispose releases a late create before returning quota',
+      () async {
+        final createBarrier = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          createBarriers: <int, Completer<void>>{1: createBarrier},
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          final late = harness.createTerminal(
+            id: 'terminal-handle-dispose-late',
+            sessionId: 'session-a',
+          );
+          await _waitForTerminalTestCondition(() => provider.createCalls == 1);
+          await harness.manager.dispose();
+          createBarrier.complete();
+
+          final lateResponse = await late;
+          expect(lateResponse, contains('error'));
+          expect(lateResponse.toString(), contains('closing or closed'));
+          expect(provider.releaseAttempts, ['terminal-1']);
+          expect(
+            await harness.manager.readTerminalOutput('terminal-1'),
+            isEmpty,
+          );
+        } finally {
+          if (!createBarrier.isCompleted) createBarrier.complete();
+          await harness.dispose();
+        }
+      },
+    );
+  });
+
   test(
     'close releases only owned terminals and aggregates cleanup failures',
     () async {
@@ -13359,6 +13881,116 @@ Future<void> main() async {
   }
 }
 
+void _expectTerminalHandleLimit(Map<String, dynamic> response) {
+  expect(response['error'], <String, dynamic>{
+    'code': -32001,
+    'message': 'Terminal handle limit exceeded.',
+  });
+  final serialized = response.toString();
+  for (final canary in const <String>[
+    'session-a',
+    'session-c',
+    'session-command-canary',
+    'session-env-canary',
+    'global-command-canary',
+    'global-env-canary',
+  ]) {
+    expect(serialized, isNot(contains(canary)));
+  }
+}
+
+Future<void> _waitForTerminalTestCondition(bool Function() predicate) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Timed out waiting for terminal test condition.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
+class _TerminalAdmissionHarness {
+  _TerminalAdmissionHarness({
+    required _RecordingTerminalProvider provider,
+    required acp.PermissionProvider permissionProvider,
+    required int maxTerminalHandles,
+    required int maxTerminalHandlesPerSession,
+  }) : channel = StreamChannelController<String>() {
+    peer = JsonRpcPeer(channel.foreign);
+    manager = SessionManager(
+      config: acp.AcpConfig(
+        terminalProvider: provider,
+        permissionProvider: permissionProvider,
+      ),
+      peer: peer,
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+    );
+    server = channel.local.stream.listen((line) {
+      final message = jsonDecode(line) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'session/resume' || method == 'session/close') {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+        return;
+      }
+      final id = message['id']?.toString();
+      if (id != null) _responses[id]?.complete(message);
+    });
+  }
+
+  final StreamChannelController<String> channel;
+  late JsonRpcPeer peer;
+  late SessionManager manager;
+  late StreamSubscription<String> server;
+  final Map<String, Completer<Map<String, dynamic>>> _responses =
+      <String, Completer<Map<String, dynamic>>>{};
+
+  Future<void> resume(String sessionId) => manager.resumeSession(
+    sessionId: sessionId,
+    workspaceRoot: '/workspace/$sessionId',
+  );
+
+  Future<Map<String, dynamic>> createTerminal({
+    required String id,
+    required String sessionId,
+    String command = 'unused',
+    String? envValue,
+  }) async {
+    final response = Completer<Map<String, dynamic>>();
+    _responses[id] = response;
+    channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': 'terminal/create',
+        'params': <String, dynamic>{
+          'sessionId': sessionId,
+          'command': command,
+          'args': const <String>[],
+          if (envValue != null)
+            'env': <Map<String, dynamic>>[
+              <String, dynamic>{'name': 'CANARY', 'value': envValue},
+            ],
+        },
+      }),
+    );
+    return response.future.timeout(const Duration(seconds: 5));
+  }
+
+  Future<void> dispose() async {
+    await manager.dispose();
+    await peer.close();
+    await server.cancel();
+    await channel.local.sink.close();
+  }
+}
+
 Future<Object> _listSessionsBudgetFailure({
   required int maxPages,
   required int maxEntries,
@@ -14402,14 +15034,24 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
     this.releaseErrorMessage = 'injected terminal release failure',
     this.createBarrier,
     this.createStarted,
-  });
+    this.failCreateCalls = const <int>{},
+    this.failLimitCalls = const <int>{},
+    Map<int, Completer<void>>? createBarriers,
+    this.terminalIdsByCall = const <int, String>{},
+  }) : createBarriers = createBarriers ?? <int, Completer<void>>{};
 
   final Set<String> failReleaseIds;
   final String releaseErrorMessage;
   final Completer<void>? createBarrier;
   final Completer<void>? createStarted;
+  final Set<int> failCreateCalls;
+  final Set<int> failLimitCalls;
+  final Map<int, Completer<void>> createBarriers;
+  final Map<int, String> terminalIdsByCall;
+  final List<String> createSessions = <String>[];
   final List<String> releaseAttempts = <String>[];
-  var _nextId = 0;
+
+  int get createCalls => createSessions.length;
 
   @override
   Future<acp.TerminalProcessHandle> create({
@@ -14420,16 +15062,26 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
     Map<String, String>? env,
     int outputByteLimit = acp.defaultTerminalOutputByteLimit,
   }) async {
-    _nextId += 1;
+    createSessions.add(sessionId);
+    final call = createCalls;
     final started = createStarted;
     if (started != null && !started.isCompleted) started.complete();
-    await createBarrier?.future;
+    await (createBarriers[call] ?? createBarrier)?.future;
+    if (failCreateCalls.contains(call)) {
+      throw StateError('injected terminal create failure');
+    }
+    if (failLimitCalls.contains(call)) {
+      throw const acp.TerminalHandleLimitException(
+        reason: acp.TerminalHandleLimitReason.global,
+        limit: 1,
+      );
+    }
     final process = await Process.start('/bin/sh', const <String>[
       '-c',
       'sleep 30',
     ]);
     return acp.TerminalProcessHandle(
-      terminalId: 'terminal-$_nextId',
+      terminalId: terminalIdsByCall[call] ?? 'terminal-$call',
       process: process,
       outputByteLimit: outputByteLimit,
     );
