@@ -7,6 +7,27 @@ import 'package:dart_acp/src/rpc/line_channel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('line byte budgets must be positive at runtime', () {
+    final process = _BlockingStdinProcess();
+
+    expect(
+      () => LineJsonChannel(process, maxLineBytes: 0),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxLineBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => LineJsonChannel(process, maxStderrLineBytes: 0),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxStderrLineBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+  });
+
   test('outbound queue budgets must be positive', () {
     final process = _BlockingStdinProcess();
 
@@ -84,6 +105,35 @@ void main() {
     await process.exitCode;
   });
 
+  test('stdout decodes UTF-8 across a 64 KiB segment boundary', () async {
+    const segmentBytes = 64 * 1024;
+    final process = _BlockingStdinProcess();
+    final channel = LineJsonChannel(process, maxLineBytes: segmentBytes + 1);
+    final lines = <String>[];
+    final errors = <Object>[];
+    final subscription = channel.channel.stream.listen(
+      lines.add,
+      onError: errors.add,
+    );
+    final bytes = List<int>.filled(segmentBytes - 1, 0x61, growable: true)
+      ..addAll(const <int>[0xc3, 0xa9, 0x0a]);
+
+    try {
+      process
+        ..addStdout(bytes.sublist(0, segmentBytes))
+        ..addStdout(bytes.sublist(segmentBytes));
+      await _waitFor(() => lines.isNotEmpty);
+
+      expect(errors, isEmpty);
+      expect(lines.single.length, segmentBytes);
+      expect(lines.single.endsWith('é'), isTrue);
+    } finally {
+      await subscription.cancel();
+      await channel.dispose();
+      process.releaseWrites();
+    }
+  });
+
   test('stdout reports invalid UTF-8 as a protocol decode error', () async {
     final process = await Process.start('/bin/sh', <String>[
       '-c',
@@ -118,11 +168,11 @@ void main() {
   });
 
   test(
-    'stdout invalid UTF-8 at direct EOF reports exactly one decode error',
+    'stdout unfinished UTF-8 at direct EOF reports exactly one decode error',
     () async {
       final process = await Process.start('/bin/sh', <String>[
         '-c',
-        "printf '\\377'",
+        "printf '\\303'",
       ]);
       final channel = LineJsonChannel(process);
       final lines = <String>[];
@@ -864,6 +914,8 @@ class _BlockingStdinProcess implements Process {
   List<String> get lines => _consumer.lines;
 
   int get stdinCloseCallCount => _consumer.closeCount;
+
+  void addStdout(List<int> bytes) => _stdoutController.add(bytes);
 
   void releaseWrites() => _consumer.release();
 

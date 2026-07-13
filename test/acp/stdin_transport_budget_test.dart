@@ -62,6 +62,36 @@ void main() {
     },
   );
 
+  test(
+    'StdinTransport decodes UTF-8 across a 64 KiB segment boundary',
+    () async {
+      const segmentBytes = 64 * 1024;
+      final bytes = List<int>.filled(segmentBytes - 1, 0x61, growable: true)
+        ..addAll(const <int>[0xc3, 0xa9, 0x0a]);
+      final output = IOSink(_DiscardStreamConsumer());
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxLineBytes: segmentBytes + 1,
+        inputStream: Stream<List<int>>.fromIterable(<List<int>>[
+          bytes.sublist(0, segmentBytes),
+          bytes.sublist(segmentBytes),
+        ]),
+        outputSink: output,
+      );
+      await transport.start();
+
+      try {
+        final lines = await transport.channel.stream.toList();
+        expect(lines, hasLength(1));
+        expect(lines.single.length, segmentBytes);
+        expect(lines.single.endsWith('é'), isTrue);
+      } finally {
+        await transport.stop();
+        await output.close();
+      }
+    },
+  );
+
   test('StdinTransport cancels input at maxLineBytes plus one', () async {
     const secret = 'secret-payload';
     final input = StreamController<List<int>>();
@@ -133,6 +163,40 @@ void main() {
       await output.close();
     }
   });
+
+  test(
+    'StdinTransport maps unfinished UTF-8 at EOF to one protocol error',
+    () async {
+      final output = IOSink(_DiscardStreamConsumer());
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxLineBytes: 1,
+        inputStream: Stream<List<int>>.value(const <int>[0xc3]),
+        outputSink: output,
+      );
+      await transport.start();
+      final lines = <String>[];
+      final errors = <Object>[];
+      final done = Completer<void>();
+      final subscription = transport.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+        onDone: done.complete,
+      );
+
+      try {
+        await done.future.timeout(const Duration(seconds: 1));
+
+        expect(lines, isEmpty);
+        expect(errors, hasLength(1));
+        expect(errors.single, isA<TransportProtocolDecodeError>());
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await output.close();
+      }
+    },
+  );
 
   test('StdinTransport delivers an unterminated final line at EOF', () async {
     final output = IOSink(_DiscardStreamConsumer());

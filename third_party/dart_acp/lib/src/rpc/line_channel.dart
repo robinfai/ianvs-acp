@@ -16,15 +16,17 @@ class LineJsonChannel {
     void Function(String)? onStderr,
     this.onInboundLine,
     this.onOutboundLine,
-    this.maxLineBytes = defaultTransportByteLimit,
+    int maxLineBytes = defaultTransportByteLimit,
     int? maxStderrLineBytes,
     int maxOutboundQueueItems = 128,
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
     Duration disposeDrainTimeout = const Duration(milliseconds: 500),
-  }) : assert(maxLineBytes > 0),
-       assert(maxStderrLineBytes == null || maxStderrLineBytes > 0),
-       _onStderr = onStderr,
-       maxStderrLineBytes = maxStderrLineBytes ?? maxLineBytes,
+  }) : _onStderr = onStderr,
+       maxLineBytes = _positiveQueueLimit(maxLineBytes, 'maxLineBytes'),
+       maxStderrLineBytes = _positiveQueueLimit(
+         maxStderrLineBytes ?? maxLineBytes,
+         'maxStderrLineBytes',
+       ),
        maxOutboundQueueItems = _positiveQueueLimit(
          maxOutboundQueueItems,
          'maxOutboundQueueItems',
@@ -119,9 +121,9 @@ class LineJsonChannel {
   /// Exposed stream channel used by the JSON-RPC peer.
   StreamChannel<String> get channel => _controller.foreign;
 
-  void _handleStdoutLine(List<int> bytes) {
+  void _handleStdoutLine(RawTransportLine rawLine) {
     if (_stdoutFailed) return;
-    final line = _decodeLine(bytes, resource: 'stdio stdout line');
+    final line = _decodeLine(rawLine, resource: 'stdio stdout line');
     if (line == null) return;
     if (line.trim().isEmpty) return;
     try {
@@ -143,9 +145,9 @@ class LineJsonChannel {
     await closeInbound(error, stackTrace);
   }
 
-  void _handleStderrLine(List<int> bytes) {
+  void _handleStderrLine(RawTransportLine rawLine) {
     if (_stderrSilenced) return;
-    final line = _decodeLine(bytes, resource: 'stdio stderr line');
+    final line = _decodeLine(rawLine, resource: 'stdio stderr line');
     if (line == null) {
       _emitStderrTruncated();
       return;
@@ -153,9 +155,9 @@ class LineJsonChannel {
     _onStderr?.call(line);
   }
 
-  String? _decodeLine(List<int> bytes, {required String resource}) {
+  String? _decodeLine(RawTransportLine rawLine, {required String resource}) {
     try {
-      return utf8.decode(bytes);
+      return rawLine.decodeUtf8();
     } on FormatException {
       if (resource.contains('stderr')) return null;
       unawaited(

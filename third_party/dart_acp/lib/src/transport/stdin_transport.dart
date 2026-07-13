@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:logging/logging.dart';
@@ -170,11 +169,11 @@ class StdinTransport implements AcpTransport {
     logger.fine('StdinTransport started');
   }
 
-  void _handleInputLine(int generation, List<int> bytes) {
+  void _handleInputLine(int generation, RawTransportLine rawLine) {
     if (_activeGeneration != generation || _inputFailed) return;
     final String line;
     try {
-      line = utf8.decode(bytes);
+      line = rawLine.decodeUtf8();
     } on FormatException {
       _failInput(
         generation,
