@@ -222,6 +222,7 @@ void main() {
         ),
       ),
     );
+    await tester.pump();
     expect(block.entriesReads, 1);
 
     rebuild(() {});
@@ -229,6 +230,7 @@ void main() {
     expect(block.entriesReads, 1);
 
     rebuild(() => message.revision += 1);
+    await tester.pump();
     await tester.pump();
     expect(block.entriesReads, 2);
   });
@@ -476,7 +478,7 @@ void main() {
 
       ScrollPosition timelinePosition() {
         return tester
-            .widget<ListView>(find.byType(ListView))
+            .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
             .controller!
             .position;
       }
@@ -544,7 +546,7 @@ void main() {
 
     ScrollPosition timelinePosition() {
       return tester
-          .widget<ListView>(find.byType(ListView))
+          .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
           .controller!
           .position;
     }
@@ -610,7 +612,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       final controller = tester
-          .widget<ListView>(find.byType(ListView))
+          .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
           .controller!;
       controller.jumpTo(0);
 
@@ -1141,6 +1143,7 @@ void main() {
         ),
       ]),
     );
+    await tester.pump();
 
     expect(find.text('Attached context.'), findsOneWidget);
     expect(find.text('main.dart'), findsOneWidget);
@@ -1156,10 +1159,361 @@ void main() {
     expect(find.text('audio/wav · 8 chars'), findsOneWidget);
   });
 
+  testWidgets('ChatTimeline builds only visible content block items', (
+    tester,
+  ) async {
+    final blocks = _CountingList<_FieldReadCountingMap>(
+      List<_FieldReadCountingMap>.generate(
+        1024,
+        (index) => _FieldReadCountingMap({
+          'type': 'resource_link',
+          'title': 'resource-$index',
+          'uri': 'file:///workspace/resource-$index',
+        }),
+      ),
+    );
+
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Attached resources.',
+          metadata: {'contentBlocks': blocks},
+        ),
+      ]),
+    );
+    await tester.pump();
+
+    expect(
+      blocks.values.fold<int>(0, (total, block) => total + block.fieldReads),
+      lessThan(128),
+    );
+    expect(blocks.itemReads, lessThan(128));
+    final listFinder = find.byKey(const ValueKey('content-blocks-list'));
+    expect(listFinder, findsOneWidget);
+    final list = tester.widget<ListView>(listFinder);
+    expect(list.primary, isFalse);
+    expect(list.shrinkWrap, isFalse);
+    expect(tester.getSize(listFinder).height, lessThanOrEqualTo(320));
+  });
+
+  testWidgets(
+    'ChatTimeline pauses non-text projection until exact load more action',
+    (tester) async {
+      final blocks = _CountingList<_FieldReadCountingMap>(
+        List<_FieldReadCountingMap>.generate(
+          1024,
+          (index) => _FieldReadCountingMap({
+            'type': 'resource_link',
+            'title': 'resource-$index',
+            'uri': 'file:///workspace/resource-$index',
+          }),
+        ),
+      );
+
+      await tester.pumpWidget(
+        timeline([
+          _TestChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Many resources.',
+            metadata: {'contentBlocks': blocks},
+          ),
+        ]),
+      );
+      await tester.pump();
+
+      final stableReads = blocks.itemReads;
+      expect(stableReads, lessThanOrEqualTo(32));
+      for (var frame = 0; frame < 5; frame++) {
+        await tester.pump();
+      }
+      expect(blocks.itemReads, stableReads);
+
+      final listFinder = find.byKey(const ValueKey('content-blocks-list'));
+      final loadMoreButton = find.descendant(
+        of: listFinder,
+        matching: find.widgetWithText(TextButton, 'Load more content'),
+      );
+      final contentScrollable = find
+          .descendant(of: listFinder, matching: find.byType(Scrollable))
+          .first;
+      await tester.scrollUntilVisible(
+        loadMoreButton,
+        48,
+        scrollable: contentScrollable,
+      );
+      expect(loadMoreButton, findsOneWidget);
+
+      await tester.tap(loadMoreButton);
+      await tester.pump();
+      await tester.pump();
+
+      expect(blocks.itemReads, greaterThan(stableReads));
+      expect(blocks.itemReads - stableReads, lessThanOrEqualTo(32));
+      final nextLoadMoreButton = find.descendant(
+        of: listFinder,
+        matching: find.widgetWithText(TextButton, 'Load more content'),
+      );
+      await tester.scrollUntilVisible(
+        nextLoadMoreButton,
+        48,
+        scrollable: contentScrollable,
+      );
+      expect(nextLoadMoreButton, findsOneWidget);
+    },
+  );
+
+  testWidgets('ChatTimeline skips mixed text blocks without blank rows', (
+    tester,
+  ) async {
+    final rawBlocks = <_FieldReadCountingMap>[
+      for (var index = 0; index < 60; index++)
+        _FieldReadCountingMap({'type': 'text', 'text': 'text-$index'}),
+      _FieldReadCountingMap({
+        'type': 'resource_link',
+        'title': 'first-visible-resource',
+        'uri': 'file:///workspace/first',
+      }),
+      for (var index = 0; index < 5; index++)
+        _FieldReadCountingMap({'type': 'text', 'text': 'middle-$index'}),
+      _FieldReadCountingMap({
+        'type': 'resource_link',
+        'title': 'second-visible-resource',
+        'uri': 'file:///workspace/second',
+      }),
+      for (var index = 0; index < 5; index++)
+        _FieldReadCountingMap({'type': 'text', 'text': 'tail-$index'}),
+    ];
+    final blocks = _CountingList<_FieldReadCountingMap>(rawBlocks);
+
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Combined text is rendered above.',
+          metadata: {'contentBlocks': blocks},
+        ),
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('first-visible-resource'), findsOneWidget);
+    expect(find.text('second-visible-resource'), findsOneWidget);
+    expect(blocks.itemReads, lessThan(128));
+    expect(
+      rawBlocks.fold<int>(0, (total, block) => total + block.fieldReads),
+      lessThan(128),
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('content-blocks-list'))).height,
+      lessThanOrEqualTo(220),
+    );
+  });
+
+  testWidgets(
+    'ChatTimeline scans sparse content blocks in bounded frame batches',
+    (tester) async {
+      final rawBlocks = <_FieldReadCountingMap>[
+        for (var index = 0; index < 1023; index++)
+          _FieldReadCountingMap({'type': 'text', 'text': 'text-$index'}),
+        _FieldReadCountingMap({
+          'type': 'resource_link',
+          'title': 'last-sparse-resource',
+          'uri': 'file:///workspace/last',
+        }),
+      ];
+      final blocks = _CountingList<_FieldReadCountingMap>(rawBlocks);
+
+      await tester.pumpWidget(
+        timeline([
+          _TestChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Sparse content.',
+            metadata: {'contentBlocks': blocks},
+          ),
+        ]),
+      );
+
+      expect(blocks.itemReads, lessThanOrEqualTo(32));
+      expect(find.text('Preparing content preview…'), findsOneWidget);
+      expect(find.text('last-sparse-resource'), findsNothing);
+
+      var previousReads = blocks.itemReads;
+      for (var frame = 0; frame < 80; frame++) {
+        await tester.pump();
+        expect(blocks.itemReads - previousReads, lessThanOrEqualTo(32));
+        previousReads = blocks.itemReads;
+        if (find.text('last-sparse-resource').evaluate().isNotEmpty) break;
+      }
+
+      expect(find.text('last-sparse-resource'), findsOneWidget);
+      expect(find.text('Preparing content preview…'), findsNothing);
+      expect(
+        rawBlocks.take(1023).every((block) => block.fieldReads == 1),
+        isTrue,
+      );
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('content-blocks-list')))
+            .height,
+        lessThanOrEqualTo(110),
+      );
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline marks partial content while bounded scanning continues',
+    (tester) async {
+      final rawBlocks = <_FieldReadCountingMap>[
+        _FieldReadCountingMap({
+          'type': 'resource_link',
+          'title': 'early-resource-one',
+          'uri': 'file:///workspace/one',
+        }),
+        _FieldReadCountingMap({
+          'type': 'resource_link',
+          'title': 'early-resource-two',
+          'uri': 'file:///workspace/two',
+        }),
+        for (var index = 0; index < 1022; index++)
+          _FieldReadCountingMap({'type': 'text', 'text': 'tail-$index'}),
+      ];
+      final blocks = _CountingList<_FieldReadCountingMap>(rawBlocks);
+
+      await tester.pumpWidget(
+        timeline([
+          _TestChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Early resources.',
+            metadata: {'contentBlocks': blocks},
+          ),
+        ]),
+      );
+      expect(blocks.itemReads, lessThanOrEqualTo(32));
+      expect(find.text('Preparing content preview…'), findsOneWidget);
+
+      await tester.pump();
+      expect(find.text('early-resource-one'), findsOneWidget);
+      expect(find.text('early-resource-two'), findsOneWidget);
+      expect(find.text('Preparing content preview…'), findsOneWidget);
+
+      var previousReads = blocks.itemReads;
+      for (var frame = 0; frame < 80; frame++) {
+        await tester.pump();
+        expect(blocks.itemReads - previousReads, lessThanOrEqualTo(32));
+        previousReads = blocks.itemReads;
+        if (find.text('Preparing content preview…').evaluate().isEmpty) break;
+      }
+
+      expect(find.text('Preparing content preview…'), findsNothing);
+      expect(find.text('early-resource-one'), findsOneWidget);
+      expect(find.text('early-resource-two'), findsOneWidget);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('content-blocks-list')))
+            .height,
+        lessThanOrEqualTo(220),
+      );
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline removes the pending preview after bounded all-text scan',
+    (tester) async {
+      final rawBlocks = List<_FieldReadCountingMap>.generate(
+        1024,
+        (index) =>
+            _FieldReadCountingMap({'type': 'text', 'text': 'text-$index'}),
+      );
+      final blocks = _CountingList<_FieldReadCountingMap>(rawBlocks);
+
+      await tester.pumpWidget(
+        timeline([
+          _TestChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'All text is rendered above.',
+            metadata: {'contentBlocks': blocks},
+          ),
+        ]),
+      );
+      expect(blocks.itemReads, lessThanOrEqualTo(32));
+      expect(find.text('Preparing content preview…'), findsOneWidget);
+
+      var previousReads = blocks.itemReads;
+      for (var frame = 0; frame < 80; frame++) {
+        await tester.pump();
+        expect(blocks.itemReads - previousReads, lessThanOrEqualTo(32));
+        previousReads = blocks.itemReads;
+        if (find.text('Preparing content preview…').evaluate().isEmpty) break;
+      }
+
+      expect(find.text('Preparing content preview…'), findsNothing);
+      expect(find.byKey(const ValueKey('content-blocks-list')), findsNothing);
+      expect(rawBlocks.every((block) => block.fieldReads == 1), isTrue);
+    },
+  );
+
+  testWidgets('ChatTimeline hides collections containing only text blocks', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'All text is rendered above.',
+          metadata: const {
+            'contentBlocks': [
+              {'type': 'text', 'text': 'one'},
+              {'type': 'text', 'text': 'two'},
+              {'type': 'text', 'text': 'three'},
+            ],
+          },
+        ),
+      ]),
+    );
+
+    expect(find.byKey(const ValueKey('content-blocks-list')), findsNothing);
+  });
+
+  testWidgets('ChatTimeline builds only visible plan items', (tester) async {
+    final entries = _CountingList<_FieldReadCountingMap>(
+      List<_FieldReadCountingMap>.generate(
+        1024,
+        (index) => _FieldReadCountingMap({
+          'content': 'plan-$index',
+          'priority': 'medium',
+          'status': 'pending',
+        }),
+      ),
+    );
+
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Large plan',
+          metadata: {'kind': 'plan', 'entries': entries},
+        ),
+      ]),
+    );
+
+    expect(
+      entries.values.fold<int>(0, (total, entry) => total + entry.fieldReads),
+      lessThan(128),
+    );
+    expect(entries.itemReads, lessThan(128));
+    final listFinder = find.byKey(const ValueKey('plan-entries-list'));
+    expect(listFinder, findsOneWidget);
+    final list = tester.widget<ListView>(listFinder);
+    expect(list.primary, isFalse);
+    expect(list.shrinkWrap, isFalse);
+    expect(tester.getSize(listFinder).height, lessThanOrEqualTo(280));
+  });
+
   testWidgets('ChatTimeline renders diff change details', (tester) async {
     await tester.pumpWidget(
       timeline([
-        ChatMessage(
+        _TestChatMessage(
           role: ChatMessageRole.status,
           text: 'file:///workspace/lib/main.dart',
           metadata: const {
@@ -1189,6 +1543,54 @@ void main() {
     expect(find.text('line 12'), findsOneWidget);
     expect(find.textContaining('final oldValue = true;'), findsOneWidget);
     expect(find.textContaining('final newValue = true;'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline builds only visible diff details', (tester) async {
+    final changes = _CountingList<_FieldReadCountingMap>(
+      List<_FieldReadCountingMap>.generate(
+        1024,
+        (index) => _FieldReadCountingMap({
+          'type': 'modification',
+          'line': index + 1,
+          'oldContent': 'old-$index',
+          'newContent': 'new-$index',
+        }),
+      ),
+    );
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.status,
+          text: 'file:///workspace/lib/main.dart',
+          metadata: {
+            'kind': 'diff',
+            'uri': 'file:///workspace/lib/main.dart',
+            'status': 'started',
+            'changes': changes,
+          },
+        ),
+      ]),
+    );
+
+    expect(
+      changes.values.fold<int>(0, (total, change) => total + change.fieldReads),
+      0,
+    );
+    expect(changes.itemReads, 0);
+    await tester.tap(find.text('Changed lines'));
+    await tester.pumpAndSettle();
+
+    final listFinder = find.byKey(const ValueKey('diff-changes-list'));
+    expect(listFinder, findsOneWidget);
+    final list = tester.widget<ListView>(listFinder);
+    expect(list.primary, isFalse);
+    expect(list.shrinkWrap, isFalse);
+    expect(tester.getSize(listFinder).height, lessThanOrEqualTo(280));
+    expect(
+      changes.values.fold<int>(0, (total, change) => total + change.fieldReads),
+      lessThan(128),
+    );
+    expect(changes.itemReads, lessThan(128));
   });
 
   testWidgets('ChatTimeline renders available command details', (tester) async {
@@ -1227,6 +1629,93 @@ void main() {
     expect(find.text('Optional focus area'), findsOneWidget);
     expect(find.text('Parameters'), findsOneWidget);
     expect(find.textContaining('"scope"'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline builds only visible command details', (
+    tester,
+  ) async {
+    final commands = _CountingList<_FieldReadCountingMap>(
+      List<_FieldReadCountingMap>.generate(
+        1024,
+        (index) => _FieldReadCountingMap({
+          'name': 'command-$index',
+          'description': 'description-$index',
+          'parameters': {'index': index},
+        }),
+      ),
+    );
+    await tester.pumpWidget(
+      timeline([
+        _TestChatMessage(
+          role: ChatMessageRole.status,
+          text: 'commands',
+          metadata: {'kind': 'commands', 'commands': commands},
+        ),
+      ]),
+    );
+
+    expect(
+      commands.values.fold<int>(
+        0,
+        (total, command) => total + command.fieldReads,
+      ),
+      lessThan(128),
+    );
+    expect(commands.itemReads, lessThan(128));
+    expect(find.text('1019 more'), findsOneWidget);
+
+    await tester.tap(find.text('Command details'));
+    await tester.pumpAndSettle();
+
+    final listFinder = find.byKey(const ValueKey('command-details-list'));
+    expect(listFinder, findsOneWidget);
+    final list = tester.widget<ListView>(listFinder);
+    expect(list.primary, isFalse);
+    expect(list.shrinkWrap, isFalse);
+    expect(tester.getSize(listFinder).height, lessThanOrEqualTo(320));
+    expect(
+      commands.values.fold<int>(
+        0,
+        (total, command) => total + command.fieldReads,
+      ),
+      lessThan(128),
+    );
+    expect(commands.itemReads, lessThan(128));
+  });
+
+  testWidgets('ChatTimeline keeps incomplete status data visible', (
+    tester,
+  ) async {
+    final omission = AcpInputOmission(
+      reason: AcpInputOmissionReason.inputLimit,
+      resource: 'available commands',
+      truncated: false,
+      limit: 1024,
+      observedAtLeast: 1025,
+    );
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'commands unavailable',
+          metadata: const {'kind': 'commands', 'commands': []},
+          omissions: [omission],
+        ),
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'partial plan',
+          metadata: const {'kind': 'plan', 'entries': [], 'truncated': true},
+        ),
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'diff unavailable',
+          metadata: const {'kind': 'diff', 'changes': [], 'truncated': true},
+        ),
+      ]),
+    );
+
+    expect(find.textContaining('available commands'), findsOneWidget);
+    expect(find.text('Details omitted'), findsNWidgets(2));
   });
 
   testWidgets('ChatTimeline renders terminal status output', (tester) async {
@@ -1314,4 +1803,56 @@ final class _CountingPreviewMap extends MapBase<String, Object?> {
 
   @override
   Object? remove(Object? key) => _values.remove(key);
+}
+
+final class _FieldReadCountingMap extends MapBase<String, Object?> {
+  _FieldReadCountingMap(this._values);
+
+  final Map<String, Object?> _values;
+  var fieldReads = 0;
+
+  @override
+  Object? operator [](Object? key) {
+    fieldReads += 1;
+    return _values[key];
+  }
+
+  @override
+  void operator []=(String key, Object? value) => _values[key] = value;
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<String> get keys {
+    fieldReads += _values.length;
+    return _values.keys;
+  }
+
+  @override
+  Object? remove(Object? key) => _values.remove(key);
+}
+
+final class _CountingList<E> extends ListBase<E> {
+  _CountingList(this.values);
+
+  final List<E> values;
+  var itemReads = 0;
+
+  @override
+  int get length => values.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  E operator [](int index) {
+    itemReads += 1;
+    return values[index];
+  }
+
+  @override
+  void operator []=(int index, E value) {
+    throw UnsupportedError('read only');
+  }
 }

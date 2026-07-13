@@ -22,6 +22,12 @@ const List<String> _toolCallIdMetadataKeys = [
 ];
 const _userMessageSelectionColor = Color(0x3d000000);
 const int _maxRenderedTimelineMessages = 200;
+const int _inlineCollectionPreviewItems = 5;
+const int _contentBlockProjectionBatchItems = 16;
+const int _contentBlockVisiblePageItems = 3;
+const double _contentBlocksMaxHeight = 320;
+const double _nestedDetailsMaxHeight = 280;
+const double _commandDetailsMaxHeight = 320;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -105,6 +111,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
 
     return DotGridBackground(
       child: ListView.separated(
+        key: const ValueKey('chat-timeline-list'),
         controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
         itemCount: entries.length + historyNoticeCount + loadingFooterCount,
@@ -1472,7 +1479,14 @@ class _StatusBubble extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: AppColors.border),
           ),
-          child: child,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              child,
+              for (final omission in message.omissions)
+                _InputOmissionNotice(omission: omission, user: false),
+            ],
+          ),
         ),
       ),
     );
@@ -1545,7 +1559,7 @@ class _TurnStatus extends StatelessWidget {
   }
 }
 
-class _ContentBlocksPreview extends StatelessWidget {
+class _ContentBlocksPreview extends StatefulWidget {
   const _ContentBlocksPreview({
     required this.message,
     required this.inputBudget,
@@ -1557,27 +1571,213 @@ class _ContentBlocksPreview extends StatelessWidget {
   final Object previewRevision;
 
   @override
+  State<_ContentBlocksPreview> createState() => _ContentBlocksPreviewState();
+}
+
+class _ContentBlocksPreviewState extends State<_ContentBlocksPreview> {
+  late _LazyNonTextBlockProjection _projection = _LazyNonTextBlockProjection(
+    _rawBlocks,
+  );
+  var _projectionGeneration = 0;
+  var _projectionScanScheduled = false;
+  var _visibleTarget = _contentBlockVisiblePageItems;
+  var _loadingMore = false;
+
+  Object? get _rawBlocks => widget.message.metadata['contentBlocks'];
+
+  @override
+  void didUpdateWidget(covariant _ContentBlocksPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldRawBlocks = oldWidget.message.metadata['contentBlocks'];
+    if (!identical(_rawBlocks, oldRawBlocks) ||
+        widget.previewRevision != oldWidget.previewRevision) {
+      _projection = _LazyNonTextBlockProjection(_rawBlocks);
+      _projectionGeneration += 1;
+      _projectionScanScheduled = false;
+      _visibleTarget = _contentBlockVisiblePageItems;
+      _loadingMore = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final blocks = _mapList(
-      message.metadata['contentBlocks'],
-    ).where((block) => _stringMetadata(block, 'type') != 'text').toList();
-    if (blocks.isEmpty) return const SizedBox.shrink();
+    if (_projection.rawCount == 0) return const SizedBox.shrink();
+    final needsMoreVisibleItems =
+        !_projection.exhausted && _projection.visibleCount < _visibleTarget;
+    if (needsMoreVisibleItems) _scheduleProjectionScan();
+    if (_projection.visibleCount == 0) {
+      if (_projection.exhausted) return const SizedBox.shrink();
+      return Padding(
+        padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+        child: const _ContentProjectionPendingNotice(),
+      );
+    }
+    final hasPendingItems = !_projection.exhausted;
+    final renderedItemCount =
+        _projection.visibleCount + (hasPendingItems ? 1 : 0);
 
     return Padding(
-      padding: EdgeInsets.only(top: message.text.isEmpty ? 0 : 8),
-      child: Column(
+      padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+      child: SizedBox(
+        height: _boundedNestedListHeight(
+          itemCount: renderedItemCount,
+          estimatedItemHeight: 110,
+          maxHeight: _contentBlocksMaxHeight,
+        ),
+        child: ListView.builder(
+          key: const ValueKey('content-blocks-list'),
+          primary: false,
+          itemCount: renderedItemCount,
+          itemBuilder: (context, index) {
+            if (index >= _projection.visibleCount) {
+              return needsMoreVisibleItems
+                  ? _ContentProjectionPendingRow(
+                      label: _loadingMore
+                          ? 'Loading more content…'
+                          : 'Preparing content preview…',
+                    )
+                  : _ContentProjectionLoadMoreRow(onPressed: _loadMore);
+            }
+            final block = _projection.blockAt(index);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _ContentBlockCard(
+                block: block,
+                inputBudget: widget.inputBudget,
+                previewRevision: widget.previewRevision,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _scheduleProjectionScan() {
+    if (_projection.exhausted || _projectionScanScheduled) return;
+    _projectionScanScheduled = true;
+    final generation = _projectionGeneration;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _projectionGeneration) return;
+      _projectionScanScheduled = false;
+      _projection.scanNextBatch(
+        _contentBlockProjectionBatchItems,
+        visibleTarget: _visibleTarget,
+      );
+      if (_projection.exhausted || _projection.visibleCount >= _visibleTarget) {
+        _loadingMore = false;
+      }
+      setState(() {});
+    });
+  }
+
+  void _loadMore() {
+    if (_projection.exhausted || _loadingMore) return;
+    setState(() {
+      _visibleTarget += _contentBlockVisiblePageItems;
+      _loadingMore = true;
+    });
+  }
+}
+
+class _ContentProjectionPendingNotice extends StatelessWidget {
+  const _ContentProjectionPendingNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      height: 42,
+      child: Row(
         children: [
-          for (final block in blocks) ...[
-            _ContentBlockCard(
-              block: block,
-              inputBudget: inputBudget,
-              previewRevision: previewRevision,
-            ),
-            if (block != blocks.last) const SizedBox(height: 6),
-          ],
+          SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 8),
+          Text(
+            'Preparing content preview…',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
         ],
       ),
     );
+  }
+}
+
+class _ContentProjectionPendingRow extends StatelessWidget {
+  const _ContentProjectionPendingRow({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ContentProjectionLoadMoreRow extends StatelessWidget {
+  const _ContentProjectionLoadMoreRow({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: onPressed,
+          child: const Text('Load more content'),
+        ),
+      ),
+    );
+  }
+}
+
+final class _LazyNonTextBlockProjection {
+  _LazyNonTextBlockProjection(this._rawBlocks)
+    : rawCount = _lazyMapCount(_rawBlocks);
+
+  final Object? _rawBlocks;
+  final int rawCount;
+  final List<Map<String, Object?>> _visibleBlocks = <Map<String, Object?>>[];
+  var _nextRawIndex = 0;
+
+  bool get exhausted => _nextRawIndex >= rawCount;
+  int get visibleCount => _visibleBlocks.length;
+
+  Map<String, Object?> blockAt(int visibleIndex) =>
+      _visibleBlocks[visibleIndex];
+
+  void scanNextBatch(int maxItems, {required int visibleTarget}) {
+    var scanned = 0;
+    while (!exhausted && scanned < maxItems && visibleCount < visibleTarget) {
+      final block = _lazyMapAt(_rawBlocks, _nextRawIndex);
+      _nextRawIndex += 1;
+      scanned += 1;
+      if (block == null || _stringMetadata(block, 'type') == 'text') {
+        continue;
+      }
+      _visibleBlocks.add(block);
+    }
   }
 }
 
@@ -1868,7 +2068,8 @@ class _PlanStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = _stringMetadata(message.metadata, 'title') ?? message.text;
     final description = _stringMetadata(message.metadata, 'description');
-    final entries = _mapList(message.metadata['entries']);
+    final rawEntries = message.metadata['entries'];
+    final entryCount = _lazyMapCount(rawEntries);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1884,9 +2085,31 @@ class _PlanStatus extends StatelessWidget {
             ),
           ),
         ],
-        if (entries.isNotEmpty) ...[
+        if (entryCount > 0) ...[
           const SizedBox(height: 10),
-          for (final entry in entries) _PlanEntryRow(entry: entry),
+          SizedBox(
+            height: _boundedNestedListHeight(
+              itemCount: entryCount,
+              estimatedItemHeight: 54,
+              maxHeight: _nestedDetailsMaxHeight,
+            ),
+            child: ListView.separated(
+              key: const ValueKey('plan-entries-list'),
+              primary: false,
+              itemCount: entryCount,
+              separatorBuilder: (context, index) => const SizedBox(height: 2),
+              itemBuilder: (context, index) {
+                final entry = _lazyMapAt(rawEntries, index);
+                return entry == null
+                    ? const SizedBox.shrink()
+                    : _PlanEntryRow(entry: entry);
+              },
+            ),
+          ),
+        ],
+        if (message.metadata['truncated'] == true) ...[
+          const SizedBox(height: 6),
+          const _DetailsIncompleteNotice(),
         ],
       ],
     );
@@ -1987,13 +2210,8 @@ class _DiffStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final uri = _stringMetadata(message.metadata, 'uri') ?? message.text;
     final status = _stringMetadata(message.metadata, 'status') ?? 'started';
-    final changes = _mapList(message.metadata['changes']);
-    final additions = changes.where((change) {
-      return _stringMetadata(change, 'type') == 'addition';
-    }).length;
-    final deletions = changes.where((change) {
-      return _stringMetadata(change, 'type') == 'deletion';
-    }).length;
+    final rawChanges = message.metadata['changes'];
+    final changeCount = _lazyMapCount(rawChanges);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2017,32 +2235,42 @@ class _DiffStatus extends StatelessWidget {
             fontWeight: FontWeight.w700,
           ),
         ),
-        if (changes.isNotEmpty) ...[
+        if (changeCount > 0) ...[
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _StatusPill(label: '+$additions', color: AppColors.success),
-              _StatusPill(label: '-$deletions', color: AppColors.danger),
               _StatusPill(
-                label: '${changes.length} changes',
+                label: '$changeCount changes',
                 color: AppColors.primaryDark,
               ),
             ],
           ),
           const SizedBox(height: 8),
-          _DiffChangesList(changes: changes),
+          _DiffChangesList(rawChanges: rawChanges, changeCount: changeCount),
+        ],
+        if (message.metadata['truncated'] == true) ...[
+          const SizedBox(height: 6),
+          const _DetailsIncompleteNotice(),
         ],
       ],
     );
   }
 }
 
-class _DiffChangesList extends StatelessWidget {
-  const _DiffChangesList({required this.changes});
+class _DiffChangesList extends StatefulWidget {
+  const _DiffChangesList({required this.rawChanges, required this.changeCount});
 
-  final List<Map<String, Object?>> changes;
+  final Object? rawChanges;
+  final int changeCount;
+
+  @override
+  State<_DiffChangesList> createState() => _DiffChangesListState();
+}
+
+class _DiffChangesListState extends State<_DiffChangesList> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2051,6 +2279,10 @@ class _DiffChangesList extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: ExpansionTile(
+          onExpansionChanged: (expanded) {
+            if (_expanded == expanded) return;
+            setState(() => _expanded = expanded);
+          },
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           initiallyExpanded: false,
@@ -2062,12 +2294,30 @@ class _DiffChangesList extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
           ),
-          children: [
-            for (final change in changes) ...[
-              _DiffChangeRow(change: change),
-              if (change != changes.last) const SizedBox(height: 6),
-            ],
-          ],
+          children: _expanded
+              ? [
+                  SizedBox(
+                    height: _boundedNestedListHeight(
+                      itemCount: widget.changeCount,
+                      estimatedItemHeight: 92,
+                      maxHeight: _nestedDetailsMaxHeight,
+                    ),
+                    child: ListView.separated(
+                      key: const ValueKey('diff-changes-list'),
+                      primary: false,
+                      itemCount: widget.changeCount,
+                      separatorBuilder: (context, index) =>
+                          const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final change = _lazyMapAt(widget.rawChanges, index);
+                        return change == null
+                            ? const SizedBox.shrink()
+                            : _DiffChangeRow(change: change);
+                      },
+                    ),
+                  ),
+                ]
+              : const <Widget>[],
         ),
       ),
     );
@@ -2157,7 +2407,11 @@ class _CommandsStatusState extends State<_CommandsStatus> {
 
   @override
   Widget build(BuildContext context) {
-    final commands = _mapList(widget.message.metadata['commands']);
+    final rawCommands = widget.message.metadata['commands'];
+    final commandCount = _lazyMapCount(rawCommands);
+    final previewCount = commandCount < _inlineCollectionPreviewItems
+        ? commandCount
+        : _inlineCollectionPreviewItems;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2166,7 +2420,7 @@ class _CommandsStatusState extends State<_CommandsStatus> {
           label: 'Available Commands',
         ),
         const SizedBox(height: 8),
-        if (commands.isEmpty)
+        if (commandCount == 0)
           const Text(
             'No commands available.',
             style: TextStyle(color: AppColors.textSecondary),
@@ -2179,13 +2433,16 @@ class _CommandsStatusState extends State<_CommandsStatus> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final command in commands)
-                    Tooltip(
-                      message: _stringMetadata(command, 'description') ?? '',
-                      child: _CommandChip(
-                        label: _stringMetadata(command, 'name') ?? 'command',
+                  for (var index = 0; index < previewCount; index++)
+                    if (_lazyMapAt(rawCommands, index) case final command?)
+                      Tooltip(
+                        message: _stringMetadata(command, 'description') ?? '',
+                        child: _CommandChip(
+                          label: _stringMetadata(command, 'name') ?? 'command',
+                        ),
                       ),
-                    ),
+                  if (commandCount > previewCount)
+                    _TinyCollectionPill('${commandCount - previewCount} more'),
                 ],
               ),
               const SizedBox(height: 8),
@@ -2212,15 +2469,34 @@ class _CommandsStatusState extends State<_CommandsStatus> {
                     ),
                     children: _expanded
                         ? [
-                            for (final command in commands) ...[
-                              _CommandDetailCard(
-                                command: command,
-                                inputBudget: widget.inputBudget,
-                                previewRevision: widget.previewRevision,
+                            SizedBox(
+                              height: _boundedNestedListHeight(
+                                itemCount: commandCount,
+                                estimatedItemHeight: 104,
+                                maxHeight: _commandDetailsMaxHeight,
                               ),
-                              if (command != commands.last)
-                                const SizedBox(height: 6),
-                            ],
+                              child: ListView.separated(
+                                key: const ValueKey('command-details-list'),
+                                primary: false,
+                                itemCount: commandCount,
+                                separatorBuilder: (context, index) =>
+                                    const SizedBox(height: 6),
+                                itemBuilder: (context, index) {
+                                  final command = _lazyMapAt(
+                                    rawCommands,
+                                    index,
+                                  );
+                                  return command == null
+                                      ? const SizedBox.shrink()
+                                      : _CommandDetailCard(
+                                          command: command,
+                                          inputBudget: widget.inputBudget,
+                                          previewRevision:
+                                              widget.previewRevision,
+                                        );
+                                },
+                              ),
+                            ),
                           ]
                         : const <Widget>[],
                   ),
@@ -2229,6 +2505,48 @@ class _CommandsStatusState extends State<_CommandsStatus> {
             ],
           ),
       ],
+    );
+  }
+}
+
+class _TinyCollectionPill extends StatelessWidget {
+  const _TinyCollectionPill(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.textSecondary,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailsIncompleteNotice extends StatelessWidget {
+  const _DetailsIncompleteNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Details omitted',
+      style: TextStyle(
+        color: AppColors.warning,
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+      ),
     );
   }
 }
@@ -2735,6 +3053,25 @@ List<Map<String, Object?>> _mapList(Object? value) {
     if (entry is Map<String, Object?>) return entry;
     return entry.map((key, value) => MapEntry(key.toString(), value));
   }).toList();
+}
+
+int _lazyMapCount(Object? value) => value is List ? value.length : 0;
+
+Map<String, Object?>? _lazyMapAt(Object? value, int index) {
+  if (value is! List || index < 0 || index >= value.length) return null;
+  final entry = value[index];
+  if (entry is Map<String, Object?>) return entry;
+  if (entry is! Map) return null;
+  return entry.map((key, value) => MapEntry(key.toString(), value));
+}
+
+double _boundedNestedListHeight({
+  required int itemCount,
+  required double estimatedItemHeight,
+  required double maxHeight,
+}) {
+  final estimated = itemCount * estimatedItemHeight;
+  return estimated < maxHeight ? estimated : maxHeight;
 }
 
 Map<String, Object?> _mapMetadata(Object? value) {

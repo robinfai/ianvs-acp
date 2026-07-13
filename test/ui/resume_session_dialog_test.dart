@@ -9,6 +9,95 @@ import 'package:ianvs_acp/ui/components/resume_session_dialog.dart';
 import 'package:ianvs_acp/ui/components/session_workspace_review_dialog.dart';
 
 void main() {
+  testWidgets('ResumeSessionDialog lazily builds 1024 searchable entries', (
+    tester,
+  ) async {
+    final conversations = _CountingList<AcpSessionEntry>(
+      List<AcpSessionEntry>.generate(
+        1024,
+        (index) => AcpSessionEntry(
+          id: 'session-$index',
+          cwd: '/workspace/project-0',
+          title: 'Conversation $index',
+        ),
+      ),
+    );
+    final projects = _CountingList<AcpProjectSessions>(
+      List<AcpProjectSessions>.generate(
+        1024,
+        (index) => AcpProjectSessions(
+          cwd: '/workspace/project-$index',
+          sessions: index == 0
+              ? conversations
+              : [
+                  AcpSessionEntry(
+                    id: 'project-$index-session',
+                    cwd: '/workspace/project-$index',
+                    title: 'Project $index conversation',
+                  ),
+                ],
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(loadSessions: () async => projects),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byWidgetPredicate((widget) => widget is DropdownButtonFormField),
+      findsNothing,
+    );
+    final projectListFinder = find.byKey(const ValueKey('resume-project-list'));
+    final conversationListFinder = find.byKey(
+      const ValueKey('resume-conversation-list'),
+    );
+    expect(projectListFinder, findsOneWidget);
+    expect(conversationListFinder, findsOneWidget);
+    expect(tester.widget<ListView>(projectListFinder).primary, isFalse);
+    expect(tester.widget<ListView>(conversationListFinder).primary, isFalse);
+    expect(projects.itemReads, lessThan(128));
+    expect(conversations.itemReads, lessThan(128));
+    expect(find.text('Conversation 1023'), findsNothing);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('resume-conversation-search')),
+      'Conversation 1023',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Conversation 1023'), findsWidgets);
+    await tester.ensureVisible(conversationListFinder);
+    await tester.pumpAndSettle();
+    final conversationTile = _listTileContaining(
+      conversationListFinder,
+      'Conversation 1023',
+    );
+    await tester.tap(conversationTile);
+    await tester.pumpAndSettle();
+    expect(_loadButton(tester).onPressed, isNotNull);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('resume-project-search')),
+      'project-1023',
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('/workspace/project-1023'), findsOneWidget);
+    await tester.ensureVisible(projectListFinder);
+    await tester.pumpAndSettle();
+    final projectTile = _listTileContaining(
+      projectListFinder,
+      '/workspace/project-1023',
+    );
+    await tester.tap(projectTile);
+    await tester.pumpAndSettle();
+    expect(find.text('Project 1023 conversation'), findsWidgets);
+  });
+
   testWidgets('ResumeSessionDialog returns selected conversation', (
     tester,
   ) async {
@@ -178,11 +267,19 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('SESSION_A_CANARY'), findsOneWidget);
 
-    await tester.tap(
-      find.byKey(const ValueKey('resume-conversation-dropdown')),
+    final conversationList = find.byKey(
+      const ValueKey('resume-conversation-list'),
     );
+    await tester.ensureVisible(conversationList);
     await tester.pumpAndSettle();
-    await tester.tap(find.textContaining('Session B').last);
+    await tester.tap(
+      find
+          .descendant(
+            of: conversationList,
+            matching: find.textContaining('Session B'),
+          )
+          .first,
+    );
     await tester.pumpAndSettle();
 
     expect(find.textContaining('SESSION_A_CANARY'), findsNothing);
@@ -363,9 +460,11 @@ void main() {
     expect(find.text('Select a conversation'), findsWidgets);
     expect(_loadButton(tester).onPressed, isNull);
 
-    await tester.tap(find.byKey(const ValueKey('resume-project-dropdown')));
+    final projectList = find.byKey(const ValueKey('resume-project-list'));
+    await tester.ensureVisible(projectList);
     await tester.pumpAndSettle();
-    await tester.tap(find.text(projectB.dropdownLabel).last);
+    final projectTile = _listTileContaining(projectList, '/workspace/other');
+    await tester.tap(projectTile);
     await tester.pumpAndSettle();
 
     expect(find.text('Other chat'), findsOneWidget);
@@ -380,11 +479,13 @@ void main() {
     expect(find.text('Select a conversation'), findsWidgets);
     expect(_loadButton(tester).onPressed, isNull);
 
-    await tester.tap(
-      find.byKey(const ValueKey('resume-conversation-dropdown')),
+    final conversationList = find.byKey(
+      const ValueKey('resume-conversation-list'),
     );
+    await tester.ensureVisible(conversationList);
     await tester.pumpAndSettle();
-    await tester.tap(find.textContaining('Beta task').last);
+    final conversationTile = _listTileContaining(conversationList, 'Beta task');
+    await tester.tap(conversationTile);
     await tester.pumpAndSettle();
 
     expect(find.text('Beta task'), findsOneWidget);
@@ -438,6 +539,14 @@ FilledButton _loadButton(WidgetTester tester) {
   return tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Load'));
 }
 
+Finder _listTileContaining(Finder list, String text) {
+  final textInList = find.descendant(
+    of: list,
+    matching: find.textContaining(text),
+  );
+  return find.ancestor(of: textInList, matching: find.byType(ListTile));
+}
+
 final class _ThrowingEntriesMetadata extends MapBase<String, Object?> {
   var entriesReads = 0;
 
@@ -462,4 +571,26 @@ final class _ThrowingEntriesMetadata extends MapBase<String, Object?> {
     entriesReads += 1;
     throw StateError('hostile entries');
   }
+}
+
+final class _CountingList<E> extends ListBase<E> {
+  _CountingList(this._values);
+
+  final List<E> _values;
+  var itemReads = 0;
+
+  @override
+  int get length => _values.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable');
+
+  @override
+  E operator [](int index) {
+    itemReads += 1;
+    return _values[index];
+  }
+
+  @override
+  void operator []=(int index, E value) => throw UnsupportedError('immutable');
 }
