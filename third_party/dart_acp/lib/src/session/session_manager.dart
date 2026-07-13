@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:logging/logging.dart';
 
 import '../capabilities.dart';
@@ -552,6 +553,7 @@ class SessionManager implements AcpBoundedObservationSource {
   // Track workspace roots per session for filesystem operations
   final Map<String, String> _sessionWorkspaceRoots = {};
   final Map<String, List<String>> _sessionAdditionalDirectories = {};
+  final Map<String, FsProvider> _sessionFsProviders = <String, FsProvider>{};
   final Map<String, Future<void>> _sessionSetupTails = {};
   final Map<String, Set<Object>> _sessionClosingOwners =
       <String, Set<Object>>{};
@@ -612,6 +614,7 @@ class SessionManager implements AcpBoundedObservationSource {
     _cancelledPromptOwners.clear();
     _sessionWorkspaceRoots.clear();
     _sessionAdditionalDirectories.clear();
+    _sessionFsProviders.clear();
     _sessionModes.clear();
     _sessionSetupTails.clear();
     _sessionClosingOwners.clear();
@@ -791,6 +794,10 @@ class SessionManager implements AcpBoundedObservationSource {
         await cleanup(
           'additionalDirectories',
           () => _sessionAdditionalDirectories.remove(sessionId),
+        );
+        await cleanup(
+          'filesystemProvider',
+          () => _sessionFsProviders.remove(sessionId),
         );
         await cleanup('modes', () => _sessionModes.remove(sessionId));
         await cleanup(
@@ -1308,6 +1315,7 @@ class SessionManager implements AcpBoundedObservationSource {
         if (!hadBinding) {
           _sessionWorkspaceRoots.remove(sessionId);
           _sessionAdditionalDirectories.remove(sessionId);
+          _sessionFsProviders.remove(sessionId);
           if (!hadReplay) {
             _replayBuffers.remove(sessionId);
           }
@@ -1382,6 +1390,7 @@ class SessionManager implements AcpBoundedObservationSource {
       _replayBuffers.containsKey(sessionId) ||
       _sessionWorkspaceRoots.containsKey(sessionId) ||
       _sessionAdditionalDirectories.containsKey(sessionId) ||
+      _sessionFsProviders.containsKey(sessionId) ||
       _sessionModes.containsKey(sessionId) ||
       _toolCalls.containsKey(sessionId) ||
       _toolCallSizes.containsKey(sessionId) ||
@@ -1423,6 +1432,7 @@ class SessionManager implements AcpBoundedObservationSource {
     _replayBuffers.remove(sessionId);
     _sessionWorkspaceRoots.remove(sessionId);
     _sessionAdditionalDirectories.remove(sessionId);
+    _sessionFsProviders.remove(sessionId);
     _sessionModes.remove(sessionId);
     _removeToolCalls(sessionId);
     await _releaseSessionTerminals(sessionId);
@@ -2237,6 +2247,19 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   // ===== Agent -> Client handlers =====
+  FsProvider _fileSystemProviderForSession(String sessionId) {
+    final configured = config.fsProvider!;
+    if (configured is! SessionScopedFsProvider) return configured;
+    return _sessionFsProviders.putIfAbsent(
+      sessionId,
+      () => configured.bindToSession(
+        workspaceRoot: _sessionWorkspaceRoots[sessionId]!,
+        additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
+        allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
+      ),
+    );
+  }
+
   Future<Json> _onReadTextFile(Json req) async {
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
@@ -2244,13 +2267,7 @@ class SessionManager implements AcpBoundedObservationSource {
     final sessionId = _requireKnownSessionId(req);
     final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
 
-    // Create a session-specific provider honoring configured access policy
-    final provider = DefaultFsProvider(
-      workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
-      allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
-      // yolo does NOT allow writes outside workspace
-    );
+    final provider = _fileSystemProviderForSession(sessionId);
 
     // Enforce permission policy for reads when provided (non-interactive
     // policy mode). Agents may or may not request permission explicitly;
@@ -2293,6 +2310,13 @@ class SessionManager implements AcpBoundedObservationSource {
       );
       _log.fine('fs/read_text_file -> ok path=$path bytes=${content.length}');
       return {'content': content};
+    } on FsReadRejectedException catch (error) {
+      _log.warning('fs/read_text_file -> rejected by bounded policy');
+      throw rpc.RpcException(
+        -32001,
+        'Filesystem read rejected.',
+        data: error.reason.name,
+      );
     } catch (e) {
       _log.warning('fs/read_text_file -> error path=$path: $e');
       rethrow;
@@ -2306,13 +2330,7 @@ class SessionManager implements AcpBoundedObservationSource {
     final sessionId = _requireKnownSessionId(req);
     final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
 
-    // Create a session-specific provider honoring configured access policy
-    final provider = DefaultFsProvider(
-      workspaceRoot: workspaceRoot,
-      additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
-      allowReadOutsideWorkspace: config.allowReadOutsideWorkspace,
-      // yolo does NOT allow writes outside workspace
-    );
+    final provider = _fileSystemProviderForSession(sessionId);
 
     // Enforce permission policy for writes when provided.
     try {
