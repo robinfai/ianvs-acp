@@ -9,6 +9,7 @@ import 'models/bounded_observation.dart';
 import 'models/session_types.dart';
 import 'models/terminal_events.dart';
 import 'models/updates.dart';
+import 'rpc/inbound_gate.dart';
 import 'rpc/peer.dart';
 import 'session/session_manager.dart';
 import 'transport/stdio_transport.dart';
@@ -31,9 +32,19 @@ class AcpClient implements AcpBoundedObservationSource {
     int maxReplayBytes = 16 * 1024 * 1024,
     int maxToolCallItems = 512,
     int maxToolCallBytes = 8 * 1024 * 1024,
+    int maxPendingItems = 128,
+    int maxPendingBytes = 32 * 1024 * 1024,
+    int maxConcurrentHandlers = 16,
+    int maxOrdinaryConcurrentHandlers = 14,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) async {
     inputBudget.validate();
+    InboundGate.validateLimits(
+      maxPendingItems: maxPendingItems,
+      maxPendingBytes: maxPendingBytes,
+      maxConcurrentHandlers: maxConcurrentHandlers,
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+    );
     if (maxReplayItems <= 0 ||
         maxReplayBytes < minimumSessionReplayBytes ||
         maxToolCallItems <= 0 ||
@@ -57,7 +68,13 @@ class AcpClient implements AcpBoundedObservationSource {
     await actualTransport.start();
 
     final client = AcpClient._(config: config, transport: actualTransport);
-    client._peer = JsonRpcPeer(actualTransport.channel);
+    client._peer = JsonRpcPeer(
+      actualTransport.channel,
+      maxPendingItems: maxPendingItems,
+      maxPendingBytes: maxPendingBytes,
+      maxConcurrentHandlers: maxConcurrentHandlers,
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+    );
     client._sessionManager = SessionManager(
       config: config,
       peer: client._peer,
@@ -76,6 +93,7 @@ class AcpClient implements AcpBoundedObservationSource {
   final AcpTransport _transport;
   late final JsonRpcPeer _peer;
   late final SessionManager _sessionManager;
+  Future<void>? _disposeFuture;
 
   @override
   void addBoundedObservationListener(AcpBoundedObservationListener listener) =>
@@ -87,16 +105,24 @@ class AcpClient implements AcpBoundedObservationSource {
   ) => _sessionManager.removeBoundedObservationListener(listener);
 
   /// Dispose the transport and release resources.
-  Future<void> dispose() async {
+  Future<void> dispose() => _disposeFuture ??= _dispose();
+
+  Future<void> _dispose() async {
     // Close JSON-RPC peer first to stop inbound traffic cleanly,
     // then dispose session resources and finally stop the transport.
     try {
-      await _peer.close();
-    } on Exception catch (_) {
-      // Ignore close errors during shutdown
+      try {
+        try {
+          await _peer.close();
+        } on Object {
+          // Ignore close errors during shutdown.
+        }
+      } finally {
+        await _sessionManager.dispose();
+      }
+    } finally {
+      await _transport.stop();
     }
-    await _sessionManager.dispose();
-    await _transport.stop();
   }
 
   /// Send `initialize` to negotiate protocol and capabilities.
