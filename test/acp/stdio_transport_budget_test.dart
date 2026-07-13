@@ -29,6 +29,30 @@ void main() {
             .having((error) => error.invalidValue, 'invalidValue', -1),
       ),
     );
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxOutboundQueueItems: 0,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxOutboundQueueItems')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxOutboundQueueBytes: -1,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxOutboundQueueBytes')
+            .having((error) => error.invalidValue, 'invalidValue', -1),
+      ),
+    );
   });
 
   test('StdioTransport forwards the configured line byte limit', () async {
@@ -56,6 +80,44 @@ void main() {
           'limit',
           4,
         ),
+      );
+    } finally {
+      await transport.stop();
+    }
+  });
+
+  test('StdioTransport forwards outbound queue budgets', () async {
+    final transport = acp.StdioTransport(
+      logger: acp.AcpConfig().logger,
+      command: '/bin/cat',
+      maxOutboundQueueItems: 1,
+      maxOutboundQueueBytes: 64,
+    );
+    final errors = <Object>[];
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+      addTearDown(subscription.cancel);
+
+      transport.channel.sink
+        ..add('first')
+        ..add('second');
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdio stdin queue items',
+            )
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
       );
     } finally {
       await transport.stop();

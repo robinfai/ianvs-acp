@@ -21,10 +21,20 @@ class StdioTransport implements AcpTransport {
     this.onProtocolIn,
     int maxLineBytes = defaultTransportByteLimit,
     int? maxStderrLineBytes,
+    int maxOutboundQueueItems = 128,
+    int maxOutboundQueueBytes = 32 * 1024 * 1024,
   }) : maxLineBytes = _positiveByteLimit(maxLineBytes, 'maxLineBytes'),
        maxStderrLineBytes = _positiveByteLimit(
          maxStderrLineBytes ?? maxLineBytes,
          'maxStderrLineBytes',
+       ),
+       maxOutboundQueueItems = _positiveByteLimit(
+         maxOutboundQueueItems,
+         'maxOutboundQueueItems',
+       ),
+       maxOutboundQueueBytes = _positiveByteLimit(
+         maxOutboundQueueBytes,
+         'maxOutboundQueueBytes',
        );
 
   /// Agent executable name/path.
@@ -53,6 +63,12 @@ class StdioTransport implements AcpTransport {
 
   /// Maximum raw bytes retained for one stderr diagnostic line.
   final int maxStderrLineBytes;
+
+  /// Maximum accepted stdin lines, including the active flush.
+  final int maxOutboundQueueItems;
+
+  /// Maximum accepted stdin UTF-8 bytes, including the active flush.
+  final int maxOutboundQueueBytes;
 
   Process? _process;
   LineJsonChannel? _channel;
@@ -114,6 +130,8 @@ class StdioTransport implements AcpTransport {
       onOutboundLine: onProtocolOut,
       maxLineBytes: maxLineBytes,
       maxStderrLineBytes: maxStderrLineBytes,
+      maxOutboundQueueItems: maxOutboundQueueItems,
+      maxOutboundQueueBytes: maxOutboundQueueBytes,
     );
 
     // stdout EOF owns protocol closure because exitCode may complete before

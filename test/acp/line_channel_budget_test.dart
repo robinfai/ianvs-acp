@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
@@ -6,6 +7,27 @@ import 'package:dart_acp/src/rpc/line_channel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('outbound queue budgets must be positive', () {
+    final process = _BlockingStdinProcess();
+
+    expect(
+      () => LineJsonChannel(process, maxOutboundQueueItems: 0),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxOutboundQueueItems')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => LineJsonChannel(process, maxOutboundQueueBytes: -1),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxOutboundQueueBytes')
+            .having((error) => error.invalidValue, 'invalidValue', -1),
+      ),
+    );
+  });
+
   test('stdout counts raw UTF-8 bytes across chunks before decoding', () async {
     final process = await Process.start('/bin/sh', <String>[
       '-c',
@@ -229,6 +251,194 @@ void main() {
     },
   );
 
+  test('outbound item budget accepts the exact active boundary', () async {
+    final process = _BlockingStdinProcess();
+    final outboundLines = <String>[];
+    final channel = LineJsonChannel(
+      process,
+      maxOutboundQueueItems: 2,
+      onOutboundLine: outboundLines.add,
+    );
+    final subscription = channel.channel.stream.listen((_) {}, onError: (_) {});
+
+    try {
+      channel.channel.sink.add('first');
+      await process.writeStarted.timeout(const Duration(seconds: 1));
+      channel.channel.sink.add('second');
+
+      process.releaseWrites();
+      await channel.dispose().timeout(const Duration(seconds: 1));
+
+      expect(outboundLines, <String>['first', 'second']);
+      expect(process.lines, <String>['first', 'second']);
+    } finally {
+      process.releaseWrites();
+      await subscription.cancel();
+      await channel.dispose();
+    }
+  });
+
+  test(
+    'outbound item overflow counts active write and drops queued payloads',
+    () async {
+      const activePayload = 'active-secret';
+      const queuedPayload = 'queued-secret';
+      const overflowPayload = 'overflow-secret';
+      final process = _BlockingStdinProcess();
+      final outboundLines = <String>[];
+      final errors = <Object>[];
+      final channel = LineJsonChannel(
+        process,
+        maxOutboundQueueItems: 2,
+        onOutboundLine: outboundLines.add,
+      );
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      try {
+        channel.channel.sink.add(activePayload);
+        await process.writeStarted.timeout(const Duration(seconds: 1));
+        channel.channel.sink
+          ..add(queuedPayload)
+          ..add(overflowPayload);
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(outboundLines, <String>[activePayload]);
+        expect(
+          errors.single,
+          isA<acp.TransportByteLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'stdio stdin queue items',
+              )
+              .having((error) => error.limit, 'limit', 2)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
+        );
+        expect(errors.single.toString(), isNot(contains(queuedPayload)));
+        expect(errors.single.toString(), isNot(contains(overflowPayload)));
+
+        await channel.dispose().timeout(const Duration(milliseconds: 200));
+        expect(process.lines, isEmpty);
+        process.releaseWrites();
+        await _waitFor(() => process.lines.isNotEmpty);
+        expect(process.lines, <String>[activePayload]);
+      } finally {
+        process.releaseWrites();
+        await subscription.cancel();
+        await channel.dispose();
+      }
+    },
+  );
+
+  test('outbound byte budget accepts exact UTF-8 boundary', () async {
+    final process = _BlockingStdinProcess();
+    final channel = LineJsonChannel(process, maxOutboundQueueBytes: 4);
+    final subscription = channel.channel.stream.listen((_) {}, onError: (_) {});
+
+    try {
+      channel.channel.sink.add('é');
+      await process.writeStarted.timeout(const Duration(seconds: 1));
+      channel.channel.sink.add('é');
+
+      process.releaseWrites();
+      await channel.dispose().timeout(const Duration(seconds: 1));
+
+      expect(process.lines, <String>['é', 'é']);
+    } finally {
+      process.releaseWrites();
+      await subscription.cancel();
+      await channel.dispose();
+    }
+  });
+
+  test('outbound byte overflow counts active UTF-8 bytes', () async {
+    final process = _BlockingStdinProcess();
+    final errors = <Object>[];
+    final channel = LineJsonChannel(process, maxOutboundQueueBytes: 4);
+    final subscription = channel.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+    );
+
+    try {
+      channel.channel.sink.add('é');
+      await process.writeStarted.timeout(const Duration(seconds: 1));
+      channel.channel.sink
+        ..add('é')
+        ..add('x');
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdio stdin queue bytes',
+            )
+            .having((error) => error.limit, 'limit', 4)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 5),
+      );
+      await channel.dispose().timeout(const Duration(milliseconds: 200));
+      expect(process.lines, isEmpty);
+      process.releaseWrites();
+      await _waitFor(() => process.lines.isNotEmpty);
+      expect(process.lines, <String>['é']);
+    } finally {
+      process.releaseWrites();
+      await subscription.cancel();
+      await channel.dispose();
+    }
+  });
+
+  test(
+    'synchronous outbound burst cannot hide in the channel controller',
+    () async {
+      final process = _BlockingStdinProcess();
+      final outboundLines = <String>[];
+      final errors = <Object>[];
+      final channel = LineJsonChannel(
+        process,
+        maxOutboundQueueItems: 3,
+        onOutboundLine: outboundLines.add,
+      );
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      try {
+        channel.channel.sink
+          ..add('one')
+          ..add('two')
+          ..add('three')
+          ..add('four')
+          ..add('five');
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(outboundLines, isEmpty);
+        expect(process.lines, isEmpty);
+        expect(
+          errors.single,
+          isA<acp.TransportByteLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'stdio stdin queue items',
+              )
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+        );
+      } finally {
+        process.releaseWrites();
+        await subscription.cancel();
+        await channel.dispose();
+      }
+    },
+  );
+
   test('outbound writes preserve strict message order', () async {
     final process = await Process.start('/bin/cat', const <String>[]);
     final channel = LineJsonChannel(process);
@@ -427,6 +637,72 @@ class _FailingStreamConsumer implements StreamConsumer<List<int>> {
     await stream.drain<void>();
     if (!_writeFailed.isCompleted) _writeFailed.complete();
     throw StateError(failureMessage);
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+class _BlockingStdinProcess implements Process {
+  _BlockingStdinProcess() : _consumer = _BlockingStreamConsumer() {
+    _stdin = IOSink(_consumer);
+  }
+
+  final StreamController<List<int>> _stdoutController =
+      StreamController<List<int>>();
+  final Completer<int> _exitCode = Completer<int>();
+  final _BlockingStreamConsumer _consumer;
+  late final IOSink _stdin;
+
+  Future<void> get writeStarted => _consumer.writeStarted;
+
+  List<String> get lines => _consumer.lines;
+
+  void releaseWrites() => _consumer.release();
+
+  @override
+  Future<int> get exitCode => _exitCode.future;
+
+  @override
+  int get pid => 1;
+
+  @override
+  Stream<List<int>> get stderr => const Stream<List<int>>.empty();
+
+  @override
+  IOSink get stdin => _stdin;
+
+  @override
+  Stream<List<int>> get stdout => _stdoutController.stream;
+
+  @override
+  bool kill([ProcessSignal signal = ProcessSignal.sigterm]) {
+    if (!_exitCode.isCompleted) _exitCode.complete(-signal.signalNumber);
+    return true;
+  }
+}
+
+class _BlockingStreamConsumer implements StreamConsumer<List<int>> {
+  final Completer<void> _writeStarted = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+  final List<String> lines = <String>[];
+
+  Future<void> get writeStarted => _writeStarted.future;
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    final bytes = <int>[];
+    await for (final chunk in stream) {
+      bytes.addAll(chunk);
+      if (!_writeStarted.isCompleted) _writeStarted.complete();
+    }
+    await _release.future;
+    final text = utf8.decode(bytes);
+    lines.addAll(text.split('\n').where((line) => line.isNotEmpty));
   }
 
   @override
