@@ -11,6 +11,9 @@ import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
+// Test-only access to the path dependency's logger contract.
+// ignore: depend_on_referenced_packages
+import 'package:logging/logging.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 void main() {
@@ -490,7 +493,384 @@ void main() {
     });
   });
 
+  group('DefaultFsProvider writeTextFile', () {
+    test('uses bounded defaults and preserves subclass compatibility', () {
+      final provider = acp.DefaultFsProvider(workspaceRoot: '/');
+
+      expect(provider.maxWriteBytes, 8 * 1024 * 1024);
+      expect(provider.maxConcurrentWrites, 2);
+      expect(provider.maxAggregateWriteBytes, 32 * 1024 * 1024);
+      expect(
+        _SubclassedDefaultFsProvider(workspaceRoot: '/'),
+        isA<acp.DefaultFsProvider>(),
+      );
+    });
+
+    test('validates write and aggregate budgets with fixed reservation', () {
+      expect(
+        () => acp.DefaultFsProvider(workspaceRoot: '/', maxWriteBytes: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => acp.DefaultFsProvider(workspaceRoot: '/', maxConcurrentWrites: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => acp.DefaultFsProvider(
+          workspaceRoot: '/',
+          maxWriteBytes: 4,
+          maxAggregateWriteBytes: 7,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        acp.DefaultFsProvider(
+          workspaceRoot: '/',
+          maxWriteBytes: 4,
+          maxAggregateWriteBytes: 8,
+        ),
+        isA<acp.DefaultFsProvider>(),
+      );
+    });
+
+    test(
+      'writes relative, absolute, nested, and additional-root paths',
+      () async {
+        final temp = await Directory.systemTemp.createTemp('acp-write-paths-');
+        addTearDown(() => temp.delete(recursive: true));
+        final workspace = Directory('${temp.path}/workspace');
+        final additional = Directory('${temp.path}/additional');
+        await workspace.create();
+        await additional.create();
+        final provider = acp.DefaultFsProvider(
+          workspaceRoot: workspace.path,
+          additionalWorkspaceRoots: <String>[additional.path],
+        );
+
+        await provider.writeTextFile('nested/relative.txt', 'relative');
+        await provider.writeTextFile(
+          '${workspace.path}/absolute.txt',
+          'absolute',
+        );
+        await provider.writeTextFile('${additional.path}/extra.txt', 'extra');
+
+        expect(
+          await File('${workspace.path}/nested/relative.txt').readAsString(),
+          'relative',
+        );
+        expect(
+          await File('${workspace.path}/absolute.txt').readAsString(),
+          'absolute',
+        );
+        expect(
+          await File('${additional.path}/extra.txt').readAsString(),
+          'extra',
+        );
+      },
+    );
+
+    test('never uses allowReadOutsideWorkspace to relax writes', () async {
+      final temp = await Directory.systemTemp.createTemp('acp-write-jail-');
+      addTearDown(() => temp.delete(recursive: true));
+      final workspace = Directory('${temp.path}/workspace');
+      await workspace.create();
+      final outside = File('${temp.path}/outside.txt');
+      final provider = acp.DefaultFsProvider(
+        workspaceRoot: workspace.path,
+        allowReadOutsideWorkspace: true,
+      );
+
+      await expectLater(
+        provider.writeTextFile(outside.path, 'secret'),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(await outside.exists(), isFalse);
+    });
+
+    test(
+      'writes through existing internal file and directory symlinks',
+      () async {
+        final temp = await Directory.systemTemp.createTemp('acp-write-links-');
+        addTearDown(() => temp.delete(recursive: true));
+        final workspace = Directory('${temp.path}/workspace');
+        final realDirectory = Directory('${workspace.path}/real');
+        await realDirectory.create(recursive: true);
+        final realFile = File('${realDirectory.path}/value.txt');
+        await realFile.writeAsString('before');
+        await Link('${workspace.path}/file-link').create(realFile.path);
+        await Link(
+          '${workspace.path}/directory-link',
+        ).create(realDirectory.path);
+        final provider = acp.DefaultFsProvider(workspaceRoot: workspace.path);
+
+        await provider.writeTextFile('file-link', 'after');
+        await provider.writeTextFile('directory-link/nested.txt', 'nested');
+
+        expect(await realFile.readAsString(), 'after');
+        expect(
+          await File('${realDirectory.path}/nested.txt').readAsString(),
+          'nested',
+        );
+      },
+    );
+
+    test('shares synchronous write capacity across session bindings', () async {
+      final temp = await Directory.systemTemp.createTemp('acp-write-shared-');
+      addTearDown(() => temp.delete(recursive: true));
+      final firstRoot = Directory('${temp.path}/first');
+      final secondRoot = Directory('${temp.path}/second');
+      await firstRoot.create();
+      await secondRoot.create();
+      final marker = acp.DefaultFsProvider(
+        workspaceRoot: '/',
+        maxWriteBytes: 64,
+        maxConcurrentWrites: 1,
+        maxAggregateWriteBytes: 128,
+      );
+      final first = marker.bindToSession(
+        workspaceRoot: firstRoot.path,
+        allowReadOutsideWorkspace: false,
+      );
+      final second = marker.bindToSession(
+        workspaceRoot: secondRoot.path,
+        allowReadOutsideWorkspace: false,
+      );
+
+      final active = first.writeTextFile('value.txt', 'first');
+      await expectLater(
+        second.writeTextFile('value.txt', 'second'),
+        throwsA(
+          isA<acp.FsWriteRejectedException>().having(
+            (error) => error.reason,
+            'reason',
+            acp.FsWriteRejectionReason.capacity,
+          ),
+        ),
+      );
+      await active;
+      await second.writeTextFile('value.txt', 'second');
+      expect(
+        await File('${secondRoot.path}/value.txt').readAsString(),
+        'second',
+      );
+    });
+
+    test('releases capacity after limit, path, and native failures', () async {
+      final temp = await Directory.systemTemp.createTemp('acp-write-release-');
+      addTearDown(() => temp.delete(recursive: true));
+      final workspace = Directory('${temp.path}/workspace');
+      await workspace.create();
+      await Directory('${workspace.path}/directory').create();
+      final provider = acp.DefaultFsProvider(
+        workspaceRoot: workspace.path,
+        maxWriteBytes: 4,
+        maxConcurrentWrites: 1,
+        maxAggregateWriteBytes: 8,
+      );
+
+      await expectLater(
+        provider.writeTextFile('too-large.txt', '12345'),
+        throwsA(
+          isA<acp.FsWriteRejectedException>().having(
+            (error) => error.reason,
+            'reason',
+            acp.FsWriteRejectionReason.limit,
+          ),
+        ),
+      );
+      await expectLater(
+        provider.writeTextFile('../escape.txt', 'x'),
+        throwsA(isA<FileSystemException>()),
+      );
+      await expectLater(
+        provider.writeTextFile('directory', 'x'),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      await provider.writeTextFile('recovered.txt', 'okay');
+      expect(
+        await File('${workspace.path}/recovered.txt').readAsString(),
+        'okay',
+      );
+    });
+
+    test('reserves aggregate write capacity before the first await', () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp-write-aggregate-',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final workspace = Directory('${temp.path}/workspace');
+      await workspace.create();
+      final provider = acp.DefaultFsProvider(
+        workspaceRoot: workspace.path,
+        maxWriteBytes: 64,
+        maxConcurrentWrites: 2,
+        maxAggregateWriteBytes: 128,
+      );
+
+      final active = provider.writeTextFile('first.txt', 'first');
+      await expectLater(
+        provider.writeTextFile('second.txt', 'second'),
+        throwsA(isA<acp.FsWriteRejectedException>()),
+      );
+      await active;
+      await provider.writeTextFile('second.txt', 'second');
+    });
+  });
+
   group('SessionManager filesystem provider wiring', () {
+    test(
+      'maps bounded write rejections to fixed payload-free RPC errors',
+      () async {
+        final temp = await Directory.systemTemp.createTemp('acp-write-rpc-');
+        addTearDown(() => temp.delete(recursive: true));
+        for (final reason in acp.FsWriteRejectionReason.values) {
+          final provider = _RejectingWriteFsProvider(reason);
+          final harness = await _SessionFsHarness.start(
+            workspaceRoot: temp.path,
+            provider: provider,
+          );
+          final response = await harness
+              .request('fs/write_text_file', <String, dynamic>{
+                'sessionId': harness.sessionId,
+                'path': '/secret/path.txt',
+                'content': 'top-secret-content',
+              });
+          await harness.close();
+
+          expect(response['error'], <String, dynamic>{
+            'code': -32001,
+            'message': 'Filesystem write rejected.',
+          });
+          final encoded = jsonEncode(response);
+          expect(encoded, isNot(contains('"data"')));
+          expect(encoded, isNot(contains(reason.name)));
+          expect(encoded, isNot(contains('/secret/path.txt')));
+          expect(encoded, isNot(contains('top-secret-content')));
+        }
+      },
+    );
+
+    test(
+      'maps permission denial and failure to payload-free write RPC errors',
+      () async {
+        final temp = await Directory.systemTemp.createTemp(
+          'acp-write-permission-rpc-',
+        );
+        addTearDown(() => temp.delete(recursive: true));
+        final largeSecret = 'SECRET-BODY-' * (64 * 1024);
+        for (final permissionProvider in <acp.PermissionProvider>[
+          const _DenyPermissionProvider(),
+          const _ThrowingPermissionProvider(),
+        ]) {
+          final harness = await _SessionFsHarness.start(
+            workspaceRoot: temp.path,
+            provider: const _NativeFailingWriteFsProvider(),
+            permissionProvider: permissionProvider,
+          );
+          final response = await harness
+              .request('fs/write_text_file', <String, dynamic>{
+                'sessionId': harness.sessionId,
+                'path': '/secret/permission-path.txt',
+                'content': largeSecret,
+              });
+          await harness.close();
+
+          expect(response['error'], <String, dynamic>{
+            'code': -32001,
+            'message': 'Filesystem write rejected.',
+          });
+          final encoded = jsonEncode(response);
+          expect(encoded.length, lessThan(300));
+          expect(encoded, isNot(contains('SECRET-BODY')));
+          expect(encoded, isNot(contains('/secret/permission-path.txt')));
+          expect(encoded, isNot(contains('permission-secret-stack')));
+          expect(encoded, isNot(contains('request')));
+          expect(encoded, isNot(contains('data')));
+        }
+      },
+    );
+
+    test('FINE write logs use real UTF-8 bytes', () async {
+      final temp = await Directory.systemTemp.createTemp('acp-write-log-');
+      addTearDown(() => temp.delete(recursive: true));
+      final previousLevel = Logger.root.level;
+      Logger.root.level = Level.FINE;
+      addTearDown(() => Logger.root.level = previousLevel);
+      final logger = Logger(
+        'acp-write-log-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final messages = <String>[];
+      final subscription = logger.onRecord.listen(
+        (record) => messages.add(record.message),
+      );
+      addTearDown(subscription.cancel);
+      final harness = await _SessionFsHarness.start(
+        workspaceRoot: temp.path,
+        provider: acp.DefaultFsProvider(workspaceRoot: temp.path),
+        logger: logger,
+      );
+      addTearDown(harness.close);
+
+      final response = await harness.request(
+        'fs/write_text_file',
+        <String, dynamic>{
+          'sessionId': harness.sessionId,
+          'path': 'emoji.txt',
+          'content': '🙂',
+        },
+      );
+
+      expect(response['result'], isNull);
+      expect(messages, contains(contains('fs/write_text_file <- bytes=4')));
+    });
+
+    test('generic write logs omit paths and native error details', () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp-write-error-log-',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final previousLevel = Logger.root.level;
+      Logger.root.level = Level.WARNING;
+      addTearDown(() => Logger.root.level = previousLevel);
+      final logger = Logger(
+        'acp-write-error-log-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final messages = <String>[];
+      final subscription = logger.onRecord.listen(
+        (record) => messages.add(record.message),
+      );
+      addTearDown(subscription.cancel);
+      final harness = await _SessionFsHarness.start(
+        workspaceRoot: temp.path,
+        provider: const _NativeFailingWriteFsProvider(),
+        logger: logger,
+      );
+      addTearDown(harness.close);
+
+      final response = await harness
+          .request('fs/write_text_file', <String, dynamic>{
+            'sessionId': harness.sessionId,
+            'path': '/secret/native-path.txt',
+            'content': 'secret-content',
+          });
+
+      expect(response['error'], <String, dynamic>{
+        'code': -32001,
+        'message': 'Filesystem write rejected.',
+      });
+      final responseText = jsonEncode(response);
+      expect(responseText, isNot(contains('/secret/native-path.txt')));
+      expect(responseText, isNot(contains('secret-content')));
+      expect(responseText, isNot(contains('errno=13')));
+      expect(responseText, isNot(contains('stack')));
+      expect(messages, contains('fs/write_text_file -> error'));
+      final joined = messages.join('\n');
+      expect(joined, isNot(contains('/secret/native-path.txt')));
+      expect(joined, isNot(contains('secret-content')));
+      expect(joined, isNot(contains('errno=13')));
+    });
+
     test(
       'keeps LineJsonChannel usable after bounded large file responses',
       () async {
@@ -1210,6 +1590,31 @@ final class _SpyFsProvider implements acp.FsProvider {
   }
 }
 
+final class _RejectingWriteFsProvider implements acp.FsProvider {
+  const _RejectingWriteFsProvider(this.reason);
+
+  final acp.FsWriteRejectionReason reason;
+
+  @override
+  Future<String> readTextFile(String path, {int? line, int? limit}) async => '';
+
+  @override
+  Future<void> writeTextFile(String path, String content) =>
+      Future<void>.error(acp.FsWriteRejectedException(reason));
+}
+
+final class _NativeFailingWriteFsProvider implements acp.FsProvider {
+  const _NativeFailingWriteFsProvider();
+
+  @override
+  Future<String> readTextFile(String path, {int? line, int? limit}) async => '';
+
+  @override
+  Future<void> writeTextFile(String path, String content) => Future<void>.error(
+    const FileSystemException('native errno=13', '/native/private.txt'),
+  );
+}
+
 final class _StatefulFsProvider implements acp.SessionScopedFsProvider {
   _StatefulFsProvider({this.onFirstWrite});
 
@@ -1267,6 +1672,24 @@ final class _AllowAllPermissionProvider implements acp.PermissionProvider {
       const acp.PermissionDecision(acp.PermissionOutcome.allow);
 }
 
+final class _DenyPermissionProvider implements acp.PermissionProvider {
+  const _DenyPermissionProvider();
+
+  @override
+  Future<acp.PermissionDecision> request(acp.PermissionOptions options) async =>
+      const acp.PermissionDecision.deny();
+}
+
+final class _ThrowingPermissionProvider implements acp.PermissionProvider {
+  const _ThrowingPermissionProvider();
+
+  @override
+  Future<acp.PermissionDecision> request(acp.PermissionOptions options) =>
+      Future<acp.PermissionDecision>.error(
+        StateError('permission-secret-stack /secret/provider.dart:13'),
+      );
+}
+
 final class _SessionFsHarness {
   _SessionFsHarness._({
     required this.sessionId,
@@ -1283,14 +1706,18 @@ final class _SessionFsHarness {
     List<String> sessionIds = const <String>['fs-session'],
     bool failCloseRequests = false,
     bool failFirstLoadAfterFsWrite = false,
+    Logger? logger,
+    acp.PermissionProvider? permissionProvider,
   }) async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
     final manager = SessionManager(
       config: acp.AcpConfig(
         fsProvider: provider,
-        permissionProvider: const _AllowAllPermissionProvider(),
+        permissionProvider:
+            permissionProvider ?? const _AllowAllPermissionProvider(),
         allowReadOutsideWorkspace: allowReadOutsideWorkspace,
+        logger: logger,
       ),
       peer: peer,
     );

@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../security/workspace_jail.dart';
 import '../transport/byte_budget.dart';
 import 'secure_fs_reader.dart';
+import 'secure_fs_writer.dart';
 
 /// Default maximum bytes retained in one filesystem read response.
 const int defaultFsReturnedByteLimit = 2 * 1024 * 1024;
@@ -15,6 +16,15 @@ const int defaultFsConcurrentReadLimit = 2;
 
 /// Default aggregate read reservation across one provider family.
 const int defaultFsAggregateReadByteLimit = 16 * 1024 * 1024;
+
+/// Default maximum bytes accepted by one filesystem write.
+const int defaultFsWriteByteLimit = 8 * 1024 * 1024;
+
+/// Default maximum simultaneous writes across one provider family.
+const int defaultFsConcurrentWriteLimit = 2;
+
+/// Default aggregate write reservation across one provider family.
+const int defaultFsAggregateWriteByteLimit = 32 * 1024 * 1024;
 
 /// Abstraction for file system operations exposed to agents.
 abstract class FsProvider {
@@ -32,6 +42,15 @@ final class FsReadRejectedException extends FileSystemException {
     : super('Filesystem read rejected');
 
   final FsReadRejectionReason reason;
+}
+
+enum FsWriteRejectionReason { limit, capacity }
+
+final class FsWriteRejectedException extends FileSystemException {
+  const FsWriteRejectedException(this.reason)
+    : super('Filesystem write rejected');
+
+  final FsWriteRejectionReason reason;
 }
 
 /// Optional interface for providers that need a session workspace binding.
@@ -57,6 +76,9 @@ class DefaultFsProvider implements SessionScopedFsProvider {
     int? maxReturnedBytes,
     int maxConcurrentReads = defaultFsConcurrentReadLimit,
     int maxAggregateReadBytes = defaultFsAggregateReadByteLimit,
+    int maxWriteBytes = defaultFsWriteByteLimit,
+    int maxConcurrentWrites = defaultFsConcurrentWriteLimit,
+    int maxAggregateWriteBytes = defaultFsAggregateWriteByteLimit,
   }) : this._(
          workspaceRoot: workspaceRoot,
          additionalWorkspaceRoots: additionalWorkspaceRoots,
@@ -69,7 +91,11 @@ class DefaultFsProvider implements SessionScopedFsProvider {
                  : defaultFsReturnedByteLimit),
          maxConcurrentReads: maxConcurrentReads,
          maxAggregateReadBytes: maxAggregateReadBytes,
-         ledger: null,
+         maxWriteBytes: maxWriteBytes,
+         maxConcurrentWrites: maxConcurrentWrites,
+         maxAggregateWriteBytes: maxAggregateWriteBytes,
+         readLedger: null,
+         writeLedger: null,
        );
 
   DefaultFsProvider._({
@@ -80,12 +106,22 @@ class DefaultFsProvider implements SessionScopedFsProvider {
     required this.maxReturnedBytes,
     required this.maxConcurrentReads,
     required this.maxAggregateReadBytes,
-    required _FsReadLedger? ledger,
-  }) : _ledger =
-           ledger ??
+    required this.maxWriteBytes,
+    required this.maxConcurrentWrites,
+    required this.maxAggregateWriteBytes,
+    required _FsReadLedger? readLedger,
+    required _FsWriteLedger? writeLedger,
+  }) : _readLedger =
+           readLedger ??
            _FsReadLedger(
              maxConcurrentReads: maxConcurrentReads,
              maxAggregateReadBytes: maxAggregateReadBytes,
+           ),
+       _writeLedger =
+           writeLedger ??
+           _FsWriteLedger(
+             maxConcurrentWrites: maxConcurrentWrites,
+             maxAggregateWriteBytes: maxAggregateWriteBytes,
            ),
        _jail = WorkspaceJail(
          workspaceRoot: workspaceRoot,
@@ -96,6 +132,9 @@ class DefaultFsProvider implements SessionScopedFsProvider {
       maxReturnedBytes: maxReturnedBytes,
       maxConcurrentReads: maxConcurrentReads,
       maxAggregateReadBytes: maxAggregateReadBytes,
+      maxWriteBytes: maxWriteBytes,
+      maxConcurrentWrites: maxConcurrentWrites,
+      maxAggregateWriteBytes: maxAggregateWriteBytes,
     );
   }
 
@@ -119,7 +158,18 @@ class DefaultFsProvider implements SessionScopedFsProvider {
   /// Maximum aggregate read reservation shared by all bindings.
   final int maxAggregateReadBytes;
 
-  final _FsReadLedger _ledger;
+  final _FsReadLedger _readLedger;
+
+  /// Maximum UTF-8 bytes accepted by one write.
+  final int maxWriteBytes;
+
+  /// Maximum simultaneous writes shared by this marker and its bindings.
+  final int maxConcurrentWrites;
+
+  /// Maximum aggregate write reservation shared by all bindings.
+  final int maxAggregateWriteBytes;
+
+  final _FsWriteLedger _writeLedger;
 
   // Writes outside the workspace are never allowed.
 
@@ -136,12 +186,16 @@ class DefaultFsProvider implements SessionScopedFsProvider {
     maxReturnedBytes: maxReturnedBytes,
     maxConcurrentReads: maxConcurrentReads,
     maxAggregateReadBytes: maxAggregateReadBytes,
-    ledger: _ledger,
+    maxWriteBytes: maxWriteBytes,
+    maxConcurrentWrites: maxConcurrentWrites,
+    maxAggregateWriteBytes: maxAggregateWriteBytes,
+    readLedger: _readLedger,
+    writeLedger: _writeLedger,
   );
 
   @override
   Future<String> readTextFile(String path, {int? line, int? limit}) {
-    final lease = _ledger.tryAcquire(_readReservationBytes);
+    final lease = _readLedger.tryAcquire(_readReservationBytes);
     if (lease == null) {
       return Future<String>.error(
         const FsReadRejectedException(FsReadRejectionReason.capacity),
@@ -221,6 +275,9 @@ class DefaultFsProvider implements SessionScopedFsProvider {
     required int maxReturnedBytes,
     required int maxConcurrentReads,
     required int maxAggregateReadBytes,
+    required int maxWriteBytes,
+    required int maxConcurrentWrites,
+    required int maxAggregateWriteBytes,
   }) {
     if (maxReadBytes <= 0) {
       throw ArgumentError.value(maxReadBytes, 'maxReadBytes');
@@ -235,6 +292,22 @@ class DefaultFsProvider implements SessionScopedFsProvider {
     if (maxAggregateReadBytes < maxReturnedBytes + scanReservation) {
       throw ArgumentError.value(maxAggregateReadBytes, 'maxAggregateReadBytes');
     }
+    if (maxWriteBytes <= 0) {
+      throw ArgumentError.value(maxWriteBytes, 'maxWriteBytes');
+    }
+    if (maxConcurrentWrites <= 0) {
+      throw ArgumentError.value(maxConcurrentWrites, 'maxConcurrentWrites');
+    }
+    final writeBufferBytes = maxWriteBytes < secureFsWriteChunkSize
+        ? maxWriteBytes
+        : secureFsWriteChunkSize;
+    if (maxAggregateWriteBytes < writeBufferBytes ||
+        maxWriteBytes > maxAggregateWriteBytes - writeBufferBytes) {
+      throw ArgumentError.value(
+        maxAggregateWriteBytes,
+        'maxAggregateWriteBytes',
+      );
+    }
   }
 
   static int _secureReadBufferBytes(int maxReadBytes) =>
@@ -243,24 +316,40 @@ class DefaultFsProvider implements SessionScopedFsProvider {
       : secureFsReadChunkSize;
 
   @override
-  Future<void> writeTextFile(String path, String content) async {
-    // Writes must stay within the workspace (never allowed outside).
-    final canonical = await _jail.resolveForgiving(path);
-    if (!await _jail.isWithinWorkspace(canonical)) {
-      throw FileSystemException(
-        'Write denied: path is outside the workspace root. '
-        'Please write within the project directory or adjust the path.',
-        canonical,
+  Future<void> writeTextFile(String path, String content) {
+    final lease = _writeLedger.tryAcquire(_writeReservationBytes);
+    if (lease == null) {
+      return Future<void>.error(
+        const FsWriteRejectedException(FsWriteRejectionReason.capacity),
       );
     }
-    final filePath = canonical;
-    final dir = Directory(p.dirname(filePath));
-    if (!dir.existsSync()) {
-      dir.createSync(recursive: true);
+    try {
+      return _writeTextFile(path, content).whenComplete(lease.release);
+    } on Object catch (error, stackTrace) {
+      lease.release();
+      return Future<void>.error(error, stackTrace);
     }
-    final file = File(filePath);
-    file.writeAsStringSync(content);
   }
+
+  Future<void> _writeTextFile(String path, String content) async {
+    final resolved = await _jail.resolveForSecureWrite(path);
+    try {
+      await writeSecureTextFile(
+        canonicalRoot: resolved.canonicalRoot,
+        relativePath: resolved.relativePath,
+        content: content,
+        maxWriteBytes: maxWriteBytes,
+      );
+    } on SecureFsWriteLimitExceeded {
+      throw const FsWriteRejectedException(FsWriteRejectionReason.limit);
+    }
+  }
+
+  int get _writeReservationBytes =>
+      maxWriteBytes +
+      (maxWriteBytes < secureFsWriteChunkSize
+          ? maxWriteBytes
+          : secureFsWriteChunkSize);
 }
 
 final class _FsReadLedger {
@@ -294,6 +383,47 @@ final class _FsReadLease {
   _FsReadLease(this._ledger, this._reservationBytes);
 
   final _FsReadLedger _ledger;
+  final int _reservationBytes;
+  var _released = false;
+
+  void release() {
+    if (_released) return;
+    _released = true;
+    _ledger._release(_reservationBytes);
+  }
+}
+
+final class _FsWriteLedger {
+  _FsWriteLedger({
+    required this.maxConcurrentWrites,
+    required this.maxAggregateWriteBytes,
+  });
+
+  final int maxConcurrentWrites;
+  final int maxAggregateWriteBytes;
+  var _activeWrites = 0;
+  var _reservedBytes = 0;
+
+  _FsWriteLease? tryAcquire(int reservationBytes) {
+    if (_activeWrites >= maxConcurrentWrites ||
+        reservationBytes > maxAggregateWriteBytes - _reservedBytes) {
+      return null;
+    }
+    _activeWrites += 1;
+    _reservedBytes += reservationBytes;
+    return _FsWriteLease(this, reservationBytes);
+  }
+
+  void _release(int reservationBytes) {
+    _activeWrites -= 1;
+    _reservedBytes -= reservationBytes;
+  }
+}
+
+final class _FsWriteLease {
+  _FsWriteLease(this._ledger, this._reservationBytes);
+
+  final _FsWriteLedger _ledger;
   final int _reservationBytes;
   var _released = false;
 

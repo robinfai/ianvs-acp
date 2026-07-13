@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:logging/logging.dart';
@@ -23,6 +24,21 @@ import '../security/workspace_jail.dart';
 
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
+
+final class _PayloadFreeRpcException extends rpc.RpcException {
+  _PayloadFreeRpcException(super.code, super.message);
+
+  @override
+  Map<String, dynamic> serialize(Object? request) {
+    final rawId = request is Map ? request['id'] : null;
+    final id = rawId is String || rawId is num ? rawId : null;
+    return <String, dynamic>{
+      'jsonrpc': '2.0',
+      'error': <String, dynamic>{'code': code, 'message': message},
+      'id': id,
+    };
+  }
+}
 
 /// Smallest replay byte budget that can retain the truncation marker.
 const int minimumSessionReplayBytes = 64;
@@ -2324,16 +2340,13 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   Future<Json?> _onWriteTextFile(Json req) async {
-    if (config.fsProvider == null) {
-      throw Exception('File system operations not supported');
-    }
-    final sessionId = _requireKnownSessionId(req);
-    final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
-
-    final provider = _fileSystemProviderForSession(sessionId);
-
-    // Enforce permission policy for writes when provided.
     try {
+      if (config.fsProvider == null) {
+        throw Exception('File system operations not supported');
+      }
+      final sessionId = _requireKnownSessionId(req);
+      final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
+      final provider = _fileSystemProviderForSession(sessionId);
       final additionalDirectories = _additionalDirectoriesForSession(sessionId);
       final outcome = await config.permissionProvider.request(
         PermissionOptions(
@@ -2354,21 +2367,22 @@ class SessionManager implements AcpBoundedObservationSource {
       if (outcome.outcome != PermissionOutcome.allow) {
         throw Exception('Permission denied');
       }
-    } catch (e) {
-      _log.fine('fs/write_text_file -> denied by policy');
-      rethrow;
-    }
-
-    final path = req['path'] as String;
-    final content = req['content'] as String? ?? '';
-    _log.fine('fs/write_text_file <- path=$path bytes=${content.length}');
-    try {
+      final path = req['path'] as String;
+      final content = req['content'] as String? ?? '';
+      if (_log.isLoggable(Level.FINE)) {
+        final contentBytes = await Isolate.run<int>(
+          () => utf8.encode(content).length,
+        );
+        _log.fine('fs/write_text_file <- bytes=$contentBytes');
+      }
       await provider.writeTextFile(path, content);
-      _log.fine('fs/write_text_file -> ok path=$path');
+      _log.fine('fs/write_text_file -> ok');
       return null; // per schema null
-    } catch (e) {
-      _log.warning('fs/write_text_file -> error path=$path: $e');
+    } on _PayloadFreeRpcException {
       rethrow;
+    } on Object {
+      _log.warning('fs/write_text_file -> error');
+      throw _PayloadFreeRpcException(-32001, 'Filesystem write rejected.');
     }
   }
 
