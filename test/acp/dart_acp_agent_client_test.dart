@@ -8982,6 +8982,12 @@ Future<void> main() async {
           maxTerminalHandles: 1,
           maxTerminalHandlesPerSession: 1,
         );
+        final releasedIds = <String>[];
+        final events = harness.manager.terminalEvents.listen((event) {
+          if (event is acp.TerminalReleased) {
+            releasedIds.add(event.terminalId);
+          }
+        });
 
         try {
           await harness.resume('session-a');
@@ -9006,6 +9012,19 @@ Future<void> main() async {
           expect(serialized, isNot(contains(providerSecret)));
           expect(serialized, isNot(contains(requestCanary)));
           expect(serialized, isNot(contains(terminalIdCanary)));
+          await Future<void>.delayed(Duration.zero);
+          expect(releasedIds, [terminalIdCanary]);
+
+          expect(
+            await harness.releaseTerminal(
+              id: 'terminal-handle-rpc-release-failure-repeat',
+              terminalId: terminalId,
+              canary: requestCanary,
+            ),
+            contains('result'),
+          );
+          await Future<void>.delayed(Duration.zero);
+          expect(releasedIds, [terminalIdCanary]);
           expect(
             await harness.createTerminal(
               id: 'terminal-handle-rpc-release-after-failure',
@@ -9015,6 +9034,7 @@ Future<void> main() async {
           );
           expect(provider.releaseAttempts, [terminalIdCanary]);
         } finally {
+          await events.cancel();
           await harness.dispose();
         }
       },

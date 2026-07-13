@@ -2859,10 +2859,17 @@ class SessionManager implements AcpBoundedObservationSource {
         await provider.release(record.handle);
       }
     } finally {
-      record.lease.release();
-    }
-    if (publishEvent) {
-      _terminalEvents.add(TerminalReleased(terminalId: terminalId));
+      try {
+        record.lease.release();
+      } finally {
+        if (publishEvent) {
+          try {
+            _terminalEvents.add(TerminalReleased(terminalId: terminalId));
+          } on Object {
+            // Event delivery must not replace the provider release result.
+          }
+        }
+      }
     }
   }
 
