@@ -1936,8 +1936,8 @@ void main() {
           .where((event) => event.kind == TaskEventKind.permission)
           .toList();
       expect(permissionEvents.map((event) => event.text), [
-        'Permission requested: Run flutter test',
-        'Permission allowed: Run flutter test',
+        'Permission requested: Command: flutter test',
+        'Permission allowed: Command: flutter test',
       ]);
       expect(
         permissionEvents.first.metadata['permission_request_id'],
@@ -2116,8 +2116,8 @@ void main() {
           .where((event) => event.kind == TaskEventKind.permission)
           .toList();
       expect(permissionEvents.map((event) => event.text), [
-        'Export-sensitive permission requested: Run: git push origin main',
-        'Permission denied: Run: git push origin main',
+        'Export-sensitive permission requested: Command: git push origin main',
+        'Permission denied: Command: git push origin main',
       ]);
       expect(permissionEvents.first.metadata['egress_sensitive'], isTrue);
       expect(permissionEvents.first.metadata['egress_reason'], 'git_push');
