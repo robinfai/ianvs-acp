@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:stream_channel/stream_channel.dart';
 
 import '../transport/byte_budget.dart';
+import '../transport/raw_line_decoder.dart';
 
 /// Wraps a process's stdio as a bounded line-delimited JSON StreamChannel.
 class LineJsonChannel {
@@ -31,13 +32,13 @@ class LineJsonChannel {
          maxOutboundQueueBytes,
          'maxOutboundQueueBytes',
        ) {
-    _stdoutDecoder = _RawLineDecoder(
+    _stdoutDecoder = RawTransportLineDecoder(
       limit: maxLineBytes,
       resource: 'stdio stdout line',
       onLine: _handleStdoutLine,
       onOverflow: _handleStdoutOverflow,
     );
-    _stderrDecoder = _RawLineDecoder(
+    _stderrDecoder = RawTransportLineDecoder(
       limit: this.maxStderrLineBytes,
       resource: 'stdio stderr line',
       discardOversizedLines: true,
@@ -81,8 +82,8 @@ class LineJsonChannel {
   final void Function(String)? _onStderr;
   final ListQueue<_OutboundFrame> _outboundQueue = ListQueue<_OutboundFrame>();
   final Completer<void> _outboundDrainCancellation = Completer<void>();
-  late final _RawLineDecoder _stdoutDecoder;
-  late final _RawLineDecoder _stderrDecoder;
+  late final RawTransportLineDecoder _stdoutDecoder;
+  late final RawTransportLineDecoder _stderrDecoder;
   late final StreamSubscription<List<int>> _stdoutSub;
   late final StreamSubscription<List<int>> _stderrSub;
   late final StreamSubscription<String> _outboundSub;
@@ -367,81 +368,4 @@ int _positiveQueueLimit(int value, String name) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
   }
   return value;
-}
-
-class _RawLineDecoder {
-  _RawLineDecoder({
-    required this.limit,
-    required this.resource,
-    required this.onLine,
-    required this.onOverflow,
-    this.discardOversizedLines = false,
-  });
-
-  final int limit;
-  final String resource;
-  final void Function(List<int> bytes) onLine;
-  final void Function(TransportByteLimitExceeded error) onOverflow;
-  final bool discardOversizedLines;
-  final List<int> _bytes = <int>[];
-  var _pendingCarriageReturn = false;
-  var _discarding = false;
-  var _closed = false;
-
-  void add(List<int> chunk) {
-    if (_closed) return;
-    for (final byte in chunk) {
-      _addByte(byte);
-      if (_closed) return;
-    }
-  }
-
-  void _addByte(int byte) {
-    if (_pendingCarriageReturn) {
-      _pendingCarriageReturn = false;
-      _finishLine();
-      if (byte == 0x0a) return;
-    }
-    if (byte == 0x0d) {
-      _pendingCarriageReturn = true;
-      return;
-    }
-    if (byte == 0x0a) {
-      _finishLine();
-      return;
-    }
-    if (_discarding) return;
-    _bytes.add(byte);
-    if (_bytes.length <= limit) return;
-    final error = TransportByteLimitExceeded(
-      resource: resource,
-      limit: limit,
-      observedAtLeast: _bytes.length,
-    );
-    _bytes.clear();
-    onOverflow(error);
-    if (discardOversizedLines) {
-      _discarding = true;
-    } else {
-      _closed = true;
-    }
-  }
-
-  void _finishLine() {
-    if (_discarding) {
-      _discarding = false;
-      _bytes.clear();
-      return;
-    }
-    final line = List<int>.of(_bytes, growable: false);
-    _bytes.clear();
-    onLine(line);
-  }
-
-  void close() {
-    if (_closed) return;
-    _closed = true;
-    if (_discarding) return;
-    if (_pendingCarriageReturn || _bytes.isNotEmpty) _finishLine();
-  }
 }

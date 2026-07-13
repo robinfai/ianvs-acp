@@ -1664,6 +1664,7 @@ void main() {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
     final initializeIds = <Object?>[];
+    final initializeCookies = <String?>[];
     var disposed = false;
 
     Future<void> openSse(HttpRequest request) async {
@@ -1690,6 +1691,10 @@ void main() {
       final body = await utf8.decoder.bind(request).join();
       final message = jsonDecode(body) as Map<String, dynamic>;
       initializeIds.add(message['id']);
+      initializeCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+      if (message['id'] == 1) {
+        request.response.cookies.add(Cookie('restart', 'must-clear'));
+      }
       request.response
         ..headers.contentType = ContentType.json
         ..headers.set('Acp-Connection-Id', 'connection-${message['id']}')
@@ -1747,6 +1752,7 @@ void main() {
       await initialize(2);
 
       expect(initializeIds, [1, 2]);
+      expect(initializeCookies, <String?>[null, null]);
 
       await transport.stop().timeout(const Duration(seconds: 5));
       disposed = true;
@@ -2406,6 +2412,890 @@ void main() {
       await server.close(force: true);
     }
   });
+
+  test('cookie budget constructor arguments are validated at runtime', () {
+    final endpoint = Uri.parse('http://127.0.0.1:1/acp');
+
+    expect(
+      () => StreamableHttpAcpTransport(endpoint: endpoint, maxCookieCount: 0),
+      throwsA(
+        isA<ArgumentError>().having(
+          (error) => error.name,
+          'name',
+          'maxCookieCount',
+        ),
+      ),
+    );
+    expect(
+      () => StreamableHttpAcpTransport(endpoint: endpoint, maxCookieBytes: -1),
+      throwsA(
+        isA<ArgumentError>().having(
+          (error) => error.name,
+          'name',
+          'maxCookieBytes',
+        ),
+      ),
+    );
+  });
+
+  test(
+    'configured Cookie bytes are rejected before creating a request',
+    () async {
+      const secret = 'configured-cookie-secret';
+      var requestCount = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        requestCount += 1;
+        await request.drain<void>();
+        await request.response.close();
+      });
+      final configuredHeader = 'configured=$secret';
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        headers: <String, String>{'cOoKiE': configuredHeader},
+        maxCookieBytes: utf8.encode(configuredHeader).length - 1,
+      );
+      await transport.start();
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(requestCount, 0);
+        expect(
+          errors.single,
+          isA<acp.TransportByteLimitExceeded>()
+              .having(
+                (error) => error.resource,
+                'resource',
+                'ACP HTTP cookie header bytes',
+              )
+              .having(
+                (error) => error.observedAtLeast,
+                'observedAtLeast',
+                utf8.encode(configuredHeader).length,
+              ),
+        );
+        expect(errors.single.toString(), isNot(contains(secret)));
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'multiple configured Cookie values count toward the cookie limit',
+    () async {
+      var requestCount = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        requestCount += 1;
+        await request.drain<void>();
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        headers: const <String, String>{
+          'Cookie': 'configured=one',
+          'cOoKiE': 'second=two',
+        },
+        maxCookieCount: 1,
+      );
+      await transport.start();
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => errors.isNotEmpty);
+
+        expect(requestCount, 0);
+        expect(
+          errors.single,
+          isA<acp.TransportByteLimitExceeded>()
+              .having((error) => error.resource, 'resource', 'ACP HTTP cookies')
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        );
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'configured and jar Cookie values share exact combined budgets',
+    () async {
+      final openResponses = <HttpResponse>[];
+      final requestCookies = <String?>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        requestCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response
+            ..bufferOutput = false
+            ..headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            )
+            ..write(': connected\n\n');
+          openResponses.add(request.response);
+          await request.response.flush();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        request.response.cookies.add(Cookie('remote', 'three'));
+        await _writeInitializeResponse(request, message['id']);
+      });
+      const configured = 'configured=one; second=two';
+      const combined = '$configured; remote=three';
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        headers: const <String, String>{
+          'Cookie': 'configured=one',
+          'cOoKiE': 'second=two',
+        },
+        maxCookieCount: 3,
+        maxCookieBytes: utf8.encode(combined).length,
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        await _waitFor(() => requestCookies.length >= 2);
+
+        expect(requestCookies[0], configured);
+        expect(requestCookies[1], combined);
+        expect(errors, isEmpty);
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test('expired cookies are pruned with Max-Age taking precedence', () async {
+    var now = DateTime.utc(2030, 1, 1, 12);
+    final openResponses = <HttpResponse>[];
+    final getCookie = Completer<String?>();
+    final postCookies = <String?>[];
+    var followUpPostCount = 0;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        if (!getCookie.isCompleted) {
+          getCookie.complete(request.headers.value(HttpHeaders.cookieHeader));
+        }
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          )
+          ..write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      if (message['method'] == 'initialize') {
+        request.response
+          ..cookies.add(
+            Cookie('max', 'age')
+              ..maxAge = 10
+              ..expires = now.subtract(const Duration(days: 1)),
+          )
+          ..cookies.add(
+            Cookie('expires', 'future')
+              ..expires = now.add(const Duration(seconds: 5)),
+          );
+        await _writeInitializeResponse(request, message['id']);
+        return;
+      }
+      postCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+      followUpPostCount += 1;
+      if (followUpPostCount == 1) {
+        request.response
+          ..cookies.add(Cookie('fresh-a', 'one'))
+          ..cookies.add(Cookie('fresh-b', 'two'));
+      }
+      request.response.statusCode = HttpStatus.accepted;
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      maxCookieCount: 2,
+      clock: () => now,
+    );
+    await transport.start();
+    final inbound = <String>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      inbound.add,
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.isNotEmpty);
+      expect(
+        await getCookie.future.timeout(const Duration(seconds: 1)),
+        'max=age; expires=future',
+      );
+
+      now = now.add(const Duration(seconds: 11));
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","method":"session/cancel",'
+        '"params":{"sessionId":"s"}}',
+      );
+      await _waitFor(() => postCookies.isNotEmpty);
+      expect(postCookies.first, isNull);
+
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","method":"session/cancel",'
+        '"params":{"sessionId":"s"}}',
+      );
+      await _waitFor(() => postCookies.length == 2);
+      expect(postCookies.last, 'fresh-a=one; fresh-b=two');
+      expect(errors, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('extreme Max-Age values clamp without wrapping into the past', () async {
+    var now = DateTime.utc(9999, 12, 31, 23, 59, 56);
+    final openResponses = <HttpResponse>[];
+    final getCookie = Completer<String?>();
+    final postCookies = <String?>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        if (!getCookie.isCompleted) {
+          getCookie.complete(request.headers.value(HttpHeaders.cookieHeader));
+        }
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          )
+          ..write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      if (message['method'] == 'initialize') {
+        request.response
+          ..cookies.add(Cookie('exact', 'two')..maxAge = 2)
+          ..cookies.add(Cookie('edge', 'three')..maxAge = 3)
+          ..cookies.add(Cookie('clamped', 'four')..maxAge = 4)
+          ..cookies.add(Cookie('huge', 'kept')..maxAge = 9223372036854775807);
+        await _writeInitializeResponse(request, message['id']);
+        return;
+      }
+      postCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+      request.response.statusCode = HttpStatus.accepted;
+      await request.response.close();
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      maxCookieCount: 4,
+      clock: () => now,
+    );
+    await transport.start();
+    final inbound = <String>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      inbound.add,
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.isNotEmpty);
+      expect(
+        await getCookie.future.timeout(const Duration(seconds: 1)),
+        'exact=two; edge=three; clamped=four; huge=kept',
+      );
+
+      now = now.add(const Duration(seconds: 2));
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","method":"session/cancel",'
+        '"params":{"sessionId":"s"}}',
+      );
+      await _waitFor(() => postCookies.isNotEmpty);
+      expect(postCookies.first, 'edge=three; clamped=four; huge=kept');
+
+      now = now.add(const Duration(seconds: 1));
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","method":"session/cancel",'
+        '"params":{"sessionId":"s"}}',
+      );
+      await _waitFor(() => postCookies.length == 2);
+      expect(postCookies.last, 'clamped=four; huge=kept');
+      expect(errors, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test(
+    'malformed response cookies are payload-free across POST SSE and DELETE',
+    () async {
+      const secret = 'malformed-cookie-secret';
+      final openResponses = <HttpResponse>[];
+      var postCount = 0;
+      var getCount = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          request.response
+            ..statusCode = HttpStatus.accepted
+            ..headers.add(HttpHeaders.setCookieHeader, 'delete-$secret');
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          getCount += 1;
+          request.response
+            ..bufferOutput = false
+            ..headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            );
+          if (getCount == 1) {
+            request.response.headers.add(
+              HttpHeaders.setCookieHeader,
+              'sse-$secret',
+            );
+            await request.response.close();
+            return;
+          }
+          request.response.write(': connected\n\n');
+          openResponses.add(request.response);
+          await request.response.flush();
+          return;
+        }
+        postCount += 1;
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        if (postCount == 1) {
+          request.response.headers.add(
+            HttpHeaders.setCookieHeader,
+            'post-$secret',
+          );
+        }
+        await _writeInitializeResponse(request, message['id']);
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => errors.isNotEmpty);
+
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        await _waitFor(() => errors.length == 2);
+
+        await transport.stop();
+        await _waitFor(() => errors.length == 3);
+
+        expect(
+          errors,
+          everyElement(
+            isA<acp.TransportProtocolDecodeError>().having(
+              (error) => error.resource,
+              'resource',
+              'ACP HTTP response cookies',
+            ),
+          ),
+        );
+        expect(
+          errors.map((error) => error.toString()),
+          everyElement(isNot(contains(secret))),
+        );
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'DELETE carries cookies and reports an atomic response overflow',
+    () async {
+      const secret = 'delete-cookie-secret';
+      final openResponses = <HttpResponse>[];
+      final postCookies = <String?>[];
+      final deleteCookies = <String?>[];
+      var postCount = 0;
+      var deleteCount = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          deleteCount += 1;
+          deleteCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+          request.response.statusCode = HttpStatus.accepted;
+          if (deleteCount == 1) {
+            request.response.cookies.add(Cookie('overflow', secret));
+          }
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response
+            ..bufferOutput = false
+            ..headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            )
+            ..write(': connected\n\n');
+          openResponses.add(request.response);
+          await request.response.flush();
+          return;
+        }
+        postCount += 1;
+        postCookies.add(request.headers.value(HttpHeaders.cookieHeader));
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        if (postCount == 1) {
+          request.response.cookies.add(Cookie('sticky', 'yes'));
+        }
+        await _writeInitializeResponse(request, message['id']);
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        maxCookieCount: 1,
+      );
+
+      Future<List<Object>> initialize(int id) async {
+        await transport.start();
+        final inbound = <String>[];
+        final errors = <Object>[];
+        final subscription = transport.channel.stream.listen(
+          inbound.add,
+          onError: errors.add,
+        );
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":$id,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        if (id == 1) {
+          await transport.stop();
+          await subscription.cancel();
+        } else {
+          await subscription.cancel();
+        }
+        return errors;
+      }
+
+      try {
+        final teardownErrors = await initialize(1);
+
+        expect(deleteCookies, <String?>['sticky=yes']);
+        expect(
+          teardownErrors.single,
+          isA<acp.TransportByteLimitExceeded>()
+              .having((error) => error.resource, 'resource', 'ACP HTTP cookies')
+              .having((error) => error.limit, 'limit', 1)
+              .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+        );
+        expect(teardownErrors.single.toString(), isNot(contains(secret)));
+
+        await initialize(2);
+        expect(postCookies, <String?>[null, null]);
+      } finally {
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'cookie jar accepts exact count and bytes then replaces and deletes',
+    () async {
+      final openResponses = <HttpResponse>[];
+      final initialGetCookie = Completer<String?>();
+      final finalPostCookie = Completer<String?>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          if (!initialGetCookie.isCompleted) {
+            initialGetCookie.complete(
+              request.headers.value(HttpHeaders.cookieHeader),
+            );
+          }
+          request.response
+            ..bufferOutput = false
+            ..headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            )
+            ..cookies.add(Cookie('r', 'x'))
+            ..cookies.add(Cookie('d', '')..maxAge = 0)
+            ..cookies.add(
+              Cookie('e', '')
+                ..expires = DateTime.now().subtract(const Duration(days: 1)),
+            )
+            ..cookies.add(Cookie('sse', 'two'))
+            ..write(': connected\n\n');
+          openResponses.add(request.response);
+          await request.response.flush();
+          return;
+        }
+
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        if (message['method'] == 'initialize') {
+          request.response
+            ..cookies.add(Cookie('r', 'long'))
+            ..cookies.add(Cookie('d', 'gone'))
+            ..cookies.add(Cookie('e', 'gone'));
+          await _writeInitializeResponse(request, message['id']);
+          return;
+        }
+        if (!finalPostCookie.isCompleted) {
+          finalPostCookie.complete(
+            request.headers.value(HttpHeaders.cookieHeader),
+          );
+        }
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+      });
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        maxCookieCount: 3,
+        maxCookieBytes: utf8.encode('r=long; d=gone; e=gone').length,
+      );
+      await transport.start();
+      final inbound = <String>[];
+      final errors = <Object>[];
+      final subscription = transport.channel.stream.listen(
+        inbound.add,
+        onError: errors.add,
+      );
+
+      try {
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+        );
+        await _waitFor(() => inbound.isNotEmpty);
+        expect(
+          await initialGetCookie.future.timeout(const Duration(seconds: 1)),
+          'r=long; d=gone; e=gone',
+        );
+
+        transport.channel.sink.add(
+          '{"jsonrpc":"2.0","method":"session/cancel",'
+          '"params":{"sessionId":"s"}}',
+        );
+
+        expect(
+          await finalPostCookie.future.timeout(const Duration(seconds: 1)),
+          'r=x; sse=two',
+        );
+        expect(errors, isEmpty);
+      } finally {
+        await subscription.cancel();
+        await transport.stop();
+        for (final response in openResponses) {
+          await response.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test('cookie byte overflow is atomic across POST and SSE', () async {
+    const secret = 'cookie-secret';
+    final openResponses = <HttpResponse>[];
+    final getCount = <int>[0];
+    final retryPostCookie = Completer<String?>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        getCount[0] += 1;
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+        if (getCount[0] == 1) {
+          request.response.cookies.add(Cookie('leaked', secret));
+          await request.response.close();
+          return;
+        }
+        request.response.write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      if (message['method'] == 'initialize') {
+        request.response.cookies.add(Cookie('safe', 'ok'));
+        await _writeInitializeResponse(request, message['id']);
+        return;
+      }
+      if (!retryPostCookie.isCompleted) {
+        retryPostCookie.complete(
+          request.headers.value(HttpHeaders.cookieHeader),
+        );
+      }
+      request.response.statusCode = HttpStatus.accepted;
+      await request.response.close();
+    });
+    final nextHeader = 'safe=ok; leaked=$secret';
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      maxCookieBytes: utf8.encode(nextHeader).length - 1,
+    );
+    await transport.start();
+    final inbound = <String>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      inbound.add,
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.isNotEmpty);
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'ACP HTTP cookie header bytes',
+            )
+            .having(
+              (error) => error.observedAtLeast,
+              'observedAtLeast',
+              utf8.encode(nextHeader).length,
+            ),
+      );
+      expect(errors.single.toString(), isNot(contains(secret)));
+
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","method":"session/cancel",'
+        '"params":{"sessionId":"s"}}',
+      );
+      expect(
+        await retryPostCookie.future.timeout(const Duration(seconds: 1)),
+        'safe=ok',
+      );
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('cookie count overflow rejects a POST response atomically', () async {
+    const secret = 'count-secret';
+    var postCount = 0;
+    String? retryCookie;
+    final openResponses = <HttpResponse>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          )
+          ..write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+      postCount += 1;
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      if (postCount == 1) {
+        request.response
+          ..cookies.add(Cookie('safe', 'ok'))
+          ..cookies.add(Cookie('leaked', secret));
+      } else {
+        retryCookie = request.headers.value(HttpHeaders.cookieHeader);
+      }
+      await _writeInitializeResponse(request, message['id']);
+    });
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+      maxCookieCount: 1,
+    );
+    await transport.start();
+    final inbound = <String>[];
+    final errors = <Object>[];
+    final subscription = transport.channel.stream.listen(
+      inbound.add,
+      onError: errors.add,
+    );
+
+    try {
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => errors.isNotEmpty);
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having((error) => error.resource, 'resource', 'ACP HTTP cookies')
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+      );
+      expect(errors.single.toString(), isNot(contains(secret)));
+
+      transport.channel.sink.add(
+        '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}',
+      );
+      await _waitFor(() => inbound.isNotEmpty);
+      expect(retryCookie, isNull);
+    } finally {
+      await subscription.cancel();
+      await transport.stop();
+      for (final response in openResponses) {
+        await response.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+}
+
+Future<void> _writeInitializeResponse(HttpRequest request, Object? id) async {
+  request.response
+    ..headers.contentType = ContentType.json
+    ..headers.set('Acp-Connection-Id', 'connection-1')
+    ..write(
+      jsonEncode(<String, Object?>{
+        'jsonrpc': '2.0',
+        'id': id,
+        'result': <String, Object?>{'connectionId': 'connection-1'},
+      }),
+    );
+  await request.response.close();
 }
 
 Future<void> _waitFor(bool Function() predicate) async {

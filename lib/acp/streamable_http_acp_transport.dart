@@ -17,7 +17,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.firstByteTimeout = const Duration(seconds: 15),
     this.sseIdleTimeout = const Duration(minutes: 5),
     this.byteBudget = const acp.TransportByteBudget(),
-  }) : assert(requestTimeout > Duration.zero),
+    int maxCookieCount = 128,
+    int maxCookieBytes = 64 * 1024,
+    DateTime Function()? clock,
+  }) : maxCookieCount = _positiveCookieLimit(maxCookieCount, 'maxCookieCount'),
+       maxCookieBytes = _positiveCookieLimit(maxCookieBytes, 'maxCookieBytes'),
+       _clock = clock ?? DateTime.now,
+       assert(requestTimeout > Duration.zero),
        assert(firstByteTimeout > Duration.zero),
        assert(sseIdleTimeout > Duration.zero) {
     validateAcpEndpoint(
@@ -34,11 +40,14 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final Duration firstByteTimeout;
   final Duration sseIdleTimeout;
   final acp.TransportByteBudget byteBudget;
+  final int maxCookieCount;
+  final int maxCookieBytes;
+  final DateTime Function() _clock;
 
   final Map<String, String> _pendingMethodsById = <String, String>{};
   final Map<String, String> _serverRequestSessionsById = <String, String>{};
   final Map<String, Future<void>> _streamStartsByKey = <String, Future<void>>{};
-  final Map<String, Cookie> _cookiesByName = <String, Cookie>{};
+  final Map<String, _StoredCookie> _cookiesByName = <String, _StoredCookie>{};
   final List<StreamSubscription<String>> _streamSubscriptions =
       <StreamSubscription<String>>[];
   final Set<acp.TransportBodyReadOperation<Object?>> _pendingBodyReads =
@@ -105,16 +114,18 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         await _ensureInboundStream(sessionId);
       }
 
+      final cookieHeader = _prepareCookieHeader();
       final request = await client.postUrl(endpoint).timeout(requestTimeout);
       request.followRedirects = false;
       _applyRequestHeaders(
         request,
+        cookieHeader: cookieHeader,
         contentType: ContentType.json,
         sessionId: sessionId,
       );
       request.write(line);
       final response = await request.close().timeout(firstByteTimeout);
-      _storeCookies(response.cookies);
+      await _storeResponseCookies(response);
 
       final body = await _readResponseBody(
         response,
@@ -213,15 +224,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final key = sessionId ?? '';
     return _streamStartsByKey.putIfAbsent(key, () async {
       try {
+        final cookieHeader = _prepareCookieHeader();
         final request = await client.getUrl(endpoint).timeout(requestTimeout);
         request.followRedirects = false;
-        _applyRequestHeaders(request, accept: 'text/event-stream');
+        _applyRequestHeaders(
+          request,
+          cookieHeader: cookieHeader,
+          accept: 'text/event-stream',
+        );
         request.headers.set('Acp-Connection-Id', connectionId);
         if (sessionId != null) {
           request.headers.set('Acp-Session-Id', sessionId);
         }
         final response = await request.close().timeout(firstByteTimeout);
-        _storeCookies(response.cookies);
+        await _storeResponseCookies(response);
         if (response.statusCode < 200 || response.statusCode >= 300) {
           await _drainResponse(
             response,
@@ -453,11 +469,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
 
   void _applyRequestHeaders(
     HttpClientRequest request, {
+    required String? cookieHeader,
     ContentType? contentType,
     String? accept,
     String? sessionId,
   }) {
     for (final entry in headers.entries) {
+      if (_isCookieHeader(entry.key)) continue;
       request.headers.set(entry.key, entry.value);
     }
     if (contentType != null) {
@@ -474,12 +492,102 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     if (sessionId != null && sessionId.isNotEmpty) {
       request.headers.set('Acp-Session-Id', sessionId);
     }
-    request.cookies.addAll(_cookiesByName.values);
+    if (cookieHeader != null) {
+      request.headers.set(HttpHeaders.cookieHeader, cookieHeader);
+    }
   }
 
   void _storeCookies(List<Cookie> cookies) {
+    if (cookies.isEmpty) return;
+    final staged = Map<String, _StoredCookie>.of(_cookiesByName);
+    final now = _clock();
+    _pruneExpiredCookies(staged, now);
     for (final cookie in cookies) {
-      _cookiesByName[cookie.name] = cookie;
+      final maxAge = cookie.maxAge;
+      final DateTime? expiresAt;
+      if (maxAge != null) {
+        if (maxAge <= 0) {
+          staged.remove(cookie.name);
+          continue;
+        }
+        expiresAt = _maxAgeExpiration(now, maxAge);
+      } else {
+        expiresAt = cookie.expires;
+      }
+      if (expiresAt != null && !expiresAt.isAfter(now)) {
+        staged.remove(cookie.name);
+      } else {
+        staged[cookie.name] = _StoredCookie(cookie, expiresAt: expiresAt);
+      }
+    }
+    _prepareCookieHeader(cookies: staged);
+    _cookiesByName
+      ..clear()
+      ..addAll(staged);
+  }
+
+  String? _prepareCookieHeader({Map<String, _StoredCookie>? cookies}) {
+    final configuredValues = <String>[
+      for (final entry in headers.entries)
+        if (_isCookieHeader(entry.key) && entry.value.isNotEmpty) entry.value,
+    ];
+    final jar = cookies ?? _cookiesByName;
+    _pruneExpiredCookies(jar, _clock());
+    final configuredCount = configuredValues.fold<int>(
+      0,
+      (count, value) =>
+          count +
+          value.split(';').where((part) => part.trim().isNotEmpty).length,
+    );
+    final observedCount = configuredCount + jar.length;
+    if (observedCount > maxCookieCount) {
+      throw acp.TransportByteLimitExceeded(
+        resource: 'ACP HTTP cookies',
+        limit: maxCookieCount,
+        observedAtLeast: observedCount,
+      );
+    }
+    final segments = <String>[
+      ...configuredValues,
+      ...jar.values.map((stored) => _requestCookiePair(stored.cookie)),
+    ];
+    if (segments.isEmpty) return null;
+    final header = segments.join('; ');
+    final headerBytes = utf8.encode(header).length;
+    if (headerBytes > maxCookieBytes) {
+      throw acp.TransportByteLimitExceeded(
+        resource: 'ACP HTTP cookie header bytes',
+        limit: maxCookieBytes,
+        observedAtLeast: headerBytes,
+      );
+    }
+    return header;
+  }
+
+  Future<void> _storeResponseCookies(HttpClientResponse response) async {
+    final List<Cookie> cookies;
+    try {
+      cookies = response.cookies;
+    } on Object {
+      await _cancelResponse(response);
+      throw acp.TransportProtocolDecodeError(
+        resource: 'ACP HTTP response cookies',
+      );
+    }
+    try {
+      _storeCookies(cookies);
+    } on Object {
+      await _cancelResponse(response);
+      rethrow;
+    }
+  }
+
+  Future<void> _cancelResponse(HttpClientResponse response) async {
+    try {
+      final subscription = response.listen((_) {});
+      await subscription.cancel();
+    } on Object {
+      // Preserve the payload-free protocol or budget failure.
     }
   }
 
@@ -555,21 +663,64 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final client = _client;
     if (client == null) return;
     try {
+      final cookieHeader = _prepareCookieHeader();
       final request = await client
           .deleteUrl(endpoint)
           .timeout(_teardownTimeout);
       request.followRedirects = false;
-      _applyRequestHeaders(request);
+      _applyRequestHeaders(request, cookieHeader: cookieHeader);
       request.headers.set('Acp-Connection-Id', connectionId);
       final response = await request.close().timeout(_teardownTimeout);
-      _storeCookies(response.cookies);
+      await _storeResponseCookies(response);
       await _drainResponse(
         response,
         resource: 'ACP HTTP DELETE response body',
         timeout: _teardownTimeout,
       );
+    } on acp.TransportByteLimitExceeded catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
+    } on acp.TransportProtocolDecodeError catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
     } on Object {
       // Remote teardown is best effort; local disposal must always finish.
     }
   }
+}
+
+String _requestCookiePair(Cookie cookie) => '${cookie.name}=${cookie.value}';
+
+class _StoredCookie {
+  const _StoredCookie(this.cookie, {required this.expiresAt});
+
+  final Cookie cookie;
+  final DateTime? expiresAt;
+}
+
+void _pruneExpiredCookies(Map<String, _StoredCookie> cookies, DateTime now) {
+  cookies.removeWhere((_, stored) {
+    final expiresAt = stored.expiresAt;
+    return expiresAt != null && !expiresAt.isAfter(now);
+  });
+}
+
+DateTime _maxAgeExpiration(DateTime receivedAt, int seconds) {
+  final receivedUtc = receivedAt.toUtc();
+  final safeMaximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999);
+  if (!receivedUtc.isBefore(safeMaximum)) return safeMaximum;
+  final remainingMicroseconds =
+      safeMaximum.microsecondsSinceEpoch - receivedUtc.microsecondsSinceEpoch;
+  final remainingWholeSeconds =
+      remainingMicroseconds ~/ Duration.microsecondsPerSecond;
+  if (seconds > remainingWholeSeconds) return safeMaximum;
+  return receivedUtc.add(Duration(seconds: seconds));
+}
+
+bool _isCookieHeader(String name) =>
+    name.toLowerCase() == HttpHeaders.cookieHeader;
+
+int _positiveCookieLimit(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
 }
