@@ -61,6 +61,730 @@ void main() {
     );
   });
 
+  test('inbound queue budgets must be positive at runtime', () {
+    final process = _BlockingStdinProcess();
+
+    expect(
+      () => LineJsonChannel(process, maxInboundQueueItems: 0),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxInboundQueueItems')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => LineJsonChannel(process, maxInboundQueueBytes: -1),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxInboundQueueBytes')
+            .having((error) => error.invalidValue, 'invalidValue', -1),
+      ),
+    );
+  });
+
+  test(
+    'inbound item budget accepts the exact boundary before listen',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process, maxInboundQueueItems: 2);
+
+      process
+        ..addStdout(utf8.encode('one\ntwo\n'))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await channel.channel.stream.toList(), <String>['one', 'two']);
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test('inbound item overflow clears accepted lines before listen', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process, maxInboundQueueItems: 2);
+    final lines = <String>[];
+    final errors = <Object>[];
+
+    process
+      ..addStdout(utf8.encode('one\ntwo\nthree\n'))
+      ..closeStdout();
+    await Future<void>.delayed(Duration.zero);
+    await _listenUntilDone(
+      channel.channel.stream,
+      onLine: lines.add,
+      errors: errors,
+    );
+
+    expect(lines, isEmpty);
+    expect(errors, hasLength(1));
+    expect(
+      errors.single,
+      isA<acp.TransportByteLimitExceeded>()
+          .having(
+            (error) => error.resource,
+            'resource',
+            'stdio stdout queue items',
+          )
+          .having((error) => error.limit, 'limit', 2)
+          .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
+    );
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test(
+    'inbound byte budget uses exact raw UTF-8 bytes before listen',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process, maxInboundQueueBytes: 4);
+
+      process
+        ..addStdout(utf8.encode('é\né\n'))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await channel.channel.stream.toList(), <String>['é', 'é']);
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test('inbound byte overflow clears accepted lines before listen', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process, maxInboundQueueBytes: 4);
+    final lines = <String>[];
+    final errors = <Object>[];
+
+    process
+      ..addStdout(utf8.encode('é\né\nx\n'))
+      ..closeStdout();
+    await Future<void>.delayed(Duration.zero);
+    await _listenUntilDone(
+      channel.channel.stream,
+      onLine: lines.add,
+      errors: errors,
+    );
+
+    expect(lines, isEmpty);
+    expect(errors, hasLength(1));
+    expect(
+      errors.single,
+      isA<acp.TransportByteLimitExceeded>()
+          .having(
+            (error) => error.resource,
+            'resource',
+            'stdio stdout queue bytes',
+          )
+          .having((error) => error.limit, 'limit', 4)
+          .having((error) => error.observedAtLeast, 'observedAtLeast', 5),
+    );
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test(
+    'blank inbound burst counts each line against the item budget',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process, maxInboundQueueItems: 2);
+      final errors = <Object>[];
+
+      process
+        ..addStdout(utf8.encode('\n \n\n'))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+      await _listenUntilDone(channel.channel.stream, errors: errors);
+
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>().having(
+          (error) => error.resource,
+          'resource',
+          'stdio stdout queue items',
+        ),
+      );
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test('inbound drain delivers at most one queue item per microtask', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    final lines = <String>[];
+    final subscription = channel.channel.stream.listen(lines.add);
+
+    process.addStdout(utf8.encode('one\ntwo\nthree\n'));
+    final countAfterOneMicrotask = Completer<int>();
+    scheduleMicrotask(() => countAfterOneMicrotask.complete(lines.length));
+
+    expect(await countAfterOneMicrotask.future, 1);
+    await _waitFor(() => lines.length == 3);
+    expect(lines, <String>['one', 'two', 'three']);
+
+    await subscription.cancel();
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test('stdout EOF while paused drains accepted lines before done', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    final lines = <String>[];
+    final done = Completer<void>();
+    final subscription = channel.channel.stream.listen(
+      lines.add,
+      onDone: done.complete,
+    )..pause();
+
+    process
+      ..addStdout(utf8.encode('one\ntwo'))
+      ..closeStdout();
+    await Future<void>.delayed(Duration.zero);
+    expect(lines, isEmpty);
+    expect(done.isCompleted, isFalse);
+
+    subscription.resume();
+    await done.future.timeout(const Duration(seconds: 1));
+    expect(lines, <String>['one', 'two']);
+
+    await subscription.cancel();
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test(
+    'decode failure clears earlier accepted lines and reports once',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process);
+      final lines = <String>[];
+      final errors = <Object>[];
+
+      process
+        ..addStdout(<int>[...utf8.encode('accepted\n'), 0xff, 0x0a])
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+      await _listenUntilDone(
+        channel.channel.stream,
+        onLine: lines.add,
+        errors: errors,
+      );
+
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<acp.TransportProtocolDecodeError>().having(
+          (error) => error.resource,
+          'resource',
+          'stdio stdout line',
+        ),
+      );
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'line byte overflow clears earlier accepted lines and reports once',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process, maxLineBytes: 3);
+      final lines = <String>[];
+      final errors = <Object>[];
+
+      process
+        ..addStdout(utf8.encode('ok\n1234\n'))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+      await _listenUntilDone(
+        channel.channel.stream,
+        onLine: lines.add,
+        errors: errors,
+      );
+
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<acp.TransportByteLimitExceeded>());
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'stdout stream error is payload-free and clears accepted lines',
+    () async {
+      const secret = 'stdout-stream-secret';
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process);
+      final lines = <String>[];
+      final errors = <Object>[];
+
+      process
+        ..addStdout(utf8.encode('accepted\n'))
+        ..addStdoutError(StateError(secret))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+      await _listenUntilDone(
+        channel.channel.stream,
+        onLine: lines.add,
+        errors: errors,
+      );
+
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<acp.TransportProtocolDecodeError>().having(
+          (error) => error.resource,
+          'resource',
+          'stdio stdout stream',
+        ),
+      );
+      expect(errors.single.toString(), isNot(contains(secret)));
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'onInboundLine observes only successfully enqueued nonblank lines',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final observed = <String>[];
+      final channel = LineJsonChannel(
+        process,
+        maxInboundQueueItems: 2,
+        onInboundLine: observed.add,
+      );
+      final errors = <Object>[];
+
+      process
+        ..addStdout(utf8.encode('one\ntwo\nthree-secret\n'))
+        ..closeStdout();
+      await Future<void>.delayed(Duration.zero);
+      await _listenUntilDone(channel.channel.stream, errors: errors);
+
+      expect(observed, <String>['one', 'two']);
+      expect(errors, hasLength(1));
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'observer failure is delivered before its line in queue order',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final events = <String>[];
+      final channel = LineJsonChannel(
+        process,
+        onInboundLine: (line) {
+          if (line == 'one') throw StateError('observer failed');
+        },
+      );
+      final subscription = channel.channel.stream.listen(
+        (line) => events.add('line:$line'),
+        onError: (_) => events.add('error'),
+        onDone: () => events.add('done'),
+      );
+
+      process
+        ..addStdout(utf8.encode('one\ntwo\n'))
+        ..closeStdout();
+      await _waitFor(() => events.contains('done'));
+
+      expect(events, <String>['error', 'line:one', 'line:two', 'done']);
+      await subscription.cancel();
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test('observer callback dispose then throw keeps error and line', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final events = <String>[];
+    late final LineJsonChannel channel;
+    Future<void>? disposeFuture;
+    channel = LineJsonChannel(
+      process,
+      onInboundLine: (_) {
+        disposeFuture = channel.dispose();
+        throw StateError('observer failed');
+      },
+    );
+    final done = Completer<void>();
+    final subscription = channel.channel.stream.listen(
+      (line) => events.add('line:$line'),
+      onError: (_) => events.add('error'),
+      onDone: () {
+        events.add('done');
+        done.complete();
+      },
+    );
+
+    process.addStdout(utf8.encode('one\n'));
+    await done.future.timeout(const Duration(seconds: 1));
+    await disposeFuture?.timeout(const Duration(seconds: 1));
+
+    expect(events, <String>['error', 'line:one', 'done']);
+    await subscription.cancel();
+    process.releaseWrites();
+  });
+
+  test(
+    'observer callback normal close then throw keeps error and line',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final events = <String>[];
+      late final LineJsonChannel channel;
+      Future<void>? closeFuture;
+      channel = LineJsonChannel(
+        process,
+        onInboundLine: (_) {
+          closeFuture = channel.closeInbound();
+          throw StateError('observer failed');
+        },
+      );
+      final done = Completer<void>();
+      final subscription = channel.channel.stream.listen(
+        (line) => events.add('line:$line'),
+        onError: (_) => events.add('error'),
+        onDone: () {
+          events.add('done');
+          done.complete();
+        },
+      );
+
+      process.addStdout(utf8.encode('one\n'));
+      await done.future.timeout(const Duration(seconds: 1));
+      await closeFuture?.timeout(const Duration(seconds: 1));
+
+      expect(events, <String>['error', 'line:one', 'done']);
+      await subscription.cancel();
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'observer callback fatal then throw keeps only terminal error',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final lines = <String>[];
+      final errors = <Object>[];
+      late final LineJsonChannel channel;
+      Future<void>? closeFuture;
+      channel = LineJsonChannel(
+        process,
+        onInboundLine: (_) {
+          closeFuture = channel.closeInbound(
+            acp.TransportWriteError(resource: 'stdio stdin write'),
+            StackTrace.current,
+          );
+          throw StateError('observer failure must be discarded');
+        },
+      );
+      final done = Completer<void>();
+      final subscription = channel.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+        onDone: done.complete,
+      );
+
+      process.addStdout(utf8.encode('one\n'));
+      await done.future.timeout(const Duration(seconds: 1));
+      await closeFuture?.timeout(const Duration(seconds: 1));
+
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<acp.TransportWriteError>());
+      await subscription.cancel();
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'paused observer error frame still counts against item budget',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final observed = <String>[];
+      final errors = <Object>[];
+      final channel = LineJsonChannel(
+        process,
+        maxInboundQueueItems: 2,
+        onInboundLine: (line) {
+          observed.add(line);
+          if (line == 'one') throw StateError('observer failed');
+        },
+      );
+      late final StreamSubscription<String> subscription;
+      subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: (Object error) {
+          errors.add(error);
+          if (errors.length == 1) subscription.pause();
+        },
+      );
+
+      process.addStdout(utf8.encode('one\n'));
+      await _waitFor(() => errors.isNotEmpty);
+      process.addStdout(utf8.encode('two\nthree-secret\n'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(observed, <String>['one', 'two']);
+      subscription.resume();
+      await _waitFor(() => errors.length == 2);
+      expect(
+        errors.last,
+        isA<acp.TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdio stdout queue items',
+            )
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
+      );
+
+      await subscription.cancel();
+      await channel.dispose();
+      process.releaseWrites();
+    },
+  );
+
+  test('fatal reentry from observer error drops the associated line', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final lines = <String>[];
+    final errors = <Object>[];
+    final channel = LineJsonChannel(
+      process,
+      maxLineBytes: 3,
+      onInboundLine: (_) => throw StateError('observer failed'),
+    );
+    final done = Completer<void>();
+    final subscription = channel.channel.stream.listen(
+      lines.add,
+      onError: (Object error) {
+        errors.add(error);
+        if (errors.length == 1) {
+          process.addStdout(utf8.encode('1234\n'));
+        }
+      },
+      onDone: done.complete,
+    );
+
+    process.addStdout(utf8.encode('one\n'));
+    await done.future.timeout(const Duration(seconds: 1));
+
+    expect(lines, isEmpty);
+    expect(errors, hasLength(2));
+    expect(errors.first, isA<StateError>());
+    expect(errors.last, isA<acp.TransportByteLimitExceeded>());
+    await subscription.cancel();
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test('paused observer error frame still counts raw byte budget', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final observed = <String>[];
+    final errors = <Object>[];
+    final channel = LineJsonChannel(
+      process,
+      maxInboundQueueBytes: 5,
+      onInboundLine: (line) {
+        observed.add(line);
+        if (line == 'one') throw StateError('observer failed');
+      },
+    );
+    late final StreamSubscription<String> subscription;
+    subscription = channel.channel.stream.listen(
+      (_) {},
+      onError: (Object error) {
+        errors.add(error);
+        if (errors.length == 1) subscription.pause();
+      },
+    );
+
+    process.addStdout(utf8.encode('one\n'));
+    await _waitFor(() => errors.isNotEmpty);
+    process.addStdout(utf8.encode('é\nx\n'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(observed, <String>['one', 'é']);
+    subscription.resume();
+    await _waitFor(() => errors.length == 2);
+    expect(
+      errors.last,
+      isA<acp.TransportByteLimitExceeded>()
+          .having(
+            (error) => error.resource,
+            'resource',
+            'stdio stdout queue bytes',
+          )
+          .having((error) => error.limit, 'limit', 5)
+          .having((error) => error.observedAtLeast, 'observedAtLeast', 6),
+    );
+
+    await subscription.cancel();
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test('fatal close upgrades pending EOF and clears accepted lines', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    final lines = <String>[];
+    final errors = <Object>[];
+
+    process
+      ..addStdout(utf8.encode('accepted-before-eof'))
+      ..closeStdout();
+    await Future<void>.delayed(Duration.zero);
+    unawaited(
+      channel.closeInbound(
+        acp.TransportWriteError(resource: 'stdio stdin write'),
+        StackTrace.current,
+      ),
+    );
+    await _listenUntilDone(
+      channel.channel.stream,
+      onLine: lines.add,
+      errors: errors,
+    );
+
+    expect(lines, isEmpty);
+    expect(errors, hasLength(1));
+    expect(errors.single, isA<acp.TransportWriteError>());
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test('terminal error listener cancel still completes close', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    late final StreamSubscription<String> subscription;
+    Future<void>? cancelFuture;
+    subscription = channel.channel.stream.listen(
+      (_) {},
+      onError: (_) {
+        cancelFuture = subscription.cancel();
+      },
+    );
+
+    final closeFuture = channel.closeInbound(
+      acp.TransportWriteError(resource: 'stdio stdin write'),
+      StackTrace.current,
+    );
+
+    await closeFuture.timeout(const Duration(seconds: 1));
+    await cancelFuture;
+    await channel.dispose();
+    process.releaseWrites();
+  });
+
+  test(
+    'stdout cancel failure does not replace the fixed terminal error',
+    () async {
+      final uncaught = <Object>[];
+      final errors = <Object>[];
+
+      await runZonedGuarded(() async {
+        final process = _BlockingStdinProcess(
+          syncStdout: true,
+          stdoutCancelFailure: StateError('cancel-secret'),
+        );
+        final channel = LineJsonChannel(process, maxInboundQueueItems: 1);
+        final done = Completer<void>();
+        final subscription = channel.channel.stream.listen(
+          (_) {},
+          onError: errors.add,
+          onDone: done.complete,
+        );
+
+        process.addStdout(utf8.encode('one\ntwo\n'));
+        await done.future.timeout(const Duration(seconds: 1));
+        await Future<void>.delayed(Duration.zero);
+
+        await subscription.cancel();
+        await channel.dispose();
+        process.releaseWrites();
+      }, (error, _) => uncaught.add(error));
+
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<acp.TransportByteLimitExceeded>());
+      expect(uncaught, isEmpty);
+    },
+  );
+
+  test(
+    'listener cancel clears queued lines and suppresses later observers',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final uncaught = <Object>[];
+      var observerCalls = 0;
+
+      await runZonedGuarded(() async {
+        late final StreamSubscription<String> subscription;
+        late final LineJsonChannel channel;
+        channel = LineJsonChannel(
+          process,
+          onInboundLine: (_) {
+            observerCalls++;
+            unawaited(subscription.cancel());
+            throw StateError('ignored after cancel');
+          },
+        );
+        subscription = channel.channel.stream.listen((_) {}, onError: (_) {});
+
+        process.addStdout(utf8.encode('one\ntwo\n'));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        await channel.dispose();
+      }, (error, _) => uncaught.add(error));
+
+      expect(observerCalls, 1);
+      expect(uncaught, isEmpty);
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'listener cancel drops a partial line and keeps draining raw stdout',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final observed = <String>[];
+      final errors = <Object>[];
+      final channel = LineJsonChannel(
+        process,
+        maxLineBytes: 3,
+        onInboundLine: observed.add,
+      );
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      process.addStdout(utf8.encode('par'));
+      await subscription.cancel();
+      expect(process.stdoutHasListener, isTrue);
+
+      process.addStdout(utf8.encode('oversized-secret\nnext\n'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(observed, isEmpty);
+      expect(errors, isEmpty);
+      expect(process.stdoutHasListener, isTrue);
+
+      await channel.dispose().timeout(const Duration(seconds: 1));
+      expect(process.stdoutHasListener, isFalse);
+      process.releaseWrites();
+    },
+  );
+
   test('stdout counts raw UTF-8 bytes across chunks before decoding', () async {
     final process = await Process.start('/bin/sh', <String>[
       '-c',
@@ -560,6 +1284,103 @@ void main() {
     },
   );
 
+  test('dispose drains accepted inbound frames before done', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    final events = <String>[];
+    final done = Completer<void>();
+    final subscription = channel.channel.stream.listen(
+      (line) => events.add('line:$line'),
+      onError: (_) => events.add('error'),
+      onDone: () {
+        events.add('done');
+        done.complete();
+      },
+    );
+
+    process.addStdout(utf8.encode('one\ntwo\n'));
+    final disposeFuture = channel.dispose();
+
+    await disposeFuture.timeout(const Duration(seconds: 1));
+    await done.future.timeout(const Duration(seconds: 1));
+    expect(events, <String>['line:one', 'line:two', 'done']);
+
+    await subscription.cancel();
+    process.releaseWrites();
+  });
+
+  test('dispose does not wait for paused accepted inbound frames', () async {
+    final process = _BlockingStdinProcess(syncStdout: true);
+    final channel = LineJsonChannel(process);
+    final lines = <String>[];
+    final done = Completer<void>();
+    final subscription = channel.channel.stream.listen(
+      lines.add,
+      onDone: done.complete,
+    )..pause();
+
+    process.addStdout(utf8.encode('one\ntwo\n'));
+    await channel.dispose().timeout(const Duration(seconds: 1));
+
+    expect(lines, isEmpty);
+    expect(done.isCompleted, isFalse);
+    subscription.resume();
+    await done.future.timeout(const Duration(seconds: 1));
+    expect(lines, <String>['one', 'two']);
+
+    await subscription.cancel();
+    process.releaseWrites();
+  });
+
+  test(
+    'dispose preserves accepted frames until a captured stream listens',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final channel = LineJsonChannel(process);
+      final stream = channel.channel.stream;
+
+      process.addStdout(utf8.encode('one\ntwo\n'));
+      await channel.dispose().timeout(const Duration(seconds: 1));
+
+      expect(await stream.toList(), <String>['one', 'two']);
+      process.releaseWrites();
+    },
+  );
+
+  test(
+    'observer error reentrant dispose still delivers its accepted line',
+    () async {
+      final process = _BlockingStdinProcess(syncStdout: true);
+      final events = <String>[];
+      late final LineJsonChannel channel;
+      Future<void>? disposeFuture;
+      channel = LineJsonChannel(
+        process,
+        onInboundLine: (_) => throw StateError('observer failed'),
+      );
+      final done = Completer<void>();
+      final subscription = channel.channel.stream.listen(
+        (line) => events.add('line:$line'),
+        onError: (_) {
+          events.add('error');
+          disposeFuture = channel.dispose();
+        },
+        onDone: () {
+          events.add('done');
+          done.complete();
+        },
+      );
+
+      process.addStdout(utf8.encode('one\n'));
+      await done.future.timeout(const Duration(seconds: 1));
+      await disposeFuture?.timeout(const Duration(seconds: 1));
+
+      expect(events, <String>['error', 'line:one', 'done']);
+      await subscription.cancel();
+      process.releaseWrites();
+    },
+  );
+
   test(
     'immediate dispose without an inbound listener flushes accepted writes',
     () async {
@@ -842,6 +1663,20 @@ Future<void> _waitFor(bool Function() predicate) async {
   }
 }
 
+Future<void> _listenUntilDone(
+  Stream<String> stream, {
+  void Function(String line)? onLine,
+  required List<Object> errors,
+}) {
+  final done = Completer<void>();
+  stream.listen(
+    onLine ?? (_) {},
+    onError: (Object error, StackTrace _) => errors.add(error),
+    onDone: done.complete,
+  );
+  return done.future.timeout(const Duration(seconds: 1));
+}
+
 class _FailingStdinProcess implements Process {
   _FailingStdinProcess(String failureMessage)
     : _consumer = _FailingStreamConsumer(failureMessage) {
@@ -898,13 +1733,21 @@ class _FailingStreamConsumer implements StreamConsumer<List<int>> {
 }
 
 class _BlockingStdinProcess implements Process {
-  _BlockingStdinProcess({Object? lateFailure})
-    : _consumer = _BlockingStreamConsumer(lateFailure) {
+  _BlockingStdinProcess({
+    Object? lateFailure,
+    bool syncStdout = false,
+    Object? stdoutCancelFailure,
+  }) : _stdoutController = StreamController<List<int>>(
+         sync: syncStdout,
+         onCancel: stdoutCancelFailure == null
+             ? null
+             : () => throw stdoutCancelFailure,
+       ),
+       _consumer = _BlockingStreamConsumer(lateFailure) {
     _stdin = IOSink(_consumer);
   }
 
-  final StreamController<List<int>> _stdoutController =
-      StreamController<List<int>>();
+  final StreamController<List<int>> _stdoutController;
   final Completer<int> _exitCode = Completer<int>();
   final _BlockingStreamConsumer _consumer;
   late final IOSink _stdin;
@@ -916,6 +1759,12 @@ class _BlockingStdinProcess implements Process {
   int get stdinCloseCallCount => _consumer.closeCount;
 
   void addStdout(List<int> bytes) => _stdoutController.add(bytes);
+
+  bool get stdoutHasListener => _stdoutController.hasListener;
+
+  void addStdoutError(Object error) => _stdoutController.addError(error);
+
+  void closeStdout() => unawaited(_stdoutController.close());
 
   void releaseWrites() => _consumer.release();
 

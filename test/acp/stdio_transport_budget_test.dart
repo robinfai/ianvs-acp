@@ -57,6 +57,30 @@ void main() {
             .having((error) => error.invalidValue, 'invalidValue', -1),
       ),
     );
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxInboundQueueItems: 0,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxInboundQueueItems')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+    expect(
+      () => acp.StdioTransport(
+        logger: acp.AcpConfig().logger,
+        command: '/bin/false',
+        maxInboundQueueBytes: -1,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxInboundQueueBytes')
+            .having((error) => error.invalidValue, 'invalidValue', -1),
+      ),
+    );
   });
 
   test(
@@ -144,6 +168,49 @@ void main() {
               (error) => error.resource,
               'resource',
               'stdio stdin queue items',
+            )
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+      );
+    } finally {
+      await transport.stop();
+    }
+  });
+
+  test('StdioTransport forwards inbound queue budgets', () async {
+    final process = _ObservableProcess.live();
+    final transport = acp.StdioTransport(
+      logger: acp.AcpConfig().logger,
+      command: 'fake-agent',
+      maxInboundQueueItems: 1,
+      maxInboundQueueBytes: 64,
+      processStarter: (_, _, {workingDirectory, environment}) async => process,
+    );
+    final lines = <String>[];
+    final errors = <Object>[];
+    final done = Completer<void>();
+
+    try {
+      await transport.start();
+      process.addStdout('one\ntwo\n'.codeUnits);
+      await Future<void>.delayed(Duration.zero);
+      final subscription = transport.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+        onDone: done.complete,
+      );
+      addTearDown(subscription.cancel);
+
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<acp.TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdio stdout queue items',
             )
             .having((error) => error.limit, 'limit', 1)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
@@ -810,6 +877,8 @@ class _ObservableProcess implements Process {
     if (!_stdoutController.isClosed) await _stdoutController.close();
     if (!_stderrController.isClosed) await _stderrController.close();
   }
+
+  void addStdout(List<int> bytes) => _stdoutController.add(bytes);
 
   @override
   Future<int> get exitCode => _exitCode.future;

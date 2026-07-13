@@ -32,6 +32,8 @@ class StdioTransport implements AcpTransport {
     int? maxStderrLineBytes,
     int maxOutboundQueueItems = 128,
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
+    int maxInboundQueueItems = 128,
+    int maxInboundQueueBytes = 32 * 1024 * 1024,
     StdioProcessStarter? processStarter,
   }) : maxLineBytes = _positiveByteLimit(maxLineBytes, 'maxLineBytes'),
        maxStderrLineBytes = _positiveByteLimit(
@@ -45,6 +47,14 @@ class StdioTransport implements AcpTransport {
        maxOutboundQueueBytes = _positiveByteLimit(
          maxOutboundQueueBytes,
          'maxOutboundQueueBytes',
+       ),
+       maxInboundQueueItems = _positiveByteLimit(
+         maxInboundQueueItems,
+         'maxInboundQueueItems',
+       ),
+       maxInboundQueueBytes = _positiveByteLimit(
+         maxInboundQueueBytes,
+         'maxInboundQueueBytes',
        ),
        _processStarter = processStarter ?? _defaultProcessStarter;
 
@@ -80,6 +90,12 @@ class StdioTransport implements AcpTransport {
 
   /// Maximum accepted stdin UTF-8 bytes, including the active flush.
   final int maxOutboundQueueBytes;
+
+  /// Maximum accepted, not-yet-delivered stdout lines.
+  final int maxInboundQueueItems;
+
+  /// Maximum accepted raw stdout bytes waiting for delivery.
+  final int maxInboundQueueBytes;
   final StdioProcessStarter _processStarter;
 
   Process? _process;
@@ -158,6 +174,8 @@ class StdioTransport implements AcpTransport {
         maxStderrLineBytes: maxStderrLineBytes,
         maxOutboundQueueItems: maxOutboundQueueItems,
         maxOutboundQueueBytes: maxOutboundQueueBytes,
+        maxInboundQueueItems: maxInboundQueueItems,
+        maxInboundQueueBytes: maxInboundQueueBytes,
       );
     } on Object {
       await _terminateAndReap(proc, exitCodeFuture);
