@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +33,7 @@ class PromptInput extends StatefulWidget {
     required this.onSend,
     required this.onStop,
     this.availableCommands = const <Map<String, Object?>>[],
+    this.availableCommandsRevision = 0,
     this.promptCapabilities,
     this.pendingPermissionRequest,
     this.onAllowPermission,
@@ -55,6 +58,7 @@ class PromptInput extends StatefulWidget {
   final PromptSendCallback onSend;
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
+  final int availableCommandsRevision;
   final AcpPromptCapabilities? promptCapabilities;
   final AcpPermissionRequest? pendingPermissionRequest;
   final VoidCallback? onAllowPermission;
@@ -79,17 +83,40 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+  String? _commandQuery;
+  List<_CommandSearchEntry> _commandSearchEntries =
+      const <_CommandSearchEntry>[];
+  LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>
+  _commandParameterPreviewMemo =
+      LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
 
   @override
   void initState() {
     super.initState();
     widget.inputBudget.validate();
+    _commandQuery = _scanBoundedCommandQuery(
+      _controller.text,
+      budget: widget.inputBudget,
+    );
+    _rebuildCommandSearchEntries();
   }
 
   @override
   void didUpdateWidget(covariant PromptInput oldWidget) {
     super.didUpdateWidget(oldWidget);
     widget.inputBudget.validate();
+    if (!identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _commandQuery = _scanBoundedCommandQuery(
+        _controller.text,
+        budget: widget.inputBudget,
+      );
+    }
+    if (!identical(widget.availableCommands, oldWidget.availableCommands) ||
+        widget.availableCommandsRevision !=
+            oldWidget.availableCommandsRevision ||
+        !identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _rebuildCommandSearchEntries();
+    }
   }
 
   bool get _canSend =>
@@ -97,35 +124,96 @@ class _PromptInputState extends State<PromptInput> {
       widget.enabled &&
       !widget.isSending;
 
-  List<Map<String, Object?>> get _commandSuggestions {
-    if (!widget.enabled ||
-        widget.isSending ||
-        widget.availableCommands.isEmpty) {
-      return const <Map<String, Object?>>[];
+  List<_CommandSearchEntry> get _commandSuggestions {
+    if (!widget.enabled || widget.isSending || _commandSearchEntries.isEmpty) {
+      return const <_CommandSearchEntry>[];
     }
-    final input = _controller.text.trimLeft();
-    if (!input.startsWith('/')) return const <Map<String, Object?>>[];
-    if (RegExp(r'^/\S+\s').hasMatch(input)) {
-      return const <Map<String, Object?>>[];
-    }
-
-    final query = input.substring(1).split(RegExp(r'\s+')).first.toLowerCase();
-    return widget.availableCommands
-        .where((command) {
-          final invocation = _commandInvocation(command);
-          if (invocation.isEmpty) return false;
+    final query = _commandQuery;
+    if (query == null) return const <_CommandSearchEntry>[];
+    return _commandSearchEntries
+        .where((entry) {
           if (query.isEmpty) return true;
-          final name = invocation.startsWith('/')
-              ? invocation.substring(1).toLowerCase()
-              : invocation.toLowerCase();
-          final description = _commandString(
-            command,
-            'description',
-          ).toLowerCase();
-          return name.contains(query) || description.contains(query);
+          return entry.lowerName.contains(query) ||
+              entry.lowerDescription.contains(query);
         })
         .take(5)
         .toList(growable: false);
+  }
+
+  void _rebuildCommandSearchEntries() {
+    const maxSearchEntries = 1024;
+    try {
+      final commands = widget.availableCommands;
+      final sourceLength = commands.length;
+      final length = sourceLength < maxSearchEntries
+          ? sourceLength
+          : maxSearchEntries;
+      final entries = <_CommandSearchEntry>[];
+      for (var index = 0; index < length; index += 1) {
+        final command = commands[index];
+        final name = _commandString(command, 'name');
+        final description = _commandString(command, 'description');
+        final invocation = _commandInvocationFromName(name);
+        if (invocation.isEmpty) continue;
+        final lowerName = invocation.substring(1).toLowerCase();
+        final entry = _CommandSearchEntry(
+          command: command,
+          invocation: invocation,
+          lowerName: lowerName,
+          lowerDescription: description.toLowerCase(),
+          description: description,
+        );
+        entries.add(entry);
+      }
+      _commandSearchEntries = List<_CommandSearchEntry>.unmodifiable(entries);
+      _commandParameterPreviewMemo =
+          LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
+    } on Object {
+      _clearCommandSearchCache();
+    }
+  }
+
+  void _clearCommandSearchCache() {
+    _commandSearchEntries = const <_CommandSearchEntry>[];
+    _commandParameterPreviewMemo =
+        LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
+  }
+
+  Map<_CommandSearchEntry, BoundedMetadataPreview?> _parameterPreviewsFor(
+    List<_CommandSearchEntry> entries,
+  ) {
+    const maxMemoEntries = 5;
+    final visible = <_CommandSearchEntry, BoundedMetadataPreview?>{};
+    for (final entry in entries) {
+      final BoundedMetadataPreview? preview;
+      if (_commandParameterPreviewMemo.containsKey(entry)) {
+        preview = _commandParameterPreviewMemo.remove(entry);
+      } else {
+        BoundedMetadataPreview? built;
+        try {
+          final parameters = entry.command['parameters'];
+          if (parameters != null) {
+            built = writeBoundedMetadataPreview(
+              parameters,
+              budget: widget.inputBudget,
+            );
+          }
+        } on Object {
+          built = null;
+        }
+        preview = built;
+        if (_commandParameterPreviewMemo.length >= maxMemoEntries) {
+          _commandParameterPreviewMemo.remove(
+            _commandParameterPreviewMemo.keys.first,
+          );
+        }
+      }
+      _commandParameterPreviewMemo[entry] = preview;
+      visible[entry] = preview;
+    }
+    return Map<_CommandSearchEntry, BoundedMetadataPreview?>.unmodifiable(
+      visible,
+    );
   }
 
   @override
@@ -137,6 +225,7 @@ class _PromptInputState extends State<PromptInput> {
   @override
   Widget build(BuildContext context) {
     final commandSuggestions = _commandSuggestions;
+    final commandParameterPreviews = _parameterPreviewsFor(commandSuggestions);
     final pendingPermissionRequest = widget.pendingPermissionRequest;
     return Container(
       color: AppColors.bg,
@@ -187,8 +276,8 @@ class _PromptInputState extends State<PromptInput> {
                     ),
                   if (commandSuggestions.isNotEmpty)
                     _CommandSuggestionPanel(
-                      commands: commandSuggestions,
-                      inputBudget: widget.inputBudget,
+                      entries: commandSuggestions,
+                      parameterPreviews: commandParameterPreviews,
                       onSelect: _insertCommand,
                     ),
                   TextField(
@@ -197,7 +286,7 @@ class _PromptInputState extends State<PromptInput> {
                     maxLines: 4,
                     keyboardType: TextInputType.multiline,
                     enabled: widget.enabled && !widget.isSending,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: _handlePromptChanged,
                     style: const TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 13,
@@ -257,18 +346,23 @@ class _PromptInputState extends State<PromptInput> {
     final attachments = List<PromptAttachment>.unmodifiable(_attachments);
     widget.onSend(text, attachments);
     _controller.clear();
+    _commandQuery = null;
     _attachments.clear();
     setState(() {});
   }
 
-  void _insertCommand(Map<String, Object?> command) {
-    final invocation = _commandInvocation(command);
-    if (invocation.isEmpty) return;
-    final text = '$invocation ';
+  void _insertCommand(_CommandSearchEntry entry) {
+    final text = '${entry.invocation} ';
     _controller.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
     );
+    _commandQuery = null;
+    setState(() {});
+  }
+
+  void _handlePromptChanged(String value) {
+    _commandQuery = _scanBoundedCommandQuery(value, budget: widget.inputBudget);
     setState(() {});
   }
 
@@ -1387,14 +1481,14 @@ String _policyDescription(
 
 class _CommandSuggestionPanel extends StatelessWidget {
   const _CommandSuggestionPanel({
-    required this.commands,
+    required this.entries,
+    required this.parameterPreviews,
     required this.onSelect,
-    required this.inputBudget,
   });
 
-  final List<Map<String, Object?>> commands;
-  final ValueChanged<Map<String, Object?>> onSelect;
-  final AcpInputBudget inputBudget;
+  final List<_CommandSearchEntry> entries;
+  final Map<_CommandSearchEntry, BoundedMetadataPreview?> parameterPreviews;
+  final ValueChanged<_CommandSearchEntry> onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -1404,25 +1498,35 @@ class _CommandSuggestionPanel extends StatelessWidget {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
         itemBuilder: (context, index) {
-          final command = commands[index];
-          final invocation = _commandInvocation(command);
-          final description = _commandString(command, 'description');
-          final parameters = command['parameters'];
-          final parametersPreview = parameters == null
-              ? null
-              : writeBoundedMetadataPreview(parameters, budget: inputBudget);
+          final entry = entries[index];
           return _CommandSuggestionTile(
-            invocation: invocation,
-            description: description,
-            onTap: () => onSelect(command),
-            parametersPreview: parametersPreview,
+            invocation: entry.invocation,
+            description: entry.description,
+            onTap: () => onSelect(entry),
+            parametersPreview: parameterPreviews[entry],
           );
         },
         separatorBuilder: (_, _) => const SizedBox(height: 3),
-        itemCount: commands.length,
+        itemCount: entries.length,
       ),
     );
   }
+}
+
+final class _CommandSearchEntry {
+  const _CommandSearchEntry({
+    required this.command,
+    required this.invocation,
+    required this.lowerName,
+    required this.lowerDescription,
+    required this.description,
+  });
+
+  final Map<String, Object?> command;
+  final String invocation;
+  final String lowerName;
+  final String lowerDescription;
+  final String description;
 }
 
 class _CommandSuggestionTile extends StatelessWidget {
@@ -1521,10 +1625,79 @@ class _CommandSuggestionTile extends StatelessWidget {
   }
 }
 
-String _commandInvocation(Map<String, Object?> command) {
-  final name = _commandString(command, 'name');
+String _commandInvocationFromName(String name) {
   if (name.isEmpty) return '';
   return name.startsWith('/') ? name : '/$name';
+}
+
+String? _scanBoundedCommandQuery(
+  String input, {
+  required AcpInputBudget budget,
+}) {
+  const maxCommandQueryCodeUnits = 1024;
+  final limit = budget.maxStructuredStringBytes < maxCommandQueryCodeUnits
+      ? budget.maxStructuredStringBytes
+      : maxCommandQueryCodeUnits;
+  final inputLength = input.length;
+  var index = 0;
+
+  while (index < inputLength) {
+    if (index >= limit) return null;
+    final scalar = _commandQueryScalarAt(input, index, limit: limit);
+    if (scalar == null) return null;
+    if (!_isUnicodeWhitespace(scalar.codePoint)) break;
+    index += scalar.codeUnits;
+  }
+  if (index >= inputLength || index >= limit) return null;
+  if (input.codeUnitAt(index) != 0x2f) return null;
+  index += 1;
+  final queryStart = index;
+
+  while (index < inputLength) {
+    if (index >= limit) return null;
+    final scalar = _commandQueryScalarAt(input, index, limit: limit);
+    if (scalar == null || _isUnicodeWhitespace(scalar.codePoint)) return null;
+    index += scalar.codeUnits;
+  }
+  return input.substring(queryStart, index).toLowerCase();
+}
+
+({int codePoint, int codeUnits})? _commandQueryScalarAt(
+  String input,
+  int index, {
+  required int limit,
+}) {
+  final first = input.codeUnitAt(index);
+  if (first < 0xd800 || first > 0xdbff) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  final secondIndex = index + 1;
+  if (secondIndex >= input.length) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  if (secondIndex >= limit) return null;
+  final second = input.codeUnitAt(secondIndex);
+  if (second < 0xdc00 || second > 0xdfff) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  return (
+    codePoint: 0x10000 + ((first - 0xd800) << 10) + second - 0xdc00,
+    codeUnits: 2,
+  );
+}
+
+bool _isUnicodeWhitespace(int codePoint) {
+  return (codePoint >= 0x09 && codePoint <= 0x0d) ||
+      codePoint == 0x20 ||
+      codePoint == 0x85 ||
+      codePoint == 0xa0 ||
+      codePoint == 0x1680 ||
+      (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+      codePoint == 0x2028 ||
+      codePoint == 0x2029 ||
+      codePoint == 0x202f ||
+      codePoint == 0x205f ||
+      codePoint == 0x3000;
 }
 
 String _commandString(Map<String, Object?> command, String key) {

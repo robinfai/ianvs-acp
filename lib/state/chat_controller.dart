@@ -2322,7 +2322,8 @@ class ChatController extends ChangeNotifier {
     _tryReplaceAvailableCommands(commands);
   }
 
-  int availableCommandsRevision = 0;
+  int _availableCommandsRevision = 0;
+  int get availableCommandsRevision => _availableCommandsRevision;
   AcpAgentCapabilities? capabilities;
   AcpSessionSettings _sessionSettings = const AcpSessionSettings();
   AcpSessionSettings get sessionSettings => _sessionSettings;
@@ -3162,7 +3163,7 @@ class ChatController extends ChangeNotifier {
       apply: () => _availableCommands = copied,
       rollback: () => _availableCommands = previous,
     );
-    if (accepted) availableCommandsRevision += 1;
+    if (accepted) _availableCommandsRevision += 1;
     return accepted;
   }
 

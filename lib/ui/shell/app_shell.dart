@@ -179,6 +179,7 @@ class AppShell extends StatelessWidget {
           enabled: !controller.isSessionOperationRunning,
           isSending: controller.isStreaming,
           availableCommands: controller.availableCommands,
+          availableCommandsRevision: controller.availableCommandsRevision,
           promptCapabilities: controller.capabilities?.prompt,
           pendingPermissionRequest: controller.pendingPermissionRequest,
           onAllowPermission: () => unawaited(

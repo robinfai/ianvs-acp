@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:dart_acp/dart_acp.dart';
@@ -20,6 +21,7 @@ void main() {
     String agentName = 'Codex',
     List<Map<String, Object?>> availableCommands =
         const <Map<String, Object?>>[],
+    int availableCommandsRevision = 0,
     AcpPromptCapabilities? promptCapabilities,
     AcpPermissionRequest? pendingPermissionRequest,
     VoidCallback? onAllowPermission,
@@ -43,6 +45,7 @@ void main() {
       enabled: enabled,
       isSending: isSending,
       availableCommands: availableCommands,
+      availableCommandsRevision: availableCommandsRevision,
       promptCapabilities: promptCapabilities,
       pendingPermissionRequest: pendingPermissionRequest,
       onAllowPermission: onAllowPermission,
@@ -198,6 +201,401 @@ void main() {
     expect(utf8.encode(preview.data ?? '').length, lessThanOrEqualTo(12));
     expect(preview.data, isNot(contains('PARAMETER_CANARY')));
     expect(find.textContaining('metadata preview bytes'), findsOneWidget);
+  });
+
+  testWidgets(
+    'PromptInput reuses command projections for the same list and revision',
+    (tester) async {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'working-tree',
+      });
+      final command = _CountingCommandMap(<String, Object?>{
+        'name': 'Review',
+        'description': 'Review the current change.',
+        'parameters': parameters,
+      });
+      final commands = <Map<String, Object?>>[command];
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 7,
+        ),
+      );
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 0);
+      expect(parameters.readsFor('scope'), 0);
+
+      await tester.enterText(find.byType(TextField), '/r');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '/re');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '/rev');
+      await tester.pump();
+
+      expect(find.text('/Review'), findsOneWidget);
+      expect(find.text('Review the current change.'), findsOneWidget);
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 1);
+      expect(parameters.readsFor('scope'), 1);
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 7,
+        ),
+      );
+      await tester.pump();
+
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 1);
+      expect(parameters.readsFor('scope'), 1);
+    },
+  );
+
+  testWidgets(
+    'PromptInput rebuilds command projections once when revision changes',
+    (tester) async {
+      final command = _CountingCommandMap(<String, Object?>{
+        'name': 'Review',
+        'description': 'First description.',
+        'parameters': <String, Object?>{'scope': 'first'},
+      });
+      final commands = <Map<String, Object?>>[command];
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 3,
+        ),
+      );
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 0);
+
+      command['description'] = 'Second description.';
+      command['parameters'] = <String, Object?>{'scope': 'second'};
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 4,
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '/rev');
+      await tester.pump();
+
+      expect(find.text('Second description.'), findsOneWidget);
+      expect(command.readsFor('name'), 2);
+      expect(command.readsFor('description'), 2);
+      expect(command.readsFor('parameters'), 1);
+    },
+  );
+
+  testWidgets('PromptInput retains at most five lazy parameter previews', (
+    tester,
+  ) async {
+    final alphaParameters = <_CountingCommandMap>[];
+    final betaParameters = <_CountingCommandMap>[];
+    final commands = <Map<String, Object?>>[];
+    for (var index = 0; index < 5; index += 1) {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'alpha-$index',
+      });
+      alphaParameters.add(parameters);
+      commands.add(<String, Object?>{
+        'name': 'alpha$index',
+        'description': 'Alpha $index',
+        'parameters': parameters,
+      });
+    }
+    for (var index = 0; index < 5; index += 1) {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'beta-$index',
+      });
+      betaParameters.add(parameters);
+      commands.add(<String, Object?>{
+        'name': 'beta$index',
+        'description': 'Beta $index',
+        'parameters': parameters,
+      });
+    }
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    for (final parameters in [...alphaParameters, ...betaParameters]) {
+      expect(parameters.readsFor('scope'), 0);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha');
+    await tester.pump();
+    for (final parameters in alphaParameters) {
+      expect(parameters.readsFor('scope'), 1);
+    }
+    for (final parameters in betaParameters) {
+      expect(parameters.readsFor('scope'), 0);
+    }
+
+    await tester.enterText(find.byType(TextField), '/beta');
+    await tester.pump();
+    for (final parameters in betaParameters) {
+      expect(parameters.readsFor('scope'), 1);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha');
+    await tester.pump();
+    for (final parameters in alphaParameters) {
+      expect(parameters.readsFor('scope'), 2);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha0');
+    await tester.pump();
+    expect(alphaParameters.first.readsFor('scope'), 2);
+  });
+
+  testWidgets('PromptInput hides a hostile parameter preview payload', (
+    tester,
+  ) async {
+    final command = _CountingCommandMap(
+      <String, Object?>{
+        'name': 'review',
+        'description': 'Review safely.',
+        'parameters': <String, Object?>{'secret': 'CANARY'},
+      },
+      throwingKeys: const <String>{'parameters'},
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        availableCommands: <Map<String, Object?>>[command],
+      ),
+    );
+    expect(command.readsFor('parameters'), 0);
+
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Review safely.'), findsOneWidget);
+    expect(find.byKey(const Key('command-parameters-preview')), findsNothing);
+    expect(find.textContaining('CANARY'), findsNothing);
+    expect(command.readsFor('parameters'), 1);
+
+    await tester.enterText(find.byType(TextField), '/revi');
+    await tester.pump();
+    expect(command.readsFor('parameters'), 1);
+  });
+
+  testWidgets('PromptInput snapshots a command list length exactly once', (
+    tester,
+  ) async {
+    final commands = _CountingCommandList(<Map<String, Object?>>[
+      <String, Object?>{'name': 'review', 'description': 'Review.'},
+    ]);
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+
+    expect(commands.lengthReads, 1);
+    expect(find.text('/review'), findsOneWidget);
+  });
+
+  testWidgets(
+    'PromptInput clears old cache when a rebuilt command source is hostile',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: <Map<String, Object?>>[
+            <String, Object?>{
+              'name': 'safe',
+              'description': 'Old safe command.',
+            },
+          ],
+          availableCommandsRevision: 1,
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '/safe');
+      await tester.pump();
+      expect(find.text('Old safe command.'), findsOneWidget);
+
+      final hostileSources = <List<Map<String, Object?>>>[
+        _CountingCommandList(
+          const <Map<String, Object?>>[],
+          throwOnLength: true,
+        ),
+        _CountingCommandList(<Map<String, Object?>>[
+          <String, Object?>{'name': 'unreachable'},
+        ], throwOnIndex: true),
+        <Map<String, Object?>>[
+          _CountingCommandMap(
+            <String, Object?>{'name': 'hidden'},
+            throwingKeys: const <String>{'name'},
+          ),
+        ],
+        <Map<String, Object?>>[
+          _CountingCommandMap(
+            <String, Object?>{
+              'name': 'hidden',
+              'description': 'never retained',
+            },
+            throwingKeys: const <String>{'description'},
+          ),
+        ],
+      ];
+
+      for (var index = 0; index < hostileSources.length; index += 1) {
+        await tester.pumpWidget(
+          input(
+            isSending: false,
+            onSend: (_, _) {},
+            availableCommands: hostileSources[index],
+            availableCommandsRevision: index + 2,
+          ),
+        );
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('Old safe command.'), findsNothing);
+      }
+    },
+  );
+
+  testWidgets('PromptInput scans at most 1024 commands and displays five', (
+    tester,
+  ) async {
+    final counted = List<_CountingCommandMap>.generate(
+      1025,
+      (index) => _CountingCommandMap(<String, Object?>{
+        'name': 'command-${index.toString().padLeft(4, '0')}',
+        'description': 'Description $index',
+      }),
+    );
+    final commands = counted.cast<Map<String, Object?>>();
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+
+    expect(find.text('/command-0000'), findsOneWidget);
+    expect(find.text('/command-0005'), findsNothing);
+    final panel = tester.widget<ListView>(find.byType(ListView));
+    expect(
+      (panel.childrenDelegate as SliverChildBuilderDelegate).childCount,
+      9,
+    );
+    expect(counted[1023].readsFor('name'), 1);
+    expect(counted[1024].readsFor('name'), 0);
+    expect(counted[1024].readsFor('description'), 0);
+    expect(counted[1024].readsFor('parameters'), 0);
+    expect(counted[1023].readsFor('parameters'), 0);
+  });
+
+  testWidgets('PromptInput hides an unfinished query beyond 1024 code units', (
+    tester,
+  ) async {
+    final commandName = ''.padLeft(1024, 'a');
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        availableCommands: <Map<String, Object?>>[
+          <String, Object?>{
+            'name': commandName,
+            'description': 'Boundary command.',
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/${''.padLeft(1023, 'a')}');
+    await tester.pump();
+    expect(find.text('Boundary command.'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/${''.padLeft(1024, 'a')}');
+    await tester.pump();
+    expect(find.text('Boundary command.'), findsNothing);
+  });
+
+  testWidgets(
+    'PromptInput bounds Unicode whitespace and multi-megabyte paste',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: const <Map<String, Object?>>[
+            <String, Object?>{
+              'name': 'review',
+              'description': 'Unicode-safe command.',
+            },
+          ],
+        ),
+      );
+
+      await tester.enterText(find.byType(TextField), '\u3000/rev');
+      await tester.pump();
+      expect(find.text('Unicode-safe command.'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '/rev\u00a0argument');
+      await tester.pump();
+      expect(find.text('Unicode-safe command.'), findsNothing);
+
+      final pasted = '/${''.padLeft(4 * 1024 * 1024, 'r')}';
+      final stopwatch = Stopwatch()..start();
+      tester.widget<TextField>(find.byType(TextField)).onChanged!(pasted);
+      stopwatch.stop();
+      await tester.pump();
+
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(tester.takeException(), isNull);
+      expect(find.text('Unicode-safe command.'), findsNothing);
+    },
+  );
+
+  testWidgets('PromptInput query cap honors the injected structured limit', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(maxStructuredStringBytes: 8);
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        inputBudget: budget,
+        availableCommands: const <Map<String, Object?>>[
+          <String, Object?>{
+            'name': 'reviewxx',
+            'description': 'Small-budget command.',
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/reviewx');
+    await tester.pump();
+    expect(find.text('Small-budget command.'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/reviewxx');
+    await tester.pump();
+    expect(find.text('Small-budget command.'), findsNothing);
   });
 
   testWidgets('PromptInput hides slash commands while sending', (tester) async {
@@ -1222,4 +1620,69 @@ void main() {
     expect(find.text('GPT-5 Super Extended Reasoning'), findsOneWidget);
     expect(sendIcon(), findsOneWidget);
   });
+}
+
+final class _CountingCommandMap extends MapBase<String, Object?> {
+  _CountingCommandMap(this._values, {this.throwingKeys = const <String>{}});
+
+  final Map<String, Object?> _values;
+  final Set<String> throwingKeys;
+  final Map<String, int> _reads = <String, int>{};
+
+  int readsFor(String key) => _reads[key] ?? 0;
+
+  @override
+  Object? operator [](Object? key) {
+    if (key is String) _reads[key] = readsFor(key) + 1;
+    if (throwingKeys.contains(key)) throw StateError('hostile command getter');
+    return _values[key];
+  }
+
+  @override
+  void operator []=(String key, Object? value) {
+    _values[key] = value;
+  }
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  Object? remove(Object? key) => _values.remove(key);
+}
+
+final class _CountingCommandList extends ListBase<Map<String, Object?>> {
+  _CountingCommandList(
+    this._values, {
+    this.throwOnLength = false,
+    this.throwOnIndex = false,
+  });
+
+  final List<Map<String, Object?>> _values;
+  final bool throwOnLength;
+  final bool throwOnIndex;
+  int lengthReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    if (throwOnLength) throw StateError('hostile command list length');
+    return _values.length;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable test list');
+
+  @override
+  Map<String, Object?> operator [](int index) {
+    if (throwOnIndex) throw StateError('hostile command list index');
+    return _values[index];
+  }
+
+  @override
+  void operator []=(int index, Map<String, Object?> value) {
+    throw UnsupportedError('immutable test list');
+  }
 }

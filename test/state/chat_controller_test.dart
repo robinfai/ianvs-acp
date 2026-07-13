@@ -4450,16 +4450,20 @@ void main() {
         controller.availableCommands = commands;
         expect(controller.availableCommandsRevision, 1);
         nested.add('mutated');
-        commands.clear();
         expect(controller.availableCommands.single['payload'], <Object?>[
           'safe',
         ]);
+        commands.single['name'] = 'updated';
+        controller.availableCommands = commands;
+        expect(controller.availableCommandsRevision, 2);
+        expect(controller.availableCommands.single['name'], 'updated');
+        commands.clear();
         expect(
           () => controller.availableCommands.clear(),
           throwsUnsupportedError,
         );
         controller.availableCommands = const <Map<String, Object?>>[];
-        expect(controller.availableCommandsRevision, 2);
+        expect(controller.availableCommandsRevision, 3);
         expect(controller.availableCommands, isEmpty);
       },
     );
@@ -5433,18 +5437,21 @@ void main() {
             <
               ({
                 int retained,
+                bool checksCommandRevision,
                 void Function(ChatController) apply,
                 void Function(ChatController) verifyRejected,
               })
             >[
               (
                 retained: snapshot(commands: commands).retainedBytes,
+                checksCommandRevision: true,
                 apply: (controller) => controller.availableCommands = commands,
                 verifyRejected: (controller) =>
                     expect(controller.availableCommands, isEmpty),
               ),
               (
                 retained: snapshot(settings: settings).retainedBytes,
+                checksCommandRevision: false,
                 apply: (controller) => controller.sessionSettings = settings,
                 verifyRejected: (controller) {
                   expect(
@@ -5460,6 +5467,7 @@ void main() {
               ),
               (
                 retained: snapshot(usage: usage).retainedBytes,
+                checksCommandRevision: false,
                 apply: (controller) => controller.sessionUsage = usage,
                 verifyRejected: (controller) =>
                     expect(controller.sessionUsage, isNull),
@@ -5478,8 +5486,12 @@ void main() {
           );
           addTearDown(controller.dispose);
           controller.restoreArchivedSessionLocally(snapshot(budget: budget));
+          final commandRevisionBefore = controller.availableCommandsRevision;
           stateCase.apply(controller);
           stateCase.verifyRejected(controller);
+          if (stateCase.checksCommandRevision) {
+            expect(controller.availableCommandsRevision, commandRevisionBefore);
+          }
           expect(controller.currentSession?.id, session.id);
           expect(
             controller.debugUiStateRetainedBytes,
