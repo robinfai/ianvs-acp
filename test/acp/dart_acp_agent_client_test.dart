@@ -8686,13 +8686,208 @@ Future<void> main() async {
           expect(duplicate, contains('error'));
           expect(duplicate.toString(), contains('duplicate terminalId'));
           expect(provider.releaseAttempts, ['duplicate-terminal']);
+          expect(provider.releaseHandles, hasLength(1));
+          expect(
+            provider.releaseHandles.single,
+            same(provider.createdHandles[1]),
+          );
 
           await harness.manager.releaseTerminal('duplicate-terminal');
           expect(provider.releaseAttempts, <String>[
             'duplicate-terminal',
             'duplicate-terminal',
           ]);
+          expect(provider.releaseHandles, hasLength(2));
+          expect(provider.releaseHandles[1], same(provider.createdHandles[0]));
         } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle rpc release is idempotent and immediately reusable',
+      () async {
+        final provider = _RecordingTerminalProvider();
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+        final releasedIds = <String>[];
+        final events = harness.manager.terminalEvents.listen((event) {
+          if (event is acp.TerminalReleased) {
+            releasedIds.add(event.terminalId);
+          }
+        });
+
+        try {
+          await harness.resume('session-a');
+          final first = await harness.createTerminal(
+            id: 'terminal-handle-rpc-release-first',
+            sessionId: 'session-a',
+          );
+          final terminalId =
+              (first['result'] as Map<String, dynamic>)['terminalId'] as String;
+
+          expect(
+            await harness.releaseTerminal(
+              id: 'terminal-handle-rpc-release-once',
+              terminalId: terminalId,
+            ),
+            contains('result'),
+          );
+          expect(
+            await harness.createTerminal(
+              id: 'terminal-handle-rpc-release-replacement',
+              sessionId: 'session-a',
+            ),
+            contains('result'),
+          );
+          expect(
+            await harness.releaseTerminal(
+              id: 'terminal-handle-rpc-release-repeat',
+              terminalId: terminalId,
+            ),
+            contains('result'),
+          );
+          expect(
+            await harness.releaseTerminal(
+              id: 'terminal-handle-rpc-release-unknown',
+              terminalId: 'unknown-terminal',
+            ),
+            contains('result'),
+          );
+          await Future<void>.delayed(Duration.zero);
+
+          expect(provider.releaseAttempts, ['terminal-1']);
+          expect(releasedIds, ['terminal-1']);
+        } finally {
+          await events.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle concurrent rpc public and close release owns handle once',
+      () async {
+        final releaseBarrier = Completer<void>();
+        final releaseStarted = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          releaseBarrier: releaseBarrier,
+          releaseStarted: releaseStarted,
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          final created = await harness.createTerminal(
+            id: 'terminal-handle-concurrent-release-create',
+            sessionId: 'session-a',
+          );
+          final terminalId =
+              (created['result'] as Map<String, dynamic>)['terminalId']
+                  as String;
+          final rpcRelease = harness.releaseTerminal(
+            id: 'terminal-handle-concurrent-release-rpc',
+            terminalId: terminalId,
+          );
+          await releaseStarted.future.timeout(const Duration(seconds: 5));
+
+          final publicRelease = harness.manager.releaseTerminal(terminalId);
+          final close = harness.manager.closeSession(sessionId: 'session-a');
+          await Future.wait<void>([publicRelease, close]);
+          expect(provider.releaseAttempts, [terminalId]);
+
+          releaseBarrier.complete();
+          expect(await rpcRelease, contains('result'));
+          expect(provider.releaseAttempts, [terminalId]);
+          expect(
+            provider.releaseHandles.single,
+            same(provider.createdHandles.single),
+          );
+        } finally {
+          if (!releaseBarrier.isCompleted) releaseBarrier.complete();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle dispose waits for an rpc owned release before events close',
+      () async {
+        const requestCanary = 'release-dispose-request-canary';
+        final releaseBarrier = Completer<void>();
+        final releaseStarted = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          releaseBarrier: releaseBarrier,
+          releaseStarted: releaseStarted,
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+        final releasedIds = <String>[];
+        final events = harness.manager.terminalEvents.listen((event) {
+          if (event is acp.TerminalReleased) {
+            releasedIds.add(event.terminalId);
+          }
+        });
+        var disposeCompleted = false;
+
+        try {
+          await harness.resume('session-a');
+          final created = await harness.createTerminal(
+            id: 'terminal-handle-dispose-release-create',
+            sessionId: 'session-a',
+          );
+          final terminalId =
+              (created['result'] as Map<String, dynamic>)['terminalId']
+                  as String;
+          final rpcRelease = harness.releaseTerminal(
+            id: 'terminal-handle-dispose-release-rpc',
+            terminalId: terminalId,
+            canary: requestCanary,
+          );
+          await releaseStarted.future.timeout(const Duration(seconds: 5));
+
+          final dispose = harness.manager.dispose().then((_) {
+            disposeCompleted = true;
+          });
+          await pumpEventQueue();
+          final disposeWaitedForRelease = !disposeCompleted;
+
+          releaseBarrier.complete();
+          final response = await rpcRelease;
+          await dispose.timeout(const Duration(seconds: 5));
+          await Future<void>.delayed(Duration.zero);
+
+          expect(disposeWaitedForRelease, isTrue);
+          expect(response, contains('result'));
+          expect(response, isNot(contains('error')));
+          expect(response.toString(), isNot(contains('data')));
+          expect(response.toString(), isNot(contains(requestCanary)));
+          expect(provider.releaseAttempts, [terminalId]);
+          expect(releasedIds, [terminalId]);
+          expect(disposeCompleted, isTrue);
+        } finally {
+          if (!releaseBarrier.isCompleted) releaseBarrier.complete();
+          await events.cancel();
           await harness.dispose();
         }
       },
@@ -8738,11 +8933,15 @@ Future<void> main() async {
     );
 
     test(
-      'terminal handle dispose releases a late create before returning quota',
+      'terminal handle rpc release failure is payload free and reusable',
       () async {
-        final createBarrier = Completer<void>();
+        const providerSecret = 'rpc-release-provider-secret';
+        const requestCanary = 'rpc-release-request-canary';
+        const terminalIdCanary = 'rpc-release-terminal-canary';
         final provider = _RecordingTerminalProvider(
-          createBarriers: <int, Completer<void>>{1: createBarrier},
+          failReleaseIds: const <String>{terminalIdCanary},
+          releaseErrorMessage: providerSecret,
+          terminalIdsByCall: const <int, String>{1: terminalIdCanary},
         );
         final harness = _TerminalAdmissionHarness(
           provider: provider,
@@ -8751,6 +8950,66 @@ Future<void> main() async {
           ),
           maxTerminalHandles: 1,
           maxTerminalHandlesPerSession: 1,
+        );
+
+        try {
+          await harness.resume('session-a');
+          final first = await harness.createTerminal(
+            id: 'terminal-handle-rpc-release-failure-first',
+            sessionId: 'session-a',
+          );
+          final terminalId =
+              (first['result'] as Map<String, dynamic>)['terminalId'] as String;
+          final failed = await harness.releaseTerminal(
+            id: 'terminal-handle-rpc-release-failure',
+            terminalId: terminalId,
+            canary: requestCanary,
+          );
+
+          expect(failed['error'], <String, dynamic>{
+            'code': -32000,
+            'message': 'Terminal release failed.',
+          });
+          final serialized = failed.toString();
+          expect(serialized, isNot(contains('data')));
+          expect(serialized, isNot(contains(providerSecret)));
+          expect(serialized, isNot(contains(requestCanary)));
+          expect(serialized, isNot(contains(terminalIdCanary)));
+          expect(
+            await harness.createTerminal(
+              id: 'terminal-handle-rpc-release-after-failure',
+              sessionId: 'session-a',
+            ),
+            contains('result'),
+          );
+          expect(provider.releaseAttempts, [terminalIdCanary]);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'terminal handle dispose releases a late create before returning quota',
+      () async {
+        const providerSecret = 'late-dispose-provider-secret';
+        final createBarrier = Completer<void>();
+        final provider = _RecordingTerminalProvider(
+          createBarriers: <int, Completer<void>>{1: createBarrier},
+          failReleaseIds: const <String>{'terminal-1'},
+          releaseErrorMessage: providerSecret,
+        );
+        final harness = _TerminalAdmissionHarness(
+          provider: provider,
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          maxTerminalHandles: 1,
+          maxTerminalHandlesPerSession: 1,
+        );
+        final logs = <String>[];
+        final logSubscription = harness.manager.config.logger.onRecord.listen(
+          (record) => logs.add(record.message),
         );
 
         try {
@@ -8766,13 +9025,16 @@ Future<void> main() async {
           final lateResponse = await late;
           expect(lateResponse, contains('error'));
           expect(lateResponse.toString(), contains('closing or closed'));
+          expect(lateResponse.toString(), isNot(contains(providerSecret)));
           expect(provider.releaseAttempts, ['terminal-1']);
+          expect(logs.join('\n'), isNot(contains(providerSecret)));
           expect(
             await harness.manager.readTerminalOutput('terminal-1'),
             isEmpty,
           );
         } finally {
           if (!createBarrier.isCompleted) createBarrier.complete();
+          await logSubscription.cancel();
           await harness.dispose();
         }
       },
@@ -13983,6 +14245,27 @@ class _TerminalAdmissionHarness {
     return response.future.timeout(const Duration(seconds: 5));
   }
 
+  Future<Map<String, dynamic>> releaseTerminal({
+    required String id,
+    required String terminalId,
+    String? canary,
+  }) async {
+    final response = Completer<Map<String, dynamic>>();
+    _responses[id] = response;
+    channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': 'terminal/release',
+        'params': <String, dynamic>{
+          'terminalId': terminalId,
+          'canary': ?canary,
+        },
+      }),
+    );
+    return response.future.timeout(const Duration(seconds: 5));
+  }
+
   Future<void> dispose() async {
     await manager.dispose();
     await peer.close();
@@ -15034,6 +15317,8 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
     this.releaseErrorMessage = 'injected terminal release failure',
     this.createBarrier,
     this.createStarted,
+    this.releaseBarrier,
+    this.releaseStarted,
     this.failCreateCalls = const <int>{},
     this.failLimitCalls = const <int>{},
     Map<int, Completer<void>>? createBarriers,
@@ -15044,12 +15329,18 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
   final String releaseErrorMessage;
   final Completer<void>? createBarrier;
   final Completer<void>? createStarted;
+  final Completer<void>? releaseBarrier;
+  final Completer<void>? releaseStarted;
   final Set<int> failCreateCalls;
   final Set<int> failLimitCalls;
   final Map<int, Completer<void>> createBarriers;
   final Map<int, String> terminalIdsByCall;
   final List<String> createSessions = <String>[];
   final List<String> releaseAttempts = <String>[];
+  final List<acp.TerminalProcessHandle> createdHandles =
+      <acp.TerminalProcessHandle>[];
+  final List<acp.TerminalProcessHandle> releaseHandles =
+      <acp.TerminalProcessHandle>[];
 
   int get createCalls => createSessions.length;
 
@@ -15080,11 +15371,13 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
       '-c',
       'sleep 30',
     ]);
-    return acp.TerminalProcessHandle(
+    final handle = acp.TerminalProcessHandle(
       terminalId: terminalIdsByCall[call] ?? 'terminal-$call',
       process: process,
       outputByteLimit: outputByteLimit,
     );
+    createdHandles.add(handle);
+    return handle;
   }
 
   @override
@@ -15097,6 +15390,10 @@ class _RecordingTerminalProvider implements acp.TerminalProvider {
   @override
   Future<void> release(acp.TerminalProcessHandle handle) async {
     releaseAttempts.add(handle.terminalId);
+    releaseHandles.add(handle);
+    final started = releaseStarted;
+    if (started != null && !started.isCompleted) started.complete();
+    await releaseBarrier?.future;
     await handle.release();
     if (failReleaseIds.contains(handle.terminalId)) {
       throw StateError(releaseErrorMessage);

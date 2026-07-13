@@ -536,6 +536,18 @@ final class _TerminalQuotaLease {
   }
 }
 
+final class _ManagedTerminal {
+  const _ManagedTerminal({
+    required this.handle,
+    required this.sessionId,
+    required this.lease,
+  });
+
+  final TerminalProcessHandle handle;
+  final String sessionId;
+  final _TerminalQuotaLease lease;
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager implements AcpBoundedObservationSource {
   /// Create a [SessionManager] with [config] and [peer].
@@ -623,8 +635,7 @@ class SessionManager implements AcpBoundedObservationSource {
   final Set<_TerminalQuotaLease> _pendingTerminalLeases =
       <_TerminalQuotaLease>{};
   final Map<String, int> _terminalLeaseCountBySession = <String, int>{};
-  final Map<String, _TerminalQuotaLease> _terminalLeasesByTerminalId =
-      <String, _TerminalQuotaLease>{};
+  final Set<Future<void>> _terminalReleaseOperations = <Future<void>>{};
   var _nextInputBudgetGeneration = 0;
   var _disposed = false;
 
@@ -647,35 +658,18 @@ class SessionManager implements AcpBoundedObservationSource {
     _boundedObservationListeners.clear();
     _invalidateAllInputBudgetPhases();
     _invalidateAllRequestInputBudgetPhases();
-    final terminalProvider = config.terminalProvider;
-    final terminals = _terminals.entries
-        .map(
-          (entry) => (
-            handle: entry.value,
-            lease: _terminalLeasesByTerminalId.remove(entry.key),
-          ),
-        )
-        .toList(growable: false);
-    _terminals.clear();
-    _terminalSessions.clear();
+    final terminalIds = _terminals.keys.toList(growable: false);
     var terminalReleaseFailures = 0;
-    if (terminalProvider != null) {
-      await Future.wait<void>(
-        terminals.map((record) async {
-          try {
-            await terminalProvider.release(record.handle);
-          } on Object {
-            terminalReleaseFailures += 1;
-          } finally {
-            record.lease?.release();
-          }
-        }),
-      );
-    } else {
-      for (final record in terminals) {
-        record.lease?.release();
-      }
-    }
+    await Future.wait<void>(
+      terminalIds.map((terminalId) async {
+        try {
+          await _releaseManagedTerminal(terminalId);
+        } on Object {
+          terminalReleaseFailures += 1;
+        }
+      }),
+    );
+    await _waitForTerminalReleaseOperations();
     if (terminalReleaseFailures > 0) {
       _log.warning(
         'session dispose cleanup stage terminals failed '
@@ -1480,7 +1474,7 @@ class SessionManager implements AcpBoundedObservationSource {
       _inputBudgetPhases.containsKey(sessionId) ||
       _cancelledPromptOwners.containsKey(sessionId) ||
       _sessionClosingOwners.containsKey(sessionId) ||
-      _terminalSessions.containsValue(sessionId) ||
+      _terminals.values.any((record) => record.sessionId == sessionId) ||
       _terminalLeases.any((lease) => lease.sessionId == sessionId) ||
       _generatedSessionRegistrationOwners.containsKey(sessionId);
 
@@ -2565,8 +2559,7 @@ class SessionManager implements AcpBoundedObservationSource {
     }
   }
 
-  final Map<String, TerminalProcessHandle> _terminals = {};
-  final Map<String, String> _terminalSessions = {};
+  final Map<String, _ManagedTerminal> _terminals = <String, _ManagedTerminal>{};
 
   Future<Json> _onTerminalCreate(Json req) async {
     final provider = config.terminalProvider;
@@ -2703,9 +2696,11 @@ class SessionManager implements AcpBoundedObservationSource {
         }
         lease.markActive();
         registered = true;
-        _terminals[handle.terminalId] = handle;
-        _terminalSessions[handle.terminalId] = sessionId;
-        _terminalLeasesByTerminalId[handle.terminalId] = lease;
+        _terminals[handle.terminalId] = _ManagedTerminal(
+          handle: handle,
+          sessionId: sessionId,
+          lease: lease,
+        );
         _terminalEvents.add(
           TerminalCreated(
             terminalId: handle.terminalId,
@@ -2728,10 +2723,11 @@ class SessionManager implements AcpBoundedObservationSource {
       return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final termId = req['terminalId'] as String;
-    final handle = _terminals[termId];
-    if (handle == null) {
+    final record = _terminals[termId];
+    if (record == null) {
       return {'output': '', 'truncated': false, 'exitStatus': null};
     }
+    final handle = record.handle;
     final output = await provider.currentOutput(handle);
     int? exitCode;
     try {
@@ -2766,14 +2762,15 @@ class SessionManager implements AcpBoundedObservationSource {
       };
     }
     final termId = req['terminalId'] as String;
-    final handle = _terminals[termId];
-    if (handle == null) {
+    final record = _terminals[termId];
+    if (record == null) {
       return {
         'output': '',
         'truncated': false,
         'exitStatus': {'exitCode': 0},
       };
     }
+    final handle = record.handle;
     final code = await provider.waitForExit(handle);
     _terminalEvents.add(TerminalExited(terminalId: termId, code: code));
     return {
@@ -2786,53 +2783,46 @@ class SessionManager implements AcpBoundedObservationSource {
   Future<Json?> _onTerminalKill(Json req) async {
     final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
-    final handle = _terminals[termId];
-    if (provider != null && handle != null) {
-      await provider.kill(handle);
+    final record = _terminals[termId];
+    if (provider != null && record != null) {
+      await provider.kill(record.handle);
     }
     return null;
   }
 
   Future<Json?> _onTerminalRelease(Json req) async {
-    final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
-    final handle = _terminals.remove(termId);
-    _terminalSessions.remove(termId);
-    final lease = _terminalLeasesByTerminalId.remove(termId);
     try {
-      if (provider != null && handle != null) {
-        await provider.release(handle);
-      }
-    } finally {
-      lease?.release();
+      await _releaseManagedTerminal(termId, publishEvent: true);
+    } on Object {
+      throw _PayloadFreeRpcException(-32000, 'Terminal release failed.');
     }
-    _terminalEvents.add(TerminalReleased(terminalId: termId));
     return null;
   }
 
   // UI helpers to interact with terminals
   /// Read buffered output for a managed terminal.
   Future<String> readTerminalOutput(String terminalId) async {
-    final handle = _terminals[terminalId];
-    if (handle == null) return '';
-    return handle.currentOutput();
+    final record = _terminals[terminalId];
+    if (record == null) return '';
+    return record.handle.currentOutput();
   }
 
   /// Kill a managed terminal process.
   Future<void> killTerminal(String terminalId) async {
     final provider = config.terminalProvider;
-    final handle = _terminals[terminalId];
-    if (provider != null && handle != null) {
-      await provider.kill(handle);
+    final record = _terminals[terminalId];
+    if (provider != null && record != null) {
+      await provider.kill(record.handle);
     }
   }
 
   /// Wait for a terminal to exit and return its code, or null if unavailable.
   Future<int?> waitTerminal(String terminalId) async {
     final provider = config.terminalProvider;
-    final handle = _terminals[terminalId];
-    if (provider != null && handle != null) {
-      final code = await provider.waitForExit(handle);
+    final record = _terminals[terminalId];
+    if (provider != null && record != null) {
+      final code = await provider.waitForExit(record.handle);
       return code;
     }
     return null;
@@ -2840,42 +2830,83 @@ class SessionManager implements AcpBoundedObservationSource {
 
   /// Release resources for a managed terminal.
   Future<void> releaseTerminal(String terminalId) async {
-    final provider = config.terminalProvider;
-    final handle = _terminals.remove(terminalId);
-    _terminalSessions.remove(terminalId);
-    final lease = _terminalLeasesByTerminalId.remove(terminalId);
+    await _releaseManagedTerminal(terminalId);
+  }
+
+  Future<bool> _releaseManagedTerminal(
+    String terminalId, {
+    bool publishEvent = false,
+  }) {
+    final record = _terminals.remove(terminalId);
+    if (record == null) return Future<bool>.value(false);
+    final operation = _performManagedTerminalRelease(
+      terminalId,
+      record,
+      publishEvent: publishEvent,
+    );
+    _trackTerminalRelease(operation);
+    return operation.then((_) => true);
+  }
+
+  Future<void> _performManagedTerminalRelease(
+    String terminalId,
+    _ManagedTerminal record, {
+    required bool publishEvent,
+  }) async {
     try {
-      if (provider != null && handle != null) {
-        await provider.release(handle);
+      final provider = config.terminalProvider;
+      if (provider != null) {
+        await provider.release(record.handle);
       }
     } finally {
-      lease?.release();
+      record.lease.release();
+    }
+    if (publishEvent) {
+      _terminalEvents.add(TerminalReleased(terminalId: terminalId));
+    }
+  }
+
+  void _trackTerminalRelease(Future<void> operation) {
+    _terminalReleaseOperations.add(operation);
+    unawaited(
+      operation.then<void>(
+        (_) => _terminalReleaseOperations.remove(operation),
+        onError: (Object _, StackTrace _) {
+          _terminalReleaseOperations.remove(operation);
+        },
+      ),
+    );
+  }
+
+  Future<void> _waitForTerminalReleaseOperations() async {
+    while (_terminalReleaseOperations.isNotEmpty) {
+      final operations = _terminalReleaseOperations.toList(growable: false);
+      await Future.wait<void>(
+        operations.map(
+          (operation) => operation.then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          ),
+        ),
+      );
     }
   }
 
   Future<void> _releaseSessionTerminals(String sessionId) async {
-    final terminalIds = _terminalSessions.entries
-        .where((entry) => entry.value == sessionId)
+    final terminalIds = _terminals.entries
+        .where((entry) => entry.value.sessionId == sessionId)
         .map((entry) => entry.key)
         .toList(growable: false);
-    final provider = config.terminalProvider;
-    final failures = <Object>[];
+    var failures = 0;
     for (final terminalId in terminalIds) {
-      final handle = _terminals.remove(terminalId);
-      _terminalSessions.remove(terminalId);
-      final lease = _terminalLeasesByTerminalId.remove(terminalId);
       try {
-        if (provider != null && handle != null) {
-          await provider.release(handle);
-        }
-      } on Object catch (error) {
-        failures.add(error);
-      } finally {
-        lease?.release();
+        await _releaseManagedTerminal(terminalId);
+      } on Object {
+        failures += 1;
       }
     }
-    if (failures.isNotEmpty) {
-      throw StateError('${failures.length} terminal release(s) failed');
+    if (failures > 0) {
+      throw StateError('$failures terminal release(s) failed');
     }
   }
 }
