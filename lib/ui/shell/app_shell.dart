@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 
 import '../../acp/acp_session_catalog.dart';
 import '../../acp/acp_permission_request.dart';
@@ -72,6 +73,7 @@ class AppShell extends StatelessWidget {
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final ChatController controller;
@@ -118,6 +120,7 @@ class AppShell extends StatelessWidget {
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -171,6 +174,7 @@ class AppShell extends StatelessWidget {
           path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
         );
         Widget promptDock() => PromptInput(
+          inputBudget: inputBudget,
           agentName: agentName,
           enabled: !controller.isSessionOperationRunning,
           isSending: controller.isStreaming,
@@ -267,6 +271,7 @@ class AppShell extends StatelessWidget {
                           final hideSidebar = constraints.maxWidth < 760;
                           final hideInspector = constraints.maxWidth < 1120;
                           final timeline = ChatTimeline(
+                            inputBudget: inputBudget,
                             messages: controller.messages,
                             messageListRevision: controller.messagesRevision,
                             agentName: agentName,
@@ -702,7 +707,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return SessionSettingsDialog(controller: controller);
+        return SessionSettingsDialog(
+          controller: controller,
+          inputBudget: inputBudget,
+        );
       },
     );
   }
@@ -712,6 +720,7 @@ class AppShell extends StatelessWidget {
     final selection = await showDialog<ResumeSessionSelection>(
       context: context,
       builder: (context) => ResumeSessionDialog(
+        inputBudget: inputBudget,
         loadSessions: () => _loadResumableSessions(sessionControllerList),
         initialCwd: controller.currentSession?.cwd ?? controller.cwd,
       ),

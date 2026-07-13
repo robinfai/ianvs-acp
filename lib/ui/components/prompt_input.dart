@@ -1,4 +1,5 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,6 +9,7 @@ import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
 import '../../tasks/egress_policy.dart';
 import '../theme/app_design_tokens.dart';
+import '../bounded_metadata_preview.dart';
 
 typedef PromptSendCallback =
     void Function(String text, List<PromptAttachment> attachments);
@@ -44,6 +46,7 @@ class PromptInput extends StatefulWidget {
     this.onModelSelected,
     this.onReasoningEffortSelected,
     this.pickAttachments,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final String agentName;
@@ -67,6 +70,7 @@ class PromptInput extends StatefulWidget {
   final ValueChanged<String>? onModelSelected;
   final ValueChanged<String>? onReasoningEffortSelected;
   final PromptAttachmentPicker? pickAttachments;
+  final AcpInputBudget inputBudget;
 
   @override
   State<PromptInput> createState() => _PromptInputState();
@@ -75,6 +79,18 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+
+  @override
+  void initState() {
+    super.initState();
+    widget.inputBudget.validate();
+  }
+
+  @override
+  void didUpdateWidget(covariant PromptInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
+  }
 
   bool get _canSend =>
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
@@ -172,6 +188,7 @@ class _PromptInputState extends State<PromptInput> {
                   if (commandSuggestions.isNotEmpty)
                     _CommandSuggestionPanel(
                       commands: commandSuggestions,
+                      inputBudget: widget.inputBudget,
                       onSelect: _insertCommand,
                     ),
                   TextField(
@@ -1372,10 +1389,12 @@ class _CommandSuggestionPanel extends StatelessWidget {
   const _CommandSuggestionPanel({
     required this.commands,
     required this.onSelect,
+    required this.inputBudget,
   });
 
   final List<Map<String, Object?>> commands;
   final ValueChanged<Map<String, Object?>> onSelect;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -1388,10 +1407,15 @@ class _CommandSuggestionPanel extends StatelessWidget {
           final command = commands[index];
           final invocation = _commandInvocation(command);
           final description = _commandString(command, 'description');
+          final parameters = command['parameters'];
+          final parametersPreview = parameters == null
+              ? null
+              : writeBoundedMetadataPreview(parameters, budget: inputBudget);
           return _CommandSuggestionTile(
             invocation: invocation,
             description: description,
             onTap: () => onSelect(command),
+            parametersPreview: parametersPreview,
           );
         },
         separatorBuilder: (_, _) => const SizedBox(height: 3),
@@ -1406,11 +1430,13 @@ class _CommandSuggestionTile extends StatelessWidget {
     required this.invocation,
     required this.description,
     required this.onTap,
+    required this.parametersPreview,
   });
 
   final String invocation;
   final String description;
   final VoidCallback onTap;
+  final BoundedMetadataPreview? parametersPreview;
 
   @override
   Widget build(BuildContext context) {
@@ -1418,48 +1444,75 @@ class _CommandSuggestionTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.sm),
       onTap: onTap,
       child: Container(
-        height: 38,
+        constraints: const BoxConstraints(minHeight: 38),
         padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: AppColors.surfaceRaised,
           borderRadius: BorderRadius.circular(AppRadius.sm),
           border: Border.all(color: AppColors.border),
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.terminal_rounded,
-              color: AppColors.primaryDark,
-              size: 15,
-            ),
-            const SizedBox(width: 7),
-            SizedBox(
-              width: 126,
-              child: Text(
-                invocation,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
+            Row(
+              children: [
+                const Icon(
+                  Icons.terminal_rounded,
+                  color: AppColors.primaryDark,
+                  size: 15,
                 ),
-              ),
-            ),
-            if (description.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  description,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
+                const SizedBox(width: 7),
+                SizedBox(
+                  width: 126,
+                  child: Text(
+                    invocation,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0,
+                    ),
                   ),
                 ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      description,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (parametersPreview != null) ...[
+              const SizedBox(height: 3),
+              SelectableText(
+                parametersPreview!.text,
+                key: const Key('command-parameters-preview'),
+                maxLines: 1,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                ),
               ),
+              if (parametersPreview!.omission != null)
+                Text(
+                  'Details omitted · ${parametersPreview!.omission!.resource}',
+                  style: const TextStyle(
+                    color: AppColors.warning,
+                    fontSize: 10,
+                  ),
+                ),
             ],
           ],
         ),

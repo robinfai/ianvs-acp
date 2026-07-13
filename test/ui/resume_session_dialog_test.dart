@@ -1,3 +1,6 @@
+import 'dart:collection';
+
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
@@ -95,6 +98,145 @@ void main() {
       find.widgetWithText(SelectableText, '/workspace/shared-two'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('ResumeSessionDialog encodes metadata only after expansion', (
+    tester,
+  ) async {
+    final metadata = _ThrowingEntriesMetadata();
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Bounded metadata',
+          meta: metadata,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            loadSessions: () async => [project],
+            inputBudget: const AcpInputBudget(
+              maxMetadataPreviewChars: 8,
+              maxMetadataPreviewBytes: 8,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(metadata.entriesReads, 0);
+    expect(tester.takeException(), isNull);
+
+    await tester.ensureVisible(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Metadata'));
+    await tester.pump();
+
+    expect(metadata.entriesReads, 1);
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('metadata preview'), findsOneWidget);
+  });
+
+  testWidgets('ResumeSessionDialog replaces expanded metadata with selection', (
+    tester,
+  ) async {
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: const [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Session A',
+          meta: {'value': 'SESSION_A_CANARY'},
+        ),
+        AcpSessionEntry(
+          id: 'session-b',
+          cwd: '/workspace/project-a',
+          title: 'Session B',
+          meta: {'value': 'SESSION_B_CANARY'},
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(loadSessions: () async => [project]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('SESSION_A_CANARY'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('resume-conversation-dropdown')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Session B').last);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('SESSION_A_CANARY'), findsNothing);
+    expect(find.textContaining('SESSION_B_CANARY'), findsOneWidget);
+  });
+
+  testWidgets('ResumeSessionDialog invalidates collapsed preview on budget', (
+    tester,
+  ) async {
+    final budget = ValueNotifier<AcpInputBudget>(const AcpInputBudget());
+    addTearDown(budget.dispose);
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: const [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Budget session',
+          meta: {'value': 'BUDGET_CANARY'},
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ValueListenableBuilder<AcpInputBudget>(
+            valueListenable: budget,
+            builder: (context, inputBudget, _) => ResumeSessionDialog(
+              loadSessions: () async => [project],
+              inputBudget: inputBudget,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('BUDGET_CANARY'), findsOneWidget);
+
+    await tester.tap(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    budget.value = const AcpInputBudget(
+      maxMetadataPreviewChars: 8,
+      maxMetadataPreviewBytes: 8,
+    );
+    await tester.pump();
+    await tester.tap(find.text('Metadata'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('BUDGET_CANARY'), findsNothing);
+    expect(find.textContaining('metadata preview'), findsOneWidget);
   });
 
   testWidgets('SessionWorkspaceReviewDialog returns only explicit approval', (
@@ -294,4 +436,30 @@ void main() {
 
 FilledButton _loadButton(WidgetTester tester) {
   return tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Load'));
+}
+
+final class _ThrowingEntriesMetadata extends MapBase<String, Object?> {
+  var entriesReads = 0;
+
+  @override
+  Object? operator [](Object? key) => key == 'payload' ? 'CANARY' : null;
+
+  @override
+  void operator []=(String key, Object? value) =>
+      throw UnsupportedError('immutable');
+
+  @override
+  void clear() => throw UnsupportedError('immutable');
+
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('immutable');
+
+  @override
+  Iterable<String> get keys => const <String>['payload'];
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries {
+    entriesReads += 1;
+    throw StateError('hostile entries');
+  }
 }

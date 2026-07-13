@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +22,7 @@ import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 import '../support/memory_task_repository.dart';
@@ -51,6 +53,45 @@ void main() {
 
     expect(taskHarness.repository.loadCount, 1);
     expect(taskHarness.repository.pathsOpened, isEmpty);
+  });
+
+  testWidgets('AcpClientApp validates and forwards the same input budget', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMarkdownSyntaxTokens: 3,
+      maxMetadataPreviewChars: 7,
+      maxMetadataPreviewBytes: 9,
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        inputBudget: budget,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    expect(identical(shell.inputBudget, budget), isTrue);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        inputBudget: const AcpInputBudget(maxMarkdownSyntaxTokens: 0),
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
+    expect(tester.takeException(), isArgumentError);
   });
 
   testWidgets('AcpClientApp rejects non-positive task maintenance intervals', (

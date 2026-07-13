@@ -1,7 +1,10 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
@@ -16,6 +19,7 @@ void main() {
     int messageListRevision = 0,
     VoidCallback? onNewSession,
     ThemeData? theme,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
     return MaterialApp(
       theme: theme,
@@ -28,6 +32,7 @@ void main() {
           isLoadingSession: isLoadingSession,
           messageListRevision: messageListRevision,
           onNewSession: onNewSession,
+          inputBudget: inputBudget,
         ),
       ),
     );
@@ -37,6 +42,195 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline never builds MarkdownBody after syntax overflow', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMarkdownSyntaxTokens: 1,
+      maxMarkdownFallbackBytes: 5,
+    );
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(role: ChatMessageRole.assistant, text: '**😀😀**'),
+      ], inputBudget: budget),
+    );
+
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.widgetWithText(SelectableText, '**'), findsOneWidget);
+    expect(find.textContaining('markdown syntax tokens'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline keeps MarkdownBody at the exact syntax limit', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(maxMarkdownSyntaxTokens: 4);
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(role: ChatMessageRole.assistant, text: '**safe**'),
+      ], inputBudget: budget),
+    );
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.textContaining('markdown syntax tokens'), findsNothing);
+  });
+
+  testWidgets('ChatTimeline displays one typed notice per omission kind', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(maxMarkdownSyntaxTokens: 1);
+    final omission = AcpInputOmission(
+      reason: AcpInputOmissionReason.inputLimit,
+      resource: 'markdown syntax tokens',
+      truncated: true,
+      limit: 1,
+      observedAtLeast: 2,
+    );
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '**safe**',
+          omissions: [omission],
+        ),
+      ], inputBudget: budget),
+    );
+
+    expect(find.textContaining('markdown syntax tokens'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline bounds tool metadata after expansion', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 20,
+      maxMetadataPreviewBytes: 12,
+    );
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'title': 'exec_command',
+            'status': 'completed',
+            'rawInput': {'secret': 'TOOL_METADATA_CANARY'},
+          },
+        ),
+      ], inputBudget: budget),
+    );
+
+    expect(find.textContaining('TOOL_METADATA_CANARY'), findsNothing);
+    await tester.tap(find.byType(ExpansionTile));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('TOOL_METADATA_CANARY'), findsNothing);
+    expect(find.textContaining('metadata preview bytes'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline caches expanded metadata by real revisions', (
+    tester,
+  ) async {
+    final first = _CountingPreviewMap('first');
+    final second = _CountingPreviewMap('second');
+    final metadata = <String, Object?>{
+      'title': 'exec_command',
+      'status': 'completed',
+      'rawInput': first,
+    };
+    final message = _TestChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'exec_command',
+      metadata: metadata,
+    );
+    var listRevision = 0;
+    AcpInputBudget budget = const AcpInputBudget();
+    late StateSetter rebuild;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return Scaffold(
+              body: ChatTimeline(
+                messages: [message],
+                messageListRevision: listRevision,
+                inputBudget: budget,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.tap(find.byType(ExpansionTile));
+    await tester.pumpAndSettle();
+    expect(first.entriesReads, 1);
+
+    rebuild(() {});
+    await tester.pump();
+    expect(first.entriesReads, 1);
+
+    rebuild(() => message.revision += 1);
+    await tester.pump();
+    expect(first.entriesReads, 2);
+
+    rebuild(() => listRevision += 1);
+    await tester.pump();
+    expect(first.entriesReads, 2);
+
+    rebuild(() => metadata['rawInput'] = second);
+    await tester.pump();
+    expect(first.entriesReads, 2);
+    expect(second.entriesReads, 1);
+
+    rebuild(
+      () => budget = const AcpInputBudget(
+        maxMetadataPreviewChars: 7,
+        maxMetadataPreviewBytes: 9,
+      ),
+    );
+    await tester.pump();
+    expect(second.entriesReads, 2);
+  });
+
+  testWidgets('ChatTimeline preserves unknown payload identity for cache', (
+    tester,
+  ) async {
+    final block = _CountingPreviewMap.fromValues(<String, Object?>{
+      'type': 'mystery',
+      'value': 'UNKNOWN_CANARY',
+    });
+    final metadata = <String, Object?>{
+      'contentBlocks': <Object?>[block],
+    };
+    final message = _TestChatMessage(
+      role: ChatMessageRole.assistant,
+      text: '',
+      metadata: metadata,
+    );
+    late StateSetter rebuild;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return Scaffold(body: ChatTimeline(messages: [message]));
+          },
+        ),
+      ),
+    );
+    expect(block.entriesReads, 1);
+
+    rebuild(() {});
+    await tester.pump();
+    expect(block.entriesReads, 1);
+
+    rebuild(() => message.revision += 1);
+    await tester.pump();
+    expect(block.entriesReads, 2);
   });
 
   testWidgets('ChatTimeline empty state exposes primary new session action', (
@@ -675,7 +869,7 @@ void main() {
     expect(find.text('call-1'), findsOneWidget);
     expect(find.textContaining('echo hi'), findsOneWidget);
     expect(find.text('hi'), findsOneWidget);
-    expect(find.textContaining('{"command"'), findsNothing);
+    expect(find.text('{"command"'), findsNothing);
   });
 
   testWidgets('ChatTimeline coalesces tool call chunks by id aliases', (
@@ -1063,4 +1257,61 @@ void main() {
     expect(find.text('Output'), findsOneWidget);
     expect(find.text('terminal-output'), findsOneWidget);
   });
+}
+
+final class _TestChatMessage implements ChatMessage {
+  _TestChatMessage({
+    required this.role,
+    required this.text,
+    required this.metadata,
+  });
+
+  @override
+  final ChatMessageRole role;
+
+  @override
+  String text;
+
+  @override
+  final Map<String, Object?> metadata;
+
+  @override
+  int revision = 0;
+
+  @override
+  List<AcpInputOmission> omissions = const <AcpInputOmission>[];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _CountingPreviewMap extends MapBase<String, Object?> {
+  _CountingPreviewMap(String value)
+    : _values = <String, Object?>{'value': value};
+
+  _CountingPreviewMap.fromValues(this._values);
+
+  final Map<String, Object?> _values;
+  var entriesReads = 0;
+
+  @override
+  Object? operator [](Object? key) => _values[key];
+
+  @override
+  void operator []=(String key, Object? value) => _values[key] = value;
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries {
+    entriesReads += 1;
+    return _values.entries;
+  }
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  Object? remove(Object? key) => _values.remove(key);
 }

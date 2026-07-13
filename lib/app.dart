@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -90,6 +91,7 @@ class AcpClientApp extends StatefulWidget {
     this.agentClientFactoryKey,
     this.taskAgentClientFactoryKey,
     this.workspaceStateStore,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final ChatController? controller;
@@ -122,6 +124,7 @@ class AcpClientApp extends StatefulWidget {
   /// stable across ordinary widget rebuilds.
   final Object? taskAgentClientFactoryKey;
   final WorkspaceSidebarStateStore? workspaceStateStore;
+  final AcpInputBudget inputBudget;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -140,6 +143,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   late AcpClientConfig _config;
   late String _widgetConfigSignature;
   late ChatController _controller;
+  late AcpInputBudget _inputBudget;
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
@@ -182,6 +186,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
+    _inputBudget = widget.inputBudget;
     _validateTaskInboxMaintenanceInterval();
     WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
@@ -217,6 +223,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void didUpdateWidget(covariant AcpClientApp oldWidget) {
     super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
+    _inputBudget = widget.inputBudget;
     _validateTaskInboxMaintenanceInterval();
     if (oldWidget.taskInboxMaintenanceInterval !=
         widget.taskInboxMaintenanceInterval) {
@@ -1062,6 +1070,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         ),
       ),
       home: AppShell(
+        inputBudget: _inputBudget,
         controller: _controller,
         taskInboxController: _taskInboxController,
         initialSidebarMode: _selectedTaskId == null

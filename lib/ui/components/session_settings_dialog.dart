@@ -1,18 +1,25 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 
 import '../../acp/acp_session_settings.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_design_tokens.dart';
 
 class SessionSettingsDialog extends StatelessWidget {
-  const SessionSettingsDialog({super.key, required this.controller});
+  const SessionSettingsDialog({
+    super.key,
+    required this.controller,
+    this.inputBudget = const AcpInputBudget(),
+  });
 
   final ChatController controller;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
+    inputBudget.validate();
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {

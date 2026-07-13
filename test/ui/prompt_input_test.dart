@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
@@ -34,6 +36,7 @@ void main() {
     ValueChanged<String>? onReasoningEffortSelected,
     PromptAttachmentPicker? pickAttachments,
     double? width,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
     final promptInput = PromptInput(
       agentName: agentName,
@@ -56,6 +59,7 @@ void main() {
       onSend: onSend,
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
+      inputBudget: inputBudget,
     );
     return MaterialApp(
       home: Scaffold(
@@ -161,6 +165,39 @@ void main() {
     final textField = tester.widget<TextField>(find.byType(TextField));
     expect(textField.controller?.text, '/review ');
     expect(find.text('Review the current change.'), findsNothing);
+  });
+
+  testWidgets('PromptInput bounds command parameters with injected budget', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 20,
+      maxMetadataPreviewBytes: 12,
+    );
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        inputBudget: budget,
+        availableCommands: const [
+          {
+            'name': 'review',
+            'description': 'Review.',
+            'parameters': {'secret': 'PARAMETER_CANARY'},
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+
+    final preview = tester.widget<SelectableText>(
+      find.byKey(const Key('command-parameters-preview')),
+    );
+    expect(utf8.encode(preview.data ?? '').length, lessThanOrEqualTo(12));
+    expect(preview.data, isNot(contains('PARAMETER_CANARY')));
+    expect(find.textContaining('metadata preview bytes'), findsOneWidget);
   });
 
   testWidgets('PromptInput hides slash commands while sending', (tester) async {

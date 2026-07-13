@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_session_catalog.dart';
 import '../theme/app_design_tokens.dart';
+import '../bounded_metadata_preview.dart';
 
 const String resumeSessionAgentNameMetaKey = 'agentName';
 
@@ -23,10 +24,12 @@ class ResumeSessionDialog extends StatefulWidget {
     super.key,
     required this.loadSessions,
     this.initialCwd,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final Future<List<AcpProjectSessions>> Function() loadSessions;
   final String? initialCwd;
+  final AcpInputBudget inputBudget;
 
   @override
   State<ResumeSessionDialog> createState() => _ResumeSessionDialogState();
@@ -47,9 +50,16 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_load());
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant ResumeSessionDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
   }
 
   @override
@@ -256,7 +266,10 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                         },
                 ),
                 const SizedBox(height: 12),
-                _ConversationPreview(conversation: selectedConversationValue),
+                _ConversationPreview(
+                  conversation: selectedConversationValue,
+                  inputBudget: widget.inputBudget,
+                ),
               ],
             ),
           ),
@@ -456,9 +469,13 @@ class _FieldLabel extends StatelessWidget {
 }
 
 class _ConversationPreview extends StatelessWidget {
-  const _ConversationPreview({required this.conversation});
+  const _ConversationPreview({
+    required this.conversation,
+    required this.inputBudget,
+  });
 
   final AcpSessionEntry? conversation;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -516,9 +533,16 @@ class _ConversationPreview extends StatelessWidget {
               label: _formatDateTime(conversation.updatedAt!),
             ),
           ],
-          if (conversation.hasMeta) ...[
+          if (conversation.hasMeta || conversation.metaOmission != null) ...[
             const SizedBox(height: 8),
-            _MetadataPreview(meta: conversation.meta),
+            if (conversation.hasMeta)
+              _MetadataPreview(
+                meta: conversation.meta,
+                inputBudget: inputBudget,
+                sessionIdentity: conversation,
+              ),
+            if (conversation.metaOmission != null)
+              _MetadataOmissionLabel(omission: conversation.metaOmission!),
           ],
         ],
       ),
@@ -526,19 +550,52 @@ class _ConversationPreview extends StatelessWidget {
   }
 }
 
-class _MetadataPreview extends StatelessWidget {
-  const _MetadataPreview({required this.meta});
+class _MetadataPreview extends StatefulWidget {
+  const _MetadataPreview({
+    required this.meta,
+    required this.inputBudget,
+    required this.sessionIdentity,
+  });
 
   final Map<String, Object?> meta;
+  final AcpInputBudget inputBudget;
+  final Object sessionIdentity;
+
+  @override
+  State<_MetadataPreview> createState() => _MetadataPreviewState();
+}
+
+class _MetadataPreviewState extends State<_MetadataPreview> {
+  BoundedMetadataPreview? _preview;
+  var _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _MetadataPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(widget.sessionIdentity, oldWidget.sessionIdentity) &&
+        identical(widget.meta, oldWidget.meta) &&
+        identical(widget.inputBudget, oldWidget.inputBudget)) {
+      return;
+    }
+    _preview = _expanded ? _writePreview() : null;
+  }
+
+  BoundedMetadataPreview _writePreview() =>
+      writeBoundedMetadataPreview(widget.meta, budget: widget.inputBudget);
 
   @override
   Widget build(BuildContext context) {
-    const encoder = JsonEncoder.withIndent('  ');
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: Material(
         color: Colors.transparent,
         child: ExpansionTile(
+          onExpansionChanged: (expanded) {
+            setState(() {
+              _expanded = expanded;
+              _preview = expanded ? _writePreview() : null;
+            });
+          },
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           title: const Text(
@@ -554,26 +611,51 @@ class _MetadataPreview extends StatelessWidget {
             color: AppColors.primaryDark,
             size: 18,
           ),
-          children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: SelectableText(
-                encoder.convert(meta),
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          ],
+          children: _preview == null
+              ? const <Widget>[]
+              : [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: SelectableText(
+                      _preview!.text,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                  if (_preview!.omission != null)
+                    _MetadataOmissionLabel(omission: _preview!.omission!),
+                ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetadataOmissionLabel extends StatelessWidget {
+  const _MetadataOmissionLabel({required this.omission});
+
+  final AcpInputOmission omission;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        'Details omitted · ${omission.resource}',
+        style: const TextStyle(
+          color: AppColors.warning,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );

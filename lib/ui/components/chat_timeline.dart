@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -7,7 +8,9 @@ import 'package:markdown/markdown.dart' as md;
 
 import '../../mermaid/mermaid_view.dart';
 import '../../state/chat_controller.dart';
+import '../bounded_metadata_preview.dart';
 import '../theme/app_design_tokens.dart';
+import '../markdown_render_budget.dart';
 import 'dot_grid_background.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -30,6 +33,7 @@ class ChatTimeline extends StatefulWidget {
     this.isLoadingSession = false,
     this.messageListRevision = 0,
     this.onNewSession,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final List<ChatMessage> messages;
@@ -39,6 +43,7 @@ class ChatTimeline extends StatefulWidget {
   final bool isLoadingSession;
   final int messageListRevision;
   final VoidCallback? onNewSession;
+  final AcpInputBudget inputBudget;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -55,9 +60,16 @@ class _ChatTimelineState extends State<ChatTimeline> {
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
     if (widget.messages.isNotEmpty) {
       _scheduleScrollToBottom();
     }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
   }
 
   @override
@@ -109,8 +121,14 @@ class _ChatTimelineState extends State<ChatTimeline> {
           }
           final entry = entries[index];
           return entry.toolMessages == null
-              ? _MessageBubble(message: entry.message!)
-              : _ToolGroupBubble(messages: entry.toolMessages!);
+              ? _MessageBubble(
+                  message: entry.message!,
+                  inputBudget: widget.inputBudget,
+                )
+              : _ToolGroupBubble(
+                  messages: entry.toolMessages!,
+                  inputBudget: widget.inputBudget,
+                );
         },
       ),
     );
@@ -579,19 +597,24 @@ class _IllustrationLine extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, required this.inputBudget});
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
     if (message.role == ChatMessageRole.tool) {
-      return _ToolBubble(message: message);
+      return _ToolBubble(message: message, inputBudget: inputBudget);
     }
     if (message.role == ChatMessageRole.status &&
         _stringMetadata(message.metadata, 'kind') != null &&
         _stringMetadata(message.metadata, 'kind') != 'unknown') {
-      return _StatusBubble(message: message);
+      return _StatusBubble(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: message.revision,
+      );
     }
 
     final user = message.role == ChatMessageRole.user;
@@ -610,6 +633,13 @@ class _MessageBubble extends StatelessWidget {
       ChatMessageRole.status => AppColors.border,
     };
     final textColor = user ? Colors.white : AppColors.textPrimary;
+    final markdownDecision = message.text.isEmpty
+        ? null
+        : scanMarkdownForRendering(message.text, budget: inputBudget);
+    final omissions = _distinctOmissions(
+      message.omissions,
+      markdownDecision?.omission,
+    );
 
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -647,15 +677,27 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ],
               ),
-              if (message.text.isNotEmpty) ...[
+              if (markdownDecision != null) ...[
                 const SizedBox(height: 6),
-                _SelectableMessageMarkdown(
-                  data: message.text,
-                  user: user,
-                  styleSheet: _markdownStyle(context, textColor, user),
-                ),
+                if (markdownDecision.useMarkdown)
+                  _SelectableMessageMarkdown(
+                    data: markdownDecision.text,
+                    user: user,
+                    styleSheet: _markdownStyle(context, textColor, user),
+                  )
+                else
+                  SelectableText(
+                    markdownDecision.text,
+                    style: TextStyle(color: textColor, height: 1.42),
+                  ),
               ],
-              _ContentBlocksPreview(message: message),
+              for (final omission in omissions)
+                _InputOmissionNotice(omission: omission, user: user),
+              _ContentBlocksPreview(
+                message: message,
+                inputBudget: inputBudget,
+                previewRevision: message.revision,
+              ),
             ],
           ),
         ),
@@ -718,6 +760,42 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+List<AcpInputOmission> _distinctOmissions(
+  List<AcpInputOmission> existing,
+  AcpInputOmission? additional,
+) {
+  final result = <AcpInputOmission>[];
+  final keys = <String>{};
+  for (final omission in <AcpInputOmission>[...existing, ?additional]) {
+    if (keys.add('${omission.reason.name}:${omission.resource}')) {
+      result.add(omission);
+    }
+  }
+  return result;
+}
+
+class _InputOmissionNotice extends StatelessWidget {
+  const _InputOmissionNotice({required this.omission, required this.user});
+
+  final AcpInputOmission omission;
+  final bool user;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        'Content omitted · ${omission.resource}',
+        style: TextStyle(
+          color: user ? Colors.white70 : AppColors.warning,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
 }
 
 class _SelectableMessageMarkdown extends StatelessWidget {
@@ -887,21 +965,25 @@ class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {
 }
 
 class _ToolBubble extends StatelessWidget {
-  const _ToolBubble({required this.message});
+  const _ToolBubble({required this.message, required this.inputBudget});
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
     final parsed = _ParsedTool.fromMessage(message);
-    return _ToolFrame(child: _ToolCallCard(parsed: parsed));
+    return _ToolFrame(
+      child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
+    );
   }
 }
 
 class _ToolGroupBubble extends StatelessWidget {
-  const _ToolGroupBubble({required this.messages});
+  const _ToolGroupBubble({required this.messages, required this.inputBudget});
 
   final List<ChatMessage> messages;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -935,7 +1017,11 @@ class _ToolGroupBubble extends StatelessWidget {
             children: [
               const Divider(height: 12, color: Color(0xfffde68a)),
               for (var index = 0; index < parsedTools.length; index++) ...[
-                _ToolSequenceCard(index: index + 1, parsed: parsedTools[index]),
+                _ToolSequenceCard(
+                  index: index + 1,
+                  parsed: parsedTools[index],
+                  inputBudget: inputBudget,
+                ),
                 if (index != parsedTools.length - 1) const SizedBox(height: 6),
               ],
             ],
@@ -963,22 +1049,65 @@ class _ToolFrame extends StatelessWidget {
   }
 }
 
-class _ToolCallCard extends StatelessWidget {
-  const _ToolCallCard({required this.parsed});
+class _ToolCallCard extends StatefulWidget {
+  const _ToolCallCard({required this.parsed, required this.inputBudget});
 
   final _ParsedTool parsed;
+  final AcpInputBudget inputBudget;
+
+  @override
+  State<_ToolCallCard> createState() => _ToolCallCardState();
+}
+
+class _ToolCallCardState extends State<_ToolCallCard> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final details = <_DetailEntry>[
-      if (parsed.id.isNotEmpty) _DetailEntry('Call ID', parsed.id),
-      if (parsed.kind.isNotEmpty) _DetailEntry('Kind', parsed.kind),
-      if (parsed.locations.isNotEmpty)
-        _DetailEntry('Locations', parsed.locations.join('\n')),
-      if (parsed.content.isNotEmpty) _DetailEntry('Content', parsed.content),
-      if (parsed.input.isNotEmpty) _DetailEntry('Input', parsed.input),
-      if (parsed.output.isNotEmpty) _DetailEntry('Output', parsed.output),
-    ];
+    final parsed = widget.parsed;
+    final hasDetails =
+        parsed.id.isNotEmpty ||
+        parsed.kind.isNotEmpty ||
+        parsed.locations.isNotEmpty ||
+        _hasMetadataDetail(parsed.content) ||
+        _hasMetadataDetail(parsed.input) ||
+        _hasMetadataDetail(parsed.output);
+    final details = !_expanded
+        ? const <Widget>[]
+        : <Widget>[
+            if (parsed.id.isNotEmpty)
+              _DetailBlock(entry: _DetailEntry('Call ID', parsed.id)),
+            if (parsed.kind.isNotEmpty)
+              _DetailBlock(entry: _DetailEntry('Kind', parsed.kind)),
+            if (parsed.locations.isNotEmpty)
+              _DetailBlock(
+                entry: _DetailEntry('Locations', parsed.locations.join('\n')),
+              ),
+            if (_hasMetadataDetail(parsed.content))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-content-preview'),
+                label: 'Content',
+                payload: parsed.content,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+            if (_hasMetadataDetail(parsed.input))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-input-preview'),
+                label: 'Input',
+                payload: parsed.input,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+            if (_hasMetadataDetail(parsed.output))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-output-preview'),
+                label: 'Output',
+                payload: parsed.output,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+          ];
 
     return Container(
       width: double.infinity,
@@ -989,7 +1118,7 @@ class _ToolCallCard extends StatelessWidget {
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: details.isEmpty
+        child: !hasDetails
             ? Padding(
                 padding: const EdgeInsets.all(10),
                 child: _ToolHeader(parsed: parsed),
@@ -1001,18 +1130,25 @@ class _ToolCallCard extends StatelessWidget {
                   childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                   initiallyExpanded: false,
                   maintainState: true,
+                  onExpansionChanged: (expanded) {
+                    if (_expanded == expanded) return;
+                    setState(() => _expanded = expanded);
+                  },
                   leading: const Icon(
                     Icons.build_circle_outlined,
                     color: Color(0xff92400e),
                     size: 18,
                   ),
                   title: _ToolHeader(parsed: parsed, compact: true),
-                  children: [
-                    for (final detail in details) ...[
-                      _DetailBlock(entry: detail),
-                      if (detail != details.last) const SizedBox(height: 6),
-                    ],
-                  ],
+                  children: _expanded
+                      ? [
+                          for (final detail in details) ...[
+                            detail,
+                            if (detail != details.last)
+                              const SizedBox(height: 6),
+                          ],
+                        ]
+                      : const <Widget>[],
                 ),
               ),
       ),
@@ -1021,10 +1157,15 @@ class _ToolCallCard extends StatelessWidget {
 }
 
 class _ToolSequenceCard extends StatelessWidget {
-  const _ToolSequenceCard({required this.index, required this.parsed});
+  const _ToolSequenceCard({
+    required this.index,
+    required this.parsed,
+    required this.inputBudget,
+  });
 
   final int index;
   final _ParsedTool parsed;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -1032,7 +1173,7 @@ class _ToolSequenceCard extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(left: 14),
-          child: _ToolCallCard(parsed: parsed),
+          child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
         ),
         Positioned(
           left: 0,
@@ -1283,9 +1424,15 @@ class _ToolHeader extends StatelessWidget {
 }
 
 class _StatusBubble extends StatelessWidget {
-  const _StatusBubble({required this.message});
+  const _StatusBubble({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1293,10 +1440,22 @@ class _StatusBubble extends StatelessWidget {
     final child = switch (kind) {
       'plan' => _PlanStatus(message: message),
       'diff' => _DiffStatus(message: message),
-      'commands' => _CommandsStatus(message: message),
-      'terminal' => _TerminalStatus(message: message),
+      'commands' => _CommandsStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
+      'terminal' => _TerminalStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
       'mode' => _ModeStatus(message: message),
-      'thought' => _ThoughtStatus(message: message),
+      'thought' => _ThoughtStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
       'turn' => _TurnStatus(message: message),
       _ => _PlainStatus(message: message),
     };
@@ -1321,9 +1480,15 @@ class _StatusBubble extends StatelessWidget {
 }
 
 class _ThoughtStatus extends StatelessWidget {
-  const _ThoughtStatus({required this.message});
+  const _ThoughtStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1344,7 +1509,11 @@ class _ThoughtStatus extends StatelessWidget {
             ),
           ),
         ],
-        _ContentBlocksPreview(message: message),
+        _ContentBlocksPreview(
+          message: message,
+          inputBudget: inputBudget,
+          previewRevision: previewRevision,
+        ),
       ],
     );
   }
@@ -1377,9 +1546,15 @@ class _TurnStatus extends StatelessWidget {
 }
 
 class _ContentBlocksPreview extends StatelessWidget {
-  const _ContentBlocksPreview({required this.message});
+  const _ContentBlocksPreview({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1393,7 +1568,11 @@ class _ContentBlocksPreview extends StatelessWidget {
       child: Column(
         children: [
           for (final block in blocks) ...[
-            _ContentBlockCard(block: block),
+            _ContentBlockCard(
+              block: block,
+              inputBudget: inputBudget,
+              previewRevision: previewRevision,
+            ),
             if (block != blocks.last) const SizedBox(height: 6),
           ],
         ],
@@ -1403,9 +1582,15 @@ class _ContentBlocksPreview extends StatelessWidget {
 }
 
 class _ContentBlockCard extends StatelessWidget {
-  const _ContentBlockCard({required this.block});
+  const _ContentBlockCard({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1413,8 +1598,16 @@ class _ContentBlockCard extends StatelessWidget {
     return switch (type) {
       'image' => _ImageContentBlock(block: block),
       'audio' => _AudioContentBlock(block: block),
-      'resource_link' || 'resource' => _ResourceContentBlock(block: block),
-      _ => _UnknownContentBlock(block: block),
+      'resource_link' || 'resource' => _ResourceContentBlock(
+        block: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
+      _ => _UnknownContentBlock(
+        block: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
     };
   }
 }
@@ -1454,9 +1647,15 @@ class _ImageContentBlock extends StatelessWidget {
 }
 
 class _ResourceContentBlock extends StatelessWidget {
-  const _ResourceContentBlock({required this.block});
+  const _ResourceContentBlock({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1490,7 +1689,12 @@ class _ResourceContentBlock extends StatelessWidget {
       subtitle: details.isEmpty ? 'resource' : details.join(' · '),
       child: uri.isEmpty && text == null
           ? null
-          : _ResourceContentDetails(uri: uri, text: text),
+          : _ResourceContentDetails(
+              uri: uri,
+              text: text,
+              inputBudget: inputBudget,
+              previewRevision: previewRevision,
+            ),
     );
   }
 }
@@ -1529,10 +1733,17 @@ class _AudioContentBlock extends StatelessWidget {
 }
 
 class _ResourceContentDetails extends StatelessWidget {
-  const _ResourceContentDetails({required this.uri, required this.text});
+  const _ResourceContentDetails({
+    required this.uri,
+    required this.text,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final String uri;
   final String? text;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1550,14 +1761,11 @@ class _ResourceContentDetails extends StatelessWidget {
           ),
         if (text != null) ...[
           if (uri.isNotEmpty) const SizedBox(height: 8),
-          SelectableText(
-            _previewObject(text),
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontFamily: 'monospace',
-              fontSize: 12,
-              height: 1.35,
-            ),
+          _BoundedMetadataDetail(
+            label: 'Text',
+            payload: text,
+            inputBudget: inputBudget,
+            previewRevision: previewRevision,
           ),
         ],
       ],
@@ -1566,9 +1774,15 @@ class _ResourceContentDetails extends StatelessWidget {
 }
 
 class _UnknownContentBlock extends StatelessWidget {
-  const _UnknownContentBlock({required this.block});
+  const _UnknownContentBlock({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1576,14 +1790,11 @@ class _UnknownContentBlock extends StatelessWidget {
       icon: Icons.extension_outlined,
       title: _stringMetadata(block, 'type') ?? 'Unknown content',
       subtitle: 'raw content block',
-      child: SelectableText(
-        _previewObject(block),
-        style: const TextStyle(
-          color: AppColors.textSecondary,
-          fontFamily: 'monospace',
-          fontSize: 12,
-          height: 1.35,
-        ),
+      child: _BoundedMetadataDetail(
+        label: 'Content',
+        payload: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
       ),
     );
   }
@@ -1926,14 +2137,27 @@ class _DiffChangeRow extends StatelessWidget {
   }
 }
 
-class _CommandsStatus extends StatelessWidget {
-  const _CommandsStatus({required this.message});
+class _CommandsStatus extends StatefulWidget {
+  const _CommandsStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
+
+  @override
+  State<_CommandsStatus> createState() => _CommandsStatusState();
+}
+
+class _CommandsStatusState extends State<_CommandsStatus> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final commands = _mapList(message.metadata['commands']);
+    final commands = _mapList(widget.message.metadata['commands']);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1972,6 +2196,10 @@ class _CommandsStatus extends StatelessWidget {
                 child: Material(
                   color: Colors.transparent,
                   child: ExpansionTile(
+                    onExpansionChanged: (expanded) {
+                      if (_expanded == expanded) return;
+                      setState(() => _expanded = expanded);
+                    },
                     tilePadding: EdgeInsets.zero,
                     childrenPadding: EdgeInsets.zero,
                     title: const Text(
@@ -1982,12 +2210,19 @@ class _CommandsStatus extends StatelessWidget {
                         fontWeight: FontWeight.w800,
                       ),
                     ),
-                    children: [
-                      for (final command in commands) ...[
-                        _CommandDetailCard(command: command),
-                        if (command != commands.last) const SizedBox(height: 6),
-                      ],
-                    ],
+                    children: _expanded
+                        ? [
+                            for (final command in commands) ...[
+                              _CommandDetailCard(
+                                command: command,
+                                inputBudget: widget.inputBudget,
+                                previewRevision: widget.previewRevision,
+                              ),
+                              if (command != commands.last)
+                                const SizedBox(height: 6),
+                            ],
+                          ]
+                        : const <Widget>[],
                   ),
                 ),
               ),
@@ -1999,9 +2234,15 @@ class _CommandsStatus extends StatelessWidget {
 }
 
 class _CommandDetailCard extends StatelessWidget {
-  const _CommandDetailCard({required this.command});
+  const _CommandDetailCard({
+    required this.command,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> command;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -2048,8 +2289,11 @@ class _CommandDetailCard extends StatelessWidget {
           ],
           if (parameters != null) ...[
             const SizedBox(height: 6),
-            _DetailBlock(
-              entry: _DetailEntry('Parameters', _previewObject(parameters)),
+            _BoundedMetadataDetail(
+              label: 'Parameters',
+              payload: parameters,
+              inputBudget: inputBudget,
+              previewRevision: previewRevision,
             ),
           ],
         ],
@@ -2081,9 +2325,15 @@ class _ModeStatus extends StatelessWidget {
 }
 
 class _TerminalStatus extends StatelessWidget {
-  const _TerminalStatus({required this.message});
+  const _TerminalStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -2138,11 +2388,11 @@ class _TerminalStatus extends StatelessWidget {
         ],
         if (output != null) ...[
           const SizedBox(height: 8),
-          _DetailBlock(
-            entry: _DetailEntry(
-              truncated ? 'Output (truncated)' : 'Output',
-              _previewObject(output),
-            ),
+          _BoundedMetadataDetail(
+            label: truncated ? 'Output (truncated)' : 'Output',
+            payload: output,
+            inputBudget: inputBudget,
+            previewRevision: previewRevision,
           ),
         ],
       ],
@@ -2275,20 +2525,74 @@ class _DetailBlock extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
-          const SizedBox(height: 5),
-          SelectableText(
-            entry.value,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontFamily: 'monospace',
-              fontSize: 12,
-              height: 1.35,
+          if (entry.value.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            SelectableText(
+              entry.value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.35,
+              ),
             ),
-          ),
+          ],
+          if (entry.omission != null)
+            _InputOmissionNotice(omission: entry.omission!, user: false),
         ],
       ),
     );
   }
+}
+
+class _BoundedMetadataDetail extends StatefulWidget {
+  const _BoundedMetadataDetail({
+    super.key,
+    required this.label,
+    required this.payload,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
+
+  final String label;
+  final Object? payload;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
+
+  @override
+  State<_BoundedMetadataDetail> createState() => _BoundedMetadataDetailState();
+}
+
+class _BoundedMetadataDetailState extends State<_BoundedMetadataDetail> {
+  late _DetailEntry _entry = _writeEntry();
+
+  @override
+  void didUpdateWidget(covariant _BoundedMetadataDetail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.payload, oldWidget.payload) ||
+        widget.previewRevision != oldWidget.previewRevision ||
+        !identical(widget.inputBudget, oldWidget.inputBudget) ||
+        widget.label != oldWidget.label) {
+      _entry = _writeEntry();
+    }
+  }
+
+  _DetailEntry _writeEntry() {
+    final preview = writeBoundedMetadataPreview(
+      widget.payload,
+      budget: widget.inputBudget,
+    );
+    return _DetailEntry(
+      widget.label,
+      preview.omission == null && widget.payload is String
+          ? widget.payload! as String
+          : preview.text,
+      preview.omission,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => _DetailBlock(entry: _entry);
 }
 
 class _ParsedTool {
@@ -2301,16 +2605,18 @@ class _ParsedTool {
     required this.input,
     required this.output,
     required this.locations,
+    required this.previewRevision,
   });
 
   final String title;
   final String status;
   final String id;
   final String kind;
-  final String content;
-  final String input;
-  final String output;
+  final Object? content;
+  final Object? input;
+  final Object? output;
   final List<String> locations;
+  final Object previewRevision;
 
   factory _ParsedTool.fromMessage(ChatMessage message) {
     final metadata = message.metadata;
@@ -2340,24 +2646,25 @@ class _ParsedTool {
       kind: _stringMetadata(metadata, 'kind') == 'tool'
           ? ''
           : _stringMetadata(metadata, 'kind') ?? '',
-      content: _previewObject(metadata['content']),
-      input: _previewObject(
-        _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
-      ),
-      output: _previewObject(
-        _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
-      ),
+      content: metadata['content'],
+      input: _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
+      output: _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
       locations: locations,
+      previewRevision: message.revision,
     );
   }
 }
 
 class _DetailEntry {
-  const _DetailEntry(this.label, this.value);
+  const _DetailEntry(this.label, this.value, [this.omission]);
 
   final String label;
   final String value;
+  final AcpInputOmission? omission;
 }
+
+bool _hasMetadataDetail(Object? value) =>
+    value != null && (value is! String || value.isNotEmpty);
 
 String? _stringMetadata(Map<String, Object?> metadata, String key) {
   final value = metadata[key];
@@ -2425,12 +2732,14 @@ String _formatByteCount(int bytes) {
 List<Map<String, Object?>> _mapList(Object? value) {
   if (value is! List) return const [];
   return value.whereType<Map>().map((entry) {
+    if (entry is Map<String, Object?>) return entry;
     return entry.map((key, value) => MapEntry(key.toString(), value));
   }).toList();
 }
 
 Map<String, Object?> _mapMetadata(Object? value) {
   if (value is! Map) return const <String, Object?>{};
+  if (value is Map<String, Object?>) return value;
   return value.map((key, value) => MapEntry(key.toString(), value));
 }
 
@@ -2441,25 +2750,9 @@ String? _resourceTitleFromUri(String uri) {
   return parsed.host.isEmpty ? null : parsed.host;
 }
 
-String _previewObject(Object? value) {
-  if (value == null) return '';
-  final text = value is String ? value : _jsonPreview(value);
-  final cleaned = text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
-  if (cleaned.length <= 1200) return cleaned;
-  return '${cleaned.substring(0, 1200)}\n...';
-}
-
-String _jsonPreview(Object value) {
-  try {
-    const encoder = JsonEncoder.withIndent('  ');
-    return encoder.convert(value);
-  } on Object {
-    return value.toString();
-  }
-}
-
 Map<String, Object?> _objectMap(Object? value) {
   if (value is! Map) return const <String, Object?>{};
+  if (value is Map<String, Object?>) return value;
   return value.map((key, value) => MapEntry(key.toString(), value));
 }
 

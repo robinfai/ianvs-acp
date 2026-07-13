@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -9,6 +10,29 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
 
 void main() {
+  testWidgets('SessionSettingsDialog accepts the injected input budget', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 7,
+      maxMetadataPreviewBytes: 9,
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    final dialog = SessionSettingsDialog(
+      controller: controller,
+      inputBudget: budget,
+    );
+
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: dialog)));
+
+    expect(identical(dialog.inputBudget, budget), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('SessionSettingsDialog prefers config options over modes', (
     tester,
   ) async {
