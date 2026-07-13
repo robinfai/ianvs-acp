@@ -1067,11 +1067,117 @@ void main() {
     final running = runner.runTask(task.id);
     await collector.started.future;
     await runner.cancelActive();
+    await collector.cancelled.future.timeout(const Duration(seconds: 1));
+    var settled = false;
+    running.whenComplete(() => settled = true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(settled, isFalse);
+
+    collector.release();
     final result = await running.timeout(const Duration(seconds: 1));
 
     expect(result.status, TaskStatus.failed);
     expect(result.error, contains('cancelled'));
+    expect(collector.finished, isTrue);
   });
+
+  test(
+    'TaskRunner deadline waits for artifact cleanup and keeps timeout reason',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Artifact deadline',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final collector = _BlockingArtifactCollector();
+      addTearDown(collector.release);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(
+          controllerFactory: (agentName) => ChatController(
+            client: FakeAgentClient(),
+            cwd: '/workspace/default',
+            agentName: agentName,
+          ),
+        ),
+        artifactCollector: collector,
+        taskDeadline: const Duration(milliseconds: 100),
+        promptCancellationTimeout: const Duration(milliseconds: 20),
+      );
+
+      final running = runner.runTask(task.id);
+      await collector.started.future;
+      final reason = await collector.cancelled.future.timeout(
+        const Duration(seconds: 1),
+      );
+      expect(reason, contains('Task run timed out'));
+      var settled = false;
+      running.whenComplete(() => settled = true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(settled, isFalse);
+
+      collector.release();
+      final result = await running.timeout(const Duration(seconds: 1));
+
+      expect(result.status, TaskStatus.failed);
+      expect(result.error, reason);
+      expect(collector.finished, isTrue);
+    },
+  );
+
+  test(
+    'TaskRunner artifact cancellation preserves the first manual reason',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Artifact first cancellation',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final collector = _BlockingArtifactCollector();
+      addTearDown(collector.release);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(
+          controllerFactory: (agentName) => ChatController(
+            client: FakeAgentClient(),
+            cwd: '/workspace/default',
+            agentName: agentName,
+          ),
+        ),
+        artifactCollector: collector,
+        taskDeadline: const Duration(milliseconds: 50),
+        promptCancellationTimeout: const Duration(milliseconds: 20),
+      );
+
+      final running = runner.runTask(task.id);
+      await collector.started.future;
+      await runner.cancelActive();
+      final firstReason = await collector.cancelled.future.timeout(
+        const Duration(seconds: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+      collector.release();
+      final result = await running.timeout(const Duration(seconds: 1));
+
+      expect(firstReason, 'Task run cancelled during application shutdown.');
+      expect(result.status, TaskStatus.failed);
+      expect(result.error, firstReason);
+    },
+  );
 
   test('TaskRunner records assistant tool and status events', () async {
     final store = _MemoryTaskStore();
@@ -2199,8 +2305,9 @@ class _FakeArtifactCollector extends ArtifactCollector {
   @override
   Future<List<ArtifactRecord>> collect(
     TaskRecord task,
-    TaskRunRecord run,
-  ) async {
+    TaskRunRecord run, {
+    ArtifactCollectionCancellation? cancellation,
+  }) async {
     return [
       ArtifactRecord(
         id: 'artifact-1',
@@ -2217,16 +2324,27 @@ class _FakeArtifactCollector extends ArtifactCollector {
 
 class _BlockingArtifactCollector extends ArtifactCollector {
   final Completer<void> started = Completer<void>();
+  final Completer<String> cancelled = Completer<String>();
   final Completer<void> _released = Completer<void>();
+  bool finished = false;
 
   @override
   Future<List<ArtifactRecord>> collect(
     TaskRecord task,
-    TaskRunRecord run,
-  ) async {
+    TaskRunRecord run, {
+    ArtifactCollectionCancellation? cancellation,
+  }) async {
     if (!started.isCompleted) started.complete();
-    await _released.future;
-    return const <ArtifactRecord>[];
+    final remove = cancellation?.addListener((reason) {
+      if (!cancelled.isCompleted) cancelled.complete(reason);
+    });
+    try {
+      await _released.future;
+      return const <ArtifactRecord>[];
+    } finally {
+      remove?.call();
+      finished = true;
+    }
   }
 
   void release() {

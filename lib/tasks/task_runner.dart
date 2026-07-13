@@ -532,9 +532,10 @@ class TaskRunner {
       );
       _throwIfCancelled(cancellation);
       final currentTask = taskController.taskById(task.id) ?? task;
-      final artifacts = await _awaitCancellable(
-        artifactCollector.collect(currentTask, activeRun),
-        cancellation,
+      final artifacts = await artifactCollector.collect(
+        currentTask,
+        activeRun,
+        cancellation: cancellation.artifactCollectionCancellation,
       );
       _throwIfCancelled(cancellation);
       await taskController.replaceArtifactsForRun(
@@ -968,6 +969,8 @@ class _TaskRunCancellation {
   _TaskRunCancellation(this.lease);
 
   final TaskAgentLease lease;
+  final ArtifactCollectionCancellation artifactCollectionCancellation =
+      ArtifactCollectionCancellation();
   final Completer<void> _cancelled = Completer<void>();
   final Completer<void> _finished = Completer<void>();
   bool cancelled = false;
@@ -984,6 +987,7 @@ class _TaskRunCancellation {
     if (cancelled) return false;
     cancelled = true;
     reason = message;
+    artifactCollectionCancellation.cancel(message);
     if (!_cancelled.isCompleted) _cancelled.complete();
     return true;
   }
