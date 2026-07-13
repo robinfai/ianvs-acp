@@ -18,6 +18,7 @@ import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
+import '../components/bounded_image_preview.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
@@ -33,6 +34,7 @@ import '../components/task_inbox_sidebar.dart';
 import '../components/workspace_header.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
+import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef AppShellProcessRunner =
@@ -74,6 +76,8 @@ class AppShell extends StatelessWidget {
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
     this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
   });
 
   final ChatController controller;
@@ -121,6 +125,8 @@ class AppShell extends StatelessWidget {
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
   final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
 
   @override
   Widget build(BuildContext context) {
@@ -273,6 +279,8 @@ class AppShell extends StatelessWidget {
                           final hideInspector = constraints.maxWidth < 1120;
                           final timeline = ChatTimeline(
                             inputBudget: inputBudget,
+                            imageDecodeLedger: imageDecodeLedger,
+                            boundedImageDecoder: boundedImageDecoder,
                             messages: controller.messages,
                             messageListRevision: controller.messagesRevision,
                             agentName: agentName,

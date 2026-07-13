@@ -6,7 +6,9 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dart_acp/dart_acp.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
+import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
+import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 void main() {
@@ -20,6 +22,8 @@ void main() {
     VoidCallback? onNewSession,
     ThemeData? theme,
     AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpImageDecodeBudgetLedger? imageDecodeLedger,
+    BoundedImageDecoder boundedImageDecoder = const DartUiBoundedImageDecoder(),
   }) {
     return MaterialApp(
       theme: theme,
@@ -33,6 +37,8 @@ void main() {
           messageListRevision: messageListRevision,
           onNewSession: onNewSession,
           inputBudget: inputBudget,
+          imageDecodeLedger: imageDecodeLedger,
+          boundedImageDecoder: boundedImageDecoder,
         ),
       ),
     );
@@ -42,6 +48,45 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline delegates image blocks without decoding in build', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxEmbeddedMediaBytes: 1,
+      maxImageDimension: 2,
+      maxImagePixels: 4,
+      maxImagePreviewPixels: 4,
+      maxImagePreviewPixelsGlobal: 4,
+      maxImageDecodeBytesGlobal: 17,
+    );
+    final decoder = _RejectingImageDecoder();
+    final ledger = AcpImageDecodeBudgetLedger(budget: budget);
+    final message = ChatMessage(
+      role: ChatMessageRole.assistant,
+      text: 'image',
+      metadata: const {
+        'contentBlocks': [
+          {'type': 'image', 'mimeType': 'image/png', 'data': 'YQ=='},
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline(
+        [message],
+        inputBudget: budget,
+        imageDecodeLedger: ledger,
+        boundedImageDecoder: decoder,
+      ),
+    );
+    expect(decoder.createBufferCalls, 0);
+
+    await tester.pump();
+    await tester.pump();
+    expect(decoder.createBufferCalls, 1);
+    expect(find.text('Image preview unavailable.'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline never builds MarkdownBody after syntax overflow', (
@@ -1746,6 +1791,31 @@ void main() {
     expect(find.text('Output'), findsOneWidget);
     expect(find.text('terminal-output'), findsOneWidget);
   });
+}
+
+final class _RejectingImageDecoder implements BoundedImageDecoder {
+  var createBufferCalls = 0;
+
+  @override
+  Future<BoundedImageBuffer> createBuffer(Uint8List bytes) async {
+    createBufferCalls += 1;
+    throw StateError('IMAGE_DECODER_CANARY');
+  }
+
+  @override
+  Future<BoundedImageDescriptor> createDescriptor(BoundedImageBuffer buffer) =>
+      throw UnimplementedError();
+
+  @override
+  Future<BoundedImageCodec> createCodec(
+    BoundedImageDescriptor descriptor, {
+    required int targetWidth,
+    required int targetHeight,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<BoundedImageFrame> getFirstFrame(BoundedImageCodec codec) =>
+      throw UnimplementedError();
 }
 
 final class _TestChatMessage implements ChatMessage {

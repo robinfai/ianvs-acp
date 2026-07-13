@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,8 +7,10 @@ import 'package:markdown/markdown.dart' as md;
 import '../../mermaid/mermaid_view.dart';
 import '../../state/chat_controller.dart';
 import '../bounded_metadata_preview.dart';
+import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
 import '../markdown_render_budget.dart';
+import 'bounded_image_preview.dart';
 import 'dot_grid_background.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -40,6 +40,8 @@ class ChatTimeline extends StatefulWidget {
     this.messageListRevision = 0,
     this.onNewSession,
     this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
   });
 
   final List<ChatMessage> messages;
@@ -50,6 +52,8 @@ class ChatTimeline extends StatefulWidget {
   final int messageListRevision;
   final VoidCallback? onNewSession;
   final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -57,6 +61,7 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   final ScrollController _scrollController = ScrollController();
+  late AcpImageDecodeBudgetLedger _imageDecodeLedger;
   late int _messageSignature = _timelineMessagesSignature(
     widget.messages,
     messageListRevision: widget.messageListRevision,
@@ -67,6 +72,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void initState() {
     super.initState();
     widget.inputBudget.validate();
+    _imageDecodeLedger =
+        widget.imageDecodeLedger ??
+        AcpImageDecodeBudgetLedger(budget: widget.inputBudget);
     if (widget.messages.isNotEmpty) {
       _scheduleScrollToBottom();
     }
@@ -76,6 +84,13 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void didUpdateWidget(covariant ChatTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
     widget.inputBudget.validate();
+    if (!identical(widget.imageDecodeLedger, oldWidget.imageDecodeLedger) ||
+        (!identical(widget.inputBudget, oldWidget.inputBudget) &&
+            widget.imageDecodeLedger == null)) {
+      _imageDecodeLedger =
+          widget.imageDecodeLedger ??
+          AcpImageDecodeBudgetLedger(budget: widget.inputBudget);
+    }
   }
 
   @override
@@ -109,34 +124,39 @@ class _ChatTimelineState extends State<ChatTimeline> {
     final historyNoticeCount = hasTrimmedHistory ? 1 : 0;
     final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
-    return DotGridBackground(
-      child: ListView.separated(
-        key: const ValueKey('chat-timeline-list'),
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
-        itemCount: entries.length + historyNoticeCount + loadingFooterCount,
-        separatorBuilder: (context, index) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          if (hasTrimmedHistory && index == entries.length) {
-            return _TrimmedHistoryNotice(
-              shownCount: visibleMessages.length,
-              totalCount: widget.messages.length,
-            );
-          }
-          if (index >= entries.length + historyNoticeCount) {
-            return const _SessionLoadingFooter();
-          }
-          final entry = entries[index];
-          return entry.toolMessages == null
-              ? _MessageBubble(
-                  message: entry.message!,
-                  inputBudget: widget.inputBudget,
-                )
-              : _ToolGroupBubble(
-                  messages: entry.toolMessages!,
-                  inputBudget: widget.inputBudget,
-                );
-        },
+    return _ImageDecodeScope(
+      ledger: _imageDecodeLedger,
+      decoder: widget.boundedImageDecoder,
+      inputBudget: widget.inputBudget,
+      child: DotGridBackground(
+        child: ListView.separated(
+          key: const ValueKey('chat-timeline-list'),
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+          itemCount: entries.length + historyNoticeCount + loadingFooterCount,
+          separatorBuilder: (context, index) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            if (hasTrimmedHistory && index == entries.length) {
+              return _TrimmedHistoryNotice(
+                shownCount: visibleMessages.length,
+                totalCount: widget.messages.length,
+              );
+            }
+            if (index >= entries.length + historyNoticeCount) {
+              return const _SessionLoadingFooter();
+            }
+            final entry = entries[index];
+            return entry.toolMessages == null
+                ? _MessageBubble(
+                    message: entry.message!,
+                    inputBudget: widget.inputBudget,
+                  )
+                : _ToolGroupBubble(
+                    messages: entry.toolMessages!,
+                    inputBudget: widget.inputBudget,
+                  );
+          },
+        ),
       ),
     );
   }
@@ -171,6 +191,32 @@ class _ChatTimelineState extends State<ChatTimeline> {
       }
     });
   }
+}
+
+class _ImageDecodeScope extends InheritedWidget {
+  const _ImageDecodeScope({
+    required this.ledger,
+    required this.decoder,
+    required this.inputBudget,
+    required super.child,
+  });
+
+  final AcpImageDecodeBudgetLedger ledger;
+  final BoundedImageDecoder decoder;
+  final AcpInputBudget inputBudget;
+
+  static _ImageDecodeScope of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_ImageDecodeScope>();
+    if (scope == null) throw StateError('Missing image decode scope.');
+    return scope;
+  }
+
+  @override
+  bool updateShouldNotify(_ImageDecodeScope oldWidget) =>
+      !identical(ledger, oldWidget.ledger) ||
+      !identical(decoder, oldWidget.decoder) ||
+      !identical(inputBudget, oldWidget.inputBudget);
 }
 
 int _timelineMessagesSignature(
@@ -1821,25 +1867,20 @@ class _ImageContentBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
     final data = _stringMetadata(block, 'data');
-    final bytes = data == null ? null : _tryDecodeBase64(data);
+    final imageDecode = _ImageDecodeScope.of(context);
     return _InlineContentFrame(
       icon: Icons.image_outlined,
       title: 'Image',
       subtitle: '$mimeType${data == null ? '' : ' · ${data.length} chars'}',
-      child: bytes == null
-          ? null
+      child: data == null
+          ? const Text('Image preview unavailable.')
           : ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: Image.memory(
-                bytes,
-                height: 132,
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Text(
-                    'Image preview unavailable.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  );
-                },
+              child: BoundedImagePreview(
+                data: data,
+                inputBudget: imageDecode.inputBudget,
+                imageDecodeLedger: imageDecode.ledger,
+                decoder: imageDecode.decoder,
               ),
             ),
     );
@@ -3151,12 +3192,4 @@ Color _stopReasonColor(String value) {
     'refusal' => AppColors.danger,
     _ => AppColors.primaryDark,
   };
-}
-
-Uint8List? _tryDecodeBase64(String value) {
-  try {
-    return base64Decode(value);
-  } on FormatException {
-    return null;
-  }
 }

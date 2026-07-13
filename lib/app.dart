@@ -36,10 +36,12 @@ import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
 import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
+import 'ui/components/bounded_image_preview.dart';
 import 'ui/components/deep_link_confirmation_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/components/session_workspace_review_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
+import 'ui/image_decode_budget.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
 import 'workspace/workspace.dart';
@@ -92,6 +94,8 @@ class AcpClientApp extends StatefulWidget {
     this.taskAgentClientFactoryKey,
     this.workspaceStateStore,
     this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder,
   });
 
   final ChatController? controller;
@@ -125,6 +129,8 @@ class AcpClientApp extends StatefulWidget {
   final Object? taskAgentClientFactoryKey;
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder? boundedImageDecoder;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -144,6 +150,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   late String _widgetConfigSignature;
   late ChatController _controller;
   late AcpInputBudget _inputBudget;
+  late AcpImageDecodeBudgetLedger _imageDecodeLedger;
+  late BoundedImageDecoder _boundedImageDecoder;
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
@@ -188,6 +196,11 @@ class _AcpClientAppState extends State<AcpClientApp>
     super.initState();
     widget.inputBudget.validate();
     _inputBudget = widget.inputBudget;
+    _imageDecodeLedger =
+        widget.imageDecodeLedger ??
+        AcpImageDecodeBudgetLedger(budget: _inputBudget);
+    _boundedImageDecoder =
+        widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
     _validateTaskInboxMaintenanceInterval();
     WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
@@ -225,6 +238,15 @@ class _AcpClientAppState extends State<AcpClientApp>
     super.didUpdateWidget(oldWidget);
     widget.inputBudget.validate();
     _inputBudget = widget.inputBudget;
+    if (!identical(widget.imageDecodeLedger, oldWidget.imageDecodeLedger) ||
+        (!identical(widget.inputBudget, oldWidget.inputBudget) &&
+            widget.imageDecodeLedger == null)) {
+      _imageDecodeLedger =
+          widget.imageDecodeLedger ??
+          AcpImageDecodeBudgetLedger(budget: _inputBudget);
+    }
+    _boundedImageDecoder =
+        widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
     _validateTaskInboxMaintenanceInterval();
     if (oldWidget.taskInboxMaintenanceInterval !=
         widget.taskInboxMaintenanceInterval) {
@@ -1071,6 +1093,8 @@ class _AcpClientAppState extends State<AcpClientApp>
       ),
       home: AppShell(
         inputBudget: _inputBudget,
+        imageDecodeLedger: _imageDecodeLedger,
+        boundedImageDecoder: _boundedImageDecoder,
         controller: _controller,
         taskInboxController: _taskInboxController,
         initialSidebarMode: _selectedTaskId == null

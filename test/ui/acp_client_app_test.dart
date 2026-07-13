@@ -22,6 +22,8 @@ import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
+import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
@@ -92,6 +94,69 @@ void main() {
       ),
     );
     expect(tester.takeException(), isArgumentError);
+  });
+
+  testWidgets('AcpClientApp owns and forwards one image decode budget chain', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget();
+    final ledger = AcpImageDecodeBudgetLedger(budget: budget);
+    const decoder = DartUiBoundedImageDecoder();
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: controller,
+        inputBudget: budget,
+        imageDecodeLedger: ledger,
+        boundedImageDecoder: decoder,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    expect(identical(shell.imageDecodeLedger, ledger), isTrue);
+    expect(identical(shell.boundedImageDecoder, decoder), isTrue);
+  });
+
+  testWidgets('AcpClientApp keeps one default image ledger across rebuilds', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    final replacementController = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/replacement-workspace',
+    );
+    addTearDown(controller.dispose);
+    addTearDown(replacementController.dispose);
+
+    Widget app(ChatController activeController) => AcpClientApp(
+      controller: activeController,
+      autoLoadWorkspaceSessions: false,
+      taskInboxController: taskHarness.controller,
+    );
+
+    await tester.pumpWidget(app(controller));
+    await tester.pump();
+    final first = tester.widget<AppShell>(find.byType(AppShell));
+    final ledger = first.imageDecodeLedger;
+    final decoder = first.boundedImageDecoder;
+    expect(ledger, isNotNull);
+
+    await tester.pumpWidget(app(replacementController));
+    await tester.pump();
+    final second = tester.widget<AppShell>(find.byType(AppShell));
+    expect(identical(second.imageDecodeLedger, ledger), isTrue);
+    expect(identical(second.boundedImageDecoder, decoder), isTrue);
   });
 
   testWidgets('AcpClientApp rejects non-positive task maintenance intervals', (
