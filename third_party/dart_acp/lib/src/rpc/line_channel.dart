@@ -20,6 +20,7 @@ class LineJsonChannel {
     int? maxStderrLineBytes,
     int maxOutboundQueueItems = 128,
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
+    Duration disposeDrainTimeout = const Duration(milliseconds: 500),
   }) : assert(maxLineBytes > 0),
        assert(maxStderrLineBytes == null || maxStderrLineBytes > 0),
        _onStderr = onStderr,
@@ -31,6 +32,10 @@ class LineJsonChannel {
        maxOutboundQueueBytes = _positiveQueueLimit(
          maxOutboundQueueBytes,
          'maxOutboundQueueBytes',
+       ),
+       disposeDrainTimeout = _positiveDuration(
+         disposeDrainTimeout,
+         'disposeDrainTimeout',
        ) {
     _stdoutDecoder = RawTransportLineDecoder(
       limit: maxLineBytes,
@@ -77,6 +82,7 @@ class LineJsonChannel {
   final int maxStderrLineBytes;
   final int maxOutboundQueueItems;
   final int maxOutboundQueueBytes;
+  final Duration disposeDrainTimeout;
   final StreamChannelController<String> _controller =
       StreamChannelController<String>(sync: true);
   final void Function(String)? _onStderr;
@@ -92,10 +98,17 @@ class LineJsonChannel {
   Future<void>? _outboundBatchBarrier;
   Future<void>? _outboundDrainFuture;
   Future<void>? _activeWrite;
+  Future<void>? _stdoutCancelFuture;
+  Future<void>? _stderrCancelFuture;
+  Future<void>? _outboundCancelFuture;
+  Future<void>? _stdinCloseFuture;
   var _outboundQueueBytes = 0;
   var _outboundDraining = false;
   var _stdoutFailed = false;
   var _outboundFailed = false;
+  var _outboundSealed = false;
+  var _stderrSilenced = false;
+  var _stdinClosePending = false;
 
   /// Callback invoked for raw inbound lines.
   final void Function(String line)? onInboundLine;
@@ -126,11 +139,12 @@ class LineJsonChannel {
   Future<void> _failStdout(Object error, StackTrace stackTrace) async {
     if (_stdoutFailed) return;
     _stdoutFailed = true;
-    await _stdoutSub.cancel();
+    await _cancelStdout();
     await closeInbound(error, stackTrace);
   }
 
   void _handleStderrLine(List<int> bytes) {
+    if (_stderrSilenced) return;
     final line = _decodeLine(bytes, resource: 'stdio stderr line');
     if (line == null) {
       _emitStderrTruncated();
@@ -155,11 +169,12 @@ class LineJsonChannel {
   }
 
   void _emitStderrTruncated() {
+    if (_stderrSilenced) return;
     _onStderr?.call('truncated');
   }
 
   void _enqueueOutbound(String line) {
-    if (_outboundFailed) return;
+    if (_outboundFailed || _outboundSealed) return;
     final bytes = utf8.encode(line);
     if (bytes.length > maxLineBytes) {
       _failOutbound(
@@ -281,7 +296,7 @@ class LineJsonChannel {
     if (!_outboundDrainCancellation.isCompleted) {
       _outboundDrainCancellation.complete();
     }
-    unawaited(_outboundSub.cancel());
+    unawaited(_cancelOutbound().catchError((Object _) {}));
     unawaited(closeInbound(error, stackTrace).catchError((Object _) {}));
   }
 
@@ -334,26 +349,123 @@ class LineJsonChannel {
   Future<void> dispose() {
     final existing = _disposeFuture;
     if (existing != null) return existing;
-    final future = _dispose();
+    final completer = Completer<void>();
+    final future = completer.future;
     _disposeFuture = future;
+    try {
+      _stdoutFailed = true;
+      _stderrSilenced = true;
+      _outboundSealed = true;
+      final outboundCancel = _cancelOutbound();
+      final operation = _dispose(outboundCancel: outboundCancel);
+      unawaited(
+        operation.then<void>(
+          (_) {
+            if (!completer.isCompleted) completer.complete();
+          },
+          onError: (Object _, StackTrace stackTrace) {
+            if (!completer.isCompleted) {
+              completer.completeError(
+                TransportWriteError(resource: 'stdio channel shutdown'),
+                stackTrace,
+              );
+            }
+          },
+        ),
+      );
+    } on Object catch (_, stackTrace) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          TransportWriteError(resource: 'stdio channel shutdown'),
+          stackTrace,
+        );
+      }
+    }
     return future;
   }
 
-  Future<void> _dispose() async {
-    _stdoutFailed = true;
-    await Future<void>.delayed(Duration.zero);
+  Future<void> _dispose({required Future<void> outboundCancel}) async {
     unawaited(closeInbound().catchError((Object _) {}));
-    await _outboundSub.cancel();
-    await _stdoutSub.cancel();
-    await _stderrSub.cancel();
-    final outboundDrain = _outboundDrainFuture;
+    final graceful = _finishDispose(outboundCancel: outboundCancel);
+    var timedOut = false;
+    await Future.any<void>(<Future<void>>[
+      graceful,
+      Future<void>.delayed(disposeDrainTimeout, () {
+        timedOut = true;
+      }),
+    ]);
+    if (!timedOut) return;
+
+    _abortOutboundDrain();
+    unawaited(_cancelStdout().catchError((Object _) {}));
+    unawaited(_cancelStderr().catchError((Object _) {}));
+    unawaited(graceful.catchError((Object _) {}));
+  }
+
+  Future<void> _finishDispose({required Future<void> outboundCancel}) async {
+    await _ignoreFailure(outboundCancel);
     try {
-      await outboundDrain;
-      if (!_outboundFailed) await process.stdin.flush();
+      await _outboundDrainFuture;
     } on Object {
       // The process may already have exited.
     }
+    await Future.wait<void>(<Future<void>>[
+      _ignoreFailure(_cancelStdout()),
+      _ignoreFailure(_cancelStderr()),
+    ]);
   }
+
+  void _abortOutboundDrain() {
+    if (!_outboundFailed) {
+      _outboundFailed = true;
+      _outboundQueue.clear();
+      _outboundQueueBytes = 0;
+    }
+    if (!_outboundDrainCancellation.isCompleted) {
+      _outboundDrainCancellation.complete();
+    }
+    final activeWrite = _activeWrite;
+    if (activeWrite != null) {
+      unawaited(activeWrite.catchError((Object _) {}));
+    }
+    _closeStdinAfterAbort();
+  }
+
+  void _closeStdinAfterAbort() {
+    if (_stdinCloseFuture != null || _stdinClosePending) return;
+    final activeWrite = _activeWrite;
+    if (activeWrite != null) {
+      _stdinClosePending = true;
+      unawaited(
+        activeWrite
+            .whenComplete(() {
+              _stdinClosePending = false;
+              _startStdinClose();
+            })
+            .catchError((Object _) {}),
+      );
+      return;
+    }
+    _startStdinClose();
+  }
+
+  void _startStdinClose() {
+    if (_stdinCloseFuture != null) return;
+    try {
+      final future = process.stdin.close();
+      _stdinCloseFuture = future;
+      unawaited(future.catchError((Object _) {}));
+    } on Object {
+      // The process may already have closed stdin.
+    }
+  }
+
+  Future<void> _cancelStdout() => _stdoutCancelFuture ??= _stdoutSub.cancel();
+
+  Future<void> _cancelStderr() => _stderrCancelFuture ??= _stderrSub.cancel();
+
+  Future<void> _cancelOutbound() =>
+      _outboundCancelFuture ??= _outboundSub.cancel();
 }
 
 class _OutboundFrame {
@@ -368,4 +480,19 @@ int _positiveQueueLimit(int value, String name) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
   }
   return value;
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
+}
+
+Future<void> _ignoreFailure(Future<void> future) async {
+  try {
+    await future;
+  } on Object {
+    // Shutdown is best effort once the channel has been sealed.
+  }
 }

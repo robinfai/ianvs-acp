@@ -26,6 +26,18 @@ void main() {
             .having((error) => error.invalidValue, 'invalidValue', -1),
       ),
     );
+    expect(
+      () => LineJsonChannel(process, disposeDrainTimeout: Duration.zero),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'disposeDrainTimeout')
+            .having(
+              (error) => error.invalidValue,
+              'invalidValue',
+              Duration.zero,
+            ),
+      ),
+    );
   });
 
   test('stdout counts raw UTF-8 bytes across chunks before decoding', () async {
@@ -547,6 +559,198 @@ void main() {
     },
   );
 
+  test('dispose bounds a stdin flush that never completes', () async {
+    final process = _BlockingStdinProcess();
+    final channel = LineJsonChannel(process);
+    final subscription = channel.channel.stream.listen((_) {}, onError: (_) {});
+
+    try {
+      channel.channel.sink.add('accepted-before-dispose');
+      await process.writeStarted.timeout(const Duration(seconds: 1));
+
+      final stopwatch = Stopwatch()..start();
+      await channel.dispose().timeout(const Duration(seconds: 1));
+      stopwatch.stop();
+
+      expect(
+        stopwatch.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 400)),
+      );
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(process.lines, isEmpty);
+    } finally {
+      process.releaseWrites();
+      await subscription.cancel();
+      await channel.dispose();
+    }
+  });
+
+  test(
+    'dispose caches its Future before synchronous inbound onDone reentry',
+    () async {
+      final process = _BlockingStdinProcess();
+      final channel = LineJsonChannel(process);
+      final inboundDone = Completer<void>();
+      Future<void>? reentrantDispose;
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: (_) {},
+        onDone: () {
+          reentrantDispose = channel.dispose();
+          inboundDone.complete();
+        },
+      );
+
+      try {
+        channel.channel.sink.add('active');
+        await process.writeStarted.timeout(const Duration(seconds: 1));
+
+        final firstDispose = channel.dispose();
+        await inboundDone.future.timeout(const Duration(seconds: 1));
+
+        expect(identical(firstDispose, reentrantDispose), isTrue);
+        await firstDispose.timeout(const Duration(seconds: 1));
+        process.releaseWrites();
+        await _waitFor(() => process.stdinCloseCallCount == 1);
+        expect(process.stdinCloseCallCount, 1);
+      } finally {
+        process.releaseWrites();
+        await subscription.cancel();
+        await channel.dispose();
+      }
+    },
+  );
+
+  test(
+    'dispose handles a late stdin flush error after bounded abort',
+    () async {
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        final process = _BlockingStdinProcess(
+          lateFailure: StateError('late secret flush failure'),
+        );
+        final channel = LineJsonChannel(process);
+        final subscription = channel.channel.stream.listen(
+          (_) {},
+          onError: (_) {},
+        );
+
+        try {
+          channel.channel.sink.add('secret payload');
+          await process.writeStarted.timeout(const Duration(seconds: 1));
+          await channel.dispose().timeout(const Duration(seconds: 1));
+          process.releaseWrites();
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        } finally {
+          process.releaseWrites();
+          await subscription.cancel();
+          await channel.dispose();
+        }
+      }, (error, _) => uncaught.add(error));
+
+      expect(uncaught, isEmpty);
+    },
+  );
+
+  test(
+    'dispose keeps stdout draining while accepted stdin is backpressured',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'line-channel-cross-backpressure-',
+      );
+      final script = File('${directory.path}/child.dart');
+      final observed = File('${directory.path}/observed.log');
+      final dartLookup = await Process.run('/usr/bin/which', <String>['dart']);
+      if (dartLookup.exitCode != 0) {
+        throw StateError('Dart executable is unavailable for child test.');
+      }
+      await script.writeAsString(r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main(List<String> args) async {
+  final observed = File(args[0]);
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final marker = line.startsWith('first:') ? 'first' : 'second';
+    observed.writeAsStringSync('$marker\n', mode: FileMode.append);
+    stdout.add(List<int>.filled(1024 * 1024, 0x78));
+    stdout.add(const <int>[0x0a]);
+    await stdout.flush();
+  }
+}
+''');
+      final process = await Process.start(
+        (dartLookup.stdout as String).trim(),
+        <String>[script.path, observed.path],
+      );
+      final channel = LineJsonChannel(
+        process,
+        maxLineBytes: 3 * 1024 * 1024,
+        disposeDrainTimeout: const Duration(seconds: 3),
+      );
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: (_) {},
+      );
+
+      try {
+        channel.channel.sink
+          ..add('first:${'a' * (128 * 1024)}')
+          ..add('second:${'b' * (2 * 1024 * 1024)}');
+
+        await channel.dispose().timeout(const Duration(seconds: 5));
+        await _waitFor(() {
+          if (!observed.existsSync()) return false;
+          return observed.readAsLinesSync().length == 2;
+        });
+
+        expect(await observed.readAsLines(), <String>['first', 'second']);
+      } finally {
+        await subscription.cancel();
+        await channel.dispose();
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode.timeout(const Duration(seconds: 2));
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'dispose timeout permits only the active write to finish late',
+    () async {
+      final process = _BlockingStdinProcess();
+      final channel = LineJsonChannel(process, maxOutboundQueueItems: 3);
+      final subscription = channel.channel.stream.listen(
+        (_) {},
+        onError: (_) {},
+      );
+
+      try {
+        channel.channel.sink.add('active');
+        await process.writeStarted.timeout(const Duration(seconds: 1));
+        channel.channel.sink.add('queued');
+
+        final disposeFuture = channel.dispose();
+        channel.channel.sink.add('post-dispose');
+        await disposeFuture.timeout(const Duration(seconds: 1));
+
+        process.releaseWrites();
+        await _waitFor(() => process.lines.isNotEmpty);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(process.lines, <String>['active']);
+      } finally {
+        process.releaseWrites();
+        await subscription.cancel();
+        await channel.dispose();
+      }
+    },
+  );
+
   test('stdin flush failure reports a payload-free transport error', () async {
     const payload = 'secret outbound payload';
     final process = _FailingStdinProcess('write failed for $payload');
@@ -644,7 +848,8 @@ class _FailingStreamConsumer implements StreamConsumer<List<int>> {
 }
 
 class _BlockingStdinProcess implements Process {
-  _BlockingStdinProcess() : _consumer = _BlockingStreamConsumer() {
+  _BlockingStdinProcess({Object? lateFailure})
+    : _consumer = _BlockingStreamConsumer(lateFailure) {
     _stdin = IOSink(_consumer);
   }
 
@@ -657,6 +862,8 @@ class _BlockingStdinProcess implements Process {
   Future<void> get writeStarted => _consumer.writeStarted;
 
   List<String> get lines => _consumer.lines;
+
+  int get stdinCloseCallCount => _consumer.closeCount;
 
   void releaseWrites() => _consumer.release();
 
@@ -683,9 +890,13 @@ class _BlockingStdinProcess implements Process {
 }
 
 class _BlockingStreamConsumer implements StreamConsumer<List<int>> {
+  _BlockingStreamConsumer(this.lateFailure);
+
+  final Object? lateFailure;
   final Completer<void> _writeStarted = Completer<void>();
   final Completer<void> _release = Completer<void>();
   final List<String> lines = <String>[];
+  var closeCount = 0;
 
   Future<void> get writeStarted => _writeStarted.future;
 
@@ -701,10 +912,13 @@ class _BlockingStreamConsumer implements StreamConsumer<List<int>> {
       if (!_writeStarted.isCompleted) _writeStarted.complete();
     }
     await _release.future;
+    if (lateFailure case final failure?) throw failure;
     final text = utf8.decode(bytes);
     lines.addAll(text.split('\n').where((line) => line.isNotEmpty));
   }
 
   @override
-  Future<void> close() async {}
+  Future<void> close() async {
+    closeCount++;
+  }
 }
