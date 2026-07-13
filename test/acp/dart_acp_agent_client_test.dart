@@ -2862,6 +2862,431 @@ Future<void> main() async {
     },
   );
 
+  test('attachment prompt budgets must be positive', () {
+    for (final invalid in <DartAcpAgentClient Function()>[
+      () => DartAcpAgentClient(maxPromptAttachmentCount: 0),
+      () => DartAcpAgentClient(maxPromptAttachmentSourceBytes: 0),
+      () => DartAcpAgentClient(maxPromptAttachmentEncodedBytes: 0),
+      () => DartAcpAgentClient(maxPromptAttachmentEncodedBytes: 1),
+    ]) {
+      expect(invalid, throwsArgumentError);
+    }
+
+    final exactEmptyArray = DartAcpAgentClient(
+      maxPromptAttachmentEncodedBytes: 2,
+    );
+    expect(exactEmptyArray.maxPromptAttachmentEncodedBytes, 2);
+  });
+
+  test(
+    'attachment source budget accepts exact bytes and rejects plus one',
+    () async {
+      final exact = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'exact.bin',
+        attachmentBytes: const <int>[1, 2, 3],
+        mimeType: 'application/octet-stream',
+        maxPromptAttachmentSourceBytes: 3,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+      final plusOne = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'plus-one.bin',
+        attachmentBytes: const <int>[1, 2, 3, 4],
+        mimeType: 'application/octet-stream',
+        declaredAttachmentSize: 1,
+        maxPromptAttachmentSourceBytes: 3,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+
+      expect(_attachmentBlock(exact)['type'], 'resource');
+      expect(_attachmentBlock(plusOne)['type'], 'resource_link');
+    },
+  );
+
+  test(
+    'attachment encoded budget accounts for exact base64 expansion',
+    () async {
+      final exactEncodedBytes = utf8
+          .encode(
+            jsonEncode(<Map<String, dynamic>>[
+              <String, dynamic>{
+                'type': 'audio',
+                'mimeType': 'audio/wav',
+                'data': base64Encode(const <int>[1, 2, 3]),
+              },
+            ]),
+          )
+          .length;
+      final exact = await _capturePromptParamsForAttachment(
+        audio: true,
+        attachmentName: 'exact.wav',
+        attachmentBytes: const <int>[1, 2, 3],
+        mimeType: 'audio/wav',
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: exactEncodedBytes,
+      );
+      final tooSmall = await _capturePromptParamsForAttachment(
+        audio: true,
+        attachmentName: 'too-small.wav',
+        attachmentBytes: const <int>[1, 2, 3],
+        mimeType: 'audio/wav',
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: exactEncodedBytes - 1,
+      );
+
+      expect(_attachmentBlock(exact)['type'], 'audio');
+      expect(tooSmall['prompt'], hasLength(1));
+    },
+  );
+
+  test(
+    'attachment budget spans mixed content and bounds embedded count',
+    () async {
+      final sourceBounded = await _capturePromptParamsForAttachments(
+        attachments: const <_TestPromptAttachment>[
+          _TestPromptAttachment(
+            name: 'first.txt',
+            bytes: <int>[0x61, 0x62],
+            mimeType: 'text/plain',
+          ),
+          _TestPromptAttachment(
+            name: 'second.bin',
+            bytes: <int>[1, 2, 3],
+            mimeType: 'application/octet-stream',
+          ),
+        ],
+        maxPromptAttachmentCount: 2,
+        maxPromptAttachmentSourceBytes: 4,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+      final countBounded = await _capturePromptParamsForAttachments(
+        attachments: const <_TestPromptAttachment>[
+          _TestPromptAttachment(
+            name: 'first.txt',
+            bytes: <int>[0x61],
+            mimeType: 'text/plain',
+          ),
+          _TestPromptAttachment(
+            name: 'second.txt',
+            bytes: <int>[0x62],
+            mimeType: 'text/plain',
+          ),
+        ],
+        maxPromptAttachmentCount: 1,
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+
+      expect(_attachmentTypes(sourceBounded), <String>[
+        'resource',
+        'resource_link',
+      ]);
+      expect(_attachmentTypes(countBounded), <String>['resource']);
+    },
+  );
+
+  test(
+    'unsupported stale attachments still consume the prompt count',
+    () async {
+      final promptParams = await _capturePromptParamsForAttachments(
+        attachments: const <_TestPromptAttachment>[
+          _TestPromptAttachment(
+            name: 'first.bin',
+            bytes: <int>[1],
+            mimeType: 'application/octet-stream',
+            declaredSize: -100,
+          ),
+          _TestPromptAttachment(
+            name: 'second.bin',
+            bytes: <int>[2],
+            mimeType: 'application/octet-stream',
+            declaredSize: 0,
+          ),
+          _TestPromptAttachment(
+            name: 'third.bin',
+            bytes: <int>[3],
+            mimeType: 'application/octet-stream',
+            declaredSize: 1,
+          ),
+        ],
+        embeddedContext: false,
+        maxPromptAttachmentCount: 2,
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+
+      expect(_attachmentTypes(promptParams), <String>[
+        'resource_link',
+        'resource_link',
+      ]);
+    },
+  );
+
+  test(
+    'text attachment budget includes JSON control-character escaping',
+    () async {
+      final plain = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'plain.txt',
+        attachmentBytes: List<int>.filled(256, 0x61),
+        mimeType: 'text/plain',
+        maxPromptAttachmentSourceBytes: 512,
+        maxPromptAttachmentEncodedBytes: 1000,
+      );
+      final escaped = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'escaped.txt',
+        attachmentBytes: List<int>.filled(256, 0),
+        mimeType: 'text/plain',
+        maxPromptAttachmentSourceBytes: 512,
+        maxPromptAttachmentEncodedBytes: 1000,
+      );
+
+      expect(_attachmentBlock(plain)['type'], 'resource');
+      expect(_attachmentBlock(escaped)['type'], 'resource_link');
+    },
+  );
+
+  test(
+    'attachment encoded budget measures mixed blocks at exact JSON bytes',
+    () async {
+      const attachments = <_TestPromptAttachment>[
+        _TestPromptAttachment(
+          name: 'notes.txt',
+          bytes: <int>[0x61, 0x62],
+          mimeType: 'text/plain',
+        ),
+        _TestPromptAttachment(
+          name: 'sound.wav',
+          bytes: <int>[1, 2, 3],
+          mimeType: 'audio/wav',
+        ),
+      ];
+      final measured = await _capturePromptParamsForAttachments(
+        attachments: attachments,
+        maxPromptAttachmentCount: 2,
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+      final measuredBlocks = (measured['prompt'] as List<dynamic>)
+          .skip(1)
+          .toList();
+      final exactBytes = utf8.encode(jsonEncode(measuredBlocks)).length;
+      final exact = await _capturePromptParamsForAttachments(
+        attachments: attachments,
+        maxPromptAttachmentCount: 2,
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: exactBytes,
+      );
+      final plusOne = await _capturePromptParamsForAttachments(
+        attachments: attachments,
+        maxPromptAttachmentCount: 2,
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: exactBytes - 1,
+      );
+
+      expect(_attachmentTypes(exact), <String>['resource', 'audio']);
+      expect(_attachmentTypes(plusOne), <String>['resource']);
+    },
+  );
+
+  test('oversized programmatic attachment metadata is omitted', () async {
+    final hugePath = '/${List<String>.filled(4096, 'x').join()}';
+    final promptParams = await _capturePromptParamsForAttachment(
+      embeddedContext: false,
+      attachmentName: 'huge.bin',
+      attachmentPathOverride: hugePath,
+      declaredAttachmentSize: -1,
+      mimeType: 'application/octet-stream',
+      maxPromptAttachmentCount: 1,
+      maxPromptAttachmentSourceBytes: 64,
+      maxPromptAttachmentEncodedBytes: 256,
+    );
+
+    expect(promptParams['prompt'], hasLength(1));
+  });
+
+  test(
+    'attachment size selected earlier cannot bypass the send-time budget',
+    () async {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'grown.txt',
+        attachmentBytes: const <int>[0x61],
+        attachmentBytesAfterSelection: utf8.encode(
+          'content selected, then grown',
+        ),
+        mimeType: 'text/plain',
+        maxPromptAttachmentSourceBytes: 4,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+
+      expect(_attachmentBlock(promptParams)['type'], 'resource_link');
+    },
+  );
+
+  test(
+    'oversized attachment falls back and the next prompt still embeds',
+    () async {
+      final prompts = await _captureTwoAttachmentPrompts(
+        firstBytes: const <int>[1, 2, 3, 4],
+        secondBytes: const <int>[1, 2, 3],
+        maxPromptAttachmentSourceBytes: 3,
+        maxPromptAttachmentEncodedBytes: 4096,
+      );
+
+      expect(_attachmentBlock(prompts.first)['type'], 'resource_link');
+      expect(_attachmentBlock(prompts.last)['type'], 'resource');
+    },
+  );
+
+  test(
+    'non-regular attachment falls back without waiting for FIFO input',
+    () async {
+      if (Platform.isWindows) return;
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-fifo-');
+      final fifo = File('${tempDir.path}/attachment.txt');
+      final result = await Process.run('mkfifo', <String>[fifo.path]);
+      expect(result.exitCode, 0);
+
+      try {
+        final promptParams = await _capturePromptParamsForAttachment(
+          embeddedContext: true,
+          attachmentName: 'attachment.txt',
+          attachmentPathOverride: fifo.path,
+          declaredAttachmentSize: 1,
+          maxPromptAttachmentSourceBytes: 64,
+          maxPromptAttachmentEncodedBytes: 4096,
+        ).timeout(const Duration(seconds: 2));
+
+        expect(_attachmentBlock(promptParams)['type'], 'resource_link');
+      } finally {
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('attachment final symlink safely embeds its canonical target', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-attachment-link-',
+    );
+    final target = File('${tempDir.path}/target.txt');
+    final link = Link('${tempDir.path}/selected.txt');
+    await target.writeAsString('safe linked attachment', flush: true);
+    await link.create(target.path);
+
+    try {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'selected.txt',
+        attachmentPathOverride: link.path,
+        declaredAttachmentSize: await target.length(),
+        mimeType: 'text/plain',
+      );
+
+      expect(_attachmentBlock(promptParams), <String, dynamic>{
+        'type': 'resource',
+        'resource': <String, dynamic>{
+          'uri': Uri.file(link.path).toString(),
+          'mimeType': 'text/plain',
+          'text': 'safe linked attachment',
+        },
+      });
+    } finally {
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test('dangling attachment final symlink falls back safely', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-attachment-dangling-',
+    );
+    final link = Link('${tempDir.path}/selected.txt');
+    await link.create('${tempDir.path}/missing.txt');
+
+    try {
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'selected.txt',
+        attachmentPathOverride: link.path,
+        declaredAttachmentSize: 1,
+        mimeType: 'text/plain',
+      );
+
+      expect(_attachmentBlock(promptParams)['type'], 'resource_link');
+    } finally {
+      await tempDir.delete(recursive: true);
+    }
+  });
+
+  test(
+    'attachment replaced by FIFO before open falls back without blocking',
+    () async {
+      if (!Platform.isMacOS && !Platform.isLinux) return;
+      var replacementCompleted = false;
+      final promptParams = await _capturePromptParamsForAttachment(
+        embeddedContext: true,
+        attachmentName: 'swapped.txt',
+        attachmentBytes: utf8.encode('original'),
+        mimeType: 'text/plain',
+        beforeAttachmentSecureOpen: (_, canonicalPath) async {
+          final canonicalTarget = File(canonicalPath);
+          await canonicalTarget.delete();
+          final result = await Process.run('mkfifo', <String>[
+            canonicalTarget.path,
+          ]);
+          expect(result.exitCode, 0, reason: result.stderr.toString());
+          replacementCompleted = true;
+        },
+        maxPromptAttachmentSourceBytes: 64,
+        maxPromptAttachmentEncodedBytes: 4096,
+      ).timeout(const Duration(seconds: 2));
+
+      expect(replacementCompleted, isTrue);
+      expect(_attachmentBlock(promptParams)['type'], 'resource_link');
+    },
+  );
+
+  test(
+    'attachment replaced by external symlink before open never leaks target',
+    () async {
+      if (!Platform.isMacOS && !Platform.isLinux) return;
+      File? canary;
+      var replacementCompleted = false;
+      try {
+        const secret = 'external-canary-must-not-be-embedded';
+        final promptParams = await _capturePromptParamsForAttachment(
+          embeddedContext: true,
+          attachmentName: 'swapped.txt',
+          attachmentBytes: utf8.encode('original'),
+          mimeType: 'text/plain',
+          beforeAttachmentSecureOpen: (_, canonicalPath) async {
+            final canonicalTarget = File(canonicalPath);
+            canary = File('${canonicalTarget.parent.path}-outside.txt');
+            await canary!.writeAsString(secret, flush: true);
+            await canonicalTarget.delete();
+            await Link(canonicalTarget.path).create(canary!.path);
+            replacementCompleted = true;
+          },
+          maxPromptAttachmentSourceBytes: 64,
+          maxPromptAttachmentEncodedBytes: 4096,
+        );
+
+        expect(replacementCompleted, isTrue);
+        expect(_attachmentBlock(promptParams)['type'], 'resource_link');
+        expect(jsonEncode(promptParams), isNot(contains(secret)));
+      } finally {
+        final outside = canary;
+        if (outside != null && await outside.exists()) {
+          await outside.delete();
+        }
+      }
+    },
+  );
+
   test(
     'falls back to resource links for binary attachments without embedded context',
     () async {
@@ -13074,12 +13499,22 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
   String prompt = 'Please inspect this.',
   String attachmentName = 'attachment.txt',
   List<int>? attachmentBytes,
+  List<int>? attachmentBytesAfterSelection,
   String? mimeType,
   Map<String, String> extraFiles = const <String, String>{},
+  int? declaredAttachmentSize,
+  String? attachmentPathOverride,
+  FutureOr<void> Function(File attachmentFile, String canonicalPath)?
+  beforeAttachmentSecureOpen,
+  int maxPromptAttachmentCount = 16,
+  int maxPromptAttachmentSourceBytes = 8 * 1024 * 1024,
+  int maxPromptAttachmentEncodedBytes = 12 * 1024 * 1024,
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
   final promptParamsFile = File('${tempDir.path}/prompt_params.json');
-  final attachmentFile = File('${tempDir.path}/$attachmentName');
+  final attachmentFile = File(
+    attachmentPathOverride ?? '${tempDir.path}/$attachmentName',
+  );
   final agentScript = File('${tempDir.path}/fake_prompt_agent.dart');
   final promptParamsPath = jsonEncode(promptParamsFile.path);
   final promptCapabilities = <String>[
@@ -13091,9 +13526,22 @@ Future<Map<String, dynamic>> _capturePromptParamsForAttachment({
       ? '<String, dynamic>{}'
       : "<String, dynamic>{'promptCapabilities': <String, dynamic>{$promptCapabilities}}";
   final bytes = attachmentBytes ?? utf8.encode('embedded attachment text');
-  await attachmentFile.writeAsBytes(bytes);
+  if (attachmentPathOverride == null) {
+    await attachmentFile.writeAsBytes(bytes);
+  }
   for (final entry in extraFiles.entries) {
     await File('${tempDir.path}/${entry.key}').writeAsString(entry.value);
+  }
+  final selectedAttachment = includeAttachment
+      ? PromptAttachment.fromPath(
+          path: attachmentFile.path,
+          mimeType: mimeType,
+          size: declaredAttachmentSize ?? await attachmentFile.length(),
+        )
+      : null;
+  final replacementBytes = attachmentBytesAfterSelection;
+  if (replacementBytes != null) {
+    await attachmentFile.writeAsBytes(replacementBytes, flush: true);
   }
   await agentScript.writeAsString('''
 import 'dart:convert';
@@ -13137,6 +13585,13 @@ Future<void> main() async {
   final client = DartAcpAgentClient(
     agentCommand: _dartExecutable(),
     agentArgs: [agentScript.path],
+    maxPromptAttachmentCount: maxPromptAttachmentCount,
+    maxPromptAttachmentSourceBytes: maxPromptAttachmentSourceBytes,
+    maxPromptAttachmentEncodedBytes: maxPromptAttachmentEncodedBytes,
+    beforeAttachmentSecureOpenForTesting: beforeAttachmentSecureOpen == null
+        ? null
+        : (canonicalPath) =>
+              beforeAttachmentSecureOpen(attachmentFile, canonicalPath),
   );
 
   try {
@@ -13146,15 +13601,9 @@ Future<void> main() async {
         .sendPrompt(
           sessionId: session.id,
           prompt: prompt,
-          attachments: includeAttachment
-              ? [
-                  PromptAttachment.fromPath(
-                    path: attachmentFile.path,
-                    mimeType: mimeType,
-                    size: await attachmentFile.length(),
-                  ),
-                ]
-              : const <PromptAttachment>[],
+          attachments: selectedAttachment == null
+              ? const <PromptAttachment>[]
+              : <PromptAttachment>[selectedAttachment],
         )
         .toList()
         .timeout(const Duration(seconds: 5));
@@ -13165,6 +13614,192 @@ Future<void> main() async {
     await client.dispose();
     await tempDir.delete(recursive: true);
   }
+}
+
+Map<String, dynamic> _attachmentBlock(Map<String, dynamic> promptParams) {
+  final prompt = promptParams['prompt'] as List<dynamic>;
+  return prompt.last as Map<String, dynamic>;
+}
+
+List<String> _attachmentTypes(Map<String, dynamic> promptParams) {
+  final prompt = promptParams['prompt'] as List<dynamic>;
+  return prompt
+      .skip(1)
+      .map((block) => (block as Map<String, dynamic>)['type'] as String)
+      .toList();
+}
+
+class _TestPromptAttachment {
+  const _TestPromptAttachment({
+    required this.name,
+    required this.bytes,
+    required this.mimeType,
+    this.declaredSize,
+  });
+
+  final String name;
+  final List<int> bytes;
+  final String mimeType;
+  final int? declaredSize;
+}
+
+Future<Map<String, dynamic>> _capturePromptParamsForAttachments({
+  required List<_TestPromptAttachment> attachments,
+  required int maxPromptAttachmentCount,
+  required int maxPromptAttachmentSourceBytes,
+  required int maxPromptAttachmentEncodedBytes,
+  bool embeddedContext = true,
+  bool image = true,
+  bool audio = true,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final promptParamsFile = File('${tempDir.path}/prompt_params.json');
+  final agentScript = File('${tempDir.path}/fake_prompt_agent.dart');
+  final selected = <PromptAttachment>[];
+  for (final attachment in attachments) {
+    final file = File('${tempDir.path}/${attachment.name}');
+    await file.writeAsBytes(attachment.bytes);
+    selected.add(
+      PromptAttachment.fromPath(
+        path: file.path,
+        mimeType: attachment.mimeType,
+        size: attachment.declaredSize ?? attachment.bytes.length,
+      ),
+    );
+  }
+  await agentScript.writeAsString(
+    _attachmentPromptAgentScript(
+      promptParamsFile.path,
+      embeddedContext: embeddedContext,
+      image: image,
+      audio: audio,
+    ),
+  );
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: <String>[agentScript.path],
+    maxPromptAttachmentCount: maxPromptAttachmentCount,
+    maxPromptAttachmentSourceBytes: maxPromptAttachmentSourceBytes,
+    maxPromptAttachmentEncodedBytes: maxPromptAttachmentEncodedBytes,
+  );
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    final session = await client.createSession(cwd: tempDir.path);
+    final events = await client
+        .sendPrompt(
+          sessionId: session.id,
+          prompt: 'Inspect attachments.',
+          attachments: selected,
+        )
+        .toList()
+        .timeout(const Duration(seconds: 5));
+    expect(events.last.metadata['stopReason'], 'endTurn');
+    return jsonDecode(await promptParamsFile.readAsString())
+        as Map<String, dynamic>;
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
+
+Future<List<Map<String, dynamic>>> _captureTwoAttachmentPrompts({
+  required List<int> firstBytes,
+  required List<int> secondBytes,
+  required int maxPromptAttachmentSourceBytes,
+  required int maxPromptAttachmentEncodedBytes,
+}) async {
+  final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+  final promptParamsFile = File('${tempDir.path}/prompt_params.json');
+  final attachmentFile = File('${tempDir.path}/attachment.bin');
+  final agentScript = File('${tempDir.path}/fake_prompt_agent.dart');
+  await agentScript.writeAsString(
+    _attachmentPromptAgentScript(promptParamsFile.path, append: true),
+  );
+  final client = DartAcpAgentClient(
+    agentCommand: _dartExecutable(),
+    agentArgs: <String>[agentScript.path],
+    maxPromptAttachmentSourceBytes: maxPromptAttachmentSourceBytes,
+    maxPromptAttachmentEncodedBytes: maxPromptAttachmentEncodedBytes,
+  );
+  try {
+    await client.connect().timeout(const Duration(seconds: 5));
+    final session = await client.createSession(cwd: tempDir.path);
+    for (final bytes in <List<int>>[firstBytes, secondBytes]) {
+      await attachmentFile.writeAsBytes(bytes, flush: true);
+      await client
+          .sendPrompt(
+            sessionId: session.id,
+            prompt: 'Inspect attachment.',
+            attachments: <PromptAttachment>[
+              PromptAttachment.fromPath(
+                path: attachmentFile.path,
+                mimeType: 'application/octet-stream',
+                size: 1,
+              ),
+            ],
+          )
+          .toList()
+          .timeout(const Duration(seconds: 5));
+    }
+    return (jsonDecode(await promptParamsFile.readAsString()) as List<dynamic>)
+        .cast<Map<String, dynamic>>();
+  } finally {
+    await client.dispose();
+    await tempDir.delete(recursive: true);
+  }
+}
+
+String _attachmentPromptAgentScript(
+  String promptParamsPath, {
+  bool append = false,
+  bool embeddedContext = true,
+  bool image = true,
+  bool audio = true,
+}) {
+  final encodedPath = jsonEncode(promptParamsPath);
+  return '''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'promptCapabilities': <String, dynamic>{
+              'embeddedContext': $embeddedContext,
+              'image': $image,
+              'audio': $audio,
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'sessionId': 'session-1'},
+      }));
+    } else if (message['method'] == 'session/prompt') {
+      final file = File($encodedPath);
+      ${append ? "final prompts = file.existsSync() ? jsonDecode(file.readAsStringSync()) as List<dynamic> : <dynamic>[]; prompts.add(message['params']); await file.writeAsString(jsonEncode(prompts));" : "await file.writeAsString(jsonEncode(message['params']));"}
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }));
+    }
+  }
+}
+''';
 }
 
 Future<

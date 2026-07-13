@@ -33,17 +33,44 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     required this.clientFactory,
     this.modelOverride,
     this.timeout = const Duration(seconds: 10),
-  });
+    this.cleanupTimeout = const Duration(seconds: 2),
+    this.maxPendingReviews = 32,
+  }) {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(timeout, 'timeout', 'must be positive');
+    }
+    if (cleanupTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        cleanupTimeout,
+        'cleanupTimeout',
+        'must be positive',
+      );
+    }
+    if (maxPendingReviews <= 0) {
+      throw ArgumentError.value(
+        maxPendingReviews,
+        'maxPendingReviews',
+        'must be positive',
+      );
+    }
+  }
 
   final String agentName;
   final AcpAgentClientFactory clientFactory;
   final String? modelOverride;
   final Duration timeout;
+  final Duration cleanupTimeout;
+  final int maxPendingReviews;
 
-  AcpAgentClient? _client;
-  AgentSession? _session;
-  String? _sessionWorkspaceRoot;
-  List<String> _sessionAdditionalDirectories = const <String>[];
+  _AcpAgentReviewContext? _context;
+  Future<void> _reviewTail = Future<void>.value();
+  final Set<_QueuedAgentReview> _pendingReviews = <_QueuedAgentReview>{};
+  Future<void>? _resetting;
+  int? _resettingGeneration;
+  Future<void>? _disposeFuture;
+  var _nextGeneration = 0;
+  var _disposed = false;
+  var _quarantined = false;
 
   @override
   Future<AcpPermissionReviewResult?> review(
@@ -51,7 +78,7 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
-  }) async {
+  }) {
     final effectiveModel = modelOverride ?? model;
     final directories = _normalizedDirectories(additionalDirectories);
     final payload = acpPermissionReviewPayload(
@@ -60,96 +87,250 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
       additionalDirectories: directories,
       model: effectiveModel,
     );
-
-    try {
-      return await (() async {
-        final client = await _ensureClient();
-        final session = await _ensureSession(
-          client,
-          workspaceRoot,
-          directories,
-        );
-        await _syncModel(client, session.id, effectiveModel);
-        final response = await _reviewWithAgent(client, session.id, payload);
-        final data = _reviewDataFromText(response);
-        return AcpPermissionReviewResult(
-          decision: _reviewDecisionFromData(data),
-          risk:
-              _reviewStringField(data, const [
-                'risk',
-                'riskLevel',
-                'severity',
-              ]) ??
-              'unknown',
-          rationale:
-              _reviewStringField(data, const [
-                'rationale',
-                'reason',
-                'summary',
-              ]) ??
-              response.trim(),
-          reviewer:
-              _reviewStringField(data, const ['reviewer', 'reviewAgent']) ??
-              agentName,
-          model: _reviewStringField(data, const ['model']) ?? effectiveModel,
-          details: <String, Object?>{
-            if (data.isNotEmpty) 'raw': data,
-            'localAnalysis': payload['analysis'],
-          },
-        );
-      }()).timeout(timeout);
-    } catch (error) {
-      await _resetClient();
-      return AcpPermissionReviewResult(
-        risk: 'unknown',
-        rationale: 'Review agent failed: $error',
-        reviewer: agentName,
-        model: effectiveModel,
-        details: <String, Object?>{
-          'error': error.toString(),
-          'localAnalysis': payload['analysis'],
-        },
+    if (_disposed || _quarantined) {
+      return Future<AcpPermissionReviewResult?>.value(
+        _failedReview(
+          _unavailableError(),
+          effectiveModel: effectiveModel,
+          payload: payload,
+        ),
       );
+    }
+    if (_pendingReviews.length >= maxPendingReviews) {
+      return Future<AcpPermissionReviewResult?>.value(
+        _failedReview(
+          StateError(
+            'Permission reviewer pending review limit '
+            '($maxPendingReviews) reached.',
+          ),
+          effectiveModel: effectiveModel,
+          payload: payload,
+        ),
+      );
+    }
+
+    final queued = _QueuedAgentReview(
+      workspaceRoot: workspaceRoot,
+      additionalDirectories: directories,
+      effectiveModel: effectiveModel,
+      payload: payload,
+    );
+    _pendingReviews.add(queued);
+    _reviewTail = _reviewTail.then((_) => _drainQueuedReview(queued));
+    return queued.result.future;
+  }
+
+  Future<void> _drainQueuedReview(_QueuedAgentReview queued) async {
+    try {
+      await _runQueuedReview(queued);
+    } on Object {
+      if (!queued.result.isCompleted) {
+        queued.result.complete(
+          _failedReview(
+            StateError('Permission review queue failed.'),
+            effectiveModel: queued.effectiveModel,
+            payload: queued.payload,
+          ),
+        );
+      }
+    } finally {
+      _pendingReviews.remove(queued);
     }
   }
 
-  Future<AcpAgentClient> _ensureClient() async {
-    final existing = _client;
-    if (existing != null) return existing;
+  Future<void> _runQueuedReview(_QueuedAgentReview queued) async {
+    queued.started = true;
+    if (_disposed || _quarantined) {
+      if (!queued.result.isCompleted) {
+        queued.result.complete(
+          _failedReview(
+            _unavailableError(),
+            effectiveModel: queued.effectiveModel,
+            payload: queued.payload,
+          ),
+        );
+      }
+      return;
+    }
 
-    final client = clientFactory();
-    await client.connect();
-    _client = client;
-    return client;
+    final operation = _performReview(
+      workspaceRoot: queued.workspaceRoot,
+      additionalDirectories: queued.additionalDirectories,
+      effectiveModel: queued.effectiveModel,
+      payload: queued.payload,
+    );
+    final settled = operation.then<_AgentReviewOutcome>(
+      _AgentReviewOutcome.success,
+      onError: (Object error, StackTrace stackTrace) =>
+          _AgentReviewOutcome.failure(error, stackTrace),
+    );
+    final timeoutSignal = Completer<_AgentReviewOutcome>();
+    final timer = Timer(timeout, () {
+      timeoutSignal.complete(
+        _AgentReviewOutcome.failure(
+          TimeoutException('Permission review timed out.', timeout),
+          StackTrace.current,
+          timedOut: true,
+        ),
+      );
+    });
+    final outcome = await Future.any<_AgentReviewOutcome>(
+      <Future<_AgentReviewOutcome>>[settled, timeoutSignal.future],
+    );
+    timer.cancel();
+
+    if (outcome.isSuccess) {
+      if (!queued.result.isCompleted) queued.result.complete(outcome.result);
+      return;
+    }
+
+    if (!queued.result.isCompleted) {
+      queued.result.complete(
+        _failedReview(
+          outcome.error!,
+          effectiveModel: queued.effectiveModel,
+          payload: queued.payload,
+        ),
+      );
+    }
+    final cleanupCompleted = await _waitForCleanup(_resetCurrentContext());
+    if (!cleanupCompleted) _quarantined = true;
+    if (outcome.timedOut) {
+      final operationSettled = await _waitForCleanup(settled);
+      if (!operationSettled) _quarantined = true;
+    }
   }
 
-  Future<AgentSession> _ensureSession(
-    AcpAgentClient client,
+  Future<AcpPermissionReviewResult> _performReview({
+    required String workspaceRoot,
+    required List<String> additionalDirectories,
+    required String? effectiveModel,
+    required Map<String, dynamic> payload,
+  }) async {
+    final context = await _ensureContext(workspaceRoot, additionalDirectories);
+    _requireOwnedContext(context);
+    await _syncModel(context.client, context.session!.id, effectiveModel);
+    _requireOwnedContext(context);
+    final response = await _reviewWithAgent(
+      context.client,
+      context.session!.id,
+      payload,
+    );
+    _requireOwnedContext(context);
+    final data = _reviewDataFromText(response);
+    return AcpPermissionReviewResult(
+      decision: _reviewDecisionFromData(data),
+      risk:
+          _reviewStringField(data, const ['risk', 'riskLevel', 'severity']) ??
+          'unknown',
+      rationale:
+          _reviewStringField(data, const ['rationale', 'reason', 'summary']) ??
+          response.trim(),
+      reviewer:
+          _reviewStringField(data, const ['reviewer', 'reviewAgent']) ??
+          agentName,
+      model: _reviewStringField(data, const ['model']) ?? effectiveModel,
+      details: <String, Object?>{
+        if (data.isNotEmpty) 'raw': data,
+        'localAnalysis': payload['analysis'],
+      },
+    );
+  }
+
+  AcpPermissionReviewResult _failedReview(
+    Object error, {
+    required String? effectiveModel,
+    required Map<String, dynamic> payload,
+  }) {
+    return AcpPermissionReviewResult(
+      risk: 'unknown',
+      rationale: 'Review agent failed: $error',
+      reviewer: agentName,
+      model: effectiveModel,
+      details: <String, Object?>{
+        'error': error.toString(),
+        'localAnalysis': payload['analysis'],
+      },
+    );
+  }
+
+  StateError _unavailableError() => StateError(
+    _disposed
+        ? 'Permission reviewer has been disposed.'
+        : 'Permission reviewer is quarantined after incomplete cleanup.',
+  );
+
+  Future<_AcpAgentReviewContext> _ensureContext(
     String workspaceRoot,
     List<String> additionalDirectories,
   ) async {
-    final existing = _session;
-    if (existing != null &&
-        _sessionWorkspaceRoot == workspaceRoot &&
-        _sameStringList(_sessionAdditionalDirectories, additionalDirectories)) {
-      return existing;
+    if (_disposed || _quarantined) {
+      throw _unavailableError();
     }
 
-    if (existing != null) {
-      try {
-        await client.closeSession(sessionId: existing.id);
-      } on Object {
-        // The sidecar session is best-effort and can be replaced safely.
+    var context = _context;
+    final existingSession = context?.session;
+    final bindingMatches =
+        context != null &&
+        existingSession != null &&
+        context.workspaceRoot == workspaceRoot &&
+        _sameStringList(context.additionalDirectories, additionalDirectories);
+    if (bindingMatches) return context;
+
+    if (context != null && existingSession != null) {
+      final resetCompleted = await _waitForCleanup(
+        _resetOwnedContext(context.generation),
+      );
+      if (!resetCompleted) {
+        _quarantined = true;
+        throw _unavailableError();
       }
+      if (_disposed || _quarantined) throw _unavailableError();
+      context = null;
     }
-    final session = await client.createSession(
+
+    if (context == null) {
+      final generation = ++_nextGeneration;
+      final client = clientFactory();
+      context = _AcpAgentReviewContext(
+        generation: generation,
+        client: client,
+        workspaceRoot: workspaceRoot,
+        additionalDirectories: additionalDirectories,
+      );
+      _context = context;
+      await client.connect();
+      _requireOwnedContext(context, requireSession: false);
+    }
+
+    final session = await context.client.createSession(
       cwd: workspaceRoot,
       additionalDirectories: additionalDirectories,
     );
-    _session = session;
-    _sessionWorkspaceRoot = workspaceRoot;
-    _sessionAdditionalDirectories = additionalDirectories;
-    return session;
+    _requireOwnedContext(context, requireSession: false);
+    final completed = _AcpAgentReviewContext(
+      generation: context.generation,
+      client: context.client,
+      session: session,
+      workspaceRoot: workspaceRoot,
+      additionalDirectories: additionalDirectories,
+    );
+    _context = completed;
+    return completed;
+  }
+
+  void _requireOwnedContext(
+    _AcpAgentReviewContext context, {
+    bool requireSession = true,
+  }) {
+    final current = _context;
+    if (_disposed ||
+        _quarantined ||
+        current == null ||
+        current.generation != context.generation ||
+        (requireSession && current.session == null)) {
+      throw StateError('Permission review context is no longer active.');
+    }
   }
 
   Future<void> _syncModel(
@@ -160,18 +341,14 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     final trimmed = model?.trim();
     if (trimmed == null || trimmed.isEmpty) return;
     try {
-      final settings = await client
-          .sessionSettings(sessionId)
-          .timeout(const Duration(seconds: 5));
+      final settings = await client.sessionSettings(sessionId);
       final option = settings.modelOption;
       if (option == null || option.currentValue == trimmed) return;
-      await client
-          .setConfigOption(
-            sessionId: sessionId,
-            configId: option.id,
-            value: trimmed,
-          )
-          .timeout(const Duration(seconds: 5));
+      await client.setConfigOption(
+        sessionId: sessionId,
+        configId: option.id,
+        value: trimmed,
+      );
     } on Object {
       // Some agents do not expose model settings on sidecar sessions. The
       // requested model is still included in the review prompt.
@@ -260,30 +437,136 @@ ${encoder.convert(payload)}
   }
 
   @override
-  Future<void> dispose() async {
-    await _resetClient();
+  Future<void> dispose() {
+    final existing = _disposeFuture;
+    if (existing != null) return existing;
+    _disposed = true;
+    for (final queued in _pendingReviews) {
+      if (queued.started || queued.result.isCompleted) continue;
+      queued.result.complete(
+        _failedReview(
+          _unavailableError(),
+          effectiveModel: queued.effectiveModel,
+          payload: queued.payload,
+        ),
+      );
+    }
+    final generation = _context?.generation;
+    final eagerReset = generation == null
+        ? Future<void>.value()
+        : _resetOwnedContext(generation);
+    final disposing = (() async {
+      if (!await _waitForCleanup(eagerReset)) _quarantined = true;
+      if (!await _waitForCleanup(_reviewTail)) _quarantined = true;
+      final remaining = _context;
+      if (remaining != null &&
+          !await _waitForCleanup(_resetOwnedContext(remaining.generation))) {
+        _quarantined = true;
+      }
+    })();
+    _disposeFuture = disposing;
+    return disposing;
   }
 
-  Future<void> _resetClient() async {
-    final client = _client;
-    final session = _session;
-    _client = null;
-    _session = null;
-    _sessionWorkspaceRoot = null;
-    _sessionAdditionalDirectories = const <String>[];
-    try {
-      if (client != null && session != null) {
-        await client.closeSession(sessionId: session.id);
-      }
-    } on Object {
-      // Best-effort cleanup for a sidecar session.
-    }
-    try {
-      await client?.dispose();
-    } on Object {
-      // Best-effort cleanup; review failures fall back to manual review.
-    }
+  Future<bool> _waitForCleanup(Future<Object?> future) async {
+    final completion = future.then<bool>(
+      (_) => true,
+      onError: (Object _, StackTrace _) => false,
+    );
+    final timedOut = Completer<bool>();
+    final timer = Timer(cleanupTimeout, () => timedOut.complete(false));
+    final result = await Future.any<bool>(<Future<bool>>[
+      completion,
+      timedOut.future,
+    ]);
+    timer.cancel();
+    return result;
   }
+
+  Future<void> _resetCurrentContext() {
+    final context = _context;
+    if (context != null) return _resetOwnedContext(context.generation);
+    return _resetting ?? Future<void>.value();
+  }
+
+  Future<void> _resetOwnedContext(int generation) {
+    final inProgress = _resetting;
+    if (inProgress != null && _resettingGeneration == generation) {
+      return inProgress;
+    }
+    final context = _context;
+    if (context == null || context.generation != generation) {
+      return Future<void>.value();
+    }
+    _context = null;
+    late final Future<void> resetting;
+    resetting = _disposeContext(context).whenComplete(() {
+      if (identical(_resetting, resetting)) {
+        _resetting = null;
+        _resettingGeneration = null;
+      }
+    });
+    _resettingGeneration = generation;
+    _resetting = resetting;
+    return resetting;
+  }
+
+  Future<void> _disposeContext(_AcpAgentReviewContext context) async {
+    await context.client.dispose();
+  }
+}
+
+final class _QueuedAgentReview {
+  _QueuedAgentReview({
+    required this.workspaceRoot,
+    required List<String> additionalDirectories,
+    required this.effectiveModel,
+    required this.payload,
+  }) : additionalDirectories = List<String>.unmodifiable(additionalDirectories);
+
+  final String workspaceRoot;
+  final List<String> additionalDirectories;
+  final String? effectiveModel;
+  final Map<String, dynamic> payload;
+  final Completer<AcpPermissionReviewResult?> result =
+      Completer<AcpPermissionReviewResult?>();
+  var started = false;
+}
+
+final class _AcpAgentReviewContext {
+  _AcpAgentReviewContext({
+    required this.generation,
+    required this.client,
+    required this.workspaceRoot,
+    required List<String> additionalDirectories,
+    this.session,
+  }) : additionalDirectories = List<String>.unmodifiable(additionalDirectories);
+
+  final int generation;
+  final AcpAgentClient client;
+  final AgentSession? session;
+  final String workspaceRoot;
+  final List<String> additionalDirectories;
+}
+
+final class _AgentReviewOutcome {
+  const _AgentReviewOutcome.success(AcpPermissionReviewResult this.result)
+    : error = null,
+      stackTrace = null,
+      timedOut = false;
+
+  const _AgentReviewOutcome.failure(
+    Object this.error,
+    StackTrace this.stackTrace, {
+    this.timedOut = false,
+  }) : result = null;
+
+  final AcpPermissionReviewResult? result;
+  final Object? error;
+  final StackTrace? stackTrace;
+  final bool timedOut;
+
+  bool get isSuccess => result != null;
 }
 
 class McpPermissionReviewAgent extends AcpPermissionReviewer {

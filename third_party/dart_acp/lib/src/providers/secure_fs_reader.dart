@@ -28,15 +28,46 @@ Future<Uint8List> readSecureTextFile({
     throw UnsupportedError('Secure filesystem reads require macOS or Linux.');
   }
   final outcome = await Isolate.run<Map<String, Object?>>(
-    () => _PosixSecureTextReader.read(
+    () => _PosixSecureFileReader.read(
       canonicalRoot: canonicalRoot,
       relativePath: relativePath,
       maxReadBytes: maxReadBytes,
       maxReturnedBytes: maxReturnedBytes,
       line: line,
       limit: limit,
+      rawBytes: false,
     ),
   );
+  return _unwrapSecureReadOutcome(outcome);
+}
+
+Future<Uint8List> readSecureFileBytes({
+  required String canonicalRoot,
+  required String relativePath,
+  required int maxReadBytes,
+}) async {
+  _validateSecureReadBudgets(
+    maxReadBytes: maxReadBytes,
+    maxReturnedBytes: maxReadBytes,
+  );
+  if (!Platform.isMacOS && !Platform.isLinux) {
+    throw UnsupportedError('Secure filesystem reads require macOS or Linux.');
+  }
+  final outcome = await Isolate.run<Map<String, Object?>>(
+    () => _PosixSecureFileReader.read(
+      canonicalRoot: canonicalRoot,
+      relativePath: relativePath,
+      maxReadBytes: maxReadBytes,
+      maxReturnedBytes: maxReadBytes,
+      line: null,
+      limit: null,
+      rawBytes: true,
+    ),
+  );
+  return _unwrapSecureReadOutcome(outcome);
+}
+
+Uint8List _unwrapSecureReadOutcome(Map<String, Object?> outcome) {
   final bytes = outcome['bytes'];
   if (bytes is Uint8List) return bytes;
   switch (outcome['failure']) {
@@ -67,7 +98,7 @@ void _validateSecureReadBudgets({
   }
 }
 
-final class _PosixSecureTextReader {
+final class _PosixSecureFileReader {
   static final DynamicLibrary _libc = DynamicLibrary.process();
   static final int Function(Pointer<Char>, int) _open = _libc
       .lookupFunction<
@@ -109,6 +140,7 @@ final class _PosixSecureTextReader {
     required int maxReturnedBytes,
     required int? line,
     required int? limit,
+    required bool rawBytes,
   }) {
     if (maxReadBytes <= 0 ||
         maxReturnedBytes <= 0 ||
@@ -211,6 +243,14 @@ final class _PosixSecureTextReader {
           return const <String, Object?>{'failure': 'read'};
         }
         if (count == 0) break;
+        if (rawBytes) {
+          inspectedBytes += count;
+          if (inspectedBytes > maxReadBytes) {
+            return const <String, Object?>{'failure': 'scan_limit'};
+          }
+          returned.add(nativeBytes.sublist(0, count));
+          continue;
+        }
         for (var index = 0; index < count; index += 1) {
           final byte = nativeBytes[index];
           inspectedBytes += 1;
@@ -245,7 +285,7 @@ final class _PosixSecureTextReader {
           }
         }
       }
-      if (!validator.complete) {
+      if (!rawBytes && !validator.complete) {
         return const <String, Object?>{'failure': 'invalid_utf8'};
       }
       return <String, Object?>{'bytes': returned.takeBytes()};

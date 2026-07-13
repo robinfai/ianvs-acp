@@ -14,6 +14,8 @@ export 'src/models/types.dart';
 export 'src/models/updates.dart';
 export 'src/providers/fs_provider.dart';
 export 'src/providers/permission_provider.dart';
+export 'src/providers/secure_fs_reader.dart'
+    show SecureFsReadLimitExceeded, readSecureFileBytes;
 export 'src/providers/terminal_provider.dart';
 export 'src/session/session_manager.dart'
     show

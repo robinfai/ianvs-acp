@@ -516,6 +516,479 @@ void main() {
     },
   );
 
+  test('agent reviewer limits and cleanup timeouts must be positive', () {
+    expect(
+      () => AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: FakeAgentClient.new,
+        timeout: Duration.zero,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: FakeAgentClient.new,
+        cleanupTimeout: Duration.zero,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: FakeAgentClient.new,
+        maxPendingReviews: 0,
+      ),
+      throwsArgumentError,
+    );
+  });
+
+  test(
+    'agent reviewer bounds pending work and restores capacity after drain',
+    () async {
+      final client = _QueueReviewAgentClient();
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        maxPendingReviews: 2,
+        clientFactory: () {
+          factoryCalls += 1;
+          return client;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final first = reviewer.review(
+        _reviewRequest('capacity-running'),
+        workspaceRoot: '/same-root',
+      );
+      await client.firstPromptStarted.future;
+      final second = reviewer.review(
+        _reviewRequest('capacity-queued'),
+        workspaceRoot: '/same-root',
+      );
+      final overflow = await reviewer
+          .review(
+            _reviewRequest('capacity-overflow'),
+            workspaceRoot: '/other-root',
+          )
+          .timeout(const Duration(milliseconds: 100));
+
+      expect(overflow?.risk, 'unknown');
+      expect(overflow?.rationale, contains('pending review limit'));
+      expect(factoryCalls, 1);
+      expect(client.promptCalls, 1);
+
+      client.releaseFirstPrompt();
+      final accepted = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+        first,
+        second,
+      ]).timeout(const Duration(seconds: 2));
+      expect(
+        accepted.map((result) => result?.decision),
+        everyElement(AcpPermissionDecision.allow),
+      );
+
+      final recovered = await reviewer.review(
+        _reviewRequest('capacity-recovered'),
+        workspaceRoot: '/same-root',
+      );
+      expect(recovered?.decision, AcpPermissionDecision.allow);
+      expect(factoryCalls, 1);
+      expect(client.promptCalls, 3);
+    },
+  );
+
+  test(
+    'pending capacity stays occupied until cleanup actually finishes',
+    () async {
+      final firstClient = _DelayedCleanupReviewAgentClient();
+      final secondClient = _ReviewFakeAgentClient(
+        reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      );
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        maxPendingReviews: 1,
+        clientFactory: () {
+          factoryCalls += 1;
+          return factoryCalls == 1 ? firstClient : secondClient;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final first = reviewer.review(
+        _reviewRequest('cleanup-running'),
+        workspaceRoot: '/root-a',
+      );
+      await firstClient.promptStarted.future;
+      final whilePromptBlocked = await reviewer.review(
+        _reviewRequest('cleanup-limit-running'),
+        workspaceRoot: '/root-b',
+      );
+      firstClient.failPrompt();
+      final firstResult = await first;
+      await firstClient.disposeStarted.future;
+      final whileCleanupBlocked = await reviewer.review(
+        _reviewRequest('cleanup-limit-disposing'),
+        workspaceRoot: '/root-b',
+      );
+
+      expect(firstResult?.risk, 'unknown');
+      expect(whilePromptBlocked?.rationale, contains('pending review limit'));
+      expect(whileCleanupBlocked?.rationale, contains('pending review limit'));
+      expect(factoryCalls, 1);
+
+      firstClient.finishDispose();
+      await firstClient.disposeFinished.future;
+      await _pumpTestEventQueue();
+      final recovered = await reviewer.review(
+        _reviewRequest('cleanup-recovered'),
+        workspaceRoot: '/root-b',
+      );
+
+      expect(recovered?.decision, AcpPermissionDecision.allow);
+      expect(factoryCalls, 2);
+    },
+  );
+
+  test(
+    'dispose promptly settles queued reviews without late client creation',
+    () async {
+      final client = _NonCooperativeReviewAgentClient();
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        timeout: const Duration(milliseconds: 200),
+        cleanupTimeout: const Duration(milliseconds: 20),
+        maxPendingReviews: 2,
+        clientFactory: () {
+          factoryCalls += 1;
+          return client;
+        },
+      );
+
+      final first = reviewer.review(
+        _reviewRequest('dispose-running'),
+        workspaceRoot: '/root-a',
+      );
+      await client.promptStarted.future;
+      final queued = reviewer.review(
+        _reviewRequest('dispose-queued'),
+        workspaceRoot: '/root-b',
+      );
+
+      final disposing = reviewer.dispose();
+      final queuedResult = await queued.timeout(
+        const Duration(milliseconds: 100),
+      );
+      await disposing.timeout(const Duration(milliseconds: 150));
+      final firstResult = await first.timeout(
+        const Duration(milliseconds: 400),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(queuedResult?.risk, 'unknown');
+      expect(firstResult?.risk, 'unknown');
+      expect(factoryCalls, 1);
+      expect(client.disposeCalls, 1);
+    },
+  );
+
+  test(
+    'concurrent agent reviews serialize different workspace bindings',
+    () async {
+      final clients = <_ReviewFakeAgentClient>[];
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: () {
+          final client = _ReviewFakeAgentClient(
+            reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+            connectDelay: const Duration(milliseconds: 20),
+          );
+          clients.add(client);
+          return client;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+        reviewer.review(_reviewRequest('root-a'), workspaceRoot: '/root-a'),
+        reviewer.review(_reviewRequest('root-b'), workspaceRoot: '/root-b'),
+      ]);
+
+      expect(
+        results.map((result) => result?.decision),
+        everyElement(AcpPermissionDecision.allow),
+      );
+      expect(clients, hasLength(2));
+      expect(clients.map((client) => client.sessionCount), everyElement(1));
+      expect(clients.first.connected, isFalse);
+      expect(clients.last.connected, isTrue);
+    },
+  );
+
+  test('agent reviewer reuses one context for the same workspace', () async {
+    final fake = _ReviewFakeAgentClient(
+      reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+    );
+    var factoryCalls = 0;
+    final reviewer = AcpAgentPermissionReviewer(
+      agentName: 'Sidecar',
+      clientFactory: () {
+        factoryCalls += 1;
+        return fake;
+      },
+    );
+    addTearDown(reviewer.dispose);
+
+    await reviewer.review(_reviewRequest('same-a'), workspaceRoot: '/same');
+    await reviewer.review(_reviewRequest('same-b'), workspaceRoot: '/same');
+
+    expect(factoryCalls, 1);
+    expect(fake.sessionCount, 1);
+  });
+
+  test(
+    'agent reviewer replaces the client before switching workspace binding',
+    () async {
+      final records = <String>[];
+      final clients = <_BindingReviewAgentClient>[];
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: () {
+          final client = _BindingReviewAgentClient(
+            name: clients.isEmpty ? 'A' : 'B',
+            records: records,
+          );
+          clients.add(client);
+          return client;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final first = await reviewer.review(
+        _reviewRequest('binding-a'),
+        workspaceRoot: '/root-a',
+      );
+      final second = await reviewer.review(
+        _reviewRequest('binding-b'),
+        workspaceRoot: '/root-b',
+      );
+
+      expect(first?.decision, AcpPermissionDecision.allow);
+      expect(second?.decision, AcpPermissionDecision.allow);
+      expect(clients, hasLength(2));
+      expect(
+        records,
+        containsAllInOrder(<String>[
+          'A:create:/root-a:same-session',
+          'A:prompt:/root-a:same-session',
+          'A:dispose',
+          'B:create:/root-b:same-session',
+          'B:prompt:/root-b:same-session',
+        ]),
+      );
+      expect(records, isNot(contains('A:create:/root-b:same-session')));
+    },
+  );
+
+  test(
+    'dispose failure quarantines workspace switching without a new client',
+    () async {
+      final client = _ThrowingDisposeReviewAgentClient();
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        cleanupTimeout: const Duration(milliseconds: 30),
+        clientFactory: () {
+          factoryCalls += 1;
+          return client;
+        },
+      );
+
+      final first = await reviewer.review(
+        _reviewRequest('throwing-dispose-a'),
+        workspaceRoot: '/root-a',
+      );
+      final switching = await reviewer.review(
+        _reviewRequest('throwing-dispose-b'),
+        workspaceRoot: '/root-b',
+      );
+      final afterFailure = await reviewer.review(
+        _reviewRequest('throwing-dispose-c'),
+        workspaceRoot: '/root-c',
+      );
+      await reviewer.dispose().timeout(const Duration(milliseconds: 100));
+
+      expect(first?.decision, AcpPermissionDecision.allow);
+      expect(switching?.risk, 'unknown');
+      expect(afterFailure?.risk, 'unknown');
+      expect(client.stillActive, isTrue);
+      expect(client.disposeCalls, 1);
+      expect(factoryCalls, 1);
+    },
+  );
+
+  test(
+    'failed agent review cannot dispose the next queued review context',
+    () async {
+      final firstClient = _ControllableReviewAgentClient(
+        firstPromptFails: true,
+        hangSubsequentPromptsUntilDispose: true,
+      );
+      final secondClient = _ControllableReviewAgentClient();
+      final clients = <_ControllableReviewAgentClient>[];
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        clientFactory: () {
+          final client = clients.isEmpty ? firstClient : secondClient;
+          clients.add(client);
+          return client;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final first = reviewer.review(
+        _reviewRequest('failure-a'),
+        workspaceRoot: '/root-a',
+      );
+      await firstClient.firstPromptStarted.future;
+      final second = reviewer.review(
+        _reviewRequest('failure-b'),
+        workspaceRoot: '/root-b',
+      );
+      await _pumpTestEventQueue();
+      firstClient.releaseFirstPrompt();
+
+      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+        first,
+        second,
+      ]).timeout(const Duration(seconds: 2));
+
+      expect(results.first?.risk, 'unknown');
+      expect(results.last?.decision, AcpPermissionDecision.allow);
+      expect(clients, hasLength(2));
+      expect(firstClient.disposed, isTrue);
+      expect(secondClient.disposed, isFalse);
+    },
+  );
+
+  test(
+    'timed out agent review settles cleanup before the next review starts',
+    () async {
+      final events = <String>[];
+      final firstClient = _ControllableReviewAgentClient(
+        hangFirstPromptUntilDispose: true,
+        hangSubsequentPromptsUntilDispose: true,
+        events: events,
+        name: 'first',
+      );
+      final secondClient = _ControllableReviewAgentClient(
+        events: events,
+        name: 'second',
+      );
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        timeout: const Duration(milliseconds: 30),
+        clientFactory: () {
+          factoryCalls += 1;
+          return factoryCalls == 1 ? firstClient : secondClient;
+        },
+      );
+      addTearDown(reviewer.dispose);
+
+      final first = reviewer.review(
+        _reviewRequest('timeout-a'),
+        workspaceRoot: '/root-a',
+      );
+      await firstClient.firstPromptStarted.future;
+      final second = reviewer.review(
+        _reviewRequest('timeout-b'),
+        workspaceRoot: '/root-b',
+      );
+      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+        first,
+        second,
+      ]).timeout(const Duration(seconds: 2));
+
+      expect(results.first?.risk, 'unknown');
+      expect(results.last?.decision, AcpPermissionDecision.allow);
+      expect(
+        events.indexOf('first:dispose'),
+        lessThan(events.indexOf('second:connect')),
+      );
+    },
+  );
+
+  test(
+    'non-cooperative timeout quarantines reviewer without blocking cleanup',
+    () async {
+      final client = _NonCooperativeReviewAgentClient();
+      var factoryCalls = 0;
+      final reviewer = AcpAgentPermissionReviewer(
+        agentName: 'Sidecar',
+        timeout: const Duration(milliseconds: 30),
+        cleanupTimeout: const Duration(milliseconds: 30),
+        clientFactory: () {
+          factoryCalls += 1;
+          return client;
+        },
+      );
+
+      final first = reviewer.review(
+        _reviewRequest('non-cooperative-a'),
+        workspaceRoot: '/root-a',
+      );
+      await client.promptStarted.future;
+      final firstResult = await first.timeout(
+        const Duration(milliseconds: 200),
+      );
+      final secondResult = await reviewer
+          .review(_reviewRequest('non-cooperative-b'), workspaceRoot: '/root-b')
+          .timeout(const Duration(milliseconds: 250));
+      await reviewer.dispose().timeout(const Duration(milliseconds: 200));
+
+      expect(firstResult?.risk, 'unknown');
+      expect(secondResult?.risk, 'unknown');
+      expect(factoryCalls, 1);
+      expect(client.disposeCalls, 1);
+    },
+  );
+
+  test('disposing an in-flight agent reviewer prevents reconnect', () async {
+    final client = _ControllableReviewAgentClient(
+      hangFirstPromptUntilDispose: true,
+    );
+    var factoryCalls = 0;
+    final reviewer = AcpAgentPermissionReviewer(
+      agentName: 'Sidecar',
+      timeout: const Duration(seconds: 1),
+      clientFactory: () {
+        factoryCalls += 1;
+        return client;
+      },
+    );
+
+    final reviewing = reviewer.review(
+      _reviewRequest('dispose-a'),
+      workspaceRoot: '/root-a',
+    );
+    await client.firstPromptStarted.future;
+    final disposing = reviewer.dispose();
+    final result = await reviewing.timeout(const Duration(seconds: 2));
+    await disposing.timeout(const Duration(seconds: 2));
+    final afterDispose = await reviewer.review(
+      _reviewRequest('dispose-b'),
+      workspaceRoot: '/root-b',
+    );
+
+    expect(result?.risk, 'unknown');
+    expect(afterDispose?.risk, 'unknown');
+    expect(factoryCalls, 1);
+  });
+
   test('configured MCP reviewer can auto approve', () {
     final reviewer = McpPermissionReviewAgent(
       config: const AcpPermissionReviewAgentConfig(enabled: true),
@@ -901,7 +1374,11 @@ Future<void> _pumpTestEventQueue() async {
 }
 
 class _ReviewFakeAgentClient extends FakeAgentClient {
-  _ReviewFakeAgentClient({required this.reviewText, super.sessionSettings});
+  _ReviewFakeAgentClient({
+    required this.reviewText,
+    super.sessionSettings,
+    super.connectDelay,
+  });
 
   final String reviewText;
   List<String> lastCreateAdditionalDirectories = const <String>[];
@@ -935,5 +1412,247 @@ class _ReviewFakeAgentClient extends FakeAgentClient {
       text: '',
       timestamp: DateTime(2026, 5, 31, 12),
     );
+  }
+}
+
+class _ControllableReviewAgentClient extends FakeAgentClient {
+  _ControllableReviewAgentClient({
+    this.firstPromptFails = false,
+    this.hangFirstPromptUntilDispose = false,
+    this.hangSubsequentPromptsUntilDispose = false,
+    this.events,
+    this.name = 'client',
+  });
+
+  final bool firstPromptFails;
+  final bool hangFirstPromptUntilDispose;
+  final bool hangSubsequentPromptsUntilDispose;
+  final List<String>? events;
+  final String name;
+  final Completer<void> firstPromptStarted = Completer<void>();
+  final Completer<void> _releaseFirstPrompt = Completer<void>();
+  final Completer<void> _disposedSignal = Completer<void>();
+  var _promptCalls = 0;
+  bool disposed = false;
+
+  @override
+  Future<void> connect() async {
+    events?.add('$name:connect');
+    await super.connect();
+  }
+
+  void releaseFirstPrompt() {
+    if (!_releaseFirstPrompt.isCompleted) {
+      _releaseFirstPrompt.complete();
+    }
+  }
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    _promptCalls += 1;
+    if (_promptCalls == 1) {
+      if (!firstPromptStarted.isCompleted) firstPromptStarted.complete();
+      if (hangFirstPromptUntilDispose) {
+        await _disposedSignal.future;
+      } else if (firstPromptFails) {
+        await _releaseFirstPrompt.future;
+      }
+      if (disposed || firstPromptFails) {
+        throw StateError('controlled prompt failure');
+      }
+    } else if (hangSubsequentPromptsUntilDispose) {
+      await _disposedSignal.future;
+    }
+    if (disposed) throw StateError('client disposed');
+    yield AgentEvent(
+      type: AgentEventType.agentTextDelta,
+      text: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      timestamp: DateTime.utc(2026, 7, 13),
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime.utc(2026, 7, 13),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    events?.add('$name:dispose');
+    disposed = true;
+    if (!_disposedSignal.isCompleted) _disposedSignal.complete();
+    if (!_releaseFirstPrompt.isCompleted) _releaseFirstPrompt.complete();
+    await super.dispose();
+  }
+}
+
+class _NonCooperativeReviewAgentClient extends FakeAgentClient {
+  final Completer<void> promptStarted = Completer<void>();
+  final Completer<void> _neverPrompt = Completer<void>();
+  final Completer<void> _neverDispose = Completer<void>();
+  var disposeCalls = 0;
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    if (!promptStarted.isCompleted) promptStarted.complete();
+    await _neverPrompt.future;
+  }
+
+  @override
+  Future<void> dispose() {
+    disposeCalls += 1;
+    return _neverDispose.future;
+  }
+}
+
+class _QueueReviewAgentClient extends _ReviewFakeAgentClient {
+  _QueueReviewAgentClient()
+    : super(
+        reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      );
+
+  final Completer<void> firstPromptStarted = Completer<void>();
+  final Completer<void> _releaseFirstPrompt = Completer<void>();
+  var promptCalls = 0;
+
+  void releaseFirstPrompt() {
+    if (!_releaseFirstPrompt.isCompleted) _releaseFirstPrompt.complete();
+  }
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    promptCalls += 1;
+    if (promptCalls == 1) {
+      if (!firstPromptStarted.isCompleted) firstPromptStarted.complete();
+      await _releaseFirstPrompt.future;
+    }
+    yield* super.sendPrompt(
+      sessionId: sessionId,
+      prompt: prompt,
+      attachments: attachments,
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    releaseFirstPrompt();
+    await super.dispose();
+  }
+}
+
+class _DelayedCleanupReviewAgentClient extends FakeAgentClient {
+  final Completer<void> promptStarted = Completer<void>();
+  final Completer<void> _failPrompt = Completer<void>();
+  final Completer<void> disposeStarted = Completer<void>();
+  final Completer<void> _finishDispose = Completer<void>();
+  final Completer<void> disposeFinished = Completer<void>();
+
+  void failPrompt() {
+    if (!_failPrompt.isCompleted) _failPrompt.complete();
+  }
+
+  void finishDispose() {
+    if (!_finishDispose.isCompleted) _finishDispose.complete();
+  }
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    if (!promptStarted.isCompleted) promptStarted.complete();
+    await _failPrompt.future;
+    throw StateError('controlled prompt failure');
+  }
+
+  @override
+  Future<void> dispose() async {
+    if (!disposeStarted.isCompleted) disposeStarted.complete();
+    await _finishDispose.future;
+    await super.dispose();
+    if (!disposeFinished.isCompleted) disposeFinished.complete();
+  }
+}
+
+class _ThrowingDisposeReviewAgentClient extends _ReviewFakeAgentClient {
+  _ThrowingDisposeReviewAgentClient()
+    : super(
+        reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      );
+
+  var stillActive = true;
+  var disposeCalls = 0;
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls += 1;
+    throw StateError('dispose failed while client remains active');
+  }
+}
+
+class _BindingReviewAgentClient extends FakeAgentClient {
+  _BindingReviewAgentClient({required this.name, required this.records});
+
+  final String name;
+  final List<String> records;
+  String? _workspaceRoot;
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    _workspaceRoot = cwd;
+    records.add('$name:create:$cwd:same-session');
+    return AgentSession(
+      id: 'same-session',
+      cwd: cwd,
+      createdAt: DateTime.utc(2026, 7, 13),
+      additionalDirectories: additionalDirectories,
+    );
+  }
+
+  @override
+  Future<void> closeSession({required String sessionId}) async {
+    records.add('$name:close:$sessionId');
+    throw StateError('close failed');
+  }
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    records.add('$name:prompt:${_workspaceRoot!}:$sessionId');
+    yield AgentEvent(
+      type: AgentEventType.agentTextDelta,
+      text: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      timestamp: DateTime.utc(2026, 7, 13),
+    );
+    yield AgentEvent(
+      type: AgentEventType.agentTextDone,
+      text: '',
+      timestamp: DateTime.utc(2026, 7, 13),
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    records.add('$name:dispose');
+    await super.dispose();
   }
 }

@@ -64,6 +64,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.maxSessionReplayBytes = 16 * 1024 * 1024,
     this.maxSessionToolCallItems = 512,
     this.maxSessionToolCallBytes = 8 * 1024 * 1024,
+    this.maxPromptAttachmentCount = 16,
+    this.maxPromptAttachmentSourceBytes = 8 * 1024 * 1024,
+    this.maxPromptAttachmentEncodedBytes = 12 * 1024 * 1024,
+    this.beforeAttachmentSecureOpenForTesting,
     acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
   }) : inputBudget = _validatedInputBudget(inputBudget),
        agentCommand = agentCommand ?? _defaultAgentCommand(),
@@ -110,6 +114,14 @@ class DartAcpAgentClient implements AcpAgentClient {
         'least ${acp.minimumSessionReplayBytes}.',
       );
     }
+    if (maxPromptAttachmentCount <= 0 ||
+        maxPromptAttachmentSourceBytes <= 0 ||
+        maxPromptAttachmentEncodedBytes < 2) {
+      throw ArgumentError(
+        'Prompt attachment count and source budgets must be positive; the '
+        'encoded budget must fit the empty JSON array.',
+      );
+    }
   }
 
   final String agentCommand;
@@ -132,6 +144,11 @@ class DartAcpAgentClient implements AcpAgentClient {
   final int maxSessionReplayBytes;
   final int maxSessionToolCallItems;
   final int maxSessionToolCallBytes;
+  final int maxPromptAttachmentCount;
+  final int maxPromptAttachmentSourceBytes;
+  final int maxPromptAttachmentEncodedBytes;
+  final FutureOr<void> Function(String canonicalPath)?
+  beforeAttachmentSecureOpenForTesting;
   final acp.AcpInputBudget inputBudget;
 
   acp.AcpClient? _client;
@@ -1220,8 +1237,20 @@ class DartAcpAgentClient implements AcpAgentClient {
     blocks.addAll(
       _mentionResourceLinkBlocks(prompt, workspaceRoot: workspaceRoot),
     );
+    final budget = _PromptAttachmentBudget(
+      maxCount: maxPromptAttachmentCount,
+      maxSourceBytes: maxPromptAttachmentSourceBytes,
+      maxEncodedBytes: maxPromptAttachmentEncodedBytes,
+    );
     for (final attachment in attachments) {
-      blocks.add(await _contentBlockForAttachment(attachment));
+      if (!budget.tryStartAttachment()) break;
+      final content = await _contentBlockForAttachment(attachment, budget);
+      if (content != null && budget.tryCommitBlock(content)) {
+        blocks.add(content);
+        continue;
+      }
+      final link = _resourceLinkBlock(attachment, budget);
+      if (link != null) blocks.add(link);
     }
     return blocks;
   }
@@ -1342,17 +1371,17 @@ class DartAcpAgentClient implements AcpAgentClient {
     return path.replaceAll('\\', '/').split('/').last;
   }
 
-  Future<Map<String, dynamic>> _contentBlockForAttachment(
+  Future<Map<String, dynamic>?> _contentBlockForAttachment(
     PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
   ) async {
-    final image = await _imageContentBlock(attachment);
+    final image = await _imageContentBlock(attachment, budget);
     if (image != null) return image;
-    final audio = await _audioContentBlock(attachment);
+    final audio = await _audioContentBlock(attachment, budget);
     if (audio != null) return audio;
-    final embedded = await _embeddedTextResourceBlock(attachment);
+    final embedded = await _embeddedTextResourceBlock(attachment, budget);
     if (embedded != null) return embedded;
-    final binary = await _embeddedBinaryResourceBlock(attachment);
-    return binary ?? _resourceLinkBlock(attachment);
+    return _embeddedBinaryResourceBlock(attachment, budget);
   }
 
   List<String> _additionalDirectoriesForRequest(List<String> override) {
@@ -1376,16 +1405,23 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<Map<String, dynamic>?> _imageContentBlock(
     PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
   ) async {
     if (_capabilities?.prompt.image != true) return null;
     final mimeType = attachment.imageMimeType;
     if (mimeType == null) return null;
+    if (!_attachmentMetadataMayFit(attachment, budget.remainingEncodedBytes)) {
+      return null;
+    }
 
     try {
-      final file = File(attachment.path);
-      final byteCount = attachment.size ?? await file.length();
-      if (byteCount > _maxImageAttachmentBytes) return null;
-      final bytes = await file.readAsBytes();
+      final read = await _readBoundedAttachmentBytes(
+        attachment.path,
+        maxBytes: budget.sourceLimit(_maxImageAttachmentBytes),
+      );
+      budget.recordSourceRead(read.sourceBytesRead);
+      final bytes = read.bytes;
+      if (bytes == null) return null;
       return <String, dynamic>{
         'type': 'image',
         'mimeType': mimeType,
@@ -1399,16 +1435,23 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<Map<String, dynamic>?> _audioContentBlock(
     PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
   ) async {
     if (_capabilities?.prompt.audio != true) return null;
     final mimeType = attachment.audioMimeType;
     if (mimeType == null) return null;
+    if (!_stringMetadataMayFit(mimeType, budget.remainingEncodedBytes)) {
+      return null;
+    }
 
     try {
-      final file = File(attachment.path);
-      final byteCount = attachment.size ?? await file.length();
-      if (byteCount > _maxAudioAttachmentBytes) return null;
-      final bytes = await file.readAsBytes();
+      final read = await _readBoundedAttachmentBytes(
+        attachment.path,
+        maxBytes: budget.sourceLimit(_maxAudioAttachmentBytes),
+      );
+      budget.recordSourceRead(read.sourceBytesRead);
+      final bytes = read.bytes;
+      if (bytes == null) return null;
       return <String, dynamic>{
         'type': 'audio',
         'mimeType': mimeType,
@@ -1421,15 +1464,23 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<Map<String, dynamic>?> _embeddedTextResourceBlock(
     PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
   ) async {
     if (_capabilities?.prompt.embeddedContext != true) return null;
     if (!attachment.isText) return null;
+    if (!_attachmentMetadataMayFit(attachment, budget.remainingEncodedBytes)) {
+      return null;
+    }
 
     try {
-      final file = File(attachment.path);
-      final byteCount = attachment.size ?? await file.length();
-      if (byteCount > _maxEmbeddedAttachmentBytes) return null;
-      final text = await file.readAsString();
+      final read = await _readBoundedAttachmentBytes(
+        attachment.path,
+        maxBytes: budget.sourceLimit(_maxEmbeddedAttachmentBytes),
+      );
+      budget.recordSourceRead(read.sourceBytesRead);
+      final bytes = read.bytes;
+      if (bytes == null) return null;
+      final text = utf8.decode(bytes, allowMalformed: false);
       return <String, dynamic>{
         'type': 'resource',
         'resource': <String, dynamic>{
@@ -1446,17 +1497,24 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   Future<Map<String, dynamic>?> _embeddedBinaryResourceBlock(
     PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
   ) async {
     if (_capabilities?.prompt.embeddedContext != true) return null;
     if (attachment.isText) return null;
     if (attachment.isImage) return null;
     if (attachment.isAudio) return null;
+    if (!_attachmentMetadataMayFit(attachment, budget.remainingEncodedBytes)) {
+      return null;
+    }
 
     try {
-      final file = File(attachment.path);
-      final byteCount = attachment.size ?? await file.length();
-      if (byteCount > _maxEmbeddedBinaryAttachmentBytes) return null;
-      final bytes = await file.readAsBytes();
+      final read = await _readBoundedAttachmentBytes(
+        attachment.path,
+        maxBytes: budget.sourceLimit(_maxEmbeddedBinaryAttachmentBytes),
+      );
+      budget.recordSourceRead(read.sourceBytesRead);
+      final bytes = read.bytes;
+      if (bytes == null) return null;
       return <String, dynamic>{
         'type': 'resource',
         'resource': <String, dynamic>{
@@ -1471,10 +1529,81 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  Map<String, dynamic> _resourceLinkBlock(PromptAttachment attachment) {
-    return attachment.toResourceLink().map<String, dynamic>(
+  Map<String, dynamic>? _resourceLinkBlock(
+    PromptAttachment attachment,
+    _PromptAttachmentBudget budget,
+  ) {
+    if (!_attachmentMetadataMayFit(attachment, budget.remainingEncodedBytes)) {
+      return null;
+    }
+    final link = attachment.toResourceLink().map<String, dynamic>(
       (key, value) => MapEntry(key, value),
     );
+    final declaredSize = link['size'];
+    if (declaredSize is int && declaredSize < 0) link.remove('size');
+    return budget.tryCommitBlock(link) ? link : null;
+  }
+
+  bool _attachmentMetadataMayFit(
+    PromptAttachment attachment,
+    int remainingEncodedBytes,
+  ) {
+    if (remainingEncodedBytes <= 0) return false;
+    const metadataCodeUnitLimit = 64 * 1024;
+    var remainingCodeUnits = remainingEncodedBytes < metadataCodeUnitLimit
+        ? remainingEncodedBytes
+        : metadataCodeUnitLimit;
+    for (final value in <String>[
+      attachment.path,
+      attachment.name,
+      ?attachment.mimeType,
+    ]) {
+      if (value.length > remainingCodeUnits) return false;
+      remainingCodeUnits -= value.length;
+    }
+    return true;
+  }
+
+  bool _stringMetadataMayFit(String value, int remainingEncodedBytes) {
+    if (remainingEncodedBytes <= 0) return false;
+    const metadataCodeUnitLimit = 64 * 1024;
+    final limit = remainingEncodedBytes < metadataCodeUnitLimit
+        ? remainingEncodedBytes
+        : metadataCodeUnitLimit;
+    return value.length <= limit;
+  }
+
+  Future<_AttachmentReadResult> _readBoundedAttachmentBytes(
+    String path, {
+    required int maxBytes,
+  }) async {
+    if (maxBytes <= 0 ||
+        (!Platform.isMacOS && !Platform.isLinux) ||
+        !path.startsWith('/')) {
+      return const _AttachmentReadResult.failure();
+    }
+    late final String canonicalPath;
+    try {
+      canonicalPath = await File(path).resolveSymbolicLinks();
+    } on Object {
+      return const _AttachmentReadResult.failure();
+    }
+    if (!canonicalPath.startsWith('/') || canonicalPath.length == 1) {
+      return const _AttachmentReadResult.failure();
+    }
+    await beforeAttachmentSecureOpenForTesting?.call(canonicalPath);
+    try {
+      final bytes = await acp.readSecureFileBytes(
+        canonicalRoot: '/',
+        relativePath: canonicalPath.substring(1),
+        maxReadBytes: maxBytes,
+      );
+      return _AttachmentReadResult.success(bytes);
+    } on acp.SecureFsReadLimitExceeded {
+      return _AttachmentReadResult.overflow(maxBytes + 1);
+    } on Object {
+      return const _AttachmentReadResult.failure();
+    }
   }
 
   Stream<AgentEvent> _sendRawPrompt({
@@ -2770,6 +2899,62 @@ class _InteractivePermissionProvider implements acp.PermissionProvider {
 acp.AcpInputBudget _validatedInputBudget(acp.AcpInputBudget budget) {
   budget.validate();
   return budget;
+}
+
+final class _AttachmentReadResult {
+  const _AttachmentReadResult.success(List<int> this.bytes)
+    : sourceBytesRead = bytes.length;
+
+  const _AttachmentReadResult.overflow(this.sourceBytesRead) : bytes = null;
+
+  const _AttachmentReadResult.failure() : bytes = null, sourceBytesRead = 0;
+
+  final List<int>? bytes;
+  final int sourceBytesRead;
+}
+
+final class _PromptAttachmentBudget {
+  _PromptAttachmentBudget({
+    required this.maxCount,
+    required this.maxSourceBytes,
+    required this.maxEncodedBytes,
+  });
+
+  final int maxCount;
+  final int maxSourceBytes;
+  final int maxEncodedBytes;
+
+  int _startedCount = 0;
+  int _sourceBytes = 0;
+  int _encodedBytes = 2;
+  int _encodedBlockCount = 0;
+
+  int get _remainingSourceBytes => maxSourceBytes - _sourceBytes;
+  int get remainingEncodedBytes => maxEncodedBytes - _encodedBytes;
+
+  bool tryStartAttachment() {
+    if (_startedCount >= maxCount) return false;
+    _startedCount += 1;
+    return true;
+  }
+
+  int sourceLimit(int itemLimit) =>
+      itemLimit < _remainingSourceBytes ? itemLimit : _remainingSourceBytes;
+
+  void recordSourceRead(int observedBytes) {
+    if (observedBytes <= 0) return;
+    final remaining = _remainingSourceBytes;
+    _sourceBytes += observedBytes < remaining ? observedBytes : remaining;
+  }
+
+  bool tryCommitBlock(Map<String, dynamic> block) {
+    final blockBytes = utf8.encode(jsonEncode(block)).length;
+    final additionalBytes = blockBytes + (_encodedBlockCount == 0 ? 0 : 1);
+    if (additionalBytes > remainingEncodedBytes) return false;
+    _encodedBytes += additionalBytes;
+    _encodedBlockCount += 1;
+    return true;
+  }
 }
 
 final class _RawPromptOperation {
