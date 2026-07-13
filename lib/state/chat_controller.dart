@@ -3854,18 +3854,21 @@ class ChatController extends ChangeNotifier {
     required String method,
     required Map<String, Object?> params,
   }) async {
-    final trimmedMethod = method.trim();
-    if (trimmedMethod.isEmpty) {
-      throw StateError('Extension method is required.');
+    if (lastError != null) {
+      lastError = null;
+      _notifyListeners();
     }
-    if (!trimmedMethod.startsWith('_')) {
-      throw StateError('Extension method must start with underscore (_).');
-    }
-    if (!canSendExtensionRequest) {
-      throw StateError('Connect to an ACP agent before sending extensions.');
-    }
-
     try {
+      final trimmedMethod = method.trim();
+      if (trimmedMethod.isEmpty) {
+        throw StateError('Extension method is required.');
+      }
+      if (!trimmedMethod.startsWith('_')) {
+        throw StateError('Extension method must start with underscore (_).');
+      }
+      if (!canSendExtensionRequest) {
+        throw StateError('Connect to an ACP agent before sending extensions.');
+      }
       final result = await client.sendExtensionRequest(
         method: trimmedMethod,
         params: params,
@@ -3874,7 +3877,7 @@ class ChatController extends ChangeNotifier {
       _notifyListeners();
       return result;
     } catch (error) {
-      _setActionError(error);
+      _setActionError(error, preserveConnectionStatus: true);
       rethrow;
     }
   }
@@ -6621,9 +6624,9 @@ class ChatController extends ChangeNotifier {
     _notifyListeners();
   }
 
-  void _setActionError(Object error) {
+  void _setActionError(Object error, {bool preserveConnectionStatus = false}) {
     lastError = _boundedLocalErrorText(_messageForError(error)).text;
-    if (status == ConnectionStatus.error) {
+    if (!preserveConnectionStatus && status == ConnectionStatus.error) {
       status = currentSession == null
           ? ConnectionStatus.connected
           : ConnectionStatus.sessionReady;

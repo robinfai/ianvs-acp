@@ -2666,6 +2666,16 @@ void main() {
 
     await tester.tap(find.text('other'));
     await tester.pumpAndSettle();
+
+    expect(find.text('Review Session Workspace'), findsOneWidget);
+    expect(controller.currentSession?.id, isNot('other-session'));
+    expect(
+      controller.sessions
+          .singleWhere((session) => session.id == 'other-session')
+          .unread,
+      isTrue,
+    );
+
     await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
     await tester.pumpAndSettle();
 
@@ -2681,21 +2691,39 @@ void main() {
   testWidgets(
     'AcpClientApp confirms sidebar workspace roots before switching agents',
     (tester) async {
+      final temp = (await tester.runAsync(
+        () => Directory.systemTemp.createTemp('ianvs-acp-remote-workspace-'),
+      ))!;
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
       final clients = <String, _RemoteWorkspaceSessionClient>{};
       final factoryCalls = <String, int>{};
+      final configPath = '${temp.path}/settings.json';
+      final workspaceStateStore = WorkspaceSidebarStateStore(
+        path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
+      );
+      await tester.runAsync(
+        () => workspaceStateStore.saveExpandedWorkspacePaths({'/workspace/pi'}),
+      );
       final config = AcpClientConfig.fromJson({
         'default_agent_server': 'Codex',
         'agent_servers': {
           'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
           'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
         },
-      });
+      }, configPath: configPath);
 
-      await pumpWithWindowSize(
-        tester,
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
         AcpClientApp(
           config: config,
           taskInboxController: taskHarness.controller,
+          workspaceStateStore: workspaceStateStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (agentConfig) {
             factoryCalls.update(
               agentConfig.agentName,
@@ -2708,7 +2736,6 @@ void main() {
             );
           },
         ),
-        const Size(1400, 900),
       );
       await _pumpUntil(
         tester,
@@ -2717,14 +2744,29 @@ void main() {
       final piFactoryCallsBeforeCancel = factoryCalls['pi ACP'] ?? 0;
 
       await tester.tap(find.text('Remote Pi Session'));
-      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () => find.text('Review Session Workspace').evaluate().isNotEmpty,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.text('Review Session Workspace'), findsOneWidget);
-      expect(find.text('/workspace/pi'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('/workspace/pi'),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('/workspace/shared-a'), findsOneWidget);
       expect(find.text('/workspace/shared-b'), findsOneWidget);
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await _pumpUntil(
+        tester,
+        () => find.text('Review Session Workspace').evaluate().isEmpty,
+      );
 
       expect(clients['pi ACP']?.resumeCalls, 0);
       expect(factoryCalls['pi ACP'] ?? 0, piFactoryCallsBeforeCancel);
@@ -2734,9 +2776,34 @@ void main() {
       );
 
       await tester.tap(find.text('Remote Pi Session'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
-      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () => find.text('Review Session Workspace').evaluate().isNotEmpty,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final targetController = tester
+          .widget<AppShell>(find.byType(AppShell))
+          .sessionControllers
+          .singleWhere((controller) => controller.agentName == 'pi ACP');
+      expect(targetController.isSessionOperationRunning, isFalse);
+      final resumeButton = find
+          .widgetWithText(FilledButton, 'Resume Session')
+          .hitTestable();
+      expect(resumeButton, findsOneWidget);
+      await tester.tap(resumeButton);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await _pumpUntil(
+        tester,
+        () => find.text('Review Session Workspace').evaluate().isEmpty,
+      );
+      await _pumpUntil(tester, () => clients['pi ACP']?.resumeCalls == 1);
+      await _pumpUntil(
+        tester,
+        () =>
+            tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName ==
+            'pi ACP',
+      );
 
       expect(clients['pi ACP']?.resumeCalls, 1);
       expect(clients['pi ACP']?.lastResumeSessionId, 'remote-pi-session');
@@ -2758,10 +2825,12 @@ void main() {
       final fake = FakeAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
-      await controller.resumeSession(
-        'session-a',
-        cwd: '/workspace/current',
-        additionalDirectories: const ['/workspace/current-extra'],
+      await tester.runAsync(
+        () => controller.resumeSession(
+          'session-a',
+          cwd: '/workspace/current',
+          additionalDirectories: const ['/workspace/current-extra'],
+        ),
       );
 
       await pumpWithWindowSize(
@@ -2769,14 +2838,32 @@ void main() {
         AcpClientApp(
           controller: controller,
           taskInboxController: taskHarness.controller,
+          autoLoadWorkspaceSessions: false,
         ),
         const Size(1400, 900),
       );
 
       await tester.tap(find.text('Resume'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
-      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () => find.text('Resume ACP Session').evaluate().isNotEmpty,
+      );
+      await _pumpUntil(tester, () {
+        final loadButton = find.widgetWithText(FilledButton, 'Load');
+        return loadButton.evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(loadButton).onPressed != null;
+      });
+      await tester.pump(const Duration(milliseconds: 300));
+      final loadButton = find
+          .widgetWithText(FilledButton, 'Load')
+          .hitTestable();
+      expect(loadButton, findsOneWidget);
+      await tester.tap(loadButton);
+      await tester.pump();
+      await _pumpUntil(
+        tester,
+        () => find.textContaining('different workspace').evaluate().isNotEmpty,
+      );
 
       expect(find.text('Review Session Workspace'), findsNothing);
       expect(find.textContaining('different workspace'), findsOneWidget);

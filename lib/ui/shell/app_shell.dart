@@ -449,7 +449,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return CapabilitiesDialog(capabilities: controller.capabilities);
+        return CapabilitiesDialog(
+          capabilities: controller.capabilities,
+          inputBudget: inputBudget,
+        );
       },
     );
   }
@@ -458,7 +461,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return ExtensionRequestDialog(controller: controller);
+        return ExtensionRequestDialog(
+          controller: controller,
+          inputBudget: inputBudget,
+        );
       },
     );
   }

@@ -1714,7 +1714,13 @@ class _AcpClientAppState extends State<AcpClientApp>
       if (identical(existingTargetController, _controller)) return;
     }
 
-    final approved = await showSessionWorkspaceReviewDialog(context, session);
+    if (!mounted) return;
+    final dialogContext = _navigatorKey.currentState?.overlay?.context;
+    if (dialogContext == null || !dialogContext.mounted) return;
+    final approved = await showSessionWorkspaceReviewDialog(
+      dialogContext,
+      session,
+    );
     if (!approved || !mounted) return;
 
     var controller = _controller;

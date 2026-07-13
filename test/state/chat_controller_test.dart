@@ -11245,10 +11245,19 @@ void main() {
 
   test('send extension request requires underscore-prefixed method', () async {
     final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      inputBudget: const acp.AcpInputBudget(
+        maxMessageTextBytes: 8,
+        maxMarkdownFallbackBytes: 8,
+      ),
+    );
     addTearDown(controller.dispose);
 
     await controller.connect();
+    var notifications = 0;
+    controller.addListener(() => notifications += 1);
 
     await expectLater(
       controller.sendExtensionRequest(
@@ -11259,7 +11268,93 @@ void main() {
     );
 
     expect(fake.lastExtensionMethod, isNull);
+    expect(controller.lastError, isNotNull);
+    expect(controller.lastError, hasLength(8));
+    expect(controller.lastError, isNot(contains('underscore')));
+    expect(notifications, 1);
+
+    final repeatedError = controller.lastError;
+    notifications = 0;
+    await expectLater(
+      controller.sendExtensionRequest(
+        method: 'example.dev/listBuffers',
+        params: const {},
+      ),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(controller.lastError, repeatedError);
+    expect(notifications, 2);
   });
+
+  test(
+    'send extension request bounds disconnected validation errors',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMessageTextBytes: 10,
+          maxMarkdownFallbackBytes: 10,
+        ),
+      );
+      addTearDown(controller.dispose);
+      var notifications = 0;
+      controller.addListener(() => notifications += 1);
+
+      await expectLater(
+        controller.sendExtensionRequest(
+          method: '_example.dev/listBuffers',
+          params: const {},
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(controller.lastError, isNotNull);
+      expect(controller.lastError, hasLength(10));
+      expect(controller.lastError, isNot(contains('Connect to an ACP agent')));
+      expect(notifications, 1);
+    },
+  );
+
+  test(
+    'send extension request preserves an existing connection error status',
+    () async {
+      final fake = FakeAgentClient(
+        connectError: StateError('connection failed'),
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        inputBudget: const acp.AcpInputBudget(
+          maxMessageTextBytes: 8,
+          maxMarkdownFallbackBytes: 8,
+        ),
+      );
+      addTearDown(controller.dispose);
+      await controller.connect();
+      expect(controller.status, app_state.ConnectionStatus.error);
+
+      final notifiedStatuses = <app_state.ConnectionStatus>[];
+      controller.addListener(() => notifiedStatuses.add(controller.status));
+
+      await expectLater(
+        controller.sendExtensionRequest(
+          method: 'invalid-method',
+          params: const {},
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(fake.lastExtensionMethod, isNull);
+      expect(controller.status, app_state.ConnectionStatus.error);
+      expect(notifiedStatuses, isNotEmpty);
+      expect(notifiedStatuses, everyElement(app_state.ConnectionStatus.error));
+      expect(controller.lastError, isNotNull);
+      expect(controller.lastError, hasLength(8));
+      expect(controller.lastError, isNot(contains('connection failed')));
+    },
+  );
 
   test('auth required session errors point to authenticate action', () async {
     final controller = ChatController(
