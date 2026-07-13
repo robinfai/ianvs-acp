@@ -6152,6 +6152,234 @@ void main() {
     expect(controller.lastError, contains('codex missing'));
   });
 
+  test('connect failure survives an error whose toString throws', () async {
+    const canary = 'CONNECT_ERROR_SECRET';
+    final error = _ThrowingErrorString(canary);
+    final controller = ChatController(
+      client: FakeAgentClient(connectError: error),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    final notifications =
+        <({app_state.ConnectionStatus status, String? error})>[];
+    controller.addListener(() {
+      notifications.add((
+        status: controller.status,
+        error: controller.lastError,
+      ));
+    });
+
+    await controller.connect();
+
+    expect(error.toStringCalls, 1);
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, 'An unexpected error occurred.');
+    expect(controller.lastError, isNot(contains(canary)));
+    expect(
+      notifications,
+      contains((
+        status: app_state.ConnectionStatus.error,
+        error: 'An unexpected error occurred.',
+      )),
+    );
+  });
+
+  test(
+    'auth detection protects map keys and values and deduplicates cycles',
+    () async {
+      const canary = 'MAP_VALUE_SECRET';
+      final throwingKey = _ThrowingStringValue('MAP_KEY_SECRET');
+      final throwingValue = _ThrowingStringValue(canary);
+      final authValue = _StringValue('AUTH_REQUIRED');
+      final data = <Object?, Object?>{};
+      data[throwingKey] = throwingValue;
+      data['self'] = data;
+      data['auth'] = authValue;
+      final controller = ChatController(
+        client: FakeAgentClient(
+          createSessionError: _StructuredError(text: 'opaque', data: data),
+          authMethods: const [
+            {'id': 'browser', 'name': 'Browser sign-in'},
+          ],
+        ),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+
+      expect(throwingKey.toStringCalls, 1);
+      expect(throwingValue.toStringCalls, 1);
+      expect(authValue.toStringCalls, 1);
+      expect(controller.status, app_state.ConnectionStatus.error);
+      expect(controller.lastError, contains('Authentication required'));
+      expect(controller.lastError, contains('Authenticate'));
+      expect(controller.lastError, isNot(contains(canary)));
+    },
+  );
+
+  test('auth detection checks cause before wide data', () async {
+    final unrelatedData = _CountingErrorIterable(10000);
+    final wrappedAuth = _StructuredError(
+      text: 'wrapped',
+      data: unrelatedData,
+      cause: const _AuthRequiredError(),
+    );
+    final authController = ChatController(
+      client: FakeAgentClient(
+        connectError: wrappedAuth,
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(authController.dispose);
+
+    await authController.connect();
+
+    expect(authController.lastError, contains('Authentication required'));
+    expect(unrelatedData.yielded, lessThan(1000));
+  });
+
+  test('auth detection does not loop on a recursive self cause', () async {
+    final recursive = _RecursiveSelfCauseError();
+    final recursiveController = ChatController(
+      client: FakeAgentClient(connectError: recursive),
+      cwd: '/workspace',
+    );
+    addTearDown(recursiveController.dispose);
+
+    await recursiveController.connect();
+
+    expect(recursive.toStringCalls, 2);
+    expect(recursiveController.status, app_state.ConnectionStatus.error);
+    expect(recursiveController.lastError, 'An unexpected error occurred.');
+  });
+
+  test('auth detection checks data fairly beside a wide cause', () async {
+    final unrelatedCause = _CountingErrorIterable(10000);
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionError: _StructuredError(
+          text: 'opaque',
+          cause: unrelatedCause,
+          data: const <String, Object?>{'code': 'auth_required'},
+        ),
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('Authentication required'));
+    expect(controller.lastError, contains('Authenticate'));
+    expect(unrelatedCause.yielded, lessThan(1000));
+  });
+
+  test('one wide cause string cannot consume the data scan budget', () async {
+    final wideCause = List<String>.filled(100000, 'x').join();
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionError: _StructuredError(
+          text: 'opaque',
+          cause: wideCause,
+          data: const <String, Object?>{'code': 'auth_required'},
+        ),
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('Authentication required'));
+    expect(controller.lastError, contains('Authenticate'));
+  });
+
+  test('auth detection bounds scanning of a single oversized string', () async {
+    final oversized = '${List<String>.filled(100000, 'x').join()}auth_required';
+    final controller = ChatController(
+      client: FakeAgentClient(
+        connectError: _StructuredError(
+          text: 'oversized error',
+          data: oversized,
+        ),
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.connect();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, 'oversized error');
+  });
+
+  test('auth detection counts pre-rendered error text only once', () async {
+    final errorText = List<String>.filled(40000, 'x').join();
+    final controller = ChatController(
+      client: FakeAgentClient(
+        createSessionError: _StructuredError(
+          text: errorText,
+          data: 'auth_required',
+        ),
+        authMethods: const [
+          {'id': 'browser', 'name': 'Browser sign-in'},
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+
+    expect(controller.status, app_state.ConnectionStatus.error);
+    expect(controller.lastError, contains('Authentication required'));
+    expect(controller.lastError, contains('Authenticate'));
+  });
+
+  test('auth detection applies depth and node traversal limits', () async {
+    Object? deep = 'auth_required';
+    for (var index = 0; index < 64; index += 1) {
+      deep = <Object?>[deep];
+    }
+    final deepController = ChatController(
+      client: FakeAgentClient(
+        connectError: _StructuredError(text: 'deep error', data: deep),
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(deepController.dispose);
+
+    await deepController.connect();
+
+    expect(deepController.lastError, 'deep error');
+
+    final iterable = _CountingErrorIterable(10000);
+    final wideController = ChatController(
+      client: FakeAgentClient(
+        connectError: _StructuredError(text: 'wide error', data: iterable),
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(wideController.dispose);
+
+    await wideController.connect();
+
+    expect(wideController.lastError, 'wide error');
+    expect(iterable.yielded, lessThan(1000));
+  });
+
   test('reconnect failure clears stale capabilities', () async {
     final fake = _FailingReconnectAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -11563,6 +11791,51 @@ void main() {
     expect(controller.messages.last.role, ChatMessageRole.error);
   });
 
+  test(
+    'prompt stream error formatting always finishes streaming and notifies',
+    () async {
+      const canary = 'PROMPT_ERROR_SECRET';
+      final promptError = _ThrowingErrorString(canary);
+      final controller = ChatController(
+        client: FakeAgentClient(promptError: promptError),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+      final notifications =
+          <
+            ({app_state.ConnectionStatus status, bool streaming, String? error})
+          >[];
+      controller.addListener(() {
+        notifications.add((
+          status: controller.status,
+          streaming: controller.isStreaming,
+          error: controller.lastError,
+        ));
+      });
+
+      final result = await controller.sendPrompt('Hi');
+      await pumpEventQueue(times: 4);
+
+      expect(result, ChatPromptSubmissionResult.submitted);
+      expect(promptError.toStringCalls, 1);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.status, app_state.ConnectionStatus.error);
+      expect(controller.lastError, 'An unexpected error occurred.');
+      expect(controller.lastError, isNot(contains(canary)));
+      expect(controller.messages.last.role, ChatMessageRole.error);
+      expect(controller.messages.last.text, controller.lastError);
+      expect(
+        notifications,
+        contains((
+          status: app_state.ConnectionStatus.error,
+          streaming: false,
+          error: 'An unexpected error occurred.',
+        )),
+      );
+    },
+  );
+
   test('send prompt error events finish streaming immediately', () async {
     final controller = ChatController(
       client: _OpenErrorEventAgentClient(),
@@ -11658,6 +11931,103 @@ class _AuthRequiredError {
 
   @override
   String toString() => 'JSON-RPC error -32001';
+}
+
+class _ThrowingErrorString {
+  _ThrowingErrorString(this.canary);
+
+  final String canary;
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    throw StateError(canary);
+  }
+}
+
+class _ThrowingStringValue {
+  _ThrowingStringValue(this.canary);
+
+  final String canary;
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    throw StateError(canary);
+  }
+}
+
+class _StringValue {
+  _StringValue(this.value);
+
+  final String value;
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    return value;
+  }
+}
+
+class _StructuredError {
+  const _StructuredError({required this.text, this.data, this.cause});
+
+  final String text;
+  final Object? data;
+  final Object? cause;
+
+  @override
+  String toString() => text;
+}
+
+class _RecursiveSelfCauseError {
+  bool _formatting = false;
+  int toStringCalls = 0;
+
+  Object get cause => this;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    if (_formatting) throw StateError('recursive error formatting');
+    _formatting = true;
+    try {
+      return cause.toString();
+    } finally {
+      _formatting = false;
+    }
+  }
+}
+
+class _CountingErrorIterable extends Iterable<Object?> {
+  _CountingErrorIterable(this.itemCount);
+
+  final int itemCount;
+  int yielded = 0;
+
+  @override
+  Iterator<Object?> get iterator => _CountingErrorIterator(this);
+}
+
+class _CountingErrorIterator implements Iterator<Object?> {
+  _CountingErrorIterator(this.owner);
+
+  final _CountingErrorIterable owner;
+  int _index = 0;
+
+  @override
+  Object? get current => _StringValue('ordinary value $_index');
+
+  @override
+  bool moveNext() {
+    if (_index >= owner.itemCount) return false;
+    _index += 1;
+    owner.yielded += 1;
+    return true;
+  }
 }
 
 class _OmittingConfigOptionsAgentClient extends FakeAgentClient {

@@ -64,6 +64,202 @@ const int _contentBlockMetadataHostRetainedBytes = 256;
 const int _contentBlockHostRetainedBytes = 320;
 const int _thoughtMetadataHostRetainedBytes = 128;
 const int _maxSafeRetainedBytes = 0x1fffffffffffff;
+const String _genericErrorMessage = 'An unexpected error occurred.';
+const int _maxAuthErrorTraversalDepth = 16;
+const int _maxAuthErrorTraversalNodes = 256;
+const int _maxAuthErrorStringCodeUnits = 64 * 1024;
+const int _maxAuthErrorStringCodeUnitsPerValue = 4 * 1024;
+
+final class _AuthValueWork {
+  const _AuthValueWork({
+    required this.value,
+    required this.depth,
+    this.knownText,
+    this.textWasAlreadyRendered = false,
+  });
+
+  final Object? value;
+  final int depth;
+  final String? knownText;
+  final bool textWasAlreadyRendered;
+}
+
+final class _AuthIteratorWork {
+  const _AuthIteratorWork({
+    required this.iterator,
+    required this.childDepth,
+    required this.yieldsMapEntries,
+  });
+
+  final Iterator<dynamic> iterator;
+  final int childDepth;
+  final bool yieldsMapEntries;
+}
+
+final class _AuthRequiredDetector {
+  final Set<Object> _seen = HashSet<Object>.identity();
+  final Queue<Object> _pending = Queue<Object>();
+  int _visitedNodes = 0;
+  int _inspectedStringCodeUnits = 0;
+
+  bool contains(
+    Object? value, {
+    String? knownText,
+    bool textWasAlreadyRendered = false,
+  }) {
+    if (_visitedNodes >= _maxAuthErrorTraversalNodes) return false;
+    _pending.addLast(
+      _AuthValueWork(
+        value: value,
+        depth: 0,
+        knownText: knownText,
+        textWasAlreadyRendered: textWasAlreadyRendered,
+      ),
+    );
+    while (_pending.isNotEmpty && _visitedNodes < _maxAuthErrorTraversalNodes) {
+      final work = _pending.removeFirst();
+      if (work is _AuthValueWork) {
+        _visitedNodes += 1;
+        if (_visitValue(work)) {
+          _pending.clear();
+          return true;
+        }
+      } else if (work is _AuthIteratorWork) {
+        _advanceIterator(work);
+      }
+    }
+    if (_visitedNodes >= _maxAuthErrorTraversalNodes) _pending.clear();
+    return false;
+  }
+
+  bool _visitValue(_AuthValueWork work) {
+    final value = work.value;
+    if (work.depth > _maxAuthErrorTraversalDepth || value == null) {
+      return false;
+    }
+    if (!_seen.add(value)) return false;
+
+    if (_containsToken(work.knownText)) return true;
+    if (value is String) {
+      if (work.textWasAlreadyRendered) return false;
+      return _containsToken(value);
+    }
+    if (value is Map) {
+      _enqueueMapIterator(value, work.depth + 1);
+      return false;
+    }
+    if (value is Iterable) {
+      _enqueueIterableIterator(value, work.depth + 1);
+      return false;
+    }
+
+    if (!work.textWasAlreadyRendered && work.knownText == null) {
+      if (_containsToken(_guardedToString(value))) return true;
+    }
+    for (final fieldName in const ['message', 'code', 'cause', 'data']) {
+      _pending.addLast(
+        _AuthValueWork(
+          value: _dynamicField(value, fieldName),
+          depth: work.depth + 1,
+        ),
+      );
+    }
+    return false;
+  }
+
+  void _enqueueMapIterator(Map<dynamic, dynamic> value, int childDepth) {
+    try {
+      _pending.addLast(
+        _AuthIteratorWork(
+          iterator: value.entries.iterator,
+          childDepth: childDepth,
+          yieldsMapEntries: true,
+        ),
+      );
+    } on Object {
+      return;
+    }
+  }
+
+  void _enqueueIterableIterator(Iterable<dynamic> value, int childDepth) {
+    try {
+      _pending.addLast(
+        _AuthIteratorWork(
+          iterator: value.iterator,
+          childDepth: childDepth,
+          yieldsMapEntries: false,
+        ),
+      );
+    } on Object {
+      return;
+    }
+  }
+
+  void _advanceIterator(_AuthIteratorWork work) {
+    try {
+      if (!work.iterator.moveNext()) return;
+      final current = work.iterator.current;
+      if (work.yieldsMapEntries) {
+        final entry = current as MapEntry<dynamic, dynamic>;
+        _pending.addLast(
+          _AuthValueWork(value: entry.key, depth: work.childDepth),
+        );
+        _pending.addLast(
+          _AuthValueWork(value: entry.value, depth: work.childDepth),
+        );
+      } else {
+        _pending.addLast(
+          _AuthValueWork(value: current, depth: work.childDepth),
+        );
+      }
+      _pending.addLast(work);
+    } on Object {
+      return;
+    }
+  }
+
+  bool _containsToken(String? value) {
+    if (value == null ||
+        _inspectedStringCodeUnits >= _maxAuthErrorStringCodeUnits) {
+      return false;
+    }
+    final remaining = _maxAuthErrorStringCodeUnits - _inspectedStringCodeUnits;
+    final perValueLength = value.length < _maxAuthErrorStringCodeUnitsPerValue
+        ? value.length
+        : _maxAuthErrorStringCodeUnitsPerValue;
+    final inspectedLength = perValueLength < remaining
+        ? perValueLength
+        : remaining;
+    _inspectedStringCodeUnits += inspectedLength;
+    final inspected = inspectedLength == value.length
+        ? value
+        : value.substring(0, inspectedLength);
+    return inspected.toLowerCase().contains('auth_required');
+  }
+
+  String? _guardedToString(Object value) {
+    try {
+      return value.toString();
+    } on Object {
+      return null;
+    }
+  }
+
+  Object? _dynamicField(Object object, String fieldName) {
+    try {
+      final dynamic value = object;
+      return switch (fieldName) {
+        'cause' => value.cause,
+        'code' => value.code,
+        'data' => value.data,
+        'message' => value.message,
+        _ => null,
+      };
+    } on Object {
+      return null;
+    }
+  }
+}
 
 final class _GuardedChatMetadata {
   const _GuardedChatMetadata({
@@ -6635,8 +6831,8 @@ class ChatController extends ChangeNotifier {
   }
 
   String _messageForAgentError(AgentEvent event) {
-    if (_containsAuthRequired(event.text) ||
-        _containsAuthRequired(event.metadata)) {
+    final detector = _AuthRequiredDetector();
+    if (detector.contains(event.text) || detector.contains(event.metadata)) {
       return _authRequiredMessage();
     }
     return event.text;
@@ -6664,13 +6860,15 @@ class ChatController extends ChangeNotifier {
   }
 
   String _messageForError(Object error) {
-    if (_containsAuthRequired(error.toString()) ||
-        _containsAuthRequired(_dynamicField(error, 'message')) ||
-        _containsAuthRequired(_dynamicField(error, 'code')) ||
-        _containsAuthRequired(_dynamicField(error, 'data'))) {
+    final errorText = _guardedErrorString(error);
+    if (_AuthRequiredDetector().contains(
+      error,
+      knownText: errorText,
+      textWasAlreadyRendered: true,
+    )) {
       return _authRequiredMessage();
     }
-    return error.toString();
+    return errorText ?? _genericErrorMessage;
   }
 
   String _authRequiredMessage() {
@@ -6680,29 +6878,10 @@ class ChatController extends ChangeNotifier {
     return 'Authentication required, but this agent did not advertise an authentication method.';
   }
 
-  bool _containsAuthRequired(Object? value) {
-    if (value == null) return false;
-    if (value is String) return value.toLowerCase().contains('auth_required');
-    if (value is Map) {
-      return value.entries.any((entry) {
-        return _containsAuthRequired(entry.key.toString()) ||
-            _containsAuthRequired(entry.value);
-      });
-    }
-    if (value is Iterable) return value.any(_containsAuthRequired);
-    return false;
-  }
-
-  Object? _dynamicField(Object object, String fieldName) {
+  String? _guardedErrorString(Object error) {
     try {
-      final dynamic value = object;
-      return switch (fieldName) {
-        'code' => value.code,
-        'data' => value.data,
-        'message' => value.message,
-        _ => null,
-      };
-    } catch (_) {
+      return error.toString();
+    } on Object {
       return null;
     }
   }
