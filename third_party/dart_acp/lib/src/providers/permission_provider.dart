@@ -126,9 +126,15 @@ class DefaultPermissionProvider implements PermissionProvider {
       return onRequest!(options);
     }
     // Defaults: allow read; deny write/execute; others deny.
-    final lowerName = options.toolName.toLowerCase();
-    final lowerKind = options.toolKind?.toLowerCase();
-    if (lowerKind == 'read' || lowerName.contains('read')) {
+    final lowerKind = options.toolKind?.trim().toLowerCase() ?? '';
+    if (lowerKind.isNotEmpty) {
+      return lowerKind == 'read'
+          ? const PermissionDecision.allow()
+          : const PermissionDecision.deny();
+    }
+    final normalizedName = options.toolName.trim().toLowerCase();
+    const readToolNames = <String>{'read', 'read file', 'read_text_file'};
+    if (readToolNames.contains(normalizedName)) {
       return const PermissionDecision.allow();
     }
     return const PermissionDecision.deny();

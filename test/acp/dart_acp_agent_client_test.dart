@@ -23,6 +23,222 @@ final _testOmission = acp.AcpInputOmission(
 );
 
 void main() {
+  group('DefaultPermissionProvider', () {
+    acp.PermissionOptions options({
+      required String toolName,
+      String? toolKind,
+    }) {
+      return acp.PermissionOptions(
+        title: toolName,
+        rationale: 'test policy',
+        options: const <String>['allow', 'deny'],
+        sessionId: 'permission-policy',
+        toolName: toolName,
+        toolKind: toolKind,
+      );
+    }
+
+    test(
+      'uses a non-empty normalized tool kind as the strict policy key',
+      () async {
+        const scenarios = <({String toolKind, String toolName, bool allowed})>[
+          (toolKind: ' execute ', toolName: 'read-and-delete', allowed: false),
+          (toolKind: 'EDIT', toolName: 'spreadsheet', allowed: false),
+          (toolKind: 'write', toolName: 'read file', allowed: false),
+          (toolKind: 'unknown', toolName: 'read file', allowed: false),
+          (toolKind: ' READ ', toolName: 'delete everything', allowed: true),
+        ];
+        const provider = acp.DefaultPermissionProvider();
+
+        for (final scenario in scenarios) {
+          final decision = await provider.request(
+            options(toolName: scenario.toolName, toolKind: scenario.toolKind),
+          );
+
+          expect(
+            decision.outcome,
+            scenario.allowed
+                ? acp.PermissionOutcome.allow
+                : acp.PermissionOutcome.deny,
+            reason:
+                'toolKind=${scenario.toolKind}, toolName=${scenario.toolName}',
+          );
+        }
+      },
+    );
+
+    test(
+      'falls back to a precise read name only when tool kind is empty',
+      () async {
+        const scenarios = <({String? toolKind, String toolName, bool allowed})>[
+          (toolKind: null, toolName: 'read', allowed: true),
+          (toolKind: null, toolName: 'read_text_file', allowed: true),
+          (toolKind: '', toolName: 'Read file', allowed: true),
+          (toolKind: null, toolName: 'spreadsheet', allowed: false),
+          (toolKind: null, toolName: 'read-and-delete', allowed: false),
+          (toolKind: '   ', toolName: 'read-and-delete', allowed: false),
+        ];
+        const provider = acp.DefaultPermissionProvider();
+
+        for (final scenario in scenarios) {
+          final decision = await provider.request(
+            options(toolName: scenario.toolName, toolKind: scenario.toolKind),
+          );
+
+          expect(
+            decision.outcome,
+            scenario.allowed
+                ? acp.PermissionOutcome.allow
+                : acp.PermissionOutcome.deny,
+            reason:
+                'toolKind=${scenario.toolKind}, toolName=${scenario.toolName}',
+          );
+        }
+      },
+    );
+
+    test('keeps the custom request callback authoritative', () async {
+      late acp.PermissionOptions received;
+      final provider = acp.DefaultPermissionProvider(
+        onRequest: (request) async {
+          received = request;
+          return const acp.PermissionDecision.allow(optionId: 'custom-allow');
+        },
+      );
+      final request = options(toolName: 'read-and-delete', toolKind: 'execute');
+
+      final decision = await provider.request(request);
+
+      expect(received, same(request));
+      expect(decision.outcome, acp.PermissionOutcome.allow);
+      expect(decision.optionId, 'custom-allow');
+    });
+  });
+
+  test(
+    'SessionManager request_permission applies strict default tool-kind policy',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = JsonRpcPeer(channel.foreign);
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final permissionResponses = <String, Completer<Map<String, dynamic>>>{};
+      final server = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        if (message['method'] == 'session/resume') {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{},
+            }),
+          );
+          return;
+        }
+        final id = message['id']?.toString();
+        if (id != null) {
+          permissionResponses[id]?.complete(message);
+        }
+      });
+
+      Future<String> requestPermission({
+        required String id,
+        required String title,
+        String? kind,
+      }) async {
+        final response = Completer<Map<String, dynamic>>();
+        permissionResponses[id] = response;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'method': 'session/request_permission',
+            'params': <String, dynamic>{
+              'sessionId': 'permission-policy',
+              'toolCall': <String, dynamic>{'title': title, 'kind': ?kind},
+              'options': const <Map<String, dynamic>>[
+                <String, dynamic>{
+                  'optionId': 'allow-once',
+                  'kind': 'allow_once',
+                  'name': 'Allow once',
+                },
+                <String, dynamic>{
+                  'optionId': 'deny-once',
+                  'kind': 'reject_once',
+                  'name': 'Deny once',
+                },
+              ],
+            },
+          }),
+        );
+        final message = await response.future.timeout(
+          const Duration(seconds: 5),
+        );
+        final result = message['result'] as Map<String, dynamic>;
+        final outcome = result['outcome'] as Map<String, dynamic>;
+        return outcome['optionId'] as String;
+      }
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'permission-policy',
+          workspaceRoot: '/workspace',
+        );
+
+        expect(
+          await requestPermission(
+            id: 'permission-execute',
+            title: 'read-and-delete',
+            kind: 'execute',
+          ),
+          'deny-once',
+        );
+        expect(
+          await requestPermission(
+            id: 'permission-edit',
+            title: 'spreadsheet',
+            kind: 'edit',
+          ),
+          'deny-once',
+        );
+        expect(
+          await requestPermission(
+            id: 'permission-read',
+            title: 'delete everything',
+            kind: ' READ ',
+          ),
+          'allow-once',
+        );
+        expect(
+          await requestPermission(
+            id: 'permission-fallback',
+            title: 'read_text_file',
+          ),
+          'allow-once',
+        );
+        expect(
+          await requestPermission(
+            id: 'permission-missing-kind-deceptive-name',
+            title: 'read-and-delete',
+          ),
+          'deny-once',
+        );
+        expect(
+          await requestPermission(
+            id: 'permission-blank-kind-deceptive-name',
+            title: 'read-and-delete',
+            kind: '   ',
+          ),
+          'deny-once',
+        );
+      } finally {
+        await manager.dispose();
+        await peer.close();
+        await server.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
   test('app typed carriers default to immutable empty omission state', () {
     const event = AgentEvent(type: AgentEventType.status, text: 'status');
     const entry = AcpSessionEntry(id: 's', cwd: '/w', title: 'Session');
