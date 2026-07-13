@@ -2229,6 +2229,37 @@ Future<void> main() async {
     expect(client.agentArgs, ['@zed-industries/codex-acp@0.16.0']);
   });
 
+  test('terminal handle limits validate and expose configured values', () {
+    expect(
+      () => DartAcpAgentClient(maxTerminalHandles: 0),
+      throwsArgumentError,
+    );
+    expect(
+      () => DartAcpAgentClient(
+        maxTerminalHandles: 1,
+        maxTerminalHandlesPerSession: 2,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => DartAcpAgentClient(maxTerminalHandlesPerSession: 0),
+      throwsArgumentError,
+    );
+
+    final client = DartAcpAgentClient(
+      maxTerminalHandles: 4,
+      maxTerminalHandlesPerSession: 2,
+    );
+    expect(client.maxTerminalHandles, 4);
+    expect(client.maxTerminalHandlesPerSession, 2);
+    final defaults = DartAcpAgentClient();
+    expect(defaults.maxTerminalHandles, acp.defaultMaxTerminalHandles);
+    expect(
+      defaults.maxTerminalHandlesPerSession,
+      acp.defaultMaxTerminalHandlesPerSession,
+    );
+  });
+
   test('rejects plaintext remote endpoints at the client boundary', () {
     expect(
       () => DartAcpAgentClient(
@@ -10106,6 +10137,174 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test(
+    'terminal handle limits flow through the raw client terminal lifecycle',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final workspace = Directory('${tempDir.path}/workspace');
+      await workspace.create();
+      final resultFile = File('${tempDir.path}/terminal_limits.json');
+      final agentScript = File(
+        '${tempDir.path}/fake_terminal_limits_agent.dart',
+      );
+      final resultPath = jsonEncode(resultFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  Object? promptId;
+  String? firstTerminalId;
+  String? thirdTerminalId;
+  Map<String, dynamic>? secondResponse;
+
+  void respond(Object? id, Object? result) {
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'result': result,
+    }));
+  }
+
+  void request(String id, String method, Map<String, dynamic> params) {
+    stdout.writeln(jsonEncode(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      'params': params,
+    }));
+  }
+
+  Map<String, dynamic> createParams(String command) => <String, dynamic>{
+    'sessionId': 'session-terminal-limits',
+    'command': command,
+    'args': <String>[],
+    'env': <Map<String, String>>[
+      <String, String>{
+        'name': 'TERMINAL_LIMIT_CANARY',
+        'value': 'raw-terminal-limit-secret',
+      },
+    ],
+  };
+
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      respond(message['id'], <String, dynamic>{
+        'protocolVersion': 1,
+        'agentCapabilities': <String, dynamic>{},
+        'authMethods': <Map<String, dynamic>>[],
+      });
+    } else if (message['method'] == 'session/new') {
+      respond(
+        message['id'],
+        <String, dynamic>{'sessionId': 'session-terminal-limits'},
+      );
+    } else if (message['method'] == 'session/prompt') {
+      promptId = message['id'];
+      request(
+        'terminal-limit-create-1',
+        'terminal/create',
+        createParams('sleep 30'),
+      );
+    } else if (message['id'] == 'terminal-limit-create-1') {
+      firstTerminalId =
+          (message['result'] as Map<String, dynamic>)['terminalId'] as String;
+      request(
+        'terminal-limit-create-2',
+        'terminal/create',
+        createParams('second-command-canary'),
+      );
+    } else if (message['id'] == 'terminal-limit-create-2') {
+      secondResponse = message;
+      request(
+        'terminal-limit-release-1',
+        'terminal/release',
+        <String, dynamic>{'terminalId': firstTerminalId},
+      );
+    } else if (message['id'] == 'terminal-limit-release-1') {
+      request(
+        'terminal-limit-create-3',
+        'terminal/create',
+        createParams('sleep 30'),
+      );
+    } else if (message['id'] == 'terminal-limit-create-3') {
+      thirdTerminalId =
+          (message['result'] as Map<String, dynamic>)['terminalId'] as String;
+      request(
+        'terminal-limit-release-3',
+        'terminal/release',
+        <String, dynamic>{'terminalId': thirdTerminalId},
+      );
+    } else if (message['id'] == 'terminal-limit-release-3') {
+      await File($resultPath).writeAsString(
+        jsonEncode(<String, dynamic>{
+          'firstTerminalId': firstTerminalId,
+          'secondResponse': secondResponse,
+          'thirdTerminalId': thirdTerminalId,
+        }),
+      );
+      respond(promptId, <String, dynamic>{'stopReason': 'end_turn'});
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+        enableTerminalProvider: true,
+        maxTerminalHandles: 1,
+        maxTerminalHandlesPerSession: 1,
+      );
+      final permissionRequests = <AcpPermissionRequest>[];
+      final subscription = client.permissionRequests.listen((request) {
+        permissionRequests.add(request);
+        unawaited(
+          client.respondToPermissionRequest(
+            id: request.id,
+            decision: AcpPermissionDecision.allow,
+          ),
+        );
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: workspace.path);
+        final events = await client
+            .sendPrompt(sessionId: session.id, prompt: 'exercise limits')
+            .toList()
+            .timeout(const Duration(seconds: 10));
+        await _waitForFile(resultFile);
+
+        final result =
+            jsonDecode(await resultFile.readAsString()) as Map<String, dynamic>;
+        final second = result['secondResponse'] as Map<String, dynamic>;
+        expect(second['error'], <String, dynamic>{
+          'code': -32001,
+          'message': 'Terminal handle limit exceeded.',
+        });
+        expect(
+          (second['error'] as Map<String, dynamic>),
+          isNot(contains('data')),
+        );
+        expect(second.toString(), isNot(contains('raw-terminal-limit-secret')));
+        expect(second.toString(), isNot(contains('second-command-canary')));
+        expect(result['firstTerminalId'], isNotEmpty);
+        expect(result['thirdTerminalId'], isNotEmpty);
+        expect(result['thirdTerminalId'], isNot(result['firstTerminalId']));
+        expect(permissionRequests, hasLength(2));
+        expect(events.last.metadata['stopReason'], 'endTurn');
+      } finally {
+        await subscription.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test('raw prompt immediate cancel is delivered before prompt RPC', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

@@ -9,6 +9,7 @@ import 'models/bounded_observation.dart';
 import 'models/session_types.dart';
 import 'models/terminal_events.dart';
 import 'models/updates.dart';
+import 'providers/terminal_provider.dart';
 import 'rpc/inbound_gate.dart';
 import 'rpc/peer.dart';
 import 'session/session_manager.dart';
@@ -36,9 +37,15 @@ class AcpClient implements AcpBoundedObservationSource {
     int maxPendingBytes = 32 * 1024 * 1024,
     int maxConcurrentHandlers = 16,
     int maxOrdinaryConcurrentHandlers = 14,
+    int maxTerminalHandles = defaultMaxTerminalHandles,
+    int maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) async {
     inputBudget.validate();
+    validateTerminalHandleLimits(
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+    );
     InboundGate.validateLimits(
       maxPendingItems: maxPendingItems,
       maxPendingBytes: maxPendingBytes,
@@ -82,6 +89,8 @@ class AcpClient implements AcpBoundedObservationSource {
       maxReplayBytes: maxReplayBytes,
       maxToolCallItems: maxToolCallItems,
       maxToolCallBytes: maxToolCallBytes,
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
       inputBudget: inputBudget,
     );
 

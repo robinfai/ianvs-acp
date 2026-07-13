@@ -64,6 +64,8 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.maxSessionReplayBytes = 16 * 1024 * 1024,
     this.maxSessionToolCallItems = 512,
     this.maxSessionToolCallBytes = 8 * 1024 * 1024,
+    this.maxTerminalHandles = acp.defaultMaxTerminalHandles,
+    this.maxTerminalHandlesPerSession = acp.defaultMaxTerminalHandlesPerSession,
     this.maxPromptAttachmentCount = 16,
     this.maxPromptAttachmentSourceBytes = 8 * 1024 * 1024,
     this.maxPromptAttachmentEncodedBytes = 12 * 1024 * 1024,
@@ -83,6 +85,10 @@ class DartAcpAgentClient implements AcpAgentClient {
            : List.unmodifiable(
                additionalDirectories.map((path) => path.trim()),
              ) {
+    acp.validateTerminalHandleLimits(
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+    );
     final webSocketEndpoint = agentWebSocketUrl;
     if (webSocketEndpoint != null) {
       validateAcpEndpoint(
@@ -144,6 +150,8 @@ class DartAcpAgentClient implements AcpAgentClient {
   final int maxSessionReplayBytes;
   final int maxSessionToolCallItems;
   final int maxSessionToolCallBytes;
+  final int maxTerminalHandles;
+  final int maxTerminalHandlesPerSession;
   final int maxPromptAttachmentCount;
   final int maxPromptAttachmentSourceBytes;
   final int maxPromptAttachmentEncodedBytes;
@@ -254,7 +262,10 @@ class DartAcpAgentClient implements AcpAgentClient {
         ),
         allowReadOutsideWorkspace: allowFilesystemReadOutsideWorkspace,
         terminalProvider: enableTerminalProvider
-            ? acp.DefaultTerminalProvider()
+            ? acp.DefaultTerminalProvider(
+                maxActiveHandles: maxTerminalHandles,
+                maxActiveHandlesPerSession: maxTerminalHandlesPerSession,
+              )
             : null,
       );
       final transport = _transportForConfig(config);
@@ -268,6 +279,8 @@ class DartAcpAgentClient implements AcpAgentClient {
           maxReplayBytes: maxSessionReplayBytes,
           maxToolCallItems: maxSessionToolCallItems,
           maxToolCallBytes: maxSessionToolCallBytes,
+          maxTerminalHandles: maxTerminalHandles,
+          maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
           inputBudget: inputBudget,
         );
       } on Object {
