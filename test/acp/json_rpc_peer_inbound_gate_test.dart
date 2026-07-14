@@ -7,6 +7,182 @@ import 'package:stream_channel/stream_channel.dart';
 
 void main() {
   test(
+    'internal correlation restores duplicate and null wire ids exactly',
+    () async {
+      final channel = StreamChannelController<String>(sync: true);
+      final outbound = StreamIterator<String>(channel.local.stream);
+      final peer = JsonRpcPeer(channel.foreign);
+      final allStarted = Completer<void>();
+      var starts = 0;
+      peer.onReadTextFile = (params) async {
+        starts += 1;
+        if (starts == 3) allStarted.complete();
+        return <String, dynamic>{'marker': params['marker']};
+      };
+      try {
+        channel.local.sink.add(
+          jsonEncode(<Object?>[
+            for (final entry in <(Object?, String)>[
+              (7, 'a'),
+              (7, 'b'),
+              (null, 'c'),
+            ])
+              <String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': entry.$1,
+                'method': 'fs/read_text_file',
+                'params': <String, dynamic>{'marker': entry.$2},
+              },
+          ]),
+        );
+        await allStarted.future.timeout(const Duration(seconds: 2));
+        expect(await outbound.moveNext(), isTrue);
+        final wire = outbound.current;
+        final response = jsonDecode(wire) as List<dynamic>;
+        expect(response.map((e) => (e as Map)['id']).toList(), <Object?>[
+          7,
+          7,
+          null,
+        ]);
+        expect(
+          response.map((e) => ((e as Map)['result'] as Map)['marker']).toList(),
+          <String>['a', 'b', 'c'],
+        );
+        expect(wire, isNot(contains('_acp_internal_')));
+        await pumpEventQueue();
+        expect(peer.correlationPendingItemsForTesting, 0);
+        expect(peer.correlationPendingBytesForTesting, 0);
+      } finally {
+        await peer.close();
+        await outbound.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test(
+    'response commit retains correlation capacity behind a blocked batch sibling',
+    () async {
+      final channel = StreamChannelController<String>(sync: true);
+      final peer = JsonRpcPeer(channel.foreign, maxPendingItems: 2);
+      final quickFinished = Completer<void>();
+      final blockedStarted = Completer<void>();
+      final releaseBlocked = Completer<void>();
+      peer.onReadTextFile = (params) async {
+        quickFinished.complete();
+        return <String, dynamic>{'content': 'ok'};
+      };
+      peer.onWriteTextFile = (params) async {
+        blockedStarted.complete();
+        await releaseBlocked.future;
+        return null;
+      };
+      try {
+        channel.local.sink.add(
+          jsonEncode(<Object?>[
+            <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{},
+            },
+            <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': 2,
+              'method': 'fs/write_text_file',
+              'params': <String, dynamic>{},
+            },
+          ]),
+        );
+        await Future.wait<void>(<Future<void>>[
+          quickFinished.future,
+          blockedStarted.future,
+        ]).timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        expect(peer.inboundPendingItemsForTesting, 1);
+        expect(peer.correlationPendingItemsForTesting, 2);
+        await peer.close().timeout(const Duration(seconds: 2));
+        expect(peer.correlationPendingItemsForTesting, 0);
+        expect(peer.correlationPendingBytesForTesting, 0);
+      } finally {
+        if (!releaseBlocked.isCompleted) releaseBlocked.complete();
+        await peer.close();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test('correlation batch reservation rolls back gate atomically', () async {
+    for (final byteLimited in <bool>[false, true]) {
+      final quickRequest = <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'fs/read_text_file',
+        'params': <String, dynamic>{},
+      };
+      final blockedRequest = <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 2,
+        'method': 'fs/read_text_file',
+        'params': <String, dynamic>{'blocked': true},
+      };
+      final firstBatchBytes =
+          utf8.encode(jsonEncode(quickRequest)).length +
+          utf8.encode(jsonEncode(blockedRequest)).length;
+      final channel = StreamChannelController<String>(sync: true);
+      final outbound = StreamIterator<String>(channel.local.stream);
+      final peer = JsonRpcPeer(
+        channel.foreign,
+        maxPendingItems: byteLimited ? 128 : 2,
+        maxPendingBytes: byteLimited ? firstBatchBytes : 32 * 1024 * 1024,
+      );
+      final quickFinished = Completer<void>();
+      final blockedStarted = Completer<void>();
+      final releaseBlocked = Completer<void>();
+      peer.onReadTextFile = (params) async {
+        if (params['blocked'] == true) {
+          blockedStarted.complete();
+          await releaseBlocked.future;
+        } else {
+          quickFinished.complete();
+        }
+        return <String, dynamic>{'content': 'ok'};
+      };
+      try {
+        channel.local.sink.add(
+          jsonEncode(<Object?>[quickRequest, blockedRequest]),
+        );
+        await Future.wait<void>(<Future<void>>[
+          quickFinished.future,
+          blockedStarted.future,
+        ]).timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        final maliciousId = peer.correlationIdsForTesting.first;
+        final gateItemsBefore = peer.inboundPendingItemsForTesting;
+        final trackerItemsBefore = peer.correlationPendingItemsForTesting;
+
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            ...quickRequest,
+            'id': byteLimited ? 3 : maliciousId,
+          }),
+        );
+        expect(await outbound.moveNext(), isTrue);
+        final rejection = jsonDecode(outbound.current) as Map<String, dynamic>;
+        expect(rejection['id'], byteLimited ? 3 : maliciousId);
+        expect((rejection['error'] as Map)['code'], -32000);
+        expect(peer.inboundPendingItemsForTesting, gateItemsBefore);
+        expect(peer.correlationPendingItemsForTesting, trackerItemsBefore);
+      } finally {
+        if (!releaseBlocked.isCompleted) releaseBlocked.complete();
+        await peer.close();
+        await outbound.cancel();
+        await channel.local.sink.close();
+      }
+    }
+  });
+
+  test(
     'mixed batch routes response immediately and preserves request batch',
     () async {
       final channel = StreamChannelController<String>();

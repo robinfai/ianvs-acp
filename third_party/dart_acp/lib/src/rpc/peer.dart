@@ -32,7 +32,12 @@ class JsonRpcPeer {
          maxConcurrentHandlers: maxConcurrentHandlers,
          maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
        ) {
-    _decodedSink = _JsonEncodingSink(channel.sink);
+    _decodedSink = _JsonEncodingSink(
+      channel.sink,
+      prepare: _prepareCorrelationResponse,
+      onCommitted: _finishCommittedCorrelations,
+      onWriteRejected: _finishRejectedCorrelations,
+    );
     _peer = rpc.Peer.withoutJson(
       StreamChannel<Object?>(_decodedIncoming.stream, _decodedSink),
     );
@@ -60,6 +65,9 @@ class JsonRpcPeer {
   );
   final ListQueue<_DecodedDelivery> _decodedDeliveries =
       ListQueue<_DecodedDelivery>();
+  final ListQueue<String> _deferredInboundLines = ListQueue<String>();
+  final Map<String, _InboundCorrelation> _correlations =
+      <String, _InboundCorrelation>{};
 
   /// Underlying JSON-RPC peer.
   late final rpc.Peer _peer;
@@ -75,6 +83,25 @@ class JsonRpcPeer {
   var _dispatchingDecoded = false;
   var _dropDecodedDeliveries = false;
   var _terminalQueued = false;
+  var _correlationWriteInProgress = false;
+  var _correlationWriteEpoch = 0;
+  var _drainingDeferredInbound = false;
+  var _deferredInboundDrainScheduled = false;
+  var _nextCorrelationId = 0;
+  var _correlationPendingBytes = 0;
+
+  @visibleForTesting
+  int get correlationPendingItemsForTesting => _correlations.length;
+
+  @visibleForTesting
+  int get correlationPendingBytesForTesting => _correlationPendingBytes;
+
+  @visibleForTesting
+  int get inboundPendingItemsForTesting => _gate.pendingItems;
+
+  @visibleForTesting
+  Set<String> get correlationIdsForTesting =>
+      Set<String>.unmodifiable(_correlations.keys);
 
   /// Close the peer and clean up resources.
   Future<void> close() => _closeFuture ??= _close();
@@ -82,6 +109,7 @@ class JsonRpcPeer {
   Future<void> _close() async {
     _dropDecodedDeliveries = true;
     _stopAdmission();
+    _finishAllCorrelationsForPeerClose();
     final canceling = Future<void>.sync(_inboundSubscription.cancel);
     unawaited(canceling.catchError((Object _) {}));
     try {
@@ -118,12 +146,21 @@ class JsonRpcPeer {
 
   void _handleInboundLine(String line) {
     if (!_acceptingInbound) return;
+    if (_correlationWriteInProgress) {
+      _deferredInboundLines.addLast(line);
+      return;
+    }
+    _processInboundLine(line);
+  }
+
+  void _processInboundLine(String line) {
+    if (!_acceptingInbound) return;
 
     Object? decoded;
     try {
       decoded = jsonDecode(line);
     } on FormatException {
-      _decodedSink.add(const <String, dynamic>{
+      _writeWireResponse(const <String, dynamic>{
         'jsonrpc': '2.0',
         'id': null,
         'error': <String, dynamic>{'code': -32700, 'message': 'Parse error.'},
@@ -157,26 +194,210 @@ class JsonRpcPeer {
     }
     if (requests.isEmpty || !_acceptingInbound) return;
 
+    _admitAndDispatchRequests(requests, wasBatch: decoded is List);
+  }
+
+  void _admitAndDispatchRequests(
+    List<Object?> requests, {
+    required bool wasBatch,
+  }) {
     final gateElements = requests
         .map(
-          (element) => InboundGateElement(
-            method: _methodOf(element),
-            byteLength: utf8.encode(jsonEncode(element)).length,
+          (request) => InboundGateElement(
+            method: _methodOf(request),
+            byteLength: utf8.encode(jsonEncode(request)).length,
           ),
         )
         .toList(growable: false);
     final reservations = _gate.tryReserveBatch(gateElements);
     if (reservations == null) {
-      _rejectForCapacity(requests, wasBatch: decoded is List);
+      _rejectForCapacity(requests, wasBatch: wasBatch);
       return;
     }
-
-    _dispatchDecoded(
-      _DecodedDelivery(
-        decoded is List ? requests : requests.single,
-        reservations: reservations,
-      ),
+    final correlations = _reserveCorrelations(requests, reservations);
+    if (correlations == null) {
+      for (final reservation in reservations) {
+        reservation.release();
+      }
+      _rejectForCapacity(requests, wasBatch: wasBatch);
+      return;
+    }
+    final rewritten = _rewriteInboundCorrelationIds(
+      requests,
+      reservations,
+      correlations,
     );
+    try {
+      _dispatchDecoded(
+        _DecodedDelivery(
+          wasBatch ? rewritten : rewritten.single,
+          reservations: reservations,
+        ),
+      );
+    } on Object {
+      for (final correlation in correlations) {
+        _finishCorrelation(correlation.internalId);
+      }
+      rethrow;
+    }
+  }
+
+  List<_InboundCorrelation>? _reserveCorrelations(
+    List<Object?> requests,
+    List<InboundGateReservation> reservations,
+  ) {
+    final candidates = <_InboundCorrelation>[];
+    var addedBytes = 0;
+    for (var i = 0; i < requests.length; i += 1) {
+      final request = requests[i];
+      if (!_hasLegalRequestId(request)) continue;
+      final byteLength = utf8.encode(jsonEncode(request)).length;
+      addedBytes += byteLength;
+      candidates.add(
+        _InboundCorrelation(
+          internalId: '_acp_internal_${++_nextCorrelationId}',
+          wireId: (request as Map)['id'],
+          arrivalIdentity: Object(),
+          canonicalByteLength: byteLength,
+          reservation: reservations[i],
+        ),
+      );
+    }
+    if (_correlations.length + candidates.length > _gate.maxPendingItems ||
+        _correlationPendingBytes + addedBytes > _gate.maxPendingBytes) {
+      return null;
+    }
+    for (final entry in candidates) {
+      _correlations[entry.internalId] = entry;
+    }
+    _correlationPendingBytes += addedBytes;
+    return candidates;
+  }
+
+  List<Object?> _rewriteInboundCorrelationIds(
+    List<Object?> requests,
+    List<InboundGateReservation> reservations,
+    List<_InboundCorrelation> correlations,
+  ) {
+    final byReservation =
+        HashMap<InboundGateReservation, _InboundCorrelation>.identity();
+    for (final correlation in correlations) {
+      byReservation[correlation.reservation] = correlation;
+    }
+    return List<Object?>.generate(requests.length, (index) {
+      final request = requests[index];
+      final correlation = byReservation[reservations[index]];
+      if (correlation == null) return request;
+      return <Object?, Object?>{
+        ...(request as Map),
+        'id': correlation.internalId,
+      };
+    }, growable: false);
+  }
+
+  _PreparedCorrelationResponse _prepareCorrelationResponse(Object? event) {
+    final ids = <String>[];
+    Object? restore(Object? element) {
+      if (element is! Map || !element.containsKey('id')) return element;
+      final internalId = element['id'];
+      if (internalId is! String) return element;
+      final correlation = _correlations[internalId];
+      if (correlation == null) return element;
+      ids.add(internalId);
+      return <Object?, Object?>{...element, 'id': correlation.wireId};
+    }
+
+    final wireValue = event is List
+        ? event.map<Object?>(restore).toList(growable: false)
+        : restore(event);
+    if (ids.isNotEmpty) {
+      _correlationWriteInProgress = true;
+      _correlationWriteEpoch += 1;
+    }
+    return (wireValue: wireValue, internalIds: ids);
+  }
+
+  void _finishCommittedCorrelations(List<String> ids) {
+    try {
+      for (final id in ids) {
+        _finishCorrelation(id);
+      }
+    } finally {
+      _completeCorrelationWrite(ids);
+    }
+  }
+
+  void _finishRejectedCorrelations(List<String> ids) {
+    try {
+      for (final id in ids) {
+        _finishCorrelation(id);
+      }
+    } finally {
+      _completeCorrelationWrite(ids);
+    }
+  }
+
+  void _completeCorrelationWrite(List<String> ids) {
+    if (ids.isEmpty) return;
+    _correlationWriteInProgress = false;
+    _drainDeferredInboundLines();
+  }
+
+  void _drainDeferredInboundLines() {
+    if (!_acceptingInbound) {
+      _deferredInboundLines.clear();
+      return;
+    }
+    if (_drainingDeferredInbound) {
+      _scheduleDeferredInboundDrain();
+      return;
+    }
+    _drainingDeferredInbound = true;
+    try {
+      while (_acceptingInbound &&
+          !_correlationWriteInProgress &&
+          _deferredInboundLines.isNotEmpty) {
+        final writeEpochBefore = _correlationWriteEpoch;
+        _processInboundLine(_deferredInboundLines.removeFirst());
+        if (_correlationWriteEpoch != writeEpochBefore) break;
+      }
+    } finally {
+      _drainingDeferredInbound = false;
+    }
+    if (_acceptingInbound &&
+        !_correlationWriteInProgress &&
+        _deferredInboundLines.isNotEmpty) {
+      _scheduleDeferredInboundDrain();
+    }
+  }
+
+  void _scheduleDeferredInboundDrain() {
+    if (_deferredInboundDrainScheduled) return;
+    _deferredInboundDrainScheduled = true;
+    scheduleMicrotask(() {
+      _deferredInboundDrainScheduled = false;
+      _drainDeferredInboundLines();
+    });
+  }
+
+  void _finishCorrelation(String internalId) {
+    final entry = _correlations.remove(internalId);
+    if (entry == null || entry.finished) return;
+    entry.finished = true;
+    _correlationPendingBytes -= entry.canonicalByteLength;
+    if (!entry.responseCommitted.isCompleted) {
+      entry.responseCommitted.complete();
+    }
+  }
+
+  void _finishAllCorrelationsForPeerClose() {
+    for (final id in _correlations.keys.toList(growable: false)) {
+      _finishCorrelation(id);
+    }
+  }
+
+  void _writeWireResponse(Object? response) {
+    _decodedSink.addWireResponse(response);
   }
 
   void _dispatchDecoded(_DecodedDelivery delivery) {
@@ -275,7 +496,7 @@ class JsonRpcPeer {
       });
     }
     if (errors.isEmpty) return;
-    _decodedSink.add(wasBatch ? errors : errors.single);
+    _writeWireResponse(wasBatch ? errors : errors.single);
   }
 
   static bool _hasLegalRequestId(Object? value) {
@@ -309,6 +530,7 @@ class JsonRpcPeer {
   void _stopAdmission() {
     if (!_acceptingInbound) return;
     _acceptingInbound = false;
+    _deferredInboundLines.clear();
     unawaited(_gate.close());
   }
 
@@ -578,44 +800,85 @@ class _DecodedDelivery {
   }
 }
 
-class _JsonEncodingSink implements StreamSink<Object?> {
-  _JsonEncodingSink(this._sink);
+final class _InboundCorrelation {
+  _InboundCorrelation({
+    required this.internalId,
+    required this.wireId,
+    required this.arrivalIdentity,
+    required this.canonicalByteLength,
+    required this.reservation,
+  });
+
+  final String internalId;
+  final Object? wireId;
+  final Object arrivalIdentity;
+  final int canonicalByteLength;
+  final InboundGateReservation reservation;
+  final Completer<void> responseCommitted = Completer<void>.sync();
+  bool finished = false;
+}
+
+typedef _PreparedCorrelationResponse = ({
+  Object? wireValue,
+  List<String> internalIds,
+});
+
+final class _JsonEncodingSink implements StreamSink<Object?> {
+  _JsonEncodingSink(
+    this._sink, {
+    required this.prepare,
+    required this.onCommitted,
+    required this.onWriteRejected,
+  });
 
   final StreamSink<String> _sink;
+  final _PreparedCorrelationResponse Function(Object? event) prepare;
+  final void Function(List<String> ids) onCommitted;
+  final void Function(List<String> ids) onWriteRejected;
   Future<void>? _closeFuture;
-  var _closed = false;
+  bool _writesEnabled = true;
+
+  void disableWrites() => _writesEnabled = false;
 
   @override
   Future<void> get done => _sink.done;
 
   @override
   void add(Object? event) {
-    if (_closed) return;
+    if (!_writesEnabled) return;
+    final prepared = prepare(event);
+    try {
+      final encoded = jsonEncode(prepared.wireValue);
+      _sink.add(encoded);
+    } on Object {
+      onWriteRejected(prepared.internalIds);
+      rethrow;
+    }
+    onCommitted(prepared.internalIds);
+  }
+
+  void addWireResponse(Object? event) {
+    if (!_writesEnabled) return;
     _sink.add(jsonEncode(event));
   }
 
   @override
   void addError(Object error, [StackTrace? stackTrace]) {
-    if (_closed) return;
-    _sink.addError(error, stackTrace);
+    if (_writesEnabled) _sink.addError(error, stackTrace);
   }
 
   @override
-  Future<void> addStream(Stream<Object?> stream) {
-    if (_closed) return Future<void>.value();
-    return _sink.addStream(stream.map(jsonEncode));
+  Future<void> addStream(Stream<Object?> stream) async {
+    await for (final event in stream) {
+      add(event);
+    }
   }
 
   @override
   Future<void> close() {
     final existing = _closeFuture;
     if (existing != null) return existing;
-    _closed = true;
-    final closing = Future<void>.sync(_sink.close);
-    _closeFuture = closing;
-    // json_rpc_2 closes its sink without awaiting the returned future. Attach
-    // a handler immediately while preserving [closing] for explicit awaiters.
-    unawaited(closing.catchError((Object _) {}));
-    return closing;
+    _writesEnabled = false;
+    return _closeFuture = Future<void>.sync(_sink.close);
   }
 }
