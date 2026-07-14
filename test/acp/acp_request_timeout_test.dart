@@ -8,6 +8,7 @@ import 'package:dart_acp/src/rpc/peer.dart';
 import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 // ignore: depend_on_referenced_packages
 import 'package:logging/logging.dart';
 import 'package:stream_channel/stream_channel.dart';
@@ -248,6 +249,38 @@ final class _ObservedAdmission implements InboundAdmission {
   void markPeerClosed() => inner.markPeerClosed();
 }
 
+final class _FailingFatalClosePeer extends JsonRpcPeer {
+  _FailingFatalClosePeer(
+    super.channel, {
+    required super.timeouts,
+    required super.maxConcurrentHandlers,
+    required super.maxOrdinaryConcurrentHandlers,
+  });
+
+  @override
+  Future<void> closeForFatalTimeout({
+    AcpPromptCleanupIdentity? cleanupIdentity,
+  }) => super
+      .closeForFatalTimeout(cleanupIdentity: cleanupIdentity)
+      .then<void>((_) => throw StateError('fixed fatal close failure'));
+}
+
+final class _SynchronouslyFailingFatalClosePeer extends JsonRpcPeer {
+  _SynchronouslyFailingFatalClosePeer(
+    super.channel, {
+    required super.timeouts,
+    required super.maxConcurrentHandlers,
+    required super.maxOrdinaryConcurrentHandlers,
+  });
+
+  @override
+  Future<void> closeForFatalTimeout({
+    AcpPromptCleanupIdentity? cleanupIdentity,
+  }) {
+    throw StateError('fixed synchronous fatal close failure');
+  }
+}
+
 class _PermissionAdmissionHarness {
   _PermissionAdmissionHarness._({
     required this.channel,
@@ -263,7 +296,10 @@ class _PermissionAdmissionHarness {
     Duration? promptCancelGrace,
     int maxOrdinaryConcurrentHandlers = 1,
     bool controlFutureSetups = false,
+    bool failFatalCloseFuture = false,
+    bool throwSynchronouslyOnFatalClose = false,
   }) async {
+    assert(!(failFatalCloseFuture && throwSynchronouslyOnFatalClose));
     final channel = StreamChannelController<String>();
     final permissions = _ControlledPermissionProvider();
     final fs = _CountingFsProvider();
@@ -277,12 +313,26 @@ class _PermissionAdmissionHarness {
             permission: timeouts.permission,
             promptCancelGrace: promptCancelGrace,
           );
-    final peer = JsonRpcPeer(
-      channel.foreign,
-      timeouts: effective,
-      maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
-      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
-    );
+    final JsonRpcPeer peer = throwSynchronouslyOnFatalClose
+        ? _SynchronouslyFailingFatalClosePeer(
+            channel.foreign,
+            timeouts: effective,
+            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
+            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+          )
+        : failFatalCloseFuture
+        ? _FailingFatalClosePeer(
+            channel.foreign,
+            timeouts: effective,
+            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
+            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+          )
+        : JsonRpcPeer(
+            channel.foreign,
+            timeouts: effective,
+            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
+            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+          );
     final manager = SessionManager(
       config: acp.AcpConfig(
         timeouts: effective,
@@ -519,6 +569,301 @@ class _PermissionAdmissionHarness {
     await setupRequestEvents.close();
     await wireRequests.close();
   }
+}
+
+enum _BlockedOutcome {
+  requestSelected,
+  requestCancelled,
+  fsSuccess,
+  fsDenied,
+  terminalSuccess,
+  terminalDenied,
+  rpcException,
+  handlerError,
+}
+
+final class _BlockedBatchProbe {
+  _BlockedBatchProbe(
+    this.owner,
+    this.base,
+    this.permission,
+    this.providerIndex,
+    this.releaseSibling,
+    this.permissionResponse,
+    this.siblingResponse,
+  ) {
+    base.peer.addUnavailableListener((state) {
+      fatalCloseCount += 1;
+      if (!peerUnavailable.isCompleted) peerUnavailable.complete(state);
+    });
+    permissionResponse.future.then<void>(wireResponses.add);
+    siblingResponse.future.then<void>(wireResponses.add);
+    permission.settled.whenComplete(() => admissionSettled = true);
+  }
+
+  final acp.AcpSessionInputBudgetOwner? owner;
+  final _PermissionAdmissionHarness base;
+  final _PermissionRequestProbe permission;
+  final int providerIndex;
+  final Completer<void> releaseSibling;
+  final Completer<_RpcReply> permissionResponse;
+  final Completer<_RpcReply> siblingResponse;
+  final Completer<AcpPeerUnavailableState> peerUnavailable =
+      Completer<AcpPeerUnavailableState>();
+  final List<_RpcReply> wireResponses = <_RpcReply>[];
+  int fatalCloseCount = 0;
+  bool admissionSettled = false;
+
+  Future<void> get permissionReservationReleased =>
+      permission.reservationReleased.future;
+  Future<void> get reservationReleased => permissionReservationReleased;
+  bool get responseCommitted => permission.responseCommitCount != 0;
+  bool get permissionResponseCompleted => permissionResponse.isCompleted;
+  bool get siblingResponseCompleted => siblingResponse.isCompleted;
+  int get gatePendingItems => base.peer.inboundPendingItemsForTesting;
+  int get correlationPendingItems =>
+      base.peer.correlationPendingItemsForTesting;
+  int get admissionCount => admissionSettled ? 0 : 1;
+  int get cleanupWindowStartCount =>
+      base.manager.admissionCleanupWindowStartCountForTesting;
+  int get cleanupExpiryCallbackCount =>
+      base.manager.ownerCleanupExpiryCallbackCountForTesting;
+  int get cleanupWindowCount =>
+      base.manager.admissionCleanupWindowCountForTesting;
+  Object? _cleanupWindowIdentity;
+  void Function()? _cleanupTimerCallback;
+  bool Function()? _cleanupTimerIsActive;
+  Future<void>? _cleanupReaped;
+  DateTime? _cleanupDeadline;
+
+  Object get cleanupWindowIdentity {
+    final captured = _cleanupWindowIdentity;
+    if (captured != null) return captured;
+    final observed = permission.admission! as _ObservedAdmission;
+    final identity = base.manager.admissionCleanupWindowIdentityForTesting(
+      observed.inner,
+    )!;
+    _cleanupWindowIdentity = identity;
+    _cleanupTimerCallback = base.manager
+        .admissionCleanupWindowTimerCallbackForTesting(identity);
+    _cleanupTimerIsActive = base.manager
+        .admissionCleanupWindowTimerActiveProbeForTesting(identity);
+    _cleanupReaped = base.manager.ownerCleanupWindowReapedForTesting(identity);
+    _cleanupDeadline = base.manager.ownerCleanupWindowDeadlineForTesting(
+      identity,
+    );
+    return identity;
+  }
+
+  Future<void> get cleanupReaped {
+    cleanupWindowIdentity;
+    return _cleanupReaped!;
+  }
+
+  bool get cleanupTimerCancelled {
+    cleanupWindowIdentity;
+    return !_cleanupTimerIsActive!();
+  }
+
+  bool get cleanupTimerActive {
+    cleanupWindowIdentity;
+    return _cleanupTimerIsActive!();
+  }
+
+  void Function() get cleanupTimerCallback {
+    cleanupWindowIdentity;
+    return _cleanupTimerCallback!;
+  }
+
+  DateTime get cleanupDeadline {
+    cleanupWindowIdentity;
+    return _cleanupDeadline!;
+  }
+
+  acp.PermissionCancellationReason? get firstCancellationReason =>
+      base.permissions.cancellations.isEmpty
+      ? null
+      : base.permissions.cancellations.first.$2;
+
+  Future<void> finishLateSibling() async {
+    if (!releaseSibling.isCompleted) releaseSibling.complete();
+    await pumpEventQueue();
+  }
+
+  Future<void> commitResponse() async {
+    if (!releaseSibling.isCompleted) releaseSibling.complete();
+    await permission.responseCommitted.future.timeout(
+      const Duration(seconds: 2),
+    );
+  }
+
+  void fireCapturedTimerCallback() {
+    cleanupWindowIdentity;
+    _cleanupTimerCallback!.call();
+  }
+
+  Future<void> elapseOwnGrace() =>
+      peerUnavailable.future.timeout(const Duration(seconds: 2));
+}
+
+final class _PermissionBatchHarness {
+  _PermissionBatchHarness._(this.base);
+
+  final _PermissionAdmissionHarness base;
+
+  int get fatalCloseCount => base.peer.isAvailable ? 0 : 1;
+
+  static Future<_PermissionBatchHarness> start({
+    required Duration promptCancelGrace,
+    bool failFatalCloseFuture = false,
+    bool throwSynchronouslyOnFatalClose = false,
+  }) async => _PermissionBatchHarness._(
+    await _PermissionAdmissionHarness.start(
+      timeouts: acp.AcpTimeouts(
+        permission: const Duration(milliseconds: 75),
+        promptCancelGrace: promptCancelGrace,
+      ),
+      failFatalCloseFuture: failFatalCloseFuture,
+      throwSynchronouslyOnFatalClose: throwSynchronouslyOnFatalClose,
+    ),
+  );
+
+  Future<_BlockedBatchProbe> _send({
+    required String method,
+    acp.AcpSessionInputBudgetOwner? owner,
+    acp.PermissionCancellationReason? reason,
+  }) async {
+    final providerIndex = base.permissions.requests.length;
+    final releaseSibling = Completer<void>();
+    base.peer.onTerminalOutput = (_) async {
+      await releaseSibling.future;
+      return <String, dynamic>{'output': '', 'truncated': false};
+    };
+    final permissionId = base._nextId++;
+    final siblingId = base._nextId++;
+    final permissionReply = Completer<_RpcReply>();
+    final siblingReply = Completer<_RpcReply>();
+    final probe = _PermissionRequestProbe(permissionId, permissionReply);
+    base._responses[permissionId] = permissionReply;
+    base._responses[siblingId] = siblingReply;
+    base._admissionQueue.add(probe);
+    base.channel.local.sink.add(
+      jsonEncode(<Object?>[
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': permissionId,
+          'method': method,
+          'params': base.paramsFor(method),
+        },
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': siblingId,
+          'method': 'terminal/output',
+          'params': <String, dynamic>{'sessionId': base.sessionId},
+        },
+      ]),
+    );
+    await probe.admissionSeen.future.timeout(const Duration(seconds: 2));
+    if (reason != null && owner != null) base.cancelOwner(owner, reason);
+    return _BlockedBatchProbe(
+      owner,
+      base,
+      probe,
+      providerIndex,
+      releaseSibling,
+      permissionReply,
+      siblingReply,
+    );
+  }
+
+  Future<_BlockedBatchProbe> sendBlockedBatch({
+    required _BlockedOutcome outcome,
+    required bool ownerScoped,
+  }) async {
+    final method = switch (outcome) {
+      _BlockedOutcome.requestSelected ||
+      _BlockedOutcome.requestCancelled => 'session/request_permission',
+      _BlockedOutcome.terminalSuccess ||
+      _BlockedOutcome.terminalDenied => 'terminal/create',
+      _ => 'fs/read_text_file',
+    };
+    final owner = ownerScoped
+        ? base.manager.beginPromptTurn(base.sessionId)
+        : null;
+    final probe = await _send(method: method, owner: owner);
+    await base.permissions
+        .waitForRequest(probe.providerIndex)
+        .timeout(const Duration(seconds: 2));
+    switch (outcome) {
+      case _BlockedOutcome.requestSelected:
+      case _BlockedOutcome.fsSuccess:
+      case _BlockedOutcome.terminalSuccess:
+        base.permissions.completeAllow(probe.providerIndex);
+        break;
+      case _BlockedOutcome.requestCancelled:
+        base.permissions.completeDecision(
+          probe.providerIndex,
+          const acp.PermissionDecision.cancelled(),
+        );
+        break;
+      case _BlockedOutcome.fsDenied:
+      case _BlockedOutcome.terminalDenied:
+        base.permissions.completeDecision(
+          probe.providerIndex,
+          const acp.PermissionDecision.deny(),
+        );
+        break;
+      case _BlockedOutcome.rpcException:
+        base.permissions.completeError(
+          probe.providerIndex,
+          rpc.RpcException(-32001, 'Fixed test rejection.'),
+        );
+        break;
+      case _BlockedOutcome.handlerError:
+        base.permissions.completeError(
+          probe.providerIndex,
+          StateError('fixed handler error'),
+        );
+        break;
+    }
+    return probe;
+  }
+
+  Future<_BlockedBatchProbe> sendCancelledPermissionWithBlockedSibling({
+    required bool ownerScoped,
+    required acp.PermissionCancellationReason reason,
+  }) async {
+    final owner = ownerScoped
+        ? base.manager.beginPromptTurn(base.sessionId)
+        : null;
+    return _send(
+      method: 'fs/read_text_file',
+      owner: owner,
+      reason: ownerScoped ? reason : null,
+    );
+  }
+
+  Future<_BlockedBatchProbe> blockResponseCommit({
+    acp.AcpSessionInputBudgetOwner? owner,
+  }) async {
+    final probe = await _send(
+      method: 'session/request_permission',
+      owner: owner,
+    );
+    await base.permissions
+        .waitForRequest(probe.providerIndex)
+        .timeout(const Duration(seconds: 2));
+    base.permissions.completeDecision(
+      probe.providerIndex,
+      const acp.PermissionDecision.cancelled(),
+    );
+    await probe.permissionReservationReleased.timeout(
+      const Duration(seconds: 2),
+    );
+    return probe;
+  }
+
+  Future<void> dispose() => base.dispose();
 }
 
 const permissionEntries = <_PermissionEntryCase>[
@@ -793,6 +1138,497 @@ void main() {
       } finally {
         await harness.dispose();
       }
+    }
+  });
+
+  test('blocked permission batch outcomes start one response grace', () async {
+    const outcomes = <_BlockedOutcome>[
+      _BlockedOutcome.requestSelected,
+      _BlockedOutcome.requestCancelled,
+      _BlockedOutcome.fsSuccess,
+      _BlockedOutcome.fsDenied,
+      _BlockedOutcome.terminalSuccess,
+      _BlockedOutcome.terminalDenied,
+      _BlockedOutcome.rpcException,
+      _BlockedOutcome.handlerError,
+    ];
+    for (final outcome in outcomes) {
+      for (final ownerScoped in <bool>[false, true]) {
+        final harness = await _PermissionBatchHarness.start(
+          promptCancelGrace: const Duration(milliseconds: 75),
+        );
+        try {
+          final batch = await harness.sendBlockedBatch(
+            outcome: outcome,
+            ownerScoped: ownerScoped,
+          );
+          await batch.permissionReservationReleased.timeout(
+            const Duration(seconds: 2),
+          );
+          final expiredWindowIdentity = batch.cleanupWindowIdentity;
+          expect(expiredWindowIdentity, isNotNull);
+          expect(batch.responseCommitted, isFalse);
+          expect(batch.permissionResponseCompleted, isFalse);
+          expect(batch.siblingResponseCompleted, isFalse);
+          expect(batch.wireResponses, isEmpty);
+          final unavailable = await batch.peerUnavailable.future.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(unavailable.reason, AcpPeerUnavailableReason.fatalTimeout);
+          final cleanupIdentity = unavailable.cleanupIdentity;
+          if (ownerScoped) {
+            expect(cleanupIdentity, isNotNull);
+            expect(identical(cleanupIdentity!.ownerToken, batch.owner), isTrue);
+            expect(cleanupIdentity.generation, batch.owner!.generation);
+          } else {
+            expect(cleanupIdentity, isNull);
+          }
+          await batch.cleanupReaped.timeout(const Duration(seconds: 2));
+          expect(batch.fatalCloseCount, 1);
+          expect(batch.cleanupExpiryCallbackCount, 1);
+          expect(batch.gatePendingItems, 0);
+          expect(batch.correlationPendingItems, 0);
+          expect(batch.admissionCount, 0);
+          expect(batch.cleanupWindowCount, 0);
+          expect(batch.wireResponses, isEmpty);
+          batch.fireCapturedTimerCallback();
+          await pumpEventQueue().timeout(const Duration(seconds: 2));
+          expect(batch.fatalCloseCount, 1);
+          expect(batch.cleanupExpiryCallbackCount, 1);
+          expect(batch.cleanupWindowCount, 0);
+          await batch.finishLateSibling().timeout(const Duration(seconds: 2));
+          expect(batch.fatalCloseCount, 1);
+          expect(batch.wireResponses, isEmpty);
+        } finally {
+          await harness.dispose();
+        }
+      }
+    }
+  });
+
+  test(
+    'ownerless and owner scoped permission batch siblings share one response grace',
+    () async {
+      for (final ownerScoped in <bool>[false, true]) {
+        final harness = await _PermissionBatchHarness.start(
+          promptCancelGrace: const Duration(milliseconds: 75),
+        );
+        try {
+          final batch = await harness.sendCancelledPermissionWithBlockedSibling(
+            ownerScoped: ownerScoped,
+            reason: ownerScoped
+                ? acp.PermissionCancellationReason.promptEnded
+                : acp.PermissionCancellationReason.timedOut,
+          );
+          await batch.permissionReservationReleased.timeout(
+            const Duration(seconds: 2),
+          );
+          final expiredWindowIdentity = batch.cleanupWindowIdentity;
+          expect(expiredWindowIdentity, isNotNull);
+          expect(batch.cleanupWindowStartCount, 1);
+          expect(batch.permissionResponseCompleted, isFalse);
+          expect(batch.siblingResponseCompleted, isFalse);
+          expect(batch.wireResponses, isEmpty);
+          final unavailable = await batch.peerUnavailable.future.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(unavailable.reason, AcpPeerUnavailableReason.fatalTimeout);
+          final cleanupIdentity = unavailable.cleanupIdentity;
+          if (ownerScoped) {
+            expect(cleanupIdentity, isNotNull);
+            expect(identical(cleanupIdentity!.ownerToken, batch.owner), isTrue);
+            expect(cleanupIdentity.generation, batch.owner!.generation);
+          } else {
+            expect(cleanupIdentity, isNull);
+          }
+          await batch.cleanupReaped.timeout(const Duration(seconds: 2));
+          expect(batch.fatalCloseCount, 1);
+          expect(batch.cleanupExpiryCallbackCount, 1);
+          expect(
+            batch.firstCancellationReason,
+            ownerScoped
+                ? acp.PermissionCancellationReason.promptEnded
+                : acp.PermissionCancellationReason.timedOut,
+          );
+          expect(batch.gatePendingItems, 0);
+          expect(batch.correlationPendingItems, 0);
+          expect(batch.admissionCount, 0);
+          expect(batch.cleanupWindowCount, 0);
+          batch.fireCapturedTimerCallback();
+          await pumpEventQueue().timeout(const Duration(seconds: 2));
+          expect(batch.fatalCloseCount, 1);
+          expect(batch.cleanupExpiryCallbackCount, 1);
+          expect(batch.cleanupWindowCount, 0);
+        } finally {
+          await harness.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'permission response commit revokes grace and later work gets a fresh window',
+    () async {
+      final harness = await _PermissionBatchHarness.start(
+        promptCancelGrace: const Duration(milliseconds: 75),
+      ).timeout(const Duration(seconds: 2));
+      try {
+        final owner = harness.base.manager.beginPromptTurn(
+          harness.base.sessionId,
+        );
+        final first = await harness
+            .blockResponseCommit(owner: owner)
+            .timeout(const Duration(seconds: 2));
+        await first.reservationReleased.timeout(const Duration(seconds: 2));
+        final firstIdentity = first.cleanupWindowIdentity;
+        await first.commitResponse().timeout(const Duration(seconds: 2));
+        expect(first.cleanupTimerCancelled, isTrue);
+        final secondStarted = DateTime.now();
+        final second = await harness
+            .blockResponseCommit(owner: owner)
+            .timeout(const Duration(seconds: 2));
+        await second.reservationReleased.timeout(const Duration(seconds: 2));
+        expect(identical(second.cleanupWindowIdentity, firstIdentity), isFalse);
+        expect(second.cleanupDeadline.isAfter(first.cleanupDeadline), isTrue);
+        first.fireCapturedTimerCallback();
+        expect(harness.fatalCloseCount, 0);
+        await second.elapseOwnGrace().timeout(const Duration(seconds: 2));
+        expect(
+          DateTime.now().difference(secondStarted),
+          greaterThanOrEqualTo(const Duration(milliseconds: 40)),
+        );
+        expect(harness.fatalCloseCount, 1);
+      } finally {
+        await harness.dispose().timeout(const Duration(seconds: 2));
+      }
+    },
+  );
+
+  test(
+    'owner cleanup keys join owned admissions and separate ownerless admissions',
+    () async {
+      final ownedHarness = await _PermissionBatchHarness.start(
+        promptCancelGrace: const Duration(seconds: 1),
+      );
+      try {
+        final owner = ownedHarness.base.manager.beginPromptTurn(
+          ownedHarness.base.sessionId,
+        );
+        final first = await ownedHarness._send(
+          method: 'fs/read_text_file',
+          owner: owner,
+          reason: acp.PermissionCancellationReason.promptEnded,
+        );
+        await first.reservationReleased.timeout(const Duration(seconds: 2));
+        final second = await ownedHarness._send(
+          method: 'fs/read_text_file',
+          owner: owner,
+          reason: acp.PermissionCancellationReason.promptEnded,
+        );
+        await second.reservationReleased.timeout(const Duration(seconds: 2));
+
+        expect(
+          identical(first.cleanupWindowIdentity, second.cleanupWindowIdentity),
+          isTrue,
+        );
+        expect(first.cleanupWindowStartCount, 1);
+        expect(
+          ownedHarness.base.manager.ownerCleanupWindowBlockerCountForTesting(
+            first.cleanupWindowIdentity,
+          ),
+          2,
+        );
+
+        first.fireCapturedTimerCallback();
+        final unavailable = await first.peerUnavailable.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await first.cleanupReaped.timeout(const Duration(seconds: 2));
+        expect(unavailable.reason, AcpPeerUnavailableReason.fatalTimeout);
+        expect(unavailable.cleanupIdentity, isNotNull);
+        expect(
+          identical(unavailable.cleanupIdentity!.ownerToken, owner),
+          isTrue,
+        );
+        expect(unavailable.cleanupIdentity!.generation, owner.generation);
+        expect(first.cleanupExpiryCallbackCount, 1);
+        second.fireCapturedTimerCallback();
+        await pumpEventQueue();
+        expect(first.cleanupExpiryCallbackCount, 1);
+      } finally {
+        await ownedHarness.dispose();
+      }
+
+      final ownerlessHarness = await _PermissionBatchHarness.start(
+        promptCancelGrace: const Duration(seconds: 1),
+      );
+      try {
+        final first = await ownerlessHarness._send(
+          method: 'session/request_permission',
+        );
+        await ownerlessHarness.base.permissions
+            .waitForRequest(first.providerIndex)
+            .timeout(const Duration(seconds: 2));
+        ownerlessHarness.base.permissions.completeDecision(
+          first.providerIndex,
+          const acp.PermissionDecision.cancelled(),
+        );
+        await first.reservationReleased.timeout(const Duration(seconds: 2));
+        final second = await ownerlessHarness._send(
+          method: 'session/request_permission',
+        );
+        await second.reservationReleased.timeout(const Duration(seconds: 2));
+
+        expect(
+          identical(first.cleanupWindowIdentity, second.cleanupWindowIdentity),
+          isFalse,
+        );
+        expect(first.cleanupWindowStartCount, 2);
+        expect(first.cleanupWindowCount, 2);
+
+        first.fireCapturedTimerCallback();
+        final unavailable = await first.peerUnavailable.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await Future.wait<void>(<Future<void>>[
+          first.cleanupReaped,
+          second.cleanupReaped,
+        ]).timeout(const Duration(seconds: 2));
+        expect(unavailable.reason, AcpPeerUnavailableReason.fatalTimeout);
+        expect(unavailable.cleanupIdentity, isNull);
+        expect(first.cleanupExpiryCallbackCount, 1);
+        first.fireCapturedTimerCallback();
+        second.fireCapturedTimerCallback();
+        await pumpEventQueue();
+        expect(first.cleanupExpiryCallbackCount, 1);
+        expect(first.cleanupWindowCount, 0);
+      } finally {
+        await ownerlessHarness.dispose();
+      }
+    },
+  );
+
+  test('fatal cleanup close errors do not leak into the zone', () async {
+    final zoneErrors = <Object>[];
+    final done = Completer<void>();
+    Object? operationError;
+    StackTrace? operationStackTrace;
+    runZonedGuarded<void>(() {
+      unawaited(() async {
+        try {
+          final harness = await _PermissionBatchHarness.start(
+            promptCancelGrace: const Duration(milliseconds: 75),
+            failFatalCloseFuture: true,
+          );
+          try {
+            final batch = await harness.blockResponseCommit();
+            final cleanupReaped = batch.cleanupReaped;
+            await batch.peerUnavailable.future.timeout(
+              const Duration(seconds: 2),
+            );
+            await cleanupReaped.timeout(const Duration(seconds: 2));
+            await batch.finishLateSibling().timeout(const Duration(seconds: 2));
+            await pumpEventQueue();
+          } finally {
+            await harness.dispose().timeout(const Duration(seconds: 2));
+          }
+        } catch (error, stackTrace) {
+          operationError = error;
+          operationStackTrace = stackTrace;
+        } finally {
+          done.complete();
+        }
+      }());
+    }, (error, _) => zoneErrors.add(error));
+    await done.future.timeout(const Duration(seconds: 5));
+    if (operationError case final error?) {
+      Error.throwWithStackTrace(error, operationStackTrace!);
+    }
+    await pumpEventQueue();
+    expect(zoneErrors, isEmpty);
+  });
+
+  test(
+    'synchronous fatal cleanup close failures do not leak or restart cleanup',
+    () async {
+      final harness = await _PermissionBatchHarness.start(
+        promptCancelGrace: const Duration(seconds: 1),
+        throwSynchronouslyOnFatalClose: true,
+      );
+      _BlockedBatchProbe? batch;
+      try {
+        batch = await harness.blockResponseCommit();
+        final cleanupReaped = batch.cleanupReaped;
+        final zoneErrors = <Object>[];
+        runZonedGuarded<void>(
+          batch.fireCapturedTimerCallback,
+          (error, _) => zoneErrors.add(error),
+        );
+        await pumpEventQueue();
+
+        expect(zoneErrors, isEmpty);
+        expect(batch.cleanupExpiryCallbackCount, 1);
+        expect(batch.cleanupTimerCancelled, isTrue);
+        expect(harness.base.peer.isAvailable, isTrue);
+
+        runZonedGuarded<void>(
+          batch.fireCapturedTimerCallback,
+          (error, _) => zoneErrors.add(error),
+        );
+        await pumpEventQueue();
+        expect(zoneErrors, isEmpty);
+        expect(batch.cleanupExpiryCallbackCount, 1);
+        expect(batch.cleanupWindowStartCount, 1);
+
+        await batch.commitResponse().timeout(const Duration(seconds: 2));
+        await cleanupReaped.timeout(const Duration(seconds: 2));
+        expect(batch.cleanupWindowCount, 0);
+      } finally {
+        if (batch != null) await batch.finishLateSibling();
+        await harness.dispose().timeout(const Duration(seconds: 2));
+      }
+    },
+  );
+
+  test(
+    'manager dispose stops cleanup windows and rejects late reservation windows',
+    () async {
+      final harness = await _PermissionBatchHarness.start(
+        promptCancelGrace: const Duration(milliseconds: 75),
+      );
+      _BlockedBatchProbe? batch;
+      try {
+        batch = await harness.blockResponseCommit();
+        final cleanupReaped = batch.cleanupReaped;
+        expect(batch.cleanupTimerActive, isTrue);
+        expect(batch.cleanupWindowCount, 1);
+
+        await harness.base.manager.dispose().timeout(
+          const Duration(seconds: 2),
+        );
+        expect(batch.cleanupTimerCancelled, isTrue);
+        expect(batch.cleanupWindowCount, 1);
+        expect(batch.cleanupExpiryCallbackCount, 0);
+
+        batch.fireCapturedTimerCallback();
+        await pumpEventQueue();
+        expect(batch.cleanupExpiryCallbackCount, 0);
+        expect(batch.cleanupWindowCount, 1);
+        await Future<void>.delayed(const Duration(milliseconds: 125));
+        expect(harness.base.peer.isAvailable, isTrue);
+        expect(batch.fatalCloseCount, 0);
+        expect(batch.cleanupExpiryCallbackCount, 0);
+
+        await batch.finishLateSibling().timeout(const Duration(seconds: 2));
+        await cleanupReaped.timeout(const Duration(seconds: 2));
+        expect(batch.cleanupWindowCount, 0);
+      } finally {
+        if (batch != null) await batch.finishLateSibling();
+        await harness.dispose().timeout(const Duration(seconds: 2));
+      }
+
+      final lateHarness = await _PermissionAdmissionHarness.start(
+        timeouts: const acp.AcpTimeouts(
+          permission: Duration(milliseconds: 75),
+          promptCancelGrace: Duration(milliseconds: 75),
+        ),
+      );
+      try {
+        await lateHarness.occupyAllOrdinaryPermits();
+        final request = await lateHarness.admit('session/request_permission');
+        expect(request.reservationReleaseCount, 0);
+        expect(
+          lateHarness.manager.admissionCleanupWindowStartCountForTesting,
+          0,
+        );
+
+        await lateHarness.manager.dispose().timeout(const Duration(seconds: 2));
+        await request.reservationReleased.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await request.response.timeout(const Duration(seconds: 2));
+        await request.settled.timeout(const Duration(seconds: 2));
+        expect(
+          lateHarness.manager.admissionCleanupWindowStartCountForTesting,
+          0,
+        );
+        expect(lateHarness.manager.admissionCleanupWindowCountForTesting, 0);
+        await Future<void>.delayed(const Duration(milliseconds: 125));
+        expect(lateHarness.peer.isAvailable, isTrue);
+      } finally {
+        lateHarness.releaseOrdinaryPermits();
+        await lateHarness.dispose().timeout(const Duration(seconds: 2));
+      }
+    },
+  );
+
+  test('same owner cleanup joins keep the original real timer', () async {
+    const grace = Duration(milliseconds: 800);
+    const halfGrace = Duration(milliseconds: 400);
+    final harness = await _PermissionBatchHarness.start(
+      promptCancelGrace: grace,
+    );
+    _BlockedBatchProbe? first;
+    _BlockedBatchProbe? second;
+    try {
+      final owner = harness.base.manager.beginPromptTurn(
+        harness.base.sessionId,
+      );
+      first = await harness._send(
+        method: 'fs/read_text_file',
+        owner: owner,
+        reason: acp.PermissionCancellationReason.promptEnded,
+      );
+      await first.reservationReleased.timeout(const Duration(seconds: 2));
+      final firstIdentity = first.cleanupWindowIdentity;
+      final firstDeadline = first.cleanupDeadline;
+      final firstCallback = first.cleanupTimerCallback;
+      expect(first.cleanupTimerActive, isTrue);
+
+      final joinTarget = firstDeadline.subtract(halfGrace);
+      final untilJoin = joinTarget.difference(DateTime.now());
+      if (!untilJoin.isNegative && untilJoin != Duration.zero) {
+        await Future<void>.delayed(untilJoin);
+      }
+
+      second = await harness._send(
+        method: 'fs/read_text_file',
+        owner: owner,
+        reason: acp.PermissionCancellationReason.promptEnded,
+      );
+      await second.reservationReleased.timeout(const Duration(seconds: 2));
+      final cleanupReaped = first.cleanupReaped;
+      expect(identical(second.cleanupWindowIdentity, firstIdentity), isTrue);
+      expect(second.cleanupDeadline, firstDeadline);
+      expect(identical(second.cleanupTimerCallback, firstCallback), isTrue);
+      expect(second.cleanupWindowStartCount, 1);
+      expect(second.cleanupTimerActive, isTrue);
+      expect(
+        harness.base.manager.ownerCleanupWindowBlockerCountForTesting(
+          firstIdentity,
+        ),
+        2,
+      );
+
+      final untilOriginalExpiry = firstDeadline.difference(DateTime.now());
+      final fatalWatchdog =
+          (untilOriginalExpiry.isNegative
+              ? Duration.zero
+              : untilOriginalExpiry) +
+          const Duration(milliseconds: 250);
+      final unavailable = await first.peerUnavailable.future.timeout(
+        fatalWatchdog,
+      );
+      expect(unavailable.reason, AcpPeerUnavailableReason.fatalTimeout);
+      expect(unavailable.cleanupIdentity, isNotNull);
+      expect(identical(unavailable.cleanupIdentity!.ownerToken, owner), isTrue);
+      expect(unavailable.cleanupIdentity!.generation, owner.generation);
+      await cleanupReaped.timeout(const Duration(seconds: 2));
+      expect(first.cleanupExpiryCallbackCount, 1);
+    } finally {
+      if (first != null) await first.finishLateSibling();
+      if (second != null) await second.finishLateSibling();
+      await harness.dispose().timeout(const Duration(seconds: 2));
     }
   });
 

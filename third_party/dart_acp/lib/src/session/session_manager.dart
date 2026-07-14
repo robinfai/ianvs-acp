@@ -574,6 +574,30 @@ final class _PeerEpoch {
   bool active = true;
 }
 
+final class _OwnerCleanupWindow {
+  _OwnerCleanupWindow({
+    required this.identity,
+    required this.fatalOwner,
+    required this.deadline,
+  });
+
+  final Object identity;
+  AcpSessionInputBudgetOwner? fatalOwner;
+  final DateTime deadline;
+  final Map<Object, Future<void>> blockers =
+      HashMap<Object, Future<void>>.identity();
+  final Completer<void> _expiry = Completer<void>.sync();
+  final Completer<void> _reaped = Completer<void>.sync();
+  Timer? timer;
+  void Function()? expireForTesting;
+  bool expirySignalled = false;
+  bool fatalCloseStarted = false;
+  bool finished = false;
+
+  Future<void> get expiryFuture => _expiry.future;
+  Future<void> get reaped => _reaped.future;
+}
+
 final class _PermissionProviderResult {
   const _PermissionProviderResult.value(this.value)
     : error = null,
@@ -875,6 +899,13 @@ class SessionManager implements AcpBoundedObservationSource {
       <String, _SessionGeneration>{};
   final Set<_InboundPermissionAdmission> _inboundAdmissions =
       HashSet<_InboundPermissionAdmission>.identity();
+  final Map<Object, _OwnerCleanupWindow> _ownerCleanupWindows =
+      HashMap<Object, _OwnerCleanupWindow>.identity();
+  final Map<String, ({Object closingOwner, Object key})>
+  _frozenSessionCleanupWindowSelections =
+      <String, ({Object closingOwner, Object key})>{};
+  var _ownerCleanupWindowStartCount = 0;
+  var _ownerCleanupExpiryCallbackCount = 0;
   final Map<Map<String, dynamic>, _InboundPermissionAdmission>
   _admissionsByParams =
       HashMap<Map<String, dynamic>, _InboundPermissionAdmission>.identity();
@@ -914,6 +945,76 @@ class SessionManager implements AcpBoundedObservationSource {
   Object? sessionGenerationForTesting(String sessionId) =>
       _sessionGenerations[sessionId];
 
+  /// Returns the number of active admission cleanup windows for tests.
+  int get admissionCleanupWindowCountForTesting => _ownerCleanupWindows.length;
+
+  /// Returns the number of admission cleanup windows started for tests.
+  int get admissionCleanupWindowStartCountForTesting =>
+      _ownerCleanupWindowStartCount;
+
+  /// Returns the number of current cleanup expiry callbacks for tests.
+  int get ownerCleanupExpiryCallbackCountForTesting =>
+      _ownerCleanupExpiryCallbackCount;
+
+  /// Returns active admission cleanup window identities for tests.
+  Set<Object> get admissionCleanupWindowIdentitiesForTesting =>
+      Set<Object>.unmodifiable(
+        _ownerCleanupWindows.values.map((window) => window.identity),
+      );
+
+  /// Returns the cleanup window identity containing [blockerIdentity].
+  Object? admissionCleanupWindowIdentityForTesting(Object blockerIdentity) {
+    for (final window in _ownerCleanupWindows.values) {
+      if (window.blockers.containsKey(blockerIdentity)) {
+        return window.identity;
+      }
+    }
+    return null;
+  }
+
+  /// Returns the timer callback for an active cleanup window identity.
+  void Function() admissionCleanupWindowTimerCallbackForTesting(
+    Object identity,
+  ) => _ownerCleanupWindows.values
+      .singleWhere((window) => identical(window.identity, identity))
+      .expireForTesting!;
+
+  /// Returns a probe that observes whether the window timer remains active.
+  bool Function() admissionCleanupWindowTimerActiveProbeForTesting(
+    Object identity,
+  ) {
+    final window = _ownerCleanupWindows.values.singleWhere(
+      (window) => identical(window.identity, identity),
+    );
+    return () => window.timer?.isActive ?? false;
+  }
+
+  /// Returns the real reap future for a cleanup window identity.
+  Future<void> ownerCleanupWindowReapedForTesting(Object identity) =>
+      _ownerCleanupWindows.values
+          .singleWhere((window) => identical(window.identity, identity))
+          .reaped;
+
+  /// Returns the absolute deadline for a cleanup window identity.
+  DateTime ownerCleanupWindowDeadlineForTesting(Object identity) =>
+      _ownerCleanupWindows.values
+          .singleWhere((window) => identical(window.identity, identity))
+          .deadline;
+
+  /// Returns the fatal owner bound to a cleanup window identity.
+  AcpSessionInputBudgetOwner? ownerCleanupWindowFatalOwnerForTesting(
+    Object identity,
+  ) => _ownerCleanupWindows.values
+      .singleWhere((window) => identical(window.identity, identity))
+      .fatalOwner;
+
+  /// Returns the blocker count for a cleanup window identity.
+  int ownerCleanupWindowBlockerCountForTesting(Object identity) =>
+      _ownerCleanupWindows.values
+          .singleWhere((window) => identical(window.identity, identity))
+          .blockers
+          .length;
+
   /// Returns the current session input owner for lifecycle race tests.
   AcpSessionInputBudgetOwner? sessionInputOwnerForTesting(String sessionId) =>
       _inputBudgetPhases[sessionId]?.owner;
@@ -948,6 +1049,7 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   void _onPeerUnavailable(AcpPeerUnavailableState _) {
+    _markOwnerCleanupWindowsPeerUnavailable();
     if (!_peerEpoch.active) return;
     _peerEpoch.active = false;
     for (final admission in _inboundAdmissions.toList(growable: false)) {
@@ -955,9 +1057,194 @@ class SessionManager implements AcpBoundedObservationSource {
     }
   }
 
-  void _onAdmissionReservationReleased(_InboundPermissionAdmission _) {}
+  void _onAdmissionReservationReleased(_InboundPermissionAdmission admission) {
+    if (admission.responseFinished || admission.peerClosed) return;
+    _startAdmissionResponseGrace(admission);
+  }
 
-  void _onAdmissionResponseFinished(_InboundPermissionAdmission _) {}
+  void _onAdmissionResponseFinished(_InboundPermissionAdmission admission) {
+    final key = _ownerCleanupKeyForAdmission(admission);
+    final window = _ownerCleanupWindows[key];
+    if (window != null) {
+      _releaseOwnerCleanupBlocker(key, window, admission);
+    }
+  }
+
+  void _startAdmissionResponseGrace(_InboundPermissionAdmission admission) {
+    if (_disposed ||
+        !admission.reservationReleased ||
+        admission.responseFinished ||
+        admission.peerClosed) {
+      return;
+    }
+    final key = _ownerCleanupKeyForAdmission(admission);
+    _getOrJoinOwnerCleanupWindow(
+      key: key,
+      fatalOwner: admission.promptOwner,
+      blockerIdentity: admission,
+      blockerReaped: admission.settled,
+    );
+  }
+
+  Object _ownerCleanupKeyForAdmission(_InboundPermissionAdmission admission) {
+    final sessionId = admission.sessionId;
+    final frozen = sessionId == null
+        ? null
+        : _frozenSessionCleanupWindowSelections[sessionId];
+    return frozen?.key ?? admission.promptOwner ?? admission;
+  }
+
+  _OwnerCleanupWindow _getOrJoinOwnerCleanupWindow({
+    required Object key,
+    required AcpSessionInputBudgetOwner? fatalOwner,
+    required Object blockerIdentity,
+    required Future<void> blockerReaped,
+  }) {
+    if (_disposed) {
+      throw StateError('Cannot start ACP cleanup after manager disposal.');
+    }
+    final existing = _ownerCleanupWindows[key];
+    if (existing != null && !existing.finished) {
+      if (fatalOwner != null) {
+        _bindOwnerCleanupFatalOwner(key, existing, fatalOwner);
+      }
+      _joinOwnerCleanupBlocker(key, existing, blockerIdentity, blockerReaped);
+      return existing;
+    }
+
+    final identity = Object();
+    final deadline = DateTime.now().add(config.timeouts.promptCancelGrace);
+    final window = _OwnerCleanupWindow(
+      identity: identity,
+      fatalOwner: fatalOwner,
+      deadline: deadline,
+    );
+    _ownerCleanupWindows[key] = window;
+    _ownerCleanupWindowStartCount += 1;
+    _joinOwnerCleanupBlocker(key, window, blockerIdentity, blockerReaped);
+    void expire() => _expireOwnerCleanupWindow(key, identity);
+    window.expireForTesting = expire;
+    final remaining = deadline.difference(DateTime.now());
+    window.timer = Timer(
+      remaining.isNegative ? Duration.zero : remaining,
+      expire,
+    );
+    return window;
+  }
+
+  void _bindOwnerCleanupFatalOwner(
+    Object key,
+    _OwnerCleanupWindow window,
+    AcpSessionInputBudgetOwner fatalOwner,
+  ) {
+    if (!identical(_ownerCleanupWindows[key], window) || window.finished) {
+      throw StateError('ACP cleanup window is no longer current.');
+    }
+    final existing = window.fatalOwner;
+    if (existing == null) {
+      window.fatalOwner = fatalOwner;
+      return;
+    }
+    if (!identical(existing, fatalOwner) ||
+        existing.generation != fatalOwner.generation) {
+      throw StateError('ACP cleanup window owner mismatch.');
+    }
+  }
+
+  void _joinOwnerCleanupBlocker(
+    Object key,
+    _OwnerCleanupWindow window,
+    Object blockerIdentity,
+    Future<void> blockerReaped,
+  ) {
+    final previous = window.blockers[blockerIdentity];
+    if (previous != null) {
+      if (!identical(previous, blockerReaped)) {
+        throw StateError('ACP cleanup blocker identity was rebound.');
+      }
+      return;
+    }
+    window.blockers[blockerIdentity] = blockerReaped;
+    blockerReaped.then<void>(
+      (_) => _releaseOwnerCleanupBlocker(key, window, blockerIdentity),
+      onError: (Object _, StackTrace _) =>
+          _releaseOwnerCleanupBlocker(key, window, blockerIdentity),
+    );
+  }
+
+  void _releaseOwnerCleanupBlocker(
+    Object key,
+    _OwnerCleanupWindow window,
+    Object blockerIdentity,
+  ) {
+    if (!identical(_ownerCleanupWindows[key], window) || window.finished) {
+      return;
+    }
+    window.blockers.remove(blockerIdentity);
+    if (window.blockers.isNotEmpty) return;
+    _finishOwnerCleanupWindow(key, window);
+  }
+
+  void _finishOwnerCleanupWindow(Object key, _OwnerCleanupWindow window) {
+    if (window.finished) return;
+    window.finished = true;
+    window.timer?.cancel();
+    if (identical(_ownerCleanupWindows[key], window)) {
+      _ownerCleanupWindows.remove(key);
+    }
+    if (!window.expirySignalled) {
+      window.expirySignalled = true;
+      window._expiry.complete();
+    }
+    if (!window._reaped.isCompleted) window._reaped.complete();
+  }
+
+  void _expireOwnerCleanupWindow(Object key, Object identity) {
+    final window = _ownerCleanupWindows[key];
+    if (window == null ||
+        window.finished ||
+        window.expirySignalled ||
+        !identical(window.identity, identity)) {
+      return;
+    }
+    _ownerCleanupExpiryCallbackCount += 1;
+    window.timer?.cancel();
+    window.expirySignalled = true;
+    window._expiry.complete();
+    if (window.blockers.isEmpty) {
+      _finishOwnerCleanupWindow(key, window);
+      return;
+    }
+    if (window.fatalCloseStarted) return;
+    window.fatalCloseStarted = true;
+    final owner = window.fatalOwner;
+    try {
+      final closing = peer.closeForFatalTimeout(
+        cleanupIdentity: owner == null
+            ? null
+            : AcpPromptCleanupIdentity(owner, owner.generation),
+      );
+      unawaited(
+        closing.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    } on Object {
+      // A peer implementation cannot leak synchronous cleanup failures.
+    }
+  }
+
+  void _markOwnerCleanupWindowsPeerUnavailable() {
+    for (final entry in _ownerCleanupWindows.entries.toList(growable: false)) {
+      final window = entry.value;
+      window.timer?.cancel();
+      if (!window.expirySignalled) {
+        window.expirySignalled = true;
+        window._expiry.complete();
+      }
+      if (window.blockers.isEmpty) {
+        _finishOwnerCleanupWindow(entry.key, window);
+      }
+    }
+  }
 
   void _closeControllerWithoutWaiting<T>(StreamController<T>? controller) {
     if (controller == null) return;
@@ -971,6 +1258,7 @@ class SessionManager implements AcpBoundedObservationSource {
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     _disposed = true;
+    _markOwnerCleanupWindowsPeerUnavailable();
     final generationsAtDispose = Map<String, _SessionGeneration>.from(
       _sessionGenerations,
     );
