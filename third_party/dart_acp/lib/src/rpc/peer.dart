@@ -876,6 +876,9 @@ final class _JsonEncodingSink implements StreamSink<Object?> {
     final existing = _closeFuture;
     if (existing != null) return existing;
     _writesEnabled = false;
-    return _closeFuture = Future<void>.sync(_sink.close);
+    final closing = Future<void>.sync(_sink.close);
+    _closeFuture = closing;
+    unawaited(closing.catchError((Object _) {}));
+    return closing;
   }
 }

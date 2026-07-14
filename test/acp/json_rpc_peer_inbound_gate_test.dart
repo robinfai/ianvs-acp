@@ -864,6 +864,34 @@ void main() {
     }
   });
 
+  test('async output close errors are consumed without zone leaks', () async {
+    final input = _ManualInputStream();
+    final output = _AsyncCloseErrorSink();
+    final zoneErrors = <Object>[];
+    late JsonRpcPeer peer;
+    late Future<void> firstClose;
+    late Future<void> secondClose;
+
+    runZonedGuarded<void>(
+      () {
+        peer = JsonRpcPeer(StreamChannel<String>(input, output));
+        firstClose = peer.close();
+        secondClose = peer.close();
+      },
+      (Object error, StackTrace _) {
+        zoneErrors.add(error);
+      },
+    );
+
+    expect(identical(firstClose, secondClose), isTrue);
+    await firstClose.timeout(const Duration(seconds: 2));
+    await pumpEventQueue();
+    expect(output.closeCount, 1);
+    expect(zoneErrors, isEmpty);
+    await peer.close();
+    input.close();
+  });
+
   test(
     'close stops RPC output before delayed inbound cancel completes',
     () async {
@@ -1586,9 +1614,35 @@ class _ReentrantSink extends _RecordingSink {
   }
 }
 
+class _AsyncCloseErrorSink implements StreamSink<String> {
+  var closeCount = 0;
+
+  @override
+  Future<void> get done => Future<void>.value();
+
+  @override
+  void add(String event) {}
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future<void> addStream(Stream<String> stream) async {
+    await stream.drain<void>();
+  }
+
+  @override
+  Future<void> close() {
+    closeCount += 1;
+    return Future<void>.delayed(Duration.zero, () => throw _OutputCloseError());
+  }
+}
+
 class _CancelError extends Error {}
 
 class _InputError extends Error {}
+
+class _OutputCloseError extends Error {}
 
 class _ManualInputStream extends Stream<String> {
   _ManualSubscription? _subscription;
