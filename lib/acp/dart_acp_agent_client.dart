@@ -70,8 +70,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.maxPromptAttachmentSourceBytes = 8 * 1024 * 1024,
     this.maxPromptAttachmentEncodedBytes = 12 * 1024 * 1024,
     this.beforeAttachmentSecureOpenForTesting,
+    acp.AcpTimeouts timeouts = const acp.AcpTimeouts(),
     acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
-  }) : inputBudget = _validatedInputBudget(inputBudget),
+  }) : timeouts = _validatedAcpTimeouts(timeouts),
+       inputBudget = _validatedInputBudget(inputBudget),
        agentCommand = agentCommand ?? _defaultAgentCommand(),
        agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
@@ -130,6 +132,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
+  static acp.AcpTimeouts _validatedAcpTimeouts(acp.AcpTimeouts value) {
+    value.validate();
+    return value;
+  }
+
   final String agentCommand;
   final List<String> agentArgs;
   final String? agentCwd;
@@ -157,6 +164,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final int maxPromptAttachmentEncodedBytes;
   final FutureOr<void> Function(String canonicalPath)?
   beforeAttachmentSecureOpenForTesting;
+  final acp.AcpTimeouts timeouts;
   final acp.AcpInputBudget inputBudget;
 
   acp.AcpClient? _client;
@@ -241,6 +249,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       final enableFilesystemProvider =
           enableFilesystemReadTextFile || enableFilesystemWriteTextFile;
       final config = acp.AcpConfig(
+        timeouts: timeouts,
         agentCommand: agentCommand,
         agentArgs: agentArgs,
         envOverrides: envOverrides,

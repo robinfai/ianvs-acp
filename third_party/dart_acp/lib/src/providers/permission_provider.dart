@@ -67,6 +67,7 @@ class PermissionOptions {
     this.toolKind,
     this.metadata = const <String, Object?>{},
     this.transientPolicyContext = const <String, Object?>{},
+    this.cancellationToken,
   });
 
   /// Display title of the permission prompt.
@@ -98,12 +99,55 @@ class PermissionOptions {
   /// Values in this map must not be copied into protocol messages, audit
   /// records, UI metadata, or logs.
   final Map<String, Object?> transientPolicyContext;
+
+  /// Memory-only identity used to cancel this exact permission request.
+  final Object? cancellationToken;
+}
+
+/// Fixed error for a permission request deadline.
+final class PermissionRequestTimeoutException implements Exception {
+  /// Create the fixed timeout error.
+  const PermissionRequestTimeoutException();
+
+  @override
+  String toString() => 'Permission request timed out.';
+}
+
+/// Local reason for settling an exact permission request.
+enum PermissionCancellationReason {
+  /// The permission deadline elapsed.
+  timedOut,
+
+  /// The owning prompt ended.
+  promptEnded,
+
+  /// The owning prompt was cancelled.
+  promptCancelled,
+
+  /// The owning session was closed.
+  sessionClosed,
+
+  /// The peer connection closed.
+  connectionClosed,
+
+  /// The client was disposed.
+  disposed,
 }
 
 /// Provider interface for answering permission requests.
 abstract class PermissionProvider {
   /// Return a decision for the given options.
   Future<PermissionDecision> request(PermissionOptions options);
+}
+
+/// Optional permission provider interface for exact local cancellation.
+abstract interface class CancellablePermissionProvider
+    implements PermissionProvider {
+  /// Cancel the request identified by [cancellationToken].
+  void cancelPendingPermission({
+    required Object cancellationToken,
+    required PermissionCancellationReason reason,
+  });
 }
 
 /// Callback signature for handling permission prompts.

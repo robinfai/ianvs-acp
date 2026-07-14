@@ -6,21 +6,67 @@ import 'providers/terminal_provider.dart';
 
 /// Collection of timeout knobs for ACP requests.
 class AcpTimeouts {
-  /// Create timeouts; all optional.
+  /// Create bounded logical timeouts for ACP operations.
   const AcpTimeouts({
     this.initialize = const Duration(seconds: 15),
-    this.prompt,
-    this.permission,
+    this.request = const Duration(seconds: 60),
+    this.prompt = const Duration(minutes: 30),
+    this.permission = const Duration(minutes: 5),
+    this.promptCancelGrace = const Duration(seconds: 2),
   });
 
   /// Initialize call timeout.
   final Duration initialize;
 
-  /// Optional prompt turn timeout (no hard timeout by default).
-  final Duration? prompt;
+  /// Ordinary request timeout.
+  final Duration request;
 
-  /// Optional permission prompt timeout.
-  final Duration? permission;
+  /// Prompt turn timeout.
+  final Duration prompt;
+
+  /// Permission prompt timeout.
+  final Duration permission;
+
+  /// Grace period for reaping a cancelled prompt.
+  final Duration promptCancelGrace;
+
+  /// Validate that every logical timeout is positive.
+  void validate() {
+    if (initialize <= Duration.zero ||
+        request <= Duration.zero ||
+        prompt <= Duration.zero ||
+        permission <= Duration.zero ||
+        promptCancelGrace <= Duration.zero) {
+      throw ArgumentError('ACP timeouts must be positive.');
+    }
+  }
+}
+
+/// Fixed error for an ordinary ACP request deadline.
+final class AcpRequestTimeoutException implements Exception {
+  /// Create the fixed timeout error.
+  const AcpRequestTimeoutException();
+
+  @override
+  String toString() => 'ACP request timed out.';
+}
+
+/// Fixed error for an ACP prompt deadline.
+final class AcpPromptTimeoutException implements Exception {
+  /// Create the fixed timeout error.
+  const AcpPromptTimeoutException();
+
+  @override
+  String toString() => 'ACP prompt timed out.';
+}
+
+/// Fixed error for an unavailable ACP connection.
+final class AcpConnectionClosedException implements Exception {
+  /// Create the fixed connection error.
+  const AcpConnectionClosedException();
+
+  @override
+  String toString() => 'ACP connection closed.';
 }
 
 /// Client configuration describing transport, providers, and capabilities.
@@ -33,16 +79,22 @@ class AcpConfig {
     this.capabilities = const AcpCapabilities(),
     this.mcpServers = const [],
     this.allowReadOutsideWorkspace = false,
-    this.timeouts = const AcpTimeouts(),
+    AcpTimeouts timeouts = const AcpTimeouts(),
     Logger? logger,
     this.fsProvider,
     PermissionProvider? permissionProvider,
     this.terminalProvider,
     this.onProtocolOut,
     this.onProtocolIn,
-  }) : logger = logger ?? Logger('dart_acp'),
+  }) : timeouts = _validatedAcpTimeouts(timeouts),
+       logger = logger ?? Logger('dart_acp'),
        permissionProvider =
            permissionProvider ?? const DefaultPermissionProvider();
+
+  static AcpTimeouts _validatedAcpTimeouts(AcpTimeouts value) {
+    value.validate();
+    return value;
+  }
 
   /// Manually maintained minimum protocol version required by this client.
   /// Bump this constant only when you add support for a future breaking spec.

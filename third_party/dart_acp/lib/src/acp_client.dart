@@ -41,6 +41,7 @@ class AcpClient implements AcpBoundedObservationSource {
     int maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) async {
+    config.timeouts.validate();
     inputBudget.validate();
     validateTerminalHandleLimits(
       maxTerminalHandles: maxTerminalHandles,
