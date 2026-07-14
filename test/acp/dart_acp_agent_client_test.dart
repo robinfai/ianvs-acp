@@ -8639,7 +8639,7 @@ Future<void> main() async {
     });
 
     test(
-      'terminal handle close retains a creating lease until late release',
+      'terminal handle close releases a creating lease before late cleanup',
       () async {
         final createBarrier = Completer<void>();
         final provider = _RecordingTerminalProvider(
@@ -8663,12 +8663,12 @@ Future<void> main() async {
           );
           await _waitForTerminalTestCondition(() => provider.createCalls == 1);
           await harness.manager.closeSession(sessionId: 'session-a');
-          final blocked = await harness.createTerminal(
-            id: 'terminal-handle-create-blocked',
+          final replacement = await harness.createTerminal(
+            id: 'terminal-handle-create-replacement',
             sessionId: 'session-b',
           );
-          _expectTerminalHandleLimit(blocked);
-          expect(provider.createCalls, 1);
+          expect(replacement, contains('result'));
+          expect(provider.createCalls, 2);
 
           createBarrier.complete();
           final lateResponse = await late;
@@ -8680,11 +8680,6 @@ Future<void> main() async {
             () => provider.releaseAttempts.length == 1,
           );
           expect(provider.releaseAttempts, ['terminal-1']);
-          final replacement = await harness.createTerminal(
-            id: 'terminal-handle-create-replacement',
-            sessionId: 'session-b',
-          );
-          expect(replacement, contains('result'));
         } finally {
           if (!createBarrier.isCompleted) createBarrier.complete();
           await harness.dispose();

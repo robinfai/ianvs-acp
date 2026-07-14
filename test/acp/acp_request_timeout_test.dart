@@ -24,6 +24,11 @@ final class _ControlledPermissionProvider
   final StreamController<int> requestEvents = StreamController<int>.broadcast();
   Object? cancellationFailure;
   void Function(acp.PermissionOptions options)? onRequest;
+  void Function(
+    Object cancellationToken,
+    acp.PermissionCancellationReason reason,
+  )?
+  onCancel;
 
   @override
   Future<acp.PermissionDecision> request(acp.PermissionOptions options) {
@@ -64,6 +69,7 @@ final class _ControlledPermissionProvider
     required acp.PermissionCancellationReason reason,
   }) {
     cancellations.add((cancellationToken, reason));
+    onCancel?.call(cancellationToken, reason);
     final failure = cancellationFailure;
     if (failure != null) throw failure;
   }
@@ -116,12 +122,20 @@ final class _CountingTerminalProvider implements acp.TerminalProvider {
   int createCalls = 0;
   int releaseCalls = 0;
   bool releaseThrows = false;
+  bool releaseThrowsSynchronously = false;
+  void Function()? onCreate;
+  Completer<void>? releaseBarrier;
   final Completer<void> createStarted = Completer<void>();
   final Completer<void> releaseStarted = Completer<void>();
+  final Completer<void> releaseCompleted = Completer<void>();
   Completer<acp.TerminalProcessHandle>? createResult;
 
   Future<acp.TerminalProcessHandle> createLateHandle(String sessionId) =>
-      _inner.create(sessionId: sessionId, command: '/usr/bin/true');
+      _inner.create(
+        sessionId: sessionId,
+        command: '/bin/sh',
+        args: const <String>['-c', 'sleep 30'],
+      );
 
   @override
   Future<acp.TerminalProcessHandle> create({
@@ -134,6 +148,7 @@ final class _CountingTerminalProvider implements acp.TerminalProvider {
   }) {
     createCalls += 1;
     if (!createStarted.isCompleted) createStarted.complete();
+    onCreate?.call();
     final controlled = createResult;
     if (controlled != null) return controlled.future;
     return _inner.create(
@@ -161,7 +176,25 @@ final class _CountingTerminalProvider implements acp.TerminalProvider {
   Future<void> release(acp.TerminalProcessHandle handle) {
     releaseCalls += 1;
     if (!releaseStarted.isCompleted) releaseStarted.complete();
-    return _inner.release(handle).then<void>((_) {
+    final barrier = releaseBarrier;
+    final releasing = barrier == null
+        ? _inner.release(handle)
+        : barrier.future.then<void>((_) => _inner.release(handle));
+    if (releaseThrowsSynchronously) {
+      unawaited(
+        releasing.then<void>(
+          (_) {
+            if (!releaseCompleted.isCompleted) releaseCompleted.complete();
+          },
+          onError: (Object _, StackTrace _) {
+            if (!releaseCompleted.isCompleted) releaseCompleted.complete();
+          },
+        ),
+      );
+      throw StateError('fixed synchronous release failure');
+    }
+    return releasing.then<void>((_) {
+      if (!releaseCompleted.isCompleted) releaseCompleted.complete();
       if (releaseThrows) throw StateError('fixed release failure');
     });
   }
@@ -181,6 +214,51 @@ final class _RpcReply {
   bool get hasErrorData => error?.containsKey('data') ?? false;
 }
 
+final class _ObservedFutureOutcome {
+  const _ObservedFutureOutcome.value(this.value)
+    : error = null,
+      stackTrace = null;
+
+  const _ObservedFutureOutcome.error(this.error, this.stackTrace)
+    : value = null;
+
+  final Object? value;
+  final Object? error;
+  final StackTrace? stackTrace;
+}
+
+Future<_ObservedFutureOutcome> _observeFuture(Future<dynamic> future) =>
+    future.then<_ObservedFutureOutcome>(
+      _ObservedFutureOutcome.value,
+      onError: (Object error, StackTrace stackTrace) =>
+          _ObservedFutureOutcome.error(error, stackTrace),
+    );
+
+Future<void> _expectNoZoneErrors(Future<void> Function() body) async {
+  final done = Completer<void>();
+  final zoneErrors = <Object>[];
+  Object? operationError;
+  StackTrace? operationStackTrace;
+  runZonedGuarded<void>(() {
+    unawaited(() async {
+      try {
+        await body();
+      } catch (error, stackTrace) {
+        operationError = error;
+        operationStackTrace = stackTrace;
+      } finally {
+        done.complete();
+      }
+    }());
+  }, (error, _) => zoneErrors.add(error));
+  await done.future.timeout(const Duration(seconds: 10));
+  await pumpEventQueue();
+  if (operationError case final error?) {
+    Error.throwWithStackTrace(error, operationStackTrace!);
+  }
+  expect(zoneErrors, isEmpty);
+}
+
 final class _PermissionRequestProbe {
   _PermissionRequestProbe(this.id, this.responseCompleter);
 
@@ -197,6 +275,7 @@ final class _PermissionRequestProbe {
   int providerCancellationCount = 0;
   int sideEffectCalls = 0;
   InboundAdmission? admission;
+  Future<dynamic>? handlerOperation;
 
   Future<_RpcReply> get response => responseCompleter.future;
   Future<void> get settled => admission!.settled;
@@ -220,7 +299,9 @@ final class _ObservedAdmission implements InboundAdmission {
         if (!probe.handlerStarted.isCompleted) {
           probe.handlerStarted.complete();
         }
-        return operation();
+        final result = Future<dynamic>.sync(operation);
+        probe.handlerOperation = result;
+        return result;
       });
 
   @override
@@ -296,11 +377,13 @@ class _PermissionAdmissionHarness {
     Duration? promptCancelGrace,
     int maxOrdinaryConcurrentHandlers = 1,
     bool controlFutureSetups = false,
+    bool registerInitialSession = true,
+    bool synchronousChannel = false,
     bool failFatalCloseFuture = false,
     bool throwSynchronouslyOnFatalClose = false,
   }) async {
     assert(!(failFatalCloseFuture && throwSynchronouslyOnFatalClose));
-    final channel = StreamChannelController<String>();
+    final channel = StreamChannelController<String>(sync: synchronousChannel);
     final permissions = _ControlledPermissionProvider();
     final fs = _CountingFsProvider();
     final terminals = _CountingTerminalProvider();
@@ -354,10 +437,12 @@ class _PermissionAdmissionHarness {
     );
     harness._installAdmissionObserver();
     harness._wireSubscription = channel.local.stream.listen(harness._onWire);
-    await manager.resumeSession(
-      sessionId: harness.sessionId,
-      workspaceRoot: '/tmp',
-    );
+    if (registerInitialSession) {
+      await manager.resumeSession(
+        sessionId: harness.sessionId,
+        workspaceRoot: '/tmp',
+      );
+    }
     harness._holdSetupResponses = controlFutureSetups;
     return harness;
   }
@@ -864,6 +949,153 @@ final class _PermissionBatchHarness {
   }
 
   Future<void> dispose() => base.dispose();
+}
+
+enum _LateCause { close, dispose }
+
+enum _ReleaseFailure { none, synchronous, asynchronous }
+
+final class _LateTerminalHarness {
+  _LateTerminalHarness._(this.base, this.events);
+
+  final _PermissionAdmissionHarness base;
+  final List<acp.TerminalEvent> events;
+  final List<acp.TerminalProcessHandle> _lateHandles =
+      <acp.TerminalProcessHandle>[];
+  late final StreamSubscription<acp.TerminalEvent> _eventsSubscription;
+  Future<dynamic>? _createReply;
+  _PermissionRequestProbe? _createProbe;
+  Future<void>? _peerClosing;
+
+  static Future<_LateTerminalHarness> start({
+    bool releaseThrows = false,
+    bool releaseThrowsSynchronously = false,
+    int maxOrdinaryConcurrentHandlers = 1,
+  }) async {
+    final base = await _PermissionAdmissionHarness.start(
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+    );
+    base.terminals
+      ..releaseThrows = releaseThrows
+      ..releaseThrowsSynchronously = releaseThrowsSynchronously
+      ..createResult = Completer<acp.TerminalProcessHandle>();
+    final harness = _LateTerminalHarness._(base, <acp.TerminalEvent>[]);
+    harness._eventsSubscription = base.manager.terminalEvents.listen(
+      harness.events.add,
+    );
+    return harness;
+  }
+
+  SessionManager get manager => base.manager;
+  Completer<void> get createStarted => base.terminals.createStarted;
+  Completer<void> get releaseCompleted => base.terminals.releaseCompleted;
+  int get releaseCalls => base.terminals.releaseCalls;
+  int get registeredTerminalCount =>
+      base.manager.managedTerminalCountForTesting;
+  Iterable<acp.TerminalCreated> get terminalCreatedEvents =>
+      events.whereType<acp.TerminalCreated>();
+  int get pendingLeaseCount => base.manager.pendingTerminalLeaseCountForTesting;
+  int get totalLeaseCount => base.manager.terminalLeaseCountForTesting;
+  _PermissionRequestProbe get createProbe => _createProbe!;
+  Object? get sessionGeneration =>
+      base.manager.sessionGenerationForTesting(base.sessionId);
+
+  Future<dynamic> createTerminal() {
+    final existing = _createReply;
+    if (existing != null) return existing;
+    final operation = () async {
+      final probe = await base.admit('terminal/create');
+      _createProbe = probe;
+      await base.permissions
+          .waitForRequest(0)
+          .timeout(const Duration(seconds: 2));
+      base.permissions.completeAllow(0);
+      await probe.handlerStarted.future.timeout(const Duration(seconds: 2));
+      return probe.handlerOperation!;
+    }();
+    _createReply = operation;
+    return operation;
+  }
+
+  Future<void> invalidate(_LateCause cause) async {
+    switch (cause) {
+      case _LateCause.close:
+        final unavailable = Completer<void>();
+        void observe(AcpPeerUnavailableState _) {
+          if (!unavailable.isCompleted) unavailable.complete();
+        }
+        base.peer.addUnavailableListener(observe);
+        final closing = base.peer.closeForTesting(
+          AcpPeerUnavailableReason.explicitClose,
+        );
+        _peerClosing = closing;
+        unawaited(closing.catchError((Object _) {}));
+        await unavailable.future.timeout(const Duration(seconds: 2));
+        base.peer.removeUnavailableListener(observe);
+        break;
+      case _LateCause.dispose:
+        await base.manager.dispose();
+        break;
+    }
+  }
+
+  Future<acp.TerminalProcessHandle> completeCreateHandle() async {
+    final handle = await base.terminals.createLateHandle(base.sessionId);
+    _lateHandles.add(handle);
+    base.terminals.createResult!.complete(handle);
+    return handle;
+  }
+
+  void completeCreateError(Object error) {
+    base.terminals.createResult!.completeError(error);
+  }
+
+  Future<void> closeAndReopenSameSession() async {
+    await base.manager.closeSession(sessionId: base.sessionId);
+    await base.manager.resumeSession(
+      sessionId: base.sessionId,
+      workspaceRoot: '/tmp',
+    );
+  }
+
+  Future<void> waitForPeerClose() async {
+    final closing = _peerClosing;
+    if (closing != null) {
+      await closing.timeout(const Duration(seconds: 2));
+    }
+  }
+
+  Future<_RpcReply> createAndReleaseReplacementTerminal() async {
+    base.terminals.createResult = null;
+    final providerIndex = base.permissions.requests.length;
+    final probe = await base.admit('terminal/create');
+    await base.permissions
+        .waitForRequest(providerIndex)
+        .timeout(const Duration(seconds: 2));
+    base.permissions.completeAllow(providerIndex);
+    final reply = await probe.response.timeout(const Duration(seconds: 2));
+    final result = reply.result! as Map<String, dynamic>;
+    await base.manager.releaseTerminal(result['terminalId']! as String);
+    return reply;
+  }
+
+  Future<void> dispose() async {
+    final pendingCreate = base.terminals.createResult;
+    if (pendingCreate != null && !pendingCreate.isCompleted) {
+      pendingCreate.completeError(StateError('fixed late terminal cleanup'));
+      await pumpEventQueue();
+    }
+    await _eventsSubscription.cancel();
+    await base.dispose();
+    for (final handle in _lateHandles) {
+      try {
+        await base.terminals._inner.release(handle);
+      } on Object {
+        // Test cleanup is best-effort after release behavior was asserted.
+      }
+      await handle.process.exitCode.timeout(const Duration(seconds: 2));
+    }
+  }
 }
 
 const permissionEntries = <_PermissionEntryCase>[
@@ -1631,6 +1863,761 @@ void main() {
       await harness.dispose().timeout(const Duration(seconds: 2));
     }
   });
+
+  test(
+    'late permission decisions cannot start file or terminal providers after epoch loss',
+    () async {
+      for (final method in <String>[
+        'fs/read_text_file',
+        'fs/write_text_file',
+        'terminal/create',
+      ]) {
+        final harness = await _PermissionAdmissionHarness.start();
+        try {
+          final request = await harness.admit(method);
+          await harness.permissions
+              .waitForRequest(0)
+              .timeout(const Duration(seconds: 2));
+          final closing = harness.peer.closeForTesting(
+            AcpPeerUnavailableReason.transportClosed,
+          );
+          harness.permissions.completeAllow(0);
+          await request.settled.timeout(const Duration(seconds: 2));
+          await closing.timeout(const Duration(seconds: 2));
+          expect(harness.fs.readCalls, 0);
+          expect(harness.fs.writeCalls, 0);
+          expect(harness.terminals.createCalls, 0);
+          expect(request.reservationReleaseCount, 1);
+          expect(request.responseCommitCount, 1);
+        } finally {
+          await harness.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'late terminal handles release once across close dispose and release failures',
+    () async {
+      for (final cause in _LateCause.values) {
+        for (final releaseFailure in _ReleaseFailure.values) {
+          for (final lateError in <bool>[false, true]) {
+            await _expectNoZoneErrors(() async {
+              final harness = await _LateTerminalHarness.start(
+                releaseThrows: releaseFailure == _ReleaseFailure.asynchronous,
+                releaseThrowsSynchronously:
+                    releaseFailure == _ReleaseFailure.synchronous,
+              );
+              try {
+                final createOutcome = _observeFuture(harness.createTerminal());
+                await harness.createStarted.future.timeout(
+                  const Duration(seconds: 2),
+                );
+                await harness.invalidate(cause);
+
+                final earlyOutcome = await createOutcome.timeout(
+                  const Duration(seconds: 2),
+                );
+                final earlyError = earlyOutcome.error;
+                expect(earlyError, isA<rpc.RpcException>());
+                final rpcError = earlyError! as rpc.RpcException;
+                expect(rpcError.code, -32000);
+                expect(rpcError.message, 'ACP connection closed.');
+                await harness.createProbe.settled.timeout(
+                  const Duration(seconds: 2),
+                );
+                if (cause == _LateCause.dispose) {
+                  final reply = await harness.createProbe.response.timeout(
+                    const Duration(seconds: 2),
+                  );
+                  expect(reply.errorCode, -32000);
+                  expect(reply.errorMessage, 'ACP connection closed.');
+                  expect(reply.hasErrorData, isFalse);
+                }
+                expect(
+                  harness.base.terminals.createResult!.isCompleted,
+                  isFalse,
+                );
+                expect(harness.createProbe.responseCommitCount, 1);
+                expect(harness.pendingLeaseCount, 0);
+                expect(harness.totalLeaseCount, 0);
+
+                acp.TerminalProcessHandle? lateHandle;
+                if (lateError) {
+                  harness.completeCreateError(StateError('LATE-CREATE-CANARY'));
+                } else {
+                  lateHandle = await harness.completeCreateHandle();
+                  await harness.releaseCompleted.future.timeout(
+                    const Duration(seconds: 2),
+                  );
+                  await lateHandle.process.exitCode.timeout(
+                    const Duration(seconds: 2),
+                  );
+                }
+                await harness.waitForPeerClose();
+                await pumpEventQueue();
+                expect(harness.releaseCalls, lateError ? 0 : 1);
+                expect(harness.terminalCreatedEvents, isEmpty);
+                expect(harness.registeredTerminalCount, 0);
+                expect(harness.pendingLeaseCount, 0);
+                expect(harness.totalLeaseCount, 0);
+              } finally {
+                await harness.dispose();
+              }
+            });
+          }
+        }
+      }
+
+      await _expectNoZoneErrors(() async {
+        final harness = await _LateTerminalHarness.start();
+        try {
+          const providerError = acp.AcpConnectionClosedException();
+          final createOutcome = _observeFuture(harness.createTerminal());
+          await harness.createStarted.future.timeout(
+            const Duration(seconds: 2),
+          );
+          harness.completeCreateError(providerError);
+          final outcome = await createOutcome.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(identical(outcome.error, providerError), isTrue);
+          await harness.createProbe.settled.timeout(const Duration(seconds: 2));
+          expect(harness.base.peer.isAvailable, isTrue);
+          expect(harness.releaseCalls, 0);
+          expect(harness.pendingLeaseCount, 0);
+          expect(harness.totalLeaseCount, 0);
+        } finally {
+          await harness.dispose();
+        }
+      });
+    },
+  );
+
+  test(
+    'published terminal success survives dispose before handler tail check',
+    () async {
+      await _expectNoZoneErrors(() async {
+        final harness = await _PermissionAdmissionHarness.start();
+        Future<void>? disposing;
+        try {
+          final probe = await harness.admit('terminal/create');
+          final published = Completer<void>();
+          unawaited(
+            probe.admission!.terminal.then<void>((_) {
+              disposing = harness.manager.dispose();
+              published.complete();
+            }),
+          );
+          await harness.permissions
+              .waitForRequest(0)
+              .timeout(const Duration(seconds: 2));
+          harness.permissions.completeAllow(0);
+          await probe.handlerStarted.future.timeout(const Duration(seconds: 2));
+          final handlerOutcome = await _observeFuture(
+            probe.handlerOperation!,
+          ).timeout(const Duration(seconds: 2));
+          await published.future.timeout(const Duration(seconds: 2));
+          expect(handlerOutcome.error, isNull);
+          expect(handlerOutcome.value, isA<Map<String, dynamic>>());
+          final reply = await probe.response.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(reply.error, isNull);
+          expect(reply.result, isA<Map<String, dynamic>>());
+          await disposing!.timeout(const Duration(seconds: 2));
+        } finally {
+          await harness.dispose();
+        }
+      });
+    },
+  );
+
+  test(
+    'reentrant invalidation rejects completed create before blocked late release',
+    () async {
+      await _expectNoZoneErrors(() async {
+        for (final closeSession in <bool>[false, true]) {
+          final harness = await _LateTerminalHarness.start();
+          final releaseBarrier = Completer<void>();
+          Future<void>? invalidating;
+          acp.TerminalProcessHandle? handle;
+          try {
+            handle = await harness.base.terminals.createLateHandle(
+              harness.base.sessionId,
+            );
+            harness.base.terminals
+              ..createResult!.complete(handle)
+              ..releaseBarrier = releaseBarrier
+              ..onCreate = () {
+                invalidating = closeSession
+                    ? harness.manager.closeSession(
+                        sessionId: harness.base.sessionId,
+                      )
+                    : harness.manager.dispose();
+              };
+
+            final outcome = await _observeFuture(
+              harness.createTerminal(),
+            ).timeout(const Duration(seconds: 2));
+            final error = outcome.error;
+            expect(error, isA<rpc.RpcException>());
+            final rpcError = error! as rpc.RpcException;
+            final expectedCode = closeSession ? -32003 : -32000;
+            final expectedMessage = closeSession
+                ? 'Permission request cancelled.'
+                : 'ACP connection closed.';
+            expect(rpcError.code, expectedCode);
+            expect(rpcError.message, expectedMessage);
+            await harness.base.terminals.releaseStarted.future.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(releaseBarrier.isCompleted, isFalse);
+            expect(harness.releaseCalls, 1);
+            expect(harness.registeredTerminalCount, 0);
+            expect(harness.pendingLeaseCount, 0);
+            expect(harness.totalLeaseCount, 0);
+            final reply = await harness.createProbe.response.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(reply.errorCode, expectedCode);
+            expect(reply.errorMessage, expectedMessage);
+            expect(reply.hasErrorData, isFalse);
+
+            releaseBarrier.complete();
+            await harness.releaseCompleted.future.timeout(
+              const Duration(seconds: 2),
+            );
+            await handle.process.exitCode.timeout(const Duration(seconds: 2));
+            await invalidating!.timeout(const Duration(seconds: 2));
+            expect(harness.releaseCalls, 1);
+          } finally {
+            if (!releaseBarrier.isCompleted) releaseBarrier.complete();
+            await harness.dispose();
+            if (handle != null) {
+              await handle.process.exitCode.timeout(const Duration(seconds: 2));
+            }
+          }
+        }
+      });
+    },
+  );
+
+  test(
+    'late terminal handle cannot register into a replacement session generation',
+    () async {
+      final harness = await _LateTerminalHarness.start();
+      try {
+        final generationA = harness.sessionGeneration;
+        final createOutcome = _observeFuture(harness.createTerminal());
+        await harness.createStarted.future.timeout(const Duration(seconds: 2));
+        await harness.closeAndReopenSameSession().timeout(
+          const Duration(seconds: 2),
+        );
+        final generationB = harness.sessionGeneration;
+        expect(identical(generationA, generationB), isFalse);
+        final earlyOutcome = await createOutcome.timeout(
+          const Duration(seconds: 2),
+        );
+        final earlyError = earlyOutcome.error;
+        expect(earlyError, isA<rpc.RpcException>());
+        final rpcError = earlyError! as rpc.RpcException;
+        expect(rpcError.code, -32003);
+        expect(rpcError.message, 'Permission request cancelled.');
+        await harness.createProbe.settled.timeout(const Duration(seconds: 2));
+        final reply = await harness.createProbe.response.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(reply.errorCode, -32003);
+        expect(reply.errorMessage, 'Permission request cancelled.');
+        expect(reply.hasErrorData, isFalse);
+        expect(harness.base.terminals.createResult!.isCompleted, isFalse);
+        expect(harness.createProbe.responseCommitCount, 1);
+        expect(harness.pendingLeaseCount, 0);
+        expect(harness.totalLeaseCount, 0);
+
+        final lateHandle = await harness.completeCreateHandle();
+        await harness.releaseCompleted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await lateHandle.process.exitCode.timeout(const Duration(seconds: 2));
+        expect(harness.releaseCalls, 1);
+        expect(harness.registeredTerminalCount, 0);
+        expect(harness.terminalCreatedEvents, isEmpty);
+        final replacement = await harness.createAndReleaseReplacementTerminal();
+        expect(replacement.error, isNull);
+        expect(replacement.result, isA<Map<String, dynamic>>());
+        expect(harness.registeredTerminalCount, 0);
+        expect(harness.pendingLeaseCount, 0);
+        expect(harness.totalLeaseCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  for (final setupMethod in <String>['resume', 'load']) {
+    for (final method in <String>[
+      'session/request_permission',
+      'fs/read_text_file',
+      'terminal/create',
+    ]) {
+      test(
+        'queued unknown $method cannot cross a successful $setupMethod generation',
+        () async {
+          final harness = await _PermissionAdmissionHarness.start();
+          const unknownSessionId = 'queued-unknown-session';
+          try {
+            await harness.occupyAllOrdinaryPermits();
+            final params = Map<String, dynamic>.from(harness.paramsFor(method))
+              ..['sessionId'] = unknownSessionId;
+            final stale = await harness.admit(method, params: params);
+            expect(
+              harness.manager.sessionGenerationForTesting(unknownSessionId),
+              isNull,
+            );
+
+            if (setupMethod == 'resume') {
+              await harness.manager.resumeSession(
+                sessionId: unknownSessionId,
+                workspaceRoot: '/tmp',
+              );
+            } else {
+              await harness.manager.loadSession(
+                sessionId: unknownSessionId,
+                workspaceRoot: '/tmp',
+              );
+            }
+            expect(
+              harness.manager.sessionGenerationForTesting(unknownSessionId),
+              isNotNull,
+            );
+
+            harness.releaseOrdinaryPermits();
+            await pumpEventQueue();
+            expect(harness.permissions.requests, isEmpty);
+            expect(harness.fs.readCalls, 0);
+            expect(harness.terminals.createCalls, 0);
+
+            final reply = await stale.response.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(reply.errorCode, -32003);
+            expect(reply.errorMessage, 'Permission request cancelled.');
+            expect(reply.hasErrorData, isFalse);
+            await stale.settled.timeout(const Duration(seconds: 2));
+            expect(harness.permissions.cancellations, hasLength(1));
+            expect(
+              harness.permissions.cancellations.single.$2,
+              acp.PermissionCancellationReason.sessionClosed,
+            );
+            expect(stale.reservationReleaseCount, 1);
+            expect(stale.responseCommitCount, 1);
+            expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+            expect(harness.manager.terminalLeaseCountForTesting, 0);
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+    }
+  }
+
+  for (final setupMethod in <String>['resume', 'load']) {
+    for (final setupSucceeds in <bool>[true, false]) {
+      for (final method in <String>['fs/read_text_file', 'terminal/create']) {
+        final outcomeName = setupSucceeds ? 'success' : 'failure';
+        test(
+          'first-time $setupMethod $outcomeName settles its $method phase owner',
+          () async {
+            final harness = await _PermissionAdmissionHarness.start(
+              controlFutureSetups: true,
+              registerInitialSession: false,
+            );
+            final terminalEvents = <acp.TerminalEvent>[];
+            final terminalSubscription = harness.manager.terminalEvents.listen(
+              terminalEvents.add,
+            );
+            Future<dynamic> startSetup(String workspaceRoot) =>
+                setupMethod == 'resume'
+                ? harness.manager.resumeSession(
+                    sessionId: harness.sessionId,
+                    workspaceRoot: workspaceRoot,
+                  )
+                : harness.manager.loadSession(
+                    sessionId: harness.sessionId,
+                    workspaceRoot: workspaceRoot,
+                  );
+            try {
+              final setupOutcome = _observeFuture(
+                startSetup('/tmp/first-time-setup'),
+              );
+              await harness
+                  .waitForSetupRequest(0)
+                  .timeout(const Duration(seconds: 2));
+              expect(
+                harness.manager.sessionGenerationForTesting(harness.sessionId),
+                isNull,
+              );
+
+              final stale = await harness.admit(method);
+              await harness.permissions
+                  .waitForRequest(0)
+                  .timeout(const Duration(seconds: 2));
+              await stale.handlerStarted.future.timeout(
+                const Duration(seconds: 2),
+              );
+              expect(harness.permissions.pending.single.isCompleted, isFalse);
+              final staleHandler = _observeFuture(stale.handlerOperation!);
+
+              if (setupSucceeds) {
+                harness.completeSetupSuccess(0);
+              } else {
+                harness.completeSetupError(0, '$setupMethod setup canary');
+              }
+              final completedSetup = await setupOutcome.timeout(
+                const Duration(seconds: 2),
+              );
+              if (setupSucceeds) {
+                expect(completedSetup.error, isNull);
+              } else {
+                expect(completedSetup.error, isA<rpc.RpcException>());
+                final setupError = completedSetup.error! as rpc.RpcException;
+                expect(setupError.code, -32000);
+                expect(setupError.message, '$setupMethod setup canary');
+              }
+
+              final handlerOutcome = await staleHandler.timeout(
+                const Duration(seconds: 2),
+              );
+              final handlerError = handlerOutcome.error;
+              expect(handlerError, isA<rpc.RpcException>());
+              final handlerRpcError = handlerError! as rpc.RpcException;
+              expect(handlerRpcError.code, -32003);
+              expect(handlerRpcError.message, 'Permission request cancelled.');
+              final staleReply = await stale.response.timeout(
+                const Duration(seconds: 2),
+              );
+              expect(staleReply.errorCode, -32003);
+              expect(staleReply.errorMessage, 'Permission request cancelled.');
+              expect(staleReply.hasErrorData, isFalse);
+              await stale.settled.timeout(const Duration(seconds: 2));
+              expect(harness.permissions.cancellations, hasLength(1));
+              expect(
+                harness.permissions.cancellations.single.$2,
+                acp.PermissionCancellationReason.sessionClosed,
+              );
+              expect(stale.reservationReleaseCount, 1);
+              expect(stale.responseCommitCount, 1);
+              expect(harness.fs.readCalls, 0);
+              expect(harness.terminals.createCalls, 0);
+              expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+              expect(harness.manager.terminalLeaseCountForTesting, 0);
+              expect(harness.manager.managedTerminalCountForTesting, 0);
+              expect(terminalEvents, isEmpty);
+
+              await _expectNoZoneErrors(() async {
+                harness.permissions.completeAllow(0);
+                await pumpEventQueue();
+              });
+              expect(harness.fs.readCalls, 0);
+              expect(harness.terminals.createCalls, 0);
+              expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+              expect(harness.manager.terminalLeaseCountForTesting, 0);
+              expect(harness.manager.managedTerminalCountForTesting, 0);
+              expect(terminalEvents, isEmpty);
+
+              if (!setupSucceeds) {
+                expect(
+                  harness.manager.sessionGenerationForTesting(
+                    harness.sessionId,
+                  ),
+                  isNull,
+                );
+                final retry = startSetup('/tmp/first-time-retry');
+                await harness
+                    .waitForSetupRequest(1)
+                    .timeout(const Duration(seconds: 2));
+                harness.completeSetupSuccess(1);
+                await retry.timeout(const Duration(seconds: 2));
+              }
+              expect(
+                harness.manager.sessionGenerationForTesting(harness.sessionId),
+                isNotNull,
+              );
+
+              final current = await harness.admit(
+                'fs/read_text_file',
+                params: <String, dynamic>{
+                  'sessionId': harness.sessionId,
+                  'path': '/tmp/current.txt',
+                },
+              );
+              await harness.permissions
+                  .waitForRequest(1)
+                  .timeout(const Duration(seconds: 2));
+              harness.permissions.completeAllow(1);
+              final currentReply = await current.response.timeout(
+                const Duration(seconds: 2),
+              );
+              expect(currentReply.error, isNull);
+              expect(currentReply.result, <String, Object?>{'content': 'ok'});
+              await current.settled.timeout(const Duration(seconds: 2));
+              expect(harness.fs.readCalls, 1);
+              expect(harness.terminals.createCalls, 0);
+              expect(terminalEvents, isEmpty);
+            } finally {
+              await terminalSubscription.cancel();
+              await harness.dispose();
+            }
+          },
+        );
+      }
+    }
+  }
+
+  for (final reentrantCase in <({String setupMethod, String permissionMethod})>[
+    (setupMethod: 'resume', permissionMethod: 'fs/read_text_file'),
+    (setupMethod: 'load', permissionMethod: 'terminal/create'),
+  ]) {
+    test(
+      'first-time ${reentrantCase.setupMethod} failure cancels synchronously reentrant ${reentrantCase.permissionMethod}',
+      () async {
+        final harness = await _PermissionAdmissionHarness.start(
+          controlFutureSetups: true,
+          registerInitialSession: false,
+          synchronousChannel: true,
+        );
+        final terminalEvents = <acp.TerminalEvent>[];
+        final terminalSubscription = harness.manager.terminalEvents.listen(
+          terminalEvents.add,
+        );
+        Future<dynamic> startSetup(String workspaceRoot) =>
+            reentrantCase.setupMethod == 'resume'
+            ? harness.manager.resumeSession(
+                sessionId: harness.sessionId,
+                workspaceRoot: workspaceRoot,
+              )
+            : harness.manager.loadSession(
+                sessionId: harness.sessionId,
+                workspaceRoot: workspaceRoot,
+              );
+        try {
+          final setupOutcome = _observeFuture(
+            startSetup('/tmp/reentrant-setup'),
+          );
+          await harness
+              .waitForSetupRequest(0)
+              .timeout(const Duration(seconds: 2));
+          final phaseOwner = harness.manager.sessionInputOwnerForTesting(
+            harness.sessionId,
+          );
+          expect(phaseOwner, isNotNull);
+          final original = await harness.admit(reentrantCase.permissionMethod);
+          await harness.permissions
+              .waitForRequest(0)
+              .timeout(const Duration(seconds: 2));
+
+          Future<_PermissionRequestProbe>? reentrantFuture;
+          var reentrantCreationCount = 0;
+          harness.permissions.onCancel = (_, _) {
+            reentrantCreationCount += 1;
+            harness.permissions.onCancel = null;
+            harness.manager.settlePromptAdmissions(
+              owner: phaseOwner!,
+              reason: acp.PermissionCancellationReason.disposed,
+            );
+            reentrantFuture = harness.admit(
+              reentrantCase.permissionMethod,
+              params: harness.paramsFor(reentrantCase.permissionMethod),
+            );
+          };
+          final setupCanary =
+              '${reentrantCase.setupMethod} synchronous setup canary';
+          harness.completeSetupError(0, setupCanary);
+
+          final completedSetup = await setupOutcome.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(completedSetup.error, isA<rpc.RpcException>());
+          final setupError = completedSetup.error! as rpc.RpcException;
+          expect(setupError.code, -32000);
+          expect(setupError.message, setupCanary);
+          expect(reentrantCreationCount, 1);
+          final reentrant = await reentrantFuture!.timeout(
+            const Duration(seconds: 2),
+          );
+
+          for (final probe in <_PermissionRequestProbe>[original, reentrant]) {
+            final reply = await probe.response.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(reply.errorCode, -32003);
+            expect(reply.errorMessage, 'Permission request cancelled.');
+            expect(reply.hasErrorData, isFalse);
+            await probe.settled.timeout(const Duration(seconds: 2));
+            expect(probe.reservationReleaseCount, 1);
+            expect(probe.responseCommitCount, 1);
+          }
+          expect(harness.permissions.requests, hasLength(1));
+          expect(harness.permissions.cancellations, hasLength(2));
+          expect(
+            harness.permissions.cancellations.map((entry) => entry.$2),
+            everyElement(acp.PermissionCancellationReason.sessionClosed),
+          );
+          expect(
+            harness.permissions.cancellations.map((entry) => entry.$1).toSet(),
+            hasLength(2),
+          );
+          expect(harness.fs.readCalls, 0);
+          expect(harness.terminals.createCalls, 0);
+          expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+          expect(harness.manager.terminalLeaseCountForTesting, 0);
+          expect(harness.manager.managedTerminalCountForTesting, 0);
+          expect(terminalEvents, isEmpty);
+          expect(harness.manager.settlingPromptOwnerCountForTesting, 0);
+          expect(harness.manager.settlingPromptReasonCountForTesting, 0);
+          expect(
+            harness.manager.sessionGenerationForTesting(harness.sessionId),
+            isNull,
+          );
+
+          final retry = startSetup('/tmp/reentrant-retry');
+          await harness
+              .waitForSetupRequest(1)
+              .timeout(const Duration(seconds: 2));
+          harness.completeSetupSuccess(1);
+          await retry.timeout(const Duration(seconds: 2));
+          expect(
+            harness.manager.sessionGenerationForTesting(harness.sessionId),
+            isNotNull,
+          );
+
+          await _expectNoZoneErrors(() async {
+            harness.permissions.completeAllow(0);
+            await pumpEventQueue();
+          });
+          expect(harness.permissions.requests, hasLength(1));
+          expect(harness.fs.readCalls, 0);
+          expect(harness.terminals.createCalls, 0);
+          expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+          expect(harness.manager.terminalLeaseCountForTesting, 0);
+          expect(harness.manager.managedTerminalCountForTesting, 0);
+          expect(terminalEvents, isEmpty);
+        } finally {
+          await terminalSubscription.cancel();
+          await harness.dispose();
+        }
+      },
+    );
+  }
+
+  for (final setupMethod in <String>['resume', 'load']) {
+    test(
+      'direct $setupMethod replacement settles only the previous terminal generation',
+      () async {
+        final harness = await _LateTerminalHarness.start(
+          maxOrdinaryConcurrentHandlers: 2,
+        );
+        const otherSessionId = 'unrelated-generation-session';
+        try {
+          await harness.manager.resumeSession(
+            sessionId: otherSessionId,
+            workspaceRoot: '/tmp',
+          );
+          final unrelatedGeneration = harness.manager
+              .sessionGenerationForTesting(otherSessionId);
+          final generationA = harness.sessionGeneration;
+
+          final createOutcome = _observeFuture(harness.createTerminal());
+          await harness.createStarted.future.timeout(
+            const Duration(seconds: 2),
+          );
+          final unrelated = await harness.base.admit(
+            'fs/read_text_file',
+            params: <String, dynamic>{
+              'sessionId': otherSessionId,
+              'path': '/tmp/unrelated.txt',
+            },
+          );
+          await harness.base.permissions
+              .waitForRequest(1)
+              .timeout(const Duration(seconds: 2));
+
+          if (setupMethod == 'resume') {
+            await harness.manager.resumeSession(
+              sessionId: harness.base.sessionId,
+              workspaceRoot: '/tmp',
+            );
+          } else {
+            await harness.manager.loadSession(
+              sessionId: harness.base.sessionId,
+              workspaceRoot: '/tmp',
+            );
+          }
+          final generationB = harness.sessionGeneration;
+          expect(identical(generationA, generationB), isFalse);
+          expect(
+            identical(
+              unrelatedGeneration,
+              harness.manager.sessionGenerationForTesting(otherSessionId),
+            ),
+            isTrue,
+          );
+
+          final earlyOutcome = await createOutcome.timeout(
+            const Duration(seconds: 2),
+          );
+          final earlyError = earlyOutcome.error;
+          expect(earlyError, isA<rpc.RpcException>());
+          final rpcError = earlyError! as rpc.RpcException;
+          expect(rpcError.code, -32003);
+          expect(rpcError.message, 'Permission request cancelled.');
+          final staleReply = await harness.createProbe.response.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(staleReply.errorCode, -32003);
+          expect(staleReply.errorMessage, 'Permission request cancelled.');
+          expect(staleReply.hasErrorData, isFalse);
+          await harness.createProbe.settled.timeout(const Duration(seconds: 2));
+          expect(harness.base.terminals.createResult!.isCompleted, isFalse);
+          expect(harness.createProbe.responseCommitCount, 1);
+          expect(harness.pendingLeaseCount, 0);
+          expect(harness.totalLeaseCount, 0);
+
+          expect(harness.base.permissions.pending[1].isCompleted, isFalse);
+          harness.base.permissions.completeAllow(1);
+          final unrelatedReply = await unrelated.response.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(unrelatedReply.error, isNull);
+          expect(unrelatedReply.result, <String, Object?>{'content': 'ok'});
+          await unrelated.settled.timeout(const Duration(seconds: 2));
+          expect(harness.base.fs.readCalls, 1);
+
+          final lateHandle = await harness.completeCreateHandle();
+          await harness.releaseCompleted.future.timeout(
+            const Duration(seconds: 2),
+          );
+          await lateHandle.process.exitCode.timeout(const Duration(seconds: 2));
+          expect(harness.releaseCalls, 1);
+          expect(harness.registeredTerminalCount, 0);
+          expect(harness.terminalCreatedEvents, isEmpty);
+
+          final replacement = await harness
+              .createAndReleaseReplacementTerminal();
+          expect(replacement.error, isNull);
+          expect(replacement.result, isA<Map<String, dynamic>>());
+          expect(harness.releaseCalls, 2);
+          expect(harness.registeredTerminalCount, 0);
+          expect(harness.pendingLeaseCount, 0);
+          expect(harness.totalLeaseCount, 0);
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+  }
 
   test(
     'permission deadline starts at admission for ownerless and owner scoped requests',

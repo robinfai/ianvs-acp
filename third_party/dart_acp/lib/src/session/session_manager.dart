@@ -611,6 +611,31 @@ final class _PermissionProviderResult {
   final StackTrace? stackTrace;
 }
 
+final class _UnregisteredTerminalRelease {
+  Future<void>? operation;
+}
+
+final class _TerminalCreateResult {
+  const _TerminalCreateResult.handle(this.handle)
+    : error = null,
+      stackTrace = null,
+      cancellationReason = null;
+
+  const _TerminalCreateResult.error(this.error, this.stackTrace)
+    : handle = null,
+      cancellationReason = null;
+
+  const _TerminalCreateResult.cancelled(this.cancellationReason)
+    : handle = null,
+      error = null,
+      stackTrace = null;
+
+  final TerminalProcessHandle? handle;
+  final Object? error;
+  final StackTrace? stackTrace;
+  final PermissionCancellationReason? cancellationReason;
+}
+
 final class _PermissionGateCancellation implements Exception {
   const _PermissionGateCancellation(this.reason);
 
@@ -917,6 +942,12 @@ class SessionManager implements AcpBoundedObservationSource {
       >.identity();
   final Map<String, AcpSessionInputBudgetOwner> _settlingPromptOwners =
       <String, AcpSessionInputBudgetOwner>{};
+  final Map<AcpSessionInputBudgetOwner, PermissionCancellationReason>
+  _settlingPromptReasons =
+      HashMap<
+        AcpSessionInputBudgetOwner,
+        PermissionCancellationReason
+      >.identity();
   final Set<_TerminalQuotaLease> _terminalLeases = <_TerminalQuotaLease>{};
   final Set<_TerminalQuotaLease> _pendingTerminalLeases =
       <_TerminalQuotaLease>{};
@@ -930,9 +961,16 @@ class SessionManager implements AcpBoundedObservationSource {
 
   _SessionGeneration _replaceSessionGeneration(String sessionId) {
     final previous = _sessionGenerations[sessionId];
-    if (previous != null) previous.active = false;
     final replacement = _SessionGeneration(sessionId, ++_nextSessionGeneration);
     _sessionGenerations[sessionId] = replacement;
+    if (previous != null) {
+      previous.active = false;
+      for (final admission in _inboundAdmissions.toList(growable: false)) {
+        if (identical(admission.sessionGeneration, previous)) {
+          admission.tryCancel(PermissionCancellationReason.sessionClosed);
+        }
+      }
+    }
     return replacement;
   }
 
@@ -1025,6 +1063,15 @@ class SessionManager implements AcpBoundedObservationSource {
   /// Returns terminal leases that have not become managed handles for tests.
   int get pendingTerminalLeaseCountForTesting => _pendingTerminalLeases.length;
 
+  /// Returns terminal handles registered in manager state for tests.
+  int get managedTerminalCountForTesting => _terminals.length;
+
+  /// Returns the number of prompt owners with an active settling reason.
+  int get settlingPromptReasonCountForTesting => _settlingPromptReasons.length;
+
+  /// Returns the number of sessions retaining a settling prompt owner.
+  int get settlingPromptOwnerCountForTesting => _settlingPromptOwners.length;
+
   /// Settles all permission admissions frozen to [owner].
   void settlePromptAdmissions({
     required AcpSessionInputBudgetOwner owner,
@@ -1033,9 +1080,13 @@ class SessionManager implements AcpBoundedObservationSource {
     if (!identical(owner.managerIdentity, _managerIdentity)) return;
     final owned = _admissionsByOwner[owner];
     if (owned == null) return;
+    final settlingReason = _settlingPromptReasons.putIfAbsent(
+      owner,
+      () => reason,
+    );
     _settlingPromptOwners[owner.sessionId] = owner;
     for (final admission in owned.toList(growable: false)) {
-      admission.tryCancel(reason);
+      admission.tryCancel(settlingReason);
     }
   }
 
@@ -2038,6 +2089,10 @@ class SessionManager implements AcpBoundedObservationSource {
         }
         rethrow;
       } finally {
+        settlePromptAdmissions(
+          owner: phaseOwner,
+          reason: PermissionCancellationReason.sessionClosed,
+        );
         endPromptTurn(phaseOwner);
       }
     });
@@ -3012,6 +3067,16 @@ class SessionManager implements AcpBoundedObservationSource {
       (_admissionsByOwner[owner] ??=
               HashSet<_InboundPermissionAdmission>.identity())
           .add(admission);
+      final settlingReason = _settlingPromptReasons[owner];
+      if (settlingReason != null) admission.tryCancel(settlingReason);
+    }
+    if (sessionId != null && generation == null && owner == null) {
+      admission.tryCompleteLocal(
+        InboundGateTerminalError<dynamic>(
+          _PayloadFreeRpcException(-32003, 'Permission request cancelled.'),
+        ),
+        cancellationReason: PermissionCancellationReason.sessionClosed,
+      );
     }
     return admission;
   }
@@ -3089,6 +3154,10 @@ class SessionManager implements AcpBoundedObservationSource {
     required PermissionOptions options,
     required Future<T> Function(PermissionDecision decision) operation,
   }) async {
+    final initialCancellation = _inactivePermissionAdmissionReason(admission);
+    if (initialCancellation != null) {
+      return _permissionCancellationResult<T>(admission, initialCancellation);
+    }
     final decision = await _permissionProviderDecision(
       admission: admission,
       options: options,
@@ -3127,12 +3196,29 @@ class SessionManager implements AcpBoundedObservationSource {
   ) {
     if (admission.terminalReason case final reason?) return reason;
     if (admission.localSettled) return null;
+    if (_disposed) {
+      admission.tryCancel(PermissionCancellationReason.disposed);
+      return admission.terminalReason ?? PermissionCancellationReason.disposed;
+    }
     if (!admission.peerEpoch.active) {
       admission.tryCancel(PermissionCancellationReason.connectionClosed);
       return admission.terminalReason ??
           PermissionCancellationReason.connectionClosed;
     }
+    final sessionId = admission.sessionId;
     final generation = admission.sessionGeneration;
+    if (sessionId != null &&
+        generation == null &&
+        admission.promptOwner == null) {
+      admission.tryCancel(PermissionCancellationReason.sessionClosed);
+      return admission.terminalReason ??
+          PermissionCancellationReason.sessionClosed;
+    }
+    if (sessionId != null && _isSessionClosing(sessionId)) {
+      admission.tryCancel(PermissionCancellationReason.sessionClosed);
+      return admission.terminalReason ??
+          PermissionCancellationReason.sessionClosed;
+    }
     if (generation != null &&
         (!generation.active ||
             !identical(
@@ -3233,6 +3319,7 @@ class SessionManager implements AcpBoundedObservationSource {
     owned?.remove(admission);
     if (owned != null && owned.isEmpty) {
       _admissionsByOwner.remove(owner);
+      _settlingPromptReasons.remove(owner);
       if (identical(_settlingPromptOwners[owner.sessionId], owner)) {
         _settlingPromptOwners.remove(owner.sessionId);
       }
@@ -3512,6 +3599,106 @@ class SessionManager implements AcpBoundedObservationSource {
 
   final Map<String, _ManagedTerminal> _terminals = <String, _ManagedTerminal>{};
 
+  Future<void> _releaseUnregisteredTerminalHandleOnce({
+    required TerminalProvider provider,
+    required TerminalProcessHandle handle,
+    required _UnregisteredTerminalRelease guard,
+  }) {
+    final existing = guard.operation;
+    if (existing != null) return existing;
+    final owner = Completer<void>.sync();
+    final operation = owner.future;
+    guard.operation = operation;
+    late final Future<void> releasing;
+    try {
+      releasing = provider.release(handle);
+    } on Object {
+      _log.warning('terminal unregistered handle release failed');
+      owner.complete();
+      return operation;
+    }
+    releasing.then<void>(
+      (_) {
+        if (!owner.isCompleted) owner.complete();
+      },
+      onError: (Object _, StackTrace _) {
+        _log.warning('terminal unregistered handle release failed');
+        if (!owner.isCompleted) owner.complete();
+      },
+    );
+    return operation;
+  }
+
+  void _consumeRejectedTerminalCreate({
+    required Future<_TerminalCreateResult> observed,
+    required TerminalProvider provider,
+    required _UnregisteredTerminalRelease release,
+  }) {
+    unawaited(
+      observed
+          .then<void>((late) async {
+            final handle = late.handle;
+            if (handle != null) {
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
+            }
+          })
+          .then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+  }
+
+  Future<_TerminalCreateResult> _createTerminalWithLateConsumer({
+    required _InboundPermissionAdmission admission,
+    required TerminalProvider provider,
+    required Future<TerminalProcessHandle> createFuture,
+    required _UnregisteredTerminalRelease release,
+  }) async {
+    final observed = createFuture.then<_TerminalCreateResult>(
+      _TerminalCreateResult.handle,
+      onError: (Object error, StackTrace stackTrace) =>
+          _TerminalCreateResult.error(error, stackTrace),
+    );
+    final initialCancellation = _inactivePermissionAdmissionReason(admission);
+    if (initialCancellation != null) {
+      _consumeRejectedTerminalCreate(
+        observed: observed,
+        provider: provider,
+        release: release,
+      );
+      return _TerminalCreateResult.cancelled(initialCancellation);
+    }
+    final invalidated = admission.cancellation.then<_TerminalCreateResult>(
+      _TerminalCreateResult.cancelled,
+    );
+    final winner = await Future.any<_TerminalCreateResult>(
+      <Future<_TerminalCreateResult>>[observed, invalidated],
+    );
+    if (winner.cancellationReason != null) {
+      _consumeRejectedTerminalCreate(
+        observed: observed,
+        provider: provider,
+        release: release,
+      );
+      return winner;
+    }
+    final cancellationReason = _inactivePermissionAdmissionReason(admission);
+    if (cancellationReason != null) {
+      _consumeRejectedTerminalCreate(
+        observed: observed,
+        provider: provider,
+        release: release,
+      );
+      return _TerminalCreateResult.cancelled(cancellationReason);
+    }
+    if (winner.error case final error?) {
+      Error.throwWithStackTrace(error, winner.stackTrace!);
+    }
+    return winner;
+  }
+
   Future<Json> _onTerminalCreate(
     Json req,
     InboundAdmission rawAdmission,
@@ -3623,9 +3810,10 @@ class SessionManager implements AcpBoundedObservationSource {
           }
           _requireUsableTerminalLease(lease);
           lease.markCreating();
-          late final TerminalProcessHandle handle;
+          final release = _UnregisteredTerminalRelease();
+          late final _TerminalCreateResult createResult;
           try {
-            handle = await provider.create(
+            final createFuture = provider.create(
               sessionId: sessionId,
               command: cmd,
               args: args,
@@ -3633,29 +3821,32 @@ class SessionManager implements AcpBoundedObservationSource {
               env: env.isEmpty ? null : env,
               outputByteLimit: outputByteLimit,
             );
+            createResult = await _createTerminalWithLateConsumer(
+              admission: admission,
+              provider: provider,
+              createFuture: createFuture,
+              release: release,
+            );
           } on TerminalHandleLimitException {
             throw _PayloadFreeRpcException(
               -32001,
               'Terminal handle limit exceeded.',
             );
           }
-
-          var rejectedHandleReleased = false;
-          Future<void> releaseRejectedHandle() async {
-            if (rejectedHandleReleased) return;
-            rejectedHandleReleased = true;
-            try {
-              await provider.release(handle);
-            } on Object {
-              // Rejected handles must never become managed terminal state.
-            }
+          if (createResult.cancellationReason case final reason?) {
+            return _permissionCancellationResult<Json>(admission, reason);
           }
+          final handle = createResult.handle!;
 
           final postCreateCancellation = _inactivePermissionAdmissionReason(
             admission,
           );
           if (postCreateCancellation != null) {
-            await releaseRejectedHandle();
+            await _releaseUnregisteredTerminalHandleOnce(
+              provider: provider,
+              handle: handle,
+              guard: release,
+            );
             return _permissionCancellationResult<Json>(
               admission,
               postCreateCancellation,
@@ -3666,7 +3857,11 @@ class SessionManager implements AcpBoundedObservationSource {
               admission,
             );
             if (registrationCancellation != null) {
-              await releaseRejectedHandle();
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
               return _permissionCancellationResult<Json>(
                 admission,
                 registrationCancellation,
@@ -3676,11 +3871,19 @@ class SessionManager implements AcpBoundedObservationSource {
                 lease.revoked ||
                 _isSessionClosing(sessionId) ||
                 !_sessionWorkspaceRoots.containsKey(sessionId)) {
-              await releaseRejectedHandle();
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
               throw StateError('Terminal session is closing or closed.');
             }
             if (_terminals.containsKey(handle.terminalId)) {
-              await releaseRejectedHandle();
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
               throw StateError(
                 'Terminal provider returned a duplicate terminalId.',
               );
@@ -3689,7 +3892,11 @@ class SessionManager implements AcpBoundedObservationSource {
             if (!admission.tryClaimLocal(
               InboundGateTerminalValue<dynamic>(result),
             )) {
-              await releaseRejectedHandle();
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
               final cancellationReason = admission.terminalReason;
               if (cancellationReason == null) {
                 throw StateError(
@@ -3714,7 +3921,11 @@ class SessionManager implements AcpBoundedObservationSource {
             } on Object catch (error, stackTrace) {
               if (inserted) _terminals.remove(handle.terminalId);
               registered = false;
-              await releaseRejectedHandle();
+              await _releaseUnregisteredTerminalHandleOnce(
+                provider: provider,
+                handle: handle,
+                guard: release,
+              );
               admission.publishClaimedLocalError(error, stackTrace);
               Error.throwWithStackTrace(error, stackTrace);
             }
