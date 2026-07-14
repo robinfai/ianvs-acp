@@ -183,71 +183,115 @@ void main() {
     }
   });
 
-  test(
-    'invalid params cannot collide with an existing internal correlation id',
-    () async {
-      final channel = StreamChannelController<String>(sync: true);
-      final outbound = StreamIterator<String>(channel.local.stream);
-      final peer = JsonRpcPeer(channel.foreign);
-      final originalStarted = Completer<void>();
-      final releaseOriginal = Completer<void>();
-      peer.onReadTextFile = (params) async {
-        originalStarted.complete();
-        await releaseOriginal.future;
-        return <String, dynamic>{'marker': 'original'};
-      };
+  group('invalid request envelopes cannot collide with an internal id', () {
+    for (final testCase
+        in <
+          ({
+            String name,
+            Map<String, dynamic> Function(String internalId) envelope,
+          })
+        >[
+          (
+            name: 'missing jsonrpc',
+            envelope: (internalId) => <String, dynamic>{
+              'id': internalId,
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{},
+            },
+          ),
+          (
+            name: 'wrong jsonrpc',
+            envelope: (internalId) => <String, dynamic>{
+              'jsonrpc': '1.0',
+              'id': internalId,
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{},
+            },
+          ),
+          (
+            name: 'missing method',
+            envelope: (internalId) => <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': internalId,
+              'params': <String, dynamic>{},
+            },
+          ),
+          (
+            name: 'non-string method',
+            envelope: (internalId) => <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': internalId,
+              'method': 7,
+              'params': <String, dynamic>{},
+            },
+          ),
+          (
+            name: 'invalid scalar params',
+            envelope: (internalId) => <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': internalId,
+              'method': 'fs/read_text_file',
+              'params': 'invalid',
+            },
+          ),
+        ]) {
+      test(testCase.name, () async {
+        final channel = StreamChannelController<String>(sync: true);
+        final outbound = StreamIterator<String>(channel.local.stream);
+        final peer = JsonRpcPeer(channel.foreign);
+        final originalStarted = Completer<void>();
+        final releaseOriginal = Completer<void>();
+        peer.onReadTextFile = (params) async {
+          originalStarted.complete();
+          await releaseOriginal.future;
+          return <String, dynamic>{'marker': 'original'};
+        };
 
-      try {
-        channel.local.sink.add(
-          jsonEncode(<String, dynamic>{
-            'jsonrpc': '2.0',
-            'id': 41,
-            'method': 'fs/read_text_file',
-            'params': <String, dynamic>{},
-          }),
-        );
-        await originalStarted.future.timeout(const Duration(seconds: 2));
-        final maliciousId = peer.correlationIdsForTesting.single;
-        final trackerItemsBefore = peer.correlationPendingItemsForTesting;
-        final trackerBytesBefore = peer.correlationPendingBytesForTesting;
-        final trackerIdsBefore = peer.correlationIdsForTesting;
+        try {
+          channel.local.sink.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': 41,
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{},
+            }),
+          );
+          await originalStarted.future.timeout(const Duration(seconds: 2));
+          final maliciousId = peer.correlationIdsForTesting.single;
+          final trackerItemsBefore = peer.correlationPendingItemsForTesting;
+          final trackerBytesBefore = peer.correlationPendingBytesForTesting;
+          final trackerIdsBefore = peer.correlationIdsForTesting;
 
-        channel.local.sink.add(
-          jsonEncode(<String, dynamic>{
-            'jsonrpc': '2.0',
-            'id': maliciousId,
-            'method': 'fs/read_text_file',
-            'params': 'invalid',
-          }),
-        );
-        expect(await outbound.moveNext(), isTrue);
-        final rejectionWire = outbound.current;
-        final rejection = jsonDecode(rejectionWire) as Map<String, dynamic>;
-        expect(rejection['id'], maliciousId);
-        expect(rejection['error'], isA<Map>());
-        await pumpEventQueue();
-        expect(peer.correlationPendingItemsForTesting, trackerItemsBefore);
-        expect(peer.correlationPendingBytesForTesting, trackerBytesBefore);
-        expect(peer.correlationIdsForTesting, trackerIdsBefore);
+          channel.local.sink.add(jsonEncode(testCase.envelope(maliciousId)));
+          expect(await outbound.moveNext(), isTrue);
+          final rejectionWire = outbound.current;
+          final rejection = jsonDecode(rejectionWire) as Map<String, dynamic>;
+          expect(rejection['id'], maliciousId);
+          expect(rejection['error'], isA<Map>());
+          await pumpEventQueue();
+          expect(peer.correlationPendingItemsForTesting, trackerItemsBefore);
+          expect(peer.correlationPendingBytesForTesting, trackerBytesBefore);
+          expect(peer.correlationIdsForTesting, trackerIdsBefore);
 
-        releaseOriginal.complete();
-        expect(await outbound.moveNext(), isTrue);
-        final originalWire = outbound.current;
-        final original = jsonDecode(originalWire) as Map<String, dynamic>;
-        expect(original['id'], 41);
-        expect((original['result'] as Map)['marker'], 'original');
-        expect(originalWire, isNot(contains('_acp_internal_')));
-        await pumpEventQueue();
-        expect(peer.correlationPendingItemsForTesting, 0);
-        expect(peer.correlationPendingBytesForTesting, 0);
-      } finally {
-        if (!releaseOriginal.isCompleted) releaseOriginal.complete();
-        await peer.close();
-        await outbound.cancel();
-        await channel.local.sink.close();
-      }
-    },
-  );
+          releaseOriginal.complete();
+          expect(await outbound.moveNext(), isTrue);
+          final originalWire = outbound.current;
+          final original = jsonDecode(originalWire) as Map<String, dynamic>;
+          expect(original['id'], 41);
+          expect((original['result'] as Map)['marker'], 'original');
+          expect(originalWire, isNot(contains('_acp_internal_')));
+          await pumpEventQueue();
+          expect(peer.correlationPendingItemsForTesting, 0);
+          expect(peer.correlationPendingBytesForTesting, 0);
+        } finally {
+          if (!releaseOriginal.isCompleted) releaseOriginal.complete();
+          await peer.close();
+          await outbound.cancel();
+          await channel.local.sink.close();
+        }
+      });
+    }
+  });
 
   test('sink reentrancy drains queued requests in FIFO order', () async {
     final input = _ManualInputStream();

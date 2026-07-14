@@ -503,7 +503,6 @@ class JsonRpcPeer {
 
   static bool _hasEchoableRequestId(Object? value) {
     if (value is! Map || !value.containsKey('id')) return false;
-    if (value['jsonrpc'] != '2.0' || value['method'] is! String) return false;
     final id = value['id'];
     return id == null || id is String || id is num;
   }
