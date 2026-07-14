@@ -64,6 +64,54 @@ abstract interface class JsonRpcPromptOwner {
   int get generation;
 }
 
+/// Local lifecycle snapshot bound to one admitted inbound request.
+abstract interface class InboundAdmission {
+  /// First local terminal that may short-circuit a queued reservation.
+  Future<InboundGateTerminal<dynamic>> get terminal;
+
+  /// Completes after local, reservation, and response stages settle.
+  Future<void> get settled;
+
+  /// Runs one local operation through the admission's first-wins boundary.
+  Future<dynamic> runLocalOperation(FutureOr<dynamic> Function() operation);
+
+  /// Binds the reservation-release stage.
+  void bindReservationReleased(Future<void> released);
+
+  /// Binds the response-commit stage.
+  void bindResponseCommitted(Future<void> committed);
+
+  /// Completes the response stage using the peer-close substitute terminal.
+  void markPeerClosed();
+}
+
+/// Synchronously snapshots one inbound request before handler queueing.
+typedef InboundAdmissionHook =
+    InboundAdmission Function(
+      String method,
+      Map<String, dynamic>? params,
+      Object arrivalIdentity,
+    );
+
+/// Handles one admitted inbound request using its frozen snapshot.
+typedef AdmittedInboundHandler =
+    Future<dynamic> Function(
+      Map<String, dynamic> params,
+      InboundAdmission admission,
+    );
+
+final class _AdmittedDispatchSlot {
+  const _AdmittedDispatchSlot({
+    required this.arrivalIdentity,
+    required this.reservation,
+    required this.responseCommitted,
+  });
+
+  final Object arrivalIdentity;
+  final InboundGateReservation reservation;
+  final Future<void> responseCommitted;
+}
+
 /// Require an object-shaped JSON-RPC result without copying or traversing it.
 Json requireJsonRpcObjectResult(Object? result, {required String resource}) {
   if (result is! Map) {
@@ -393,11 +441,16 @@ class JsonRpcPeer {
       reservations,
       correlations,
     );
+    final admittedSlots = _buildAdmittedDispatchSlots(
+      reservations,
+      correlations,
+    );
     try {
       _dispatchDecoded(
         _DecodedDelivery(
           wasBatch ? rewritten : rewritten.single,
           reservations: reservations,
+          admittedSlots: admittedSlots,
         ),
       );
     } on Object {
@@ -458,6 +511,27 @@ class JsonRpcPeer {
         ...(request as Map),
         'id': correlation.internalId,
       };
+    }, growable: false);
+  }
+
+  List<_AdmittedDispatchSlot> _buildAdmittedDispatchSlots(
+    List<InboundGateReservation> reservations,
+    List<_InboundCorrelation> correlations,
+  ) {
+    final byReservation =
+        HashMap<InboundGateReservation, _InboundCorrelation>.identity();
+    for (final correlation in correlations) {
+      byReservation[correlation.reservation] = correlation;
+    }
+    return List<_AdmittedDispatchSlot>.generate(reservations.length, (index) {
+      final reservation = reservations[index];
+      final correlation = byReservation[reservation];
+      return _AdmittedDispatchSlot(
+        arrivalIdentity: correlation?.arrivalIdentity ?? Object(),
+        reservation: reservation,
+        responseCommitted:
+            correlation?.responseCommitted.future ?? Future<void>.value(),
+      );
     }, growable: false);
   }
 
@@ -624,8 +698,15 @@ class JsonRpcPeer {
       _decodedIncoming.add(delivery.message);
       return;
     }
+    final admittedSlots = delivery.admittedSlots;
+    if (admittedSlots == null || admittedSlots.length != reservations.length) {
+      for (final reservation in reservations) {
+        reservation.release();
+      }
+      throw StateError('Missing admitted inbound dispatch slots.');
+    }
     final previousContext = _dispatchContext;
-    final context = _DispatchContext(reservations);
+    final context = _DispatchContext(reservations, admittedSlots);
     _dispatchContext = context;
     var delivered = false;
     try {
@@ -802,6 +883,50 @@ class JsonRpcPeer {
     return running;
   }
 
+  Future<dynamic> _runAdmittedInbound(
+    String method,
+    rpc.Parameters rpcParams,
+    AdmittedInboundHandler? handler,
+  ) {
+    final context = _dispatchContext;
+    final slot = context?.takeAdmitted(method);
+    if (slot == null) {
+      return Future<dynamic>.error(
+        StateError('Missing admitted inbound reservation for $method.'),
+      );
+    }
+    final params = rpcParams.value is Map
+        ? Map<String, dynamic>.from(rpcParams.value as Map)
+        : null;
+    final admissionHook = onInboundAdmission;
+    if (admissionHook == null) {
+      slot.reservation.release();
+      return Future<dynamic>.error(
+        StateError('Missing inbound admission hook for $method.'),
+      );
+    }
+    late final InboundAdmission admission;
+    try {
+      admission = admissionHook(method, params, slot.arrivalIdentity);
+    } on Object catch (error, stackTrace) {
+      slot.reservation.release();
+      return Future<dynamic>.error(error, stackTrace);
+    }
+    admission.bindReservationReleased(slot.reservation.released);
+    admission.bindResponseCommitted(slot.responseCommitted);
+    final running = slot.reservation.runCancellable<dynamic>(
+      terminal: admission.terminal,
+      operation: () => admission.runLocalOperation(() {
+        if (params == null || handler == null) {
+          throw rpc.RpcException(-32602, 'Invalid params.');
+        }
+        return handler(params, admission);
+      }),
+    );
+    context!.track(running);
+    return running;
+  }
+
   T _runSessionUpdateSync<T>(T Function() operation) {
     final reservation = _dispatchContext?.take('session/update');
     if (reservation == null) {
@@ -825,42 +950,22 @@ class JsonRpcPeer {
     // registration points for them via onX setters.
     // Filesystem callbacks (Agent -> Client)
     _peer.registerMethod('fs/read_text_file', (rpc.Parameters params) {
-      return _runInbound('fs/read_text_file', () {
-        if (onReadTextFile == null) {
-          throw rpc.RpcException.methodNotFound('fs/read_text_file');
-        }
-        final json = Map<String, dynamic>.from(params.value as Map);
-        return onReadTextFile!(json);
-      });
+      return _runAdmittedInbound('fs/read_text_file', params, onReadTextFile);
     });
     _peer.registerMethod('fs/write_text_file', (rpc.Parameters params) {
-      return _runInbound('fs/write_text_file', () {
-        if (onWriteTextFile == null) {
-          throw rpc.RpcException.methodNotFound('fs/write_text_file');
-        }
-        final json = Map<String, dynamic>.from(params.value as Map);
-        return onWriteTextFile!(json);
-      });
+      return _runAdmittedInbound('fs/write_text_file', params, onWriteTextFile);
     });
     // Permissioning (Agent -> Client)
     _peer.registerMethod('session/request_permission', (rpc.Parameters params) {
-      return _runInbound('session/request_permission', () {
-        if (onRequestPermission == null) {
-          throw rpc.RpcException.methodNotFound('session/request_permission');
-        }
-        final json = Map<String, dynamic>.from(params.value as Map);
-        return onRequestPermission!(json);
-      });
+      return _runAdmittedInbound(
+        'session/request_permission',
+        params,
+        onRequestPermission,
+      );
     });
     // Terminal callbacks (Agent -> Client)
     _peer.registerMethod('terminal/create', (rpc.Parameters params) {
-      return _runInbound('terminal/create', () {
-        if (onTerminalCreate == null) {
-          throw rpc.RpcException.methodNotFound('terminal/create');
-        }
-        final json = Map<String, dynamic>.from(params.value as Map);
-        return onTerminalCreate!(json);
-      });
+      return _runAdmittedInbound('terminal/create', params, onTerminalCreate);
     });
     _peer.registerMethod('terminal/output', (rpc.Parameters params) {
       return _runInbound('terminal/output', () {
@@ -907,17 +1012,20 @@ class JsonRpcPeer {
   }
 
   /// Client handlers (Agent -> Client callbacks)
+  /// Hook invoked synchronously before an admitted handler enters the gate.
+  InboundAdmissionHook? onInboundAdmission;
+
   /// Handler invoked when agent requests `fs/read_text_file`.
-  Future<dynamic> Function(Json)? onReadTextFile;
+  AdmittedInboundHandler? onReadTextFile;
 
   /// Handler invoked when agent requests `fs/write_text_file`.
-  Future<dynamic> Function(Json)? onWriteTextFile;
+  AdmittedInboundHandler? onWriteTextFile;
 
   /// Handler invoked when agent requests `session/request_permission`.
-  Future<dynamic> Function(Json)? onRequestPermission;
+  AdmittedInboundHandler? onRequestPermission;
 
   /// Handler invoked when agent requests `terminal/create`.
-  Future<dynamic> Function(Json)? onTerminalCreate;
+  AdmittedInboundHandler? onTerminalCreate;
 
   /// Handler invoked when agent requests `terminal/output`.
   Future<dynamic> Function(Json)? onTerminalOutput;
@@ -1133,10 +1241,19 @@ final class _PendingTransportTermination {
 }
 
 class _DispatchContext {
-  _DispatchContext(this.reservations)
-    : _claimed = List<bool>.filled(reservations.length, false);
+  _DispatchContext(this.reservations, this.admittedSlots)
+    : assert(reservations.length == admittedSlots.length),
+      assert(
+        List<bool>.generate(
+          reservations.length,
+          (index) =>
+              identical(reservations[index], admittedSlots[index].reservation),
+        ).every((matches) => matches),
+      ),
+      _claimed = List<bool>.filled(reservations.length, false);
 
   final List<InboundGateReservation> reservations;
+  final List<_AdmittedDispatchSlot> admittedSlots;
   final List<bool> _claimed;
   final List<Future<void>> _claimedSettled = <Future<void>>[];
 
@@ -1147,6 +1264,20 @@ class _DispatchContext {
         _claimed[index] = true;
         return reservations[index];
       }
+    }
+    return null;
+  }
+
+  _AdmittedDispatchSlot? takeAdmitted(String method) {
+    for (var index = 0; index < admittedSlots.length; index += 1) {
+      if (_claimed[index]) continue;
+      final slot = admittedSlots[index];
+      if (slot.reservation.method != method) continue;
+      if (!identical(slot.reservation, reservations[index])) {
+        throw StateError('Inbound admitted slot reservation mismatch.');
+      }
+      _claimed[index] = true;
+      return slot;
     }
     return null;
   }
@@ -1178,14 +1309,20 @@ class _DispatchContext {
 }
 
 class _DecodedDelivery {
-  _DecodedDelivery(this.message, {this.reservations})
+  _DecodedDelivery(this.message, {this.reservations, this.admittedSlots})
     : isTerminal = false,
       isResponseOnly = false,
       terminalError = null,
-      terminalStackTrace = null;
+      terminalStackTrace = null,
+      assert(
+        reservations == null ||
+            (admittedSlots != null &&
+                admittedSlots.length == reservations.length),
+      );
 
   _DecodedDelivery.response(this.message)
     : reservations = null,
+      admittedSlots = null,
       isTerminal = false,
       isResponseOnly = true,
       terminalError = null,
@@ -1194,6 +1331,7 @@ class _DecodedDelivery {
   _DecodedDelivery.terminal({Object? error, StackTrace? stackTrace})
     : message = null,
       reservations = null,
+      admittedSlots = null,
       isTerminal = true,
       isResponseOnly = false,
       terminalError = error,
@@ -1201,6 +1339,7 @@ class _DecodedDelivery {
 
   final Object? message;
   final List<InboundGateReservation>? reservations;
+  final List<_AdmittedDispatchSlot>? admittedSlots;
   final bool isTerminal;
   final bool isResponseOnly;
   final Object? terminalError;

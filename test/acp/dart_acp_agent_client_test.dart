@@ -8625,8 +8625,10 @@ Future<void> main() async {
 
         firstPermission.complete(const acp.PermissionDecision.allow());
         final lateResponse = await late;
-        expect(lateResponse, contains('error'));
-        expect(lateResponse.toString(), contains('closing or closed'));
+        expect(lateResponse['error'], <String, dynamic>{
+          'code': -32003,
+          'message': 'Permission request cancelled.',
+        });
         expect(provider.createCalls, 1);
       } finally {
         if (!firstPermission.isCompleted) {
@@ -8670,7 +8672,13 @@ Future<void> main() async {
 
           createBarrier.complete();
           final lateResponse = await late;
-          expect(lateResponse, contains('error'));
+          expect(lateResponse['error'], <String, dynamic>{
+            'code': -32003,
+            'message': 'Permission request cancelled.',
+          });
+          await _waitForTerminalTestCondition(
+            () => provider.releaseAttempts.length == 1,
+          );
           expect(provider.releaseAttempts, ['terminal-1']);
           final replacement = await harness.createTerminal(
             id: 'terminal-handle-create-replacement',
@@ -9074,9 +9082,14 @@ Future<void> main() async {
           createBarrier.complete();
 
           final lateResponse = await late;
-          expect(lateResponse, contains('error'));
-          expect(lateResponse.toString(), contains('closing or closed'));
+          expect(lateResponse['error'], <String, dynamic>{
+            'code': -32000,
+            'message': 'ACP connection closed.',
+          });
           expect(lateResponse.toString(), isNot(contains(providerSecret)));
+          await _waitForTerminalTestCondition(
+            () => provider.releaseAttempts.length == 1,
+          );
           expect(provider.releaseAttempts, ['terminal-1']);
           expect(logs.join('\n'), isNot(contains(providerSecret)));
           expect(
@@ -9514,9 +9527,14 @@ Future<void> main() async {
           const Duration(seconds: 5),
         );
 
-        expect(response, contains('error'));
-        expect(response.toString(), contains('closing or closed'));
+        expect(response['error'], <String, dynamic>{
+          'code': -32003,
+          'message': 'Permission request cancelled.',
+        });
         expect(response.toString(), isNot(contains(providerSecret)));
+        await _waitForTerminalTestCondition(
+          () => provider.releaseAttempts.length == 1,
+        );
         expect(provider.releaseAttempts, ['terminal-1']);
         expect(await manager.readTerminalOutput('terminal-1'), isEmpty);
       } finally {
@@ -9897,6 +9915,7 @@ Future<void> main() async {
             jsonDecode(await outsideResponseFile.readAsString())
                 as Map<String, dynamic>;
 
+        expect(readResponse, contains('result'), reason: '$readResponse');
         expect(readResponse['result'], containsPair('content', 'hello extra'));
         expect(writeResponse, containsPair('result', null));
         expect(await extraCreated.readAsString(), 'created in extra workspace');

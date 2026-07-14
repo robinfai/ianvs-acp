@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:isolate';
 
@@ -19,6 +20,7 @@ import '../models/updates.dart';
 import '../providers/fs_provider.dart';
 import '../providers/permission_provider.dart';
 import '../providers/terminal_provider.dart';
+import '../rpc/inbound_gate.dart';
 import '../rpc/peer.dart';
 import '../security/workspace_jail.dart';
 
@@ -453,11 +455,18 @@ class InitializeResult {
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
 
 /// Opaque identity for one session input-budget phase.
-final class AcpSessionInputBudgetOwner {
-  const AcpSessionInputBudgetOwner._(this.sessionId, this.generation);
+final class AcpSessionInputBudgetOwner implements JsonRpcPromptOwner {
+  const AcpSessionInputBudgetOwner._(
+    this.sessionId,
+    this.generation,
+    this.managerIdentity,
+  );
 
+  @override
   final String sessionId;
+  @override
   final int generation;
+  final Object managerIdentity;
 }
 
 final class _SessionInputBudgetPhase {
@@ -492,10 +501,15 @@ final class _RequestInputBudgetPhase {
 }
 
 final class _GeneratedSessionRegistration {
-  const _GeneratedSessionRegistration(this.sessionId, this.identity);
+  const _GeneratedSessionRegistration(
+    this.sessionId,
+    this.identity,
+    this.phaseOwner,
+  );
 
   final String sessionId;
   final Object identity;
+  final AcpSessionInputBudgetOwner phaseOwner;
 }
 
 enum _TerminalLeaseState { reserved, creating, active, released }
@@ -548,6 +562,227 @@ final class _ManagedTerminal {
   final _TerminalQuotaLease lease;
 }
 
+final class _SessionGeneration {
+  _SessionGeneration(this.sessionId, this.value);
+
+  final String sessionId;
+  final int value;
+  bool active = true;
+}
+
+final class _PeerEpoch {
+  bool active = true;
+}
+
+final class _PermissionProviderResult {
+  const _PermissionProviderResult.value(this.value)
+    : error = null,
+      stackTrace = null;
+
+  const _PermissionProviderResult.error(this.error, this.stackTrace)
+    : value = null;
+
+  final PermissionDecision? value;
+  final Object? error;
+  final StackTrace? stackTrace;
+}
+
+final class _PermissionGateCancellation implements Exception {
+  const _PermissionGateCancellation(this.reason);
+
+  final PermissionCancellationReason reason;
+}
+
+final class _InboundPermissionAdmission implements InboundAdmission {
+  _InboundPermissionAdmission({
+    required this.manager,
+    required this.method,
+    required this.correlationIdentity,
+    required this.sessionId,
+    required this.sessionGeneration,
+    required this.promptOwner,
+    required this.peerEpoch,
+  }) {
+    unawaited(
+      _localResult.future.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
+    deadlineTimer = Timer(manager.config.timeouts.permission, () {
+      tryCancel(PermissionCancellationReason.timedOut);
+    });
+  }
+
+  final SessionManager manager;
+  final String method;
+  final Object correlationIdentity;
+  final String? sessionId;
+  final _SessionGeneration? sessionGeneration;
+  final AcpSessionInputBudgetOwner? promptOwner;
+  final _PeerEpoch peerEpoch;
+  final Object cancellationToken = Object();
+  final Completer<InboundGateTerminal<dynamic>> _terminal =
+      Completer<InboundGateTerminal<dynamic>>.sync();
+  final Completer<PermissionCancellationReason> _cancellation =
+      Completer<PermissionCancellationReason>.sync();
+  final Completer<dynamic> _localResult = Completer<dynamic>.sync();
+  final Completer<void> _settled = Completer<void>.sync();
+  InboundGateTerminal<dynamic>? _claimedOutcome;
+  StackTrace? _claimedStackTrace;
+  PermissionCancellationReason? terminalReason;
+  Timer? deadlineTimer;
+  bool providerStarted = false;
+  bool providerCancellationSent = false;
+  bool localSettled = false;
+  bool localPublished = false;
+  bool reservationReleased = false;
+  bool responseFinished = false;
+  bool peerClosed = false;
+  bool settledCompleted = false;
+
+  @override
+  Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
+
+  @override
+  Future<void> get settled => _settled.future;
+
+  Future<PermissionCancellationReason> get cancellation => _cancellation.future;
+
+  bool tryCompleteLocal(
+    InboundGateTerminal<dynamic> outcome, {
+    StackTrace? stackTrace,
+    PermissionCancellationReason? cancellationReason,
+  }) {
+    if (!tryClaimLocal(
+      outcome,
+      stackTrace: stackTrace,
+      cancellationReason: cancellationReason,
+    )) {
+      return false;
+    }
+    publishClaimedLocal();
+    return true;
+  }
+
+  bool tryClaimLocal(
+    InboundGateTerminal<dynamic> outcome, {
+    StackTrace? stackTrace,
+    PermissionCancellationReason? cancellationReason,
+  }) {
+    if (localSettled) return false;
+    localSettled = true;
+    terminalReason = cancellationReason;
+    deadlineTimer?.cancel();
+    _claimedOutcome = outcome;
+    _claimedStackTrace = stackTrace;
+    return true;
+  }
+
+  bool publishClaimedLocal() {
+    if (!localSettled || localPublished) return false;
+    localPublished = true;
+    final outcome = _claimedOutcome!;
+    if (!_terminal.isCompleted) _terminal.complete(outcome);
+    switch (outcome) {
+      case InboundGateTerminalValue<dynamic>(:final value):
+        _localResult.complete(value);
+      case InboundGateTerminalError<dynamic>(
+        :final error,
+        stackTrace: final outcomeStackTrace,
+      ):
+        _localResult.completeError(
+          error,
+          _claimedStackTrace ?? outcomeStackTrace ?? StackTrace.current,
+        );
+    }
+    if (terminalReason case final reason?) {
+      if (!_cancellation.isCompleted) _cancellation.complete(reason);
+      manager._notifyPermissionProviderCancellation(this, reason);
+    }
+    tryCompleteSettled();
+    return true;
+  }
+
+  void publishClaimedLocalError(Object error, StackTrace stackTrace) {
+    if (!localSettled || localPublished) return;
+    terminalReason = null;
+    _claimedOutcome = InboundGateTerminalError<dynamic>(error, stackTrace);
+    _claimedStackTrace = stackTrace;
+    publishClaimedLocal();
+  }
+
+  bool tryCancel(PermissionCancellationReason reason) => tryCompleteLocal(
+    manager._permissionGateTerminal(method, reason),
+    cancellationReason: reason,
+  );
+
+  @override
+  Future<dynamic> runLocalOperation(FutureOr<dynamic> Function() operation) {
+    Future<dynamic>.sync(operation).then<void>(
+      (value) {
+        tryCompleteLocal(InboundGateTerminalValue<dynamic>(value));
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        tryCompleteLocal(
+          InboundGateTerminalError<dynamic>(error, stackTrace),
+          stackTrace: stackTrace,
+        );
+      },
+    );
+    return _localResult.future;
+  }
+
+  @override
+  void bindReservationReleased(Future<void> released) {
+    void finish() {
+      if (reservationReleased) return;
+      reservationReleased = true;
+      manager._onAdmissionReservationReleased(this);
+      tryCompleteSettled();
+    }
+
+    released.then<void>((_) => finish(), onError: (_, _) => finish());
+  }
+
+  @override
+  void bindResponseCommitted(Future<void> committed) {
+    void finish() {
+      if (responseFinished) return;
+      responseFinished = true;
+      manager._onAdmissionResponseFinished(this);
+      tryCompleteSettled();
+    }
+
+    committed.then<void>((_) => finish(), onError: (_, _) => finish());
+  }
+
+  @override
+  void markPeerClosed() {
+    if (peerClosed) return;
+    peerClosed = true;
+    responseFinished = true;
+    deadlineTimer?.cancel();
+    tryCancel(PermissionCancellationReason.connectionClosed);
+    manager._onAdmissionResponseFinished(this);
+    tryCompleteSettled();
+  }
+
+  void tryCompleteSettled() {
+    if (settledCompleted ||
+        !localSettled ||
+        !localPublished ||
+        !reservationReleased ||
+        !responseFinished) {
+      return;
+    }
+    settledCompleted = true;
+    deadlineTimer?.cancel();
+    manager._removeInboundAdmission(this);
+    _settled.complete();
+  }
+}
+
 /// Orchestrates ACP lifecycle and routes updates/tool/terminal handlers.
 class SessionManager implements AcpBoundedObservationSource {
   /// Create a [SessionManager] with [config] and [peer].
@@ -579,6 +814,8 @@ class SessionManager implements AcpBoundedObservationSource {
       );
     }
     _boundedObservationListeners = <AcpBoundedObservationListener>{};
+    peer.onInboundAdmission = _admitInboundPermission;
+    peer.addUnavailableListener(_onPeerUnavailable);
     // Wire client-side handlers
     peer.onReadTextFile = _onReadTextFile;
     peer.onWriteTextFile = _onWriteTextFile;
@@ -631,6 +868,24 @@ class SessionManager implements AcpBoundedObservationSource {
   final Map<String, Future<void>> _sessionSetupTails = {};
   final Map<String, Set<Object>> _sessionClosingOwners =
       <String, Set<Object>>{};
+  final Object _managerIdentity = Object();
+  final _PeerEpoch _peerEpoch = _PeerEpoch();
+  var _nextSessionGeneration = 0;
+  final Map<String, _SessionGeneration> _sessionGenerations =
+      <String, _SessionGeneration>{};
+  final Set<_InboundPermissionAdmission> _inboundAdmissions =
+      HashSet<_InboundPermissionAdmission>.identity();
+  final Map<Map<String, dynamic>, _InboundPermissionAdmission>
+  _admissionsByParams =
+      HashMap<Map<String, dynamic>, _InboundPermissionAdmission>.identity();
+  final Map<AcpSessionInputBudgetOwner, Set<_InboundPermissionAdmission>>
+  _admissionsByOwner =
+      HashMap<
+        AcpSessionInputBudgetOwner,
+        Set<_InboundPermissionAdmission>
+      >.identity();
+  final Map<String, AcpSessionInputBudgetOwner> _settlingPromptOwners =
+      <String, AcpSessionInputBudgetOwner>{};
   final Set<_TerminalQuotaLease> _terminalLeases = <_TerminalQuotaLease>{};
   final Set<_TerminalQuotaLease> _pendingTerminalLeases =
       <_TerminalQuotaLease>{};
@@ -641,6 +896,68 @@ class SessionManager implements AcpBoundedObservationSource {
 
   _ReplayBuffer _newReplayBuffer() =>
       _ReplayBuffer(maxItems: maxReplayItems, maxBytes: maxReplayBytes);
+
+  _SessionGeneration _replaceSessionGeneration(String sessionId) {
+    final previous = _sessionGenerations[sessionId];
+    if (previous != null) previous.active = false;
+    final replacement = _SessionGeneration(sessionId, ++_nextSessionGeneration);
+    _sessionGenerations[sessionId] = replacement;
+    return replacement;
+  }
+
+  void _invalidateSessionGeneration(String sessionId) {
+    final current = _sessionGenerations[sessionId];
+    if (current != null) current.active = false;
+  }
+
+  /// Returns the current opaque generation identity for tests.
+  Object? sessionGenerationForTesting(String sessionId) =>
+      _sessionGenerations[sessionId];
+
+  /// Returns the current session input owner for lifecycle race tests.
+  AcpSessionInputBudgetOwner? sessionInputOwnerForTesting(String sessionId) =>
+      _inputBudgetPhases[sessionId]?.owner;
+
+  /// Returns the total number of terminal quota leases for lifecycle tests.
+  int get terminalLeaseCountForTesting => _terminalLeases.length;
+
+  /// Returns terminal leases that have not become managed handles for tests.
+  int get pendingTerminalLeaseCountForTesting => _pendingTerminalLeases.length;
+
+  /// Settles all permission admissions frozen to [owner].
+  void settlePromptAdmissions({
+    required AcpSessionInputBudgetOwner owner,
+    required PermissionCancellationReason reason,
+  }) {
+    if (!identical(owner.managerIdentity, _managerIdentity)) return;
+    final owned = _admissionsByOwner[owner];
+    if (owned == null) return;
+    _settlingPromptOwners[owner.sessionId] = owner;
+    for (final admission in owned.toList(growable: false)) {
+      admission.tryCancel(reason);
+    }
+  }
+
+  void _settleSessionAdmissionsForClose(String sessionId) {
+    final admissions = _inboundAdmissions
+        .where((admission) => admission.sessionId == sessionId)
+        .toList(growable: false);
+    for (final admission in admissions) {
+      admission.tryCancel(PermissionCancellationReason.sessionClosed);
+    }
+  }
+
+  void _onPeerUnavailable(AcpPeerUnavailableState _) {
+    if (!_peerEpoch.active) return;
+    _peerEpoch.active = false;
+    for (final admission in _inboundAdmissions.toList(growable: false)) {
+      admission.markPeerClosed();
+    }
+  }
+
+  void _onAdmissionReservationReleased(_InboundPermissionAdmission _) {}
+
+  void _onAdmissionResponseFinished(_InboundPermissionAdmission _) {}
 
   void _closeControllerWithoutWaiting<T>(StreamController<T>? controller) {
     if (controller == null) return;
@@ -654,47 +971,64 @@ class SessionManager implements AcpBoundedObservationSource {
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     _disposed = true;
-    _revokeTerminalLeases();
-    _boundedObservationListeners.clear();
-    _invalidateAllInputBudgetPhases();
-    _invalidateAllRequestInputBudgetPhases();
-    final terminalIds = _terminals.keys.toList(growable: false);
-    var terminalReleaseFailures = 0;
-    await Future.wait<void>(
-      terminalIds.map((terminalId) async {
-        try {
-          await _releaseManagedTerminal(terminalId);
-        } on Object {
-          terminalReleaseFailures += 1;
-        }
-      }),
+    final generationsAtDispose = Map<String, _SessionGeneration>.from(
+      _sessionGenerations,
     );
-    await _waitForTerminalReleaseOperations();
-    if (terminalReleaseFailures > 0) {
-      _log.warning(
-        'session dispose cleanup stage terminals failed '
-        '(count: $terminalReleaseFailures)',
+    for (final sessionId in generationsAtDispose.keys) {
+      _invalidateSessionGeneration(sessionId);
+    }
+    for (final admission in _inboundAdmissions.toList(growable: false)) {
+      admission.tryCancel(PermissionCancellationReason.disposed);
+    }
+    try {
+      _revokeTerminalLeases();
+      _boundedObservationListeners.clear();
+      _invalidateAllInputBudgetPhases();
+      _invalidateAllRequestInputBudgetPhases();
+      final terminalIds = _terminals.keys.toList(growable: false);
+      var terminalReleaseFailures = 0;
+      await Future.wait<void>(
+        terminalIds.map((terminalId) async {
+          try {
+            await _releaseManagedTerminal(terminalId);
+          } on Object {
+            terminalReleaseFailures += 1;
+          }
+        }),
       );
+      await _waitForTerminalReleaseOperations();
+      if (terminalReleaseFailures > 0) {
+        _log.warning(
+          'session dispose cleanup stage terminals failed '
+          '(count: $terminalReleaseFailures)',
+        );
+      }
+      _closeControllerWithoutWaiting(_terminalEvents);
+      final sessionStreams = _sessionStreams.values.toList(growable: false);
+      _sessionStreams.clear();
+      for (final controller in sessionStreams) {
+        _closeControllerWithoutWaiting(controller);
+      }
+      _replayBuffers.clear();
+      _toolCalls.clear();
+      _toolCallSizes.clear();
+      _toolCallItemCount = 0;
+      _toolCallByteCount = 0;
+      _cancelledPromptOwners.clear();
+      _sessionWorkspaceRoots.clear();
+      _sessionAdditionalDirectories.clear();
+      _sessionFsProviders.clear();
+      _sessionModes.clear();
+      _sessionSetupTails.clear();
+      _sessionClosingOwners.clear();
+      _generatedSessionRegistrationOwners.clear();
+    } finally {
+      _sessionGenerations.removeWhere(
+        (sessionId, current) =>
+            identical(generationsAtDispose[sessionId], current),
+      );
+      peer.removeUnavailableListener(_onPeerUnavailable);
     }
-    _closeControllerWithoutWaiting(_terminalEvents);
-    final sessionStreams = _sessionStreams.values.toList(growable: false);
-    _sessionStreams.clear();
-    for (final controller in sessionStreams) {
-      _closeControllerWithoutWaiting(controller);
-    }
-    _replayBuffers.clear();
-    _toolCalls.clear();
-    _toolCallSizes.clear();
-    _toolCallItemCount = 0;
-    _toolCallByteCount = 0;
-    _cancelledPromptOwners.clear();
-    _sessionWorkspaceRoots.clear();
-    _sessionAdditionalDirectories.clear();
-    _sessionFsProviders.clear();
-    _sessionModes.clear();
-    _sessionSetupTails.clear();
-    _sessionClosingOwners.clear();
-    _generatedSessionRegistrationOwners.clear();
   }
 
   /// Send `initialize` with capabilities and return negotiated result.
@@ -763,9 +1097,10 @@ class SessionManager implements AcpBoundedObservationSource {
         requestPhase: requestPhase,
       );
       try {
-        await _drainGeneratedSessionUpdates(id);
+        await _drainGeneratedSessionUpdates(registration);
         _requireRequestInputBudgetPhase(requestPhase);
         _commitGeneratedSessionRegistration(registration);
+        _replaceSessionGeneration(id);
       } on Object {
         await _rollbackGeneratedSession(registration);
         rethrow;
@@ -818,6 +1153,7 @@ class SessionManager implements AcpBoundedObservationSource {
           sessionId: sessionId,
           result: result,
         );
+        _replaceSessionGeneration(sessionId);
       },
     );
   }
@@ -899,11 +1235,13 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   Object _beginSessionClose(String sessionId) {
+    _invalidateSessionGeneration(sessionId);
     _invalidateInputBudgetPhase(sessionId);
     _invalidateRequestInputBudgetPhasesForSource(sessionId);
     _cancelledPromptOwners.remove(sessionId);
     final owner = Object();
     _sessionClosingOwners.putIfAbsent(sessionId, () => <Object>{}).add(owner);
+    _settleSessionAdmissionsForClose(sessionId);
     _revokeTerminalLeases(sessionId: sessionId);
     return owner;
   }
@@ -957,6 +1295,7 @@ class SessionManager implements AcpBoundedObservationSource {
           sessionId: sessionId,
           result: result,
         );
+        _replaceSessionGeneration(sessionId);
       },
     );
     return result;
@@ -1010,9 +1349,10 @@ class SessionManager implements AcpBoundedObservationSource {
         requestPhase: requestPhase,
       );
       try {
-        await _drainGeneratedSessionUpdates(newId);
+        await _drainGeneratedSessionUpdates(registration);
         _requireRequestInputBudgetPhase(requestPhase);
         _commitGeneratedSessionRegistration(registration);
+        _replaceSessionGeneration(newId);
       } on Object {
         await _rollbackGeneratedSession(registration);
         rethrow;
@@ -1211,6 +1551,7 @@ class SessionManager implements AcpBoundedObservationSource {
     final owner = AcpSessionInputBudgetOwner._(
       sessionId,
       ++_nextInputBudgetGeneration,
+      _managerIdentity,
     );
     _inputBudgetPhases[sessionId] = _SessionInputBudgetPhase(
       owner: owner,
@@ -1389,6 +1730,7 @@ class SessionManager implements AcpBoundedObservationSource {
         commit?.call(result);
         return result;
       } catch (_) {
+        _invalidateSessionGeneration(sessionId);
         if (!hadBinding) {
           _sessionWorkspaceRoots.remove(sessionId);
           _sessionAdditionalDirectories.remove(sessionId);
@@ -1447,7 +1789,8 @@ class SessionManager implements AcpBoundedObservationSource {
       );
       if (modes != null) _sessionModes[sessionId] = modes;
       _generatedSessionRegistrationOwners[sessionId] = identity;
-      return _GeneratedSessionRegistration(sessionId, identity);
+      final phaseOwner = _beginInputBudgetPhase(sessionId);
+      return _GeneratedSessionRegistration(sessionId, identity, phaseOwner);
     });
   }
 
@@ -1476,6 +1819,7 @@ class SessionManager implements AcpBoundedObservationSource {
       _sessionClosingOwners.containsKey(sessionId) ||
       _terminals.values.any((record) => record.sessionId == sessionId) ||
       _terminalLeases.any((lease) => lease.sessionId == sessionId) ||
+      _sessionGenerations.containsKey(sessionId) ||
       _generatedSessionRegistrationOwners.containsKey(sessionId);
 
   void _commitSessionResultModes(String sessionId, SessionResult result) {
@@ -1483,8 +1827,10 @@ class SessionManager implements AcpBoundedObservationSource {
     if (modes != null) _sessionModes[sessionId] = modes;
   }
 
-  Future<void> _drainGeneratedSessionUpdates(String sessionId) async {
-    final owner = _beginInputBudgetPhase(sessionId);
+  Future<void> _drainGeneratedSessionUpdates(
+    _GeneratedSessionRegistration registration,
+  ) async {
+    final owner = registration.phaseOwner;
     try {
       await Future<void>.delayed(Duration.zero);
       _requireInputBudgetPhase(owner);
@@ -1503,6 +1849,12 @@ class SessionManager implements AcpBoundedObservationSource {
     )) {
       return;
     }
+    settlePromptAdmissions(
+      owner: registration.phaseOwner,
+      reason: PermissionCancellationReason.sessionClosed,
+    );
+    final invalidatedGeneration = _sessionGenerations[sessionId];
+    _invalidateSessionGeneration(sessionId);
     _generatedSessionRegistrationOwners.remove(sessionId);
     _invalidateInputBudgetPhase(sessionId);
     _cancelledPromptOwners.remove(sessionId);
@@ -1513,7 +1865,13 @@ class SessionManager implements AcpBoundedObservationSource {
     _sessionFsProviders.remove(sessionId);
     _sessionModes.remove(sessionId);
     _removeToolCalls(sessionId);
-    await _releaseSessionTerminals(sessionId);
+    try {
+      await _releaseSessionTerminals(sessionId);
+    } finally {
+      if (identical(_sessionGenerations[sessionId], invalidatedGeneration)) {
+        _sessionGenerations.remove(sessionId);
+      }
+    }
   }
 
   Future<T> _runSerializedSessionMutation<T>(
@@ -2338,7 +2696,277 @@ class SessionManager implements AcpBoundedObservationSource {
     );
   }
 
-  Future<Json> _onReadTextFile(Json req) async {
+  _InboundPermissionAdmission _admitInboundPermission(
+    String method,
+    Map<String, dynamic>? params,
+    Object correlationIdentity,
+  ) {
+    final sessionId = _sessionIdFromMap(params);
+    final generation = sessionId == null
+        ? null
+        : _sessionGenerations[sessionId];
+    final owner = sessionId == null
+        ? null
+        : (_settlingPromptOwners[sessionId] ??
+              _inputBudgetPhases[sessionId]?.owner);
+    final admission = _InboundPermissionAdmission(
+      manager: this,
+      method: method,
+      correlationIdentity: correlationIdentity,
+      sessionId: sessionId,
+      sessionGeneration: generation,
+      promptOwner: owner,
+      peerEpoch: _peerEpoch,
+    );
+    _inboundAdmissions.add(admission);
+    if (params != null) _admissionsByParams[params] = admission;
+    if (owner != null) {
+      (_admissionsByOwner[owner] ??=
+              HashSet<_InboundPermissionAdmission>.identity())
+          .add(admission);
+    }
+    return admission;
+  }
+
+  Future<PermissionDecision> _permissionProviderDecision({
+    required _InboundPermissionAdmission admission,
+    required PermissionOptions options,
+  }) async {
+    if (admission.terminalReason case final reason?) {
+      return _permissionDecisionForCancellation(reason);
+    }
+    if (!admission.peerEpoch.active) {
+      admission.tryCancel(PermissionCancellationReason.connectionClosed);
+      return _permissionDecisionForCancellation(
+        PermissionCancellationReason.connectionClosed,
+      );
+    }
+    final generation = admission.sessionGeneration;
+    if (generation != null &&
+        (!generation.active ||
+            !identical(
+              _sessionGenerations[generation.sessionId],
+              generation,
+            ))) {
+      admission.tryCancel(PermissionCancellationReason.sessionClosed);
+      return _permissionDecisionForCancellation(
+        PermissionCancellationReason.sessionClosed,
+      );
+    }
+    admission.providerStarted = true;
+    final providerOptions = PermissionOptions(
+      title: options.title,
+      rationale: options.rationale,
+      options: options.options,
+      choices: options.choices,
+      sessionId: options.sessionId,
+      toolName: options.toolName,
+      toolKind: options.toolKind,
+      metadata: options.metadata,
+      transientPolicyContext: options.transientPolicyContext,
+      cancellationToken: admission.cancellationToken,
+    );
+    final providerResult = config.permissionProvider
+        .request(providerOptions)
+        .then<_PermissionProviderResult>(
+          _PermissionProviderResult.value,
+          onError: (Object error, StackTrace stackTrace) =>
+              _PermissionProviderResult.error(error, stackTrace),
+        );
+    final cancelled = admission.cancellation.then<_PermissionProviderResult>(
+      (reason) => _PermissionProviderResult.error(
+        _PermissionGateCancellation(reason),
+        StackTrace.empty,
+      ),
+    );
+    final winner = await Future.any<_PermissionProviderResult>(
+      <Future<_PermissionProviderResult>>[providerResult, cancelled],
+    );
+    final error = winner.error;
+    if (error is _PermissionGateCancellation) {
+      return _permissionDecisionForCancellation(error.reason);
+    }
+    if (error is PermissionRequestTimeoutException) {
+      admission.tryCancel(PermissionCancellationReason.timedOut);
+      return _permissionDecisionForCancellation(
+        admission.terminalReason ?? PermissionCancellationReason.timedOut,
+      );
+    }
+    if (error != null) Error.throwWithStackTrace(error, winner.stackTrace!);
+    return winner.value!;
+  }
+
+  Future<T> _runPermissionHandler<T>({
+    required _InboundPermissionAdmission admission,
+    required PermissionOptions options,
+    required Future<T> Function(PermissionDecision decision) operation,
+  }) async {
+    final decision = await _permissionProviderDecision(
+      admission: admission,
+      options: options,
+    );
+    // Let a cancellation queued by the same permission resolution freeze the
+    // admission before any allowed operation can begin.
+    await Future<void>.value();
+    final cancellationReason = _inactivePermissionAdmissionReason(admission);
+    if (cancellationReason != null) {
+      return _permissionCancellationResult<T>(admission, cancellationReason);
+    }
+    late final T value;
+    try {
+      value = await operation(decision);
+    } on Object catch (error, stackTrace) {
+      final operationCancellation = _inactivePermissionAdmissionReason(
+        admission,
+      );
+      if (operationCancellation != null) {
+        return _permissionCancellationResult<T>(
+          admission,
+          operationCancellation,
+        );
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+    final operationCancellation = _inactivePermissionAdmissionReason(admission);
+    if (operationCancellation != null) {
+      return _permissionCancellationResult<T>(admission, operationCancellation);
+    }
+    return value;
+  }
+
+  PermissionCancellationReason? _inactivePermissionAdmissionReason(
+    _InboundPermissionAdmission admission,
+  ) {
+    if (admission.terminalReason case final reason?) return reason;
+    if (admission.localSettled) return null;
+    if (!admission.peerEpoch.active) {
+      admission.tryCancel(PermissionCancellationReason.connectionClosed);
+      return admission.terminalReason ??
+          PermissionCancellationReason.connectionClosed;
+    }
+    final generation = admission.sessionGeneration;
+    if (generation != null &&
+        (!generation.active ||
+            !identical(
+              _sessionGenerations[generation.sessionId],
+              generation,
+            ))) {
+      admission.tryCancel(PermissionCancellationReason.sessionClosed);
+      return admission.terminalReason ??
+          PermissionCancellationReason.sessionClosed;
+    }
+    return null;
+  }
+
+  T _permissionCancellationResult<T>(
+    _InboundPermissionAdmission admission,
+    PermissionCancellationReason reason,
+  ) {
+    final terminal = _permissionGateTerminal(admission.method, reason);
+    switch (terminal) {
+      case InboundGateTerminalValue<dynamic>(:final value):
+        return value as T;
+      case InboundGateTerminalError<dynamic>(
+        :final error,
+        stackTrace: final stackTrace,
+      ):
+        Error.throwWithStackTrace(error, stackTrace ?? StackTrace.current);
+    }
+  }
+
+  PermissionDecision _permissionDecisionForCancellation(
+    PermissionCancellationReason reason,
+  ) {
+    switch (reason) {
+      case PermissionCancellationReason.timedOut:
+        throw const PermissionRequestTimeoutException();
+      case PermissionCancellationReason.promptEnded:
+      case PermissionCancellationReason.promptCancelled:
+      case PermissionCancellationReason.sessionClosed:
+        return const PermissionDecision.cancelled();
+      case PermissionCancellationReason.connectionClosed:
+      case PermissionCancellationReason.disposed:
+        throw const AcpConnectionClosedException();
+    }
+  }
+
+  InboundGateTerminal<dynamic> _permissionGateTerminal(
+    String method,
+    PermissionCancellationReason reason,
+  ) {
+    if (method == 'session/request_permission') {
+      return const InboundGateTerminalValue<dynamic>(<String, Object?>{
+        'outcome': <String, Object?>{'outcome': 'cancelled'},
+      });
+    }
+    if (reason == PermissionCancellationReason.timedOut) {
+      return InboundGateTerminalError<dynamic>(
+        _PayloadFreeRpcException(-32002, 'Permission request timed out.'),
+      );
+    }
+    if (reason == PermissionCancellationReason.promptEnded ||
+        reason == PermissionCancellationReason.promptCancelled ||
+        reason == PermissionCancellationReason.sessionClosed) {
+      return InboundGateTerminalError<dynamic>(
+        _PayloadFreeRpcException(-32003, 'Permission request cancelled.'),
+      );
+    }
+    return InboundGateTerminalError<dynamic>(
+      _PayloadFreeRpcException(-32000, 'ACP connection closed.'),
+    );
+  }
+
+  void _notifyPermissionProviderCancellation(
+    _InboundPermissionAdmission admission,
+    PermissionCancellationReason reason,
+  ) {
+    if (admission.providerCancellationSent) return;
+    final provider = config.permissionProvider;
+    if (provider is! CancellablePermissionProvider) return;
+    admission.providerCancellationSent = true;
+    try {
+      provider.cancelPendingPermission(
+        cancellationToken: admission.cancellationToken,
+        reason: reason,
+      );
+    } on Object {
+      _log.warning('ACP permission provider cancellation failed.');
+    }
+  }
+
+  void _removeInboundAdmission(_InboundPermissionAdmission admission) {
+    _inboundAdmissions.remove(admission);
+    _admissionsByParams.removeWhere(
+      (_, current) => identical(current, admission),
+    );
+    final owner = admission.promptOwner;
+    if (owner == null) return;
+    final owned = _admissionsByOwner[owner];
+    owned?.remove(admission);
+    if (owned != null && owned.isEmpty) {
+      _admissionsByOwner.remove(owner);
+      if (identical(_settlingPromptOwners[owner.sessionId], owner)) {
+        _settlingPromptOwners.remove(owner.sessionId);
+      }
+    }
+  }
+
+  _InboundPermissionAdmission _permissionAdmissionForHandler(
+    Json req,
+    InboundAdmission rawAdmission,
+  ) {
+    final direct = rawAdmission is _InboundPermissionAdmission
+        ? rawAdmission
+        : null;
+    final frozen = direct ?? _admissionsByParams[req];
+    if (frozen == null) {
+      throw StateError('Missing frozen inbound permission admission.');
+    }
+    return frozen;
+  }
+
+  Future<Json> _onReadTextFile(Json req, InboundAdmission rawAdmission) async {
+    final admission = _permissionAdmissionForHandler(req, rawAdmission);
     if (config.fsProvider == null) {
       throw Exception('File system operations not supported');
     }
@@ -2352,8 +2980,9 @@ class SessionManager implements AcpBoundedObservationSource {
     // we gate here to ensure policy is always respected.
     try {
       final additionalDirectories = _additionalDirectoriesForSession(sessionId);
-      final outcome = await config.permissionProvider.request(
-        PermissionOptions(
+      return await _runPermissionHandler<Json>(
+        admission: admission,
+        options: PermissionOptions(
           title: 'Read file',
           rationale: 'Agent requested to read a file',
           options: const ['allow', 'deny'],
@@ -2367,41 +2996,48 @@ class SessionManager implements AcpBoundedObservationSource {
               'additionalDirectories': additionalDirectories,
           },
         ),
+        operation: (decision) async {
+          if (decision.outcome != PermissionOutcome.allow) {
+            throw Exception('Permission denied');
+          }
+          final path = req['path'] as String;
+          final line = (req['line'] as num?)?.toInt();
+          final limit = (req['limit'] as num?)?.toInt();
+          _log.fine('fs/read_text_file <- path=$path line=$line limit=$limit');
+          try {
+            final content = await provider.readTextFile(
+              path,
+              line: line,
+              limit: limit,
+            );
+            _log.fine(
+              'fs/read_text_file -> ok path=$path bytes=${content.length}',
+            );
+            return {'content': content};
+          } on FsReadRejectedException catch (error) {
+            _log.warning('fs/read_text_file -> rejected by bounded policy');
+            throw rpc.RpcException(
+              -32001,
+              'Filesystem read rejected.',
+              data: error.reason.name,
+            );
+          } catch (e) {
+            _log.warning('fs/read_text_file -> error path=$path: $e');
+            rethrow;
+          }
+        },
       );
-      if (outcome.outcome != PermissionOutcome.allow) {
-        throw Exception('Permission denied');
-      }
     } catch (e) {
       _log.fine('fs/read_text_file -> denied by policy');
       rethrow;
     }
-
-    final path = req['path'] as String;
-    final line = (req['line'] as num?)?.toInt();
-    final limit = (req['limit'] as num?)?.toInt();
-    _log.fine('fs/read_text_file <- path=$path line=$line limit=$limit');
-    try {
-      final content = await provider.readTextFile(
-        path,
-        line: line,
-        limit: limit,
-      );
-      _log.fine('fs/read_text_file -> ok path=$path bytes=${content.length}');
-      return {'content': content};
-    } on FsReadRejectedException catch (error) {
-      _log.warning('fs/read_text_file -> rejected by bounded policy');
-      throw rpc.RpcException(
-        -32001,
-        'Filesystem read rejected.',
-        data: error.reason.name,
-      );
-    } catch (e) {
-      _log.warning('fs/read_text_file -> error path=$path: $e');
-      rethrow;
-    }
   }
 
-  Future<Json?> _onWriteTextFile(Json req) async {
+  Future<Json?> _onWriteTextFile(
+    Json req,
+    InboundAdmission rawAdmission,
+  ) async {
+    final admission = _permissionAdmissionForHandler(req, rawAdmission);
     try {
       if (config.fsProvider == null) {
         throw Exception('File system operations not supported');
@@ -2410,8 +3046,9 @@ class SessionManager implements AcpBoundedObservationSource {
       final workspaceRoot = _sessionWorkspaceRoots[sessionId]!;
       final provider = _fileSystemProviderForSession(sessionId);
       final additionalDirectories = _additionalDirectoriesForSession(sessionId);
-      final outcome = await config.permissionProvider.request(
-        PermissionOptions(
+      return await _runPermissionHandler<Json?>(
+        admission: admission,
+        options: PermissionOptions(
           title: 'Write file',
           rationale: 'Agent requested to write a file',
           options: const ['allow', 'deny'],
@@ -2425,21 +3062,41 @@ class SessionManager implements AcpBoundedObservationSource {
               'additionalDirectories': additionalDirectories,
           },
         ),
+        operation: (decision) async {
+          if (decision.outcome != PermissionOutcome.allow) {
+            throw Exception('Permission denied');
+          }
+          final path = req['path'] as String;
+          final content = req['content'] as String? ?? '';
+          if (_log.isLoggable(Level.FINE)) {
+            final contentBytes = await Isolate.run<int>(
+              () => utf8.encode(content).length,
+            );
+            final cancellationReason = _inactivePermissionAdmissionReason(
+              admission,
+            );
+            if (cancellationReason != null) {
+              return _permissionCancellationResult<Json?>(
+                admission,
+                cancellationReason,
+              );
+            }
+            _log.fine('fs/write_text_file <- bytes=$contentBytes');
+          }
+          final cancellationReason = _inactivePermissionAdmissionReason(
+            admission,
+          );
+          if (cancellationReason != null) {
+            return _permissionCancellationResult<Json?>(
+              admission,
+              cancellationReason,
+            );
+          }
+          await provider.writeTextFile(path, content);
+          _log.fine('fs/write_text_file -> ok');
+          return null; // per schema null
+        },
       );
-      if (outcome.outcome != PermissionOutcome.allow) {
-        throw Exception('Permission denied');
-      }
-      final path = req['path'] as String;
-      final content = req['content'] as String? ?? '';
-      if (_log.isLoggable(Level.FINE)) {
-        final contentBytes = await Isolate.run<int>(
-          () => utf8.encode(content).length,
-        );
-        _log.fine('fs/write_text_file <- bytes=$contentBytes');
-      }
-      await provider.writeTextFile(path, content);
-      _log.fine('fs/write_text_file -> ok');
-      return null; // per schema null
     } on _PayloadFreeRpcException {
       rethrow;
     } on Object {
@@ -2448,7 +3105,11 @@ class SessionManager implements AcpBoundedObservationSource {
     }
   }
 
-  Future<Json> _onRequestPermission(Json req) async {
+  Future<Json> _onRequestPermission(
+    Json req,
+    InboundAdmission rawAdmission,
+  ) async {
+    final admission = _permissionAdmissionForHandler(req, rawAdmission);
     final reqSessionId = _requireKnownSessionId(req);
     if (_cancelledPromptOwners.containsKey(reqSessionId)) {
       return {
@@ -2461,8 +3122,9 @@ class SessionManager implements AcpBoundedObservationSource {
     final toolKind = _permissionToolKind(toolCall);
     final metadata = <String, Object?>{};
     if (toolCall != null) metadata['toolCall'] = toolCall;
-    final outcome = await config.permissionProvider.request(
-      PermissionOptions(
+    return _runPermissionHandler<Json>(
+      admission: admission,
+      options: PermissionOptions(
         title: toolName,
         rationale: 'Requested by agent',
         options: options.map((choice) => choice.label).toList(),
@@ -2480,23 +3142,24 @@ class SessionManager implements AcpBoundedObservationSource {
         toolKind: toolKind,
         metadata: metadata,
       ),
+      operation: (decision) async {
+        if (decision.outcome == PermissionOutcome.cancelled) {
+          return {
+            'outcome': {'outcome': 'cancelled'},
+          };
+        }
+
+        final optionId = _permissionOptionIdForDecision(options, decision);
+        if (optionId == null) {
+          return {
+            'outcome': {'outcome': 'cancelled'},
+          };
+        }
+        return {
+          'outcome': {'outcome': 'selected', 'optionId': optionId},
+        };
+      },
     );
-
-    if (outcome.outcome == PermissionOutcome.cancelled) {
-      return {
-        'outcome': {'outcome': 'cancelled'},
-      };
-    }
-
-    final optionId = _permissionOptionIdForDecision(options, outcome);
-    if (optionId == null) {
-      return {
-        'outcome': {'outcome': 'cancelled'},
-      };
-    }
-    return {
-      'outcome': {'outcome': 'selected', 'optionId': optionId},
-    };
   }
 
   String _requireKnownSessionId(Json req) {
@@ -2561,7 +3224,11 @@ class SessionManager implements AcpBoundedObservationSource {
 
   final Map<String, _ManagedTerminal> _terminals = <String, _ManagedTerminal>{};
 
-  Future<Json> _onTerminalCreate(Json req) async {
+  Future<Json> _onTerminalCreate(
+    Json req,
+    InboundAdmission rawAdmission,
+  ) async {
+    final admission = _permissionAdmissionForHandler(req, rawAdmission);
     final provider = config.terminalProvider;
     if (provider == null) {
       throw Exception('Terminal not supported');
@@ -2609,13 +3276,11 @@ class SessionManager implements AcpBoundedObservationSource {
     } on TerminalHandleLimitException {
       throw _PayloadFreeRpcException(-32001, 'Terminal handle limit exceeded.');
     }
-
     var registered = false;
     try {
-      // Enforce permission for execute/terminal usage. If policy denies,
-      // reject creation so the agent cannot bypass the FS jail via shell.
-      final execOutcome = await config.permissionProvider.request(
-        PermissionOptions(
+      return await _runPermissionHandler<Json>(
+        admission: admission,
+        options: PermissionOptions(
           title: 'Create terminal',
           rationale: 'Agent requested to execute commands',
           options: const ['allow', 'deny'],
@@ -2628,90 +3293,157 @@ class SessionManager implements AcpBoundedObservationSource {
               'environment': Map<String, String>.unmodifiable(env),
           },
         ),
-      );
-      if (execOutcome.outcome != PermissionOutcome.allow) {
-        throw Exception('Permission denied');
-      }
-      _requireUsableTerminalLease(lease);
-      var cwd = requestedCwd;
-      // Enforce workspace jail for terminal working directory unless yolo.
-      if (!config.allowReadOutsideWorkspace) {
-        final jail = WorkspaceJail(
-          workspaceRoot: workspaceRoot,
-          additionalWorkspaceRoots: _additionalDirectoriesForSession(sessionId),
-        );
-        if (cwd != null) {
-          try {
-            final resolved = await jail.resolveForgiving(cwd);
-            final within = await jail.isWithinWorkspace(resolved);
-            if (!within) {
+        operation: (decision) async {
+          // Enforce permission for execute/terminal usage. If policy denies,
+          // reject creation so the agent cannot bypass the FS jail via shell.
+          if (decision.outcome != PermissionOutcome.allow) {
+            throw Exception('Permission denied');
+          }
+
+          _requireUsableTerminalLease(lease);
+          var cwd = requestedCwd;
+          // Enforce workspace jail for terminal working directory unless yolo.
+          if (!config.allowReadOutsideWorkspace) {
+            final jail = WorkspaceJail(
+              workspaceRoot: workspaceRoot,
+              additionalWorkspaceRoots: _additionalDirectoriesForSession(
+                sessionId,
+              ),
+            );
+            if (cwd != null) {
+              try {
+                final resolved = await jail.resolveForgiving(cwd);
+                final within = await jail.isWithinWorkspace(resolved);
+                if (!within) {
+                  cwd = workspaceRoot;
+                }
+              } on Exception catch (_) {
+                cwd = workspaceRoot;
+              }
+            } else {
               cwd = workspaceRoot;
             }
-          } on Exception catch (_) {
-            cwd = workspaceRoot;
           }
-        } else {
-          cwd = workspaceRoot;
-        }
-      }
-      _requireUsableTerminalLease(lease);
-      lease.markCreating();
-      late final TerminalProcessHandle handle;
-      try {
-        handle = await provider.create(
-          sessionId: sessionId,
-          command: cmd,
-          args: args,
-          cwd: cwd,
-          env: env.isEmpty ? null : env,
-          outputByteLimit: outputByteLimit,
-        );
-      } on TerminalHandleLimitException {
-        throw _PayloadFreeRpcException(
-          -32001,
-          'Terminal handle limit exceeded.',
-        );
-      }
-      return await _runSerializedSessionMutation(sessionId, () async {
-        if (_disposed ||
-            lease.revoked ||
-            _isSessionClosing(sessionId) ||
-            !_sessionWorkspaceRoots.containsKey(sessionId)) {
-          try {
-            await provider.release(handle);
-          } on Object {
-            // Rejected handles must never become managed terminal state.
-          }
-          throw StateError('Terminal session is closing or closed.');
-        }
-        if (_terminals.containsKey(handle.terminalId)) {
-          try {
-            await provider.release(handle);
-          } on Object {
-            // Duplicate handles are rejected without replacing ownership.
-          }
-          throw StateError(
-            'Terminal provider returned a duplicate terminalId.',
+          final preCreateCancellation = _inactivePermissionAdmissionReason(
+            admission,
           );
-        }
-        lease.markActive();
-        registered = true;
-        _terminals[handle.terminalId] = _ManagedTerminal(
-          handle: handle,
-          sessionId: sessionId,
-          lease: lease,
-        );
-        _terminalEvents.add(
-          TerminalCreated(
-            terminalId: handle.terminalId,
-            sessionId: sessionId,
-            command: cmd,
-            args: args,
-            cwd: cwd,
-          ),
-        );
-        return {'terminalId': handle.terminalId};
-      });
+          if (preCreateCancellation != null) {
+            return _permissionCancellationResult<Json>(
+              admission,
+              preCreateCancellation,
+            );
+          }
+          _requireUsableTerminalLease(lease);
+          lease.markCreating();
+          late final TerminalProcessHandle handle;
+          try {
+            handle = await provider.create(
+              sessionId: sessionId,
+              command: cmd,
+              args: args,
+              cwd: cwd,
+              env: env.isEmpty ? null : env,
+              outputByteLimit: outputByteLimit,
+            );
+          } on TerminalHandleLimitException {
+            throw _PayloadFreeRpcException(
+              -32001,
+              'Terminal handle limit exceeded.',
+            );
+          }
+
+          var rejectedHandleReleased = false;
+          Future<void> releaseRejectedHandle() async {
+            if (rejectedHandleReleased) return;
+            rejectedHandleReleased = true;
+            try {
+              await provider.release(handle);
+            } on Object {
+              // Rejected handles must never become managed terminal state.
+            }
+          }
+
+          final postCreateCancellation = _inactivePermissionAdmissionReason(
+            admission,
+          );
+          if (postCreateCancellation != null) {
+            await releaseRejectedHandle();
+            return _permissionCancellationResult<Json>(
+              admission,
+              postCreateCancellation,
+            );
+          }
+          return await _runSerializedSessionMutation(sessionId, () async {
+            final registrationCancellation = _inactivePermissionAdmissionReason(
+              admission,
+            );
+            if (registrationCancellation != null) {
+              await releaseRejectedHandle();
+              return _permissionCancellationResult<Json>(
+                admission,
+                registrationCancellation,
+              );
+            }
+            if (_disposed ||
+                lease.revoked ||
+                _isSessionClosing(sessionId) ||
+                !_sessionWorkspaceRoots.containsKey(sessionId)) {
+              await releaseRejectedHandle();
+              throw StateError('Terminal session is closing or closed.');
+            }
+            if (_terminals.containsKey(handle.terminalId)) {
+              await releaseRejectedHandle();
+              throw StateError(
+                'Terminal provider returned a duplicate terminalId.',
+              );
+            }
+            final result = <String, dynamic>{'terminalId': handle.terminalId};
+            if (!admission.tryClaimLocal(
+              InboundGateTerminalValue<dynamic>(result),
+            )) {
+              await releaseRejectedHandle();
+              final cancellationReason = admission.terminalReason;
+              if (cancellationReason == null) {
+                throw StateError(
+                  'Terminal permission admission was already completed.',
+                );
+              }
+              return _permissionCancellationResult<Json>(
+                admission,
+                cancellationReason,
+              );
+            }
+            var inserted = false;
+            try {
+              lease.markActive();
+              _terminals[handle.terminalId] = _ManagedTerminal(
+                handle: handle,
+                sessionId: sessionId,
+                lease: lease,
+              );
+              inserted = true;
+              registered = true;
+            } on Object catch (error, stackTrace) {
+              if (inserted) _terminals.remove(handle.terminalId);
+              registered = false;
+              await releaseRejectedHandle();
+              admission.publishClaimedLocalError(error, stackTrace);
+              Error.throwWithStackTrace(error, stackTrace);
+            }
+            admission.publishClaimedLocal();
+            _terminalEvents.add(
+              TerminalCreated(
+                terminalId: handle.terminalId,
+                sessionId: sessionId,
+                command: cmd,
+                args: args,
+                cwd: cwd,
+              ),
+            );
+            return result;
+          });
+        },
+      );
     } finally {
       if (!registered) lease.release();
     }

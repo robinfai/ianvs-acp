@@ -2,11 +2,174 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dart_acp/src/rpc/peer.dart';
+import 'package:dart_acp/src/rpc/inbound_gate.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 
+final class _PassThroughInboundAdmission implements InboundAdmission {
+  _PassThroughInboundAdmission({
+    required this.method,
+    required this.params,
+    required this.arrivalIdentity,
+  });
+
+  final String method;
+  final Map<String, dynamic>? params;
+  final Object arrivalIdentity;
+  final Completer<InboundGateTerminal<dynamic>> _terminal =
+      Completer<InboundGateTerminal<dynamic>>.sync();
+  final Completer<void> _settled = Completer<void>.sync();
+  bool _localFinished = false;
+  bool _reservationFinished = false;
+  bool _responseFinished = false;
+  int responseCommitCount = 0;
+
+  @override
+  Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
+
+  @override
+  Future<void> get settled => _settled.future;
+
+  @override
+  Future<dynamic> runLocalOperation(FutureOr<dynamic> Function() operation) =>
+      Future<dynamic>.sync(operation).whenComplete(() {
+        _localFinished = true;
+        _tryCompleteSettled();
+      });
+
+  @override
+  void bindReservationReleased(Future<void> released) {
+    void finish() {
+      if (_reservationFinished) return;
+      _reservationFinished = true;
+      _tryCompleteSettled();
+    }
+
+    released.then<void>((_) => finish(), onError: (_, _) => finish());
+  }
+
+  @override
+  void bindResponseCommitted(Future<void> committed) {
+    void finish() {
+      if (_responseFinished) return;
+      _responseFinished = true;
+      responseCommitCount += 1;
+      _tryCompleteSettled();
+    }
+
+    committed.then<void>((_) => finish(), onError: (_, _) => finish());
+  }
+
+  @override
+  void markPeerClosed() {
+    if (_responseFinished) return;
+    _responseFinished = true;
+    responseCommitCount += 1;
+    _tryCompleteSettled();
+  }
+
+  void _tryCompleteSettled() {
+    if (!_localFinished ||
+        !_reservationFinished ||
+        !_responseFinished ||
+        _settled.isCompleted) {
+      return;
+    }
+    _settled.complete();
+  }
+}
+
+void _installPassThroughAdmissions(
+  JsonRpcPeer peer, {
+  void Function(_PassThroughInboundAdmission admission)? onAdmission,
+}) {
+  peer.onInboundAdmission = (method, params, arrivalIdentity) {
+    final admission = _PassThroughInboundAdmission(
+      method: method,
+      params: params,
+      arrivalIdentity: arrivalIdentity,
+    );
+    onAdmission?.call(admission);
+    return admission;
+  };
+}
+
 void main() {
+  test(
+    'admitted slots preserve malformed and notification response stages',
+    () async {
+      final channel = StreamChannelController<String>(sync: true);
+      final outbound = StreamIterator<String>(channel.local.stream);
+      final peer = JsonRpcPeer(channel.foreign);
+      final admissions = <_PassThroughInboundAdmission>[];
+      final notificationStarted = Completer<void>.sync();
+      final releaseNotification = Completer<void>.sync();
+      _installPassThroughAdmissions(peer, onAdmission: admissions.add);
+      peer.onReadTextFile = (params, _) async {
+        if (params['notification'] == true) {
+          notificationStarted.complete();
+          await releaseNotification.future;
+        }
+        return <String, dynamic>{'content': 'ok'};
+      };
+      try {
+        channel.local.sink.add(
+          jsonEncode(<Object?>[
+            <String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': 41,
+              'method': 'fs/read_text_file',
+              'params': <Object?>['not-an-object'],
+            },
+            <String, dynamic>{
+              'jsonrpc': '2.0',
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{'notification': true},
+            },
+          ]),
+        );
+        await notificationStarted.future.timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        expect(admissions, hasLength(2));
+        final malformed = admissions.singleWhere((item) => item.params == null);
+        final notification = admissions.singleWhere(
+          (item) => item.params?['notification'] == true,
+        );
+        expect(
+          identical(malformed.arrivalIdentity, notification.arrivalIdentity),
+          isFalse,
+        );
+        expect(notification.responseCommitCount, 1);
+        expect(malformed.responseCommitCount, 0);
+
+        releaseNotification.complete();
+        expect(await outbound.moveNext(), isTrue);
+        final decoded = jsonDecode(outbound.current);
+        final response = Map<String, dynamic>.from(
+          (decoded is List ? decoded.single : decoded) as Map,
+        );
+        expect(response['id'], 41);
+        expect(
+          (response['error'] as Map)['code'],
+          rpc.RpcException.invalidParams('fixed expected error').code,
+        );
+        await Future.wait<void>(<Future<void>>[
+          malformed.settled,
+          notification.settled,
+        ]).timeout(const Duration(seconds: 2));
+        expect(malformed.responseCommitCount, 1);
+        expect(notification.responseCommitCount, 1);
+      } finally {
+        if (!releaseNotification.isCompleted) releaseNotification.complete();
+        await peer.close();
+        await outbound.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
   test(
     'peer unavailable listener reentry preserves first reason and one close future',
     () async {
@@ -74,7 +237,8 @@ void main() {
       final peer = JsonRpcPeer(StreamChannel<String>(input, output));
       final started = Completer<void>();
       final release = Completer<void>();
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         started.complete();
         await release.future;
         throw StateError(canary);
@@ -111,9 +275,11 @@ void main() {
       final channel = StreamChannelController<String>(sync: true);
       final outbound = StreamIterator<String>(channel.local.stream);
       final peer = JsonRpcPeer(channel.foreign);
+      final admissions = <_PassThroughInboundAdmission>[];
       final allStarted = Completer<void>();
       var starts = 0;
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer, onAdmission: admissions.add);
+      peer.onReadTextFile = (params, _) async {
         starts += 1;
         if (starts == 3) allStarted.complete();
         return <String, dynamic>{'marker': params['marker']};
@@ -148,6 +314,21 @@ void main() {
           <String>['a', 'b', 'c'],
         );
         expect(wire, isNot(contains('_acp_internal_')));
+        expect(admissions, hasLength(3));
+        for (var left = 0; left < admissions.length; left += 1) {
+          for (var right = left + 1; right < admissions.length; right += 1) {
+            expect(
+              identical(
+                admissions[left].arrivalIdentity,
+                admissions[right].arrivalIdentity,
+              ),
+              isFalse,
+            );
+          }
+        }
+        await Future.wait<void>(
+          admissions.map((admission) => admission.settled),
+        ).timeout(const Duration(seconds: 2));
         await pumpEventQueue();
         expect(peer.correlationPendingItemsForTesting, 0);
         expect(peer.correlationPendingBytesForTesting, 0);
@@ -167,11 +348,13 @@ void main() {
       final quickFinished = Completer<void>();
       final blockedStarted = Completer<void>();
       final releaseBlocked = Completer<void>();
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         quickFinished.complete();
         return <String, dynamic>{'content': 'ok'};
       };
-      peer.onWriteTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onWriteTextFile = (params, _) async {
         blockedStarted.complete();
         await releaseBlocked.future;
         return null;
@@ -238,7 +421,8 @@ void main() {
       final quickFinished = Completer<void>();
       final blockedStarted = Completer<void>();
       final releaseBlocked = Completer<void>();
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         if (params['blocked'] == true) {
           blockedStarted.complete();
           await releaseBlocked.future;
@@ -339,7 +523,8 @@ void main() {
         final peer = JsonRpcPeer(channel.foreign);
         final originalStarted = Completer<void>();
         final releaseOriginal = Completer<void>();
-        peer.onReadTextFile = (params) async {
+        _installPassThroughAdmissions(peer);
+        peer.onReadTextFile = (params, _) async {
           originalStarted.complete();
           await releaseOriginal.future;
           return <String, dynamic>{'marker': 'original'};
@@ -400,7 +585,8 @@ void main() {
     );
     final processingMarkers = <String>[];
     var injected = false;
-    peer.onReadTextFile = (params) {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) {
       final marker = params['marker'] as String;
       processingMarkers.add(marker);
       return SynchronousFuture<dynamic>(<String, dynamic>{'marker': marker});
@@ -474,7 +660,8 @@ void main() {
       StreamChannel<String>(input, output),
       maxPendingItems: 1,
     );
-    peer.onReadTextFile = (params) {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) {
       handlerStarts += 1;
       return SynchronousFuture<dynamic>(<String, dynamic>{
         'marker': params['marker'],
@@ -532,12 +719,14 @@ void main() {
       final requestStarted = Completer<void>();
       final releaseRequest = Completer<void>();
       var notificationCount = 0;
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         requestStarted.complete();
         await releaseRequest.future;
         return <String, dynamic>{'content': 'ok'};
       };
-      peer.onWriteTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onWriteTextFile = (params, _) async {
         notificationCount += 1;
         return null;
       };
@@ -610,7 +799,8 @@ void main() {
     final peer = JsonRpcPeer(channel.foreign, maxPendingItems: 1);
     final firstStarted = Completer<void>();
     final releaseFirst = Completer<void>();
-    peer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) async {
       firstStarted.complete();
       await releaseFirst.future;
       return <String, dynamic>{'content': 'ok'};
@@ -698,7 +888,8 @@ void main() {
       final blockedStarted = Completer<void>();
       final releaseBlocked = Completer<void>();
       var handlerStarts = 0;
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         handlerStarts += 1;
         if (handlerStarts == 1) {
           blockedStarted.complete();
@@ -738,7 +929,8 @@ void main() {
     var started = 0;
     var active = 0;
     var peak = 0;
-    peer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) async {
       started += 1;
       active += 1;
       if (active > peak) peak = active;
@@ -1002,7 +1194,8 @@ void main() {
       final peer = JsonRpcPeer(StreamChannel<String>(input.stream, output));
       final handlerStarted = Completer<void>();
       final releaseHandler = Completer<void>();
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         handlerStarted.complete();
         await releaseHandler.future;
         return <String, dynamic>{'content': 'late'};
@@ -1055,7 +1248,8 @@ void main() {
       final outputSubscription = channel.local.stream.listen(lines.add);
       final peer = JsonRpcPeer(channel.foreign, maxPendingItems: 1);
       var handlerStarts = 0;
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         handlerStarts += 1;
         return <String, dynamic>{'content': 'ok'};
       };
@@ -1119,7 +1313,8 @@ void main() {
     final channel = StreamChannelController<String>(sync: true);
     final outbound = StreamIterator<String>(channel.local.stream);
     final peer = JsonRpcPeer(channel.foreign, maxPendingItems: 1);
-    peer.onReadTextFile = (params) {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) {
       if (params['mode'] == 'sync') throw StateError('sync failure');
       if (params['mode'] == 'async') {
         return Future<dynamic>.error(StateError('async failure'));
@@ -1170,7 +1365,8 @@ void main() {
       final blockedStarted = Completer<void>();
       final releaseBlocked = Completer<void>();
       var handlerStarts = 0;
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         handlerStarts += 1;
         if (handlerStarts == 1) {
           blockedStarted.complete();
@@ -1242,7 +1438,8 @@ void main() {
       final peer = JsonRpcPeer(channel.foreign, maxPendingItems: 1);
       final blockedStarted = Completer<void>();
       final releaseBlocked = Completer<void>();
-      peer.onReadTextFile = (params) async {
+      _installPassThroughAdmissions(peer);
+      peer.onReadTextFile = (params, _) async {
         blockedStarted.complete();
         await releaseBlocked.future;
         return <String, dynamic>{'content': 'blocked'};
@@ -1320,7 +1517,8 @@ void main() {
       maxPendingBytes: canonicalBytes,
     );
     var exactStarts = 0;
-    exactPeer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(exactPeer);
+    exactPeer.onReadTextFile = (params, _) async {
       exactStarts += 1;
       return <String, dynamic>{'content': 'ok'};
     };
@@ -1345,7 +1543,8 @@ void main() {
       maxPendingBytes: canonicalBytes - 1,
     );
     var shortStarts = 0;
-    shortPeer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(shortPeer);
+    shortPeer.onReadTextFile = (params, _) async {
       shortStarts += 1;
       return <String, dynamic>{'content': 'unexpected'};
     };
@@ -1373,7 +1572,8 @@ void main() {
     final outbound = StreamIterator<String>(channel.local.stream);
     final peer = JsonRpcPeer(channel.foreign);
     var handlerStarts = 0;
-    peer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) async {
       handlerStarts += 1;
       return <String, dynamic>{'content': 'ok'};
     };
@@ -1415,7 +1615,8 @@ void main() {
     final peer = JsonRpcPeer(StreamChannel<String>(input, output));
     final updates = <Object?>[];
     var handlerStarts = 0;
-    peer.onReadTextFile = (params) async {
+    _installPassThroughAdmissions(peer);
+    peer.onReadTextFile = (params, _) async {
       handlerStarts += 1;
       return <String, dynamic>{'content': 'ok'};
     };
@@ -1484,7 +1685,8 @@ void main() {
         () {
           peer = JsonRpcPeer(StreamChannel<String>(input, output));
           peer.addUnavailableListener(unavailableListener);
-          peer.onReadTextFile = (params) async {
+          _installPassThroughAdmissions(peer);
+          peer.onReadTextFile = (params, _) async {
             handlerStarts += 1;
             return <String, dynamic>{'content': 'unexpected'};
           };
@@ -1642,7 +1844,8 @@ void main() {
         final activeStarted = Completer<void>();
         final releaseActive = Completer<void>();
         var handlerStarts = 0;
-        peer.onReadTextFile = (params) async {
+        _installPassThroughAdmissions(peer);
+        peer.onReadTextFile = (params, _) async {
           handlerStarts += 1;
           if (handlerStarts == 1) {
             activeStarted.complete();
