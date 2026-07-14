@@ -8,6 +8,104 @@ import 'package:stream_channel/stream_channel.dart';
 
 void main() {
   test(
+    'peer unavailable listener reentry preserves first reason and one close future',
+    () async {
+      for (final first in AcpPeerUnavailableReason.values) {
+        final channel = StreamChannelController<String>(sync: true);
+        final peer = JsonRpcPeer(channel.foreign);
+        final observed = <AcpPeerUnavailableState>[];
+        Future<void>? reentrantClose;
+        var reentrantCalls = 0;
+        void throwing(AcpPeerUnavailableState state) =>
+            throw StateError('listener');
+        void reenter(AcpPeerUnavailableState state) {
+          reentrantCalls += 1;
+          reentrantClose = peer.dispose();
+        }
+
+        void recording(AcpPeerUnavailableState state) => observed.add(state);
+        peer.addUnavailableListener(throwing);
+        peer.addUnavailableListener(reenter);
+        peer.addUnavailableListener(recording);
+        try {
+          expect(peer.isAvailable, isTrue);
+          final firstClose = peer.closeForTesting(first);
+          expect(reentrantClose, isNotNull);
+          expect(identical(firstClose, reentrantClose), isTrue);
+          for (final later in AcpPeerUnavailableReason.values.where(
+            (reason) => reason != first,
+          )) {
+            expect(identical(firstClose, peer.closeForTesting(later)), isTrue);
+          }
+          await firstClose.timeout(const Duration(seconds: 2));
+          expect(peer.isAvailable, isFalse);
+          expect(reentrantCalls, 1);
+          expect(observed, hasLength(1));
+          expect(observed.single.reason, first);
+          AcpPeerUnavailableState? replayed;
+          var replayCalls = 0;
+          void replay(AcpPeerUnavailableState state) {
+            replayCalls += 1;
+            replayed = state;
+          }
+
+          peer.addUnavailableListener(replay);
+          peer.addUnavailableListener(replay);
+          expect(replayed, same(observed.single));
+          expect(replayCalls, 1);
+          peer.removeUnavailableListener(replay);
+        } finally {
+          peer.removeUnavailableListener(throwing);
+          peer.removeUnavailableListener(reenter);
+          peer.removeUnavailableListener(recording);
+          await peer.close();
+          await channel.local.sink.close();
+        }
+      }
+    },
+  );
+
+  test(
+    'unavailable peer drops waiter responses before writing the wire',
+    () async {
+      const canary = 'WAITER-STACK-DATA-CANARY';
+      final input = _ManualInputStream();
+      final output = _RecordingSink();
+      final peer = JsonRpcPeer(StreamChannel<String>(input, output));
+      final started = Completer<void>();
+      final release = Completer<void>();
+      peer.onReadTextFile = (params) async {
+        started.complete();
+        await release.future;
+        throw StateError(canary);
+      };
+      try {
+        input.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 9,
+            'method': 'fs/read_text_file',
+            'params': <String, dynamic>{},
+          }),
+        );
+        await started.future.timeout(const Duration(seconds: 2));
+        await peer
+            .closeForTesting(AcpPeerUnavailableReason.explicitClose)
+            .timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        expect(output.events, isEmpty);
+        expect(output.events.join(), isNot(contains(canary)));
+        expect(output.closeCount, 1);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await pumpEventQueue();
+        input.close();
+        await peer.close();
+      }
+    },
+  );
+
+  test(
     'internal correlation restores duplicate and null wire ids exactly',
     () async {
       final channel = StreamChannelController<String>(sync: true);
@@ -1365,87 +1463,109 @@ void main() {
     }
   });
 
-  test('explicit close drops reentrant queued deliveries', () async {
-    final input = _ManualInputStream();
-    final output = _RecordingSink();
-    final zoneErrors = <Object>[];
-    Object? synchronousError;
-    late JsonRpcPeer peer;
-    late Future<void> closing;
-    late Future<Object?> pendingSettled;
-    late StreamSubscription<Object?> updateSubscription;
-    var handlerStarts = 0;
+  test(
+    'transport error wins over later explicit close without starting queued work',
+    () async {
+      final input = _ManualInputStream();
+      final output = _RecordingSink();
+      final zoneErrors = <Object>[];
+      final unavailableStates = <AcpPeerUnavailableState>[];
+      Object? synchronousError;
+      late JsonRpcPeer peer;
+      late Future<Object?> closingSettled;
+      late Future<Object?> pendingSettled;
+      late StreamSubscription<Object?> updateSubscription;
+      var handlerStarts = 0;
+      var reusedCloseOwner = false;
+      void unavailableListener(AcpPeerUnavailableState state) =>
+          unavailableStates.add(state);
 
-    runZonedGuarded<void>(
-      () {
-        peer = JsonRpcPeer(StreamChannel<String>(input, output));
-        peer.onReadTextFile = (params) async {
-          handlerStarts += 1;
-          return <String, dynamic>{'content': 'unexpected'};
-        };
-        final pendingResponse = peer.sendRaw('agent/ping', <String, dynamic>{});
-        pendingSettled = pendingResponse.then<Object?>(
-          (value) => value,
-          onError: (Object error, StackTrace _) => error,
-        );
-        final outboundRequest =
-            jsonDecode(output.events.single) as Map<String, dynamic>;
-        updateSubscription = peer.sessionUpdates.listen((_) {
-          input.add(
-            jsonEncode(<String, dynamic>{
-              'jsonrpc': '2.0',
-              'id': outboundRequest['id'],
-              'result': <String, dynamic>{'pong': true},
-            }),
+      runZonedGuarded<void>(
+        () {
+          peer = JsonRpcPeer(StreamChannel<String>(input, output));
+          peer.addUnavailableListener(unavailableListener);
+          peer.onReadTextFile = (params) async {
+            handlerStarts += 1;
+            return <String, dynamic>{'content': 'unexpected'};
+          };
+          final pendingResponse = peer.sendRaw(
+            'agent/ping',
+            <String, dynamic>{},
           );
-          input.add(
-            jsonEncode(<String, dynamic>{
-              'jsonrpc': '2.0',
-              'id': 2,
-              'method': 'fs/read_text_file',
-              'params': <String, dynamic>{},
-            }),
+          pendingSettled = pendingResponse.then<Object?>(
+            (value) => value,
+            onError: (Object error, StackTrace _) => error,
           );
-          input.addError(_InputError(), StackTrace.current);
-          closing = peer.close();
-        });
+          final outboundRequest =
+              jsonDecode(output.events.single) as Map<String, dynamic>;
+          updateSubscription = peer.sessionUpdates.listen((_) {
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': outboundRequest['id'],
+                'result': <String, dynamic>{'pong': true},
+              }),
+            );
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': 2,
+                'method': 'fs/read_text_file',
+                'params': <String, dynamic>{},
+              }),
+            );
+            input.addError(_InputError(), StackTrace.current);
+            final closing = peer.close();
+            reusedCloseOwner = identical(closing, peer.close());
+            closingSettled = closing.then<Object?>(
+              (_) => null,
+              onError: (Object error, StackTrace _) => error,
+            );
+          });
 
-        try {
-          input.add(
-            jsonEncode(<String, dynamic>{
-              'jsonrpc': '2.0',
-              'method': 'session/update',
-              'params': <String, dynamic>{'sequence': 'U1'},
-            }),
-          );
-        } on Object catch (error) {
-          synchronousError = error;
-        }
-      },
-      (Object error, StackTrace _) {
-        zoneErrors.add(error);
-      },
-    );
-
-    try {
-      expect(synchronousError, isNull);
-      await closing.timeout(const Duration(seconds: 1));
-      final pendingResult = await pendingSettled.timeout(
-        const Duration(seconds: 1),
+          try {
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'method': 'session/update',
+                'params': <String, dynamic>{'sequence': 'U1'},
+              }),
+            );
+          } on Object catch (error) {
+            synchronousError = error;
+          }
+        },
+        (Object error, StackTrace _) {
+          zoneErrors.add(error);
+        },
       );
-      await pumpEventQueue();
-      expect(zoneErrors, isEmpty);
-      expect(handlerStarts, 0);
-      expect(pendingResult, isNot(<String, dynamic>{'pong': true}));
-    } finally {
-      await updateSubscription.cancel();
+
       try {
-        await peer.close();
-      } on Object {
-        // The assertions above report any unexpected close error.
+        expect(synchronousError, isNull);
+        final closeResult = await closingSettled.timeout(
+          const Duration(seconds: 1),
+        );
+        final pendingResult = await pendingSettled.timeout(
+          const Duration(seconds: 1),
+        );
+        await pumpEventQueue();
+        expect(zoneErrors, isEmpty);
+        expect(closeResult, isA<_InputError>());
+        expect(handlerStarts, 0);
+        expect(pendingResult, <String, dynamic>{'pong': true});
+        expect(reusedCloseOwner, isTrue);
+        expect(unavailableStates, hasLength(1));
+        expect(
+          unavailableStates.single.reason,
+          AcpPeerUnavailableReason.transportClosed,
+        );
+        expect(output.closeCount, 1);
+      } finally {
+        peer.removeUnavailableListener(unavailableListener);
+        await updateSubscription.cancel();
       }
-    }
-  });
+    },
+  );
 
   for (final termination in <String>['done', 'error']) {
     test(

@@ -11,6 +11,49 @@ import 'inbound_gate.dart';
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
 
+/// The first cause that made an ACP peer unavailable.
+enum AcpPeerUnavailableReason {
+  /// A fatal request or cleanup deadline expired.
+  fatalTimeout,
+
+  /// The underlying transport closed or failed.
+  transportClosed,
+
+  /// The peer was explicitly closed.
+  explicitClose,
+
+  /// The owning client was disposed.
+  disposed,
+}
+
+/// Identifies prompt cleanup work owned by one generation.
+final class AcpPromptCleanupIdentity {
+  /// Creates an owner-scoped cleanup identity.
+  const AcpPromptCleanupIdentity(this.ownerToken, this.generation);
+
+  /// Identity token for the cleanup owner.
+  final Object ownerToken;
+
+  /// Generation of the cleanup owner.
+  final int generation;
+}
+
+/// Immutable state published when an ACP peer becomes unavailable.
+final class AcpPeerUnavailableState {
+  /// Creates unavailable [reason] state with optional cleanup identity.
+  const AcpPeerUnavailableState(this.reason, {this.cleanupIdentity});
+
+  /// First reason that made the peer unavailable.
+  final AcpPeerUnavailableReason reason;
+
+  /// Fatal-timeout cleanup identity, when one exists.
+  final AcpPromptCleanupIdentity? cleanupIdentity;
+}
+
+/// Receives the first unavailable state for an ACP peer.
+typedef AcpPeerUnavailableListener =
+    void Function(AcpPeerUnavailableState state);
+
 /// Require an object-shaped JSON-RPC result without copying or traversing it.
 Json requireJsonRpcObjectResult(Object? result, {required String resource}) {
   if (result is Json) return result;
@@ -68,6 +111,8 @@ class JsonRpcPeer {
   final ListQueue<String> _deferredInboundLines = ListQueue<String>();
   final Map<String, _InboundCorrelation> _correlations =
       <String, _InboundCorrelation>{};
+  final Set<AcpPeerUnavailableListener> _unavailableListeners =
+      <AcpPeerUnavailableListener>{};
 
   /// Underlying JSON-RPC peer.
   late final rpc.Peer _peer;
@@ -76,6 +121,7 @@ class JsonRpcPeer {
   final StreamController<Object?> _sessionUpdates =
       StreamController<Object?>.broadcast(sync: true);
   _DispatchContext? _dispatchContext;
+  AcpPeerUnavailableState? _unavailableState;
   Future<void>? _closeFuture;
   var _acceptingInbound = true;
   var _decodedIncomingClosed = false;
@@ -103,13 +149,91 @@ class JsonRpcPeer {
   Set<String> get correlationIdsForTesting =>
       Set<String>.unmodifiable(_correlations.keys);
 
-  /// Close the peer and clean up resources.
-  Future<void> close() => _closeFuture ??= _close();
+  /// Whether the peer has not yet entered its unavailable state.
+  bool get isAvailable => _unavailableState == null;
 
-  Future<void> _close() async {
+  /// Adds an unavailable listener, replaying existing state synchronously.
+  void addUnavailableListener(AcpPeerUnavailableListener listener) {
+    if (!_unavailableListeners.add(listener)) return;
+    final state = _unavailableState;
+    if (state != null) {
+      try {
+        listener(state);
+      } on Object {
+        // One listener cannot prevent replay to or cleanup by other owners.
+      }
+    }
+  }
+
+  /// Removes a previously added unavailable listener.
+  void removeUnavailableListener(AcpPeerUnavailableListener listener) {
+    _unavailableListeners.remove(listener);
+  }
+
+  /// Close the peer and clean up resources.
+  Future<void> close() =>
+      _becomeUnavailable(AcpPeerUnavailableReason.explicitClose);
+
+  /// Dispose the peer and publish a disposed unavailable reason.
+  Future<void> dispose() =>
+      _becomeUnavailable(AcpPeerUnavailableReason.disposed);
+
+  /// Close after a fatal timeout, optionally scoped to prompt cleanup.
+  Future<void> closeForFatalTimeout({
+    AcpPromptCleanupIdentity? cleanupIdentity,
+  }) => _becomeUnavailable(
+    AcpPeerUnavailableReason.fatalTimeout,
+    cleanupIdentity: cleanupIdentity,
+  );
+
+  /// Close with a selected reason for unavailable lifecycle tests.
+  @visibleForTesting
+  Future<void> closeForTesting(AcpPeerUnavailableReason reason) =>
+      _becomeUnavailable(reason);
+
+  Future<void> _becomeUnavailable(
+    AcpPeerUnavailableReason reason, {
+    AcpPromptCleanupIdentity? cleanupIdentity,
+  }) {
+    final existing = _closeFuture;
+    if (existing != null) return existing;
+    final closeOwner = Completer<void>.sync();
+    final closeFuture = closeOwner.future;
+    _closeFuture = closeFuture;
+    final state = AcpPeerUnavailableState(
+      reason,
+      cleanupIdentity: cleanupIdentity,
+    );
+    _unavailableState = state;
+    _decodedSink.disableWrites();
+    for (final listener in _unavailableListeners.toList(growable: false)) {
+      try {
+        listener(state);
+      } on Object {
+        // Listener failures are isolated from peer shutdown and each other.
+      }
+    }
+    unawaited(_closeUnavailableResources(closeOwner));
+    return closeFuture;
+  }
+
+  Future<void> _closeUnavailableResources(Completer<void> closeOwner) async {
+    try {
+      _acceptingInbound = false;
+      _deferredInboundLines.clear();
+      await _gate.close();
+      _finishAllCorrelationsForPeerClose();
+      await _closeUnderlyingPeerAfterGate();
+      if (!closeOwner.isCompleted) closeOwner.complete();
+    } on Object catch (error, stackTrace) {
+      if (!closeOwner.isCompleted) {
+        closeOwner.completeError(error, stackTrace);
+      }
+    }
+  }
+
+  Future<void> _closeUnderlyingPeerAfterGate() async {
     _dropDecodedDeliveries = true;
-    _stopAdmission();
-    _finishAllCorrelationsForPeerClose();
     final canceling = Future<void>.sync(_inboundSubscription.cancel);
     unawaited(canceling.catchError((Object _) {}));
     try {
@@ -508,10 +632,18 @@ class JsonRpcPeer {
   }
 
   void _handleInboundError(Object error, StackTrace stackTrace) {
+    final closing = _becomeUnavailable(
+      AcpPeerUnavailableReason.transportClosed,
+    );
+    unawaited(closing.catchError((Object _) {}));
     _queueTerminal(error: error, stackTrace: stackTrace);
   }
 
   void _handleInboundDone() {
+    final closing = _becomeUnavailable(
+      AcpPeerUnavailableReason.transportClosed,
+    );
+    unawaited(closing.catchError((Object _) {}));
     _queueTerminal();
   }
 
@@ -866,7 +998,9 @@ final class _JsonEncodingSink implements StreamSink<Object?> {
 
   @override
   Future<void> addStream(Stream<Object?> stream) async {
+    if (!_writesEnabled) return;
     await for (final event in stream) {
+      if (!_writesEnabled) return;
       add(event);
     }
   }

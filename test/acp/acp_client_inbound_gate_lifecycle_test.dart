@@ -6,6 +6,42 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:stream_channel/stream_channel.dart';
 
 void main() {
+  test(
+    'AcpClient replays disposed unavailability through its public proxy',
+    () async {
+      final transport = _LifecycleTransport();
+      final client = await AcpClient.start(
+        config: AcpConfig(),
+        transport: transport,
+      );
+      final observed = <AcpPeerUnavailableState>[];
+      Future<void>? reentrantDispose;
+      void listener(AcpPeerUnavailableState state) {
+        observed.add(state);
+        reentrantDispose = client.dispose();
+      }
+
+      client.addPeerUnavailableListener(listener);
+      try {
+        expect(client.isAvailable, isTrue);
+        final firstDispose = client.dispose();
+        expect(reentrantDispose, isNotNull);
+        expect(identical(firstDispose, reentrantDispose), isTrue);
+        await firstDispose;
+        expect(client.isAvailable, isFalse);
+        expect(observed.single.reason, AcpPeerUnavailableReason.disposed);
+        expect(transport.stopCount, 1);
+        AcpPeerUnavailableState? replay;
+        client.addPeerUnavailableListener((state) => replay = state);
+        expect(replay, same(observed.single));
+      } finally {
+        client.removePeerUnavailableListener(listener);
+        await client.dispose();
+        await transport.closeInput();
+      }
+    },
+  );
+
   test('invalid inbound gate limits fail before transport start', () async {
     final transport = _LifecycleTransport();
 

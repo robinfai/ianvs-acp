@@ -105,6 +105,17 @@ class AcpClient implements AcpBoundedObservationSource {
   late final SessionManager _sessionManager;
   Future<void>? _disposeFuture;
 
+  /// Whether the underlying ACP peer remains available.
+  bool get isAvailable => _peer.isAvailable;
+
+  /// Adds a listener for the peer's first unavailable state.
+  void addPeerUnavailableListener(AcpPeerUnavailableListener listener) =>
+      _peer.addUnavailableListener(listener);
+
+  /// Removes a peer unavailable listener.
+  void removePeerUnavailableListener(AcpPeerUnavailableListener listener) =>
+      _peer.removeUnavailableListener(listener);
+
   @override
   void addBoundedObservationListener(AcpBoundedObservationListener listener) =>
       _sessionManager.addBoundedObservationListener(listener);
@@ -115,23 +126,36 @@ class AcpClient implements AcpBoundedObservationSource {
   ) => _sessionManager.removeBoundedObservationListener(listener);
 
   /// Dispose the transport and release resources.
-  Future<void> dispose() => _disposeFuture ??= _dispose();
+  Future<void> dispose() {
+    final existing = _disposeFuture;
+    if (existing != null) return existing;
+    final owner = Completer<void>.sync();
+    final disposing = owner.future;
+    _disposeFuture = disposing;
+    unawaited(_dispose(owner));
+    return disposing;
+  }
 
-  Future<void> _dispose() async {
-    // Close JSON-RPC peer first to stop inbound traffic cleanly,
-    // then dispose session resources and finally stop the transport.
+  Future<void> _dispose(Completer<void> owner) async {
     try {
+      // Close JSON-RPC peer first to stop inbound traffic cleanly,
+      // then dispose session resources and finally stop the transport.
       try {
         try {
-          await _peer.close();
-        } on Object {
-          // Ignore close errors during shutdown.
+          try {
+            await _peer.dispose();
+          } on Object {
+            // Ignore close errors during shutdown.
+          }
+        } finally {
+          await _sessionManager.dispose();
         }
       } finally {
-        await _sessionManager.dispose();
+        await _transport.stop();
       }
-    } finally {
-      await _transport.stop();
+      if (!owner.isCompleted) owner.complete();
+    } on Object catch (error, stackTrace) {
+      if (!owner.isCompleted) owner.completeError(error, stackTrace);
     }
   }
 

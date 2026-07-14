@@ -17,6 +17,12 @@ export 'src/providers/permission_provider.dart';
 export 'src/providers/secure_fs_reader.dart'
     show SecureFsReadLimitExceeded, readSecureFileBytes;
 export 'src/providers/terminal_provider.dart';
+export 'src/rpc/peer.dart'
+    show
+        AcpPeerUnavailableReason,
+        AcpPromptCleanupIdentity,
+        AcpPeerUnavailableState,
+        AcpPeerUnavailableListener;
 export 'src/session/session_manager.dart'
     show
         AcpSessionInputBudgetOwner,
