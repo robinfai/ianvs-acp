@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:meta/meta.dart';
+
 import 'capabilities.dart';
 import 'config.dart';
 import 'content/content_builder.dart';
@@ -40,6 +42,11 @@ class AcpClient implements AcpBoundedObservationSource {
     int maxTerminalHandles = defaultMaxTerminalHandles,
     int maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
     AcpInputBudget inputBudget = const AcpInputBudget(),
+    @visibleForTesting
+    void Function(JsonRpcPeer peer)? beforeSessionManagerForTesting,
+    @visibleForTesting
+    void Function(JsonRpcPeer peer, SessionManager manager)?
+    afterSessionManagerForTesting,
   }) async {
     config.timeouts.validate();
     inputBudget.validate();
@@ -84,6 +91,7 @@ class AcpClient implements AcpBoundedObservationSource {
       maxConcurrentHandlers: maxConcurrentHandlers,
       maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
     );
+    beforeSessionManagerForTesting?.call(client._peer);
     client._sessionManager = SessionManager(
       config: config,
       peer: client._peer,
@@ -95,6 +103,7 @@ class AcpClient implements AcpBoundedObservationSource {
       maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
       inputBudget: inputBudget,
     );
+    afterSessionManagerForTesting?.call(client._peer, client._sessionManager);
 
     return client;
   }
@@ -211,6 +220,12 @@ class AcpClient implements AcpBoundedObservationSource {
   /// Mark a raw `session/prompt` request as active.
   AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) =>
       _sessionManager.beginPromptTurn(sessionId);
+
+  /// Sends one prompt request bound to the exact active [owner].
+  Future<Map<String, dynamic>> sendPromptRequest({
+    required AcpSessionInputBudgetOwner owner,
+    required List<Map<String, dynamic>> content,
+  }) => _sessionManager.sendPromptRequest(owner: owner, content: content);
 
   /// Clear turn-local state after a raw `session/prompt` request completes.
   void endPromptTurn(AcpSessionInputBudgetOwner owner) =>

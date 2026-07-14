@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:logging/logging.dart';
+import 'package:meta/meta.dart';
 
 import '../capabilities.dart';
 import '../config.dart';
@@ -469,6 +470,108 @@ final class AcpSessionInputBudgetOwner implements JsonRpcPromptOwner {
   final Object managerIdentity;
 }
 
+/// Read-only prompt lifecycle state exposed to package tests.
+@visibleForTesting
+final class PromptLifecycleSnapshot {
+  /// Creates a prompt lifecycle snapshot.
+  const PromptLifecycleSnapshot({
+    required this.winner,
+    required this.cancellationWinner,
+    required this.hasDeliveryRight,
+    required this.cleanupDeadline,
+    required this.cleanupIdentity,
+    required this.cleanupStarted,
+  });
+
+  /// First neutral prompt terminal, when recorded.
+  final JsonRpcPromptTerminalWinner? winner;
+
+  /// First local cancellation reason, when recorded.
+  final PermissionCancellationReason? cancellationWinner;
+
+  /// Whether a typed terminal delivery right remains present.
+  final bool hasDeliveryRight;
+
+  /// Shared cleanup deadline, when cleanup started.
+  final DateTime? cleanupDeadline;
+
+  /// Owner-scoped cleanup identity, when cleanup started.
+  final AcpPromptCleanupIdentity? cleanupIdentity;
+
+  /// Whether prompt cleanup has started.
+  final bool cleanupStarted;
+}
+
+enum _PromptLifecycleState { active, settling, terminalReady, removed }
+
+final class _PromptDeliveryRight {
+  _PromptDeliveryRight(this.owner, this.winner);
+
+  final AcpSessionInputBudgetOwner owner;
+  final JsonRpcPromptTerminalWinner winner;
+  bool revoked = false;
+
+  void revoke() => revoked = true;
+}
+
+final class _PromptLifecycle {
+  _PromptLifecycle(this.owner, this.sessionGeneration);
+
+  final AcpSessionInputBudgetOwner owner;
+  final _SessionGeneration sessionGeneration;
+  JsonRpcPromptTerminalWinner? winner;
+  PermissionCancellationReason? cancellationWinner;
+  _PromptDeliveryRight? deliveryRight;
+  _OwnerCleanupWindow? cleanupWindow;
+  Future<void>? promptReaped;
+  Future<void>? cleanupFuture;
+  Future<void>? cancelSubmitted;
+  Future<Map<String, dynamic>>? promptResult;
+  AcpPromptCleanupIdentity? cleanupIdentity;
+  final Completer<void> winnerRecorded = Completer<void>.sync();
+  final Completer<void> rightRecorded = Completer<void>.sync();
+  final Completer<void> barrierReleased = Completer<void>.sync();
+  final Completer<void> _admissionsSettled = Completer<void>.sync();
+  _PromptLifecycleState state = _PromptLifecycleState.active;
+  bool callerEnded = false;
+  bool admissionsSealed = false;
+  bool cleanupDone = false;
+
+  bool get settling => state != _PromptLifecycleState.active;
+  bool get removed => state == _PromptLifecycleState.removed;
+  Future<void> get admissionsSettled => _admissionsSettled.future;
+  bool get admissionsSettledNow => _admissionsSettled.isCompleted;
+
+  void startSettling() {
+    if (state == _PromptLifecycleState.active) {
+      state = _PromptLifecycleState.settling;
+    }
+  }
+
+  void sealAdmissions(Set<_InboundPermissionAdmission>? admissions) {
+    admissionsSealed = true;
+    if ((admissions == null || admissions.isEmpty) &&
+        !_admissionsSettled.isCompleted) {
+      _admissionsSettled.complete();
+    }
+  }
+
+  void markAdmissionRemoving({required bool isLastForOwner}) {
+    if (admissionsSealed && isLastForOwner && !_admissionsSettled.isCompleted) {
+      _admissionsSettled.complete();
+    }
+  }
+}
+
+final class _TypedPromptTurn {
+  _TypedPromptTurn(this.owner, this.controller);
+
+  final AcpSessionInputBudgetOwner owner;
+  final StreamController<AcpUpdate> controller;
+  StreamSubscription<AcpUpdate>? updates;
+  bool closed = false;
+}
+
 final class _SessionInputBudgetPhase {
   _SessionInputBudgetPhase({
     required this.owner,
@@ -650,6 +753,8 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     required this.sessionId,
     required this.sessionGeneration,
     required this.promptOwner,
+    required this.promptLifecycle,
+    required this.ownerAdmissionsSealedAtArrival,
     required this.peerEpoch,
   }) {
     unawaited(
@@ -669,6 +774,8 @@ final class _InboundPermissionAdmission implements InboundAdmission {
   final String? sessionId;
   final _SessionGeneration? sessionGeneration;
   final AcpSessionInputBudgetOwner? promptOwner;
+  final _PromptLifecycle? promptLifecycle;
+  final bool ownerAdmissionsSealedAtArrival;
   final _PeerEpoch peerEpoch;
   final Object cancellationToken = Object();
   final Completer<InboundGateTerminal<dynamic>> _terminal =
@@ -875,7 +982,7 @@ class SessionManager implements AcpBoundedObservationSource {
     peer.onTerminalKill = _onTerminalKill;
     peer.onTerminalRelease = _onTerminalRelease;
 
-    peer.sessionUpdates.listen(_routeSessionUpdate);
+    peer.sessionUpdates.listen(_onPeerSessionUpdate);
   }
 
   /// Client configuration.
@@ -897,6 +1004,12 @@ class SessionManager implements AcpBoundedObservationSource {
   final Map<String, _ReplayBuffer> _replayBuffers = {};
   final Map<String, _SessionInputBudgetPhase> _inputBudgetPhases =
       <String, _SessionInputBudgetPhase>{};
+  final Map<String, _PromptLifecycle> _promptLifecycles =
+      <String, _PromptLifecycle>{};
+  final Map<AcpSessionInputBudgetOwner, _TypedPromptTurn> _activeTypedTurns =
+      HashMap<AcpSessionInputBudgetOwner, _TypedPromptTurn>.identity();
+  ({AcpSessionInputBudgetOwner owner, PromptLifecycleSnapshot snapshot})?
+  _lastReleasedPromptLifecycleSnapshot;
   final Set<_RequestInputBudgetPhase> _requestInputBudgetPhases =
       <_RequestInputBudgetPhase>{};
   final Map<String, Object> _generatedSessionRegistrationOwners =
@@ -994,6 +1107,23 @@ class SessionManager implements AcpBoundedObservationSource {
   int get ownerCleanupExpiryCallbackCountForTesting =>
       _ownerCleanupExpiryCallbackCount;
 
+  /// Returns active cleanup timers retained by current owner windows.
+  int get ownerCleanupActiveTimerCountForTesting => _ownerCleanupWindows.values
+      .where((window) => window.timer?.isActive ?? false)
+      .length;
+
+  /// Returns admitted requests retained by the manager.
+  int get inboundAdmissionCountForTesting => _inboundAdmissions.length;
+
+  /// Returns owner admission buckets retained by the manager.
+  int get ownerAdmissionBucketCountForTesting => _admissionsByOwner.length;
+
+  /// Returns prompt lifecycle entries retained by session.
+  int get promptLifecycleCountForTesting => _promptLifecycles.length;
+
+  /// Returns call-specific typed prompt turns retained by owner identity.
+  int get activeTypedPromptTurnCountForTesting => _activeTypedTurns.length;
+
   /// Returns active admission cleanup window identities for tests.
   Set<Object> get admissionCleanupWindowIdentitiesForTesting =>
       Set<Object>.unmodifiable(
@@ -1057,6 +1187,110 @@ class SessionManager implements AcpBoundedObservationSource {
   AcpSessionInputBudgetOwner? sessionInputOwnerForTesting(String sessionId) =>
       _inputBudgetPhases[sessionId]?.owner;
 
+  /// Returns the active prompt owner observed by package tests.
+  @visibleForTesting
+  AcpSessionInputBudgetOwner activePromptOwnerForTesting(String sessionId) =>
+      _promptLifecycles[sessionId]!.owner;
+
+  _PromptLifecycle _promptLifecycleForOwnerForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null ||
+        !_isCurrentPromptLifecycle(lifecycle) ||
+        !identical(lifecycle.owner, owner)) {
+      throw StateError('Prompt lifecycle is no longer current.');
+    }
+    return lifecycle;
+  }
+
+  PromptLifecycleSnapshot _snapshotPromptLifecycle(
+    _PromptLifecycle lifecycle,
+  ) => PromptLifecycleSnapshot(
+    winner: lifecycle.winner,
+    cancellationWinner: lifecycle.cancellationWinner,
+    hasDeliveryRight:
+        lifecycle.deliveryRight != null && !lifecycle.deliveryRight!.revoked,
+    cleanupDeadline: lifecycle.cleanupWindow?.deadline,
+    cleanupIdentity: lifecycle.cleanupIdentity,
+    cleanupStarted: lifecycle.cleanupFuture != null,
+  );
+
+  /// Returns the owner-bound prompt result observed by package tests.
+  @visibleForTesting
+  Future<Map<String, dynamic>> promptResultForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) => _promptLifecycleForOwnerForTesting(owner).promptResult!;
+
+  /// Completes when a prompt terminal winner is recorded.
+  @visibleForTesting
+  Future<void> promptWinnerRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) => _promptLifecycleForOwnerForTesting(owner).winnerRecorded.future;
+
+  /// Completes when a prompt delivery right is recorded.
+  @visibleForTesting
+  Future<void> promptRightRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) => _promptLifecycleForOwnerForTesting(owner).rightRecorded.future;
+
+  /// Returns the current scaffold prompt lifecycle snapshot.
+  @visibleForTesting
+  PromptLifecycleSnapshot promptLifecycleSnapshotForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle != null && identical(lifecycle.owner, owner)) {
+      return _snapshotPromptLifecycle(lifecycle);
+    }
+    final released = _lastReleasedPromptLifecycleSnapshot;
+    if (released != null && identical(released.owner, owner)) {
+      return released.snapshot;
+    }
+    throw StateError('Prompt lifecycle snapshot is unavailable.');
+  }
+
+  /// Returns the actual shared cleanup-window identity for [owner].
+  @visibleForTesting
+  Object? promptCleanupWindowIdentityForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycleForOwnerForTesting(owner);
+    return admissionCleanupWindowIdentityForTesting(lifecycle);
+  }
+
+  /// Returns the actual shared cleanup-window reap Future for [owner].
+  @visibleForTesting
+  Future<void>? promptCleanupReapedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) => _promptLifecycleForOwnerForTesting(owner).cleanupFuture;
+
+  /// Returns the exact lifecycle admission barrier for [owner].
+  @visibleForTesting
+  Future<void> promptAdmissionsSettledForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) => _promptLifecycleForOwnerForTesting(owner).admissionsSettled;
+
+  /// Whether the owner currently has a terminal delivery right.
+  @visibleForTesting
+  bool promptHasDeliveryRightForTesting(AcpSessionInputBudgetOwner owner) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    return lifecycle != null &&
+        identical(lifecycle.owner, owner) &&
+        _isCurrentPromptLifecycle(lifecycle) &&
+        lifecycle.deliveryRight != null &&
+        !lifecycle.deliveryRight!.revoked;
+  }
+
+  /// Whether the owner still holds the current input phase.
+  @visibleForTesting
+  bool promptLifecycleIsCurrentForTesting(AcpSessionInputBudgetOwner owner) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    return lifecycle != null &&
+        identical(lifecycle.owner, owner) &&
+        _isCurrentPromptLifecycle(lifecycle);
+  }
+
   /// Returns the total number of terminal quota leases for lifecycle tests.
   int get terminalLeaseCountForTesting => _terminalLeases.length;
 
@@ -1106,6 +1340,22 @@ class SessionManager implements AcpBoundedObservationSource {
     for (final admission in _inboundAdmissions.toList(growable: false)) {
       admission.markPeerClosed();
     }
+    for (final lifecycle in _promptLifecycles.values.toList(growable: false)) {
+      final right = lifecycle.deliveryRight;
+      if (right != null && !right.revoked) continue;
+      lifecycle.callerEnded = true;
+      lifecycle.cancellationWinner ??=
+          PermissionCancellationReason.connectionClosed;
+      final cleanup = _settlePromptLifecycle(
+        lifecycle,
+        lifecycle.cancellationWinner!,
+      );
+      unawaited(
+        cleanup.whenComplete(() {
+          if (lifecycle.callerEnded) _releasePromptLifecycle(lifecycle);
+        }),
+      );
+    }
   }
 
   void _onAdmissionReservationReleased(_InboundPermissionAdmission admission) {
@@ -1131,13 +1381,16 @@ class SessionManager implements AcpBoundedObservationSource {
     final key = _ownerCleanupKeyForAdmission(admission);
     _getOrJoinOwnerCleanupWindow(
       key: key,
-      fatalOwner: admission.promptOwner,
+      fatalOwner: admission.ownerAdmissionsSealedAtArrival
+          ? null
+          : admission.promptOwner,
       blockerIdentity: admission,
       blockerReaped: admission.settled,
     );
   }
 
   Object _ownerCleanupKeyForAdmission(_InboundPermissionAdmission admission) {
+    if (admission.ownerAdmissionsSealedAtArrival) return admission;
     final sessionId = admission.sessionId;
     final frozen = sessionId == null
         ? null
@@ -1343,6 +1596,9 @@ class SessionManager implements AcpBoundedObservationSource {
         );
       }
       _closeControllerWithoutWaiting(_terminalEvents);
+      for (final turn in _activeTypedTurns.values.toList(growable: false)) {
+        _closeTypedPromptTurn(turn);
+      }
       final sessionStreams = _sessionStreams.values.toList(growable: false);
       _sessionStreams.clear();
       for (final controller in sessionStreams) {
@@ -1574,6 +1830,24 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   Object _beginSessionClose(String sessionId) {
+    final lifecycle = _promptLifecycles[sessionId];
+    if (lifecycle != null && _isCurrentPromptLifecycle(lifecycle)) {
+      lifecycle.callerEnded = true;
+      if (lifecycle.winner == null) {
+        lifecycle.deliveryRight?.revoke();
+        _settlePromptLifecycle(
+          lifecycle,
+          PermissionCancellationReason.sessionClosed,
+          sendCancel: true,
+        );
+      } else if (lifecycle.cleanupFuture case final cleanup?) {
+        unawaited(
+          cleanup.whenComplete(() {
+            if (lifecycle.callerEnded) _releasePromptLifecycle(lifecycle);
+          }),
+        );
+      }
+    }
     _invalidateSessionGeneration(sessionId);
     _invalidateInputBudgetPhase(sessionId);
     _invalidateRequestInputBudgetPhasesForSource(sessionId);
@@ -1761,125 +2035,349 @@ class SessionManager implements AcpBoundedObservationSource {
       throw StateError('Session $sessionId has no workspace binding');
     }
 
-    final base = _sessionStreams[sessionId]!.stream;
     late final StreamController<AcpUpdate> controller;
-    StreamSubscription<AcpUpdate>? subscription;
-    AcpSessionInputBudgetOwner? promptOwner;
-    var requestFinished = false;
+    _TypedPromptTurn? turn;
     controller = StreamController<AcpUpdate>(
       onListen: () {
-        subscription = base.listen(
-          (u) {
-            if (!controller.isClosed) controller.add(u);
-            if (u is TurnEnded) {
-              unawaited(subscription?.cancel());
-              _closeControllerWithoutWaiting(controller);
+        late final AcpSessionInputBudgetOwner owner;
+        try {
+          owner = beginPromptTurn(sessionId);
+        } on Object catch (error, stackTrace) {
+          controller.addError(error, stackTrace);
+          _closeControllerWithoutWaiting(controller);
+          return;
+        }
+        final current = _TypedPromptTurn(owner, controller);
+        turn = current;
+        current.updates = _sessionStreams[sessionId]!.stream.listen(
+          (update) {
+            if (!current.closed && update is! TurnEnded) {
+              controller.add(update);
             }
           },
-          onError: (e, st) {
-            if (!controller.isClosed) controller.addError(e, st);
-          },
-          onDone: () {
-            if (!controller.isClosed) {
-              _closeControllerWithoutWaiting(controller);
+          onError: (Object error, StackTrace stackTrace) {
+            if (!current.closed) {
+              controller.addError(error, stackTrace);
             }
           },
         );
-
-        unawaited(() async {
-          try {
-            promptOwner = beginPromptTurn(sessionId);
-          } on Object catch (error, stackTrace) {
-            await subscription?.cancel();
-            if (!controller.isClosed) {
-              controller.addError(error, stackTrace);
-              _closeControllerWithoutWaiting(controller);
-            }
-            return;
-          }
-          try {
-            final resp = await peer.prompt({
-              'sessionId': sessionId,
-              'prompt': content,
-            });
-            final owner = promptOwner;
-            if (owner == null || !_ownsInputBudgetPhase(owner)) {
-              requestFinished = true;
-              return;
-            }
-            final stop = stopReasonFromWire(
-              (resp['stopReason'] as String?) ?? 'other',
-            );
-            final turnEnded = TurnEnded(stop);
-            requestFinished = true;
-            _replayBuffers[sessionId]?.add(turnEnded);
-            _sessionStreams[sessionId]?.add(turnEnded);
-          } on Object catch (e, st) {
-            final owner = promptOwner;
-            if (owner == null || !_ownsInputBudgetPhase(owner)) {
-              requestFinished = true;
-              return;
-            }
-            _log.warning('prompt error: $e');
-            requestFinished = true;
-            final sessionController = _sessionStreams[sessionId];
-            sessionController?.addError(e, st);
-            const turnEnded = TurnEnded(StopReason.other);
-            _replayBuffers[sessionId]?.add(turnEnded);
-            sessionController?.add(turnEnded);
-          } finally {
-            final owner = promptOwner;
-            if (owner != null) endPromptTurn(owner);
-          }
-        }());
+        _registerTypedPromptTurn(current);
+        unawaited(_runTypedPrompt(current, content));
       },
       onCancel: () async {
-        await subscription?.cancel();
-        final owner = promptOwner;
-        if (owner != null && !requestFinished) {
-          try {
-            await cancelPromptTurn(owner);
-          } on StateError {
-            // The exact phase already ended or was invalidated by close/dispose.
-          }
+        final current = turn;
+        if (current == null) return;
+        _closeTypedPromptTurn(current);
+        await current.updates?.cancel();
+        try {
+          await cancelPromptTurn(current.owner);
+        } on StateError {
+          // The exact phase already ended or was invalidated by close/dispose.
         }
       },
     );
     return controller.stream;
   }
 
+  void _registerTypedPromptTurn(_TypedPromptTurn turn) {
+    final previous = _activeTypedTurns[turn.owner];
+    if (previous != null && !identical(previous, turn)) {
+      throw StateError('ACP typed prompt turn is already registered.');
+    }
+    _activeTypedTurns[turn.owner] = turn;
+  }
+
+  Future<void> _runTypedPrompt(
+    _TypedPromptTurn turn,
+    List<Map<String, dynamic>> content,
+  ) async {
+    final lifecycle = _requireDispatchablePrompt(turn.owner);
+    Object? rpcFailure;
+    StackTrace? rpcFailureStack;
+    try {
+      try {
+        await sendPromptRequest(owner: turn.owner, content: content);
+      } on Object catch (error, stackTrace) {
+        rpcFailure = error;
+        rpcFailureStack = stackTrace;
+      }
+      if (lifecycle.winner == null) {
+        if (!turn.closed) {
+          turn.controller.addError(
+            rpcFailure ?? const AcpConnectionClosedException(),
+            rpcFailureStack ?? StackTrace.empty,
+          );
+          _closeTypedPromptTurn(turn);
+        }
+        return;
+      }
+      try {
+        await lifecycle.cleanupFuture;
+      } on Object {
+        // A recorded winner remains deliverable after cleanup makes the peer
+        // unavailable for the same owner.
+      }
+      if (!lifecycle.barrierReleased.isCompleted) {
+        lifecycle.barrierReleased.complete();
+      }
+      await turn.updates?.cancel();
+      await _deliverTypedPromptWinner(lifecycle, turn);
+    } finally {
+      endPromptTurn(turn.owner);
+    }
+  }
+
+  Future<void> _deliverTypedPromptWinner(
+    _PromptLifecycle lifecycle,
+    _TypedPromptTurn turn,
+  ) async {
+    if (turn.closed) return;
+    final winner = lifecycle.winner!;
+    if (winner.kind == JsonRpcPromptTerminalKind.response) {
+      turn.controller.add(
+        TurnEnded(
+          stopReasonFromWire(
+            (winner.response?['stopReason'] as String?) ?? 'other',
+          ),
+        ),
+      );
+    } else {
+      turn.controller.addError(
+        winner.kind == JsonRpcPromptTerminalKind.timedOut
+            ? const AcpPromptTimeoutException()
+            : winner.error!,
+        winner.stackTrace ?? StackTrace.empty,
+      );
+      turn.controller.add(const TurnEnded(StopReason.other));
+    }
+    _closeTypedPromptTurn(turn);
+    _releasePromptLifecycle(lifecycle);
+  }
+
+  void _closeTypedPromptTurn(_TypedPromptTurn turn) {
+    if (turn.closed) return;
+    turn.closed = true;
+    if (identical(_activeTypedTurns[turn.owner], turn)) {
+      _activeTypedTurns.remove(turn.owner);
+    }
+    _closeControllerWithoutWaiting(turn.controller);
+  }
+
+  /// Sends a prompt bound to the exact active input owner.
+  Future<Map<String, dynamic>> sendPromptRequest({
+    required AcpSessionInputBudgetOwner owner,
+    required List<Map<String, dynamic>> content,
+  }) {
+    final lifecycle = _requireDispatchablePrompt(owner);
+    final result = peer.sendPromptRequest(
+      owner: owner,
+      content: content,
+      onTerminal: (terminalOwner, winner) {
+        if (!identical(terminalOwner, owner) ||
+            !_isCurrentPromptLifecycle(lifecycle) ||
+            lifecycle.removed ||
+            lifecycle.winner != null) {
+          return JsonRpcPromptSettlement.rejected();
+        }
+        final cancellationWinner = lifecycle.cancellationWinner;
+        if (cancellationWinner ==
+                PermissionCancellationReason.promptCancelled ||
+            cancellationWinner == PermissionCancellationReason.sessionClosed) {
+          return JsonRpcPromptSettlement.rejected();
+        }
+        lifecycle.winner = winner;
+        if (!lifecycle.winnerRecorded.isCompleted) {
+          lifecycle.winnerRecorded.complete();
+        }
+        lifecycle.deliveryRight = _PromptDeliveryRight(owner, winner);
+        if (!lifecycle.rightRecorded.isCompleted) {
+          lifecycle.rightRecorded.complete();
+        }
+        lifecycle.state = _PromptLifecycleState.terminalReady;
+        _settlePromptLifecycle(
+          lifecycle,
+          PermissionCancellationReason.promptEnded,
+          sendCancel: winner.kind == JsonRpcPromptTerminalKind.timedOut,
+        );
+        return JsonRpcPromptSettlement(lifecycle.admissionsSettled);
+      },
+    );
+    lifecycle.promptResult = result;
+    return result;
+  }
+
+  _PromptLifecycle _requireDispatchablePrompt(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    final generation = _sessionGenerations[owner.sessionId];
+    if (_disposed ||
+        !peer.isAvailable ||
+        !identical(owner.managerIdentity, _managerIdentity) ||
+        lifecycle == null ||
+        !_isCurrentPromptLifecycle(lifecycle) ||
+        !identical(lifecycle.owner, owner) ||
+        lifecycle.settling ||
+        generation == null ||
+        !generation.active ||
+        !identical(lifecycle.sessionGeneration, generation) ||
+        _isSessionClosing(owner.sessionId)) {
+      throw StateError('ACP prompt is already active or settling.');
+    }
+    return lifecycle;
+  }
+
+  bool _isCurrentPromptLifecycle(_PromptLifecycle lifecycle) =>
+      !lifecycle.removed &&
+      identical(_promptLifecycles[lifecycle.owner.sessionId], lifecycle);
+
   /// Mark [sessionId] as having an active prompt turn.
   AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) {
-    if (_disposed) throw StateError('Session manager is disposed.');
-    if (_isSessionClosing(sessionId)) {
-      throw StateError('Session is closing or closed.');
+    if (_disposed || !peer.isAvailable) {
+      throw StateError('ACP connection is not available.');
     }
-    if (_sessionSetupTails.containsKey(sessionId)) {
-      throw StateError('Session setup is already active.');
+    if (_isSessionClosing(sessionId) ||
+        _sessionSetupTails.containsKey(sessionId)) {
+      throw StateError('Session is closing or setup is active.');
     }
-    return _beginInputBudgetPhase(sessionId);
+    if (_promptLifecycles.containsKey(sessionId)) {
+      throw StateError('ACP prompt is already active or settling.');
+    }
+    final generation = _sessionGenerations[sessionId];
+    if (generation == null || !generation.active) {
+      throw StateError('Unknown or closed session.');
+    }
+    final owner = _beginInputBudgetPhase(sessionId);
+    _promptLifecycles[sessionId] = _PromptLifecycle(owner, generation);
+    return owner;
   }
 
   /// Clear turn-local state only when [owner] still owns the phase.
   void endPromptTurn(AcpSessionInputBudgetOwner owner) {
-    final phase = _inputBudgetPhases[owner.sessionId];
-    if (phase == null || !identical(phase.owner, owner)) return;
-    phase.invalidated = true;
-    _inputBudgetPhases.remove(owner.sessionId);
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null) {
+      final phase = _inputBudgetPhases[owner.sessionId];
+      if (phase != null && identical(phase.owner, owner)) {
+        phase.invalidated = true;
+        _inputBudgetPhases.remove(owner.sessionId);
+      }
+      return;
+    }
+    if (!_isCurrentPromptLifecycle(lifecycle) ||
+        !identical(lifecycle.owner, owner)) {
+      return;
+    }
+    lifecycle.callerEnded = true;
+    if (lifecycle.promptResult == null && lifecycle.cleanupFuture == null) {
+      _releasePromptLifecycle(lifecycle);
+      return;
+    }
+    final cleanup = lifecycle.cleanupFuture;
+    if (cleanup != null && lifecycle.cleanupDone) {
+      _releasePromptLifecycle(lifecycle);
+    }
   }
 
   /// Cancel the phase owned by [owner], rejecting stale owners locally.
-  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) {
-    final phase = _inputBudgetPhases[owner.sessionId];
-    if (phase == null || !identical(phase.owner, owner)) {
-      return Future<void>.error(
-        StateError('ACP prompt phase owner is no longer active.'),
+  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) async {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null ||
+        !_isCurrentPromptLifecycle(lifecycle) ||
+        !identical(lifecycle.owner, owner) ||
+        !identical(owner.managerIdentity, _managerIdentity) ||
+        lifecycle.settling) {
+      throw StateError('ACP prompt phase owner is no longer active.');
+    }
+    lifecycle.callerEnded = true;
+    final legacyRawCaller = lifecycle.promptResult == null;
+    _cancelledPromptOwners[owner.sessionId] = owner;
+    _settlePromptLifecycle(
+      lifecycle,
+      PermissionCancellationReason.promptCancelled,
+      sendCancel: true,
+    );
+    await lifecycle.cancelSubmitted;
+    if (legacyRawCaller && lifecycle.admissionsSettledNow) {
+      _releasePromptLifecycle(lifecycle);
+    }
+  }
+
+  Future<void> _settlePromptLifecycle(
+    _PromptLifecycle lifecycle,
+    PermissionCancellationReason reason, {
+    bool sendCancel = false,
+  }) {
+    final existing = lifecycle.cleanupFuture;
+    if (existing != null) return existing;
+    lifecycle.startSettling();
+    lifecycle.cancellationWinner ??= reason;
+    settlePromptAdmissions(
+      owner: lifecycle.owner,
+      reason: lifecycle.cancellationWinner!,
+    );
+    lifecycle.sealAdmissions(_admissionsByOwner[lifecycle.owner]);
+    final legacyRawCaller = lifecycle.promptResult == null;
+    final JsonRpcPromptCleanup cleanup;
+    if (legacyRawCaller) {
+      final notification = sendCancel
+          ? peer.cancel(<String, dynamic>{
+              'sessionId': lifecycle.owner.sessionId,
+            })
+          : Future<void>.value();
+      unawaited(notification.then<void>((_) {}, onError: (_, _) {}));
+      // The pre-Task11 raw caller has no owner-bound peer operation. Preserve
+      // its compatibility contract without pretending the raw request was
+      // reaped: only the exact owner admissions participate in this window.
+      cleanup = JsonRpcPromptCleanup(
+        notificationSubmitted: notification,
+        reaped: lifecycle.admissionsSettled,
+      );
+    } else {
+      cleanup = peer.cancelPromptRequest(
+        owner: lifecycle.owner,
+        admissionsSettled: lifecycle.admissionsSettled,
+        sendCancel: sendCancel,
       );
     }
-    phase.invalidated = true;
-    _inputBudgetPhases.remove(owner.sessionId);
-    _cancelledPromptOwners[owner.sessionId] = owner;
-    return peer.cancel({'sessionId': owner.sessionId});
+    final window = _getOrJoinOwnerCleanupWindow(
+      key: lifecycle.owner,
+      fatalOwner: lifecycle.owner,
+      blockerIdentity: lifecycle,
+      blockerReaped: cleanup.reaped,
+    );
+    lifecycle.cancelSubmitted = cleanup.notificationSubmitted;
+    lifecycle.promptReaped = cleanup.reaped;
+    lifecycle.cleanupWindow = window;
+    lifecycle.cleanupIdentity = AcpPromptCleanupIdentity(
+      lifecycle.owner,
+      lifecycle.owner.generation,
+    );
+    lifecycle.cleanupFuture = window.reaped;
+    if (legacyRawCaller && lifecycle.admissionsSettledNow) {
+      _releaseOwnerCleanupBlocker(lifecycle.owner, window, lifecycle);
+    }
+    unawaited(
+      window.reaped.whenComplete(() {
+        lifecycle.cleanupDone = true;
+        if (lifecycle.callerEnded) _releasePromptLifecycle(lifecycle);
+      }),
+    );
+    return window.reaped;
+  }
+
+  void _releasePromptLifecycle(_PromptLifecycle lifecycle) {
+    if (!_isCurrentPromptLifecycle(lifecycle)) return;
+    _lastReleasedPromptLifecycleSnapshot = (
+      owner: lifecycle.owner,
+      snapshot: _snapshotPromptLifecycle(lifecycle),
+    );
+    lifecycle.state = _PromptLifecycleState.removed;
+    _promptLifecycles.remove(lifecycle.owner.sessionId);
+    final phase = _inputBudgetPhases[lifecycle.owner.sessionId];
+    if (phase != null && identical(phase.owner, lifecycle.owner)) {
+      phase.invalidated = true;
+      _inputBudgetPhases.remove(lifecycle.owner.sessionId);
+    }
   }
 
   AcpSessionInputBudgetOwner _beginInputBudgetPhase(String sessionId) {
@@ -2069,7 +2567,7 @@ class SessionManager implements AcpBoundedObservationSource {
         commit?.call(result);
         return result;
       } catch (_) {
-        _invalidateSessionGeneration(sessionId);
+        if (!hadBinding) _invalidateSessionGeneration(sessionId);
         if (!hadBinding) {
           _sessionWorkspaceRoots.remove(sessionId);
           _sessionAdditionalDirectories.remove(sessionId);
@@ -2364,6 +2862,54 @@ class SessionManager implements AcpBoundedObservationSource {
     } on Object {
       // A synchronous listener or hostile envelope must not escape the route.
     }
+  }
+
+  void _onPeerSessionUpdate(Object? incoming) {
+    final envelope = incoming is PausedSessionUpdateForTesting
+        ? incoming.envelope
+        : incoming;
+    final String? sessionId;
+    try {
+      sessionId = envelope is Map
+          ? _sessionIdFromMap(Map<String, dynamic>.from(envelope))
+          : null;
+    } on Object {
+      return;
+    }
+    final generation = sessionId == null
+        ? null
+        : _sessionGenerations[sessionId];
+    final phase = sessionId == null ? null : _inputBudgetPhases[sessionId];
+    if (sessionId == null || (generation == null && phase == null)) return;
+    if (incoming is PausedSessionUpdateForTesting) {
+      unawaited(
+        incoming.release.then<void>((_) {
+          _routeSessionUpdateForOwner(sessionId!, generation, phase, envelope);
+        }),
+      );
+      return;
+    }
+    _routeSessionUpdateForOwner(sessionId, generation, phase, envelope);
+  }
+
+  void _routeSessionUpdateForOwner(
+    String sessionId,
+    _SessionGeneration? generation,
+    _SessionInputBudgetPhase? phase,
+    Object? envelope,
+  ) {
+    final currentGeneration = _sessionGenerations[sessionId];
+    final generationOwns =
+        generation != null &&
+        generation.active &&
+        identical(currentGeneration, generation);
+    final currentPhase = _inputBudgetPhases[sessionId];
+    final phaseOwns =
+        phase != null && !phase.invalidated && identical(currentPhase, phase);
+    if (!generationOwns && !phaseOwns) {
+      return;
+    }
+    _routeSessionUpdate(envelope);
   }
 
   void _routeSessionUpdateIsolated(Object? envelope) {
@@ -3052,6 +3598,20 @@ class SessionManager implements AcpBoundedObservationSource {
         ? null
         : (_settlingPromptOwners[sessionId] ??
               _inputBudgetPhases[sessionId]?.owner);
+    final currentLifecycle = sessionId == null
+        ? null
+        : _promptLifecycles[sessionId];
+    final promptLifecycle =
+        currentLifecycle != null &&
+            owner != null &&
+            identical(currentLifecycle.owner, owner)
+        ? currentLifecycle
+        : null;
+    final ownerAdmissionsSealed = promptLifecycle?.admissionsSealed ?? false;
+    final sealedCancellationReason = ownerAdmissionsSealed
+        ? promptLifecycle!.cancellationWinner ??
+              PermissionCancellationReason.promptEnded
+        : null;
     final admission = _InboundPermissionAdmission(
       manager: this,
       method: method,
@@ -3059,16 +3619,26 @@ class SessionManager implements AcpBoundedObservationSource {
       sessionId: sessionId,
       sessionGeneration: generation,
       promptOwner: owner,
+      promptLifecycle: ownerAdmissionsSealed ? null : promptLifecycle,
+      ownerAdmissionsSealedAtArrival: ownerAdmissionsSealed,
       peerEpoch: _peerEpoch,
     );
     _inboundAdmissions.add(admission);
     if (params != null) _admissionsByParams[params] = admission;
-    if (owner != null) {
+    if (sealedCancellationReason != null) {
+      admission.tryCancel(sealedCancellationReason);
+    } else if (owner != null) {
       (_admissionsByOwner[owner] ??=
               HashSet<_InboundPermissionAdmission>.identity())
           .add(admission);
       final settlingReason = _settlingPromptReasons[owner];
-      if (settlingReason != null) admission.tryCancel(settlingReason);
+      final lifecycleReason = promptLifecycle?.settling ?? false
+          ? promptLifecycle!.cancellationWinner
+          : null;
+      final cancellationReason = settlingReason ?? lifecycleReason;
+      if (cancellationReason != null) {
+        admission.tryCancel(cancellationReason);
+      }
     }
     if (sessionId != null && generation == null && owner == null) {
       admission.tryCompleteLocal(
@@ -3316,6 +3886,11 @@ class SessionManager implements AcpBoundedObservationSource {
     final owner = admission.promptOwner;
     if (owner == null) return;
     final owned = _admissionsByOwner[owner];
+    final isLastForOwner =
+        owned != null && owned.contains(admission) && owned.length == 1;
+    admission.promptLifecycle?.markAdmissionRemoving(
+      isLastForOwner: isLastForOwner,
+    );
     owned?.remove(admission);
     if (owned != null && owned.isEmpty) {
       _admissionsByOwner.remove(owner);

@@ -4992,10 +4992,28 @@ Future<void> main() async {
     var cancelRequests = 0;
     final server = channel.local.stream.listen((line) {
       final request = jsonDecode(line) as Map<String, dynamic>;
-      if (request['method'] == 'session/cancel') cancelRequests += 1;
+      if (request['method'] == 'session/resume') {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      } else if (request['method'] == 'session/cancel') {
+        cancelRequests += 1;
+      }
     });
 
     try {
+      await manager.resumeSession(
+        sessionId: 'owner-session',
+        workspaceRoot: '/workspace/owner',
+      );
+      await manager.resumeSession(
+        sessionId: 'parallel-session',
+        workspaceRoot: '/workspace/parallel',
+      );
       final first = manager.beginPromptTurn('owner-session');
       expect(first.sessionId, 'owner-session');
       expect(first.generation, greaterThan(0));
@@ -5038,7 +5056,9 @@ Future<void> main() async {
         final method = request['method'] as String?;
         if (method == null) return;
         requestIds.putIfAbsent(method, () => <Object?>[]).add(request['id']);
-        if (method == 'session/cancel' || method == 'session/close') {
+        if (method == 'session/resume' ||
+            method == 'session/cancel' ||
+            method == 'session/close') {
           channel.local.sink.add(
             jsonEncode(<String, dynamic>{
               'jsonrpc': '2.0',
@@ -5050,6 +5070,17 @@ Future<void> main() async {
       });
 
       try {
+        for (final sessionId in <String>[
+          'cancel-session',
+          'close-session',
+          'unaffected-session',
+          'dispose-session',
+        ]) {
+          await manager.resumeSession(
+            sessionId: sessionId,
+            workspaceRoot: '/workspace/$sessionId',
+          );
+        }
         final cancelled = manager.beginPromptTurn('cancel-session');
         await manager.cancelPromptTurn(cancelled);
         final replacement = manager.beginPromptTurn('cancel-session');
@@ -5065,6 +5096,10 @@ Future<void> main() async {
         expect(
           () => manager.beginPromptTurn('unaffected-session'),
           throwsStateError,
+        );
+        await manager.resumeSession(
+          sessionId: 'close-session',
+          workspaceRoot: '/workspace/close-session',
         );
         final afterClose = manager.beginPromptTurn('close-session');
         manager.endPromptTurn(closed);
@@ -5106,6 +5141,17 @@ Future<void> main() async {
       final server = channel.local.stream.listen((line) {
         final request = jsonDecode(line) as Map<String, dynamic>;
         if (request['method'] == 'session/resume') {
+          final sessionId = (request['params'] as Map)['sessionId'];
+          if (sessionId == 'other-session') {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': request['id'],
+                'result': <String, dynamic>{},
+              }),
+            );
+            return;
+          }
           resumeCount += 1;
           if (!resumeRequest.isCompleted) resumeRequest.complete(request['id']);
         } else if (request['method'] == 'session/load') {
@@ -5125,6 +5171,10 @@ Future<void> main() async {
       }
 
       try {
+        await manager.resumeSession(
+          sessionId: 'other-session',
+          workspaceRoot: '/workspace/other',
+        );
         final resume = manager.resumeSession(
           sessionId: 'setup-session',
           workspaceRoot: '/workspace',
@@ -5257,7 +5307,7 @@ Future<void> main() async {
 
   for (final lateOutcome in const <String>['success', 'error']) {
     test(
-      'stale cancelled prompt $lateOutcome cannot terminate its replacement',
+      'stale cancelled prompt $lateOutcome reaps before its replacement',
       () async {
         final channel = StreamChannelController<String>();
         final peer = JsonRpcPeer(channel.foreign);
@@ -5303,17 +5353,16 @@ Future<void> main() async {
           await first.cancel();
           first = null;
 
-          final secondSeen = promptSeen.stream.first;
-          var replacementCompleted = false;
-          final replacement = manager
-              .prompt(
-                sessionId: 'stale-prompt',
-                content: const <Map<String, dynamic>>[],
-              )
-              .toList()
-              .whenComplete(() => replacementCompleted = true);
-          await secondSeen.timeout(const Duration(seconds: 5));
-          expect(promptIds, hasLength(2));
+          await expectLater(
+            manager
+                .prompt(
+                  sessionId: 'stale-prompt',
+                  content: const <Map<String, dynamic>>[],
+                )
+                .toList(),
+            throwsStateError,
+          );
+          expect(promptIds, hasLength(1));
 
           channel.local.sink.add(
             jsonEncode(<String, dynamic>{
@@ -5329,10 +5378,18 @@ Future<void> main() async {
             }),
           );
           await pumpEventQueue();
-          expect(replacementCompleted, isFalse);
           expect(sharedUpdates.whereType<acp.TurnEnded>(), isEmpty);
           expect(sharedErrors, isEmpty);
 
+          final secondSeen = promptSeen.stream.first;
+          final replacement = manager
+              .prompt(
+                sessionId: 'stale-prompt',
+                content: const <Map<String, dynamic>>[],
+              )
+              .toList();
+          await secondSeen.timeout(const Duration(seconds: 5));
+          expect(promptIds, hasLength(2));
           channel.local.sink.add(
             jsonEncode(<String, dynamic>{
               'jsonrpc': '2.0',
@@ -5360,6 +5417,7 @@ Future<void> main() async {
     final peer = JsonRpcPeer(channel.foreign);
     final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
     final cancelSeen = Completer<void>();
+    final promptId = Completer<Object?>();
     final server = channel.local.stream.listen((line) {
       final request = jsonDecode(line) as Map<String, dynamic>;
       if (request['method'] == 'session/resume') {
@@ -5379,6 +5437,9 @@ Future<void> main() async {
             'result': <String, dynamic>{},
           }),
         );
+      } else if (request['method'] == 'session/prompt' &&
+          !promptId.isCompleted) {
+        promptId.complete(request['id']);
       }
     });
 
@@ -5396,6 +5457,20 @@ Future<void> main() async {
       await subscription.cancel();
       await cancelSeen.future.timeout(const Duration(seconds: 5));
 
+      expect(
+        () => manager.beginPromptTurn('immediate-cancel'),
+        throwsStateError,
+        reason: 'owner-bound prompt remains settling until request reap',
+      );
+      final id = await promptId.future.timeout(const Duration(seconds: 5));
+      channel.local.sink.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        }),
+      );
+      await pumpEventQueue();
       final replacement = manager.beginPromptTurn('immediate-cancel');
       manager.endPromptTurn(replacement);
     } finally {
@@ -5458,29 +5533,41 @@ Future<void> main() async {
     }
   });
 
-  test('cancel RPC failure still releases the owned phase', () async {
+  test('cancel submission failure still releases the owned phase', () async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
     final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
     final server = channel.local.stream.listen((line) {
       final request = jsonDecode(line) as Map<String, dynamic>;
-      if (request['method'] != 'session/cancel') return;
-      channel.local.sink.add(
-        jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': request['id'],
-          'error': <String, dynamic>{
-            'code': -32000,
-            'message': 'fixed cancel failure',
-          },
-        }),
-      );
+      if (request['method'] == 'session/resume') {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': request['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      }
     });
 
     try {
+      await manager.resumeSession(
+        sessionId: 'cancel-error',
+        workspaceRoot: '/workspace/cancel-error',
+      );
       final owner = manager.beginPromptTurn('cancel-error');
-      await peer.close();
-      await expectLater(manager.cancelPromptTurn(owner), throwsA(anything));
+      peer.failNextCancelSubmissionForTesting();
+      await expectLater(
+        manager.cancelPromptTurn(owner),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'fixed session/cancel submission failure',
+          ),
+        ),
+      );
+      await pumpEventQueue();
       final replacement = manager.beginPromptTurn('cancel-error');
       manager.endPromptTurn(replacement);
     } finally {
@@ -14131,7 +14218,10 @@ Future<void> main() async {
       expect(loadEvents, isEmpty);
       expect(promptEvents, hasLength(1));
       expect(promptEvents.single.type, AgentEventType.error);
-      expect(promptEvents.single.text, contains('Session setup'));
+      expect(
+        promptEvents.single.text,
+        contains('Session is closing or setup is active.'),
+      );
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);

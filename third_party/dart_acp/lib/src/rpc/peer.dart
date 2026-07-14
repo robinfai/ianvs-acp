@@ -12,6 +12,70 @@ import 'inbound_gate.dart';
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
 
+/// Terminal kind observed for one owner-bound prompt request.
+enum JsonRpcPromptTerminalKind { response, remoteError, timedOut }
+
+/// First terminal outcome observed for one owner-bound prompt request.
+final class JsonRpcPromptTerminalWinner {
+  /// Creates an immutable prompt terminal outcome.
+  const JsonRpcPromptTerminalWinner({
+    required this.kind,
+    this.response,
+    this.error,
+    this.stackTrace,
+  });
+
+  /// Kind of terminal outcome.
+  final JsonRpcPromptTerminalKind kind;
+
+  /// Successful response payload, when [kind] is response.
+  final Map<String, dynamic>? response;
+
+  /// Remote or local error, when [kind] is remoteError.
+  final Object? error;
+
+  /// Original error stack trace, when available.
+  final StackTrace? stackTrace;
+}
+
+/// Manager settlement accepted for one prompt terminal.
+final class JsonRpcPromptSettlement {
+  /// Creates a prompt terminal settlement.
+  const JsonRpcPromptSettlement(this.admissionsSettled, {this.accepted = true});
+
+  /// Creates a rejected prompt terminal settlement.
+  factory JsonRpcPromptSettlement.rejected() =>
+      JsonRpcPromptSettlement(Future<void>.value(), accepted: false);
+
+  /// Completes after all prompt-owned admissions settle.
+  final Future<void> admissionsSettled;
+
+  /// Whether the terminal still belongs to the current manager lifecycle.
+  final bool accepted;
+}
+
+/// Notification and reap futures for one prompt cancellation.
+final class JsonRpcPromptCleanup {
+  /// Creates prompt cancellation cleanup futures.
+  const JsonRpcPromptCleanup({
+    required this.notificationSubmitted,
+    required this.reaped,
+  });
+
+  /// Completes when the cancel notification is submitted.
+  final Future<void> notificationSubmitted;
+
+  /// Completes when request and admission cleanup both finish.
+  final Future<void> reaped;
+}
+
+/// Handles one neutral prompt terminal in the owning manager.
+typedef JsonRpcPromptTerminalHandler =
+    JsonRpcPromptSettlement Function(
+      JsonRpcPromptOwner owner,
+      JsonRpcPromptTerminalWinner winner,
+    );
+
 /// The first cause that made an ACP peer unavailable.
 enum AcpPeerUnavailableReason {
   /// A fatal request or cleanup deadline expired.
@@ -64,6 +128,18 @@ abstract interface class JsonRpcPromptOwner {
   int get generation;
 }
 
+/// Test envelope that pauses delivery after the peer callback captured it.
+final class PausedSessionUpdateForTesting {
+  /// Creates a paused update envelope.
+  PausedSessionUpdateForTesting(this.envelope, this.release);
+
+  /// Original update envelope.
+  final Object? envelope;
+
+  /// Completes when the captured callback may continue.
+  final Future<void> release;
+}
+
 /// Local lifecycle snapshot bound to one admitted inbound request.
 abstract interface class InboundAdmission {
   /// First local terminal that may short-circuit a queued reservation.
@@ -99,6 +175,38 @@ typedef AdmittedInboundHandler =
       Map<String, dynamic> params,
       InboundAdmission admission,
     );
+
+final class _JsonRpcPromptOperation {
+  _JsonRpcPromptOperation({required this.owner, required this.request});
+
+  final JsonRpcPromptOwner owner;
+  final Future<Map<String, dynamic>> request;
+  final Completer<Map<String, dynamic>> caller =
+      Completer<Map<String, dynamic>>.sync();
+  JsonRpcPromptTerminalWinner? winner;
+  Future<void>? cleanupFuture;
+  Future<void>? cancelSubmission;
+  Timer? deadlineTimer;
+  void Function()? deadlineCallbackForTesting;
+  bool cancelSent = false;
+  bool reaped = false;
+  bool terminalSettlementInProgress = false;
+
+  bool tryRecordWinner(JsonRpcPromptTerminalWinner candidate) {
+    if (winner != null) return false;
+    winner = candidate;
+    deadlineTimer?.cancel();
+    return true;
+  }
+
+  Future<void> sendCancelOnce(JsonRpcPeer peer) {
+    if (cancelSent) return Future<void>.value();
+    cancelSent = true;
+    return peer.sendNotificationRaw('session/cancel', <String, dynamic>{
+      'sessionId': owner.sessionId,
+    });
+  }
+}
 
 final class _AdmittedDispatchSlot {
   const _AdmittedDispatchSlot({
@@ -138,8 +246,9 @@ class JsonRpcPeer {
          maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
        ) {
     timeouts.validate();
+    _outboundSink = _FailNextCancelSink(channel.sink);
     _decodedSink = _JsonEncodingSink(
-      channel.sink,
+      _outboundSink,
       prepare: _prepareCorrelationResponse,
       onCommitted: _finishCommittedCorrelations,
       onWriteRejected: _finishRejectedCorrelations,
@@ -171,13 +280,21 @@ class JsonRpcPeer {
   final Set<AcpPeerUnavailableListener> _unavailableListeners =
       <AcpPeerUnavailableListener>{};
   final _OutboundRequestRegistry _outboundRequests = _OutboundRequestRegistry();
+  final Map<String, _JsonRpcPromptOperation> _promptOperationsBySession =
+      <String, _JsonRpcPromptOperation>{};
+  final Map<JsonRpcPromptOwner, _JsonRpcPromptOperation>
+  _promptOperationsByOwner =
+      HashMap<JsonRpcPromptOwner, _JsonRpcPromptOperation>.identity();
 
   /// Underlying JSON-RPC peer.
   late final rpc.Peer _peer;
+  late final _FailNextCancelSink _outboundSink;
   late final _JsonEncodingSink _decodedSink;
   late final StreamSubscription<String> _inboundSubscription;
   final StreamController<Object?> _sessionUpdates =
       StreamController<Object?>.broadcast(sync: true);
+  Completer<void>? _pauseNextSessionUpdate;
+  final Completer<void> _pausedSessionUpdateCaptured = Completer<void>.sync();
   _DispatchContext? _dispatchContext;
   _PendingTransportTermination? _pendingTransportTermination;
   AcpPeerUnavailableState? _unavailableState;
@@ -205,9 +322,45 @@ class JsonRpcPeer {
   @visibleForTesting
   int get inboundPendingItemsForTesting => _gate.pendingItems;
 
+  /// Number of owner-bound prompt operations retained by the peer.
+  @visibleForTesting
+  int get promptOperationCountForTesting => _promptOperationsByOwner.length;
+
+  /// Owner-index size for prompt operation invariant tests.
+  @visibleForTesting
+  int get promptOwnerOperationCountForTesting =>
+      _promptOperationsByOwner.length;
+
+  /// Session-index size for prompt operation invariant tests.
+  @visibleForTesting
+  int get promptSessionOperationCountForTesting =>
+      _promptOperationsBySession.length;
+
   @visibleForTesting
   Set<String> get correlationIdsForTesting =>
       Set<String>.unmodifiable(_correlations.keys);
+
+  /// Makes the next encoded session/cancel sink submission fail.
+  @visibleForTesting
+  void failNextCancelSubmissionForTesting() =>
+      _outboundSink.failNextCancelSubmission();
+
+  /// Completes when a paused session update has been captured.
+  @visibleForTesting
+  Future<void> get pausedSessionUpdateCapturedForTesting =>
+      _pausedSessionUpdateCaptured.future;
+
+  /// Pauses the next test-dispatched session update after callback capture.
+  @visibleForTesting
+  void pauseNextSessionUpdateForTesting() {
+    _pauseNextSessionUpdate = Completer<void>.sync();
+  }
+
+  /// Releases the currently paused test session update.
+  @visibleForTesting
+  void releasePausedSessionUpdateForTesting() {
+    _pauseNextSessionUpdate?.complete();
+  }
 
   /// Whether the peer has not yet entered its unavailable state.
   bool get isAvailable => _closeFuture == null;
@@ -288,10 +441,36 @@ class JsonRpcPeer {
     _unavailableState = state;
     _decodedSink.disableWrites();
     final flushedRequests = _outboundRequests.completeConnectionClosed();
+    _completePromptOperationsUnavailable(state);
     _notifyUnavailableListeners(state);
     unawaited(_closeUnavailableResources(closeOwner));
     for (final operation in flushedRequests) {
       operation.publish();
+    }
+  }
+
+  void _completePromptOperationsUnavailable(AcpPeerUnavailableState state) {
+    for (final operation in _promptOperationsByOwner.values.toList(
+      growable: false,
+    )) {
+      if (!_isCurrentPromptOperation(operation)) continue;
+      final cleanup = state.cleanupIdentity;
+      final preservesCachedTerminal =
+          state.reason == AcpPeerUnavailableReason.fatalTimeout &&
+          cleanup != null &&
+          identical(cleanup.ownerToken, operation.owner) &&
+          cleanup.generation == operation.owner.generation &&
+          operation.winner != null &&
+          (operation.cleanupFuture != null ||
+              operation.terminalSettlementInProgress);
+      if (preservesCachedTerminal) continue;
+      if (!operation.caller.isCompleted) {
+        operation.caller.completeError(const AcpConnectionClosedException());
+      }
+      unawaited(operation.request.then<void>((_) {}, onError: (_, _) {}));
+      if (operation.cleanupFuture == null) {
+        _removePromptOperation(operation);
+      }
     }
   }
 
@@ -349,7 +528,18 @@ class JsonRpcPeer {
   /// Injects a raw update for hostile-envelope route verification.
   @visibleForTesting
   void dispatchSessionUpdateForTesting(Object? envelope) {
-    _dispatchSessionUpdate(envelope);
+    final gate = _pauseNextSessionUpdate;
+    _pauseNextSessionUpdate = null;
+    if (gate == null) {
+      _dispatchSessionUpdate(envelope);
+      return;
+    }
+    _dispatchSessionUpdate(
+      PausedSessionUpdateForTesting(envelope, gate.future),
+    );
+    if (!_pausedSessionUpdateCaptured.isCompleted) {
+      _pausedSessionUpdateCaptured.complete();
+    }
   }
 
   void _dispatchSessionUpdate(Object? envelope) {
@@ -1068,15 +1258,239 @@ class JsonRpcPeer {
   Future<Json> sendPromptRequest({
     required JsonRpcPromptOwner owner,
     required List<Map<String, dynamic>> content,
-  }) async {
-    final raw = await _sendRequest('session/prompt', <String, dynamic>{
+    required JsonRpcPromptTerminalHandler onTerminal,
+  }) {
+    if (!isAvailable ||
+        _promptOperationsBySession.containsKey(owner.sessionId) ||
+        _promptOperationsByOwner.containsKey(owner)) {
+      return Future<Json>.error(
+        StateError('ACP prompt is already active or settling.'),
+      );
+    }
+    final original = Completer<Map<String, dynamic>>.sync();
+    final operation = _JsonRpcPromptOperation(
+      owner: owner,
+      request: original.future,
+    );
+    unawaited(
+      operation.request.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
+    _promptOperationsBySession[owner.sessionId] = operation;
+    _promptOperationsByOwner[owner] = operation;
+
+    void completeCallerAfterCleanup(
+      JsonRpcPromptTerminalWinner winner,
+      JsonRpcPromptCleanup cleanup,
+    ) {
+      unawaited(
+        cleanup.reaped.then<void>(
+          (_) {
+            if (operation.caller.isCompleted) return;
+            switch (winner.kind) {
+              case JsonRpcPromptTerminalKind.response:
+                operation.caller.complete(winner.response!);
+              case JsonRpcPromptTerminalKind.remoteError:
+                operation.caller.completeError(
+                  winner.error!,
+                  winner.stackTrace ?? StackTrace.empty,
+                );
+              case JsonRpcPromptTerminalKind.timedOut:
+                operation.caller.completeError(
+                  const AcpPromptTimeoutException(),
+                );
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!operation.caller.isCompleted) {
+              operation.caller.completeError(error, stackTrace);
+            }
+          },
+        ),
+      );
+    }
+
+    void finish(JsonRpcPromptTerminalWinner winner) {
+      if (!_isCurrentPromptOperation(operation) ||
+          !operation.tryRecordWinner(winner)) {
+        return;
+      }
+      late final JsonRpcPromptSettlement settlement;
+      operation.terminalSettlementInProgress = true;
+      try {
+        settlement = onTerminal(owner, winner);
+      } on Object catch (error, stackTrace) {
+        operation.terminalSettlementInProgress = false;
+        Future<void> notification = Future<void>.value();
+        if (winner.kind == JsonRpcPromptTerminalKind.timedOut &&
+            !operation.reaped) {
+          try {
+            notification = operation.sendCancelOnce(this);
+          } on Object catch (cancelError, cancelStackTrace) {
+            notification = Future<void>.error(cancelError, cancelStackTrace);
+          }
+        }
+        operation.cancelSubmission = notification;
+        unawaited(
+          notification.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+        _removePromptOperation(operation);
+        if (!operation.caller.isCompleted) {
+          operation.caller.completeError(error, stackTrace);
+        }
+        return;
+      }
+      operation.terminalSettlementInProgress = false;
+      if (!settlement.accepted) {
+        if (operation.cleanupFuture == null) {
+          _removePromptOperation(operation);
+        }
+        if (!operation.caller.isCompleted) {
+          operation.caller.completeError(const AcpConnectionClosedException());
+        }
+        return;
+      }
+      final cleanup = cancelPromptRequest(
+        owner: owner,
+        admissionsSettled: settlement.admissionsSettled,
+        sendCancel: winner.kind == JsonRpcPromptTerminalKind.timedOut,
+      );
+      completeCallerAfterCleanup(winner, cleanup);
+    }
+
+    final rawRequest = _sendRequest('session/prompt', <String, dynamic>{
       'sessionId': owner.sessionId,
       'prompt': content,
     }, promptOwner: owner);
-    return requireJsonRpcObjectResult(
-      raw,
-      resource: 'JSON-RPC session/prompt result',
+    final rawConsumer = rawRequest.then<void>(
+      (raw) {
+        if (raw is! Map) {
+          const error = FormatException('Invalid session/prompt response.');
+          operation.reaped = true;
+          if (_isCurrentPromptOperation(operation)) {
+            finish(
+              const JsonRpcPromptTerminalWinner(
+                kind: JsonRpcPromptTerminalKind.remoteError,
+                error: error,
+              ),
+            );
+          }
+          if (!original.isCompleted) original.completeError(error);
+          return;
+        }
+        final response = Map<String, dynamic>.from(raw);
+        operation.reaped = true;
+        if (_isCurrentPromptOperation(operation)) {
+          finish(
+            JsonRpcPromptTerminalWinner(
+              kind: JsonRpcPromptTerminalKind.response,
+              response: response,
+            ),
+          );
+        }
+        if (!original.isCompleted) original.complete(response);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        operation.reaped = true;
+        if (_isCurrentPromptOperation(operation)) {
+          finish(
+            JsonRpcPromptTerminalWinner(
+              kind: JsonRpcPromptTerminalKind.remoteError,
+              error: error,
+              stackTrace: stackTrace,
+            ),
+          );
+        }
+        if (!original.isCompleted) original.completeError(error, stackTrace);
+      },
     );
+    unawaited(rawConsumer.catchError((Object _, StackTrace _) {}));
+    void deadline() {
+      finish(
+        const JsonRpcPromptTerminalWinner(
+          kind: JsonRpcPromptTerminalKind.timedOut,
+        ),
+      );
+    }
+
+    operation.deadlineCallbackForTesting = deadline;
+    operation.deadlineTimer = Timer(timeouts.prompt, deadline);
+    return operation.caller.future;
+  }
+
+  /// Fires the current prompt deadline in package tests.
+  @visibleForTesting
+  void firePromptDeadlineForTesting(JsonRpcPromptOwner owner) {
+    final operation = _promptOperationsByOwner[owner];
+    if (operation == null || !_isCurrentPromptOperation(operation)) {
+      throw StateError('Prompt operation is no longer current.');
+    }
+    operation.deadlineCallbackForTesting!.call();
+  }
+
+  /// Cancels one current owner-bound prompt and reaps request plus admissions.
+  JsonRpcPromptCleanup cancelPromptRequest({
+    required JsonRpcPromptOwner owner,
+    required Future<void> admissionsSettled,
+    bool sendCancel = true,
+  }) {
+    final operation = _promptOperationsByOwner[owner];
+    if (operation == null || !_isCurrentPromptOperation(operation)) {
+      final error = Future<void>.error(
+        StateError('ACP prompt phase owner is no longer active.'),
+      );
+      unawaited(error.catchError((Object _, StackTrace _) {}));
+      return JsonRpcPromptCleanup(notificationSubmitted: error, reaped: error);
+    }
+    final existing = operation.cleanupFuture;
+    if (existing != null) {
+      return JsonRpcPromptCleanup(
+        notificationSubmitted:
+            operation.cancelSubmission ?? Future<void>.value(),
+        reaped: existing,
+      );
+    }
+    final notification = sendCancel && !operation.reaped
+        ? operation.sendCancelOnce(this)
+        : Future<void>.value();
+    operation.cancelSubmission = notification;
+    unawaited(notification.then<void>((_) {}, onError: (_, _) {}));
+    final requestReaped = operation.request.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    final cleanup = () async {
+      try {
+        await Future.wait<void>(<Future<void>>[
+          requestReaped,
+          admissionsSettled,
+        ], eagerError: false);
+      } finally {
+        operation.reaped = true;
+        _removePromptOperation(operation);
+      }
+    }();
+    operation.cleanupFuture = cleanup;
+    return JsonRpcPromptCleanup(
+      notificationSubmitted: notification,
+      reaped: cleanup,
+    );
+  }
+
+  bool _isCurrentPromptOperation(_JsonRpcPromptOperation operation) =>
+      identical(_promptOperationsByOwner[operation.owner], operation) &&
+      identical(
+        _promptOperationsBySession[operation.owner.sessionId],
+        operation,
+      );
+
+  void _removePromptOperation(_JsonRpcPromptOperation operation) {
+    if (!_isCurrentPromptOperation(operation)) return;
+    operation.deadlineTimer?.cancel();
+    _promptOperationsByOwner.remove(operation.owner);
+    _promptOperationsBySession.remove(operation.owner.sessionId);
   }
 
   /// Send `session/cancel` as a notification.
@@ -1376,6 +1790,45 @@ typedef _PreparedCorrelationResponse = ({
   Object? wireValue,
   List<String> internalIds,
 });
+
+final class _FailNextCancelSink implements StreamSink<String> {
+  _FailNextCancelSink(this.delegate);
+
+  final StreamSink<String> delegate;
+  bool _failNextCancel = false;
+
+  void failNextCancelSubmission() {
+    if (_failNextCancel) {
+      throw StateError('A cancel submission failure is already armed.');
+    }
+    _failNextCancel = true;
+  }
+
+  @override
+  Future<void> get done => delegate.done;
+
+  @override
+  void add(String event) {
+    if (_failNextCancel) {
+      final decoded = jsonDecode(event);
+      if (decoded is Map && decoded['method'] == 'session/cancel') {
+        _failNextCancel = false;
+        throw StateError('fixed session/cancel submission failure');
+      }
+    }
+    delegate.add(event);
+  }
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      delegate.addError(error, stackTrace);
+
+  @override
+  Future<void> addStream(Stream<String> stream) => delegate.addStream(stream);
+
+  @override
+  Future<void> close() => delegate.close();
+}
 
 final class _JsonEncodingSink implements StreamSink<Object?> {
   _JsonEncodingSink(

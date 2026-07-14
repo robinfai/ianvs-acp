@@ -5,7 +5,8 @@ import 'dart:convert';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:dart_acp/src/rpc/inbound_gate.dart';
 import 'package:dart_acp/src/rpc/peer.dart';
-import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
+import 'package:dart_acp/src/session/session_manager.dart'
+    show PromptLifecycleSnapshot, SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
@@ -1098,6 +1099,713 @@ final class _LateTerminalHarness {
   }
 }
 
+enum _PromptRaceTerminal { response, remoteError, deadline, userCancel }
+
+final class _PromptManagerDriver {
+  _PromptManagerDriver(this.core);
+
+  final SessionManager core;
+  acp.AcpSessionInputBudgetOwner? activeOwner;
+
+  acp.AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) =>
+      activeOwner = core.beginPromptTurn(sessionId);
+
+  void endPromptTurn(acp.AcpSessionInputBudgetOwner owner) =>
+      core.endPromptTurn(owner);
+
+  Future<void> cancelPromptTurn(acp.AcpSessionInputBudgetOwner owner) =>
+      core.cancelPromptTurn(owner);
+
+  Future<void> closeSession({required String sessionId}) =>
+      core.closeSession(sessionId: sessionId);
+
+  Future<Map<String, dynamic>> sendPromptRequest({
+    required acp.AcpSessionInputBudgetOwner owner,
+    required List<Map<String, dynamic>> content,
+  }) => core.sendPromptRequest(owner: owner, content: content);
+
+  Stream<acp.AcpUpdate> prompt({
+    required String sessionId,
+    required List<Map<String, dynamic>> content,
+  }) => core.prompt(sessionId: sessionId, content: content);
+}
+
+final class _PromptPublicTransport implements acp.AcpTransport {
+  final StreamChannelController<String> controller =
+      StreamChannelController<String>();
+
+  @override
+  StreamChannel<String> get channel => controller.foreign;
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> stop() => controller.local.sink.close();
+}
+
+final class _PromptPublicClientFixture {
+  _PromptPublicClientFixture._(this.client, this.transport, this.subscription);
+
+  final acp.AcpClient client;
+  final _PromptPublicTransport transport;
+  final StreamSubscription<String> subscription;
+  final Completer<void> promptSeen = Completer<void>();
+  Object? promptId;
+  int promptWireCount = 0;
+
+  static Future<_PromptPublicClientFixture> start() async {
+    final transport = _PromptPublicTransport();
+    late final _PromptPublicClientFixture fixture;
+    final client = await acp.AcpClient.start(
+      config: acp.AcpConfig(timeouts: const acp.AcpTimeouts()),
+      transport: transport,
+    );
+    final subscription = transport.controller.local.stream.listen((line) {
+      final message = Map<String, dynamic>.from(jsonDecode(line) as Map);
+      final method = message['method'];
+      if (method == 'session/resume' || method == 'session/close') {
+        transport.controller.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+      } else if (method == 'session/prompt') {
+        fixture.promptId = message['id'];
+        fixture.promptWireCount += 1;
+        if (!fixture.promptSeen.isCompleted) fixture.promptSeen.complete();
+      }
+    });
+    fixture = _PromptPublicClientFixture._(client, transport, subscription);
+    await client.resumeSession(
+      sessionId: 'public-prompt-session',
+      workspaceRoot: '/tmp',
+    );
+    return fixture;
+  }
+
+  Future<acp.AcpSessionInputBudgetOwner> createStaleOwner() async {
+    final stale = client.beginPromptTurn('public-prompt-session');
+    client.endPromptTurn(stale);
+    await client.closeSession(sessionId: 'public-prompt-session');
+    await client.resumeSession(
+      sessionId: 'public-prompt-session',
+      workspaceRoot: '/tmp',
+    );
+    return stale;
+  }
+
+  Future<acp.AcpSessionInputBudgetOwner> createOtherSessionOwner() async {
+    const otherSessionId = 'public-other-session';
+    await client.resumeSession(
+      sessionId: otherSessionId,
+      workspaceRoot: '/tmp',
+    );
+    final owner = client.beginPromptTurn(otherSessionId);
+    client.endPromptTurn(owner);
+    return owner;
+  }
+
+  void respondSuccess() {
+    transport.controller.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': promptId,
+        'result': <String, dynamic>{'stopReason': 'end_turn'},
+      }),
+    );
+  }
+
+  Future<void> dispose() async {
+    await client.dispose();
+    await subscription.cancel();
+  }
+}
+
+final class _PromptOperationProbe {
+  _PromptOperationProbe({
+    required this.harness,
+    required this.owner,
+    required this.result,
+    required this.promptSeen,
+  }) : admissionBarrier = harness.base.manager
+           .promptAdmissionsSettledForTesting(owner);
+
+  final _PromptLifecycleHarness harness;
+  final acp.AcpSessionInputBudgetOwner owner;
+  final Future<Map<String, dynamic>> result;
+  final Completer<void> promptSeen;
+  final Future<void> admissionBarrier;
+  final Completer<void> admissionStarted = Completer<void>();
+  final Completer<void> admissionReservationReleased = Completer<void>();
+  _PermissionRequestProbe? admission;
+  Completer<void>? responseCommitBlocker;
+
+  PromptLifecycleSnapshot get lifecycle =>
+      harness.base.manager.promptLifecycleSnapshotForTesting(owner);
+
+  JsonRpcPromptTerminalKind? get terminalKind => lifecycle.winner?.kind;
+  AcpPromptCleanupIdentity? get unavailableCleanupIdentity =>
+      lifecycle.cleanupIdentity;
+  bool get terminalRecorded =>
+      lifecycle.winner != null || lifecycle.cancellationWinner != null;
+
+  acp.PermissionCancellationReason? get permissionReason =>
+      harness.base.permissions.cancellations.isEmpty
+      ? null
+      : harness.base.permissions.cancellations.last.$2;
+
+  int get cancelWireCount => harness.cancelWireCount;
+  int get cleanupWindowStartCount =>
+      harness.base.manager.admissionCleanupWindowStartCountForTesting;
+
+  Future<Map<String, dynamic>> get promptResult async {
+    try {
+      return await result;
+    } finally {
+      harness.manager.endPromptTurn(owner);
+    }
+  }
+
+  Future<void> commitAdmissionResponse() async {
+    final blocker = responseCommitBlocker;
+    if (blocker != null && !blocker.isCompleted) blocker.complete();
+    await admission?.responseCommitted.future;
+  }
+
+  Future<void> finishPromptAndAdmission() => harness.finishPromptRace(this);
+}
+
+final class _UnavailablePromptHarness {
+  _UnavailablePromptHarness({
+    required this.client,
+    required this.transport,
+    required this.peer,
+    required this.manager,
+    required this.outboundSubscription,
+  });
+
+  final acp.AcpClient client;
+  final _PromptPublicTransport transport;
+  final JsonRpcPeer peer;
+  final SessionManager manager;
+  final StreamSubscription<String> outboundSubscription;
+  final String sessionId = 'unavailable-prompt-session';
+  int promptWireCount = 0;
+
+  Future<void> dispose() async {
+    await client.dispose();
+    await outboundSubscription.cancel();
+  }
+}
+
+class _PromptLifecycleHarness {
+  _PromptLifecycleHarness._(
+    this.base,
+    this.foreignBase,
+    this.publicFixture,
+    this.publicStaleOwner,
+  ) : manager = _PromptManagerDriver(base.manager);
+
+  static Future<_PromptLifecycleHarness> start({
+    Duration prompt = const Duration(seconds: 2),
+    Duration grace = const Duration(milliseconds: 100),
+    int maxOrdinaryConcurrentHandlers = 1,
+    bool synchronousChannel = false,
+  }) async {
+    final base = await _PermissionAdmissionHarness.start(
+      timeouts: acp.AcpTimeouts(prompt: prompt, promptCancelGrace: grace),
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+      synchronousChannel: synchronousChannel,
+      controlFutureSetups: synchronousChannel,
+      registerInitialSession: !synchronousChannel,
+    );
+    if (synchronousChannel) {
+      final resume = base.manager.resumeSession(
+        sessionId: base.sessionId,
+        workspaceRoot: '/tmp',
+      );
+      await base.waitForSetupRequest(0).timeout(const Duration(seconds: 2));
+      base.completeSetupSuccess(0);
+      await resume.timeout(const Duration(seconds: 2));
+    }
+    final foreign = await _PermissionAdmissionHarness.start();
+    final publicFixture = await _PromptPublicClientFixture.start();
+    final publicStaleOwner = await publicFixture.createStaleOwner();
+    final harness = _PromptLifecycleHarness._(
+      base,
+      foreign,
+      publicFixture,
+      publicStaleOwner,
+    );
+    harness._listen();
+    harness._foreignOwner = foreign.manager.beginPromptTurn(foreign.sessionId);
+    return harness;
+  }
+
+  static Future<_UnavailablePromptHarness> startWithUnavailablePeer() async {
+    final transport = _PromptPublicTransport();
+    late JsonRpcPeer closedPeer;
+    late SessionManager replayedManager;
+    final client = await acp.AcpClient.start(
+      config: acp.AcpConfig(timeouts: const acp.AcpTimeouts()),
+      transport: transport,
+      beforeSessionManagerForTesting: (peer) {
+        closedPeer = peer;
+        unawaited(peer.closeForTesting(AcpPeerUnavailableReason.explicitClose));
+      },
+      afterSessionManagerForTesting: (peer, manager) {
+        expect(peer, same(closedPeer));
+        replayedManager = manager;
+      },
+    );
+    late final _UnavailablePromptHarness harness;
+    final outbound = transport.controller.local.stream.listen((line) {
+      final message = Map<String, dynamic>.from(jsonDecode(line) as Map);
+      if (message['method'] == 'session/prompt') {
+        harness.promptWireCount += 1;
+      }
+    });
+    harness = _UnavailablePromptHarness(
+      client: client,
+      transport: transport,
+      peer: closedPeer,
+      manager: replayedManager,
+      outboundSubscription: outbound,
+    );
+    return harness;
+  }
+
+  final _PermissionAdmissionHarness base;
+  final _PermissionAdmissionHarness foreignBase;
+  final _PromptPublicClientFixture publicFixture;
+  final acp.AcpSessionInputBudgetOwner publicStaleOwner;
+  final _PromptManagerDriver manager;
+  JsonRpcPeer get peer => base.peer;
+  String get sessionId => base.sessionId;
+  final Completer<void> promptSeen = Completer<void>();
+  late final acp.AcpSessionInputBudgetOwner _foreignOwner;
+  StreamSubscription<Map<String, dynamic>>? _wire;
+  Object? _promptRequestId;
+  _PromptOperationProbe? _current;
+  int promptWireCount = 0;
+  int cancelWireCount = 0;
+  int rawPromptCalls = 0;
+  bool _promptResponded = false;
+
+  acp.AcpSessionInputBudgetOwner get activeOwner => manager.activeOwner!;
+  acp.AcpSessionInputBudgetOwner foreignManagerOwner() => _foreignOwner;
+  acp.AcpClient get publicClient => publicFixture.client;
+  int get publicPromptWireCount => publicFixture.promptWireCount;
+  Future<void> get publicPromptSeen => publicFixture.promptSeen.future;
+  void respondPublicPromptSuccess() => publicFixture.respondSuccess();
+  void failNextCancelSubmission() => peer.failNextCancelSubmissionForTesting();
+
+  void _listen() {
+    _wire = base.wireRequests.stream.listen((message) {
+      switch (message['method']) {
+        case 'session/prompt':
+          promptWireCount += 1;
+          _promptRequestId = message['id'];
+          final activeOwner = base.manager.activePromptOwnerForTesting(
+            sessionId,
+          );
+          _current ??= _PromptOperationProbe(
+            harness: this,
+            owner: activeOwner,
+            result: base.manager.promptResultForTesting(activeOwner),
+            promptSeen: Completer<void>(),
+          );
+          if (!promptSeen.isCompleted) promptSeen.complete();
+          final operation = _current!;
+          if (!operation.promptSeen.isCompleted) {
+            operation.promptSeen.complete();
+          }
+          break;
+        case 'session/cancel':
+          cancelWireCount += 1;
+          break;
+      }
+    });
+  }
+
+  Future<_PromptOperationProbe> _startPrompt() async {
+    final owner = manager.beginPromptTurn(sessionId);
+    final seen = Completer<void>();
+    final result = manager.sendPromptRequest(
+      owner: owner,
+      content: const <Map<String, dynamic>>[],
+    );
+    unawaited(result.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    final operation = _PromptOperationProbe(
+      harness: this,
+      owner: owner,
+      result: result,
+      promptSeen: seen,
+    );
+    _current = operation;
+    if (promptSeen.isCompleted) seen.complete();
+    await seen.future.timeout(const Duration(seconds: 2));
+    return operation;
+  }
+
+  Future<_PermissionRequestProbe> _startBlockedAdmission(
+    _PromptOperationProbe operation, {
+    bool running = true,
+    String method = 'fs/read_text_file',
+  }) async {
+    if (!running) await base.occupyAllOrdinaryPermits();
+    final releaseSibling = Completer<void>();
+    operation.responseCommitBlocker = releaseSibling;
+    base.peer.onTerminalOutput = (_) async {
+      await releaseSibling.future;
+      return <String, dynamic>{'output': '', 'truncated': false};
+    };
+    final permissionId = base._nextId++;
+    final siblingId = base._nextId++;
+    final permissionReply = Completer<_RpcReply>();
+    final siblingReply = Completer<_RpcReply>();
+    final admission = _PermissionRequestProbe(permissionId, permissionReply);
+    final providerIndex = base.permissions.requests.length;
+    base._responses[permissionId] = permissionReply;
+    base._responses[siblingId] = siblingReply;
+    base._admissionQueue.add(admission);
+    base.channel.local.sink.add(
+      jsonEncode(<Object?>[
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': permissionId,
+          'method': method,
+          'params': base.paramsFor(method),
+        },
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': siblingId,
+          'method': 'terminal/output',
+          'params': <String, dynamic>{'sessionId': sessionId},
+        },
+      ]),
+    );
+    await admission.admissionSeen.future;
+    operation.admission = admission;
+    admission.reservationReleased.future.then<void>((_) {
+      if (!operation.admissionReservationReleased.isCompleted) {
+        operation.admissionReservationReleased.complete();
+      }
+    });
+    if (running) await base.permissions.waitForRequest(providerIndex);
+    if (!operation.admissionStarted.isCompleted) {
+      operation.admissionStarted.complete();
+    }
+    return admission;
+  }
+
+  Future<
+    ({_PermissionRequestProbe admission, Completer<void> releaseResponseCommit})
+  >
+  startSealedAdmissionWithBlockedResponseCommit() async {
+    final releaseResponseCommit = Completer<void>();
+    base.peer.onTerminalOutput = (_) async {
+      await releaseResponseCommit.future;
+      return <String, dynamic>{'output': '', 'truncated': false};
+    };
+    final permissionId = base._nextId++;
+    final siblingId = base._nextId++;
+    final permissionReply = Completer<_RpcReply>();
+    final admission = _PermissionRequestProbe(permissionId, permissionReply);
+    base._responses[permissionId] = permissionReply;
+    base._admissionQueue.add(admission);
+    base.channel.local.sink.add(
+      jsonEncode(<Object?>[
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': permissionId,
+          'method': 'fs/read_text_file',
+          'params': base.paramsFor('fs/read_text_file'),
+        },
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': siblingId,
+          'method': 'terminal/output',
+          'params': <String, dynamic>{'sessionId': sessionId},
+        },
+      ]),
+    );
+    await admission.admissionSeen.future.timeout(const Duration(seconds: 2));
+    return (admission: admission, releaseResponseCommit: releaseResponseCommit);
+  }
+
+  Future<_PromptOperationProbe> startPromptWithBlockedAdmissionCommit() async {
+    final operation = await _startPrompt();
+    await _startBlockedAdmission(operation);
+    base.permissions.completeAllow(base.permissions.pending.length - 1);
+    return operation;
+  }
+
+  Future<_PromptOperationProbe> startPromptWithRunningAdmission() async {
+    final operation = await _startPrompt();
+    await _startBlockedAdmission(operation);
+    return operation;
+  }
+
+  Future<_PromptOperationProbe> startPromptWithAdmission({
+    required bool running,
+  }) async {
+    final operation = await _startPrompt();
+    await _startBlockedAdmission(operation, running: running);
+    return operation;
+  }
+
+  void respondPromptSuccess({String stopReason = 'end_turn'}) {
+    if (_promptResponded) return;
+    if (_promptRequestId == null) {
+      throw StateError('prompt request was not observed');
+    }
+    _promptResponded = true;
+    base.channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': _promptRequestId,
+        'result': <String, dynamic>{'stopReason': stopReason},
+      }),
+    );
+  }
+
+  void respondPromptError({required int code, required String message}) {
+    if (_promptResponded || _promptRequestId == null) return;
+    _promptResponded = true;
+    base.channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': _promptRequestId,
+        'error': <String, dynamic>{'code': code, 'message': message},
+      }),
+    );
+  }
+
+  void respondPromptMalformed() {
+    if (_promptResponded || _promptRequestId == null) return;
+    _promptResponded = true;
+    base.channel.local.sink.add(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': _promptRequestId,
+        'result': <Object?>['not-an-object'],
+      }),
+    );
+  }
+
+  Future<void> recordPromptWinner(
+    _PromptOperationProbe operation,
+    _PromptRaceTerminal terminal, {
+    required bool expectAccepted,
+  }) async {
+    switch (terminal) {
+      case _PromptRaceTerminal.response:
+        respondPromptSuccess();
+        break;
+      case _PromptRaceTerminal.remoteError:
+        respondPromptError(code: -32000, message: 'fixed prompt error');
+        break;
+      case _PromptRaceTerminal.deadline:
+        base.peer.firePromptDeadlineForTesting(operation.owner);
+        break;
+      case _PromptRaceTerminal.userCancel:
+        if (expectAccepted) {
+          await manager.cancelPromptTurn(operation.owner);
+        } else {
+          await expectLater(
+            manager.cancelPromptTurn(operation.owner),
+            throwsStateError,
+          );
+        }
+        return;
+    }
+    if (expectAccepted) {
+      await base.manager
+          .promptWinnerRecordedForTesting(operation.owner)
+          .timeout(const Duration(seconds: 2));
+      await base.manager
+          .promptRightRecordedForTesting(operation.owner)
+          .timeout(const Duration(seconds: 2));
+    } else {
+      await pumpEventQueue();
+    }
+  }
+
+  Future<void> finishPromptRace(_PromptOperationProbe operation) async {
+    base.permissions.finishPending();
+    base.releaseOrdinaryPermits();
+    final blocker = operation.responseCommitBlocker;
+    if (blocker != null && !blocker.isCompleted) blocker.complete();
+    respondPromptSuccess();
+    final admission = operation.admission;
+    if (admission != null) {
+      await admission.settled.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('prompt admission did not settle'),
+      );
+    }
+    await operation.admissionBarrier.timeout(
+      const Duration(seconds: 2),
+      onTimeout: () => throw StateError('prompt admission barrier stuck'),
+    );
+    await operation.result
+        .then<void>((_) {}, onError: (_, _) {})
+        .timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError('prompt result did not settle'),
+        );
+  }
+
+  Future<void> assertOldSessionUpdateIsDropped() async {
+    base.peer.pauseNextSessionUpdateForTesting();
+    base.peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+      'sessionId': sessionId,
+      'update': <String, dynamic>{
+        'sessionUpdate': 'current_mode_update',
+        'currentModeId': 'stale-mode',
+      },
+    });
+    await base.peer.pausedSessionUpdateCapturedForTesting;
+    await base.manager.closeSession(sessionId: sessionId);
+    await base.manager.resumeSession(
+      sessionId: sessionId,
+      workspaceRoot: '/tmp',
+    );
+    final received = <acp.AcpUpdate>[];
+    final subscription = base.manager
+        .sessionUpdates(sessionId)
+        .listen(received.add);
+    base.peer.releasePausedSessionUpdateForTesting();
+    await pumpEventQueue();
+    expect(received, isEmpty);
+    await subscription.cancel();
+  }
+
+  Future<void> dispose() async {
+    await _wire?.cancel();
+    await publicFixture.dispose();
+    await foreignBase.dispose();
+    await base.dispose();
+  }
+}
+
+void _expectPromptHarnessDrained(_PromptLifecycleHarness harness) {
+  expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+  expect(harness.peer.promptSessionOperationCountForTesting, 0);
+  expect(harness.base.manager.promptLifecycleCountForTesting, 0);
+  expect(harness.base.manager.activeTypedPromptTurnCountForTesting, 0);
+  expect(harness.base.manager.inboundAdmissionCountForTesting, 0);
+  expect(harness.base.manager.ownerAdmissionBucketCountForTesting, 0);
+  expect(harness.base.manager.admissionCleanupWindowCountForTesting, 0);
+  expect(harness.base.manager.ownerCleanupActiveTimerCountForTesting, 0);
+  expect(harness.base.manager.settlingPromptOwnerCountForTesting, 0);
+  expect(harness.base.manager.settlingPromptReasonCountForTesting, 0);
+}
+
+Future<void> _expectPromptAndAdmissionShareCleanupWindow(
+  _PromptLifecycleHarness harness,
+  _PromptOperationProbe operation,
+) async {
+  await operation.admissionReservationReleased.future.timeout(
+    const Duration(seconds: 2),
+  );
+  final observed = operation.admission!.admission! as _ObservedAdmission;
+  final promptIdentity = harness.base.manager
+      .promptCleanupWindowIdentityForTesting(operation.owner);
+  final admissionIdentity = harness.base.manager
+      .admissionCleanupWindowIdentityForTesting(observed.inner);
+  expect(promptIdentity, isNotNull);
+  expect(admissionIdentity, isNotNull);
+  expect(identical(promptIdentity, admissionIdentity), isTrue);
+
+  final lifecycleReaped = harness.base.manager.promptCleanupReapedForTesting(
+    operation.owner,
+  );
+  final promptWindowReaped = harness.base.manager
+      .ownerCleanupWindowReapedForTesting(promptIdentity!);
+  final admissionWindowReaped = harness.base.manager
+      .ownerCleanupWindowReapedForTesting(admissionIdentity!);
+  expect(lifecycleReaped, isNotNull);
+  expect(identical(lifecycleReaped, promptWindowReaped), isTrue);
+  expect(identical(promptWindowReaped, admissionWindowReaped), isTrue);
+
+  final promptDeadline = harness.base.manager
+      .ownerCleanupWindowDeadlineForTesting(promptIdentity);
+  final admissionDeadline = harness.base.manager
+      .ownerCleanupWindowDeadlineForTesting(admissionIdentity);
+  expect(promptDeadline, admissionDeadline);
+}
+
+Future<void> _expectSealedPromptAdmissionRejected(
+  _PromptLifecycleHarness harness,
+  _PromptOperationProbe operation,
+) async {
+  final manager = harness.base.manager;
+  final barrier = manager.promptAdmissionsSettledForTesting(operation.owner);
+  final windowStartsBefore = manager.admissionCleanupWindowStartCountForTesting;
+  final providerRequestsBefore = harness.base.permissions.requests.length;
+  final providerCancellationsBefore =
+      harness.base.permissions.cancellations.length;
+  final sideEffectsBefore = harness.base.fs.readCalls;
+
+  final blocked = await harness.startSealedAdmissionWithBlockedResponseCommit();
+  final late = blocked.admission;
+  final observed = late.admission! as _ObservedAdmission;
+  final ownerBucketsAtAdmission = manager.ownerAdmissionBucketCountForTesting;
+  await late.reservationReleased.future.timeout(const Duration(seconds: 2));
+  final lateWindow = manager.admissionCleanupWindowIdentityForTesting(
+    observed.inner,
+  );
+  expect(lateWindow, isNotNull);
+  expect(manager.ownerCleanupWindowFatalOwnerForTesting(lateWindow!), isNull);
+  expect(manager.ownerCleanupWindowBlockerCountForTesting(lateWindow), 1);
+  expect(
+    manager.admissionCleanupWindowTimerActiveProbeForTesting(lateWindow)(),
+    isTrue,
+  );
+  expect(
+    manager.admissionCleanupWindowStartCountForTesting,
+    windowStartsBefore + 1,
+  );
+  expect(manager.admissionCleanupWindowCountForTesting, 1);
+  blocked.releaseResponseCommit.complete();
+  final reply = await late.response.timeout(const Duration(seconds: 2));
+  await late.settled.timeout(const Duration(seconds: 2));
+
+  expect(reply.errorCode, -32003);
+  expect(reply.errorMessage, 'Permission request cancelled.');
+  expect(ownerBucketsAtAdmission, 0);
+  expect(
+    manager.admissionCleanupWindowStartCountForTesting,
+    windowStartsBefore + 1,
+  );
+  expect(manager.admissionCleanupWindowCountForTesting, 0);
+  expect(manager.ownerAdmissionBucketCountForTesting, 0);
+  expect(manager.inboundAdmissionCountForTesting, 0);
+  expect(
+    identical(
+      manager.promptAdmissionsSettledForTesting(operation.owner),
+      barrier,
+    ),
+    isTrue,
+  );
+  expect(harness.base.permissions.requests.length, providerRequestsBefore);
+  expect(
+    harness.base.permissions.cancellations.length,
+    providerCancellationsBefore + 1,
+  );
+  expect(
+    harness.base.permissions.cancellations.last.$2,
+    operation.lifecycle.cancellationWinner,
+  );
+  expect(harness.base.fs.readCalls, sideEffectsBefore);
+  expect(manager.promptLifecycleIsCurrentForTesting(operation.owner), isTrue);
+}
+
 const permissionEntries = <_PermissionEntryCase>[
   _PermissionEntryCase(
     method: 'session/request_permission',
@@ -1168,6 +1876,15 @@ final class _RequestHarness {
   void respond(Object? id, Object? result) => input.add(
     jsonEncode(<String, dynamic>{'jsonrpc': '2.0', 'id': id, 'result': result}),
   );
+
+  void respondError(Object? id, {required int code, required String message}) =>
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': <String, dynamic>{'code': code, 'message': message},
+        }),
+      );
 
   Future<void> dispose() async {
     await peer.close();
@@ -2618,6 +3335,762 @@ void main() {
       },
     );
   }
+
+  test(
+    'typed prompt uses the public owner bound proxy and rejects stale owners',
+    () async {
+      final typedHarness = await _PromptLifecycleHarness.start();
+      try {
+        final sharedUpdates = <acp.AcpUpdate>[];
+        final sharedErrors = <Object>[];
+        final shared = typedHarness.base.manager
+            .sessionUpdates(typedHarness.sessionId)
+            .listen(
+              sharedUpdates.add,
+              onError: (Object error, StackTrace _) => sharedErrors.add(error),
+            );
+        final typed = _observeFuture(
+          typedHarness.manager
+              .prompt(
+                sessionId: typedHarness.sessionId,
+                content: const <Map<String, dynamic>>[],
+              )
+              .toList(),
+        );
+        await typedHarness.promptSeen.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(typedHarness.promptWireCount, 1);
+        expect(typedHarness.peer.promptOperationCountForTesting, 1);
+        typedHarness.respondPromptSuccess();
+        final outcome = await typed.timeout(const Duration(seconds: 2));
+        expect(outcome.error, isNull);
+        final updates = outcome.value! as List<acp.AcpUpdate>;
+        expect(updates, hasLength(1));
+        expect(updates.single, isA<acp.TurnEnded>());
+        expect(
+          (updates.single as acp.TurnEnded).stopReason,
+          acp.StopReason.endTurn,
+        );
+        expect(sharedUpdates.whereType<acp.TurnEnded>(), isEmpty);
+        expect(sharedErrors, isEmpty);
+        expect(typedHarness.peer.promptOperationCountForTesting, 0);
+        _expectPromptHarnessDrained(typedHarness);
+        await shared.cancel();
+      } finally {
+        await typedHarness.dispose();
+      }
+
+      final typedErrorHarness = await _PromptLifecycleHarness.start();
+      try {
+        final callEvents = <Object>[];
+        final sharedUpdates = <acp.AcpUpdate>[];
+        final sharedErrors = <Object>[];
+        final done = Completer<void>();
+        var doneCount = 0;
+        final shared = typedErrorHarness.base.manager
+            .sessionUpdates(typedErrorHarness.sessionId)
+            .listen(
+              sharedUpdates.add,
+              onError: (Object error, StackTrace _) => sharedErrors.add(error),
+            );
+        typedErrorHarness.manager
+            .prompt(
+              sessionId: typedErrorHarness.sessionId,
+              content: const <Map<String, dynamic>>[],
+            )
+            .listen(
+              callEvents.add,
+              onError: (Object error, StackTrace _) => callEvents.add(error),
+              onDone: () {
+                doneCount += 1;
+                if (!done.isCompleted) done.complete();
+              },
+            );
+        await typedErrorHarness.promptSeen.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(typedErrorHarness.peer.promptOperationCountForTesting, 1);
+        typedErrorHarness.respondPromptError(
+          code: -32000,
+          message: 'fixed typed prompt error',
+        );
+        await done.future.timeout(const Duration(seconds: 2));
+        expect(callEvents, hasLength(2));
+        expect(callEvents.first, isA<rpc.RpcException>());
+        expect(callEvents.last, isA<acp.TurnEnded>());
+        expect(
+          (callEvents.last as acp.TurnEnded).stopReason,
+          acp.StopReason.other,
+        );
+        expect(doneCount, 1);
+        expect(sharedUpdates.whereType<acp.TurnEnded>(), isEmpty);
+        expect(sharedErrors, isEmpty);
+        expect(typedErrorHarness.peer.promptOperationCountForTesting, 0);
+        _expectPromptHarnessDrained(typedErrorHarness);
+        await shared.cancel();
+      } finally {
+        await typedErrorHarness.dispose();
+      }
+
+      final typedCancelHarness = await _PromptLifecycleHarness.start();
+      try {
+        final subscription = typedCancelHarness.manager
+            .prompt(
+              sessionId: typedCancelHarness.sessionId,
+              content: const <Map<String, dynamic>>[],
+            )
+            .listen((_) {});
+        await typedCancelHarness.promptSeen.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(typedCancelHarness.peer.promptOperationCountForTesting, 1);
+        await subscription.cancel().timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        expect(typedCancelHarness.cancelWireCount, 1);
+        expect(typedCancelHarness.peer.promptOperationCountForTesting, 1);
+        typedCancelHarness.respondPromptSuccess();
+        await pumpEventQueue();
+        expect(typedCancelHarness.peer.promptOperationCountForTesting, 0);
+        _expectPromptHarnessDrained(typedCancelHarness);
+      } finally {
+        await typedCancelHarness.dispose();
+      }
+
+      final publicHarness = await _PromptLifecycleHarness.start();
+      try {
+        await publicHarness.assertOldSessionUpdateIsDropped();
+        final otherSessionOwner = await publicHarness.publicFixture
+            .createOtherSessionOwner();
+        final owner = publicHarness.publicClient.beginPromptTurn(
+          'public-prompt-session',
+        );
+        final publicPrompt = _observeFuture(
+          publicHarness.publicClient.sendPromptRequest(
+            owner: owner,
+            content: const <Map<String, dynamic>>[],
+          ),
+        );
+        await publicHarness.publicPromptSeen;
+        expect(publicHarness.publicPromptWireCount, 1);
+        for (final rejected in <acp.AcpSessionInputBudgetOwner>[
+          publicHarness.foreignManagerOwner(),
+          publicHarness.publicStaleOwner,
+          otherSessionOwner,
+          owner,
+        ]) {
+          final before = publicHarness.publicPromptWireCount;
+          final rejectedOutcome = _observeFuture(
+            Future<Map<String, dynamic>>.sync(
+              () => publicHarness.publicClient.sendPromptRequest(
+                owner: rejected,
+                content: const <Map<String, dynamic>>[],
+              ),
+            ),
+          );
+          await pumpEventQueue();
+          expect(publicHarness.publicPromptWireCount, before);
+          final outcome = await rejectedOutcome.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(outcome.error, isA<StateError>());
+        }
+        publicHarness.respondPublicPromptSuccess();
+        expect((await publicPrompt).error, isNull);
+        publicHarness.publicClient.endPromptTurn(owner);
+      } finally {
+        await publicHarness.dispose();
+      }
+
+      final settlingHarness = await _PromptLifecycleHarness.start();
+      try {
+        final operation = await settlingHarness
+            .startPromptWithBlockedAdmissionCommit();
+        var before = settlingHarness.promptWireCount;
+        var rejected = await _observeFuture(
+          Future<Map<String, dynamic>>.sync(
+            () => settlingHarness.manager.sendPromptRequest(
+              owner: operation.owner,
+              content: const <Map<String, dynamic>>[],
+            ),
+          ),
+        );
+        expect(rejected.error, isA<StateError>());
+        expect(settlingHarness.promptWireCount, before);
+
+        settlingHarness.respondPromptSuccess();
+        await operation.admissionReservationReleased.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await settlingHarness.base.manager
+            .promptWinnerRecordedForTesting(operation.owner)
+            .timeout(const Duration(seconds: 2));
+        before = settlingHarness.promptWireCount;
+        rejected = await _observeFuture(
+          Future<Map<String, dynamic>>.sync(
+            () => settlingHarness.manager.sendPromptRequest(
+              owner: operation.owner,
+              content: const <Map<String, dynamic>>[],
+            ),
+          ),
+        );
+        expect(rejected.error, isA<StateError>());
+        expect(settlingHarness.promptWireCount, before);
+        expect(
+          () => settlingHarness.manager.beginPromptTurn(
+            settlingHarness.sessionId,
+          ),
+          throwsStateError,
+        );
+
+        await operation.commitAdmissionResponse();
+        await operation.promptResult;
+        expect(settlingHarness.peer.promptOperationCountForTesting, 0);
+        _expectPromptHarnessDrained(settlingHarness);
+      } finally {
+        await settlingHarness.dispose();
+      }
+    },
+  );
+
+  test(
+    'prompt terminal waits for admission response commit before replacement',
+    () async {
+      final harness = await _PromptLifecycleHarness.start();
+      try {
+        final first = await harness.startPromptWithBlockedAdmissionCommit();
+        harness.respondPromptSuccess();
+        await first.admissionReservationReleased.future;
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP prompt is already active or settling.',
+            ),
+          ),
+        );
+        await first.commitAdmissionResponse();
+        await first.promptResult;
+        final replacement = harness.manager.beginPromptTurn(harness.sessionId);
+        harness.manager.endPromptTurn(replacement);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'prompt timeout shares one cancel and one cleanup grace with admissions',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        prompt: const Duration(milliseconds: 75),
+        grace: const Duration(milliseconds: 100),
+      );
+      try {
+        final operation = await harness.startPromptWithRunningAdmission();
+        await operation.promptSeen.future;
+        await operation.admissionStarted.future;
+        final result = _observeFuture(operation.result);
+        await harness.base.manager
+            .promptWinnerRecordedForTesting(operation.owner)
+            .timeout(const Duration(seconds: 2));
+        await pumpEventQueue();
+        await _expectPromptAndAdmissionShareCleanupWindow(harness, operation);
+        final resultOutcome = await result.timeout(const Duration(seconds: 2));
+        expect(resultOutcome.error, isA<acp.AcpPromptTimeoutException>());
+        expect(operation.terminalKind, JsonRpcPromptTerminalKind.timedOut);
+        expect(
+          operation.permissionReason,
+          acp.PermissionCancellationReason.promptEnded,
+        );
+        expect(operation.cancelWireCount, 1);
+        expect(operation.cleanupWindowStartCount, 1);
+        expect(
+          operation.unavailableCleanupIdentity?.ownerToken,
+          same(operation.owner),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'prompt cancellation keeps replacement settling and stale cancel is isolated',
+    () async {
+      for (final running in <bool>[false, true]) {
+        final harness = await _PromptLifecycleHarness.start();
+        try {
+          final first = await harness.startPromptWithAdmission(
+            running: running,
+          );
+          await harness.manager.cancelPromptTurn(first.owner);
+          await pumpEventQueue();
+          expect(first.cancelWireCount, 1);
+          expect(
+            first.permissionReason,
+            acp.PermissionCancellationReason.promptCancelled,
+          );
+          expect(
+            () => harness.manager.beginPromptTurn(harness.sessionId),
+            throwsA(isA<StateError>()),
+          );
+          await first.finishPromptAndAdmission();
+          expect(
+            harness.base.manager.promptHasDeliveryRightForTesting(first.owner),
+            isFalse,
+          );
+          final replacement = harness.manager.beginPromptTurn(
+            harness.sessionId,
+          );
+          await expectLater(
+            harness.manager.cancelPromptTurn(first.owner),
+            throwsStateError,
+          );
+          expect(first.cancelWireCount, 1);
+          expect(harness.activeOwner, same(replacement));
+          harness.manager.endPromptTurn(replacement);
+        } finally {
+          await harness.dispose();
+        }
+      }
+    },
+  );
+
+  test('prompt settlement seals synchronous reentrant admission', () async {
+    final harness = await _PromptLifecycleHarness.start(
+      synchronousChannel: true,
+    );
+    try {
+      final operation = await harness.startPromptWithRunningAdmission();
+      Future<_PermissionRequestProbe>? reentrantFuture;
+      var reentrantCreationCount = 0;
+      harness.base.permissions.onCancel = (_, _) {
+        reentrantCreationCount += 1;
+        harness.base.permissions.onCancel = null;
+        reentrantFuture = harness.base.admit(
+          'fs/read_text_file',
+          params: harness.base.paramsFor('fs/read_text_file'),
+        );
+      };
+
+      await harness.manager
+          .cancelPromptTurn(operation.owner)
+          .timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw StateError(
+              'reentrant prompt cancel notification did not settle',
+            ),
+          );
+      final reentrant = await reentrantFuture!.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(reentrantCreationCount, 1);
+      expect(harness.base.permissions.requests, hasLength(1));
+      expect(harness.base.permissions.cancellations, hasLength(2));
+      expect(
+        harness.base.permissions.cancellations.map((entry) => entry.$2),
+        everyElement(acp.PermissionCancellationReason.promptCancelled),
+      );
+      expect(
+        harness.base.permissions.cancellations.map((entry) => entry.$1).toSet(),
+        hasLength(2),
+      );
+
+      await operation.finishPromptAndAdmission();
+      final reentrantReply = await reentrant.response.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(reentrantReply.errorCode, -32003);
+      expect(reentrantReply.errorMessage, 'Permission request cancelled.');
+      await reentrant.settled.timeout(const Duration(seconds: 2));
+      _expectPromptHarnessDrained(harness);
+    } finally {
+      await harness.dispose().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError(
+          'reentrant prompt harness disposal did not settle',
+        ),
+      );
+    }
+  });
+
+  test(
+    'sealed empty prompt barrier rejects late same owner admission',
+    () async {
+      final harness = await _PromptLifecycleHarness.start();
+      try {
+        final operation = await harness._startPrompt();
+        harness.respondPromptSuccess();
+        await operation.admissionBarrier.timeout(const Duration(seconds: 2));
+        await operation.result.timeout(const Duration(seconds: 2));
+        expect(
+          harness.base.manager.promptLifecycleIsCurrentForTesting(
+            operation.owner,
+          ),
+          isTrue,
+        );
+        expect(harness.base.manager.admissionCleanupWindowCountForTesting, 0);
+
+        await _expectSealedPromptAdmissionRejected(harness, operation);
+
+        harness.manager.endPromptTurn(operation.owner);
+        final replacement = harness.manager.beginPromptTurn(harness.sessionId);
+        harness.manager.endPromptTurn(replacement);
+        _expectPromptHarnessDrained(harness);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'sealed completed prompt barrier rejects late same owner admission',
+    () async {
+      final harness = await _PromptLifecycleHarness.start();
+      try {
+        final operation = await harness.startPromptWithRunningAdmission();
+        harness.respondPromptSuccess();
+        await harness.base.manager
+            .promptWinnerRecordedForTesting(operation.owner)
+            .timeout(const Duration(seconds: 2));
+        harness.base.permissions.finishPending();
+        harness.base.releaseOrdinaryPermits();
+        final blocker = operation.responseCommitBlocker;
+        if (blocker != null && !blocker.isCompleted) blocker.complete();
+        await operation.admission!.settled.timeout(const Duration(seconds: 2));
+        await operation.admissionBarrier.timeout(const Duration(seconds: 2));
+        await operation.result.timeout(const Duration(seconds: 2));
+        expect(
+          harness.base.manager.promptLifecycleIsCurrentForTesting(
+            operation.owner,
+          ),
+          isTrue,
+        );
+        expect(harness.base.manager.admissionCleanupWindowCountForTesting, 0);
+
+        await _expectSealedPromptAdmissionRejected(harness, operation);
+
+        harness.manager.endPromptTurn(operation.owner);
+        final replacement = harness.manager.beginPromptTurn(harness.sessionId);
+        harness.manager.endPromptTurn(replacement);
+        _expectPromptHarnessDrained(harness);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'failed prompt cancel submission still reaps request and admissions before replacement',
+    () async {
+      final graceful = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 500),
+      );
+      try {
+        final operation = await graceful.startPromptWithRunningAdmission();
+        graceful.failNextCancelSubmission();
+        await expectLater(
+          graceful.manager.cancelPromptTurn(operation.owner),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'fixed session/cancel submission failure',
+            ),
+          ),
+        );
+        expect(graceful.cancelWireCount, 0);
+        expect(
+          () => graceful.manager.beginPromptTurn(graceful.sessionId),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP prompt is already active or settling.',
+            ),
+          ),
+        );
+
+        await graceful
+            .finishPromptRace(operation)
+            .timeout(const Duration(seconds: 2));
+        await operation.admission!.settled.timeout(const Duration(seconds: 2));
+        await operation.promptResult
+            .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+            .timeout(const Duration(seconds: 2));
+        expect(graceful.peer.promptOperationCountForTesting, 0);
+        final replacement = graceful.manager.beginPromptTurn(
+          graceful.sessionId,
+        );
+        expect(identical(replacement, operation.owner), isFalse);
+        graceful.manager.endPromptTurn(replacement);
+      } finally {
+        await graceful.dispose();
+      }
+
+      final fatal = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 75),
+      );
+      try {
+        final unavailable = Completer<AcpPeerUnavailableState>();
+        fatal.peer.addUnavailableListener((state) {
+          if (!unavailable.isCompleted) unavailable.complete(state);
+        });
+        final operation = await fatal.startPromptWithRunningAdmission();
+        fatal.failNextCancelSubmission();
+        await expectLater(
+          fatal.manager.cancelPromptTurn(operation.owner),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'fixed session/cancel submission failure',
+            ),
+          ),
+        );
+        expect(
+          () => fatal.manager.beginPromptTurn(fatal.sessionId),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP prompt is already active or settling.',
+            ),
+          ),
+        );
+
+        final state = await unavailable.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(state.reason, AcpPeerUnavailableReason.fatalTimeout);
+        await operation.admission!.settled.timeout(const Duration(seconds: 2));
+        await operation.promptResult
+            .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+            .timeout(const Duration(seconds: 2));
+        expect(fatal.peer.promptOperationCountForTesting, 0);
+        expect(fatal.base.manager.admissionCleanupWindowCountForTesting, 0);
+      } finally {
+        await fatal.dispose();
+      }
+    },
+  );
+
+  test(
+    'session close shares prompt cancel and reap across response deadline and user cancel',
+    () async {
+      for (final terminal in _PromptRaceTerminal.values) {
+        for (final closeFirst in <bool>[false, true]) {
+          final harness = await _PromptLifecycleHarness.start();
+          try {
+            final operation = await harness.startPromptWithRunningAdmission();
+            late final Future<void> close;
+            if (closeFirst) {
+              close = harness.manager.closeSession(
+                sessionId: harness.sessionId,
+              );
+              await harness.recordPromptWinner(
+                operation,
+                terminal,
+                expectAccepted: false,
+              );
+            } else {
+              await harness.recordPromptWinner(
+                operation,
+                terminal,
+                expectAccepted: true,
+              );
+              expect(operation.terminalRecorded, isTrue);
+              close = harness.manager.closeSession(
+                sessionId: harness.sessionId,
+              );
+            }
+            await _expectPromptAndAdmissionShareCleanupWindow(
+              harness,
+              operation,
+            );
+            await harness.finishPromptRace(operation);
+            await close.catchError((Object _) {});
+            final expectedCancelCount =
+                !closeFirst &&
+                    (terminal == _PromptRaceTerminal.response ||
+                        terminal == _PromptRaceTerminal.remoteError)
+                ? 0
+                : 1;
+            expect(operation.cancelWireCount, expectedCancelCount);
+            expect(operation.cleanupWindowStartCount, 1);
+            if (closeFirst) {
+              expect(
+                operation.permissionReason,
+                acp.PermissionCancellationReason.sessionClosed,
+              );
+              expect(operation.lifecycle.winner, isNull);
+              expect(operation.lifecycle.hasDeliveryRight, isFalse);
+            } else if (terminal == _PromptRaceTerminal.userCancel) {
+              expect(
+                operation.lifecycle.cancellationWinner,
+                acp.PermissionCancellationReason.promptCancelled,
+              );
+              expect(operation.lifecycle.hasDeliveryRight, isFalse);
+            } else {
+              expect(operation.lifecycle.winner, isNotNull);
+              expect(operation.lifecycle.hasDeliveryRight, isTrue);
+              expect(operation.lifecycle.winner!.kind, switch (terminal) {
+                _PromptRaceTerminal.response =>
+                  JsonRpcPromptTerminalKind.response,
+                _PromptRaceTerminal.remoteError =>
+                  JsonRpcPromptTerminalKind.remoteError,
+                _PromptRaceTerminal.deadline =>
+                  JsonRpcPromptTerminalKind.timedOut,
+                _PromptRaceTerminal.userCancel => throw StateError(
+                  'unreachable',
+                ),
+              });
+            }
+          } finally {
+            await harness.dispose();
+          }
+        }
+      }
+    },
+  );
+
+  test(
+    'late unavailable replay invalidates prompt epoch before dispatch',
+    () async {
+      final harness = await _PromptLifecycleHarness.startWithUnavailablePeer();
+      try {
+        expect(harness.peer.isAvailable, isFalse);
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsStateError,
+        );
+        expect(harness.promptWireCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+
+      for (final late in <String>['value', 'error', 'malformed']) {
+        final active = await _PromptLifecycleHarness.start();
+        final zoneErrors = <Object>[];
+        try {
+          final operation = await active._startPrompt();
+          await active.peer.closeForTesting(
+            AcpPeerUnavailableReason.transportClosed,
+          );
+          await expectLater(
+            operation.result,
+            throwsA(isA<acp.AcpConnectionClosedException>()),
+          );
+          await runZonedGuarded(
+            () async {
+              switch (late) {
+                case 'value':
+                  active.respondPromptSuccess();
+                  break;
+                case 'error':
+                  active.respondPromptError(
+                    code: -32000,
+                    message: 'late error',
+                  );
+                  break;
+                case 'malformed':
+                  active.respondPromptMalformed();
+                  break;
+              }
+              await pumpEventQueue();
+            },
+            (Object error, StackTrace _) {
+              zoneErrors.add(error);
+            },
+          );
+          expect(zoneErrors, isEmpty);
+          expect(
+            active.base.manager.promptLifecycleIsCurrentForTesting(
+              operation.owner,
+            ),
+            isFalse,
+          );
+          expect(
+            active.base.manager.promptHasDeliveryRightForTesting(
+              operation.owner,
+            ),
+            isFalse,
+          );
+        } finally {
+          await active.dispose();
+        }
+      }
+
+      for (final matchingOwner in <bool>[false, true]) {
+        final direct = _RequestHarness(
+          const acp.AcpTimeouts(promptCancelGrace: Duration(milliseconds: 75)),
+        );
+        const owner = _TestPromptOwner('direct-raw-session', 17);
+        final admissionBarrier = Completer<void>();
+        final terminalHook = Completer<void>.sync();
+        final unavailable = Completer<AcpPeerUnavailableState>.sync();
+        direct.peer.addUnavailableListener((state) {
+          if (!unavailable.isCompleted) unavailable.complete(state);
+        });
+        try {
+          final result = _observeFuture(
+            direct.peer.sendPromptRequest(
+              owner: owner,
+              content: const <Map<String, dynamic>>[],
+              onTerminal: (_, _) {
+                if (!terminalHook.isCompleted) terminalHook.complete();
+                return JsonRpcPromptSettlement(admissionBarrier.future);
+              },
+            ),
+          );
+          final request = await direct.takeRequest();
+          direct.respond(request['id'], <String, dynamic>{
+            'stopReason': 'end_turn',
+          });
+          await terminalHook.future.timeout(const Duration(seconds: 2));
+          expect(direct.peer.promptOwnerOperationCountForTesting, 1);
+          expect(direct.peer.promptSessionOperationCountForTesting, 1);
+          if (!matchingOwner) {
+            await direct.peer.closeForFatalTimeout(
+              cleanupIdentity: AcpPromptCleanupIdentity(Object(), 17),
+            );
+            expect(
+              (await result).error,
+              isA<acp.AcpConnectionClosedException>(),
+            );
+            expect(direct.peer.promptOwnerOperationCountForTesting, 0);
+            expect(direct.peer.promptSessionOperationCountForTesting, 0);
+          } else {
+            await direct.peer.closeForFatalTimeout(
+              cleanupIdentity: AcpPromptCleanupIdentity(
+                owner,
+                owner.generation,
+              ),
+            );
+            final state = await unavailable.future.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(state.reason, AcpPeerUnavailableReason.fatalTimeout);
+            expect(state.cleanupIdentity?.ownerToken, same(owner));
+            expect(direct.peer.promptOwnerOperationCountForTesting, 1);
+            expect(direct.peer.promptSessionOperationCountForTesting, 1);
+            admissionBarrier.complete();
+            final outcome = await result;
+            expect(outcome.error, isNull);
+            expect(outcome.value, <String, dynamic>{'stopReason': 'end_turn'});
+            expect(direct.peer.promptOwnerOperationCountForTesting, 0);
+            expect(direct.peer.promptSessionOperationCountForTesting, 0);
+          }
+        } finally {
+          if (!admissionBarrier.isCompleted) admissionBarrier.complete();
+          await direct.dispose();
+        }
+      }
+    },
+  );
 
   test(
     'permission deadline starts at admission for ownerless and owner scoped requests',
@@ -4142,16 +5615,117 @@ void main() {
         content: const <Map<String, dynamic>>[
           <String, dynamic>{'type': 'text', 'text': 'safe'},
         ],
+        onTerminal: (_, _) => JsonRpcPromptSettlement(Future<void>.value()),
       );
       final sent = await harness.takeRequest();
       expect(sent['method'], 'session/prompt');
       expect((sent['params'] as Map)['sessionId'], owner.sessionId);
+      expect(harness.peer.promptOwnerOperationCountForTesting, 1);
+      expect(harness.peer.promptSessionOperationCountForTesting, 1);
       harness.respond(sent['id'], <String, dynamic>{'stopReason': 'end_turn'});
       expect(await result, <String, dynamic>{'stopReason': 'end_turn'});
+      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+      expect(harness.peer.promptSessionOperationCountForTesting, 0);
     } finally {
       await harness.dispose();
     }
   });
+
+  test('prompt terminal hook failure reaps owner operation', () async {
+    final harness = _RequestHarness(const acp.AcpTimeouts());
+    const owner = _TestPromptOwner('hook-failure-session', 9);
+    try {
+      final result = harness.peer.sendPromptRequest(
+        owner: owner,
+        content: const <Map<String, dynamic>>[],
+        onTerminal: (_, _) => throw StateError('fixed terminal hook failure'),
+      );
+      final sent = await harness.takeRequest();
+      harness.respond(sent['id'], <String, dynamic>{'stopReason': 'end_turn'});
+      await expectLater(
+        result,
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'fixed terminal hook failure',
+          ),
+        ),
+      );
+      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+      expect(harness.peer.promptSessionOperationCountForTesting, 0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'prompt timeout hook failure cancels and removes owner before late result',
+    () async {
+      for (final lateError in <bool>[false, true]) {
+        await _expectNoZoneErrors(() async {
+          final harness = _RequestHarness(const acp.AcpTimeouts());
+          const owner = _TestPromptOwner('timeout-hook-failure-session', 10);
+          try {
+            var terminalCalls = 0;
+            final result = _observeFuture(
+              harness.peer.sendPromptRequest(
+                owner: owner,
+                content: const <Map<String, dynamic>>[],
+                onTerminal: (_, _) {
+                  terminalCalls += 1;
+                  throw StateError('fixed timeout terminal hook failure');
+                },
+              ),
+            );
+            final sent = await harness.takeRequest();
+            harness.peer.firePromptDeadlineForTesting(owner);
+            final early = await result.timeout(
+              const Duration(milliseconds: 100),
+            );
+            final ownerCountBeforeLate =
+                harness.peer.promptOwnerOperationCountForTesting;
+            final sessionCountBeforeLate =
+                harness.peer.promptSessionOperationCountForTesting;
+            final cancelCount = harness.sink.events.where((event) {
+              final decoded = jsonDecode(event);
+              return decoded is Map && decoded['method'] == 'session/cancel';
+            }).length;
+
+            if (lateError) {
+              harness.respondError(
+                sent['id'],
+                code: -32000,
+                message: 'fixed late prompt error',
+              );
+            } else {
+              harness.respond(sent['id'], <String, dynamic>{
+                'stopReason': 'end_turn',
+              });
+            }
+            await pumpEventQueue();
+
+            expect(
+              early.error,
+              isA<StateError>().having(
+                (error) => error.message,
+                'message',
+                'fixed timeout terminal hook failure',
+              ),
+            );
+            expect(terminalCalls, 1);
+            expect(cancelCount, 1);
+            expect(ownerCountBeforeLate, 0);
+            expect(sessionCountBeforeLate, 0);
+            expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+            expect(harness.peer.promptSessionOperationCountForTesting, 0);
+          } finally {
+            await harness.dispose();
+          }
+        });
+      }
+    },
+  );
 
   test('sendRaw session/prompt keeps its legacy ownerless path', () async {
     final harness = _RequestHarness(const acp.AcpTimeouts());
@@ -4164,8 +5738,12 @@ void main() {
       });
       final sent = await harness.takeRequest();
       expect(sent['method'], 'session/prompt');
+      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+      expect(harness.peer.promptSessionOperationCountForTesting, 0);
       harness.respond(sent['id'], <String, dynamic>{'stopReason': 'end_turn'});
       expect(await result, <String, dynamic>{'stopReason': 'end_turn'});
+      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+      expect(harness.peer.promptSessionOperationCountForTesting, 0);
     } finally {
       await harness.dispose();
     }
