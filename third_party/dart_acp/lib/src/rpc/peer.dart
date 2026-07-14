@@ -250,7 +250,7 @@ class JsonRpcPeer {
     var addedBytes = 0;
     for (var i = 0; i < requests.length; i += 1) {
       final request = requests[i];
-      if (!_hasLegalRequestId(request)) continue;
+      if (!_hasEchoableRequestId(request)) continue;
       final byteLength = utf8.encode(jsonEncode(request)).length;
       addedBytes += byteLength;
       candidates.add(
@@ -353,17 +353,19 @@ class JsonRpcPeer {
       return;
     }
     _drainingDeferredInbound = true;
+    var enteredCorrelationWrite = false;
     try {
-      while (_acceptingInbound &&
+      if (_acceptingInbound &&
           !_correlationWriteInProgress &&
           _deferredInboundLines.isNotEmpty) {
         final writeEpochBefore = _correlationWriteEpoch;
         _processInboundLine(_deferredInboundLines.removeFirst());
-        if (_correlationWriteEpoch != writeEpochBefore) break;
+        enteredCorrelationWrite = _correlationWriteEpoch != writeEpochBefore;
       }
     } finally {
       _drainingDeferredInbound = false;
     }
+    if (enteredCorrelationWrite) return;
     if (_acceptingInbound &&
         !_correlationWriteInProgress &&
         _deferredInboundLines.isNotEmpty) {
@@ -485,7 +487,7 @@ class JsonRpcPeer {
   void _rejectForCapacity(List<Object?> requests, {required bool wasBatch}) {
     final errors = <Map<String, dynamic>>[];
     for (final request in requests) {
-      if (!_hasLegalRequestId(request)) continue;
+      if (!_hasEchoableRequestId(request)) continue;
       errors.add(<String, dynamic>{
         'jsonrpc': '2.0',
         'id': (request as Map)['id'],
@@ -499,13 +501,9 @@ class JsonRpcPeer {
     _writeWireResponse(wasBatch ? errors : errors.single);
   }
 
-  static bool _hasLegalRequestId(Object? value) {
+  static bool _hasEchoableRequestId(Object? value) {
     if (value is! Map || !value.containsKey('id')) return false;
     if (value['jsonrpc'] != '2.0' || value['method'] is! String) return false;
-    if (value.containsKey('params')) {
-      final params = value['params'];
-      if (params is! List && params is! Map) return false;
-    }
     final id = value['id'];
     return id == null || id is String || id is num;
   }

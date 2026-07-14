@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dart_acp/src/rpc/peer.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stream_channel/stream_channel.dart';
 
@@ -179,6 +180,204 @@ void main() {
         await outbound.cancel();
         await channel.local.sink.close();
       }
+    }
+  });
+
+  test(
+    'invalid params cannot collide with an existing internal correlation id',
+    () async {
+      final channel = StreamChannelController<String>(sync: true);
+      final outbound = StreamIterator<String>(channel.local.stream);
+      final peer = JsonRpcPeer(channel.foreign);
+      final originalStarted = Completer<void>();
+      final releaseOriginal = Completer<void>();
+      peer.onReadTextFile = (params) async {
+        originalStarted.complete();
+        await releaseOriginal.future;
+        return <String, dynamic>{'marker': 'original'};
+      };
+
+      try {
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 41,
+            'method': 'fs/read_text_file',
+            'params': <String, dynamic>{},
+          }),
+        );
+        await originalStarted.future.timeout(const Duration(seconds: 2));
+        final maliciousId = peer.correlationIdsForTesting.single;
+        final trackerItemsBefore = peer.correlationPendingItemsForTesting;
+        final trackerBytesBefore = peer.correlationPendingBytesForTesting;
+        final trackerIdsBefore = peer.correlationIdsForTesting;
+
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': maliciousId,
+            'method': 'fs/read_text_file',
+            'params': 'invalid',
+          }),
+        );
+        expect(await outbound.moveNext(), isTrue);
+        final rejectionWire = outbound.current;
+        final rejection = jsonDecode(rejectionWire) as Map<String, dynamic>;
+        expect(rejection['id'], maliciousId);
+        expect(rejection['error'], isA<Map>());
+        await pumpEventQueue();
+        expect(peer.correlationPendingItemsForTesting, trackerItemsBefore);
+        expect(peer.correlationPendingBytesForTesting, trackerBytesBefore);
+        expect(peer.correlationIdsForTesting, trackerIdsBefore);
+
+        releaseOriginal.complete();
+        expect(await outbound.moveNext(), isTrue);
+        final originalWire = outbound.current;
+        final original = jsonDecode(originalWire) as Map<String, dynamic>;
+        expect(original['id'], 41);
+        expect((original['result'] as Map)['marker'], 'original');
+        expect(originalWire, isNot(contains('_acp_internal_')));
+        await pumpEventQueue();
+        expect(peer.correlationPendingItemsForTesting, 0);
+        expect(peer.correlationPendingBytesForTesting, 0);
+      } finally {
+        if (!releaseOriginal.isCompleted) releaseOriginal.complete();
+        await peer.close();
+        await outbound.cancel();
+        await channel.local.sink.close();
+      }
+    },
+  );
+
+  test('sink reentrancy drains queued requests in FIFO order', () async {
+    final input = _ManualInputStream();
+    final output = _ReentrantSink();
+    final peer = JsonRpcPeer(
+      StreamChannel<String>(input, output),
+      maxPendingItems: 1,
+    );
+    final processingMarkers = <String>[];
+    var injected = false;
+    peer.onReadTextFile = (params) {
+      final marker = params['marker'] as String;
+      processingMarkers.add(marker);
+      return SynchronousFuture<dynamic>(<String, dynamic>{'marker': marker});
+    };
+    final updateSubscription = peer.sessionUpdates.listen((update) {
+      processingMarkers.add((update as Map)['marker'] as String);
+    });
+    output.onAdd = (_) {
+      if (injected) return;
+      injected = true;
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'method': 'session/update',
+          'params': <String, dynamic>{'marker': 'second'},
+        }),
+      );
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 3,
+          'method': 'fs/read_text_file',
+          'params': <String, dynamic>{'marker': 'third'},
+        }),
+      );
+    };
+
+    try {
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'fs/read_text_file',
+          'params': <String, dynamic>{'marker': 'first'},
+        }),
+      );
+      await pumpEventQueue();
+
+      expect(processingMarkers, <String>['first', 'second', 'third']);
+      final responses = output.events
+          .map((event) => jsonDecode(event) as Map<String, dynamic>)
+          .toList(growable: false);
+      expect(responses.map((response) => response['id']).toList(), <int>[
+        1,
+        2,
+        3,
+      ]);
+      expect((responses.first['result'] as Map)['marker'], 'first');
+      expect(responses[1]['result'], isNull);
+      expect((responses.last['result'] as Map)['marker'], 'third');
+      expect(peer.inboundPendingItemsForTesting, 0);
+      expect(peer.correlationPendingItemsForTesting, 0);
+      expect(peer.correlationPendingBytesForTesting, 0);
+    } finally {
+      await updateSubscription.cancel();
+      await peer.close();
+      input.close();
+    }
+  });
+
+  test('peer close drops raw lines queued inside sink add', () async {
+    final input = _ManualInputStream();
+    final output = _ReentrantSink();
+    late JsonRpcPeer peer;
+    Future<void>? closing;
+    final closeStarted = Completer<void>();
+    var handlerStarts = 0;
+    var closeTriggered = false;
+    peer = JsonRpcPeer(
+      StreamChannel<String>(input, output),
+      maxPendingItems: 1,
+    );
+    peer.onReadTextFile = (params) {
+      handlerStarts += 1;
+      return SynchronousFuture<dynamic>(<String, dynamic>{
+        'marker': params['marker'],
+      });
+    };
+    output.onAdd = (_) {
+      if (closeTriggered) return;
+      closeTriggered = true;
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'method': 'fs/read_text_file',
+          'params': <String, dynamic>{'marker': 'must-drop'},
+        }),
+      );
+      closing = peer.close();
+      closeStarted.complete();
+    };
+
+    try {
+      input.add(
+        jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'fs/read_text_file',
+          'params': <String, dynamic>{'marker': 'first'},
+        }),
+      );
+      await closeStarted.future.timeout(const Duration(seconds: 2));
+      await closing!.timeout(const Duration(seconds: 2));
+      await pumpEventQueue();
+
+      expect(closeTriggered, isTrue);
+      expect(handlerStarts, 1);
+      expect(output.events, hasLength(1));
+      final response = jsonDecode(output.events.single) as Map<String, dynamic>;
+      expect(response['id'], 1);
+      expect((response['result'] as Map)['marker'], 'first');
+      expect(peer.inboundPendingItemsForTesting, 0);
+      expect(peer.correlationPendingItemsForTesting, 0);
+      expect(peer.correlationPendingBytesForTesting, 0);
+    } finally {
+      await peer.close();
+      input.close();
     }
   });
 
@@ -1330,6 +1529,16 @@ class _RecordingSink implements StreamSink<String> {
     closeCount += 1;
     if (!_done.isCompleted) _done.complete();
     return _done.future;
+  }
+}
+
+class _ReentrantSink extends _RecordingSink {
+  void Function(String event)? onAdd;
+
+  @override
+  void add(String event) {
+    super.add(event);
+    onAdd?.call(event);
   }
 }
 
