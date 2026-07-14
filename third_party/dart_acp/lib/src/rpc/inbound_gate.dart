@@ -12,6 +12,32 @@ class InboundGateElement {
   final int byteLength;
 }
 
+/// A local terminal outcome that may settle queued inbound work.
+sealed class InboundGateTerminal<T> {
+  const InboundGateTerminal();
+}
+
+/// A local terminal value for queued inbound work.
+final class InboundGateTerminalValue<T> extends InboundGateTerminal<T> {
+  /// Create a terminal [value].
+  const InboundGateTerminalValue(this.value);
+
+  /// Value used to settle the queued waiter.
+  final T value;
+}
+
+/// A local terminal error for queued inbound work.
+final class InboundGateTerminalError<T> extends InboundGateTerminal<T> {
+  /// Create a terminal [error] with its optional [stackTrace].
+  const InboundGateTerminalError(this.error, [this.stackTrace]);
+
+  /// Error used to settle the queued waiter.
+  final Object error;
+
+  /// Original stack trace when one is available.
+  final StackTrace? stackTrace;
+}
+
 /// Bounds admitted inbound work and limits asynchronous handler concurrency.
 class InboundGate {
   InboundGate({
@@ -35,6 +61,7 @@ class InboundGate {
 
   final ListQueue<_HandlerWaiter<dynamic>> _waiters =
       ListQueue<_HandlerWaiter<dynamic>>();
+  final Set<_HandlerWaiter<dynamic>> _running = <_HandlerWaiter<dynamic>>{};
   final Set<InboundGateReservation> _reservations = <InboundGateReservation>{};
   Future<void>? _closeFuture;
   var _pendingItems = 0;
@@ -139,6 +166,49 @@ class InboundGate {
     return waiter.completer.future;
   }
 
+  Future<T> _runCancellable<T>(
+    InboundGateReservation reservation, {
+    required FutureOr<T> Function() operation,
+    required Future<InboundGateTerminal<T>> terminal,
+  }) {
+    if (!_reservations.contains(reservation) ||
+        reservation._state != _ReservationState.reserved ||
+        _closed) {
+      return Future<T>.error(StateError('Inbound gate reservation is closed.'));
+    }
+    reservation._state = _ReservationState.queued;
+    final waiter = _HandlerWaiter<T>(reservation, operation);
+    _waiters.addLast(waiter);
+    unawaited(
+      terminal.then<void>(
+        (outcome) {
+          if (reservation._state != _ReservationState.queued) return;
+          _waiters.remove(waiter);
+          _release(reservation);
+          switch (outcome) {
+            case InboundGateTerminalValue<T>(:final value):
+              waiter.completer.complete(value);
+            case InboundGateTerminalError<T>(:final error, :final stackTrace):
+              waiter.completer.completeError(
+                error,
+                stackTrace ?? StackTrace.current,
+              );
+          }
+          _pump();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (reservation._state != _ReservationState.queued) return;
+          _waiters.remove(waiter);
+          _release(reservation);
+          waiter.completer.completeError(error, stackTrace);
+          _pump();
+        },
+      ),
+    );
+    _pump();
+    return waiter.completer.future;
+  }
+
   T _runSync<T>(InboundGateReservation reservation, T Function() operation) {
     if (reservation.method != 'session/update') {
       throw StateError('Only session/update may bypass handler permits.');
@@ -185,31 +255,30 @@ class InboundGate {
       return;
     }
     reservation._state = _ReservationState.running;
+    _running.add(waiter);
     _activeHandlers += 1;
     if (!waiter.isReservedControl) _activeOrdinaryHandlers += 1;
 
-    Object? result;
+    final Future<dynamic> operation;
     try {
-      result = waiter.operation();
+      operation = Future<dynamic>.sync(waiter.operation);
     } on Object catch (error, stackTrace) {
       _finishError(waiter, error, stackTrace);
       return;
     }
-    if (result is Future) {
-      unawaited(
-        result.then<void>(
-          (value) => _finishValue(waiter, value),
-          onError: (Object error, StackTrace stackTrace) {
-            _finishError(waiter, error, stackTrace);
-          },
-        ),
-      );
-    } else {
-      _finishValue(waiter, result);
-    }
+    unawaited(
+      operation.then<void>(
+        (value) => _finishValue(waiter, value),
+        onError: (Object error, StackTrace stackTrace) {
+          _finishError(waiter, error, stackTrace);
+        },
+      ),
+    );
   }
 
   void _finishValue(_HandlerWaiter<dynamic> waiter, Object? value) {
+    if (waiter.reservation._state == _ReservationState.detached) return;
+    if (waiter.reservation._state != _ReservationState.running) return;
     _finish(waiter);
     if (!waiter.completer.isCompleted) waiter.completer.complete(value);
   }
@@ -219,6 +288,8 @@ class InboundGate {
     Object error,
     StackTrace stackTrace,
   ) {
+    if (waiter.reservation._state == _ReservationState.detached) return;
+    if (waiter.reservation._state != _ReservationState.running) return;
     _finish(waiter);
     if (!waiter.completer.isCompleted) {
       waiter.completer.completeError(error, stackTrace);
@@ -226,6 +297,7 @@ class InboundGate {
   }
 
   void _finish(_HandlerWaiter<dynamic> waiter) {
+    if (!_running.remove(waiter)) return;
     _activeHandlers -= 1;
     if (!waiter.isReservedControl) _activeOrdinaryHandlers -= 1;
     _release(waiter.reservation);
@@ -237,6 +309,23 @@ class InboundGate {
     reservation._state = _ReservationState.released;
     _pendingItems -= 1;
     _pendingBytes -= reservation.byteLength;
+    if (!reservation._released.isCompleted) reservation._released.complete();
+  }
+
+  void _detach(_HandlerWaiter<dynamic> waiter) {
+    final reservation = waiter.reservation;
+    if (reservation._state != _ReservationState.running) return;
+    _running.remove(waiter);
+    reservation._state = _ReservationState.detached;
+    _reservations.remove(reservation);
+    _activeHandlers -= 1;
+    if (!waiter.isReservedControl) _activeOrdinaryHandlers -= 1;
+    _pendingItems -= 1;
+    _pendingBytes -= reservation.byteLength;
+    if (!reservation._released.isCompleted) reservation._released.complete();
+    if (!waiter.completer.isCompleted) {
+      waiter.completer.completeError(StateError('Inbound gate is closed.'));
+    }
   }
 
   void _releaseUnused(InboundGateReservation reservation) {
@@ -250,8 +339,8 @@ class InboundGate {
   Future<void> close() {
     final existing = _closeFuture;
     if (existing != null) return existing;
-    final completer = Completer<void>.sync();
-    _closeFuture = completer.future;
+    final owner = Completer<void>.sync();
+    _closeFuture = owner.future;
     _closed = true;
 
     final queued = _waiters.toList(growable: false);
@@ -259,13 +348,16 @@ class InboundGate {
     for (final waiter in queued) {
       _rejectWaiter(waiter);
     }
+    for (final waiter in _running.toList(growable: false)) {
+      _detach(waiter);
+    }
     for (final reservation in _reservations.toList(growable: false)) {
       if (reservation._state == _ReservationState.reserved) {
         _release(reservation);
       }
     }
-    completer.complete();
-    return completer.future;
+    owner.complete();
+    return owner.future;
   }
 
   void _rejectWaiter(_HandlerWaiter<dynamic> waiter) {
@@ -284,10 +376,20 @@ class InboundGateReservation {
   final InboundGate _gate;
   final String? method;
   final int byteLength;
+  final Completer<void> _released = Completer<void>.sync();
   _ReservationState _state = _ReservationState.reserved;
+
+  /// Completes when this reservation no longer consumes gate capacity.
+  Future<void> get released => _released.future;
 
   Future<T> run<T>(FutureOr<T> Function() operation) =>
       _gate._run(this, operation);
+
+  /// Run [operation] unless [terminal] settles this reservation while queued.
+  Future<T> runCancellable<T>({
+    required FutureOr<T> Function() operation,
+    required Future<InboundGateTerminal<T>> terminal,
+  }) => _gate._runCancellable(this, operation: operation, terminal: terminal);
 
   T runSync<T>(T Function() operation) => _gate._runSync(this, operation);
 
@@ -308,4 +410,4 @@ class _HandlerWaiter<T> {
       reservation.method == 'terminal/release';
 }
 
-enum _ReservationState { reserved, queued, running, released }
+enum _ReservationState { reserved, queued, running, released, detached }

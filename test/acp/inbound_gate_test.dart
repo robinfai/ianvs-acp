@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dart_acp/src/rpc/inbound_gate.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 
 void main() {
   test('gate limits must be positive and preserve two reserved slots', () {
@@ -264,6 +265,130 @@ void main() {
     },
   );
 
+  test('queued terminal short circuits before handler invocation', () async {
+    final gate = InboundGate(
+      maxConcurrentHandlers: 3,
+      maxOrdinaryConcurrentHandlers: 1,
+    );
+    final reservations = gate.tryReserveBatch(const <InboundGateElement>[
+      InboundGateElement(method: 'fs/read_text_file', byteLength: 3),
+      InboundGateElement(method: 'fs/write_text_file', byteLength: 5),
+      InboundGateElement(method: 'terminal/create', byteLength: 7),
+    ])!;
+    final blockerStarted = Completer<void>();
+    final releaseBlocker = Completer<void>();
+    final queuedValue = Completer<InboundGateTerminal<String>>.sync();
+    final queuedError = Completer<InboundGateTerminal<String>>.sync();
+    var valueHandlerCalls = 0;
+    var errorHandlerCalls = 0;
+
+    final blocker = reservations[0].run(() async {
+      blockerStarted.complete();
+      await releaseBlocker.future;
+    });
+    try {
+      await blockerStarted.future.timeout(const Duration(seconds: 2));
+      final value = reservations[1].runCancellable<String>(
+        operation: () {
+          valueHandlerCalls += 1;
+          return 'handler';
+        },
+        terminal: queuedValue.future,
+      );
+      final error = reservations[2].runCancellable<String>(
+        operation: () {
+          errorHandlerCalls += 1;
+          return 'handler';
+        },
+        terminal: queuedError.future,
+      );
+      final errorExpectation = expectLater(
+        error,
+        throwsA(isA<rpc.RpcException>().having((e) => e.code, 'code', -32003)),
+      );
+
+      queuedValue.complete(const InboundGateTerminalValue<String>('cancelled'));
+      queuedError.complete(
+        InboundGateTerminalError<String>(
+          rpc.RpcException(-32003, 'Permission request cancelled.'),
+        ),
+      );
+
+      expect(await value.timeout(const Duration(seconds: 2)), 'cancelled');
+      await errorExpectation;
+      await Future.wait<void>(<Future<void>>[
+        reservations[1].released,
+        reservations[2].released,
+      ]).timeout(const Duration(seconds: 2));
+      expect(valueHandlerCalls, 0);
+      expect(errorHandlerCalls, 0);
+      expect(gate.pendingItems, 1);
+      expect(gate.pendingBytes, 3);
+      expect(gate.activeHandlers, 1);
+    } finally {
+      if (!releaseBlocker.isCompleted) releaseBlocker.complete();
+      await blocker;
+      await gate.close();
+    }
+  });
+
+  test(
+    'running reservation detaches and consumes late outcomes on close',
+    () async {
+      for (final lateError in <bool>[false, true]) {
+        final zoneErrors = <Object>[];
+        await runZonedGuarded(
+          () async {
+            final gate = InboundGate();
+            final reservation = gate.tryReserveBatch(const <InboundGateElement>[
+              InboundGateElement(method: 'fs/read_text_file', byteLength: 11),
+            ])!.single;
+            final started = Completer<void>();
+            final operation = Completer<String>();
+            final neverTerminal = Completer<InboundGateTerminal<String>>();
+            final waiter = reservation.runCancellable<String>(
+              operation: () {
+                started.complete();
+                return operation.future;
+              },
+              terminal: neverTerminal.future,
+            );
+            final waiterFailure = expectLater(waiter, throwsStateError);
+            try {
+              await started.future.timeout(const Duration(seconds: 2));
+              await gate.close().timeout(const Duration(seconds: 2));
+              await reservation.released.timeout(const Duration(seconds: 2));
+              await waiterFailure;
+              expect(gate.pendingItems, 0);
+              expect(gate.pendingBytes, 0);
+              expect(gate.activeHandlers, 0);
+              if (lateError) {
+                operation.completeError(StateError('late operation'));
+              } else {
+                operation.complete('late value');
+              }
+              await pumpEventQueue();
+              expect(gate.pendingItems, 0);
+              expect(gate.activeHandlers, 0);
+            } finally {
+              if (!operation.isCompleted) operation.complete('cleanup');
+              if (!neverTerminal.isCompleted) {
+                neverTerminal.complete(
+                  const InboundGateTerminalValue<String>('cleanup'),
+                );
+              }
+              await gate.close();
+            }
+          },
+          (Object error, StackTrace stackTrace) {
+            zoneErrors.add(error);
+          },
+        );
+        expect(zoneErrors, isEmpty);
+      }
+    },
+  );
+
   test('session update runs synchronously without a handler permit', () async {
     final gate = InboundGate(
       maxConcurrentHandlers: 3,
@@ -317,6 +442,7 @@ void main() {
       });
       await activeStarted.future;
 
+      final activeFailure = expectLater(active, throwsStateError);
       final queuedFailure = expectLater(queued, throwsStateError);
       final firstClose = gate.close();
       final secondClose = gate.close();
@@ -324,7 +450,8 @@ void main() {
       await firstClose.timeout(const Duration(seconds: 1));
       expect(queuedStarted, isFalse);
       await queuedFailure;
-      expect(gate.pendingItems, 1);
+      expect(gate.pendingItems, 0);
+      expect(gate.activeHandlers, 0);
       expect(
         gate.tryReserveBatch(const <InboundGateElement>[
           InboundGateElement(method: 'terminal/kill', byteLength: 1),
@@ -332,9 +459,11 @@ void main() {
         isNull,
       );
 
+      await activeFailure;
       releaseActive.complete();
-      await active;
+      await pumpEventQueue();
       expect(gate.pendingItems, 0);
+      expect(gate.activeHandlers, 0);
     },
   );
 }
