@@ -89,7 +89,7 @@ final class _ControlledPermissionProvider
   }
 }
 
-final class _CountingFsProvider implements acp.FsProvider {
+final class _CountingFsProvider implements acp.SessionScopedFsProvider {
   int readCalls = 0;
   int writeCalls = 0;
   Completer<String>? readResult;
@@ -113,6 +113,13 @@ final class _CountingFsProvider implements acp.FsProvider {
     final controlled = writeResult;
     if (controlled != null) await controlled.future;
   }
+
+  @override
+  acp.FsProvider bindToSession({
+    required String workspaceRoot,
+    List<String> additionalWorkspaceRoots = const <String>[],
+    required bool allowReadOutsideWorkspace,
+  }) => this;
 }
 
 final class _CountingTerminalProvider implements acp.TerminalProvider {
@@ -382,6 +389,7 @@ class _PermissionAdmissionHarness {
     bool synchronousChannel = false,
     bool failFatalCloseFuture = false,
     bool throwSynchronouslyOnFatalClose = false,
+    List<String> initialAdditionalDirectories = const <String>[],
   }) async {
     assert(!(failFatalCloseFuture && throwSynchronouslyOnFatalClose));
     final channel = StreamChannelController<String>(sync: synchronousChannel);
@@ -442,6 +450,7 @@ class _PermissionAdmissionHarness {
       await manager.resumeSession(
         sessionId: harness.sessionId,
         workspaceRoot: '/tmp',
+        additionalDirectories: initialAdditionalDirectories,
       );
     }
     harness._holdSetupResponses = controlFutureSetups;
@@ -466,10 +475,15 @@ class _PermissionAdmissionHarness {
       StreamController<int>.broadcast();
   final Completer<void> _ordinaryStarted = Completer<void>();
   final Completer<void> _releaseOrdinary = Completer<void>();
-  late final StreamSubscription<String> _wireSubscription;
+  late StreamSubscription<String> _wireSubscription;
+  void Function(Map<String, dynamic>)? _wireDelegate;
   int _nextId = 100;
   bool _holdSetupResponses = false;
   Future<_RpcReply>? _ordinaryResponse;
+  String? _remoteSessionCloseFailure;
+  int _remoteCloseCalls = 0;
+  Completer<void> _remoteCloseSeen = Completer<void>();
+  Completer<void> _releaseRemoteClose = Completer<void>();
 
   void _installAdmissionObserver() {
     final production = peer.onInboundAdmission!;
@@ -487,11 +501,20 @@ class _PermissionAdmissionHarness {
     final decoded = jsonDecode(line);
     if (decoded is List) {
       for (final item in decoded.whereType<Map>()) {
-        _acceptWireMap(Map<String, dynamic>.from(item));
+        _dispatchWireMap(Map<String, dynamic>.from(item));
       }
       return;
     }
-    if (decoded is Map) _acceptWireMap(Map<String, dynamic>.from(decoded));
+    if (decoded is Map) _dispatchWireMap(Map<String, dynamic>.from(decoded));
+  }
+
+  void _dispatchWireMap(Map<String, dynamic> message) {
+    final delegate = _wireDelegate;
+    if (delegate == null) {
+      _acceptWireMap(message);
+    } else {
+      delegate(message);
+    }
   }
 
   void _acceptWireMap(Map<String, dynamic> message) {
@@ -644,9 +667,248 @@ class _PermissionAdmissionHarness {
     manager.settlePromptAdmissions(owner: owner, reason: reason);
   }
 
+  Future<void> configureRemoteSessionCloseFailureForTesting(
+    String failure,
+  ) async {
+    _remoteSessionCloseFailure = failure;
+    _remoteCloseSeen = Completer<void>();
+    _releaseRemoteClose = Completer<void>();
+    _wireDelegate = _onTask10Wire;
+  }
+
+  int get remoteCloseCallsForTesting => _remoteCloseCalls;
+  Future<void> get remoteCloseSeenForTesting => _remoteCloseSeen.future;
+
+  void releaseRemoteCloseErrorForTesting() {
+    if (!_releaseRemoteClose.isCompleted) _releaseRemoteClose.complete();
+  }
+
+  void _onTask10Wire(Map<String, dynamic> message) {
+    if (message['method'] != 'session/close') {
+      _acceptWireMap(message);
+      return;
+    }
+    _remoteCloseCalls += 1;
+    if (!_remoteCloseSeen.isCompleted) _remoteCloseSeen.complete();
+    switch (_remoteSessionCloseFailure) {
+      case 'remoteError':
+      case 'remoteAndCleanupError':
+      case 'ownerlessAdmission':
+        unawaited(
+          _releaseRemoteClose.future.then<void>((_) {
+            channel.local.sink.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': message['id'],
+                'error': <String, dynamic>{
+                  'code': -32000,
+                  'message': 'fixed session close failure',
+                },
+              }),
+            );
+          }),
+        );
+        break;
+      case 'requestTimeout':
+        break;
+      default:
+        throw StateError('Unexpected close failure driver.');
+    }
+  }
+
+  Future<void> populateEverySessionStateForTesting({
+    bool beginInputPhase = true,
+    bool retainInputPhase = true,
+  }) async {
+    manager.sessionUpdates(sessionId).listen((_) {});
+    await manager.resumeSession(
+      sessionId: sessionId,
+      workspaceRoot: '/tmp',
+      additionalDirectories: const <String>['/tmp/additional'],
+    );
+    final populatedOwner = beginInputPhase
+        ? manager.beginPromptTurn(sessionId)
+        : null;
+    populateSessionUpdatesForTesting();
+    await pumpEventQueue();
+    final fsIndex = permissions.requests.length;
+    final fsRequest = await admit('fs/read_text_file');
+    await permissions.waitForRequest(fsIndex);
+    permissions.completeAllow(fsIndex);
+    await fsRequest.response.timeout(const Duration(seconds: 2));
+    final terminalIndex = permissions.requests.length;
+    final terminalRequest = await admit('terminal/create');
+    await permissions.waitForRequest(terminalIndex);
+    permissions.completeAllow(terminalIndex);
+    await terminalRequest.response.timeout(const Duration(seconds: 2));
+    if (!retainInputPhase && populatedOwner != null) {
+      manager.endPromptTurn(populatedOwner);
+    }
+    final present = manager.localSessionStateKeysForTesting(sessionId);
+    expect(present, <String>{
+      'stream',
+      'replay',
+      'workspace',
+      'additionalDirectories',
+      'provider',
+      if (beginInputPhase) 'mode',
+      if (beginInputPhase) 'tool',
+      if (beginInputPhase && retainInputPhase) 'input',
+      'generation',
+      'terminal',
+    });
+  }
+
+  void populateSessionUpdatesForTesting({String? targetSessionId}) {
+    final updateSessionId = targetSessionId ?? sessionId;
+    peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+      'sessionId': updateSessionId,
+      'update': <String, dynamic>{
+        'sessionUpdate': 'current_mode_update',
+        'currentModeId': 'fixed-mode',
+      },
+    });
+    peer.dispatchSessionUpdateForTesting(<String, dynamic>{
+      'sessionId': updateSessionId,
+      'update': <String, dynamic>{
+        'sessionUpdate': 'tool_call',
+        'toolCallId': 'fixed-tool',
+        'title': 'fixed tool',
+        'status': 'pending',
+      },
+    });
+  }
+
+  Future<_PermissionRequestProbe> startPendingPermissionForTesting({
+    String? targetSessionId,
+  }) async {
+    final index = permissions.requests.length;
+    final admission = await admit(
+      'fs/read_text_file',
+      params: <String, dynamic>{
+        'sessionId': targetSessionId ?? sessionId,
+        'path': '/tmp/pending-close.txt',
+      },
+    );
+    await permissions.waitForRequest(index);
+    return admission;
+  }
+
+  Future<void> startOwnerlessRunningAdmissionForTesting() async {
+    fs.readResult = Completer<String>();
+    final releaseSibling = Completer<void>();
+    peer.onTerminalOutput = (_) async {
+      await releaseSibling.future;
+      return <String, dynamic>{'output': '', 'truncated': false};
+    };
+    final index = permissions.requests.length;
+    final permissionId = _nextId++;
+    final siblingId = _nextId++;
+    final permissionReply = Completer<_RpcReply>();
+    final siblingReply = Completer<_RpcReply>();
+    final admission = _PermissionRequestProbe(permissionId, permissionReply);
+    _responses[permissionId] = permissionReply;
+    _responses[siblingId] = siblingReply;
+    _admissionQueue.add(admission);
+    channel.local.sink.add(
+      jsonEncode(<Object?>[
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': permissionId,
+          'method': 'fs/read_text_file',
+          'params': paramsFor('fs/read_text_file'),
+        },
+        <String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': siblingId,
+          'method': 'terminal/output',
+          'params': <String, dynamic>{'sessionId': sessionId},
+        },
+      ]),
+    );
+    await admission.admissionSeen.future.timeout(const Duration(seconds: 2));
+    final observed = admission.admission! as _ObservedAdmission;
+    expect(manager.admissionHasPromptOwnerForTesting(observed.inner), isFalse);
+    await permissions.waitForRequest(index);
+    permissions.completeAllow(index);
+    await fs.readStarted.future.timeout(const Duration(seconds: 2));
+  }
+
+  void failNextSessionCloseReapForTesting(
+    _SessionCloseReapSource source,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    switch (source) {
+      case _SessionCloseReapSource.admission:
+        manager.failNextSessionCloseAdmissionReapForTesting(error, stackTrace);
+        break;
+      case _SessionCloseReapSource.prompt:
+        manager.failNextSessionClosePromptReapForTesting(error, stackTrace);
+        break;
+    }
+  }
+
+  Future<void> releaseAdmissionAndCommitForTesting(
+    _PromptOperationProbe operation,
+  ) async {
+    permissions.finishPending();
+    releaseOrdinaryPermits();
+    final blocker = operation.responseCommitBlocker;
+    if (blocker != null && !blocker.isCompleted) blocker.complete();
+    final admission = operation.admission;
+    if (admission != null) {
+      await admission.responseCommitted.future.timeout(
+        const Duration(seconds: 2),
+      );
+    }
+  }
+
+  Future<void> completePermissionAndBlockCommitForTesting(
+    _PromptOperationProbe operation,
+  ) async {
+    final admission = operation.admission!;
+    final providerIndex = permissions.pending.length - 1;
+    permissions.completeAllow(providerIndex);
+    await admission.reservationReleased.future.timeout(
+      const Duration(seconds: 2),
+    );
+    if (operation.responseCommitBlocker?.isCompleted ?? false) {
+      throw StateError('Batch response commit blocker was released too early.');
+    }
+    if (admission.responseCommitCount != 0) {
+      throw StateError('Batch response committed before grace expiry.');
+    }
+  }
+
+  Future<void> expireAdmissionResponseGraceForTesting() async {
+    final unavailable = Completer<AcpPeerUnavailableState>();
+    void listener(AcpPeerUnavailableState state) {
+      if (state.reason == AcpPeerUnavailableReason.fatalTimeout &&
+          !unavailable.isCompleted) {
+        unavailable.complete(state);
+      }
+    }
+
+    peer.addUnavailableListener(listener);
+    final identity = manager.admissionCleanupWindowIdentitiesForTesting.single;
+    manager.admissionCleanupWindowTimerCallbackForTesting(identity)();
+    await unavailable.future.timeout(const Duration(seconds: 2));
+    peer.removeUnavailableListener(listener);
+  }
+
   Future<void> dispose() async {
     permissions.finishPending();
     releaseOrdinaryPermits();
+    releaseRemoteCloseErrorForTesting();
+    final read = fs.readResult;
+    if (read != null && !read.isCompleted) {
+      read.complete('disposed');
+    }
+    final write = fs.writeResult;
+    if (write != null && !write.isCompleted) {
+      write.complete();
+    }
     await manager.dispose();
     await peer.close();
     await _wireSubscription.cancel();
@@ -1314,6 +1576,7 @@ class _PromptLifecycleHarness {
     Duration grace = const Duration(milliseconds: 100),
     int maxOrdinaryConcurrentHandlers = 1,
     bool synchronousChannel = false,
+    List<String> initialAdditionalDirectories = const <String>[],
   }) async {
     final base = await _PermissionAdmissionHarness.start(
       timeouts: acp.AcpTimeouts(prompt: prompt, promptCancelGrace: grace),
@@ -1321,6 +1584,7 @@ class _PromptLifecycleHarness {
       synchronousChannel: synchronousChannel,
       controlFutureSetups: synchronousChannel,
       registerInitialSession: !synchronousChannel,
+      initialAdditionalDirectories: initialAdditionalDirectories,
     );
     if (synchronousChannel) {
       final resume = base.manager.resumeSession(
@@ -2076,7 +2340,1638 @@ final class _SecretToken {
   String toString() => 'TOKEN-CANARY';
 }
 
+enum _TypedClaimRace {
+  closeBeforeClaim,
+  transportBeforeClaim,
+  requestFatalBeforeClaim,
+  disposeBeforeClaim,
+  otherOwnerBeforeClaim,
+  subscriberCancelBeforeClaim,
+  claimBeforeClose,
+  claimBeforeDispose,
+  claimBeforeSubscriberCancel,
+  otherOwnerFatal,
+  sameOwnerCleanupAfterWinner,
+  sameOwnerCleanupThenDisposeBeforeClaim,
+  sameOwnerAdmissionFatalBeforeWinner,
+}
+
+enum _TypedAdmissionEntry { fsRead, fsWrite, terminal }
+
+enum _TypedUnavailableFirst {
+  transportClosed,
+  requestFatal,
+  explicitClose,
+  dispose,
+}
+
+enum _RemoteCloseFailure {
+  remoteError,
+  requestTimeout,
+  ownerlessAdmission,
+  peerFatal,
+  remoteAndCleanupError,
+}
+
+enum _SessionCloseReapSource { admission, prompt }
+
+final class _TypedTurnProbe {
+  _TypedTurnProbe(Stream<acp.AcpUpdate> stream) {
+    _subscription = stream.listen(
+      (event) {
+        _events.add(event);
+        if (event is acp.TurnEnded) terminalDeliveryCount += 1;
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        errors.add(error);
+        if (error is acp.AcpConnectionClosedException) {
+          connectionClosedCount += 1;
+        }
+      },
+      onDone: () {
+        streamDoneCount += 1;
+        if (!done.isCompleted) done.complete();
+        if (!_eventsDone.isCompleted) _eventsDone.complete(_events);
+      },
+    );
+  }
+
+  late final StreamSubscription<acp.AcpUpdate> _subscription;
+  final List<acp.AcpUpdate> _events = <acp.AcpUpdate>[];
+  final List<Object> errors = <Object>[];
+  final Completer<List<acp.AcpUpdate>> _eventsDone =
+      Completer<List<acp.AcpUpdate>>();
+  final Completer<void> cleanupFatalSeen = Completer<void>();
+  final Completer<void> winnerRecorded = Completer<void>();
+  final Completer<void> rightRecorded = Completer<void>();
+  final Completer<void> barrierReleased = Completer<void>();
+  final Completer<void> claimSeen = Completer<void>();
+  final Completer<void> done = Completer<void>();
+  int streamDoneCount = 0;
+  int terminalDeliveryCount = 0;
+  int connectionClosedCount = 0;
+  int subscriptionCancelCount = 0;
+  bool _subscriptionCancelled = false;
+
+  Future<List<acp.AcpUpdate>> get events => _eventsDone.future;
+
+  Future<void> dispose() async {
+    if (!_subscriptionCancelled) {
+      _subscriptionCancelled = true;
+      subscriptionCancelCount += 1;
+      await _subscription.cancel();
+    }
+    if (!done.isCompleted) done.complete();
+    if (!_eventsDone.isCompleted) _eventsDone.complete(_events);
+  }
+}
+
+final class _TypedPromptHarness {
+  _TypedPromptHarness._(this.prompt);
+
+  static Future<_TypedPromptHarness> start() async {
+    final prompt = await _PromptLifecycleHarness.start(
+      grace: const Duration(milliseconds: 75),
+    );
+    final harness = _TypedPromptHarness._(prompt);
+    prompt.peer.addUnavailableListener((state) {
+      final turn = harness._activeTurn;
+      final operation = prompt._current;
+      final cleanup = state.cleanupIdentity;
+      if (turn != null &&
+          operation != null &&
+          state.reason == AcpPeerUnavailableReason.fatalTimeout &&
+          cleanup != null &&
+          identical(cleanup.ownerToken, operation.owner) &&
+          cleanup.generation == operation.owner.generation &&
+          !turn.cleanupFatalSeen.isCompleted) {
+        turn.cleanupFatalSeen.complete();
+      }
+    });
+    return harness;
+  }
+
+  final _PromptLifecycleHarness prompt;
+  _TypedTurnProbe? _activeTurn;
+  JsonRpcPeer get peer => prompt.peer;
+
+  Future<_TypedTurnProbe> startWithRunningAdmission({
+    _TypedAdmissionEntry? sideEffect,
+  }) async {
+    switch (sideEffect) {
+      case _TypedAdmissionEntry.fsRead:
+        prompt.base.fs.readResult = Completer<String>();
+        break;
+      case _TypedAdmissionEntry.fsWrite:
+        prompt.base.fs.writeResult = Completer<void>();
+        break;
+      case _TypedAdmissionEntry.terminal:
+        prompt.base.terminals.createResult =
+            Completer<acp.TerminalProcessHandle>();
+        break;
+      case null:
+        break;
+    }
+    final turn = _TypedTurnProbe(
+      prompt.base.manager.prompt(
+        sessionId: prompt.sessionId,
+        content: const <Map<String, dynamic>>[],
+      ),
+    );
+    _activeTurn = turn;
+    await prompt.promptSeen.future.timeout(const Duration(seconds: 2));
+    final operation = prompt._current!;
+    final method = switch (sideEffect) {
+      _TypedAdmissionEntry.fsRead || null => 'fs/read_text_file',
+      _TypedAdmissionEntry.fsWrite => 'fs/write_text_file',
+      _TypedAdmissionEntry.terminal => 'terminal/create',
+    };
+    final providerIndex = prompt.base.permissions.requests.length;
+    await prompt._startBlockedAdmission(operation, method: method);
+    if (sideEffect != null) {
+      prompt.base.permissions.completeAllow(providerIndex);
+      await (switch (sideEffect) {
+        _TypedAdmissionEntry.fsRead => prompt.base.fs.readStarted.future,
+        _TypedAdmissionEntry.fsWrite => prompt.base.fs.writeStarted.future,
+        _TypedAdmissionEntry.terminal =>
+          prompt.base.terminals.createStarted.future,
+      }).timeout(const Duration(seconds: 2));
+    }
+    prompt.base.manager
+        .promptWinnerRecordedForTesting(operation.owner)
+        .then<void>((_) {
+          if (!turn.winnerRecorded.isCompleted) turn.winnerRecorded.complete();
+        });
+    prompt.base.manager
+        .promptRightRecordedForTesting(operation.owner)
+        .then<void>((_) {
+          if (!turn.rightRecorded.isCompleted) turn.rightRecorded.complete();
+        });
+    prompt.base.manager
+        .promptBarrierReleasedForTesting(operation.owner)
+        .then<void>((_) {
+          if (!turn.barrierReleased.isCompleted) {
+            turn.barrierReleased.complete();
+          }
+        });
+    prompt.base.manager.promptClaimSeenForTesting(operation.owner).then<void>((
+      _,
+    ) {
+      if (!turn.claimSeen.isCompleted) turn.claimSeen.complete();
+    });
+    return turn;
+  }
+
+  Future<_TypedTurnProbe> startPendingWithoutAdmission() async {
+    final turn = _TypedTurnProbe(
+      prompt.base.manager.prompt(
+        sessionId: prompt.sessionId,
+        content: const <Map<String, dynamic>>[],
+      ),
+    );
+    _activeTurn = turn;
+    await prompt.promptSeen.future.timeout(const Duration(seconds: 2));
+    return turn;
+  }
+
+  bool sideEffectStarted(_TypedAdmissionEntry entry) => switch (entry) {
+    _TypedAdmissionEntry.fsRead => prompt.base.fs.readCalls == 1,
+    _TypedAdmissionEntry.fsWrite => prompt.base.fs.writeCalls == 1,
+    _TypedAdmissionEntry.terminal => prompt.base.terminals.createCalls == 1,
+  };
+
+  void respondPrompt({required String stopReason}) {
+    prompt.respondPromptSuccess(stopReason: stopReason);
+  }
+
+  void respondPromptSuccess() => prompt.respondPromptSuccess();
+
+  void respondPromptError({required int code, required String message}) {
+    prompt.respondPromptError(code: code, message: message);
+  }
+
+  void firePromptDeadline() {
+    prompt.peer.firePromptDeadlineForTesting(prompt._current!.owner);
+  }
+
+  Future<_TypedTurnProbe> startClaimRace(_TypedClaimRace scenario) async {
+    final turn = await startWithRunningAdmission();
+    if (scenario == _TypedClaimRace.closeBeforeClaim ||
+        scenario == _TypedClaimRace.transportBeforeClaim ||
+        scenario == _TypedClaimRace.requestFatalBeforeClaim ||
+        scenario == _TypedClaimRace.disposeBeforeClaim ||
+        scenario == _TypedClaimRace.otherOwnerBeforeClaim ||
+        scenario == _TypedClaimRace.subscriberCancelBeforeClaim ||
+        scenario == _TypedClaimRace.sameOwnerCleanupThenDisposeBeforeClaim) {
+      unawaited(
+        prompt.base.manager.holdPromptPreclaimForTesting(
+          prompt._current!.owner,
+        ),
+      );
+    } else if (scenario == _TypedClaimRace.claimBeforeDispose ||
+        scenario == _TypedClaimRace.claimBeforeSubscriberCancel) {
+      unawaited(
+        prompt.base.manager.holdPromptTerminalOnlyForTesting(
+          prompt._current!.owner,
+        ),
+      );
+    }
+    return turn;
+  }
+
+  Future<void> runClaimRace(
+    _TypedTurnProbe turn,
+    _TypedClaimRace scenario,
+  ) async {
+    final operation = prompt._current!;
+    switch (scenario) {
+      case _TypedClaimRace.closeBeforeClaim:
+      case _TypedClaimRace.transportBeforeClaim:
+      case _TypedClaimRace.requestFatalBeforeClaim:
+      case _TypedClaimRace.disposeBeforeClaim:
+      case _TypedClaimRace.otherOwnerBeforeClaim:
+      case _TypedClaimRace.subscriberCancelBeforeClaim:
+        respondPromptSuccess();
+        await turn.winnerRecorded.future;
+        await turn.rightRecorded.future;
+        await prompt.base.releaseAdmissionAndCommitForTesting(operation);
+        await turn.barrierReleased.future;
+        await prompt.base.manager.holdPromptPreclaimForTesting(operation.owner);
+        switch (scenario) {
+          case _TypedClaimRace.closeBeforeClaim:
+            await prompt.peer.close();
+            break;
+          case _TypedClaimRace.transportBeforeClaim:
+            await prompt.peer.closeForTesting(
+              AcpPeerUnavailableReason.transportClosed,
+            );
+            break;
+          case _TypedClaimRace.requestFatalBeforeClaim:
+            await prompt.peer.closeForFatalTimeout();
+            break;
+          case _TypedClaimRace.disposeBeforeClaim:
+            await prompt.base.manager.dispose();
+            break;
+          case _TypedClaimRace.otherOwnerBeforeClaim:
+            await prompt.peer.closeForFatalTimeout(
+              cleanupIdentity: AcpPromptCleanupIdentity(Object(), 1),
+            );
+            break;
+          case _TypedClaimRace.subscriberCancelBeforeClaim:
+            await turn.dispose();
+            break;
+          case _:
+            throw StateError('Unexpected preclaim scenario.');
+        }
+        prompt.base.manager.releasePromptPreclaimForTesting(operation.owner);
+        break;
+      case _TypedClaimRace.claimBeforeClose:
+      case _TypedClaimRace.claimBeforeDispose:
+      case _TypedClaimRace.claimBeforeSubscriberCancel:
+        respondPromptSuccess();
+        await turn.winnerRecorded.future;
+        await turn.rightRecorded.future;
+        await prompt.base.releaseAdmissionAndCommitForTesting(operation);
+        await turn.barrierReleased.future;
+        await turn.claimSeen.future;
+        if (scenario == _TypedClaimRace.claimBeforeDispose ||
+            scenario == _TypedClaimRace.claimBeforeSubscriberCancel) {
+          await prompt.base.manager.holdPromptTerminalOnlyForTesting(
+            operation.owner,
+          );
+        }
+        if (scenario == _TypedClaimRace.claimBeforeDispose) {
+          await prompt.base.manager.dispose();
+          prompt.base.manager.releasePromptTerminalOnlyForTesting(
+            operation.owner,
+          );
+        } else if (scenario == _TypedClaimRace.claimBeforeSubscriberCancel) {
+          await turn.dispose();
+          prompt.base.manager.releasePromptTerminalOnlyForTesting(
+            operation.owner,
+          );
+          await pumpEventQueue();
+        } else {
+          await prompt.peer.close();
+        }
+        break;
+      case _TypedClaimRace.otherOwnerFatal:
+        await prompt.peer.closeForFatalTimeout(
+          cleanupIdentity: AcpPromptCleanupIdentity(Object(), 1),
+        );
+        break;
+      case _TypedClaimRace.sameOwnerCleanupAfterWinner:
+        respondPromptSuccess();
+        await turn.winnerRecorded.future;
+        await turn.rightRecorded.future;
+        await prompt.base.expireAdmissionResponseGraceForTesting();
+        await turn.cleanupFatalSeen.future;
+        break;
+      case _TypedClaimRace.sameOwnerCleanupThenDisposeBeforeClaim:
+        final disposeDone = Completer<void>();
+        void disposeOnFatal(AcpPeerUnavailableState state) {
+          if (state.reason != AcpPeerUnavailableReason.fatalTimeout ||
+              disposeDone.isCompleted) {
+            return;
+          }
+          unawaited(
+            prompt.base.manager.dispose().then<void>(
+              (_) => disposeDone.complete(),
+              onError: disposeDone.completeError,
+            ),
+          );
+        }
+
+        prompt.peer.addUnavailableListener(disposeOnFatal);
+        try {
+          respondPromptSuccess();
+          await turn.winnerRecorded.future;
+          await turn.rightRecorded.future;
+          await prompt.base.expireAdmissionResponseGraceForTesting();
+          await turn.cleanupFatalSeen.future;
+          await disposeDone.future.timeout(const Duration(seconds: 2));
+        } finally {
+          prompt.peer.removeUnavailableListener(disposeOnFatal);
+        }
+        break;
+      case _TypedClaimRace.sameOwnerAdmissionFatalBeforeWinner:
+        await prompt.base.completePermissionAndBlockCommitForTesting(operation);
+        await prompt.base.expireAdmissionResponseGraceForTesting();
+        await turn.cleanupFatalSeen.future;
+        respondPromptSuccess();
+        break;
+    }
+    await turn.done.future.timeout(const Duration(seconds: 2));
+  }
+
+  Future<void> runUnavailableFirst(
+    _TypedTurnProbe turn,
+    _TypedUnavailableFirst cause,
+  ) async {
+    switch (cause) {
+      case _TypedUnavailableFirst.transportClosed:
+        await prompt.peer.closeForTesting(
+          AcpPeerUnavailableReason.transportClosed,
+        );
+        break;
+      case _TypedUnavailableFirst.requestFatal:
+        await prompt.peer.closeForFatalTimeout();
+        break;
+      case _TypedUnavailableFirst.explicitClose:
+        await prompt.peer.close();
+        break;
+      case _TypedUnavailableFirst.dispose:
+        await prompt.base.manager.dispose();
+        break;
+    }
+    respondPromptSuccess();
+    await turn.done.future.timeout(const Duration(seconds: 2));
+  }
+
+  Future<void> dispose() async {
+    final read = prompt.base.fs.readResult;
+    if (read != null && !read.isCompleted) {
+      read.completeError(StateError('typed harness disposed'));
+    }
+    final write = prompt.base.fs.writeResult;
+    if (write != null && !write.isCompleted) {
+      write.completeError(StateError('typed harness disposed'));
+    }
+    final terminal = prompt.base.terminals.createResult;
+    if (terminal != null && !terminal.isCompleted) {
+      terminal.completeError(StateError('typed harness disposed'));
+    }
+    await _activeTurn?.dispose();
+    await prompt.dispose();
+  }
+}
+
+final class _SessionCloseManagerDriver {
+  _SessionCloseManagerDriver(this.base, this.failure);
+
+  final _PermissionAdmissionHarness base;
+  final _RemoteCloseFailure failure;
+
+  Future<void> closeSession({required String sessionId}) async {
+    if (failure == _RemoteCloseFailure.peerFatal) {
+      await base.peer.closeForFatalTimeout();
+    }
+    await base.manager.closeSession(sessionId: sessionId);
+  }
+}
+
+final class _SessionCloseHarness {
+  _SessionCloseHarness._(this.base, this.failure)
+    : manager = _SessionCloseManagerDriver(base, failure) {
+    _fatalListener = (state) {
+      if (state.reason == AcpPeerUnavailableReason.fatalTimeout) {
+        fatalCloseCount += 1;
+      }
+    };
+    base.peer.addUnavailableListener(_fatalListener);
+  }
+
+  static Future<_SessionCloseHarness> start({
+    required _RemoteCloseFailure failure,
+  }) async {
+    final base = await _PermissionAdmissionHarness.start(
+      timeouts: const acp.AcpTimeouts(
+        request: Duration(milliseconds: 75),
+        promptCancelGrace: Duration(milliseconds: 75),
+      ),
+      initialAdditionalDirectories: const <String>['/tmp/additional'],
+      maxOrdinaryConcurrentHandlers:
+          failure == _RemoteCloseFailure.ownerlessAdmission ? 2 : 1,
+    );
+    final harness = _SessionCloseHarness._(base, failure);
+    if (failure == _RemoteCloseFailure.remoteAndCleanupError) {
+      base.terminals.releaseThrows = true;
+    }
+    if (failure != _RemoteCloseFailure.peerFatal) {
+      await base.configureRemoteSessionCloseFailureForTesting(failure.name);
+    }
+    return harness;
+  }
+
+  final _PermissionAdmissionHarness base;
+  final _RemoteCloseFailure failure;
+  final _SessionCloseManagerDriver manager;
+  late final AcpPeerUnavailableListener _fatalListener;
+  int fatalCloseCount = 0;
+  String get sessionId => base.sessionId;
+  int get cleanupWindowStartCount =>
+      base.manager.admissionCleanupWindowStartCountForTesting;
+  int get remoteCloseCalls => base.remoteCloseCallsForTesting;
+  Set<String> get remainingLocalState =>
+      base.manager.localSessionStateKeysForTesting(sessionId);
+  int get pendingPermissionCount =>
+      base.manager.pendingPermissionCountForTesting(sessionId);
+  int get pendingTerminalLeaseCount =>
+      base.manager.pendingTerminalLeaseCountForTesting;
+  int get sessionCloseSelectionCount =>
+      base.manager.sessionCloseSelectionCountForTesting(sessionId);
+  bool get ownerlessSideEffectStarted => base.fs.readCalls >= 1;
+
+  Future<void> populateEverySessionState({bool retainInputPhase = true}) => base
+      .populateEverySessionStateForTesting(retainInputPhase: retainInputPhase);
+
+  Future<void> startOwnerlessRunningAdmission() =>
+      base.startOwnerlessRunningAdmissionForTesting();
+
+  void failNextPrepareSynchronously(Object error, StackTrace stackTrace) {
+    base.manager.failNextSessionClosePrepareSynchronouslyForTesting(
+      error,
+      stackTrace,
+    );
+  }
+
+  Future<void> dispose() async {
+    try {
+      await base.dispose();
+    } finally {
+      base.peer.removeUnavailableListener(_fatalListener);
+    }
+  }
+}
+
+Future<({Object error, StackTrace stackTrace})> _captureCloseFailure(
+  Future<void> closing,
+) async {
+  try {
+    await closing;
+  } on Object catch (error, stackTrace) {
+    return (error: error, stackTrace: stackTrace);
+  }
+  throw StateError('Expected session close to fail.');
+}
+
 void main() {
+  test('typed prompt preserves success across its cleanup fatal', () async {
+    for (final entry in _TypedAdmissionEntry.values) {
+      final harness = await _TypedPromptHarness.start();
+      try {
+        final turn = await harness.startWithRunningAdmission(sideEffect: entry);
+        expect(harness.sideEffectStarted(entry), isTrue);
+        harness.respondPrompt(stopReason: 'end_turn');
+        await turn.cleanupFatalSeen.future.timeout(const Duration(seconds: 2));
+        final events = await turn.events.timeout(const Duration(seconds: 2));
+        final terminals = events.whereType<acp.TurnEnded>().toList();
+        expect(terminals, hasLength(1));
+        expect(terminals.single.stopReason, acp.StopReason.endTurn);
+        expect(turn.errors, isEmpty);
+        expect(turn.streamDoneCount, 1);
+        expect(harness.peer.isAvailable, isFalse);
+      } finally {
+        await harness.dispose();
+      }
+    }
+  });
+
+  test(
+    'typed prompt preserves remote error across its cleanup fatal',
+    () async {
+      for (final entry in _TypedAdmissionEntry.values) {
+        final harness = await _TypedPromptHarness.start();
+        try {
+          final turn = await harness.startWithRunningAdmission(
+            sideEffect: entry,
+          );
+          expect(harness.sideEffectStarted(entry), isTrue);
+          harness.respondPromptError(
+            code: -32000,
+            message: 'fixed remote error',
+          );
+          await turn.cleanupFatalSeen.future.timeout(
+            const Duration(seconds: 2),
+          );
+          final events = await turn.events.timeout(const Duration(seconds: 2));
+          expect(turn.errors, hasLength(1));
+          expect(turn.errors.single.toString(), contains('fixed remote error'));
+          expect(
+            turn.errors.whereType<acp.AcpConnectionClosedException>(),
+            isEmpty,
+          );
+          final terminals = events.whereType<acp.TurnEnded>().toList();
+          expect(terminals, hasLength(1));
+          expect(terminals.single.stopReason, acp.StopReason.other);
+          expect(turn.streamDoneCount, 1);
+        } finally {
+          await harness.dispose();
+        }
+      }
+    },
+  );
+
+  test('typed prompt preserves timeout across its cleanup fatal', () async {
+    final harness = await _TypedPromptHarness.start();
+    try {
+      final turn = await harness.startWithRunningAdmission(
+        sideEffect: _TypedAdmissionEntry.fsRead,
+      );
+      harness.firePromptDeadline();
+      await turn.winnerRecorded.future.timeout(const Duration(seconds: 2));
+      await turn.rightRecorded.future.timeout(const Duration(seconds: 2));
+      await turn.cleanupFatalSeen.future.timeout(const Duration(seconds: 2));
+      final events = await turn.events.timeout(const Duration(seconds: 2));
+      expect(turn.errors, hasLength(1));
+      expect(turn.errors.single, isA<acp.AcpPromptTimeoutException>());
+      final terminals = events.whereType<acp.TurnEnded>().toList();
+      expect(terminals, hasLength(1));
+      expect(terminals.single.stopReason, acp.StopReason.other);
+      expect(turn.connectionClosedCount, 0);
+      expect(turn.streamDoneCount, 1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'raw owner bound prompt preserves cached winner without a typed turn',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 75),
+      );
+      try {
+        final operation = await harness.startPromptWithBlockedAdmissionCommit();
+        harness.respondPromptSuccess(stopReason: 'end_turn');
+        await harness.base.manager
+            .promptWinnerRecordedForTesting(operation.owner)
+            .timeout(const Duration(seconds: 2));
+        await harness.base.manager
+            .promptRightRecordedForTesting(operation.owner)
+            .timeout(const Duration(seconds: 2));
+        expect(
+          await operation.promptResult.timeout(const Duration(seconds: 2)),
+          <String, dynamic>{'stopReason': 'end_turn'},
+        );
+        final snapshot = harness.base.manager.promptLifecycleSnapshotForTesting(
+          operation.owner,
+        );
+        expect(snapshot.winner?.kind, JsonRpcPromptTerminalKind.response);
+        expect(snapshot.hasDeliveryRight, isTrue);
+        expect(snapshot.cleanupIdentity?.ownerToken, same(operation.owner));
+        expect(harness.peer.isAvailable, isFalse);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'typed external close and terminal claim are first wins',
+    () => _expectNoZoneErrors(() async {
+      final mismatches = <String>[];
+      for (final scenario in _TypedClaimRace.values) {
+        final harness = await _TypedPromptHarness.start();
+        try {
+          final turn = await harness.startClaimRace(scenario);
+          await harness.runClaimRace(turn, scenario);
+          final events = await turn.events.timeout(const Duration(seconds: 2));
+          final terminalShouldWin =
+              scenario == _TypedClaimRace.sameOwnerCleanupAfterWinner ||
+              scenario ==
+                  _TypedClaimRace.sameOwnerCleanupThenDisposeBeforeClaim ||
+              scenario == _TypedClaimRace.claimBeforeClose ||
+              scenario == _TypedClaimRace.claimBeforeDispose;
+          final exactTerminal =
+              turn.streamDoneCount == 1 &&
+              turn.errors.isEmpty &&
+              events.length == 1 &&
+              events.single is acp.TurnEnded &&
+              turn.connectionClosedCount == 0;
+          final exactConnectionClosed =
+              turn.streamDoneCount == 1 &&
+              events.isEmpty &&
+              turn.errors.length == 1 &&
+              turn.errors.single is acp.AcpConnectionClosedException &&
+              turn.connectionClosedCount == 1;
+          final subscriberCancelled =
+              scenario == _TypedClaimRace.subscriberCancelBeforeClaim ||
+              scenario == _TypedClaimRace.claimBeforeSubscriberCancel;
+          final exactSubscriberCancellation =
+              turn.streamDoneCount == 0 &&
+              events.isEmpty &&
+              turn.errors.isEmpty &&
+              turn.terminalDeliveryCount == 0 &&
+              turn.connectionClosedCount == 0 &&
+              turn.subscriptionCancelCount == 1;
+          final matches = subscriberCancelled
+              ? exactSubscriberCancellation
+              : terminalShouldWin
+              ? exactTerminal
+              : exactConnectionClosed;
+          if (!matches) {
+            mismatches.add(
+              '${scenario.name}: events=${events.map((event) => event.runtimeType).toList()}, '
+              'errors=${turn.errors.map((error) => error.runtimeType).toList()}, '
+              'done=${turn.streamDoneCount}',
+            );
+          }
+          expect(
+            harness.prompt.base.manager.promptPreclaimBarrierCountForTesting,
+            0,
+            reason: scenario.name,
+          );
+          expect(
+            harness
+                .prompt
+                .base
+                .manager
+                .promptTerminalOnlyBarrierCountForTesting,
+            0,
+            reason: scenario.name,
+          );
+          expect(
+            harness.prompt.base.manager.activeTypedPromptTurnCountForTesting,
+            0,
+            reason: scenario.name,
+          );
+          expect(
+            harness
+                .prompt
+                .base
+                .manager
+                .activeTypedUpdateSubscriptionCountForTesting,
+            0,
+            reason: scenario.name,
+          );
+          expect(
+            harness.prompt.base.manager.promptLifecycleCountForTesting,
+            0,
+            reason: scenario.name,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      }
+      for (final otherOwnerFatal in <bool>[false, true]) {
+        final harness = await _PromptLifecycleHarness.start(
+          grace: const Duration(milliseconds: 75),
+        );
+        try {
+          final operation = await harness
+              .startPromptWithBlockedAdmissionCommit();
+          harness.respondPromptSuccess();
+          await harness.base.manager
+              .promptWinnerRecordedForTesting(operation.owner)
+              .timeout(const Duration(seconds: 2));
+          await harness.base.manager
+              .promptRightRecordedForTesting(operation.owner)
+              .timeout(const Duration(seconds: 2));
+          final result = _observeFuture(operation.promptResult);
+          if (otherOwnerFatal) {
+            await harness.peer.closeForFatalTimeout(
+              cleanupIdentity: AcpPromptCleanupIdentity(Object(), 1),
+            );
+          } else {
+            await harness.peer.close();
+          }
+          final outcome = await result.timeout(const Duration(seconds: 2));
+          final snapshot = harness.base.manager
+              .promptLifecycleSnapshotForTesting(operation.owner);
+          final exactRawRevocation =
+              outcome.error is acp.AcpConnectionClosedException &&
+              !snapshot.hasDeliveryRight &&
+              snapshot.cancellationWinner ==
+                  acp.PermissionCancellationReason.connectionClosed;
+          if (!exactRawRevocation) {
+            mismatches.add(
+              'raw-${otherOwnerFatal ? 'otherOwnerFatal' : 'explicitClose'}: '
+              'error=${outcome.error.runtimeType}, '
+              'right=${snapshot.hasDeliveryRight}, '
+              'reason=${snapshot.cancellationWinner}',
+            );
+          }
+        } finally {
+          await harness.dispose();
+        }
+      }
+      expect(mismatches, isEmpty, reason: mismatches.join('\n'));
+    }),
+  );
+
+  test(
+    'typed unavailable before terminal is fixed connection closed once',
+    () async {
+      for (final cause in _TypedUnavailableFirst.values) {
+        final harness = await _TypedPromptHarness.start();
+        try {
+          final turn = await harness.startWithRunningAdmission();
+          final owner = harness.prompt._current!.owner;
+          await harness.runUnavailableFirst(turn, cause);
+          final events = await turn.events.timeout(const Duration(seconds: 2));
+          final expectedPermissionReason =
+              cause == _TypedUnavailableFirst.dispose
+              ? acp.PermissionCancellationReason.disposed
+              : acp.PermissionCancellationReason.connectionClosed;
+          expect(events, isEmpty, reason: cause.name);
+          expect(turn.errors, hasLength(1), reason: cause.name);
+          expect(
+            turn.errors.single,
+            isA<acp.AcpConnectionClosedException>(),
+            reason: cause.name,
+          );
+          expect(turn.connectionClosedCount, 1, reason: cause.name);
+          expect(turn.streamDoneCount, 1, reason: cause.name);
+          expect(
+            harness
+                .prompt
+                .base
+                .manager
+                .activeTypedUpdateSubscriptionCountForTesting,
+            0,
+            reason: cause.name,
+          );
+          expect(turn.claimSeen.isCompleted, isFalse, reason: cause.name);
+          expect(
+            harness.prompt.base.permissions.cancellations.map(
+              (item) => item.$2,
+            ),
+            contains(expectedPermissionReason),
+            reason: cause.name,
+          );
+          expect(
+            harness.prompt.base.manager
+                .promptLifecycleSnapshotForTesting(owner)
+                .cancellationWinner,
+            expectedPermissionReason,
+            reason: cause.name,
+          );
+        } finally {
+          await harness.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'session close cleans local state in finally after remote failure',
+    () async {
+      final mismatches = <String>[];
+      for (final failure in _RemoteCloseFailure.values) {
+        final harness = await _SessionCloseHarness.start(failure: failure);
+        try {
+          if (failure == _RemoteCloseFailure.ownerlessAdmission) {
+            await harness.populateEverySessionState(retainInputPhase: false);
+            await harness.startOwnerlessRunningAdmission();
+            expect(harness.ownerlessSideEffectStarted, isTrue);
+          } else {
+            await harness.populateEverySessionState();
+            await harness.base.startPendingPermissionForTesting();
+            expect(harness.remainingLocalState, <String>{
+              'stream',
+              'replay',
+              'workspace',
+              'additionalDirectories',
+              'provider',
+              'mode',
+              'tool',
+              'input',
+              'generation',
+              'permission',
+              'terminal',
+            }, reason: failure.name);
+          }
+          final windowStartsBeforeClose = harness.cleanupWindowStartCount;
+          final capturedFuture = _captureCloseFailure(
+            harness.manager.closeSession(sessionId: harness.sessionId),
+          );
+          if (failure == _RemoteCloseFailure.remoteError ||
+              failure == _RemoteCloseFailure.remoteAndCleanupError) {
+            await harness.base.remoteCloseSeenForTesting.timeout(
+              const Duration(seconds: 2),
+            );
+            harness.base.releaseRemoteCloseErrorForTesting();
+          } else if (failure == _RemoteCloseFailure.ownerlessAdmission) {
+            // Release eagerly so an unexpected remote-stage regression fails
+            // by assertion instead of leaving the fixture blocked.
+            harness.base.releaseRemoteCloseErrorForTesting();
+          }
+          final captured = await capturedFuture.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw StateError(
+              'session close did not finish for ${failure.name}',
+            ),
+          );
+          final errorIsExact = switch (failure) {
+            _RemoteCloseFailure.remoteError =>
+              captured.error is rpc.RpcException,
+            _RemoteCloseFailure.requestTimeout =>
+              captured.error is acp.AcpRequestTimeoutException,
+            _RemoteCloseFailure.ownerlessAdmission ||
+            _RemoteCloseFailure.peerFatal =>
+              captured.error is acp.AcpConnectionClosedException,
+            _RemoteCloseFailure.remoteAndCleanupError =>
+              captured.error is acp.SessionCloseCleanupException &&
+                  (captured.error as acp.SessionCloseCleanupException)
+                          .failedStages
+                          .length ==
+                      1 &&
+                  (captured.error as acp.SessionCloseCleanupException)
+                          .failedStages
+                          .single ==
+                      'terminals' &&
+                  !captured.error.toString().contains(
+                    'fixed session close failure',
+                  ),
+          };
+          final expectedRemoteCalls =
+              failure == _RemoteCloseFailure.peerFatal ||
+                  failure == _RemoteCloseFailure.ownerlessAdmission
+              ? 0
+              : 1;
+          final localStateCleared =
+              harness.remainingLocalState.isEmpty &&
+              harness.pendingPermissionCount == 0 &&
+              harness.pendingTerminalLeaseCount == 0 &&
+              harness.sessionCloseSelectionCount == 0;
+          final ownerlessWindowExact =
+              failure != _RemoteCloseFailure.ownerlessAdmission ||
+              (harness.cleanupWindowStartCount == windowStartsBeforeClose + 1 &&
+                  harness.fatalCloseCount == 1 &&
+                  harness.base.manager.admissionCleanupWindowCountForTesting ==
+                      0 &&
+                  harness.base.manager.ownerCleanupActiveTimerCountForTesting ==
+                      0);
+          if (!errorIsExact ||
+              harness.remoteCloseCalls != expectedRemoteCalls ||
+              !localStateCleared ||
+              !ownerlessWindowExact) {
+            mismatches.add(
+              '${failure.name}: error=${captured.error.runtimeType}, '
+              'remote=${harness.remoteCloseCalls}/$expectedRemoteCalls, '
+              'state=${harness.remainingLocalState}, '
+              'windows=${harness.cleanupWindowStartCount}/'
+              '${harness.base.manager.admissionCleanupWindowCountForTesting}, '
+              'fatal=${harness.fatalCloseCount}',
+            );
+          }
+        } finally {
+          await harness.dispose();
+        }
+      }
+      final generatedBase = await _PermissionAdmissionHarness.start(
+        registerInitialSession: false,
+        controlFutureSetups: true,
+        maxOrdinaryConcurrentHandlers: 2,
+        timeouts: const acp.AcpTimeouts(
+          request: Duration(seconds: 1),
+          permission: Duration(seconds: 1),
+          promptCancelGrace: Duration(milliseconds: 75),
+        ),
+      );
+      const generatedSessionId = 'generated-close-state';
+      await generatedBase.configureRemoteSessionCloseFailureForTesting(
+        _RemoteCloseFailure.remoteError.name,
+      );
+      final registrationSeen = generatedBase.manager
+          .holdNextGeneratedRegistrationDrainForTesting();
+      final creating = _observeFuture(
+        generatedBase.manager.newSession(
+          workspaceRoot: '/tmp',
+          additionalDirectories: const <String>['/tmp/additional'],
+        ),
+      );
+      try {
+        await generatedBase
+            .waitForSetupRequest(0)
+            .timeout(const Duration(seconds: 2));
+        generatedBase.completeSetupSuccess(0, sessionId: generatedSessionId);
+        expect(
+          await registrationSeen.timeout(const Duration(seconds: 2)),
+          generatedSessionId,
+        );
+        generatedBase.populateSessionUpdatesForTesting(
+          targetSessionId: generatedSessionId,
+        );
+        await pumpEventQueue();
+        final terminalPermissionIndex =
+            generatedBase.permissions.requests.length;
+        final terminal = await generatedBase.admit(
+          'terminal/create',
+          params: <String, dynamic>{
+            'sessionId': generatedSessionId,
+            'command': '/usr/bin/true',
+            'args': <String>[],
+          },
+        );
+        await generatedBase.permissions.waitForRequest(terminalPermissionIndex);
+        generatedBase.permissions.completeAllow(terminalPermissionIndex);
+        await terminal.response.timeout(const Duration(seconds: 2));
+        await generatedBase.startPendingPermissionForTesting(
+          targetSessionId: generatedSessionId,
+        );
+        expect(
+          generatedBase.manager.localSessionStateKeysForTesting(
+            generatedSessionId,
+          ),
+          <String>{
+            'stream',
+            'replay',
+            'workspace',
+            'additionalDirectories',
+            'provider',
+            'mode',
+            'registration',
+            'tool',
+            'input',
+            'permission',
+            'terminal',
+          },
+        );
+        final closeFailure = _captureCloseFailure(
+          generatedBase.manager.closeSession(sessionId: generatedSessionId),
+        );
+        await generatedBase.remoteCloseSeenForTesting.timeout(
+          const Duration(seconds: 2),
+        );
+        generatedBase.releaseRemoteCloseErrorForTesting();
+        final captured = await closeFailure.timeout(const Duration(seconds: 2));
+        expect(captured.error, isA<rpc.RpcException>());
+        expect(
+          generatedBase.manager.localSessionStateKeysForTesting(
+            generatedSessionId,
+          ),
+          isEmpty,
+        );
+        expect(
+          generatedBase.manager.pendingPermissionCountForTesting(
+            generatedSessionId,
+          ),
+          0,
+        );
+        expect(
+          generatedBase.manager.sessionCloseSelectionCountForTesting(
+            generatedSessionId,
+          ),
+          0,
+        );
+        generatedBase.manager.releaseGeneratedRegistrationDrainForTesting();
+        final createOutcome = await creating.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(createOutcome.error, isA<StateError>());
+      } finally {
+        generatedBase.manager.releaseGeneratedRegistrationDrainForTesting();
+        await generatedBase.dispose();
+      }
+      expect(mismatches, isEmpty, reason: mismatches.join('\n'));
+    },
+  );
+
+  test(
+    'session close cleans local state after synchronous prepare failure',
+    () async {
+      final harness = await _SessionCloseHarness.start(
+        failure: _RemoteCloseFailure.remoteError,
+      );
+      final injectedError = StateError('fixed synchronous prepare failure');
+      final stackMarker = 'fixed-synchronous-prepare-stack';
+      final injectedStackTrace = StackTrace.fromString(stackMarker);
+      try {
+        await harness.populateEverySessionState();
+        harness.failNextPrepareSynchronously(injectedError, injectedStackTrace);
+        expect(
+          () => harness.failNextPrepareSynchronously(
+            StateError('must not replace prepare failure'),
+            StackTrace.empty,
+          ),
+          throwsStateError,
+        );
+        final capturedFuture = _captureCloseFailure(
+          harness.manager.closeSession(sessionId: harness.sessionId),
+        );
+        // Eager release lets the old implementation fail without making a
+        // correct prepare-before-remote implementation wait for a request.
+        harness.base.releaseRemoteCloseErrorForTesting();
+        final captured = await capturedFuture.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(captured.error, same(injectedError));
+        expect(captured.stackTrace.toString(), contains(stackMarker));
+        expect(harness.remoteCloseCalls, 0);
+        expect(harness.remainingLocalState, isEmpty);
+        expect(harness.sessionCloseSelectionCount, 0);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test('session close prepare failure closes active typed turn', () async {
+    final active = await _TypedPromptHarness.start();
+    final activePrepareError = StateError('fixed active typed prepare failure');
+    var promptResponded = false;
+    try {
+      final turn = await active.startPendingWithoutAdmission();
+      expect(active.peer.promptOperationCountForTesting, 1);
+      active.prompt.base.manager
+          .failNextSessionClosePrepareSynchronouslyForTesting(
+            activePrepareError,
+            StackTrace.fromString('active-typed-prepare-stack'),
+          );
+      final captured = await _captureCloseFailure(
+        active.prompt.base.manager.closeSession(
+          sessionId: active.prompt.sessionId,
+        ),
+      ).timeout(const Duration(seconds: 2));
+      expect(captured.error, same(activePrepareError));
+      expect(active.prompt.base.remoteCloseCallsForTesting, 0);
+      expect(active.peer.isAvailable, isTrue);
+      expect(
+        active.prompt.base.manager.activeTypedPromptTurnCountForTesting,
+        0,
+      );
+      expect(
+        active.prompt.base.manager.activeTypedUpdateSubscriptionCountForTesting,
+        0,
+      );
+      expect(active.prompt.base.manager.promptLifecycleCountForTesting, 0);
+      expect(
+        active.prompt.base.manager.sessionCloseSelectionCountForTesting(
+          active.prompt.sessionId,
+        ),
+        0,
+      );
+      final events = await turn.events.timeout(const Duration(seconds: 2));
+      expect(events, isEmpty);
+      expect(turn.errors, hasLength(1));
+      expect(turn.errors.single, isA<acp.AcpConnectionClosedException>());
+      expect(turn.connectionClosedCount, 1);
+      expect(turn.streamDoneCount, 1);
+      expect(active.peer.promptOperationCountForTesting, 1);
+      expect(
+        active.prompt.base.manager.admissionCleanupWindowCountForTesting,
+        1,
+      );
+      active.respondPromptSuccess();
+      promptResponded = true;
+      await pumpEventQueue();
+      expect(active.peer.promptOperationCountForTesting, 0);
+      expect(active.peer.promptOwnerOperationCountForTesting, 0);
+      expect(active.peer.promptSessionOperationCountForTesting, 0);
+      expect(
+        active.prompt.base.manager.admissionCleanupWindowCountForTesting,
+        0,
+      );
+      expect(
+        active.prompt.base.manager.ownerCleanupActiveTimerCountForTesting,
+        0,
+      );
+      expect(active.peer.isAvailable, isTrue);
+    } finally {
+      if (!promptResponded) active.respondPromptSuccess();
+      await active.dispose();
+    }
+  });
+
+  test(
+    'session close preserves admission and prompt reap errors unless local cleanup fails',
+    () async {
+      final mismatches = <String>[];
+      for (final source in _SessionCloseReapSource.values) {
+        for (final localCleanupFails in <bool>[false, true]) {
+          final injectedError = StateError('fixed ${source.name} reap failure');
+          final stackMarker = 'fixed-${source.name}-reap-stack';
+          final injectedStackTrace = StackTrace.fromString(stackMarker);
+          if (source == _SessionCloseReapSource.admission) {
+            final harness = await _SessionCloseHarness.start(
+              failure: _RemoteCloseFailure.ownerlessAdmission,
+            );
+            try {
+              await harness.populateEverySessionState(retainInputPhase: false);
+              await harness.startOwnerlessRunningAdmission();
+              harness.base.failNextSessionCloseReapForTesting(
+                source,
+                injectedError,
+                injectedStackTrace,
+              );
+              expect(
+                () => harness.base.failNextSessionCloseReapForTesting(
+                  source,
+                  StateError('must not replace admission reap failure'),
+                  StackTrace.empty,
+                ),
+                throwsStateError,
+              );
+              harness.base.terminals.releaseThrows = localCleanupFails;
+              final capturedFuture = _captureCloseFailure(
+                harness.manager.closeSession(sessionId: harness.sessionId),
+              );
+              harness.base.releaseRemoteCloseErrorForTesting();
+              final captured = await capturedFuture.timeout(
+                const Duration(seconds: 2),
+              );
+              final errorExact = localCleanupFails
+                  ? captured.error is acp.SessionCloseCleanupException &&
+                        !captured.error.toString().contains(stackMarker)
+                  : identical(captured.error, injectedError) &&
+                        captured.stackTrace.toString().contains(stackMarker);
+              if (!errorExact ||
+                  harness.remoteCloseCalls != 0 ||
+                  harness.remainingLocalState.isNotEmpty) {
+                mismatches.add(
+                  '${source.name}/cleanup=$localCleanupFails: '
+                  'error=${captured.error.runtimeType}, '
+                  'remote=${harness.remoteCloseCalls}, '
+                  'state=${harness.remainingLocalState}',
+                );
+              }
+            } finally {
+              await harness.dispose();
+            }
+            continue;
+          }
+          final harness = await _PromptLifecycleHarness.start(
+            grace: const Duration(milliseconds: 75),
+            initialAdditionalDirectories: const <String>['/tmp/additional'],
+          );
+          try {
+            await harness.base.populateEverySessionStateForTesting(
+              beginInputPhase: false,
+            );
+            final operation = await harness._startPrompt();
+            await operation.promptSeen.future.timeout(
+              const Duration(seconds: 2),
+            );
+            harness.base.populateSessionUpdatesForTesting();
+            await pumpEventQueue();
+            harness.base.failNextSessionCloseReapForTesting(
+              source,
+              injectedError,
+              injectedStackTrace,
+            );
+            expect(
+              () => harness.base.failNextSessionCloseReapForTesting(
+                source,
+                StateError('must not replace prompt reap failure'),
+                StackTrace.empty,
+              ),
+              throwsStateError,
+            );
+            harness.base.terminals.releaseThrows = localCleanupFails;
+            await harness.base.configureRemoteSessionCloseFailureForTesting(
+              _RemoteCloseFailure.remoteError.name,
+            );
+            harness.base.releaseRemoteCloseErrorForTesting();
+            final captured = await _captureCloseFailure(
+              harness.base.manager.closeSession(sessionId: harness.sessionId),
+            );
+            final remaining = harness.base.manager
+                .localSessionStateKeysForTesting(harness.sessionId);
+            final errorExact = localCleanupFails
+                ? captured.error is acp.SessionCloseCleanupException &&
+                      !captured.error.toString().contains(stackMarker)
+                : identical(captured.error, injectedError) &&
+                      captured.stackTrace.toString().contains(stackMarker);
+            if (!errorExact ||
+                harness.base.remoteCloseCallsForTesting != 0 ||
+                remaining.isNotEmpty) {
+              mismatches.add(
+                '${source.name}/cleanup=$localCleanupFails: '
+                'error=${captured.error.runtimeType}, '
+                'remote=${harness.base.remoteCloseCallsForTesting}, '
+                'state=$remaining',
+              );
+            }
+          } finally {
+            await harness.dispose();
+          }
+        }
+      }
+      expect(mismatches, isEmpty, reason: mismatches.join('\n'));
+    },
+  );
+
+  test('admission prompt and close share one owner cleanup callback', () async {
+    final ownerless = await _SessionCloseHarness.start(
+      failure: _RemoteCloseFailure.ownerlessAdmission,
+    );
+    try {
+      await ownerless.startOwnerlessRunningAdmission();
+      final manager = ownerless.base.manager;
+      final closing = ownerless.manager.closeSession(
+        sessionId: ownerless.sessionId,
+      );
+      await pumpEventQueue();
+      final identity =
+          manager.admissionCleanupWindowIdentitiesForTesting.single;
+      final oldCallback = manager.admissionCleanupWindowTimerCallbackForTesting(
+        identity,
+      );
+      expect(manager.admissionCleanupWindowStartCountForTesting, 1);
+      expect(manager.admissionCleanupWindowCountForTesting, 1);
+      oldCallback();
+      await expectLater(
+        closing.timeout(const Duration(seconds: 2)),
+        throwsA(isA<acp.AcpConnectionClosedException>()),
+      );
+      expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+      expect(ownerless.fatalCloseCount, 1);
+      expect(manager.admissionCleanupWindowCountForTesting, 0);
+      expect(ownerless.remainingLocalState, isEmpty);
+      oldCallback();
+      await pumpEventQueue();
+      expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+      expect(ownerless.fatalCloseCount, 1);
+    } finally {
+      await ownerless.dispose();
+    }
+
+    final harness = await _PromptLifecycleHarness.start(
+      grace: const Duration(milliseconds: 75),
+    );
+    try {
+      final operation = await harness._startPrompt();
+      await harness._startBlockedAdmission(operation);
+      harness.base.permissions.completeAllow(
+        harness.base.permissions.pending.length - 1,
+      );
+      await operation.admissionReservationReleased.future.timeout(
+        const Duration(seconds: 2),
+      );
+      final manager = harness.base.manager;
+      final identity =
+          manager.admissionCleanupWindowIdentitiesForTesting.single;
+      final oldCallback = manager.admissionCleanupWindowTimerCallbackForTesting(
+        identity,
+      );
+      harness.respondPromptSuccess();
+      await manager.promptWinnerRecordedForTesting(operation.owner);
+      final closing = manager.closeSession(sessionId: harness.sessionId);
+      expect(manager.admissionCleanupWindowStartCountForTesting, 1);
+      oldCallback();
+      await expectLater(
+        closing.timeout(const Duration(seconds: 2)),
+        throwsA(isA<acp.AcpConnectionClosedException>()),
+      );
+      expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+      expect(manager.admissionCleanupWindowCountForTesting, 0);
+      oldCallback();
+      await pumpEventQueue();
+      expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'session close keeps the earliest ownerless window with an active prompt',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 750),
+        maxOrdinaryConcurrentHandlers: 2,
+      );
+      var fatalCloseCount = 0;
+      void fatalListener(AcpPeerUnavailableState state) {
+        if (state.reason == AcpPeerUnavailableReason.fatalTimeout) {
+          fatalCloseCount += 1;
+        }
+      }
+
+      harness.peer.addUnavailableListener(fatalListener);
+      try {
+        final ownerless = await _PermissionBatchHarness._(harness.base)
+            .sendBlockedBatch(
+              outcome: _BlockedOutcome.fsSuccess,
+              ownerScoped: false,
+            );
+        await ownerless.permissionReservationReleased.timeout(
+          const Duration(seconds: 2),
+        );
+        final ownerlessIdentity = ownerless.cleanupWindowIdentity;
+        final ownerlessDeadline = ownerless.cleanupDeadline;
+        final ownerlessCallback = ownerless.cleanupTimerCallback;
+        final ownerlessTimerActive = harness.base.manager
+            .admissionCleanupWindowTimerActiveProbeForTesting(
+              ownerlessIdentity,
+            );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final operation = await harness._startPrompt();
+        await harness._startBlockedAdmission(operation);
+        harness.base.permissions.completeAllow(
+          harness.base.permissions.pending.length - 1,
+        );
+        await operation.admissionReservationReleased.future.timeout(
+          const Duration(seconds: 2),
+        );
+        final manager = harness.base.manager;
+        final observed = operation.admission!.admission! as _ObservedAdmission;
+        final promptIdentity = manager.admissionCleanupWindowIdentityForTesting(
+          observed.inner,
+        )!;
+        final promptCallback = manager
+            .admissionCleanupWindowTimerCallbackForTesting(promptIdentity);
+        final promptTimerActive = manager
+            .admissionCleanupWindowTimerActiveProbeForTesting(promptIdentity);
+        final closing = manager.closeSession(sessionId: harness.sessionId);
+        final identities = manager.admissionCleanupWindowIdentitiesForTesting;
+        expect(identities, hasLength(1));
+        expect(identities.single, same(ownerlessIdentity));
+        expect(
+          manager.ownerCleanupWindowDeadlineForTesting(identities.single),
+          ownerlessDeadline,
+        );
+        expect(
+          manager.ownerCleanupWindowFatalOwnerForTesting(identities.single),
+          same(operation.owner),
+        );
+        expect(
+          manager
+              .promptLifecycleSnapshotForTesting(operation.owner)
+              .cleanupDeadline,
+          ownerlessDeadline,
+        );
+        expect(
+          manager.ownerCleanupWindowBlockerCountForTesting(identities.single),
+          4,
+        );
+        expect(ownerlessTimerActive(), isTrue);
+        expect(promptTimerActive(), isFalse);
+        expect(
+          manager.sessionCloseSelectionCountForTesting(harness.sessionId),
+          1,
+        );
+        promptCallback();
+        expect(manager.ownerCleanupExpiryCallbackCountForTesting, 0);
+        ownerlessCallback();
+        await expectLater(
+          closing.timeout(const Duration(seconds: 2)),
+          throwsA(isA<acp.AcpConnectionClosedException>()),
+        );
+        expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+        expect(fatalCloseCount, 1);
+        expect(manager.admissionCleanupWindowCountForTesting, 0);
+        expect(manager.ownerCleanupActiveTimerCountForTesting, 0);
+        expect(
+          manager.sessionCloseSelectionCountForTesting(harness.sessionId),
+          0,
+        );
+        expect(
+          manager.localSessionStateKeysForTesting(harness.sessionId),
+          isEmpty,
+        );
+        promptCallback();
+        ownerlessCallback();
+        await pumpEventQueue();
+        expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+        expect(fatalCloseCount, 1);
+      } finally {
+        try {
+          await harness.dispose();
+        } finally {
+          harness.peer.removeUnavailableListener(fatalListener);
+        }
+      }
+    },
+  );
+
+  test(
+    'session close routes prompt cleanup to a frozen ownerless key',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 750),
+        maxOrdinaryConcurrentHandlers: 2,
+      );
+      var fatalCloseCount = 0;
+      void fatalListener(AcpPeerUnavailableState state) {
+        if (state.reason == AcpPeerUnavailableReason.fatalTimeout) {
+          fatalCloseCount += 1;
+        }
+      }
+
+      harness.peer.addUnavailableListener(fatalListener);
+      try {
+        final ownerless = await _PermissionBatchHarness._(harness.base)
+            .sendBlockedBatch(
+              outcome: _BlockedOutcome.fsSuccess,
+              ownerScoped: false,
+            );
+        await ownerless.permissionReservationReleased.timeout(
+          const Duration(seconds: 2),
+        );
+        final ownerlessIdentity = ownerless.cleanupWindowIdentity;
+        final ownerlessDeadline = ownerless.cleanupDeadline;
+        final ownerlessCallback = ownerless.cleanupTimerCallback;
+        final ownerlessTimerActive = harness.base.manager
+            .admissionCleanupWindowTimerActiveProbeForTesting(
+              ownerlessIdentity,
+            );
+        final operation = await harness._startPrompt();
+        final manager = harness.base.manager;
+        expect(manager.admissionCleanupWindowIdentitiesForTesting, <Object>{
+          ownerlessIdentity,
+        });
+        expect(
+          manager.ownerCleanupWindowFatalOwnerForTesting(ownerlessIdentity),
+          isNull,
+        );
+        final closing = manager.closeSession(sessionId: harness.sessionId);
+        expect(manager.admissionCleanupWindowIdentitiesForTesting, <Object>{
+          ownerlessIdentity,
+        });
+        expect(manager.admissionCleanupWindowStartCountForTesting, 1);
+        expect(
+          manager.ownerCleanupWindowDeadlineForTesting(ownerlessIdentity),
+          ownerlessDeadline,
+        );
+        expect(
+          manager.ownerCleanupWindowFatalOwnerForTesting(ownerlessIdentity),
+          same(operation.owner),
+        );
+        expect(
+          manager.ownerCleanupWindowBlockerCountForTesting(ownerlessIdentity),
+          3,
+        );
+        expect(ownerlessTimerActive(), isTrue);
+        expect(
+          manager.sessionCloseSelectionCountForTesting(harness.sessionId),
+          1,
+        );
+        ownerlessCallback();
+        await expectLater(
+          closing.timeout(const Duration(seconds: 2)),
+          throwsA(isA<acp.AcpConnectionClosedException>()),
+        );
+        expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+        expect(fatalCloseCount, 1);
+        expect(manager.admissionCleanupWindowCountForTesting, 0);
+        expect(manager.ownerCleanupActiveTimerCountForTesting, 0);
+        expect(
+          manager.sessionCloseSelectionCountForTesting(harness.sessionId),
+          0,
+        );
+        expect(
+          manager.localSessionStateKeysForTesting(harness.sessionId),
+          isEmpty,
+        );
+        ownerlessCallback();
+        await pumpEventQueue();
+        expect(manager.ownerCleanupExpiryCallbackCountForTesting, 1);
+        expect(fatalCloseCount, 1);
+      } finally {
+        try {
+          await harness.dispose();
+        } finally {
+          harness.peer.removeUnavailableListener(fatalListener);
+        }
+      }
+    },
+  );
+
+  test('session close stays serialized across setup and replacement', () async {
+    for (final method in <String>['session/load', 'session/resume']) {
+      final base = await _PermissionAdmissionHarness.start(
+        controlFutureSetups: true,
+      );
+      await base.configureRemoteSessionCloseFailureForTesting(
+        _RemoteCloseFailure.remoteError.name,
+      );
+      Future<void>? setup;
+      Future<void>? closing;
+      Future<void>? replacement;
+      try {
+        final staleWindow = await _PermissionBatchHarness._(base)
+            .sendBlockedBatch(
+              outcome: _BlockedOutcome.fsSuccess,
+              ownerScoped: false,
+            );
+        await staleWindow.permissionReservationReleased.timeout(
+          const Duration(seconds: 2),
+        );
+        final oldCleanupCallback = staleWindow.cleanupTimerCallback;
+        final oldCleanupReaped = staleWindow.cleanupReaped;
+        await staleWindow.commitResponse();
+        await oldCleanupReaped.timeout(const Duration(seconds: 2));
+        expect(base.manager.admissionCleanupWindowCountForTesting, 0);
+        setup = method == 'session/load'
+            ? base.manager.loadSession(
+                sessionId: base.sessionId,
+                workspaceRoot: '/tmp',
+              )
+            : base.manager
+                  .resumeSession(
+                    sessionId: base.sessionId,
+                    workspaceRoot: '/tmp',
+                  )
+                  .then<void>((_) {});
+        unawaited(setup.catchError((Object _) {}));
+        await base.waitForSetupRequest(0).timeout(const Duration(seconds: 2));
+        final oldSetupRollback = base.manager
+            .captureSessionSetupRollbackCallbackForTesting();
+        final oldGeneration = base.manager.sessionGenerationForTesting(
+          base.sessionId,
+        );
+        closing = base.manager.closeSession(sessionId: base.sessionId);
+        unawaited(closing.catchError((Object _) {}));
+        replacement = method == 'session/load'
+            ? base.manager.loadSession(
+                sessionId: base.sessionId,
+                workspaceRoot: '/tmp',
+              )
+            : base.manager
+                  .resumeSession(
+                    sessionId: base.sessionId,
+                    workspaceRoot: '/tmp',
+                  )
+                  .then<void>((_) {});
+        unawaited(replacement.catchError((Object _) {}));
+        await pumpEventQueue();
+        expect(base.remoteCloseCallsForTesting, 0, reason: method);
+        expect(base.setupRequests, hasLength(1), reason: method);
+        base.completeSetupSuccess(0);
+        await setup.timeout(const Duration(seconds: 2));
+        await base.remoteCloseSeenForTesting.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(base.setupRequests, hasLength(1), reason: method);
+        base.releaseRemoteCloseErrorForTesting();
+        await expectLater(closing, throwsA(isA<rpc.RpcException>()));
+        await base.waitForSetupRequest(1).timeout(const Duration(seconds: 2));
+        base.completeSetupSuccess(1);
+        await replacement.timeout(const Duration(seconds: 2));
+        final replacementGeneration = base.manager.sessionGenerationForTesting(
+          base.sessionId,
+        );
+        expect(replacementGeneration, isNot(same(oldGeneration)));
+        final expiryCallbacks =
+            base.manager.ownerCleanupExpiryCallbackCountForTesting;
+        oldCleanupCallback();
+        oldSetupRollback();
+        await pumpEventQueue();
+        expect(
+          base.manager.sessionGenerationForTesting(base.sessionId),
+          same(replacementGeneration),
+        );
+        expect(
+          base.manager.localSessionStateKeysForTesting(base.sessionId),
+          containsAll(<String>{'workspace', 'generation'}),
+        );
+        expect(
+          base.manager.localSessionStateKeysForTesting(base.sessionId),
+          isNot(contains('sessionClosingOwner')),
+        );
+        expect(
+          base.manager.sessionCloseSelectionCountForTesting(base.sessionId),
+          0,
+        );
+        expect(
+          base.manager.ownerCleanupExpiryCallbackCountForTesting,
+          expiryCallbacks,
+        );
+      } finally {
+        if (base.setupRequests.isNotEmpty) base.completeSetupSuccess(0);
+        base.releaseRemoteCloseErrorForTesting();
+        await pumpEventQueue();
+        if (base.setupRequests.length > 1) base.completeSetupSuccess(1);
+        await setup?.catchError((Object _) {});
+        await closing?.catchError((Object _) {});
+        await replacement?.catchError((Object _) {});
+        await base.dispose();
+      }
+    }
+  });
+
   test('permission harness preserves two reserved control slots', () async {
     for (final ordinary in <int>[1, 2]) {
       final harness = await _PermissionAdmissionHarness.start(
@@ -2456,20 +4351,20 @@ void main() {
           const Duration(seconds: 2),
         );
         expect(batch.cleanupTimerCancelled, isTrue);
-        expect(batch.cleanupWindowCount, 1);
+        expect(batch.cleanupWindowCount, 0);
         expect(batch.cleanupExpiryCallbackCount, 0);
+        await cleanupReaped.timeout(const Duration(seconds: 2));
 
         batch.fireCapturedTimerCallback();
         await pumpEventQueue();
         expect(batch.cleanupExpiryCallbackCount, 0);
-        expect(batch.cleanupWindowCount, 1);
+        expect(batch.cleanupWindowCount, 0);
         await Future<void>.delayed(const Duration(milliseconds: 125));
         expect(harness.base.peer.isAvailable, isTrue);
         expect(batch.fatalCloseCount, 0);
         expect(batch.cleanupExpiryCallbackCount, 0);
 
         await batch.finishLateSibling().timeout(const Duration(seconds: 2));
-        await cleanupReaped.timeout(const Duration(seconds: 2));
         expect(batch.cleanupWindowCount, 0);
       } finally {
         if (batch != null) await batch.finishLateSibling();

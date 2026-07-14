@@ -14,6 +14,7 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 
 final _testOmission = acp.AcpInputOmission(
@@ -5621,7 +5622,7 @@ Future<void> main() async {
     },
   );
 
-  test('late resume response fails after the session starts closing', () async {
+  test('session close waits for an earlier resume mutation', () async {
     final channel = StreamChannelController<String>();
     final peer = JsonRpcPeer(channel.foreign);
     final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
@@ -5655,14 +5656,20 @@ Future<void> main() async {
         const Duration(seconds: 5),
       );
       final close = manager.closeSession(sessionId: 'closing-resume');
+      await pumpEventQueue();
+      expect(closeId.isCompleted, isFalse);
+      respond(pendingResumeId);
+      await resume.timeout(const Duration(seconds: 5));
       final pendingCloseId = await closeId.future.timeout(
         const Duration(seconds: 5),
       );
       respond(pendingCloseId);
-      respond(pendingResumeId);
-
-      await expectLater(resume, throwsStateError);
       await close.timeout(const Duration(seconds: 5));
+      expect(
+        manager.localSessionStateKeysForTesting('closing-resume'),
+        isEmpty,
+      );
+      expect(manager.sessionCloseSelectionCountForTesting('closing-resume'), 0);
     } finally {
       await manager.dispose();
       await peer.close();
@@ -8304,12 +8311,11 @@ Future<void> main() async {
   });
 
   test(
-    'session manager close drops later updates and preserves state on RPC failure',
+    'session manager close drops later updates and cleans state on RPC failure',
     () async {
       final channel = StreamChannelController<String>();
       final peer = JsonRpcPeer(channel.foreign);
       final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
-      var failClose = true;
       final server = channel.local.stream.listen((line) {
         final request = jsonDecode(line) as Map<String, dynamic>;
         final method = request['method'];
@@ -8326,10 +8332,7 @@ Future<void> main() async {
             jsonEncode(<String, dynamic>{
               'jsonrpc': '2.0',
               'id': request['id'],
-              if (failClose)
-                'error': <String, dynamic>{'code': -32000, 'message': 'failed'}
-              else
-                'result': <String, dynamic>{},
+              'error': <String, dynamic>{'code': -32000, 'message': 'failed'},
             }),
           );
         }
@@ -8342,12 +8345,17 @@ Future<void> main() async {
         );
         await expectLater(
           manager.closeSession(sessionId: 'close-state'),
-          throwsA(anything),
+          throwsA(
+            isA<rpc.RpcException>()
+                .having((error) => error.code, 'code', -32000)
+                .having((error) => error.message, 'message', 'failed'),
+          ),
         );
-        expect(manager.getWorkspaceRoot('close-state'), '/workspace');
-
-        failClose = false;
-        await manager.closeSession(sessionId: 'close-state');
+        expect(manager.localSessionStateKeysForTesting('close-state'), isEmpty);
+        expect(manager.sessionGenerationForTesting('close-state'), isNull);
+        expect(manager.sessionCloseSelectionCountForTesting('close-state'), 0);
+        expect(manager.terminalLeaseCountForTesting, 0);
+        expect(manager.managedTerminalCountForTesting, 0);
         expect(() => manager.getWorkspaceRoot('close-state'), throwsStateError);
         expect(manager.sessionModes('close-state'), isNull);
 
@@ -9630,47 +9638,54 @@ Future<void> main() async {
   );
 
   test(
-    'concurrent close owners reject queued setup and late registration',
+    'serialized close owners gate queued setup and stale rollback',
     () async {
       final channel = StreamChannelController<String>();
       final peer = JsonRpcPeer(channel.foreign);
       final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
-      final closeRequestIds = <Object?>[];
-      final closeRequestsReady = Completer<void>();
+      final firstCloseRequestId = Completer<Object?>();
+      final secondCloseRequestId = Completer<Object?>();
+      final gateResumeId = Completer<Object?>();
+      final replacementResumeId = Completer<Object?>();
+      final replacementLoadId = Completer<Object?>();
       final newRequestId = Completer<Object?>();
       var resumeRequests = 0;
       var loadRequests = 0;
+      var closeRequests = 0;
       final server = channel.local.stream.listen((line) {
         final message = jsonDecode(line) as Map<String, dynamic>;
         switch (message['method']) {
           case 'session/resume':
             resumeRequests += 1;
-            channel.local.sink.add(
-              jsonEncode(<String, dynamic>{
-                'jsonrpc': '2.0',
-                'id': message['id'],
-                'result': <String, dynamic>{},
-              }),
-            );
+            if (resumeRequests == 1) {
+              channel.local.sink.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': message['id'],
+                  'result': <String, dynamic>{},
+                }),
+              );
+            } else if (resumeRequests == 2 && !gateResumeId.isCompleted) {
+              gateResumeId.complete(message['id']);
+            } else if (!replacementResumeId.isCompleted) {
+              replacementResumeId.complete(message['id']);
+            }
             break;
           case 'session/load':
             loadRequests += 1;
-            channel.local.sink.add(
-              jsonEncode(<String, dynamic>{
-                'jsonrpc': '2.0',
-                'id': message['id'],
-                'result': <String, dynamic>{},
-              }),
-            );
+            if (!replacementLoadId.isCompleted) {
+              replacementLoadId.complete(message['id']);
+            }
             break;
           case 'session/new':
             if (!newRequestId.isCompleted) newRequestId.complete(message['id']);
             break;
           case 'session/close':
-            closeRequestIds.add(message['id']);
-            if (closeRequestIds.length == 2 &&
-                !closeRequestsReady.isCompleted) {
-              closeRequestsReady.complete();
+            closeRequests += 1;
+            if (closeRequests == 1 && !firstCloseRequestId.isCompleted) {
+              firstCloseRequestId.complete(message['id']);
+            } else if (!secondCloseRequestId.isCompleted) {
+              secondCloseRequestId.complete(message['id']);
             }
             break;
         }
@@ -9691,6 +9706,9 @@ Future<void> main() async {
           sessionId: 'shared-close',
           workspaceRoot: '/workspace',
         );
+        final originalGeneration = manager.sessionGenerationForTesting(
+          'shared-close',
+        );
         final lateRegistration = manager.newSession(
           workspaceRoot: '/workspace',
         );
@@ -9701,25 +9719,43 @@ Future<void> main() async {
         final pendingNewId = await newRequestId.future.timeout(
           const Duration(seconds: 5),
         );
+        final gateSetup = manager.resumeSession(
+          sessionId: 'shared-close',
+          workspaceRoot: '/workspace',
+        );
+        final gateId = await gateResumeId.future.timeout(
+          const Duration(seconds: 5),
+        );
+        final staleSetupRollback = manager
+            .captureSessionSetupRollbackCallbackForTesting();
 
         final closeOne = manager.closeSession(sessionId: 'shared-close');
         final closeTwo = manager.closeSession(sessionId: 'shared-close');
-        await closeRequestsReady.future.timeout(const Duration(seconds: 5));
+        final queuedResume = manager.resumeSession(
+          sessionId: 'shared-close',
+          workspaceRoot: '/workspace',
+        );
+        final queuedLoad = manager.loadSession(
+          sessionId: 'shared-close',
+          workspaceRoot: '/workspace',
+        );
+        await pumpEventQueue();
+        expect(closeRequests, 0);
+        expect(firstCloseRequestId.isCompleted, isFalse);
+        expect(secondCloseRequestId.isCompleted, isFalse);
+        expect(resumeRequests, 2);
+        expect(loadRequests, 0);
+        expect(manager.sessionCloseSelectionCountForTesting('shared-close'), 0);
 
-        final queuedResumeFailure = expectLater(
-          manager.resumeSession(
-            sessionId: 'shared-close',
-            workspaceRoot: '/workspace',
-          ),
-          throwsStateError,
+        respond(gateId, const <String, dynamic>{});
+        await gateSetup.timeout(const Duration(seconds: 5));
+        final firstCloseId = await firstCloseRequestId.future.timeout(
+          const Duration(seconds: 5),
         );
-        final queuedLoadFailure = expectLater(
-          manager.loadSession(
-            sessionId: 'shared-close',
-            workspaceRoot: '/workspace',
-          ),
-          throwsStateError,
-        );
+        expect(closeRequests, 1);
+        expect(resumeRequests, 2);
+        expect(loadRequests, 0);
+        expect(manager.sessionCloseSelectionCountForTesting('shared-close'), 1);
         channel.local.sink.add(
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
@@ -9736,12 +9772,18 @@ Future<void> main() async {
         await pumpEventQueue();
         expect(manager.sessionModes('shared-close'), isNull);
 
-        respond(closeRequestIds.first, const <String, dynamic>{});
+        respond(firstCloseId, const <String, dynamic>{});
         await closeOne;
+        final secondCloseId = await secondCloseRequestId.future.timeout(
+          const Duration(seconds: 5),
+        );
+        expect(closeRequests, 2);
+        expect(resumeRequests, 2);
+        expect(loadRequests, 0);
+        expect(manager.sessionCloseSelectionCountForTesting('shared-close'), 1);
         respond(pendingNewId, const <String, dynamic>{
           'sessionId': 'shared-close',
         });
-        await lateRegistrationFailure;
         channel.local.sink.add(
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
@@ -9758,18 +9800,39 @@ Future<void> main() async {
         await pumpEventQueue();
         expect(manager.sessionModes('shared-close'), isNull);
 
-        respond(closeRequestIds.last, const <String, dynamic>{});
+        respond(secondCloseId, const <String, dynamic>{});
         await closeTwo;
-        await queuedResumeFailure;
-        await queuedLoadFailure;
-        expect(resumeRequests, 1, reason: 'queued resume must not reach peer');
-        expect(loadRequests, 0, reason: 'queued load must not reach peer');
-
-        await manager.resumeSession(
-          sessionId: 'shared-close',
-          workspaceRoot: '/workspace',
+        final resumeId = await replacementResumeId.future.timeout(
+          const Duration(seconds: 5),
         );
+        expect(loadRequests, 0, reason: 'load must wait for queued resume');
+        respond(resumeId, const <String, dynamic>{});
+        await queuedResume.timeout(const Duration(seconds: 5));
+        final resumedGeneration = manager.sessionGenerationForTesting(
+          'shared-close',
+        );
+        expect(resumedGeneration, isNot(same(originalGeneration)));
+        final loadId = await replacementLoadId.future.timeout(
+          const Duration(seconds: 5),
+        );
+        respond(loadId, const <String, dynamic>{});
+        await queuedLoad.timeout(const Duration(seconds: 5));
+        await lateRegistrationFailure;
+        final replacementGeneration = manager.sessionGenerationForTesting(
+          'shared-close',
+        );
+        expect(replacementGeneration, isNot(same(resumedGeneration)));
+        expect(manager.sessionCloseSelectionCountForTesting('shared-close'), 0);
+        expect(manager.getWorkspaceRoot('shared-close'), '/workspace');
+
         final acceptedOwner = manager.beginPromptTurn('shared-close');
+        staleSetupRollback();
+        await pumpEventQueue();
+        expect(
+          manager.sessionGenerationForTesting('shared-close'),
+          same(replacementGeneration),
+        );
+        expect(manager.getWorkspaceRoot('shared-close'), '/workspace');
         channel.local.sink.add(
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
@@ -9789,6 +9852,9 @@ Future<void> main() async {
           manager.sessionModes('shared-close')?.currentModeId,
           'accepted-after-close',
         );
+        expect(resumeRequests, 3);
+        expect(loadRequests, 1);
+        expect(closeRequests, 2);
       } finally {
         await manager.dispose();
         await peer.close();
