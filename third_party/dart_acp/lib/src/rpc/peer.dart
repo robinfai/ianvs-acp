@@ -6,6 +6,7 @@ import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:meta/meta.dart';
 import 'package:stream_channel/stream_channel.dart';
 
+import '../config.dart';
 import 'inbound_gate.dart';
 
 /// Alias for a JSON map used in requests/responses.
@@ -54,10 +55,22 @@ final class AcpPeerUnavailableState {
 typedef AcpPeerUnavailableListener =
     void Function(AcpPeerUnavailableState state);
 
+/// Minimal identity required to bind a prompt request to its session owner.
+abstract interface class JsonRpcPromptOwner {
+  /// Session that owns the prompt request.
+  String get sessionId;
+
+  /// Monotonic generation of the prompt owner.
+  int get generation;
+}
+
 /// Require an object-shaped JSON-RPC result without copying or traversing it.
 Json requireJsonRpcObjectResult(Object? result, {required String resource}) {
+  if (result is! Map) {
+    throw FormatException('$resource must be a JSON object.');
+  }
   if (result is Json) return result;
-  throw FormatException('$resource must be a JSON object.');
+  return Map<String, dynamic>.from(result);
 }
 
 /// Thin wrapper around json_rpc_2.Peer with client handler hooks.
@@ -65,6 +78,7 @@ class JsonRpcPeer {
   /// Construct a peer bound to a [channel].
   JsonRpcPeer(
     StreamChannel<String> channel, {
+    this.timeouts = const AcpTimeouts(),
     int maxPendingItems = 128,
     int maxPendingBytes = 32 * 1024 * 1024,
     int maxConcurrentHandlers = 16,
@@ -75,6 +89,7 @@ class JsonRpcPeer {
          maxConcurrentHandlers: maxConcurrentHandlers,
          maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
        ) {
+    timeouts.validate();
     _decodedSink = _JsonEncodingSink(
       channel.sink,
       prepare: _prepareCorrelationResponse,
@@ -85,22 +100,16 @@ class JsonRpcPeer {
       StreamChannel<Object?>(_decodedIncoming.stream, _decodedSink),
     );
     _registerClientHandlers();
-    // Start listening for messages; fire-and-forget intentionally.
-    unawaited(() async {
-      try {
-        await _peer.listen();
-      } on Object {
-        // Pending requests receive the channel failure directly. The peer's
-        // listener future must not report the same transport error again as
-        // an unhandled asynchronous exception.
-      }
-    }());
+    unawaited(_listenToUnderlyingPeer());
     _inboundSubscription = channel.stream.listen(
       _handleInboundLine,
       onError: _handleInboundError,
       onDone: _handleInboundDone,
     );
   }
+
+  /// Validated logical timeouts used by outbound requests.
+  final AcpTimeouts timeouts;
 
   final InboundGate _gate;
   final StreamController<Object?> _decodedIncoming = StreamController<Object?>(
@@ -113,6 +122,7 @@ class JsonRpcPeer {
       <String, _InboundCorrelation>{};
   final Set<AcpPeerUnavailableListener> _unavailableListeners =
       <AcpPeerUnavailableListener>{};
+  final _OutboundRequestRegistry _outboundRequests = _OutboundRequestRegistry();
 
   /// Underlying JSON-RPC peer.
   late final rpc.Peer _peer;
@@ -121,8 +131,10 @@ class JsonRpcPeer {
   final StreamController<Object?> _sessionUpdates =
       StreamController<Object?>.broadcast(sync: true);
   _DispatchContext? _dispatchContext;
+  _PendingTransportTermination? _pendingTransportTermination;
   AcpPeerUnavailableState? _unavailableState;
   Future<void>? _closeFuture;
+  var _pendingTransportFinalizeScheduled = false;
   var _acceptingInbound = true;
   var _decodedIncomingClosed = false;
   var _sessionUpdatesClosed = false;
@@ -150,7 +162,19 @@ class JsonRpcPeer {
       Set<String>.unmodifiable(_correlations.keys);
 
   /// Whether the peer has not yet entered its unavailable state.
-  bool get isAvailable => _unavailableState == null;
+  bool get isAvailable => _closeFuture == null;
+
+  Future<void> _listenToUnderlyingPeer() async {
+    try {
+      await _peer.listen();
+    } on Object {
+      try {
+        await _becomeUnavailable(AcpPeerUnavailableReason.transportClosed);
+      } on Object {
+        // The public close owner retains the original cleanup failure.
+      }
+    }
+  }
 
   /// Adds an unavailable listener, replaying existing state synchronously.
   void addUnavailableListener(AcpPeerUnavailableListener listener) {
@@ -200,12 +224,30 @@ class JsonRpcPeer {
     final closeOwner = Completer<void>.sync();
     final closeFuture = closeOwner.future;
     _closeFuture = closeFuture;
+    _publishUnavailable(reason, closeOwner, cleanupIdentity: cleanupIdentity);
+    return closeFuture;
+  }
+
+  void _publishUnavailable(
+    AcpPeerUnavailableReason reason,
+    Completer<void> closeOwner, {
+    AcpPromptCleanupIdentity? cleanupIdentity,
+  }) {
     final state = AcpPeerUnavailableState(
       reason,
       cleanupIdentity: cleanupIdentity,
     );
     _unavailableState = state;
     _decodedSink.disableWrites();
+    final flushedRequests = _outboundRequests.completeConnectionClosed();
+    _notifyUnavailableListeners(state);
+    unawaited(_closeUnavailableResources(closeOwner));
+    for (final operation in flushedRequests) {
+      operation.publish();
+    }
+  }
+
+  void _notifyUnavailableListeners(AcpPeerUnavailableState state) {
     for (final listener in _unavailableListeners.toList(growable: false)) {
       try {
         listener(state);
@@ -213,8 +255,6 @@ class JsonRpcPeer {
         // Listener failures are isolated from peer shutdown and each other.
       }
     }
-    unawaited(_closeUnavailableResources(closeOwner));
-    return closeFuture;
   }
 
   Future<void> _closeUnavailableResources(Completer<void> closeOwner) async {
@@ -313,7 +353,9 @@ class JsonRpcPeer {
 
     if (responses.isNotEmpty) {
       _dispatchDecoded(
-        _DecodedDelivery(decoded is List ? responses : responses.single),
+        _DecodedDelivery.response(
+          decoded is List ? responses : responses.single,
+        ),
       );
     }
     if (requests.isEmpty || !_acceptingInbound) return;
@@ -541,6 +583,14 @@ class JsonRpcPeer {
           next.releaseUndelivered();
           continue;
         }
+        if (_pendingTransportTermination != null && !next.isResponseOnly) {
+          next.releaseUndelivered();
+          for (final queued in _decodedDeliveries) {
+            queued.releaseUndelivered();
+          }
+          _decodedDeliveries.clear();
+          break;
+        }
         if (!_acceptingInbound && next.reservations != null) {
           next.releaseUndelivered();
           continue;
@@ -555,6 +605,7 @@ class JsonRpcPeer {
       rethrow;
     } finally {
       _dispatchingDecoded = false;
+      _schedulePendingTransportFinalization();
     }
   }
 
@@ -632,6 +683,12 @@ class JsonRpcPeer {
   }
 
   void _handleInboundError(Object error, StackTrace stackTrace) {
+    if (_deferTransportTerminationDuringDispatch(
+      error: error,
+      stackTrace: stackTrace,
+    )) {
+      return;
+    }
     final closing = _becomeUnavailable(
       AcpPeerUnavailableReason.transportClosed,
     );
@@ -640,11 +697,62 @@ class JsonRpcPeer {
   }
 
   void _handleInboundDone() {
+    if (_deferTransportTerminationDuringDispatch()) return;
     final closing = _becomeUnavailable(
       AcpPeerUnavailableReason.transportClosed,
     );
     unawaited(closing.catchError((Object _) {}));
     _queueTerminal();
+  }
+
+  bool _deferTransportTerminationDuringDispatch({
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    if (_pendingTransportTermination != null) return true;
+    if (!_dispatchingDecoded || _closeFuture != null) return false;
+    final closeOwner = Completer<void>.sync();
+    final closeFuture = closeOwner.future;
+    _closeFuture = closeFuture;
+    _pendingTransportTermination = _PendingTransportTermination(
+      closeOwner: closeOwner,
+      error: error,
+      stackTrace: stackTrace,
+    );
+    final state = AcpPeerUnavailableState(
+      AcpPeerUnavailableReason.transportClosed,
+    );
+    _unavailableState = state;
+    _decodedSink.disableWrites();
+    _stopRawAdmission();
+    _notifyUnavailableListeners(state);
+    _closeInboundGate();
+    unawaited(
+      closeFuture.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    return true;
+  }
+
+  void _schedulePendingTransportFinalization() {
+    if (_pendingTransportTermination == null ||
+        _pendingTransportFinalizeScheduled) {
+      return;
+    }
+    _pendingTransportFinalizeScheduled = true;
+    scheduleMicrotask(_finalizePendingTransportTermination);
+  }
+
+  void _finalizePendingTransportTermination() {
+    _pendingTransportFinalizeScheduled = false;
+    final pending = _pendingTransportTermination;
+    if (pending == null) return;
+    _pendingTransportTermination = null;
+    final flushedRequests = _outboundRequests.completeConnectionClosed();
+    unawaited(_closeUnavailableResources(pending.closeOwner));
+    for (final operation in flushedRequests) {
+      operation.publish();
+    }
+    _queueTerminal(error: pending.error, stackTrace: pending.stackTrace);
   }
 
   void _queueTerminal({Object? error, StackTrace? stackTrace}) {
@@ -658,10 +766,16 @@ class JsonRpcPeer {
 
   void _stopAdmission() {
     if (!_acceptingInbound) return;
+    _stopRawAdmission();
+    _closeInboundGate();
+  }
+
+  void _stopRawAdmission() {
     _acceptingInbound = false;
     _deferredInboundLines.clear();
-    unawaited(_gate.close());
   }
+
+  void _closeInboundGate() => unawaited(_gate.close());
 
   Future<void> _closeDecodedIncoming() {
     if (_decodedIncomingClosed) return Future<void>.value();
@@ -819,22 +933,43 @@ class JsonRpcPeer {
 
   /// Send `initialize` and return the JSON payload.
   Future<Json> initialize(Json params) async => requireJsonRpcObjectResult(
-    await _peer.sendRequest('initialize', params),
+    await _sendRequest('initialize', params),
     resource: 'JSON-RPC initialize result',
   );
 
   /// Send `session/new` and return the JSON payload.
-  Future<Json> newSession(Json params) async =>
-      Map<String, dynamic>.from(await _peer.sendRequest('session/new', params));
+  Future<Json> newSession(Json params) async => requireJsonRpcObjectResult(
+    await _sendRequest('session/new', params),
+    resource: 'JSON-RPC session/new result',
+  );
 
   /// Send `session/load` for replay.
   Future<void> loadSession(Json params) async =>
-      _peer.sendRequest('session/load', params);
+      _sendRequest('session/load', params);
 
   /// Send `session/prompt` and return the terminal result payload.
-  Future<Json> prompt(Json params) async => Map<String, dynamic>.from(
-    await _peer.sendRequest('session/prompt', params),
-  );
+  Future<Json> prompt(Json params) async {
+    if (!isAvailable) throw const AcpConnectionClosedException();
+    return requireJsonRpcObjectResult(
+      await _peer.sendRequest('session/prompt', params),
+      resource: 'JSON-RPC session/prompt result',
+    );
+  }
+
+  /// Send an owner-bound prompt request without applying a prompt deadline.
+  Future<Json> sendPromptRequest({
+    required JsonRpcPromptOwner owner,
+    required List<Map<String, dynamic>> content,
+  }) async {
+    final raw = await _sendRequest('session/prompt', <String, dynamic>{
+      'sessionId': owner.sessionId,
+      'prompt': content,
+    }, promptOwner: owner);
+    return requireJsonRpcObjectResult(
+      raw,
+      resource: 'JSON-RPC session/prompt result',
+    );
+  }
 
   /// Send `session/cancel` as a notification.
   Future<void> cancel(Json params) async =>
@@ -842,18 +977,159 @@ class JsonRpcPeer {
 
   /// (Extension) Send `session/set_mode` to change the session's mode.
   Future<void> setSessionMode(Json params) async =>
-      _peer.sendRequest('session/set_mode', params);
+      _sendRequest('session/set_mode', params);
 
   /// Send an arbitrary JSON-RPC request by method name with params.
-  Future<Json> sendRaw(String method, Json params) async =>
-      requireJsonRpcObjectResult(
-        await _peer.sendRequest(method, params),
-        resource: 'JSON-RPC $method result',
-      );
+  Future<Json> sendRaw(String method, Json params) async {
+    if (method == 'session/prompt') return prompt(params);
+    return requireJsonRpcObjectResult(
+      await _sendRequest(method, params),
+      resource: 'JSON-RPC $method result',
+    );
+  }
 
   /// Send an arbitrary JSON-RPC notification by method name with params.
   Future<void> sendNotificationRaw(String method, Json params) async =>
       _peer.sendNotification(method, params);
+
+  Future<Object?> _sendRequest(
+    String method,
+    Json params, {
+    JsonRpcPromptOwner? promptOwner,
+  }) {
+    if (!isAvailable) {
+      return Future<Object?>.error(const AcpConnectionClosedException());
+    }
+    if (method == 'session/prompt' && promptOwner == null) {
+      return Future<Object?>.error(
+        StateError('session/prompt requires an owner.'),
+      );
+    }
+
+    final operation = _OutboundRequestOperation();
+    _outboundRequests.add(operation);
+    final settled = operation.result.future.whenComplete(() {
+      operation.timer?.cancel();
+      _outboundRequests.remove(operation);
+    });
+    final Duration? deadline = method == 'session/prompt'
+        ? null
+        : method == 'initialize'
+        ? timeouts.initialize
+        : timeouts.request;
+
+    late final Future<Object?> raw;
+    try {
+      raw = _peer.sendRequest(method, params);
+    } on Object catch (error, stackTrace) {
+      operation.completeError(error, stackTrace);
+      return settled;
+    }
+    unawaited(
+      raw.then<void>(operation.completeValue, onError: operation.completeError),
+    );
+
+    if (deadline != null) {
+      operation.timer = Timer(deadline, () {
+        if (!operation.claimError(
+          const AcpRequestTimeoutException(),
+          StackTrace.current,
+        )) {
+          return;
+        }
+        try {
+          final closing = closeForFatalTimeout();
+          unawaited(
+            closing.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+          );
+        } on Object {
+          // The request deadline remains the public first-wins terminal.
+        } finally {
+          operation.publish();
+        }
+      });
+    }
+    return settled;
+  }
+}
+
+final class _OutboundRequestOperation {
+  final Completer<Object?> result = Completer<Object?>();
+  Timer? timer;
+  Object? _value;
+  Object? _error;
+  StackTrace? _stackTrace;
+  var _claimed = false;
+  var _isError = false;
+  var _published = false;
+
+  bool get isCompleted => _claimed;
+
+  void completeValue(Object? value) {
+    if (claimValue(value)) publish();
+  }
+
+  void completeError(Object error, StackTrace stackTrace) {
+    if (claimError(error, stackTrace)) publish();
+  }
+
+  bool claimValue(Object? value) {
+    if (_claimed) return false;
+    _claimed = true;
+    _value = value;
+    return true;
+  }
+
+  bool claimError(Object error, [StackTrace? stackTrace]) {
+    if (_claimed) return false;
+    _claimed = true;
+    _isError = true;
+    _error = error;
+    _stackTrace = stackTrace;
+    return true;
+  }
+
+  bool claimConnectionClosed() =>
+      claimError(const AcpConnectionClosedException());
+
+  void publish() {
+    if (!_claimed || _published) return;
+    _published = true;
+    if (_isError) {
+      result.completeError(_error!, _stackTrace);
+    } else {
+      result.complete(_value);
+    }
+  }
+}
+
+final class _OutboundRequestRegistry {
+  final Set<_OutboundRequestOperation> _pending = <_OutboundRequestOperation>{};
+
+  void add(_OutboundRequestOperation operation) => _pending.add(operation);
+
+  void remove(_OutboundRequestOperation operation) =>
+      _pending.remove(operation);
+
+  List<_OutboundRequestOperation> completeConnectionClosed() {
+    final claimed = <_OutboundRequestOperation>[];
+    for (final operation in _pending.toList(growable: false)) {
+      if (operation.claimConnectionClosed()) claimed.add(operation);
+    }
+    return claimed;
+  }
+}
+
+final class _PendingTransportTermination {
+  const _PendingTransportTermination({
+    required this.closeOwner,
+    this.error,
+    this.stackTrace,
+  });
+
+  final Completer<void> closeOwner;
+  final Object? error;
+  final StackTrace? stackTrace;
 }
 
 class _DispatchContext {
@@ -904,6 +1180,14 @@ class _DispatchContext {
 class _DecodedDelivery {
   _DecodedDelivery(this.message, {this.reservations})
     : isTerminal = false,
+      isResponseOnly = false,
+      terminalError = null,
+      terminalStackTrace = null;
+
+  _DecodedDelivery.response(this.message)
+    : reservations = null,
+      isTerminal = false,
+      isResponseOnly = true,
       terminalError = null,
       terminalStackTrace = null;
 
@@ -911,12 +1195,14 @@ class _DecodedDelivery {
     : message = null,
       reservations = null,
       isTerminal = true,
+      isResponseOnly = false,
       terminalError = error,
       terminalStackTrace = stackTrace;
 
   final Object? message;
   final List<InboundGateReservation>? reservations;
   final bool isTerminal;
+  final bool isResponseOnly;
   final Object? terminalError;
   final StackTrace? terminalStackTrace;
 

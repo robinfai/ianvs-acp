@@ -78,6 +78,7 @@ class AcpClient implements AcpBoundedObservationSource {
     final client = AcpClient._(config: config, transport: actualTransport);
     client._peer = JsonRpcPeer(
       actualTransport.channel,
+      timeouts: config.timeouts,
       maxPendingItems: maxPendingItems,
       maxPendingBytes: maxPendingBytes,
       maxConcurrentHandlers: maxConcurrentHandlers,
