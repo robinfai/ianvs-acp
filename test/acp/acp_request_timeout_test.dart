@@ -7207,7 +7207,7 @@ void main() {
             lateCase.method,
             params: lateCase.method == 'fs/read_text_file'
                 ? (harness.paramsFor(lateCase.method)
-                  ..['path'] = '/tmp/$pathCanary')
+                    ..['path'] = '/tmp/$pathCanary')
                 : null,
           );
           await harness.permissions
@@ -8482,6 +8482,66 @@ void main() {
       await transport.dispose();
     }
   });
+
+  test(
+    'invalid session item budgets fail with field errors before peer registration',
+    () async {
+      final constructors =
+          <String, SessionManager Function(JsonRpcPeer peer, int value)>{
+            'maxReplayItems': (peer, value) => SessionManager(
+              config: acp.AcpConfig(),
+              peer: peer,
+              maxReplayItems: value,
+            ),
+            'maxToolCallItems': (peer, value) => SessionManager(
+              config: acp.AcpConfig(),
+              peer: peer,
+              maxToolCallItems: value,
+            ),
+            'maxToolCallBytes': (peer, value) => SessionManager(
+              config: acp.AcpConfig(),
+              peer: peer,
+              maxToolCallBytes: value,
+            ),
+          };
+
+      for (final invalidValue in <int>[0, -1]) {
+        for (final constructor in constructors.entries) {
+          final channel = StreamChannelController<String>();
+          final peer = JsonRpcPeer(channel.foreign);
+          final outbound = channel.local.stream.listen((_) {});
+          try {
+            expect(
+              () => constructor.value(peer, invalidValue),
+              throwsA(
+                isA<ArgumentError>()
+                    .having((error) => error.name, 'name', constructor.key)
+                    .having(
+                      (error) => error.invalidValue,
+                      'invalidValue',
+                      invalidValue,
+                    ),
+              ),
+              reason: '${constructor.key}=$invalidValue',
+            );
+            expect(peer.onInboundAdmission, isNull);
+            expect(peer.onReadTextFile, isNull);
+            expect(peer.onWriteTextFile, isNull);
+            expect(peer.onRequestPermission, isNull);
+            expect(peer.onTerminalCreate, isNull);
+            expect(peer.onTerminalOutput, isNull);
+            expect(peer.onTerminalWaitForExit, isNull);
+            expect(peer.onTerminalKill, isNull);
+            expect(peer.onTerminalRelease, isNull);
+          } finally {
+            await peer.close();
+            await channel.local.sink.close();
+            await outbound.cancel();
+          }
+        }
+      }
+    },
+  );
 
   test('timeout exceptions and cancellation tokens do not leak context', () {
     expect(

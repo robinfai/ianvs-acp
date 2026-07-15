@@ -1131,11 +1131,29 @@ class SessionManager implements AcpBoundedObservationSource {
     this.inputBudget = const AcpInputBudget(),
     this.maxTerminalHandles = defaultMaxTerminalHandles,
     this.maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
-  }) : assert(maxReplayItems > 0),
-       assert(maxReplayBytes > 0),
-       assert(maxToolCallItems > 0),
-       assert(maxToolCallBytes > 0),
+  }) : assert(maxReplayBytes > 0),
        _log = config.logger {
+    if (maxReplayItems <= 0) {
+      throw ArgumentError.value(
+        maxReplayItems,
+        'maxReplayItems',
+        'must be greater than zero',
+      );
+    }
+    if (maxToolCallItems <= 0) {
+      throw ArgumentError.value(
+        maxToolCallItems,
+        'maxToolCallItems',
+        'must be greater than zero',
+      );
+    }
+    if (maxToolCallBytes <= 0) {
+      throw ArgumentError.value(
+        maxToolCallBytes,
+        'maxToolCallBytes',
+        'must be greater than zero',
+      );
+    }
     validateTerminalHandleLimits(
       maxTerminalHandles: maxTerminalHandles,
       maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
