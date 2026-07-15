@@ -4,24 +4,603 @@ import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter_test/flutter_test.dart';
+// logging is a direct dependency of the in-repository dart_acp package.
+// ignore: depend_on_referenced_packages
+import 'package:logging/logging.dart';
 
 void main() {
-  test('StdinTransport validates maxLineBytes at runtime', () {
-    expect(
-      () => StdinTransport(
-        logger: AcpConfig().logger,
-        maxLineBytes: 0,
-        inputStream: const Stream<List<int>>.empty(),
-        outputSink: IOSink(_DiscardStreamConsumer()),
-      ),
-      throwsA(
-        isA<ArgumentError>().having(
-          (error) => error.name,
-          'name',
-          'maxLineBytes',
+  test('StdinTransport validates byte and queue budgets at runtime', () {
+    for (final budget in <({String name, StdinTransport Function() create})>[
+      (
+        name: 'maxLineBytes',
+        create: () => StdinTransport(
+          logger: AcpConfig().logger,
+          maxLineBytes: 0,
+          inputStream: const Stream<List<int>>.empty(),
+          outputSink: IOSink(_DiscardStreamConsumer()),
         ),
       ),
+      (
+        name: 'maxOutboundQueueItems',
+        create: () => StdinTransport(
+          logger: AcpConfig().logger,
+          maxOutboundQueueItems: 0,
+          inputStream: const Stream<List<int>>.empty(),
+          outputSink: IOSink(_DiscardStreamConsumer()),
+        ),
+      ),
+      (
+        name: 'maxOutboundQueueBytes',
+        create: () => StdinTransport(
+          logger: AcpConfig().logger,
+          maxOutboundQueueBytes: 0,
+          inputStream: const Stream<List<int>>.empty(),
+          outputSink: IOSink(_DiscardStreamConsumer()),
+        ),
+      ),
+      (
+        name: 'maxInboundQueueItems',
+        create: () => StdinTransport(
+          logger: AcpConfig().logger,
+          maxInboundQueueItems: 0,
+          inputStream: const Stream<List<int>>.empty(),
+          outputSink: IOSink(_DiscardStreamConsumer()),
+        ),
+      ),
+      (
+        name: 'maxInboundQueueBytes',
+        create: () => StdinTransport(
+          logger: AcpConfig().logger,
+          maxInboundQueueBytes: 0,
+          inputStream: const Stream<List<int>>.empty(),
+          outputSink: IOSink(_DiscardStreamConsumer()),
+        ),
+      ),
+    ]) {
+      expect(
+        budget.create,
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.name,
+            'name',
+            budget.name,
+          ),
+        ),
+      );
+    }
+  });
+
+  test('StdinTransport logs omit inbound and outbound payloads', () async {
+    const inboundSecret = 'stdin-inbound-secret';
+    const outboundSecret = 'stdin-outbound-secret';
+    final previousLevel = Logger.root.level;
+    Logger.root.level = Level.ALL;
+    final logger = Logger(
+      'stdin.payload-free.${DateTime.now().microsecondsSinceEpoch}',
     );
+    final messages = <String>[];
+    final logSubscription = logger.onRecord.listen(
+      (record) => messages.add(record.message),
+    );
+    final input = StreamController<List<int>>();
+    final output = IOSink(_DiscardStreamConsumer());
+    final transport = StdinTransport(
+      logger: logger,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+
+    try {
+      await transport.start();
+      final inbound = transport.channel.stream.first;
+      input.add(utf8.encode('$inboundSecret\n'));
+      transport.channel.sink.add(outboundSecret);
+      expect(await inbound, inboundSecret);
+      await output.flush();
+
+      expect(messages.join('\n'), isNot(contains(inboundSecret)));
+      expect(messages.join('\n'), isNot(contains(outboundSecret)));
+    } finally {
+      Logger.root.level = previousLevel;
+      await logSubscription.cancel();
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport bounds a paused inbound consumer', () async {
+    final input = StreamController<List<int>>(sync: true);
+    final output = IOSink(_DiscardStreamConsumer());
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxInboundQueueItems: 1,
+      maxInboundQueueBytes: 64,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+    final lines = <String>[];
+    final errors = <Object>[];
+    final done = Completer<void>();
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+        onDone: done.complete,
+      );
+      subscription.pause();
+      input.add(utf8.encode('one\ntwo\n'));
+      await _waitFor(() => !input.hasListener);
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 1));
+
+      expect(lines, isEmpty);
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin input queue items',
+            )
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+      );
+      await subscription.cancel();
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport bounds paused inbound UTF-8 bytes', () async {
+    final input = StreamController<List<int>>(sync: true);
+    final output = IOSink(_DiscardStreamConsumer());
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxInboundQueueItems: 8,
+      maxInboundQueueBytes: 3,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+    final errors = <Object>[];
+    final done = Completer<void>();
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+        onDone: done.complete,
+      );
+      subscription.pause();
+      input.add(utf8.encode('é\né\n'));
+      await _waitFor(() => !input.hasListener);
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 1));
+
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin input queue bytes',
+            )
+            .having((error) => error.limit, 'limit', 3)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+      );
+      await subscription.cancel();
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport bounds pending outbound writes', () async {
+    final input = StreamController<List<int>>();
+    final outputConsumer = _BlockingStreamConsumer();
+    final output = IOSink(outputConsumer);
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxOutboundQueueItems: 1,
+      maxOutboundQueueBytes: 64,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+    final errors = <Object>[];
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+      transport.channel.sink
+        ..add('first')
+        ..add('second');
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin output queue items',
+            )
+            .having((error) => error.limit, 'limit', 1)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+      );
+      expect(outputConsumer.text, isEmpty);
+      await subscription.cancel();
+    } finally {
+      outputConsumer.release();
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport bounds pending outbound UTF-8 bytes', () async {
+    final input = StreamController<List<int>>();
+    final outputConsumer = _BlockingStreamConsumer();
+    final output = IOSink(outputConsumer);
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxOutboundQueueItems: 8,
+      maxOutboundQueueBytes: 3,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+    final errors = <Object>[];
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+      transport.channel.sink
+        ..add('é')
+        ..add('é');
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin output queue bytes',
+            )
+            .having((error) => error.limit, 'limit', 3)
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+      );
+      expect(outputConsumer.text, isEmpty);
+      await subscription.cancel();
+    } finally {
+      outputConsumer.release();
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport stop does not wait for a paused listener', () async {
+    final input = StreamController<List<int>>();
+    final output = IOSink(_DiscardStreamConsumer());
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+    StreamSubscription<String>? subscription;
+
+    try {
+      await transport.start();
+      subscription = transport.channel.stream.listen((_) {});
+      subscription.pause();
+
+      await expectLater(
+        transport.stop().timeout(const Duration(milliseconds: 200)),
+        completes,
+      );
+    } finally {
+      subscription?.resume();
+      await subscription?.cancel();
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport serializes restart behind an active flush', () async {
+    final input = _RestartableInputStream();
+    final outputConsumer = _BlockingStreamConsumer();
+    final output = IOSink(outputConsumer);
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      inputStream: input,
+      outputSink: output,
+    );
+
+    try {
+      await transport.start();
+      transport.channel.sink.add('old generation');
+      await outputConsumer.started.future;
+
+      var stopCompleted = false;
+      final stop = transport.stop().then((_) => stopCompleted = true);
+      var restartCompleted = false;
+      final restart = transport.start().then((_) => restartCompleted = true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(stopCompleted, isFalse);
+      expect(restartCompleted, isFalse);
+      expect(input.listenCount, 1);
+
+      outputConsumer.release();
+      await stop.timeout(const Duration(seconds: 1));
+      await restart.timeout(const Duration(seconds: 1));
+      expect(input.listenCount, 2);
+
+      transport.channel.sink.add('new generation');
+      await _waitFor(() => outputConsumer.text.contains('new generation\n'));
+      expect(outputConsumer.text, 'old generation\nnew generation\n');
+    } finally {
+      outputConsumer.release();
+      await transport.stop();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport counts an observer-active inbound item', () async {
+    final input = StreamController<List<int>>(sync: true);
+    final output = IOSink(_DiscardStreamConsumer());
+    final lines = <String>[];
+    final errors = <Object>[];
+    late final StdinTransport transport;
+    transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxInboundQueueItems: 1,
+      maxInboundQueueBytes: 64,
+      inputStream: input.stream,
+      outputSink: output,
+      onProtocolIn: (line) {
+        if (line == 'first') input.add(utf8.encode('second\n'));
+      },
+    );
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        lines.add,
+        onError: errors.add,
+      );
+      input.add(utf8.encode('first\n'));
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(lines, isEmpty);
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin input queue items',
+            )
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
+      );
+      await subscription.cancel();
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport counts observer-active inbound UTF-8 bytes', () async {
+    final input = StreamController<List<int>>(sync: true);
+    final output = IOSink(_DiscardStreamConsumer());
+    final errors = <Object>[];
+    var injected = false;
+    late final StdinTransport transport;
+    transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxInboundQueueItems: 8,
+      maxInboundQueueBytes: 3,
+      inputStream: input.stream,
+      outputSink: output,
+      onProtocolIn: (_) {
+        if (injected) return;
+        injected = true;
+        input.add(utf8.encode('é\n'));
+      },
+    );
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+      input.add(utf8.encode('é\n'));
+      await _waitFor(() => errors.isNotEmpty);
+
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>()
+            .having(
+              (error) => error.resource,
+              'resource',
+              'stdin input queue bytes',
+            )
+            .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
+      );
+      await subscription.cancel();
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test(
+    'StdinTransport clears active inbound bytes after exact budget',
+    () async {
+      final input = StreamController<List<int>>(sync: true);
+      final output = IOSink(_DiscardStreamConsumer());
+      final lines = <String>[];
+      final errors = <Object>[];
+      var injected = false;
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxInboundQueueItems: 8,
+        maxInboundQueueBytes: 4,
+        inputStream: input.stream,
+        outputSink: output,
+        onProtocolIn: (_) {
+          if (injected) return;
+          injected = true;
+          input.add(utf8.encode('é\n'));
+        },
+      );
+
+      try {
+        await transport.start();
+        final subscription = transport.channel.stream.listen(
+          lines.add,
+          onError: errors.add,
+        );
+        input.add(utf8.encode('é\n'));
+        await _waitFor(() => lines.length == 2);
+
+        input.add(utf8.encode('éé\n'));
+        await _waitFor(() => lines.length == 3 || errors.isNotEmpty);
+
+        expect(lines, <String>['é', 'é', 'éé']);
+        expect(errors, isEmpty);
+        await subscription.cancel();
+      } finally {
+        await transport.stop();
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
+  test('StdinTransport retains a frame paused by its observer', () async {
+    final input = StreamController<List<int>>();
+    final output = IOSink(_DiscardStreamConsumer());
+    final lines = <String>[];
+    final observed = <String>[];
+    final observerPaused = Completer<void>();
+    late StreamSubscription<String> subscription;
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      inputStream: input.stream,
+      outputSink: output,
+      onProtocolIn: (line) {
+        observed.add(line);
+        subscription.pause();
+        if (!observerPaused.isCompleted) observerPaused.complete();
+      },
+    );
+
+    try {
+      await transport.start();
+      subscription = transport.channel.stream.listen(lines.add);
+      input.add(utf8.encode('retained\n'));
+      await observerPaused.future;
+      expect(lines, isEmpty);
+
+      subscription.resume();
+      await _waitFor(() => lines.isNotEmpty);
+      expect(lines, <String>['retained']);
+      expect(observed, <String>['retained']);
+    } finally {
+      subscription.resume();
+      await subscription.cancel();
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport listener cancellation cancels input', () async {
+    final input = StreamController<List<int>>();
+    final output = IOSink(_DiscardStreamConsumer());
+    final observed = <String>[];
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      inputStream: input.stream,
+      outputSink: output,
+      onProtocolIn: observed.add,
+    );
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen((_) {});
+      await subscription.cancel();
+      await _waitFor(() => !input.hasListener);
+
+      input.add(utf8.encode('late\n'));
+      await Future<void>.delayed(Duration.zero);
+      expect(observed, isEmpty);
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
+  });
+
+  test('StdinTransport publishes the first terminal failure only', () async {
+    final input = StreamController<List<int>>();
+    final output = IOSink(_DiscardStreamConsumer());
+    final errors = <Object>[];
+    final done = Completer<void>();
+    final transport = StdinTransport(
+      logger: AcpConfig().logger,
+      maxLineBytes: 1,
+      inputStream: input.stream,
+      outputSink: output,
+    );
+
+    try {
+      await transport.start();
+      final subscription = transport.channel.stream.listen(
+        (_) {},
+        onError: errors.add,
+        onDone: done.complete,
+      );
+      subscription.pause();
+      input.add(utf8.encode('xx\n'));
+      await _waitFor(() => !input.hasListener);
+      transport.channel.sink.add('yy');
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 1));
+
+      expect(errors, hasLength(1));
+      expect(
+        errors.single,
+        isA<TransportByteLimitExceeded>().having(
+          (error) => error.resource,
+          'resource',
+          'stdin input line',
+        ),
+      );
+      await subscription.cancel();
+    } finally {
+      await transport.stop();
+      await input.close();
+      await output.close();
+    }
   });
 
   test(
@@ -525,6 +1104,45 @@ class _RecordingStreamConsumer implements StreamConsumer<List<int>> {
 
   @override
   Future<void> close() async {}
+}
+
+class _BlockingStreamConsumer implements StreamConsumer<List<int>> {
+  final Completer<void> _release = Completer<void>();
+  final Completer<void> started = Completer<void>();
+  final List<int> _bytes = <int>[];
+
+  String get text => utf8.decode(_bytes);
+
+  void release() {
+    if (!_release.isCompleted) _release.complete();
+  }
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    if (!started.isCompleted) started.complete();
+    await _release.future;
+    await for (final chunk in stream) {
+      _bytes.addAll(chunk);
+    }
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+class _RestartableInputStream extends Stream<List<int>> {
+  var listenCount = 0;
+
+  @override
+  StreamSubscription<List<int>> listen(
+    void Function(List<int> event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    listenCount += 1;
+    return _SynchronousSubscription<List<int>>();
+  }
 }
 
 class _RetainingListenThrowingInputStream extends Stream<List<int>> {
