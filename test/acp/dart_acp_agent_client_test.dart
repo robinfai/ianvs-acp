@@ -1769,148 +1769,251 @@ void main() {
     }
   });
 
-  test(
-    'permission invalidation canaries never reach wire or audit events',
-    () async {
-      for (final method in bridgePermissionMethods) {
-        for (final reason in bridgeInvalidationReasons) {
-          final canary = 'secret-${method.replaceAll('/', '_')}-${reason.name}';
-          final fixture = await _PermissionStdioFixture.startPermissionScenario(
-            transientMetadata: <String, Object?>{
-              'path': '/private/$canary',
-              'payload': canary,
-            },
-          );
-          final invalidations = <AcpPermissionInvalidation>[];
-          final sub = fixture.client.permissionInvalidations.listen(
-            invalidations.add,
-          );
-          final controller = ChatController(
-            client: fixture.client,
-            cwd: fixture.workspaceDirectory.path,
-          );
-          try {
-            fixture.injectCancellationTokenCanary(canary);
-            final probe = await fixture.sendPermission(
-              method: method,
-              canary: canary,
-              ownerScoped:
-                  reason == AcpPermissionInvalidationReason.promptEnded ||
-                  reason == AcpPermissionInvalidationReason.promptCancelled,
-            );
-            expect(fixture.cancellationTokensCreatedForTesting, hasLength(1));
-            expect(
-              identical(
-                fixture.cancellationTokensCreatedForTesting.single,
-                fixture.injectedCancellationTokenForTesting,
-              ),
-              isTrue,
-            );
-            final tokenText = fixture.injectedCancellationTokenForTesting
-                .toString();
-            for (final captured in <Map<String, Object?>>[
-              probe.control,
-              probe.agentParams,
-            ]) {
-              final encoded = jsonEncode(captured);
-              expect(encoded, isNot(contains(tokenText)));
-              expect(encoded, isNot(contains('"cancellationToken"')));
-              expect(encoded, isNot(contains('"tokenCanary"')));
-            }
-            final pending = controller.pendingPermissionRequest;
-            if (pending == null) {
-              fail('controller did not bind the real permission lifecycle');
-            }
-            expect(pending.lifecycleId, probe.request.lifecycleId);
-            expect(
-              pending.bindingKey,
-              probe.request.withGeneration(pending.generation).bindingKey,
-            );
-            await fixture.triggerAppInvalidation(probe.request, reason);
-            final closesPeer =
-                reason == AcpPermissionInvalidationReason.connectionClosed ||
-                reason == AcpPermissionInvalidationReason.disposed;
-            if (closesPeer) {
-              await fixture.peerUnavailable.timeout(const Duration(seconds: 2));
-              await fixture.quiesceForResponseCaptureCheck().timeout(
+  for (final method in bridgePermissionMethods) {
+    for (final reason in bridgeInvalidationReasons) {
+      test('permission invalidation canaries never reach wire or audit events '
+          '[method=$method reason=${reason.name}]', () async {
+        final scenario = 'method=$method reason=${reason.name}';
+        final canary = 'secret-${method.replaceAll('/', '_')}-${reason.name}';
+        final fixture = await _PermissionStdioFixture.startPermissionScenario(
+          timeouts: acp.AcpTimeouts(
+            request: const Duration(seconds: 5),
+            permission: reason == AcpPermissionInvalidationReason.timedOut
+                ? const Duration(milliseconds: 75)
+                : const Duration(seconds: 5),
+            promptCancelGrace: const Duration(milliseconds: 750),
+          ),
+          transientMetadata: <String, Object?>{
+            'path': '/private/$canary',
+            'payload': canary,
+          },
+        );
+        final invalidations = <AcpPermissionInvalidation>[];
+        final sub = fixture.client.permissionInvalidations.listen(
+          invalidations.add,
+        );
+        final controller = ChatController(
+          client: fixture.client,
+          cwd: fixture.workspaceDirectory.path,
+        );
+        try {
+          fixture.injectCancellationTokenCanary(canary);
+          final probe = await fixture
+              .sendPermission(
+                method: method,
+                canary: canary,
+                ownerScoped:
+                    reason == AcpPermissionInvalidationReason.promptEnded ||
+                    reason == AcpPermissionInvalidationReason.promptCancelled,
+              )
+              .timeout(
                 const Duration(seconds: 2),
+                onTimeout: () {
+                  throw TimeoutException(
+                    '$scenario: permission request setup timed out',
+                  );
+                },
               );
-              expect(
-                await probe.responseCapture.exists(),
-                isFalse,
-                reason: 'the stopped stdio agent cannot write a late response',
-              );
-            } else {
-              final response = await probe.response.timeout(
-                const Duration(seconds: 2),
-              );
-              if (method == 'session/request_permission') {
-                expect(response.hasError, isFalse);
-                expect(response.selectedOutcome, 'cancelled');
-              } else {
-                expect(response.hasError, isTrue);
-                switch (reason) {
-                  case AcpPermissionInvalidationReason.timedOut:
-                    expect(response.errorCode, -32002);
-                    expect(response.errorText, 'Permission request timed out.');
-                    break;
-                  case AcpPermissionInvalidationReason.promptEnded:
-                  case AcpPermissionInvalidationReason.promptCancelled:
-                  case AcpPermissionInvalidationReason.sessionClosed:
-                    expect(response.errorCode, -32003);
-                    expect(response.errorText, 'Permission request cancelled.');
-                    break;
-                  case AcpPermissionInvalidationReason.connectionClosed:
-                  case AcpPermissionInvalidationReason.disposed:
-                    fail(
-                      'peer-closing reasons must not produce a wire response',
-                    );
-                }
-              }
-              expect(response.hasErrorData, isFalse);
-              expect(jsonEncode(response.raw), isNot(contains(canary)));
-            }
-            expect(invalidations, hasLength(1));
-            final invalidation = invalidations.single;
-            expect(invalidation.requestId, probe.request.id);
-            expect(invalidation.lifecycleId, probe.request.lifecycleId);
-            expect(invalidation.sessionId, probe.request.sessionId);
-            expect(invalidation.reason, reason);
+          expect(
+            fixture.cancellationTokensCreatedForTesting,
+            hasLength(1),
+            reason: scenario,
+          );
+          expect(
+            identical(
+              fixture.cancellationTokensCreatedForTesting.single,
+              fixture.injectedCancellationTokenForTesting,
+            ),
+            isTrue,
+            reason: scenario,
+          );
+          final tokenText = fixture.injectedCancellationTokenForTesting
+              .toString();
+          for (final captured in <Map<String, Object?>>[
+            probe.control,
+            probe.agentParams,
+          ]) {
+            final encoded = jsonEncode(captured);
+            expect(encoded, isNot(contains(tokenText)), reason: scenario);
             expect(
-              jsonEncode(
-                invalidations
-                    .map(
-                      (event) => <String, Object?>{
-                        'requestId': event.requestId,
-                        'lifecycleId': event.lifecycleId,
-                        'sessionId': event.sessionId,
-                        'reason': event.reason.name,
-                      },
-                    )
-                    .toList(),
-              ),
-              isNot(contains(canary)),
+              encoded,
+              isNot(contains('"cancellationToken"')),
+              reason: scenario,
             );
-            expect(controller.permissionHistory, hasLength(1));
-            final audit = controller.permissionHistory.single;
-            expect(audit.request.lifecycleId, probe.request.lifecycleId);
-            expect(audit.request.bindingKey, pending.bindingKey);
-            expect(audit.status, AcpPermissionAuditStatus.cancelled);
-            expect(audit.decisionSource, AcpPermissionDecisionSource.system);
-            final auditMap = audit.toJson();
-            expect(auditMap, isNotEmpty);
-            expect(jsonEncode(auditMap), isNot(contains(canary)));
-            expect(fixture.cancellationTokensCreatedForTesting, hasLength(1));
-          } finally {
-            await sub.cancel();
-            controller.dispose();
-            await controller.disposalComplete;
-            await fixture.dispose();
+            expect(encoded, isNot(contains('"tokenCanary"')), reason: scenario);
           }
+          final pending = controller.pendingPermissionRequest;
+          if (pending == null) {
+            fail(
+              '$scenario: controller did not bind the real permission lifecycle',
+            );
+          }
+          expect(
+            pending.lifecycleId,
+            probe.request.lifecycleId,
+            reason: scenario,
+          );
+          expect(
+            pending.bindingKey,
+            probe.request.withGeneration(pending.generation).bindingKey,
+            reason: scenario,
+          );
+          if (method == 'session/request_permission' &&
+              reason == AcpPermissionInvalidationReason.promptEnded) {
+            await Future<void>.delayed(const Duration(milliseconds: 800));
+          }
+          await fixture
+              .triggerAppInvalidation(probe.request, reason)
+              .timeout(
+                const Duration(seconds: 2),
+                onTimeout: () {
+                  throw TimeoutException(
+                    '$scenario: explicit invalidation timed out',
+                  );
+                },
+              );
+          final closesPeer =
+              reason == AcpPermissionInvalidationReason.connectionClosed ||
+              reason == AcpPermissionInvalidationReason.disposed;
+          if (closesPeer) {
+            await fixture.peerUnavailable.timeout(
+              const Duration(seconds: 2),
+              onTimeout: () {
+                throw TimeoutException(
+                  '$scenario: peer unavailable signal timed out',
+                );
+              },
+            );
+            await fixture.quiesceForResponseCaptureCheck().timeout(
+              const Duration(seconds: 2),
+              onTimeout: () {
+                throw TimeoutException(
+                  '$scenario: response capture quiescence timed out',
+                );
+              },
+            );
+            expect(
+              await probe.responseCapture.exists(),
+              isFalse,
+              reason:
+                  '$scenario: the stopped stdio agent cannot write a late response',
+            );
+          } else {
+            final response = await probe.response.timeout(
+              const Duration(seconds: 2),
+              onTimeout: () {
+                throw TimeoutException('$scenario: wire response timed out');
+              },
+            );
+            if (method == 'session/request_permission') {
+              expect(response.hasError, isFalse, reason: scenario);
+              expect(response.selectedOutcome, 'cancelled', reason: scenario);
+            } else {
+              expect(response.hasError, isTrue, reason: scenario);
+              switch (reason) {
+                case AcpPermissionInvalidationReason.timedOut:
+                  expect(response.errorCode, -32002, reason: scenario);
+                  expect(
+                    response.errorText,
+                    'Permission request timed out.',
+                    reason: scenario,
+                  );
+                  break;
+                case AcpPermissionInvalidationReason.promptEnded:
+                case AcpPermissionInvalidationReason.promptCancelled:
+                case AcpPermissionInvalidationReason.sessionClosed:
+                  expect(response.errorCode, -32003, reason: scenario);
+                  expect(
+                    response.errorText,
+                    'Permission request cancelled.',
+                    reason: scenario,
+                  );
+                  break;
+                case AcpPermissionInvalidationReason.connectionClosed:
+                case AcpPermissionInvalidationReason.disposed:
+                  fail('peer-closing reasons must not produce a wire response');
+              }
+            }
+            expect(response.hasErrorData, isFalse, reason: scenario);
+            expect(
+              jsonEncode(response.raw),
+              isNot(contains(canary)),
+              reason: scenario,
+            );
+          }
+          expect(invalidations, hasLength(1), reason: scenario);
+          final invalidation = invalidations.single;
+          expect(invalidation.requestId, probe.request.id, reason: scenario);
+          expect(
+            invalidation.lifecycleId,
+            probe.request.lifecycleId,
+            reason: scenario,
+          );
+          expect(
+            invalidation.sessionId,
+            probe.request.sessionId,
+            reason: scenario,
+          );
+          expect(invalidation.reason, reason, reason: scenario);
+          expect(
+            jsonEncode(
+              invalidations
+                  .map(
+                    (event) => <String, Object?>{
+                      'requestId': event.requestId,
+                      'lifecycleId': event.lifecycleId,
+                      'sessionId': event.sessionId,
+                      'reason': event.reason.name,
+                    },
+                  )
+                  .toList(),
+            ),
+            isNot(contains(canary)),
+            reason: scenario,
+          );
+          expect(controller.permissionHistory, hasLength(1), reason: scenario);
+          final audit = controller.permissionHistory.single;
+          expect(
+            audit.request.lifecycleId,
+            probe.request.lifecycleId,
+            reason: scenario,
+          );
+          expect(
+            audit.request.bindingKey,
+            pending.bindingKey,
+            reason: scenario,
+          );
+          expect(
+            audit.status,
+            AcpPermissionAuditStatus.cancelled,
+            reason: scenario,
+          );
+          expect(
+            audit.decisionSource,
+            AcpPermissionDecisionSource.system,
+            reason: scenario,
+          );
+          final auditMap = audit.toJson();
+          expect(auditMap, isNotEmpty, reason: scenario);
+          expect(
+            jsonEncode(auditMap),
+            isNot(contains(canary)),
+            reason: scenario,
+          );
+          expect(
+            fixture.cancellationTokensCreatedForTesting,
+            hasLength(1),
+            reason: scenario,
+          );
+        } finally {
+          await sub.cancel();
+          controller.dispose();
+          await controller.disposalComplete;
+          await fixture.dispose();
         }
-      }
-    },
-  );
+      });
+    }
+  }
 
   group('DefaultPermissionProvider', () {
     acp.PermissionOptions options({
