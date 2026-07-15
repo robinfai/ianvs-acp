@@ -268,6 +268,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   Stream<AcpPermissionRequest> get permissionRequests =>
       _permissionBridge.requests;
 
+  @override
+  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+      _permissionBridge.invalidations;
+
   bool _isCurrentPeerSource(acp.AcpClient source) =>
       identical(_client, source) ||
       identical(_connectingClient, source) ||
@@ -3548,12 +3552,16 @@ final class _RawPromptRpcOutcome {
 class _AcpPermissionBridge {
   final StreamController<AcpPermissionRequest> _requests =
       StreamController<AcpPermissionRequest>.broadcast(sync: true);
+  final StreamController<AcpPermissionInvalidation> _invalidations =
+      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
   final Map<String, _PendingPermissionRequest> _pending =
       <String, _PendingPermissionRequest>{};
   int _nextId = 0;
   bool _isClosed = false;
 
   Stream<AcpPermissionRequest> get requests => _requests.stream;
+
+  Stream<AcpPermissionInvalidation> get invalidations => _invalidations.stream;
 
   Future<acp.PermissionDecision> request(acp.PermissionOptions options) async {
     if (_isClosed || !_requests.hasListener) {
@@ -3649,7 +3657,10 @@ class _AcpPermissionBridge {
     if (_isClosed) return;
     _isClosed = true;
     cancelAll();
-    await _requests.close();
+    await Future.wait<void>(<Future<void>>[
+      _requests.close(),
+      _invalidations.close(),
+    ]);
   }
 
   acp.PermissionOutcome _outcomeForDecision(AcpPermissionDecision decision) {

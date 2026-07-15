@@ -2478,6 +2478,10 @@ class ChatController extends ChangeNotifier {
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
       onDone: _handlePermissionRequestsDone,
     );
+    _permissionInvalidationSubscription = client.permissionInvalidations.listen(
+      _handlePermissionInvalidation,
+      onError: (Object error, StackTrace stackTrace) => _setActionError(error),
+    );
   }
 
   static const int defaultPermissionHistoryLimit = 500;
@@ -2701,6 +2705,8 @@ class ChatController extends ChangeNotifier {
 
   StreamSubscription<AgentEvent>? _promptSubscription;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
+  late final StreamSubscription<AcpPermissionInvalidation>
+  _permissionInvalidationSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? _lastLatency;
   Duration? get lastLatency => _lastLatency;
@@ -4724,6 +4730,27 @@ class ChatController extends ChangeNotifier {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
+    _recordPermissionDecision(
+      request,
+      AcpPermissionDecision.cancel,
+      source: AcpPermissionDecisionSource.system,
+    );
+    _notifyListeners();
+  }
+
+  void _handlePermissionInvalidation(AcpPermissionInvalidation event) {
+    if (_isDisposed) return;
+    final request = pendingPermissionRequest;
+    if (request == null ||
+        request.id != event.requestId ||
+        request.lifecycleId != event.lifecycleId ||
+        request.sessionId != event.sessionId) {
+      return;
+    }
+    final bindingKey = request.bindingKey;
+    pendingPermissionRequest = null;
+    _resolvingPermissionRequestIds.remove(bindingKey);
+    _reviewingPermissionRequestIds.remove(bindingKey);
     _recordPermissionDecision(
       request,
       AcpPermissionDecision.cancel,
@@ -6970,6 +6997,7 @@ class ChatController extends ChangeNotifier {
   ) async {
     await _ignoreCleanup(() => promptSubscription?.cancel());
     await _ignoreCleanup(_permissionSubscription.cancel);
+    await _ignoreCleanup(_permissionInvalidationSubscription.cancel);
     await _ignoreCleanup(client.dispose);
     await _ignoreCleanup(() => permissionReviewer?.dispose());
   }

@@ -8899,6 +8899,226 @@ void main() {
     expect(controller.messages.single.metadata['output'], 'terminal-output');
   });
 
+  test('permission invalidation clears only the matching lifecycle', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    final permissionEvents = <ChatPermissionEvent>[];
+    controller.addPermissionEventObserver(permissionEvents.add);
+    final request = AcpPermissionRequest(
+      id: 'permission-1',
+      lifecycleId: 'lifecycle-current',
+      title: 'Read file',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'read_text_file',
+      options: const <String>['Allow', 'Deny'],
+      requestedAt: DateTime.utc(2026, 7, 14, 12),
+    );
+    fake.emitPermissionRequest(request);
+    await pumpEventQueue();
+
+    final mismatches = <AcpPermissionInvalidation>[
+      AcpPermissionInvalidation(
+        requestId: 'permission-other',
+        lifecycleId: request.lifecycleId,
+        sessionId: request.sessionId,
+        reason: AcpPermissionInvalidationReason.timedOut,
+        invalidatedAt: DateTime.utc(2026, 7, 14, 12, 1),
+      ),
+      AcpPermissionInvalidation(
+        requestId: request.id,
+        lifecycleId: 'lifecycle-old',
+        sessionId: request.sessionId,
+        reason: AcpPermissionInvalidationReason.timedOut,
+        invalidatedAt: DateTime.utc(2026, 7, 14, 12, 2),
+      ),
+      AcpPermissionInvalidation(
+        requestId: request.id,
+        lifecycleId: request.lifecycleId,
+        sessionId: 'session-other',
+        reason: AcpPermissionInvalidationReason.timedOut,
+        invalidatedAt: DateTime.utc(2026, 7, 14, 12, 3),
+      ),
+    ];
+    for (final mismatch in mismatches) {
+      fake.emitPermissionInvalidation(mismatch);
+      await pumpEventQueue();
+      expect(
+        controller.pendingPermissionRequest?.bindingKey,
+        request.withGeneration(1).bindingKey,
+      );
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.pending,
+      );
+      expect(fake.lastPermissionRequestId, isNull);
+    }
+
+    final matching = AcpPermissionInvalidation(
+      requestId: request.id,
+      lifecycleId: request.lifecycleId,
+      sessionId: request.sessionId,
+      reason: AcpPermissionInvalidationReason.timedOut,
+      invalidatedAt: DateTime.utc(2026, 7, 14, 12, 4),
+    );
+    fake.emitPermissionInvalidation(matching);
+    fake.emitPermissionInvalidation(matching);
+    await pumpEventQueue(times: 2);
+
+    expect(controller.pendingPermissionRequest, isNull);
+    expect(controller.permissionHistory, hasLength(1));
+    expect(
+      controller.permissionHistory.single.status,
+      AcpPermissionAuditStatus.cancelled,
+    );
+    expect(
+      controller.permissionHistory.single.decisionSource,
+      AcpPermissionDecisionSource.system,
+    );
+    expect(
+      permissionEvents.where(
+        (event) => event.type == ChatPermissionEventType.resolved,
+      ),
+      hasLength(1),
+    );
+    expect(
+      fake.lastPermissionRequestId,
+      isNull,
+      reason: 'invalidation is not a UI permission response',
+    );
+  });
+
+  test('permission invalidation reasons and UI races settle once', () async {
+    AcpPermissionRequest requestFor(String suffix) => AcpPermissionRequest(
+      id: 'permission-$suffix',
+      lifecycleId: 'lifecycle-$suffix',
+      title: 'Run command',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'terminal',
+      toolKind: 'execute',
+      options: const <String>['Allow', 'Deny'],
+      requestedAt: DateTime.utc(2026, 7, 14, 13),
+    );
+
+    for (final decision in AcpPermissionDecision.values) {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      final request = requestFor('ui-${decision.name}');
+      fake.emitPermissionRequest(request);
+      await pumpEventQueue();
+
+      await controller.resolvePermissionRequest(decision);
+      final expectedStatus = switch (decision) {
+        AcpPermissionDecision.allow => AcpPermissionAuditStatus.allowed,
+        AcpPermissionDecision.deny => AcpPermissionAuditStatus.denied,
+        AcpPermissionDecision.cancel => AcpPermissionAuditStatus.cancelled,
+      };
+      expect(fake.lastPermissionRequestId, request.id);
+      expect(fake.lastPermissionDecision, decision);
+      expect(controller.permissionHistory, hasLength(1));
+      expect(controller.permissionHistory.single.status, expectedStatus);
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.manual,
+      );
+
+      fake.emitPermissionInvalidation(
+        AcpPermissionInvalidation(
+          requestId: request.id,
+          lifecycleId: request.lifecycleId,
+          sessionId: request.sessionId,
+          reason: AcpPermissionInvalidationReason.connectionClosed,
+          invalidatedAt: DateTime.utc(2026, 7, 14, 13, 1),
+        ),
+      );
+      await pumpEventQueue();
+      expect(fake.lastPermissionRequestId, request.id);
+      expect(fake.lastPermissionDecision, decision);
+      expect(controller.permissionHistory, hasLength(1));
+      expect(controller.permissionHistory.single.status, expectedStatus);
+      controller.dispose();
+      await controller.disposalComplete;
+    }
+
+    expect(AcpPermissionInvalidationReason.values, hasLength(6));
+    for (final reason in AcpPermissionInvalidationReason.values) {
+      final fake = FakeAgentClient();
+      final reviewer = _DelayedPermissionReviewer();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionReviewer: reviewer,
+      );
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
+      final permissionEvents = <ChatPermissionEvent>[];
+      controller.addPermissionEventObserver(permissionEvents.add);
+      final request = requestFor(reason.name);
+      fake.emitPermissionRequest(request);
+      await pumpEventQueue();
+      expect(reviewer.requests.single.id, request.id);
+
+      final invalidation = AcpPermissionInvalidation(
+        requestId: request.id,
+        lifecycleId: request.lifecycleId,
+        sessionId: request.sessionId,
+        reason: reason,
+        invalidatedAt: DateTime.utc(2026, 7, 14, 13, 2),
+      );
+      fake.emitPermissionInvalidation(invalidation);
+      fake.emitPermissionInvalidation(invalidation);
+      final lateManual = controller.resolvePermissionRequest(
+        AcpPermissionDecision.deny,
+      );
+      if (reason == AcpPermissionInvalidationReason.disposed) {
+        controller.dispose();
+      }
+      reviewer.complete(
+        const AcpPermissionReviewResult(
+          decision: AcpPermissionDecision.allow,
+          risk: 'low',
+          rationale: 'Late reviewer result.',
+        ),
+      );
+      await lateManual;
+      await pumpEventQueue(times: 3);
+
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(controller.permissionHistory, hasLength(1));
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.cancelled,
+      );
+      expect(
+        controller.permissionHistory.single.decisionSource,
+        AcpPermissionDecisionSource.system,
+      );
+      expect(
+        controller.permissionHistory.single.reviewResult?.rationale,
+        reason == AcpPermissionInvalidationReason.disposed
+            ? isNull
+            : 'Late reviewer result.',
+      );
+      expect(
+        permissionEvents.where(
+          (event) => event.type == ChatPermissionEventType.resolved,
+        ),
+        hasLength(1),
+      );
+      expect(
+        fake.lastPermissionRequestId,
+        isNull,
+        reason: '$reason invalidation must never respond to the agent',
+      );
+      expect(fake.lastPermissionDecision, isNull);
+      controller.dispose();
+      await controller.disposalComplete;
+    }
+  });
+
   test('permission history records user decisions', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

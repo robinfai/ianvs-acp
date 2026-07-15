@@ -174,6 +174,46 @@ void main() {
     expect(choice.isSingleUse, isFalse);
   });
 
+  test('permission lifecycle identity survives copies without leaking', () {
+    final request = AcpPermissionRequest(
+      id: 'permission-1',
+      lifecycleId: 'lifecycle-1',
+      title: 'Read',
+      rationale: 'Requested',
+      sessionId: 'session-1',
+      toolName: 'read_text_file',
+      options: const <String>['Allow', 'Deny'],
+      requestedAt: DateTime.utc(2026, 7, 14),
+    );
+    final generated = request.withGeneration(2);
+    final audit = generated.forAudit();
+    expect(generated.lifecycleId, 'lifecycle-1');
+    expect(audit.lifecycleId, 'lifecycle-1');
+    expect(
+      generated.bindingKey,
+      'permission-1:lifecycle-1:${request.contentFingerprint}:2',
+    );
+    expect(generated.contentFingerprint, request.contentFingerprint);
+
+    final legacy = AcpPermissionRequest(
+      id: 'legacy',
+      title: '',
+      rationale: '',
+      sessionId: 'session-1',
+      toolName: '',
+      options: const <String>[],
+      requestedAt: DateTime.utc(2026),
+    );
+    expect(legacy.lifecycleId, isEmpty);
+    expect(
+      legacy.bindingKey,
+      'legacy:${legacy.contentFingerprint}:0',
+      reason: 'empty lifecycleId must preserve the pre-migration key format',
+    );
+    expect(legacy.withGeneration(3).lifecycleId, isEmpty);
+    expect(legacy.forAudit().lifecycleId, isEmpty);
+  });
+
   test('explicit permission decisions use kind without name fallback', () {
     const explicitAllow = AcpPermissionChoice(
       optionId: 'allow-once',

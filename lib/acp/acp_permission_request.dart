@@ -4,6 +4,31 @@ import 'package:crypto/crypto.dart';
 
 enum AcpPermissionDecision { allow, deny, cancel }
 
+enum AcpPermissionInvalidationReason {
+  timedOut,
+  promptEnded,
+  promptCancelled,
+  sessionClosed,
+  connectionClosed,
+  disposed,
+}
+
+final class AcpPermissionInvalidation {
+  const AcpPermissionInvalidation({
+    required this.requestId,
+    required this.lifecycleId,
+    required this.sessionId,
+    required this.reason,
+    required this.invalidatedAt,
+  });
+
+  final String requestId;
+  final String lifecycleId;
+  final String sessionId;
+  final AcpPermissionInvalidationReason reason;
+  final DateTime invalidatedAt;
+}
+
 enum AcpPermissionAuditStatus { pending, allowed, denied, cancelled }
 
 enum AcpPermissionDecisionSource {
@@ -122,6 +147,7 @@ class AcpPermissionTrustRule {
 class AcpPermissionRequest {
   const AcpPermissionRequest({
     required this.id,
+    this.lifecycleId = '',
     required this.title,
     required this.rationale,
     required this.sessionId,
@@ -138,6 +164,7 @@ class AcpPermissionRequest {
 
   const AcpPermissionRequest._retained({
     required this.id,
+    required this.lifecycleId,
     required this.title,
     required this.rationale,
     required this.sessionId,
@@ -154,6 +181,7 @@ class AcpPermissionRequest {
   });
 
   final String id;
+  final String lifecycleId;
   final String title;
   final String rationale;
   final String sessionId;
@@ -205,11 +233,14 @@ class AcpPermissionRequest {
     return sha256.convert(utf8.encode(jsonEncode(content))).toString();
   }
 
-  String get bindingKey => '$id:$contentFingerprint:$generation';
+  String get bindingKey => lifecycleId.isEmpty
+      ? '$id:$contentFingerprint:$generation'
+      : '$id:$lifecycleId:$contentFingerprint:$generation';
 
   AcpPermissionRequest withGeneration(int value) {
     return AcpPermissionRequest._retained(
       id: id,
+      lifecycleId: lifecycleId,
       title: title,
       rationale: rationale,
       sessionId: sessionId,
@@ -233,6 +264,7 @@ class AcpPermissionRequest {
   }) {
     return AcpPermissionRequest._retained(
       id: id,
+      lifecycleId: lifecycleId,
       title: title ?? this.title,
       rationale: rationale ?? this.rationale,
       sessionId: sessionId,

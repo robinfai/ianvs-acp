@@ -11,6 +11,8 @@ abstract class AcpAgentClient {
 
   Stream<AcpPermissionRequest> get permissionRequests;
 
+  Stream<AcpPermissionInvalidation> get permissionInvalidations;
+
   Future<void> connect();
 
   Future<AgentSession> createSession({
