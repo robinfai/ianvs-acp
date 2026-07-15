@@ -294,6 +294,7 @@ void main() {
           return 'handler';
         },
         terminal: queuedValue.future,
+        terminalSnapshot: null,
       );
       final error = reservations[2].runCancellable<String>(
         operation: () {
@@ -301,6 +302,7 @@ void main() {
           return 'handler';
         },
         terminal: queuedError.future,
+        terminalSnapshot: null,
       );
       final errorExpectation = expectLater(
         error,
@@ -332,6 +334,126 @@ void main() {
     }
   });
 
+  test('pre-completed terminal value wins before handler scheduling', () async {
+    final gate = InboundGate();
+    final reservation = gate.tryReserveBatch(const <InboundGateElement>[
+      InboundGateElement(method: 'fs/read_text_file', byteLength: 7),
+    ])!.single;
+    const terminalSnapshot = InboundGateTerminalValue<String>(
+      'pre-completed cancellation',
+    );
+    final terminal = Completer<InboundGateTerminal<String>>.sync()
+      ..complete(terminalSnapshot);
+    var handlerCalls = 0;
+
+    final result = await reservation.runCancellable<String>(
+      operation: () {
+        handlerCalls += 1;
+        return 'handler result';
+      },
+      terminal: terminal.future,
+      terminalSnapshot: terminalSnapshot,
+    );
+
+    expect(result, 'pre-completed cancellation');
+    expect(handlerCalls, 0);
+    await reservation.released.timeout(const Duration(seconds: 2));
+    expect(gate.pendingItems, 0);
+    expect(gate.pendingBytes, 0);
+    expect(gate.activeHandlers, 0);
+    await gate.close();
+  });
+
+  test('later terminal preserves permit and ordinary waiter order', () async {
+    final gate = InboundGate(
+      maxConcurrentHandlers: 3,
+      maxOrdinaryConcurrentHandlers: 1,
+    );
+    final reservations = gate.tryReserveBatch(const <InboundGateElement>[
+      InboundGateElement(method: 'fs/read_text_file', byteLength: 7),
+      InboundGateElement(method: 'terminal/output', byteLength: 11),
+    ])!;
+    final terminal = Completer<InboundGateTerminal<String>>.sync();
+    final firstStarted = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final starts = <String>[];
+
+    final first = reservations[0].runCancellable<String>(
+      operation: () async {
+        starts.add('first');
+        firstStarted.complete();
+        await releaseFirst.future;
+        return 'handler result';
+      },
+      terminal: terminal.future,
+      terminalSnapshot: null,
+    );
+    final second = reservations[1].run<void>(() {
+      starts.add('second');
+    });
+    unawaited(first.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    unawaited(second.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    try {
+      expect(starts, <String>['first']);
+      await firstStarted.future.timeout(const Duration(seconds: 2));
+      expect(starts, <String>['first']);
+      terminal.complete(
+        const InboundGateTerminalValue<String>('terminal result'),
+      );
+      releaseFirst.complete();
+      expect(await first.timeout(const Duration(seconds: 2)), 'handler result');
+      await second.timeout(const Duration(seconds: 2));
+      expect(starts, <String>['first', 'second']);
+    } finally {
+      if (!releaseFirst.isCompleted) releaseFirst.complete();
+      if (!terminal.isCompleted) {
+        terminal.complete(const InboundGateTerminalValue<String>('cleanup'));
+      }
+      await gate.close();
+    }
+  });
+
+  test('pre-completed terminal error preserves its stack', () async {
+    final gate = InboundGate();
+    final reservation = gate.tryReserveBatch(const <InboundGateElement>[
+      InboundGateElement(method: 'terminal/create', byteLength: 11),
+    ])!.single;
+    final terminalError = StateError('pre-completed terminal error');
+    final terminalStack = StackTrace.fromString('pre-completed-terminal-stack');
+    final terminalSnapshot = InboundGateTerminalError<String>(
+      terminalError,
+      terminalStack,
+    );
+    final terminal = Completer<InboundGateTerminal<String>>.sync()
+      ..complete(terminalSnapshot);
+    var handlerCalls = 0;
+    Object? caughtError;
+    StackTrace? caughtStack;
+
+    try {
+      await reservation.runCancellable<String>(
+        operation: () {
+          handlerCalls += 1;
+          return 'handler result';
+        },
+        terminal: terminal.future,
+        terminalSnapshot: terminalSnapshot,
+      );
+    } on Object catch (error, stackTrace) {
+      caughtError = error;
+      caughtStack = stackTrace;
+    }
+
+    expect(caughtError, same(terminalError));
+    expect(caughtStack.toString(), contains('pre-completed-terminal-stack'));
+    expect(handlerCalls, 0);
+    await reservation.released.timeout(const Duration(seconds: 2));
+    expect(gate.pendingItems, 0);
+    expect(gate.pendingBytes, 0);
+    expect(gate.activeHandlers, 0);
+    await gate.close();
+  });
+
   test(
     'running reservation detaches and consumes late outcomes on close',
     () async {
@@ -352,6 +474,7 @@ void main() {
                 return operation.future;
               },
               terminal: neverTerminal.future,
+              terminalSnapshot: null,
             );
             final waiterFailure = expectLater(waiter, throwsStateError);
             try {

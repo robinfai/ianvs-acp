@@ -276,10 +276,108 @@ void main() {
     expect(first.contentFingerprint, isNot(second.contentFingerprint));
     expect(
       first.withGeneration(2).transientPolicyContext,
-      same(first.transientPolicyContext),
+      first.transientPolicyContext,
     );
     expect(first.toJson().toString(), isNot(contains('one.example')));
     expect(first.toJson(), isNot(contains('transientPolicyContext')));
+  });
+
+  test('generated and audit requests detach and deeply freeze collections', () {
+    final options = <String>['Allow', 'Deny'];
+    final choices = <AcpPermissionChoice>[
+      const AcpPermissionChoice(
+        optionId: 'allow-once',
+        name: 'Allow',
+        kind: 'allow_once',
+      ),
+    ];
+    final metadataItems = <Object?>['one'];
+    final metadataNested = <String, Object?>{'items': metadataItems};
+    final metadata = <String, Object?>{'nested': metadataNested};
+    final environment = <String, Object?>{'TOKEN': 'original'};
+    final transientPolicyContext = <String, Object?>{
+      'environment': environment,
+    };
+    final auditItems = <Object?>['audit-one'];
+    final auditMetadata = <String, Object?>{
+      'nested': <String, Object?>{'items': auditItems},
+    };
+    final request = AcpPermissionRequest(
+      id: 'permission-frozen',
+      title: 'Review action',
+      rationale: 'Requested by agent',
+      sessionId: 'session-1',
+      toolName: 'tool',
+      options: options,
+      choices: choices,
+      metadata: metadata,
+      transientPolicyContext: transientPolicyContext,
+      requestedAt: DateTime.utc(2026, 7, 15),
+    );
+
+    final generated = request.withGeneration(7);
+    final audit = generated.forAudit(metadata: auditMetadata);
+    final generatedFingerprint = generated.contentFingerprint;
+    final generatedContextFingerprint =
+        generated.transientPolicyContextFingerprint;
+    final generatedJson = jsonEncode(generated.toJson());
+    final auditEntry = AcpPermissionAuditEntry(
+      request: audit,
+      status: AcpPermissionAuditStatus.pending,
+      recordedAt: DateTime.utc(2026, 7, 15),
+    );
+    final auditJson = jsonEncode(audit.toJson());
+    final auditBytes = acpPermissionAuditEntryEncodedBytes(auditEntry);
+
+    options.add('Late option');
+    choices.add(
+      const AcpPermissionChoice(optionId: 'late', name: 'Late choice'),
+    );
+    metadataItems.add('late metadata item');
+    metadataNested['late'] = true;
+    environment['TOKEN'] = 'changed';
+    auditItems.add('late audit item');
+
+    expect(jsonEncode(generated.toJson()), generatedJson);
+    expect(generated.contentFingerprint, generatedFingerprint);
+    expect(
+      generated.transientPolicyContextFingerprint,
+      generatedContextFingerprint,
+    );
+    expect(jsonEncode(audit.toJson()), auditJson);
+    expect(acpPermissionAuditEntryEncodedBytes(auditEntry), auditBytes);
+    expect(() => generated.options.add('blocked'), throwsUnsupportedError);
+    expect(() => generated.choices.add(choices.first), throwsUnsupportedError);
+    expect(() => generated.metadata['late'] = false, throwsUnsupportedError);
+    expect(
+      () => (generated.metadata['nested']! as Map<String, Object?>)['late'] =
+          false,
+      throwsUnsupportedError,
+    );
+    expect(
+      () =>
+          ((generated.metadata['nested']! as Map<String, Object?>)['items']!
+                  as List<Object?>)
+              .add('blocked'),
+      throwsUnsupportedError,
+    );
+    expect(
+      () =>
+          (generated.transientPolicyContext['environment']!
+                  as Map<String, Object?>)['TOKEN'] =
+              'blocked',
+      throwsUnsupportedError,
+    );
+    expect(() => audit.options.add('blocked'), throwsUnsupportedError);
+    expect(() => audit.choices.add(choices.first), throwsUnsupportedError);
+    expect(() => audit.metadata['late'] = false, throwsUnsupportedError);
+    expect(
+      () =>
+          ((audit.metadata['nested']! as Map<String, Object?>)['items']!
+                  as List<Object?>)
+              .add('blocked'),
+      throwsUnsupportedError,
+    );
   });
 
   test('permission review encoded budget accepts exact and omits plus one', () {

@@ -941,6 +941,9 @@ final class _InboundPermissionAdmission implements InboundAdmission {
   Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
 
   @override
+  InboundGateTerminal<dynamic>? get terminalSnapshot => _claimedOutcome;
+
+  @override
   Future<void> get settled => _settled.future;
 
   Future<void> get reservationReleasedForTesting =>

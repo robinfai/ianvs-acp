@@ -170,6 +170,7 @@ class InboundGate {
     InboundGateReservation reservation, {
     required FutureOr<T> Function() operation,
     required Future<InboundGateTerminal<T>> terminal,
+    required InboundGateTerminal<T>? terminalSnapshot,
   }) {
     if (!_reservations.contains(reservation) ||
         reservation._state != _ReservationState.reserved ||
@@ -181,32 +182,46 @@ class InboundGate {
     _waiters.addLast(waiter);
     unawaited(
       terminal.then<void>(
-        (outcome) {
-          if (reservation._state != _ReservationState.queued) return;
-          _waiters.remove(waiter);
-          _release(reservation);
-          switch (outcome) {
-            case InboundGateTerminalValue<T>(:final value):
-              waiter.completer.complete(value);
-            case InboundGateTerminalError<T>(:final error, :final stackTrace):
-              waiter.completer.completeError(
-                error,
-                stackTrace ?? StackTrace.current,
-              );
-          }
-          _pump();
-        },
+        (outcome) => _settleQueuedTerminal(waiter, outcome),
         onError: (Object error, StackTrace stackTrace) {
-          if (reservation._state != _ReservationState.queued) return;
-          _waiters.remove(waiter);
-          _release(reservation);
-          waiter.completer.completeError(error, stackTrace);
-          _pump();
+          _settleQueuedTerminalError(waiter, error, stackTrace);
         },
       ),
     );
-    _pump();
+    if (terminalSnapshot case final outcome?) {
+      _settleQueuedTerminal(waiter, outcome);
+    } else {
+      _pump();
+    }
     return waiter.completer.future;
+  }
+
+  void _settleQueuedTerminal<T>(
+    _HandlerWaiter<T> waiter,
+    InboundGateTerminal<T> outcome,
+  ) {
+    if (waiter.reservation._state != _ReservationState.queued) return;
+    _waiters.remove(waiter);
+    _release(waiter.reservation);
+    switch (outcome) {
+      case InboundGateTerminalValue<T>(:final value):
+        waiter.completer.complete(value);
+      case InboundGateTerminalError<T>(:final error, :final stackTrace):
+        waiter.completer.completeError(error, stackTrace ?? StackTrace.current);
+    }
+    _pump();
+  }
+
+  void _settleQueuedTerminalError<T>(
+    _HandlerWaiter<T> waiter,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (waiter.reservation._state != _ReservationState.queued) return;
+    _waiters.remove(waiter);
+    _release(waiter.reservation);
+    waiter.completer.completeError(error, stackTrace);
+    _pump();
   }
 
   T _runSync<T>(InboundGateReservation reservation, T Function() operation) {
@@ -389,7 +404,13 @@ class InboundGateReservation {
   Future<T> runCancellable<T>({
     required FutureOr<T> Function() operation,
     required Future<InboundGateTerminal<T>> terminal,
-  }) => _gate._runCancellable(this, operation: operation, terminal: terminal);
+    required InboundGateTerminal<T>? terminalSnapshot,
+  }) => _gate._runCancellable(
+    this,
+    operation: operation,
+    terminal: terminal,
+    terminalSnapshot: terminalSnapshot,
+  );
 
   T runSync<T>(T Function() operation) => _gate._runSync(this, operation);
 

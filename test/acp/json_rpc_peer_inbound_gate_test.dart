@@ -30,6 +30,9 @@ final class _PassThroughInboundAdmission implements InboundAdmission {
   Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
 
   @override
+  InboundGateTerminal<dynamic>? get terminalSnapshot => null;
+
+  @override
   Future<void> get settled => _settled.future;
 
   @override

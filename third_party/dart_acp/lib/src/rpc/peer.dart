@@ -145,6 +145,9 @@ abstract interface class InboundAdmission {
   /// First local terminal that may short-circuit a queued reservation.
   Future<InboundGateTerminal<dynamic>> get terminal;
 
+  /// Local terminal that has already won, when one is fixed synchronously.
+  InboundGateTerminal<dynamic>? get terminalSnapshot;
+
   /// Completes after local, reservation, and response stages settle.
   Future<void> get settled;
 
@@ -1135,8 +1138,10 @@ class JsonRpcPeer {
     }
     admission.bindReservationReleased(slot.reservation.released);
     admission.bindResponseCommitted(slot.responseCommitted);
+    final terminalSnapshot = admission.terminalSnapshot;
     final running = slot.reservation.runCancellable<dynamic>(
       terminal: admission.terminal,
+      terminalSnapshot: terminalSnapshot,
       operation: () => admission.runLocalOperation(() {
         if (params == null || handler == null) {
           throw rpc.RpcException(-32602, 'Invalid params.');

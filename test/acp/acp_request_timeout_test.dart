@@ -358,6 +358,9 @@ final class _ObservedAdmission implements InboundAdmission {
   Future<InboundGateTerminal<dynamic>> get terminal => inner.terminal;
 
   @override
+  InboundGateTerminal<dynamic>? get terminalSnapshot => inner.terminalSnapshot;
+
+  @override
   Future<void> get settled => inner.settled;
 
   @override

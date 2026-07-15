@@ -239,6 +239,29 @@ class AcpPermissionRequest {
       : '$id:$lifecycleId:$contentFingerprint:$generation';
 
   AcpPermissionRequest withGeneration(int value) {
+    final frozen = _freezePermissionRequestCollections(
+      options: options,
+      choices: choices,
+      metadata: metadata,
+      transientPolicyContext: transientPolicyContext,
+    );
+    final snapshot = AcpPermissionRequest._retained(
+      id: id,
+      lifecycleId: lifecycleId,
+      title: title,
+      rationale: rationale,
+      sessionId: sessionId,
+      toolName: toolName,
+      options: frozen.options,
+      requestedAt: requestedAt,
+      choices: frozen.choices,
+      toolKind: toolKind,
+      metadata: frozen.metadata,
+      transientPolicyContext: frozen.transientPolicyContext,
+      generation: value,
+      transientPolicyContextHash: null,
+      contentFingerprintOverride: null,
+    );
     return AcpPermissionRequest._retained(
       id: id,
       lifecycleId: lifecycleId,
@@ -246,15 +269,15 @@ class AcpPermissionRequest {
       rationale: rationale,
       sessionId: sessionId,
       toolName: toolName,
-      options: options,
+      options: frozen.options,
       requestedAt: requestedAt,
-      choices: choices,
+      choices: frozen.choices,
       toolKind: toolKind,
-      metadata: metadata,
-      transientPolicyContext: transientPolicyContext,
+      metadata: frozen.metadata,
+      transientPolicyContext: frozen.transientPolicyContext,
       generation: value,
-      transientPolicyContextHash: transientPolicyContextFingerprint,
-      contentFingerprintOverride: contentFingerprint,
+      transientPolicyContextHash: snapshot.transientPolicyContextFingerprint,
+      contentFingerprintOverride: snapshot.contentFingerprint,
     );
   }
 
@@ -263,6 +286,35 @@ class AcpPermissionRequest {
     String? title,
     String? rationale,
   }) {
+    final source = _freezePermissionRequestCollections(
+      options: options,
+      choices: choices,
+      metadata: this.metadata,
+      transientPolicyContext: transientPolicyContext,
+    );
+    final sourceSnapshot = AcpPermissionRequest._retained(
+      id: id,
+      lifecycleId: lifecycleId,
+      title: this.title,
+      rationale: this.rationale,
+      sessionId: sessionId,
+      toolName: toolName,
+      options: source.options,
+      requestedAt: requestedAt,
+      choices: source.choices,
+      toolKind: toolKind,
+      metadata: source.metadata,
+      transientPolicyContext: source.transientPolicyContext,
+      generation: generation,
+      transientPolicyContextHash: _transientPolicyContextHash,
+      contentFingerprintOverride: _contentFingerprintOverride,
+    );
+    final audit = _freezePermissionRequestCollections(
+      options: source.options,
+      choices: source.choices,
+      metadata: metadata ?? source.metadata,
+      transientPolicyContext: const <String, Object?>{},
+    );
     return AcpPermissionRequest._retained(
       id: id,
       lifecycleId: lifecycleId,
@@ -270,15 +322,16 @@ class AcpPermissionRequest {
       rationale: rationale ?? this.rationale,
       sessionId: sessionId,
       toolName: toolName,
-      options: options,
+      options: audit.options,
       requestedAt: requestedAt,
-      choices: choices,
+      choices: audit.choices,
       toolKind: toolKind,
-      metadata: metadata ?? this.metadata,
+      metadata: audit.metadata,
       transientPolicyContext: const <String, Object?>{},
       generation: generation,
-      transientPolicyContextHash: transientPolicyContextFingerprint,
-      contentFingerprintOverride: contentFingerprint,
+      transientPolicyContextHash:
+          sourceSnapshot.transientPolicyContextFingerprint,
+      contentFingerprintOverride: sourceSnapshot.contentFingerprint,
     );
   }
 
@@ -365,6 +418,85 @@ class AcpPermissionRequest {
       if (generation > 0) 'contentFingerprint': contentFingerprint,
     };
   }
+}
+
+({
+  List<String> options,
+  List<AcpPermissionChoice> choices,
+  Map<String, Object?> metadata,
+  Map<String, Object?> transientPolicyContext,
+})
+_freezePermissionRequestCollections({
+  required List<String> options,
+  required List<AcpPermissionChoice> choices,
+  required Map<String, Object?> metadata,
+  required Map<String, Object?> transientPolicyContext,
+}) {
+  final guard = acp.AcpStructuredUpdateGuard(
+    budget: const acp.AcpInputBudget(),
+    resource: 'permission request snapshot',
+  );
+
+  List<String> frozenOptions() {
+    try {
+      final copied = guard.copyJsonValue(options, field: 'options');
+      return List<String>.unmodifiable(
+        (copied! as List<Object?>).cast<String>(),
+      );
+    } on Object {
+      return const <String>[];
+    }
+  }
+
+  List<AcpPermissionChoice> frozenChoices() {
+    try {
+      final choiceCount = guard.checkCollection(choices, field: 'choices');
+      final choiceValues = <Map<String, Object?>>[];
+      for (var index = 0; index < choiceCount; index += 1) {
+        final choice = choices[index];
+        choiceValues.add(<String, Object?>{
+          'optionId': choice.optionId,
+          'name': choice.name,
+          if (choice.kind != null) 'kind': choice.kind,
+        });
+      }
+      final copied =
+          guard.copyJsonValue(choiceValues, field: 'choices')! as List<Object?>;
+      return List<AcpPermissionChoice>.unmodifiable(
+        copied.map((value) {
+          final choice = value! as Map<String, Object?>;
+          return AcpPermissionChoice(
+            optionId: choice['optionId']! as String,
+            name: choice['name']! as String,
+            kind: choice['kind'] as String?,
+          );
+        }),
+      );
+    } on Object {
+      return const <AcpPermissionChoice>[];
+    }
+  }
+
+  Map<String, Object?> frozenMetadata(
+    Map<String, Object?> value, {
+    required String field,
+  }) {
+    try {
+      return guard.copyMetadata(value, field: field);
+    } on Object {
+      return const <String, Object?>{};
+    }
+  }
+
+  return (
+    options: frozenOptions(),
+    choices: frozenChoices(),
+    metadata: frozenMetadata(metadata, field: 'metadata'),
+    transientPolicyContext: frozenMetadata(
+      transientPolicyContext,
+      field: 'transient policy context',
+    ),
+  );
 }
 
 Object? _canonicalPermissionValue(Object? value) {

@@ -10412,6 +10412,69 @@ void main() {
   );
 
   test(
+    'permission history snapshots mutable request collections once',
+    () async {
+      final options = <String>['Allow', 'Deny'];
+      final choices = <AcpPermissionChoice>[
+        const AcpPermissionChoice(
+          optionId: 'allow-once',
+          name: 'Allow',
+          kind: 'allow_once',
+        ),
+      ];
+      final metadataItems = <Object?>['one'];
+      final metadata = <String, Object?>{
+        'nested': <String, Object?>{'items': metadataItems},
+      };
+      final client = FakeAgentClient();
+      final controller = ChatController(client: client, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      client.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-mutable-history',
+          title: 'Review action',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'tool',
+          options: options,
+          choices: choices,
+          metadata: metadata,
+          requestedAt: DateTime.utc(2026, 7, 15),
+        ),
+      );
+      await pumpEventQueue();
+      final entry = controller.permissionHistory.single;
+      final historyJson = jsonEncode(entry.toJson());
+      final fingerprint = entry.request.contentFingerprint;
+      final encodedBytes = controller.permissionHistoryEncodedBytes;
+
+      options.add(List<String>.filled(4096, 'late-option').join());
+      choices.add(
+        const AcpPermissionChoice(optionId: 'late', name: 'Late choice'),
+      );
+      metadataItems.add(List<String>.filled(4096, 'late-metadata').join());
+
+      expect(jsonEncode(entry.toJson()), historyJson);
+      expect(entry.request.contentFingerprint, fingerprint);
+      expect(controller.permissionHistoryEncodedBytes, encodedBytes);
+      expect(acpPermissionAuditEntryEncodedBytes(entry), encodedBytes);
+      expect(
+        () => entry.request.options.add('blocked'),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => entry.request.choices.add(choices.first),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => entry.request.metadata['late'] = true,
+        throwsUnsupportedError,
+      );
+    },
+  );
+
+  test(
     'oversized review results cannot accumulate in 500-entry history',
     () async {
       const tokenCanary = 'token-canary-review-history';
