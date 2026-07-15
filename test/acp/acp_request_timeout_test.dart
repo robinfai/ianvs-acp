@@ -7169,10 +7169,19 @@ void main() {
       'setup rollback overrides ${lateCase.name} after side effect starts',
       () async {
         const canary = 'ROLLBACK-LATE-RESULT-CANARY';
+        const pathCanary = 'ROLLBACK-LATE-PATH-CANARY';
+        const stackCanary = 'ROLLBACK-LATE-STACK-CANARY';
         final harness = await _PermissionAdmissionHarness.start(
           controlFutureSetups: true,
         );
         final zoneErrors = <Object>[];
+        final warningRecords = <LogRecord>[];
+        final logSubscription = Logger.root.onRecord.listen((record) {
+          if (record.level.value >= Level.WARNING.value &&
+              record.message.startsWith('fs/read_text_file ->')) {
+            warningRecords.add(record);
+          }
+        });
         try {
           if (lateCase.method == 'fs/read_text_file') {
             harness.fs.readResult = Completer<String>();
@@ -7194,7 +7203,13 @@ void main() {
           await harness
               .waitForSetupRequest(0)
               .timeout(const Duration(seconds: 2));
-          final stale = await harness.admit(lateCase.method);
+          final stale = await harness.admit(
+            lateCase.method,
+            params: lateCase.method == 'fs/read_text_file'
+                ? (harness.paramsFor(lateCase.method)
+                  ..['path'] = '/tmp/$pathCanary')
+                : null,
+          );
           await harness.permissions
               .waitForRequest(0)
               .timeout(const Duration(seconds: 2));
@@ -7221,7 +7236,10 @@ void main() {
           await runZonedGuarded(() async {
             if (lateCase.method == 'fs/read_text_file') {
               if (lateCase.lateError) {
-                harness.fs.readResult!.completeError(StateError(canary));
+                harness.fs.readResult!.completeError(
+                  StateError(canary),
+                  StackTrace.fromString(stackCanary),
+                );
               } else {
                 harness.fs.readResult!.complete(canary);
               }
@@ -7238,10 +7256,26 @@ void main() {
           expect(reply!.hasErrorData, isFalse);
           expect(jsonEncode(reply!.raw), isNot(contains(canary)));
           expect(zoneErrors, isEmpty);
+          if (lateCase.name == 'filesystem late error') {
+            expect(warningRecords, hasLength(1));
+            final warning = warningRecords.single;
+            expect(warning.message, 'fs/read_text_file -> provider error');
+            expect(warning.error, isNull);
+            expect(warning.stackTrace, isNull);
+            final renderedWarning = <Object?>[
+              warning.message,
+              warning.error,
+              warning.stackTrace,
+            ].join('\n');
+            expect(renderedWarning, isNot(contains(canary)));
+            expect(renderedWarning, isNot(contains(pathCanary)));
+            expect(renderedWarning, isNot(contains(stackCanary)));
+          }
           expect(stale.reservationReleaseCount, 1);
           expect(stale.responseCommitCount, 1);
           expect(harness.fs.readCalls + harness.terminals.createCalls, 1);
         } finally {
+          await logSubscription.cancel();
           await harness.dispose();
         }
       },

@@ -5010,8 +5010,8 @@ class SessionManager implements AcpBoundedObservationSource {
               'Filesystem read rejected.',
               data: error.reason.name,
             );
-          } catch (e) {
-            _log.warning('fs/read_text_file -> error path=$path: $e');
+          } on Object {
+            _log.warning('fs/read_text_file -> provider error');
             rethrow;
           }
         },
