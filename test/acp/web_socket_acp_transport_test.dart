@@ -312,6 +312,86 @@ void main() {
     }
   });
 
+  test('onProtocolIn stop drops the observed websocket frame', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSocket = Completer<WebSocket>();
+    final serverSubscription = server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      serverSocket.complete(socket);
+      socket.listen((_) {});
+    });
+    final observerCalled = Completer<void>();
+    late final WebSocketAcpTransport transport;
+    Future<void>? observerStop;
+    transport = WebSocketAcpTransport(
+      endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      onProtocolIn: (_) {
+        observerStop = transport.stop();
+        observerCalled.complete();
+      },
+    );
+    final inboundMessages = <String>[];
+    StreamSubscription<String>? inboundSubscription;
+
+    try {
+      await transport.start();
+      inboundSubscription = transport.channel.stream.listen(
+        inboundMessages.add,
+      );
+      final socket = await serverSocket.future;
+
+      socket.add('{"jsonrpc":"2.0","method":"inbound"}');
+
+      await observerCalled.future.timeout(const Duration(seconds: 2));
+      await observerStop!.timeout(const Duration(seconds: 2));
+      expect(inboundMessages, isEmpty);
+    } finally {
+      await inboundSubscription?.cancel();
+      await transport.stop();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  test('onProtocolOut stop drops the observed websocket frame', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSocket = Completer<WebSocket>();
+    final serverSubscription = server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      serverSocket.complete(socket);
+      socket.listen((_) {});
+    });
+    final observerCalled = Completer<void>();
+    final writesStarted = <String>[];
+    late final WebSocketAcpTransport transport;
+    Future<void>? observerStop;
+    transport = WebSocketAcpTransport(
+      endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      onProtocolOut: (_) {
+        observerStop = transport.stop();
+        observerCalled.complete();
+      },
+      frameWriter: (_, frame) async {
+        writesStarted.add(frame);
+      },
+    );
+
+    try {
+      await transport.start();
+      await serverSocket.future;
+
+      transport.channel.sink.add('{"jsonrpc":"2.0","method":"outbound"}');
+
+      await observerCalled.future.timeout(const Duration(seconds: 2));
+      await observerStop!.timeout(const Duration(seconds: 2));
+      expect(writesStarted, isEmpty);
+    } finally {
+      await transport.stop();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('oversized UTF-8 text frame closes with 1009 without payload', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final serverSocket = Completer<WebSocket>();

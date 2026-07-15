@@ -261,6 +261,9 @@ class WebSocketAcpTransport implements acp.AcpTransport {
       final frame = _inboundQueue.removeAt(0);
       _inboundQueueBytes -= frame.bytes;
       _notifyProtocolIn(frame.text);
+      if (_stopping || _failed || !identical(_inboundController, controller)) {
+        return;
+      }
       controller.add(frame.text);
     }
   }
@@ -324,6 +327,15 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     while (_outboundQueue.isNotEmpty && !_stopping && !_failed) {
       final frame = _outboundQueue.first;
       _notifyProtocolOut(frame.text);
+      if (_stopping ||
+          _failed ||
+          cancellation.isCompleted ||
+          !identical(_socket, socket) ||
+          !identical(_drainCancellation, cancellation) ||
+          _outboundQueue.isEmpty ||
+          !identical(_outboundQueue.first, frame)) {
+        return;
+      }
       final write = _frameWriter(socket, frame.text);
       _activeWrite = write;
       try {
