@@ -4923,7 +4923,11 @@ class SessionManager implements AcpBoundedObservationSource {
     String method,
     PermissionCancellationReason reason,
   ) {
-    if (method == 'session/request_permission') {
+    if (method == 'session/request_permission' &&
+        (reason == PermissionCancellationReason.timedOut ||
+            reason == PermissionCancellationReason.promptEnded ||
+            reason == PermissionCancellationReason.promptCancelled ||
+            reason == PermissionCancellationReason.sessionClosed)) {
       return const InboundGateTerminalValue<dynamic>(<String, Object?>{
         'outcome': <String, Object?>{'outcome': 'cancelled'},
       });

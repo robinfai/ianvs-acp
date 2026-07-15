@@ -343,6 +343,7 @@ final class _PermissionRequestProbe {
   int sideEffectCalls = 0;
   InboundAdmission? admission;
   Future<dynamic>? handlerOperation;
+  Future<dynamic>? effectiveLocalOperation;
 
   Future<_RpcReply> get response => responseCompleter.future;
   Future<void> get settled => admission!.settled;
@@ -364,15 +365,18 @@ final class _ObservedAdmission implements InboundAdmission {
   Future<void> get settled => inner.settled;
 
   @override
-  Future<dynamic> runLocalOperation(FutureOr<dynamic> Function() operation) =>
-      inner.runLocalOperation(() {
-        if (!probe.handlerStarted.isCompleted) {
-          probe.handlerStarted.complete();
-        }
-        final result = Future<dynamic>.sync(operation);
-        probe.handlerOperation = result;
-        return result;
-      });
+  Future<dynamic> runLocalOperation(FutureOr<dynamic> Function() operation) {
+    final effective = inner.runLocalOperation(() {
+      if (!probe.handlerStarted.isCompleted) {
+        probe.handlerStarted.complete();
+      }
+      final result = Future<dynamic>.sync(operation);
+      probe.handlerOperation = result;
+      return result;
+    });
+    probe.effectiveLocalOperation = effective;
+    return effective;
+  }
 
   @override
   void bindReservationReleased(Future<void> released) {
@@ -8449,9 +8453,14 @@ void main() {
   });
 
   test(
-    'permission provider never started receives no cancellation callback',
+    'queued request permission maps business cancellations to cancelled',
     () async {
-      for (final reason in acp.PermissionCancellationReason.values) {
+      for (final reason in <acp.PermissionCancellationReason>[
+        acp.PermissionCancellationReason.timedOut,
+        acp.PermissionCancellationReason.promptEnded,
+        acp.PermissionCancellationReason.promptCancelled,
+        acp.PermissionCancellationReason.sessionClosed,
+      ]) {
         final core = await _PermissionAdmissionHarness.start();
         try {
           await core.occupyAllOrdinaryPermits();
@@ -8490,6 +8499,99 @@ void main() {
             'outcome': <String, Object?>{'outcome': 'cancelled'},
           });
           core.manager.endPromptTurn(owner);
+        } finally {
+          await core.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'queued request permission maps unavailable reasons to connection closed',
+    () async {
+      const canary = 'PERMISSION-CONNECTION-CANARY';
+      for (final reason in <acp.PermissionCancellationReason>[
+        acp.PermissionCancellationReason.connectionClosed,
+        acp.PermissionCancellationReason.disposed,
+      ]) {
+        final core = await _PermissionAdmissionHarness.start();
+        try {
+          await core.occupyAllOrdinaryPermits();
+          core.manager.beginPromptTurn(core.sessionId);
+          final params = core.paramsFor('session/request_permission');
+          params['toolCall'] = <String, dynamic>{'title': canary};
+          final admission = await core.admit(
+            'session/request_permission',
+            params: params,
+          );
+
+          final closing = core.peer.closeForTesting(
+            reason == acp.PermissionCancellationReason.disposed
+                ? AcpPeerUnavailableReason.disposed
+                : AcpPeerUnavailableReason.explicitClose,
+          );
+          final terminal = await admission.admission!.terminal.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(terminal, isA<InboundGateTerminalError<dynamic>>());
+          final error = (terminal as InboundGateTerminalError<dynamic>).error;
+          expect(error, isA<rpc.RpcException>());
+          final rpcError = error as rpc.RpcException;
+          expect(rpcError.code, -32000);
+          expect(rpcError.message, 'ACP connection closed.');
+          expect(rpcError.toString(), isNot(contains(canary)));
+          expect(core.permissions.requests, isEmpty);
+          expect(core.permissions.cancellations, isEmpty);
+          await closing.timeout(const Duration(seconds: 2));
+          await admission.settled.timeout(const Duration(seconds: 2));
+        } finally {
+          await core.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'running request permission keeps unavailable error and cancellation reason',
+    () async {
+      const canary = 'PERMISSION-CONNECTION-CANARY';
+      for (final reason in <acp.PermissionCancellationReason>[
+        acp.PermissionCancellationReason.connectionClosed,
+        acp.PermissionCancellationReason.disposed,
+      ]) {
+        final core = await _PermissionAdmissionHarness.start();
+        try {
+          core.manager.beginPromptTurn(core.sessionId);
+          final params = core.paramsFor('session/request_permission');
+          params['toolCall'] = <String, dynamic>{'title': canary};
+          final admission = await core.admit(
+            'session/request_permission',
+            params: params,
+          );
+          await admission.handlerStarted.future.timeout(
+            const Duration(seconds: 2),
+          );
+          await core.permissions
+              .waitForRequest(0)
+              .timeout(const Duration(seconds: 2));
+          final effective = _observeFuture(admission.effectiveLocalOperation!);
+
+          await core.peer
+              .closeForTesting(
+                reason == acp.PermissionCancellationReason.disposed
+                    ? AcpPeerUnavailableReason.disposed
+                    : AcpPeerUnavailableReason.explicitClose,
+              )
+              .timeout(const Duration(seconds: 2));
+          final outcome = await effective.timeout(const Duration(seconds: 2));
+          expect(outcome.error, isA<rpc.RpcException>());
+          final rpcError = outcome.error! as rpc.RpcException;
+          expect(rpcError.code, -32000);
+          expect(rpcError.message, 'ACP connection closed.');
+          expect(rpcError.toString(), isNot(contains(canary)));
+          expect(core.permissions.cancellations, hasLength(1));
+          expect(core.permissions.cancellations.single.$2, reason);
+          await admission.settled.timeout(const Duration(seconds: 2));
         } finally {
           await core.dispose();
         }

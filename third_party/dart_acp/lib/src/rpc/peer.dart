@@ -793,9 +793,12 @@ class JsonRpcPeer {
 
   void _finishRejectedCorrelations(List<String> ids) {
     try {
-      for (final id in ids) {
-        _finishCorrelation(id);
-      }
+      final closing = _becomeUnavailable(
+        AcpPeerUnavailableReason.transportClosed,
+      );
+      unawaited(
+        closing.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
     } finally {
       _completeCorrelationWrite(ids);
     }
@@ -1896,8 +1899,11 @@ final class _JsonEncodingSink implements StreamSink<Object?> {
       final encoded = jsonEncode(prepared.wireValue);
       _sink.add(encoded);
     } on Object {
+      if (prepared.internalIds.isEmpty) {
+        rethrow;
+      }
       onWriteRejected(prepared.internalIds);
-      rethrow;
+      return;
     }
     onCommitted(prepared.internalIds);
   }

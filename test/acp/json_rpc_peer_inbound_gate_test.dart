@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dart_acp/src/config.dart';
 import 'package:dart_acp/src/rpc/peer.dart';
 import 'package:dart_acp/src/rpc/inbound_gate.dart';
 import 'package:flutter/foundation.dart';
@@ -25,6 +26,7 @@ final class _PassThroughInboundAdmission implements InboundAdmission {
   bool _reservationFinished = false;
   bool _responseFinished = false;
   int responseCommitCount = 0;
+  int responsePeerCloseCount = 0;
 
   @override
   Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
@@ -70,6 +72,7 @@ final class _PassThroughInboundAdmission implements InboundAdmission {
     if (_responseFinished) return;
     _responseFinished = true;
     responseCommitCount += 1;
+    responsePeerCloseCount += 1;
     _tryCompleteSettled();
   }
 
@@ -1668,6 +1671,85 @@ void main() {
   });
 
   test(
+    'response sink rejection closes peer before deferred inbound can run',
+    () async {
+      final input = _ManualInputStream();
+      final output = _RejectingReentrantSink();
+      final zoneErrors = <Object>[];
+      final unavailableStates = <AcpPeerUnavailableState>[];
+      final admissions = <_PassThroughInboundAdmission>[];
+      late JsonRpcPeer peer;
+      var handlerStarts = 0;
+
+      runZonedGuarded<void>(
+        () {
+          peer = JsonRpcPeer(StreamChannel<String>(input, output));
+          peer.addUnavailableListener((state) {
+            unavailableStates.add(state);
+            for (final admission in admissions.toList(growable: false)) {
+              admission.markPeerClosed();
+            }
+          });
+          _installPassThroughAdmissions(peer, onAdmission: admissions.add);
+          peer.onReadTextFile = (params, _) async {
+            handlerStarts += 1;
+            return <String, dynamic>{'content': 'ok'};
+          };
+          output.onReject = (_) {
+            output.onReject = null;
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': 2,
+                'method': 'fs/read_text_file',
+                'params': <String, dynamic>{},
+              }),
+            );
+          };
+          input.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'fs/read_text_file',
+              'params': <String, dynamic>{},
+            }),
+          );
+        },
+        (Object error, StackTrace _) {
+          zoneErrors.add(error);
+        },
+      );
+
+      try {
+        await pumpEventQueue();
+        expect(peer.isAvailable, isFalse);
+        expect(unavailableStates, hasLength(1));
+        expect(
+          unavailableStates.single.reason,
+          AcpPeerUnavailableReason.transportClosed,
+        );
+        expect(handlerStarts, 1);
+        expect(admissions, hasLength(1));
+        await admissions.single.settled.timeout(const Duration(seconds: 1));
+        expect(admissions.single.responseCommitCount, 1);
+        expect(admissions.single.responsePeerCloseCount, 1);
+        expect(peer.correlationPendingItemsForTesting, 0);
+        expect(peer.correlationPendingBytesForTesting, 0);
+        await expectLater(
+          peer.sendRaw('agent/ping', <String, dynamic>{}),
+          throwsA(isA<AcpConnectionClosedException>()),
+        );
+        await pumpEventQueue();
+        expect(output.addCount, 1);
+        expect(zoneErrors, isEmpty);
+      } finally {
+        await peer.close();
+        input.close();
+      }
+    },
+  );
+
+  test(
     'transport error wins over later explicit close without starting queued work',
     () async {
       final input = _ManualInputStream();
@@ -1940,6 +2022,18 @@ class _ReentrantSink extends _RecordingSink {
   }
 }
 
+class _RejectingReentrantSink extends _RecordingSink {
+  void Function(String event)? onReject;
+  var addCount = 0;
+
+  @override
+  void add(String event) {
+    addCount += 1;
+    onReject?.call(event);
+    throw _OutputAddError();
+  }
+}
+
 class _AsyncCloseErrorSink implements StreamSink<String> {
   var closeCount = 0;
 
@@ -1969,6 +2063,8 @@ class _CancelError extends Error {}
 class _InputError extends Error {}
 
 class _OutputCloseError extends Error {}
+
+class _OutputAddError extends Error {}
 
 class _ManualInputStream extends Stream<String> {
   _ManualSubscription? _subscription;
