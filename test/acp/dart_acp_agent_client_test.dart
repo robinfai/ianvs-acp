@@ -18520,6 +18520,7 @@ _runInvalidSessionRequest({
   final methodLiteral = jsonEncode(method);
   final paramsLiteral = jsonEncode(params);
   final responsePath = jsonEncode(responseFile.path);
+  final pendingResponsePath = jsonEncode('${responseFile.path}.pending');
   await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
@@ -18552,7 +18553,9 @@ Future<void> main() async {
         'params': $paramsLiteral,
       }));
     } else if (message['id'] == 'invalid-session-request') {
-      await File($responsePath).writeAsString(jsonEncode(message));
+      final pendingResponse = File($pendingResponsePath);
+      await pendingResponse.writeAsString(jsonEncode(message));
+      await pendingResponse.rename($responsePath);
     }
   }
 }
