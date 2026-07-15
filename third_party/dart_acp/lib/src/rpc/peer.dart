@@ -312,8 +312,8 @@ class JsonRpcPeer {
   var _dispatchingDecoded = false;
   var _dropDecodedDeliveries = false;
   var _terminalQueued = false;
-  var _correlationWriteInProgress = false;
-  var _correlationWriteEpoch = 0;
+  var _inboundResponseWriteInProgress = false;
+  var _inboundResponseWriteEpoch = 0;
   var _drainingDeferredInbound = false;
   var _deferredInboundDrainScheduled = false;
   var _nextCorrelationId = 0;
@@ -582,7 +582,7 @@ class JsonRpcPeer {
 
   void _handleInboundLine(String line) {
     if (!_acceptingInbound) return;
-    if (_correlationWriteInProgress) {
+    if (_inboundResponseWriteInProgress) {
       _deferredInboundLines.addLast(line);
       return;
     }
@@ -775,8 +775,7 @@ class JsonRpcPeer {
         ? event.map<Object?>(restore).toList(growable: false)
         : restore(event);
     if (ids.isNotEmpty) {
-      _correlationWriteInProgress = true;
-      _correlationWriteEpoch += 1;
+      _beginInboundResponseWrite();
     }
     return (wireValue: wireValue, internalIds: ids);
   }
@@ -806,7 +805,19 @@ class JsonRpcPeer {
 
   void _completeCorrelationWrite(List<String> ids) {
     if (ids.isEmpty) return;
-    _correlationWriteInProgress = false;
+    _completeInboundResponseWrite();
+  }
+
+  void _beginInboundResponseWrite() {
+    if (_inboundResponseWriteInProgress) {
+      throw StateError('An inbound response write is already in progress.');
+    }
+    _inboundResponseWriteInProgress = true;
+    _inboundResponseWriteEpoch += 1;
+  }
+
+  void _completeInboundResponseWrite() {
+    _inboundResponseWriteInProgress = false;
     _drainDeferredInboundLines();
   }
 
@@ -820,21 +831,21 @@ class JsonRpcPeer {
       return;
     }
     _drainingDeferredInbound = true;
-    var enteredCorrelationWrite = false;
+    var enteredResponseWrite = false;
     try {
       if (_acceptingInbound &&
-          !_correlationWriteInProgress &&
+          !_inboundResponseWriteInProgress &&
           _deferredInboundLines.isNotEmpty) {
-        final writeEpochBefore = _correlationWriteEpoch;
+        final writeEpochBefore = _inboundResponseWriteEpoch;
         _processInboundLine(_deferredInboundLines.removeFirst());
-        enteredCorrelationWrite = _correlationWriteEpoch != writeEpochBefore;
+        enteredResponseWrite = _inboundResponseWriteEpoch != writeEpochBefore;
       }
     } finally {
       _drainingDeferredInbound = false;
     }
-    if (enteredCorrelationWrite) return;
+    if (enteredResponseWrite) return;
     if (_acceptingInbound &&
-        !_correlationWriteInProgress &&
+        !_inboundResponseWriteInProgress &&
         _deferredInboundLines.isNotEmpty) {
       _scheduleDeferredInboundDrain();
     }
@@ -866,7 +877,19 @@ class JsonRpcPeer {
   }
 
   void _writeWireResponse(Object? response) {
-    _decodedSink.addWireResponse(response);
+    _beginInboundResponseWrite();
+    try {
+      _decodedSink.addWireResponse(response);
+    } on Object {
+      final closing = _becomeUnavailable(
+        AcpPeerUnavailableReason.transportClosed,
+      );
+      unawaited(
+        closing.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    } finally {
+      _completeInboundResponseWrite();
+    }
   }
 
   void _dispatchDecoded(_DecodedDelivery delivery) {

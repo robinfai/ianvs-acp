@@ -1749,6 +1749,175 @@ void main() {
     },
   );
 
+  for (final directKind in <String>['parse', 'capacity']) {
+    test(
+      'direct $directKind response rejection closes before reentrant work',
+      () async {
+        final input = _ManualInputStream();
+        final output = _RejectingReentrantSink();
+        final zoneErrors = <Object>[];
+        final unavailableStates = <AcpPeerUnavailableState>[];
+        final admissions = <_PassThroughInboundAdmission>[];
+        final rejectionStarted = Completer<void>.sync();
+        late JsonRpcPeer peer;
+        var sideEffectStarts = 0;
+
+        runZonedGuarded<void>(
+          () {
+            peer = JsonRpcPeer(
+              StreamChannel<String>(input, output),
+              maxPendingItems: directKind == 'capacity' ? 1 : 128,
+            );
+            peer.addUnavailableListener((state) {
+              unavailableStates.add(state);
+              for (final admission in admissions.toList(growable: false)) {
+                admission.markPeerClosed();
+              }
+            });
+            _installPassThroughAdmissions(peer, onAdmission: admissions.add);
+            peer.onReadTextFile = (params, _) async {
+              sideEffectStarts += 1;
+              return <String, dynamic>{'content': 'unexpected'};
+            };
+            output.onReject = (_) {
+              output.onReject = null;
+              input.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': 900,
+                  'method': 'fs/read_text_file',
+                  'params': <String, dynamic>{'sideEffect': true},
+                }),
+              );
+              if (!rejectionStarted.isCompleted) rejectionStarted.complete();
+            };
+            if (directKind == 'parse') {
+              input.add('{');
+            } else {
+              input.add(
+                jsonEncode(<Object?>[
+                  <String, dynamic>{
+                    'jsonrpc': '2.0',
+                    'id': 1,
+                    'method': 'fs/read_text_file',
+                    'params': <String, dynamic>{'overflow': 1},
+                  },
+                  <String, dynamic>{
+                    'jsonrpc': '2.0',
+                    'id': 2,
+                    'method': 'fs/read_text_file',
+                    'params': <String, dynamic>{'overflow': 2},
+                  },
+                ]),
+              );
+            }
+          },
+          (Object error, StackTrace _) {
+            zoneErrors.add(error);
+          },
+        );
+
+        try {
+          await rejectionStarted.future.timeout(
+            const Duration(seconds: 1),
+            onTimeout: () =>
+                throw TimeoutException('direct response write did not start'),
+          );
+          await pumpEventQueue();
+          expect(peer.isAvailable, isFalse);
+          expect(unavailableStates, hasLength(1));
+          expect(
+            unavailableStates.single.reason,
+            AcpPeerUnavailableReason.transportClosed,
+          );
+          expect(sideEffectStarts, 0);
+          expect(output.addCount, 1);
+          expect(zoneErrors, isEmpty);
+          await expectLater(
+            peer.sendRaw('agent/ping', <String, dynamic>{}),
+            throwsA(isA<AcpConnectionClosedException>()),
+          );
+          await peer.close().timeout(const Duration(seconds: 1));
+          expect(unavailableStates, hasLength(1));
+          expect(
+            unavailableStates.single.reason,
+            AcpPeerUnavailableReason.transportClosed,
+          );
+        } finally {
+          await peer.close();
+          input.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'successful direct response drains reentrant work FIFO after write',
+    () async {
+      final input = _ManualInputStream();
+      final output = _ReentrantSink();
+      final zoneErrors = <Object>[];
+      final handlerStarts = <int>[];
+      late JsonRpcPeer peer;
+      var deferredInsideWrite = false;
+
+      runZonedGuarded<void>(
+        () {
+          peer = JsonRpcPeer(StreamChannel<String>(input, output));
+          _installPassThroughAdmissions(peer);
+          peer.onReadTextFile = (params, _) async {
+            handlerStarts.add(params['sequence'] as int);
+            return <String, dynamic>{'content': 'ok'};
+          };
+          output.onAdd = (_) {
+            output.onAdd = null;
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': 1,
+                'method': 'fs/read_text_file',
+                'params': <String, dynamic>{'sequence': 1},
+              }),
+            );
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'id': 2,
+                'method': 'fs/read_text_file',
+                'params': <String, dynamic>{'sequence': 2},
+              }),
+            );
+            deferredInsideWrite = handlerStarts.isEmpty;
+          };
+          input.add('{');
+        },
+        (Object error, StackTrace _) {
+          zoneErrors.add(error);
+        },
+      );
+
+      try {
+        await pumpEventQueue();
+        expect(deferredInsideWrite, isTrue);
+        expect(handlerStarts, <int>[1, 2]);
+        expect(output.events, hasLength(3));
+        expect(
+          (jsonDecode(output.events.first) as Map<String, dynamic>)['error'],
+          <String, dynamic>{'code': -32700, 'message': 'Parse error.'},
+        );
+        expect(
+          output.events.skip(1).map((line) => jsonDecode(line)['id']),
+          <Object?>[1, 2],
+        );
+        expect(peer.isAvailable, isTrue);
+        expect(zoneErrors, isEmpty);
+      } finally {
+        await peer.close();
+        input.close();
+      }
+    },
+  );
+
   test(
     'transport error wins over later explicit close without starting queued work',
     () async {
