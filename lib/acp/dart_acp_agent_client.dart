@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:meta/meta.dart';
 import 'package:mime/mime.dart' as mime;
 
 import 'acp_adapter_packages.dart';
@@ -180,10 +182,53 @@ class DartAcpAgentClient implements AcpAgentClient {
   bool _supportsResumeSession = false;
   bool _connectInProgress = false;
   bool _disposed = false;
+  bool _acceptingRawPromptOperations = false;
   Future<void>? _disposeFuture;
   String? _activeSessionId;
   final Map<String, _RawPromptOperation> _rawPromptOperationsBySession =
       <String, _RawPromptOperation>{};
+  final Set<_RawPromptOperation> _rawPromptOperationsInFlight =
+      HashSet<_RawPromptOperation>.identity();
+  // ignore: invalid_use_of_visible_for_testing_member
+  acp.AcpPromptAdmissionProbeForTesting? _rawAdmissionProbeForTesting;
+  final StreamController<acp.AcpPeerUnavailableState> _peerUnavailableStates =
+      StreamController<acp.AcpPeerUnavailableState>.broadcast(sync: true);
+  acp.AcpClient? _peerUnavailableListenerClient;
+  acp.AcpPeerUnavailableListener? _peerUnavailableListener;
+  final Set<acp.AcpClient> _disposingPeerSources =
+      HashSet<acp.AcpClient>.identity();
+  Completer<void>? _rawUnavailablePublicationGateForTesting;
+  final Completer<void> _rawUnavailablePublicationPausedForTesting =
+      Completer<void>.sync();
+  final Expando<int> _rawDeliveryClaimCounts = Expando<int>(
+    'raw delivery claim count',
+  );
+  final Expando<int> _rawStreamCloseCounts = Expando<int>(
+    'raw stream close count',
+  );
+  final Map<acp.AcpSessionInputBudgetOwner, Completer<void>>
+  _rawDeliveryClaimBarriers =
+      HashMap<acp.AcpSessionInputBudgetOwner, Completer<void>>.identity();
+  final Map<acp.AcpSessionInputBudgetOwner, Completer<void>>
+  _rawPostManagerClaimBarriers =
+      HashMap<acp.AcpSessionInputBudgetOwner, Completer<void>>.identity();
+  final Expando<Completer<void>> _rawPostManagerClaimReached =
+      Expando<Completer<void>>('raw post-manager claim reached');
+  final Expando<Completer<void>> _rawConnectionResultErrorsForTesting =
+      Expando<Completer<void>>('raw connection result error');
+  int _rawPromptDispatchCount = 0;
+  int _rawPromptCancelCount = 0;
+  int _beginPromptTurnCount = 0;
+
+  @visibleForTesting
+  void Function(acp.AcpSessionInputBudgetOwner owner)?
+  onRawPromptDispatchedForTesting;
+
+  @visibleForTesting
+  void Function()? onRawTeardownSnapshotForTesting;
+
+  Completer<void>? _rawAttachmentConversionGateForTesting;
+  Completer<void>? _rawAttachmentConversionPausedForTesting;
   final Map<String, String> _modeOverridesBySession = <String, String>{};
   final Map<String, AcpSessionModeInfo> _modesBySession =
       <String, AcpSessionModeInfo>{};
@@ -223,6 +268,243 @@ class DartAcpAgentClient implements AcpAgentClient {
   Stream<AcpPermissionRequest> get permissionRequests =>
       _permissionBridge.requests;
 
+  bool _isCurrentPeerSource(acp.AcpClient source) =>
+      identical(_client, source) ||
+      identical(_connectingClient, source) ||
+      _disposingPeerSources.contains(source);
+
+  void _publishPeerUnavailable(acp.AcpPeerUnavailableState state) {
+    if (!_peerUnavailableStates.isClosed) _peerUnavailableStates.add(state);
+  }
+
+  void _handleTask11PeerUnavailable(
+    acp.AcpClient source,
+    acp.AcpPeerUnavailableState state,
+  ) {
+    if (!_isCurrentPeerSource(source)) return;
+    final gate = _rawUnavailablePublicationGateForTesting;
+    if (gate == null) {
+      _publishPeerUnavailable(state);
+      return;
+    }
+    if (!_rawUnavailablePublicationPausedForTesting.isCompleted) {
+      _rawUnavailablePublicationPausedForTesting.complete();
+    }
+    unawaited(
+      gate.future.then<void>((_) {
+        if (identical(_rawUnavailablePublicationGateForTesting, gate)) {
+          _rawUnavailablePublicationGateForTesting = null;
+        }
+        if (_isCurrentPeerSource(source)) _publishPeerUnavailable(state);
+      }),
+    );
+  }
+
+  void _replacePeerUnavailableListener(acp.AcpClient source) {
+    if (_peerUnavailableListenerClient != null ||
+        _peerUnavailableListener != null) {
+      throw StateError('Previous ACP unavailable listener is still installed.');
+    }
+    late final acp.AcpPeerUnavailableListener listener;
+    listener = (state) => _handleTask11PeerUnavailable(source, state);
+    _peerUnavailableListenerClient = source;
+    _peerUnavailableListener = listener;
+    source.addPeerUnavailableListener(listener);
+  }
+
+  acp.AcpPeerUnavailableListener? _listenerFor(acp.AcpClient? source) =>
+      identical(_peerUnavailableListenerClient, source)
+      ? _peerUnavailableListener
+      : null;
+
+  void _removePeerUnavailableListenerAfterCoreDispose(
+    acp.AcpClient source,
+    acp.AcpPeerUnavailableListener listener,
+  ) {
+    source.removePeerUnavailableListener(listener);
+    if (identical(_peerUnavailableListenerClient, source) &&
+        identical(_peerUnavailableListener, listener)) {
+      _peerUnavailableListenerClient = null;
+      _peerUnavailableListener = null;
+    }
+  }
+
+  @visibleForTesting
+  void holdNextRawUnavailablePublicationForTesting() {
+    if (_rawUnavailablePublicationGateForTesting != null) {
+      throw StateError('Raw unavailable publication is already held.');
+    }
+    _rawUnavailablePublicationGateForTesting = Completer<void>.sync();
+  }
+
+  @visibleForTesting
+  Future<void> get rawUnavailablePublicationPausedForTesting =>
+      _rawUnavailablePublicationPausedForTesting.future;
+
+  @visibleForTesting
+  void releaseRawUnavailablePublicationForTesting() {
+    final gate = _rawUnavailablePublicationGateForTesting;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  @visibleForTesting
+  acp.AcpClient get acpClientForTesting => _requireClient();
+
+  @visibleForTesting
+  Stream<acp.AcpPeerUnavailableState> get peerUnavailableForTesting =>
+      _peerUnavailableStates.stream;
+
+  @visibleForTesting
+  // ignore: invalid_use_of_visible_for_testing_member
+  acp.AcpPromptAdmissionProbeForTesting installRawAdmissionProbeForTesting() {
+    if (_rawAdmissionProbeForTesting != null) {
+      throw StateError('Raw admission probe is already armed.');
+    }
+    return _rawAdmissionProbeForTesting = _requireClient()
+        // ignore: invalid_use_of_visible_for_testing_member
+        .armNextPromptAdmissionForTesting();
+  }
+
+  @visibleForTesting
+  Future<void> rawProviderSideEffectStartedForTesting(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final probe = _rawAdmissionProbeForTesting;
+    if (probe == null || !identical(probe.owner, owner)) {
+      return Future<void>.error(StateError('Raw admission owner mismatch.'));
+    }
+    return probe.sideEffectStarted;
+  }
+
+  @visibleForTesting
+  int get rawPromptDispatchCountForTesting => _rawPromptDispatchCount;
+
+  @visibleForTesting
+  int get rawPromptCancelCountForTesting => _rawPromptCancelCount;
+
+  @visibleForTesting
+  int get beginPromptTurnCountForTesting => _beginPromptTurnCount;
+
+  @visibleForTesting
+  int rawDeliveryClaimCountForTesting(acp.AcpSessionInputBudgetOwner owner) =>
+      _rawDeliveryClaimCounts[owner] ?? 0;
+
+  @visibleForTesting
+  int rawStreamCloseCountForTesting(acp.AcpSessionInputBudgetOwner owner) =>
+      _rawStreamCloseCounts[owner] ?? 0;
+
+  @visibleForTesting
+  int get rawInFlightPromptCountForTesting =>
+      _rawPromptOperationsInFlight.length;
+
+  @visibleForTesting
+  Future<void> rawConnectionResultErrorSeenForTesting(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final existing = _rawConnectionResultErrorsForTesting[owner];
+    if (existing != null) return existing.future;
+    final created = Completer<void>.sync();
+    _rawConnectionResultErrorsForTesting[owner] = created;
+    return created.future;
+  }
+
+  @visibleForTesting
+  void holdRawDeliveryClaimForTesting(acp.AcpSessionInputBudgetOwner owner) {
+    _rawDeliveryClaimBarriers.putIfAbsent(owner, Completer<void>.sync);
+  }
+
+  @visibleForTesting
+  void releaseRawDeliveryClaimForTesting(acp.AcpSessionInputBudgetOwner owner) {
+    final barrier = _rawDeliveryClaimBarriers.remove(owner);
+    if (barrier != null && !barrier.isCompleted) barrier.complete();
+  }
+
+  @visibleForTesting
+  void holdRawAfterManagerClaimForTesting(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    _rawPostManagerClaimBarriers.putIfAbsent(owner, Completer<void>.sync);
+    _rawPostManagerClaimReached[owner] ??= Completer<void>.sync();
+  }
+
+  @visibleForTesting
+  Future<void> rawAfterManagerClaimSeenForTesting(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final existing = _rawPostManagerClaimReached[owner];
+    if (existing != null) return existing.future;
+    final created = Completer<void>.sync();
+    _rawPostManagerClaimReached[owner] = created;
+    return created.future;
+  }
+
+  @visibleForTesting
+  void releaseRawAfterManagerClaimForTesting(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final barrier = _rawPostManagerClaimBarriers.remove(owner);
+    if (barrier != null && !barrier.isCompleted) barrier.complete();
+  }
+
+  @visibleForTesting
+  void holdNextRawAttachmentConversionForTesting() {
+    if (_rawAttachmentConversionGateForTesting != null) {
+      throw StateError('Raw attachment conversion is already held.');
+    }
+    _rawAttachmentConversionGateForTesting = Completer<void>.sync();
+    _rawAttachmentConversionPausedForTesting = Completer<void>.sync();
+  }
+
+  @visibleForTesting
+  Future<void> get rawAttachmentConversionPausedForTesting {
+    final paused = _rawAttachmentConversionPausedForTesting;
+    return paused?.future ??
+        Future<void>.error(
+          StateError('Raw attachment conversion is not held.'),
+        );
+  }
+
+  @visibleForTesting
+  void releaseRawAttachmentConversionForTesting() {
+    final gate = _rawAttachmentConversionGateForTesting;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  Future<void> _waitForRawAttachmentConversionGateForTesting() async {
+    final gate = _rawAttachmentConversionGateForTesting;
+    if (gate == null) return;
+    final paused = _rawAttachmentConversionPausedForTesting;
+    if (paused != null && !paused.isCompleted) paused.complete();
+    await gate.future;
+    if (identical(_rawAttachmentConversionGateForTesting, gate)) {
+      _rawAttachmentConversionGateForTesting = null;
+      _rawAttachmentConversionPausedForTesting = null;
+    }
+  }
+
+  Future<void> _waitForRawDeliveryClaimTestBarrier(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) async {
+    final barrier = _rawDeliveryClaimBarriers[owner];
+    if (barrier != null) await barrier.future;
+  }
+
+  Future<void> _waitForRawPostManagerClaimTestBarrier(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) async {
+    final barrier = _rawPostManagerClaimBarriers[owner];
+    if (barrier == null) return;
+    final reached = _rawPostManagerClaimReached[owner] ??=
+        Completer<void>.sync();
+    if (!reached.isCompleted) reached.complete();
+    await barrier.future;
+  }
+
+  @visibleForTesting
+  Future<void> closePeerExplicitlyForTesting() =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _requireClient().closePeerExplicitlyForTesting();
+
   @override
   Future<void> connect() async {
     if (_disposed) {
@@ -231,6 +513,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (_connectInProgress) {
       throw StateError('Codex ACP client connection is already in progress.');
     }
+    _acceptingRawPromptOperations = false;
     _connectInProgress = true;
     try {
       await _disposeActiveClient(closePermissionStream: false);
@@ -304,6 +587,7 @@ class DartAcpAgentClient implements AcpAgentClient {
         throw StateError('Codex ACP client has been disposed.');
       }
       _connectingClient = client;
+      _replacePeerUnavailableListener(client);
       late final acp.AcpBoundedObservationListener observationListener;
       observationListener = (observation) {
         _handleBoundedObservation(client, observation);
@@ -363,13 +647,20 @@ class DartAcpAgentClient implements AcpAgentClient {
         _supportsListSessions = capabilities.session.list;
         _supportsResumeSession = capabilities.session.resume;
         _capabilities = capabilities;
+        _acceptingRawPromptOperations = true;
       } catch (_) {
         if (identical(_connectingClient, client)) {
-          client.removeBoundedObservationListener(observationListener);
+          final peerUnavailableListener = _listenerFor(client);
+          _disposingPeerSources.add(client);
           _connectingBoundedObservationListener = null;
           _connectingClient = null;
           _connectingTransport = null;
-          await _disposeClient(client, transport);
+          await _disposeClient(
+            client,
+            transport,
+            observationListener,
+            peerUnavailableListener,
+          );
         }
         rethrow;
       }
@@ -711,7 +1002,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       throw StateError('ACP agent does not support session/close.');
     }
     _invalidateConfigMutationQueue(sessionId);
-    _invalidateRawPromptOperation(sessionId);
+    final operation = _rawPromptOperationsBySession[sessionId];
+    if (operation != null) {
+      await _invalidateRawPromptOperation(client, operation, sendCancel: false);
+    }
     try {
       await client.closeSession(sessionId: sessionId);
     } on acp.SessionCloseCleanupException {
@@ -806,132 +1100,167 @@ class DartAcpAgentClient implements AcpAgentClient {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     late final StreamController<AgentEvent> controller;
-    StreamSubscription<AgentEvent>? forwarding;
+    final operation = _RawPromptOperation(sessionId);
     acp.AcpClient? operationClient;
-    _RawPromptOperation? operation;
+    var operationAdmitted = false;
+
+    void closeRejectedOutput() {
+      unawaited(
+        controller.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
+    }
+
     controller = StreamController<AgentEvent>(
       onListen: () {
-        try {
-          final client = _requireClient();
-          operationClient = client;
-          _activeSessionId = sessionId;
-          final currentOperation = _RawPromptOperation(sessionId);
-          operation = currentOperation;
-          final accepted = !_rawPromptOperationsBySession.containsKey(
-            sessionId,
+        if (!_acceptingRawPromptOperations) {
+          operation.state = _RawPromptOperationState.finished;
+          operation.markFinished();
+          controller.addError(
+            StateError('ACP raw prompt operations are not being accepted.'),
           );
-          if (accepted) {
-            _rawPromptOperationsBySession[sessionId] = currentOperation;
-          }
-          forwarding =
-              _runRawPromptOperation(
-                client: client,
-                operation: currentOperation,
-                prompt: prompt,
-                attachments: attachments,
-                accepted: accepted,
-              ).listen(
-                controller.add,
-                onError: controller.addError,
-                onDone: controller.close,
+          closeRejectedOutput();
+          return;
+        }
+        final client = _requireClient();
+        if (_rawPromptOperationsBySession.containsKey(sessionId)) {
+          operation.state = _RawPromptOperationState.finished;
+          operation.markFinished();
+          controller.addError(
+            StateError('An ACP prompt operation is already active.'),
+          );
+          closeRejectedOutput();
+          return;
+        }
+        operationClient = client;
+        operationAdmitted = true;
+        _activeSessionId = sessionId;
+        _rawPromptOperationsBySession[sessionId] = operation;
+        _rawPromptOperationsInFlight.add(operation);
+        operation.finishOutputAction =
+            ({required bool emitConnectionClosed}) async {
+              if (operation.terminalClaimed && !operation.streamClosed) {
+                await operation.finished;
+                return;
+              }
+              if (emitConnectionClosed &&
+                  operation.state != _RawPromptOperationState.finished) {
+                operation.unavailableWonBeforeTerminal = true;
+                operation.state = _RawPromptOperationState.invalidated;
+              }
+              if (!operation.streamCancellation.isCompleted) {
+                operation.streamCancellation.complete();
+              }
+              await operation.enterTerminalOnly();
+              await _finishRawOutput(
+                operation,
+                controller,
+                emitConnectionClosed: emitConnectionClosed,
               );
-        } on Object catch (error, stackTrace) {
-          controller.addError(error, stackTrace);
-          unawaited(controller.close());
-        }
+            };
+        unawaited(
+          _runRawPromptOperation(
+            client: client,
+            operation: operation,
+            prompt: prompt,
+            attachments: attachments,
+            output: controller,
+          ),
+        );
       },
-      onPause: () => forwarding?.pause(),
-      onResume: () => forwarding?.resume(),
       onCancel: () async {
-        final currentOperation = operation;
+        if (!operationAdmitted ||
+            operation.state == _RawPromptOperationState.finished) {
+          return;
+        }
         final client = operationClient;
-        final settlements = <Future<_VoidFutureSettlement>>[];
-        if (currentOperation != null &&
-            !currentOperation.finished &&
-            !currentOperation.locallyInvalidated &&
-            client != null) {
-          currentOperation.cancelRequested = true;
-          settlements.add(
-            _settleVoidFuture(
-              _cancelRawPromptOperation(client, currentOperation),
-            ),
-          );
-          if (!currentOperation.streamCancellation.isCompleted) {
-            currentOperation.streamCancellation.complete();
-          }
-        }
-        Future<void> forwardingCleanup;
-        try {
-          forwardingCleanup = forwarding?.cancel() ?? Future<void>.value();
-        } on Object catch (error, stackTrace) {
-          forwardingCleanup = Future<void>.error(error, stackTrace);
-        }
-        settlements.add(_settleVoidFuture(forwardingCleanup));
-        final outcomes = await Future.wait<_VoidFutureSettlement>(settlements);
-        for (final outcome in outcomes) {
-          outcome.throwIfFailed();
-        }
+        if (client == null) return;
+        await _invalidateRawPromptOperation(
+          client,
+          operation,
+          sendCancel: true,
+        );
       },
     );
     return controller.stream;
   }
 
-  Stream<AgentEvent> _runRawPromptOperation({
+  Future<void> _runRawPromptOperation({
     required acp.AcpClient client,
     required _RawPromptOperation operation,
     required String prompt,
     required List<PromptAttachment> attachments,
-    required bool accepted,
-  }) async* {
+    required StreamController<AgentEvent> output,
+  }) async {
     try {
-      if (!accepted) {
-        throw StateError('An ACP prompt operation is already active.');
+      if (operation.state != _RawPromptOperationState.active) return;
+      final conversion =
+          () async {
+            await _waitForRawAttachmentConversionGateForTesting();
+            return _promptContentBlocks(
+              prompt,
+              attachments,
+              workspaceRoot: _cwdBySession[operation.sessionId],
+            );
+          }().then<_RawAttachmentConversionOutcome>(
+            _RawAttachmentConversionOutcome.content,
+            onError: (Object error, StackTrace stackTrace) =>
+                _RawAttachmentConversionOutcome.error(error, stackTrace),
+          );
+      final conversionOutcome =
+          await Future.any<_RawAttachmentConversionOutcome>(
+            <Future<_RawAttachmentConversionOutcome>>[
+              conversion,
+              operation.streamCancellation.future.then(
+                (_) => const _RawAttachmentConversionOutcome.cancelled(),
+              ),
+            ],
+          );
+      if (conversionOutcome.cancelled) return;
+      final conversionError = conversionOutcome.error;
+      if (conversionError != null) {
+        Error.throwWithStackTrace(
+          conversionError,
+          conversionOutcome.stackTrace!,
+        );
       }
-      if (operation.locallyInvalidated) return;
-      final content = await _promptContentBlocks(
-        prompt,
-        attachments,
-        workspaceRoot: _cwdBySession[operation.sessionId],
-      );
-      if (operation.locallyInvalidated) return;
-      if (operation.cancelRequested) {
-        await _cancelRawPromptOperation(client, operation);
+      if (operation.cancelRequested ||
+          operation.state != _RawPromptOperationState.active) {
         return;
       }
-      await for (final event in _sendRawPrompt(
+      await _sendRawPrompt(
         client: client,
         operation: operation,
-        content: content,
-      )) {
-        if (operation.acceptsEvents) {
-          yield event;
-        }
-      }
-    } catch (error) {
-      if (!operation.acceptsEvents) return;
-      final details = _agentErrorDetails(error);
-      yield AgentEvent(
-        type: AgentEventType.error,
-        text: details.text,
-        metadata: details.metadata,
-        timestamp: DateTime.now(),
+        content: conversionOutcome.content!,
+        output: output,
       );
+    } on Object catch (error, stackTrace) {
+      if (operation.state == _RawPromptOperationState.active &&
+          !output.isClosed) {
+        output.addError(error, stackTrace);
+      }
     } finally {
-      operation.finished = true;
-      final cancelCompletion = operation.cancelCompletion;
-      if (operation.cancelRequested &&
-          operation.owner == null &&
-          cancelCompletion != null &&
-          !cancelCompletion.isCompleted) {
-        cancelCompletion.complete();
+      await operation.enterTerminalOnly();
+      operation.state = _RawPromptOperationState.finished;
+      _releaseRawPromptSessionIdentity(operation);
+      await _finishRawOutput(operation, output, emitConnectionClosed: false);
+      final owner = operation.owner;
+      if (owner != null) {
+        final claimBarrier = _rawDeliveryClaimBarriers.remove(owner);
+        if (claimBarrier != null && !claimBarrier.isCompleted) {
+          claimBarrier.complete();
+        }
+        final postClaimBarrier = _rawPostManagerClaimBarriers.remove(owner);
+        if (postClaimBarrier != null && !postClaimBarrier.isCompleted) {
+          postClaimBarrier.complete();
+        }
+        _rawPostManagerClaimReached[owner] = null;
+        _rawConnectionResultErrorsForTesting[owner] = null;
       }
-      if (accepted &&
-          identical(
-            _rawPromptOperationsBySession[operation.sessionId],
-            operation,
-          )) {
-        _rawPromptOperationsBySession.remove(operation.sessionId);
-      }
+      _rawPromptOperationsInFlight.remove(operation);
+      operation.markFinished();
     }
   }
 
@@ -1628,132 +1957,253 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  Stream<AgentEvent> _sendRawPrompt({
+  bool _tryCloseRawStream(_RawPromptOperation operation) {
+    if (!operation.tryCloseStream()) return false;
+    final owner = operation.owner;
+    if (owner != null) {
+      _rawStreamCloseCounts[owner] = (_rawStreamCloseCounts[owner] ?? 0) + 1;
+    }
+    return true;
+  }
+
+  bool _handleRawUnavailable(
+    acp.AcpClient client,
+    _RawPromptOperation operation,
+    acp.AcpPeerUnavailableState unavailable,
+  ) {
+    final owner = operation.owner;
+    if (owner == null || operation.streamClosed) return false;
+    if (client.hasActivePromptDeliveryClaim(owner)) return false;
+    final cleanup = unavailable.cleanupIdentity;
+    final sameOwnerCleanupFatal =
+        unavailable.reason == acp.AcpPeerUnavailableReason.fatalTimeout &&
+        cleanup != null &&
+        identical(cleanup.ownerToken, owner) &&
+        cleanup.generation == owner.generation;
+    final unavailableWon = operation.handleUnavailable(
+      sameOwnerCleanupFatal: sameOwnerCleanupFatal,
+      deliveryRightExists: client.hasPromptDeliveryRight(owner),
+    );
+    if (operation.state == _RawPromptOperationState.terminalOnly) {
+      unawaited(operation.enterTerminalOnly());
+      return false;
+    }
+    return unavailableWon;
+  }
+
+  Future<bool> _finishRawOutput(
+    _RawPromptOperation operation,
+    StreamController<AgentEvent> output, {
+    required bool emitConnectionClosed,
+  }) async {
+    if (!_tryCloseRawStream(operation)) return false;
+    _releaseRawPromptSessionIdentity(operation);
+    if (emitConnectionClosed && !output.isClosed) {
+      output.add(
+        const AgentEvent(
+          type: AgentEventType.error,
+          text: 'ACP connection closed.',
+        ),
+      );
+    }
+    if (!output.isClosed) await output.close();
+    return true;
+  }
+
+  void _releaseRawPromptSessionIdentity(_RawPromptOperation operation) {
+    if (identical(
+      _rawPromptOperationsBySession[operation.sessionId],
+      operation,
+    )) {
+      _rawPromptOperationsBySession.remove(operation.sessionId);
+    }
+  }
+
+  Future<bool> _deliverRawTerminal(
+    acp.AcpClient client,
+    _RawPromptOperation operation,
+    StreamController<AgentEvent> output,
+  ) async {
+    final owner = operation.owner;
+    if (owner == null) return false;
+    if (!await client.waitForPromptDeliveryBarrier(owner)) return false;
+    await _waitForRawDeliveryClaimTestBarrier(owner);
+    if (!operation.acceptsTerminal || operation.unavailableWonBeforeTerminal) {
+      return false;
+    }
+    final claim = client.tryClaimPromptDeliveryRight(owner);
+    if (claim == null) return false;
+    _rawDeliveryClaimCounts[owner] = (_rawDeliveryClaimCounts[owner] ?? 0) + 1;
+    var delivered = false;
+    try {
+      if (!operation.tryAcceptClaimedTerminal()) return false;
+      await _waitForRawPostManagerClaimTestBarrier(owner);
+      await operation.enterTerminalOnly();
+      output.add(_agentEventForPromptWinner(claim.winner));
+      delivered = true;
+      return true;
+    } finally {
+      client.releasePromptDeliveryRight(claim);
+      if (delivered) {
+        await _finishRawOutput(operation, output, emitConnectionClosed: false);
+      }
+    }
+  }
+
+  String _rawPromptProtocolMessage(Object error) {
+    try {
+      final dynamic dynamicError = error;
+      final Object? message = dynamicError.message;
+      if (message is String && message.trim().isNotEmpty) {
+        return message;
+      }
+    } on Object {
+      // The public projection deliberately ignores every non-message field.
+    }
+    return 'ACP prompt failed.';
+  }
+
+  AgentEvent _agentEventForPromptWinner(
+    acp.JsonRpcPromptTerminalWinner winner,
+  ) {
+    switch (winner.kind) {
+      case acp.JsonRpcPromptTerminalKind.response:
+        final response = winner.response;
+        if (response == null) {
+          throw StateError('ACP prompt response winner has no response.');
+        }
+        return _eventFromPromptResponse(response);
+      case acp.JsonRpcPromptTerminalKind.remoteError:
+        final error = winner.error;
+        if (error == null) {
+          throw StateError('ACP prompt remote-error winner has no error.');
+        }
+        return AgentEvent(
+          type: AgentEventType.error,
+          text: _rawPromptProtocolMessage(error),
+          metadata: const <String, Object?>{
+            'kind': 'turn',
+            'terminalKind': 'remoteError',
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.JsonRpcPromptTerminalKind.timedOut:
+        const error = acp.AcpPromptTimeoutException();
+        return AgentEvent(
+          type: AgentEventType.error,
+          text: error.toString(),
+          metadata: const <String, Object?>{
+            'kind': 'turn',
+            'terminalKind': 'timedOut',
+          },
+          timestamp: DateTime.now(),
+        );
+    }
+  }
+
+  Future<void> _sendRawPrompt({
     required acp.AcpClient client,
     required _RawPromptOperation operation,
     required List<Map<String, dynamic>> content,
-  }) async* {
-    if (operation.locallyInvalidated) return;
-    if (operation.cancelRequested) {
-      await _cancelRawPromptOperation(client, operation);
-      return;
-    }
-    final sessionId = operation.sessionId;
-    final events = StreamController<AgentEvent>();
+    required StreamController<AgentEvent> output,
+  }) async {
+    StreamSubscription<acp.AcpUpdate>? updates;
+    StreamSubscription<acp.TerminalEvent>? terminals;
+    StreamSubscription<acp.AcpPeerUnavailableState>? unavailable;
     var acceptingUpdates = false;
-    final terminalSubscription = client.terminalEvents.listen(
-      (update) {
-        if (!acceptingUpdates || !operation.acceptsEvents || events.isClosed) {
-          return;
-        }
-        final event = _eventFromTerminalEvent(update, sessionId);
-        if (event != null) {
-          events.add(event);
-        }
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        if (operation.acceptsEvents && !events.isClosed) {
-          events.addError(error, stackTrace);
-        }
-      },
-    );
-    final subscription = client
-        .sessionUpdates(sessionId)
-        .listen(
-          (update) {
-            if (!acceptingUpdates ||
-                !operation.acceptsEvents ||
-                events.isClosed) {
-              return;
-            }
-            final event = _eventFromAcpUpdate(
-              update,
-              includeUserMessages: false,
-              sessionId: sessionId,
-            );
-            if (event != null) {
-              events.add(event);
-            }
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            if (operation.acceptsEvents && !events.isClosed) {
-              events.addError(error, stackTrace);
-            }
-          },
-        );
+
+    Future<void> enterTerminalOnly() async {
+      acceptingUpdates = false;
+      final currentUpdates = updates;
+      final currentTerminals = terminals;
+      updates = null;
+      terminals = null;
+      await currentUpdates?.cancel();
+      await currentTerminals?.cancel();
+    }
+
+    operation.enterTerminalOnlyAction = enterTerminalOnly;
+    updates = client.liveSessionUpdates(operation.sessionId).listen((update) {
+      if (!acceptingUpdates || !operation.acceptsUpdates || output.isClosed) {
+        return;
+      }
+      final event = _eventFromAcpUpdate(
+        update,
+        includeUserMessages: false,
+        sessionId: operation.sessionId,
+      );
+      if (event != null) output.add(event);
+    });
+    terminals = client.terminalEvents.listen((update) {
+      if (!acceptingUpdates || !operation.acceptsUpdates || output.isClosed) {
+        return;
+      }
+      final event = _eventFromTerminalEvent(update, operation.sessionId);
+      if (event != null) output.add(event);
+    });
+    unavailable = _peerUnavailableStates.stream.listen((state) {
+      final unavailableWon = _handleRawUnavailable(client, operation, state);
+      if (unavailableWon) {
+        unawaited(operation.finishOutput(emitConnectionClosed: true));
+      }
+    });
+    acp.AcpSessionInputBudgetOwner? owner;
+    Future<_RawPromptRpcOutcome>? terminalOutcome;
+    var streamCancellationWon = false;
     try {
-      await Future<void>.delayed(Duration.zero);
-      if (operation.locallyInvalidated) return;
-      if (operation.cancelRequested) {
-        await _cancelRawPromptOperation(client, operation);
+      if (operation.cancelRequested ||
+          operation.state != _RawPromptOperationState.active) {
         return;
       }
       acceptingUpdates = true;
-      unawaited(() async {
-        acp.AcpSessionInputBudgetOwner? owner;
-        try {
-          if (operation.locallyInvalidated) return;
-          owner = operation.owner;
-          if (owner == null) {
-            owner = client.beginPromptTurn(sessionId);
-            operation.owner = owner;
-          }
-          if (operation.locallyInvalidated) return;
-          if (operation.cancelRequested) {
-            await _cancelRawPromptOperation(client, operation);
-            return;
-          }
-          final request = client
-              .sendRaw('session/prompt', <String, dynamic>{
-                'sessionId': sessionId,
-                'prompt': content,
-              })
-              .then<_RawPromptRpcOutcome>(
-                _RawPromptRpcOutcome.response,
-                onError: (Object error, StackTrace stackTrace) =>
-                    _RawPromptRpcOutcome.error(error, stackTrace),
-              );
-          final outcome = await Future.any<_RawPromptRpcOutcome>(
-            <Future<_RawPromptRpcOutcome>>[
-              request,
-              operation.streamCancellation.future.then(
-                (_) => const _RawPromptRpcOutcome.cancelled(),
-              ),
-            ],
-          );
-          if (outcome.cancelled) return;
-          final error = outcome.error;
-          if (error != null) {
-            Error.throwWithStackTrace(error, outcome.stackTrace!);
-          }
-          final response = outcome.response!;
-          if (operation.acceptsEvents && !events.isClosed) {
-            events.add(_eventFromPromptResponse(response));
-          }
-        } catch (error, stackTrace) {
-          if (operation.acceptsEvents && !events.isClosed) {
-            events.addError(error, stackTrace);
-          }
-        } finally {
-          if (owner != null) {
-            client.endPromptTurn(owner);
-          }
-          if (!events.isClosed) {
-            await events.close();
-          }
-        }
-      }());
-      await for (final event in events.stream) {
-        if (operation.acceptsEvents) {
-          yield event;
-        }
+      owner = client.beginPromptTurn(operation.sessionId);
+      _beginPromptTurnCount += 1;
+      operation.owner = owner;
+      onRawPromptDispatchedForTesting?.call(owner);
+      final result = client.sendPromptRequest(owner: owner, content: content);
+      _rawPromptDispatchCount += 1;
+      terminalOutcome = result.then<_RawPromptRpcOutcome>(
+        _RawPromptRpcOutcome.response,
+        onError: (Object error, StackTrace stackTrace) =>
+            _RawPromptRpcOutcome.error(error, stackTrace),
+      );
+      final outcome =
+          await Future.any<_RawPromptRpcOutcome>(<Future<_RawPromptRpcOutcome>>[
+            terminalOutcome,
+            operation.streamCancellation.future.then(
+              (_) => const _RawPromptRpcOutcome.cancelled(),
+            ),
+          ]);
+      if (outcome.cancelled) {
+        streamCancellationWon = true;
+        return;
+      }
+      if (outcome.error is acp.AcpConnectionClosedException) {
+        final seen = _rawConnectionResultErrorsForTesting[owner] ??=
+            Completer<void>.sync();
+        if (!seen.isCompleted) seen.complete();
+      }
+      final delivered = await _deliverRawTerminal(client, operation, output);
+      final error = outcome.error;
+      if (!delivered && error is acp.AcpConnectionClosedException) {
+        await operation.finishOutput(emitConnectionClosed: true);
+      } else if (!delivered && error != null && operation.acceptsTerminal) {
+        Error.throwWithStackTrace(error, outcome.stackTrace!);
+      }
+    } on Object catch (error, stackTrace) {
+      if (error is acp.AcpConnectionClosedException) {
+        await operation.finishOutput(emitConnectionClosed: true);
+      } else if (operation.acceptsTerminal && !output.isClosed) {
+        output.addError(error, stackTrace);
       }
     } finally {
-      await terminalSubscription.cancel();
-      await subscription.cancel();
-      if (!events.isClosed) {
-        await events.close();
+      if (owner != null) client.endPromptTurn(owner);
+      if (streamCancellationWon && terminalOutcome != null) {
+        await terminalOutcome;
       }
+      await unavailable.cancel();
+      await operation.enterTerminalOnly();
+      await operation.finishOutput(emitConnectionClosed: false);
     }
   }
 
@@ -1846,39 +2296,6 @@ class DartAcpAgentClient implements AcpAgentClient {
       },
       timestamp: DateTime.now(),
     );
-  }
-
-  ({String text, Map<String, Object?> metadata}) _agentErrorDetails(
-    Object error,
-  ) {
-    final data = _dynamicField(error, 'data');
-    if (data is Map) {
-      final message = data['message'];
-      final errorInfo = data['codex_error_info'];
-      return (
-        text: message is String && message.trim().isNotEmpty
-            ? message
-            : error.toString(),
-        metadata: <String, Object?>{
-          'rawError': error.toString(),
-          if (errorInfo is String && errorInfo.isNotEmpty)
-            'codexErrorInfo': errorInfo,
-        },
-      );
-    }
-    return (text: error.toString(), metadata: const <String, Object?>{});
-  }
-
-  Object? _dynamicField(Object object, String fieldName) {
-    try {
-      final dynamic value = object;
-      return switch (fieldName) {
-        'data' => value.data,
-        _ => null,
-      };
-    } catch (_) {
-      return null;
-    }
   }
 
   void _handleBoundedObservation(
@@ -2588,35 +3005,80 @@ class DartAcpAgentClient implements AcpAgentClient {
     return events;
   }
 
-  void _invalidateRawPromptOperation(String sessionId) {
-    final operation = _rawPromptOperationsBySession[sessionId];
-    if (operation == null) return;
-    operation.locallyInvalidated = true;
-    if (identical(_rawPromptOperationsBySession[sessionId], operation)) {
-      _rawPromptOperationsBySession.remove(sessionId);
+  Future<void> _invalidateRawPromptOperation(
+    acp.AcpClient client,
+    _RawPromptOperation operation, {
+    required bool sendCancel,
+    bool waitForOutputClose = true,
+  }) async {
+    if (operation.state == _RawPromptOperationState.finished ||
+        operation.streamClosed) {
+      return;
     }
+    operation.cancelRequested = true;
+    operation.unavailableWonBeforeTerminal = true;
+    operation.state = _RawPromptOperationState.invalidated;
     if (!operation.streamCancellation.isCompleted) {
       operation.streamCancellation.complete();
     }
-  }
-
-  void _invalidateAllRawPromptOperations() {
-    final operations = _rawPromptOperationsBySession.values.toList(
-      growable: false,
-    );
-    for (final operation in operations) {
-      operation.locallyInvalidated = true;
-      if (identical(
-        _rawPromptOperationsBySession[operation.sessionId],
-        operation,
-      )) {
-        _rawPromptOperationsBySession.remove(operation.sessionId);
-      }
-      if (!operation.streamCancellation.isCompleted) {
-        operation.streamCancellation.complete();
-      }
+    if (!waitForOutputClose) {
+      _releaseRawPromptSessionIdentity(operation);
+    }
+    await operation.enterTerminalOnly();
+    final owner = operation.owner;
+    if (owner != null &&
+        sendCancel &&
+        !operation.cancelSent &&
+        client.isAvailable) {
+      operation.cancelSent = true;
+      _rawPromptCancelCount += 1;
+      await client.cancelPromptTurn(owner);
+    }
+    final outputClose = operation.finishOutput(emitConnectionClosed: false);
+    if (waitForOutputClose) {
+      await outputClose;
+    } else {
+      unawaited(
+        outputClose.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
     }
   }
+
+  Future<List<_RawPromptOperation>> _invalidateAllRawPromptOperations({
+    required bool sendCancel,
+  }) async {
+    final client = _client;
+    if (client == null) return const <_RawPromptOperation>[];
+    final snapshot = _rawPromptOperationsInFlight.toList(growable: false);
+    onRawTeardownSnapshotForTesting?.call();
+    final invalidations = <Future<void>>[
+      for (final operation in snapshot)
+        _invalidateRawPromptOperation(
+          client,
+          operation,
+          sendCancel: sendCancel,
+        ),
+    ];
+    await Future.wait<void>(invalidations, eagerError: false);
+    return snapshot;
+  }
+
+  Future<List<_RawPromptOperation>> _finishAllRawOutputsForUnavailable() async {
+    final snapshot = _rawPromptOperationsInFlight.toList(growable: false);
+    onRawTeardownSnapshotForTesting?.call();
+    final settlements = <Future<void>>[
+      for (final operation in snapshot)
+        operation.finishOutput(emitConnectionClosed: true),
+    ];
+    await Future.wait<void>(settlements, eagerError: false);
+    return snapshot;
+  }
+
+  Future<void> _waitForRawPromptOperationsFinished(
+    List<_RawPromptOperation> snapshot,
+  ) => Future.wait<void>(<Future<void>>[
+    for (final operation in snapshot) operation.finished,
+  ], eagerError: false);
 
   @override
   Future<void> cancel() async {
@@ -2626,67 +3088,18 @@ class DartAcpAgentClient implements AcpAgentClient {
     _permissionBridge.cancelSession(sessionId);
     final operation = _rawPromptOperationsBySession[sessionId];
     if (operation == null) return;
-    operation.cancelRequested = true;
-    final cancellation = _settleVoidFuture(
-      _cancelRawPromptOperation(client, operation),
-    );
-    if (!operation.streamCancellation.isCompleted) {
-      operation.streamCancellation.complete();
-    }
-    try {
-      (await cancellation).throwIfFailed();
-    } finally {
-      if (identical(_rawPromptOperationsBySession[sessionId], operation)) {
-        _rawPromptOperationsBySession.remove(sessionId);
-      }
-    }
+    await _cancelRawPromptOperation(client, operation);
   }
 
   Future<void> _cancelRawPromptOperation(
     acp.AcpClient client,
     _RawPromptOperation operation,
-  ) {
-    final completion = operation.cancelCompletion ??= Completer<void>();
-    var owner = operation.owner;
-    if (owner == null) {
-      if (operation.locallyInvalidated || operation.finished) {
-        if (!completion.isCompleted) completion.complete();
-        return completion.future;
-      }
-      try {
-        owner = client.beginPromptTurn(operation.sessionId);
-        operation.owner = owner;
-      } on Object catch (error, stackTrace) {
-        if (!completion.isCompleted) {
-          completion.completeError(error, stackTrace);
-        }
-        return completion.future;
-      }
-    }
-    if (operation.cancelSent) return completion.future;
-    operation.cancelSent = true;
-    try {
-      unawaited(
-        client
-            .cancelPromptTurn(owner)
-            .then<void>(
-              (_) {
-                if (!completion.isCompleted) completion.complete();
-              },
-              onError: (Object error, StackTrace stackTrace) {
-                if (!completion.isCompleted) {
-                  completion.completeError(error, stackTrace);
-                }
-              },
-            ),
-      );
-    } on Object catch (error, stackTrace) {
-      if (!completion.isCompleted) {
-        completion.completeError(error, stackTrace);
-      }
-    }
-    return completion.future;
-  }
+  ) => _invalidateRawPromptOperation(
+    client,
+    operation,
+    sendCancel: true,
+    waitForOutputClose: false,
+  );
 
   @override
   Future<void> respondToPermissionRequest({
@@ -2705,11 +3118,14 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<void> dispose() {
     final existing = _disposeFuture;
     if (existing != null) return existing;
+    _acceptingRawPromptOperations = false;
     _disposed = true;
     _invalidateAllConfigMutationQueues();
     final connectingClient = _connectingClient;
     final connectingTransport = _connectingTransport;
     final connectingListener = _connectingBoundedObservationListener;
+    final connectingPeerUnavailableListener = _listenerFor(connectingClient);
+    if (connectingClient != null) _disposingPeerSources.add(connectingClient);
     _connectingClient = null;
     _connectingTransport = null;
     _connectingBoundedObservationListener = null;
@@ -2717,6 +3133,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       connectingClient,
       connectingTransport,
       connectingListener,
+      connectingPeerUnavailableListener,
     );
   }
 
@@ -2724,26 +3141,41 @@ class DartAcpAgentClient implements AcpAgentClient {
     acp.AcpClient? connectingClient,
     acp.AcpTransport? connectingTransport,
     acp.AcpBoundedObservationListener? connectingListener,
+    acp.AcpPeerUnavailableListener? connectingPeerUnavailableListener,
   ) async {
     try {
       await _disposeClient(
         connectingClient,
         connectingTransport,
         connectingListener,
+        connectingPeerUnavailableListener,
       );
     } finally {
-      await _disposeActiveClient(closePermissionStream: true);
+      try {
+        await _disposeActiveClient(closePermissionStream: true);
+      } finally {
+        await _peerUnavailableStates.close();
+      }
     }
   }
 
   Future<void> _disposeActiveClient({
     required bool closePermissionStream,
   }) async {
-    _invalidateAllRawPromptOperations();
+    late final List<_RawPromptOperation> invalidatedOperations;
+    if (closePermissionStream) {
+      invalidatedOperations = await _finishAllRawOutputsForUnavailable();
+    } else {
+      invalidatedOperations = await _invalidateAllRawPromptOperations(
+        sendCancel: false,
+      );
+    }
     _invalidateAllConfigMutationQueues();
     final client = _client;
     final transport = _transport;
     final observationListener = _boundedObservationListener;
+    final peerUnavailableListener = _listenerFor(client);
+    if (client != null) _disposingPeerSources.add(client);
     _client = null;
     _transport = null;
     _boundedObservationListener = null;
@@ -2766,7 +3198,16 @@ class DartAcpAgentClient implements AcpAgentClient {
     } else {
       _permissionBridge.cancelAll();
     }
-    await _disposeClient(client, transport, observationListener);
+    try {
+      await _disposeClient(
+        client,
+        transport,
+        observationListener,
+        peerUnavailableListener,
+      );
+    } finally {
+      await _waitForRawPromptOperationsFinished(invalidatedOperations);
+    }
   }
 
   acp.AcpClient _requireClient() {
@@ -2850,12 +3291,13 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   Future<void> _disposeClient(
-    acp.AcpClient? client,
+    acp.AcpClient? source,
     acp.AcpTransport? transport, [
     acp.AcpBoundedObservationListener? observationListener,
+    acp.AcpPeerUnavailableListener? peerUnavailableListener,
   ]) async {
-    if (client != null && observationListener != null) {
-      client.removeBoundedObservationListener(observationListener);
+    if (source != null && observationListener != null) {
+      source.removeBoundedObservationListener(observationListener);
     }
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -2866,13 +3308,21 @@ class DartAcpAgentClient implements AcpAgentClient {
       firstStackTrace = stackTrace;
     }
     try {
-      await client?.dispose().timeout(const Duration(milliseconds: 500));
+      await source?.dispose().timeout(const Duration(milliseconds: 500));
     } on TimeoutException {
       // The underlying package can wait for a still-open JSON-RPC stream while
       // shutting down. The stdio process has already been stopped above.
     } on Object catch (error, stackTrace) {
       firstError ??= error;
       firstStackTrace ??= stackTrace;
+    } finally {
+      if (source != null && peerUnavailableListener != null) {
+        _removePeerUnavailableListenerAfterCoreDispose(
+          source,
+          peerUnavailableListener,
+        );
+      }
+      if (source != null) _disposingPeerSources.remove(source);
     }
     final cleanupError = firstError;
     if (cleanupError != null) {
@@ -2979,20 +3429,98 @@ final class _PromptAttachmentBudget {
   }
 }
 
+enum _RawPromptOperationState { active, terminalOnly, invalidated, finished }
+
 final class _RawPromptOperation {
   _RawPromptOperation(this.sessionId);
 
   final String sessionId;
   acp.AcpSessionInputBudgetOwner? owner;
+  _RawPromptOperationState state = _RawPromptOperationState.active;
   bool cancelRequested = false;
   bool cancelSent = false;
-  bool finished = false;
-  bool locallyInvalidated = false;
-  Completer<void>? cancelCompletion;
+  bool terminalClaimed = false;
+  bool unavailableWonBeforeTerminal = false;
+  bool streamClosed = false;
+  Future<void> Function()? enterTerminalOnlyAction;
+  Future<void> Function({required bool emitConnectionClosed})?
+  finishOutputAction;
+  Future<void>? _terminalOnlyEntered;
   final Completer<void> streamCancellation = Completer<void>();
+  final Completer<void> _finished = Completer<void>.sync();
 
-  bool get acceptsEvents =>
-      !locallyInvalidated && !cancelRequested && !finished;
+  Future<void> get finished => _finished.future;
+
+  void markFinished() {
+    if (!_finished.isCompleted) _finished.complete();
+  }
+
+  bool get acceptsUpdates =>
+      state == _RawPromptOperationState.active && !cancelRequested;
+  bool get acceptsTerminal =>
+      state == _RawPromptOperationState.active ||
+      state == _RawPromptOperationState.terminalOnly;
+
+  Future<void> enterTerminalOnly() {
+    final action = enterTerminalOnlyAction;
+    if (action == null) return Future<void>.value();
+    return _terminalOnlyEntered ??= action();
+  }
+
+  Future<void> finishOutput({required bool emitConnectionClosed}) =>
+      finishOutputAction?.call(emitConnectionClosed: emitConnectionClosed) ??
+      Future<void>.error(StateError('Raw output settlement is not installed.'));
+
+  bool handleUnavailable({
+    required bool sameOwnerCleanupFatal,
+    required bool deliveryRightExists,
+  }) {
+    if (state != _RawPromptOperationState.active) return false;
+    if (sameOwnerCleanupFatal && deliveryRightExists) {
+      state = _RawPromptOperationState.terminalOnly;
+      return false;
+    }
+    unavailableWonBeforeTerminal = true;
+    state = _RawPromptOperationState.invalidated;
+    return true;
+  }
+
+  bool tryAcceptClaimedTerminal() {
+    if (!acceptsTerminal || unavailableWonBeforeTerminal || terminalClaimed) {
+      return false;
+    }
+    terminalClaimed = true;
+    state = _RawPromptOperationState.finished;
+    return true;
+  }
+
+  bool tryCloseStream() {
+    if (streamClosed) return false;
+    streamClosed = true;
+    return true;
+  }
+}
+
+final class _RawAttachmentConversionOutcome {
+  const _RawAttachmentConversionOutcome.content(this.content)
+    : error = null,
+      stackTrace = null,
+      cancelled = false;
+
+  const _RawAttachmentConversionOutcome.error(this.error, this.stackTrace)
+    : content = null,
+      cancelled = false;
+
+  const _RawAttachmentConversionOutcome.cancelled()
+    : content = null,
+      error = null,
+      stackTrace = null,
+      cancelled = true;
+
+  final List<Map<String, dynamic>>? content;
+  final Object? error;
+  final StackTrace? stackTrace;
+  final bool cancelled;
 }
 
 final class _RawPromptRpcOutcome {
@@ -3015,28 +3543,6 @@ final class _RawPromptRpcOutcome {
   final Object? error;
   final StackTrace? stackTrace;
   final bool cancelled;
-}
-
-Future<_VoidFutureSettlement> _settleVoidFuture(Future<void> future) {
-  return future.then<_VoidFutureSettlement>(
-    (_) => const _VoidFutureSettlement.success(),
-    onError: (Object error, StackTrace stackTrace) =>
-        _VoidFutureSettlement.failure(error, stackTrace),
-  );
-}
-
-final class _VoidFutureSettlement {
-  const _VoidFutureSettlement.success() : error = null, stackTrace = null;
-
-  const _VoidFutureSettlement.failure(this.error, this.stackTrace);
-
-  final Object? error;
-  final StackTrace? stackTrace;
-
-  void throwIfFailed() {
-    final failure = error;
-    if (failure != null) Error.throwWithStackTrace(failure, stackTrace!);
-  }
 }
 
 class _AcpPermissionBridge {

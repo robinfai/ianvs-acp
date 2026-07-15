@@ -12,6 +12,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
@@ -22,6 +23,507 @@ final _testOmission = acp.AcpInputOmission(
   resource: 'test_resource',
   truncated: false,
 );
+
+enum _RawUnavailableFirst {
+  transportClose,
+  requestFatal,
+  explicitClose,
+  dispose,
+}
+
+enum _RawCloseRaceOrder { listenerFirst, resultErrorFirst, userCancelFirst }
+
+enum _RawExternalUnavailableCause { explicitClose, dispose }
+
+enum _RawPreOwnerExit { cancel, reconnect, dispose }
+
+enum _RawPostOwnerExit { reconnect, dispose }
+
+const _rawAgentSource = r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main(List<String> args) async {
+  final promptSeen = File(args[0]);
+  final cancelSeen = File(args[1]);
+  final releaseResponse = File(args[2]);
+  final lateTerminalSent = File(args[3]);
+  final control = File(args[4]);
+  final providerResponse = File(args[5]);
+  final requestFatalSeen = File(args[6]);
+  Map<String, dynamic>? promptRequest;
+  var stopped = false;
+  var providerSent = false;
+  var newCount = 0;
+  var promptCount = 0;
+
+  void send(Map<String, dynamic> message) {
+    stdout.writeln(jsonEncode(message));
+  }
+
+  Future<void> poll() async {
+    while (!stopped) {
+      if (await control.exists() &&
+          (await control.readAsString()).trim() == 'transport-close') {
+        await stdout.flush();
+        exit(0);
+      }
+      if (await control.exists()) {
+        final action = (await control.readAsString()).trim();
+        if (!providerSent && action.startsWith('provider:')) {
+          providerSent = true;
+          final method = action.substring('provider:'.length);
+          final params = switch (method) {
+            'fs/read_text_file' => <String, dynamic>{
+              'sessionId': 'session-1',
+              'path': 'input.txt',
+            },
+            'fs/write_text_file' => <String, dynamic>{
+              'sessionId': 'session-1',
+              'path': 'output.txt',
+              'content': 'fixed output',
+            },
+            'terminal/create' => <String, dynamic>{
+              'sessionId': 'session-1',
+              'command': 'printf fixed',
+              'args': <String>[],
+            },
+            _ => throw StateError('Unsupported provider method: $method'),
+          };
+          send(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 'raw-provider-1',
+            'method': method,
+            'params': params,
+          });
+          await stdout.flush();
+        }
+      }
+      final current = promptRequest;
+      if (current != null && await releaseResponse.exists()) {
+        final terminal = (await releaseResponse.readAsString()).trim();
+        promptRequest = null;
+        if (terminal == 'success') {
+          send(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': current['id'],
+            'result': <String, dynamic>{'stopReason': 'end_turn'},
+          });
+        } else {
+          final error = Map<String, dynamic>.from(
+            jsonDecode(terminal) as Map,
+          );
+          send(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': current['id'],
+            'error': error,
+          });
+        }
+        await stdout.flush();
+        await lateTerminalSent.writeAsString('sent');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
+  final polling = poll();
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final decoded = jsonDecode(line);
+    if (decoded is! Map) continue;
+    final message = Map<String, dynamic>.from(decoded);
+    if (message['id'] == 'raw-provider-1' && message['method'] == null) {
+      await providerResponse.writeAsString(jsonEncode(message));
+      continue;
+    }
+    switch (message['method']) {
+      case 'initialize':
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{
+            'protocolVersion': 1,
+            'agentCapabilities': <String, dynamic>{
+              'promptCapabilities': <String, dynamic>{},
+            },
+            'authMethods': <Map<String, dynamic>>[],
+          },
+        });
+        break;
+      case 'session/new':
+        newCount += 1;
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{
+            'sessionId': 'session-' + newCount.toString(),
+          },
+        });
+        break;
+      case 'session/prompt':
+        promptCount += 1;
+        promptRequest = message;
+        await promptSeen.writeAsString(promptCount.toString());
+        break;
+      case 'session/cancel':
+        await cancelSeen.writeAsString('seen');
+        break;
+      case '_raw/request-fatal':
+        await requestFatalSeen.writeAsString('seen');
+        break;
+      case 'logout':
+        send(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, dynamic>{},
+        });
+        break;
+    }
+    await stdout.flush();
+  }
+  stopped = true;
+  await polling;
+}
+''';
+
+final class _RawStdioFixture {
+  _RawStdioFixture._({
+    required this.tempDir,
+    required this.client,
+    required this.acpClient,
+    required this.session,
+    required this.promptSeenFile,
+    required this.cancelSeenFile,
+    required this.releaseResponseFile,
+    required this.lateTerminalSentFile,
+    required this.controlFile,
+    required this.providerResponseFile,
+    required this.requestFatalSeenFile,
+    required this._unavailable,
+  });
+
+  final Directory tempDir;
+  final DartAcpAgentClient client;
+  final acp.AcpClient acpClient;
+  final AgentSession session;
+  final File promptSeenFile;
+  final File cancelSeenFile;
+  final File releaseResponseFile;
+  final File lateTerminalSentFile;
+  final File controlFile;
+  final File providerResponseFile;
+  final File requestFatalSeenFile;
+  final Future<acp.AcpPeerUnavailableState> _unavailable;
+  final StreamController<AgentEvent> _eventsController =
+      StreamController<AgentEvent>.broadcast(sync: true);
+  late final Stream<AgentEvent> events = _eventsController.stream;
+  final Completer<void> _publicStreamDone = Completer<void>.sync();
+  late final StreamSubscription<AgentEvent> _rawPromptSubscription;
+  late final StreamSubscription<AcpPermissionRequest> permissionSubscription;
+  late final acp.AcpPromptAdmissionProbeForTesting admissionProbe;
+  bool _disposed = false;
+
+  acp.AcpSessionInputBudgetOwner? _owner;
+  Future<void>? _winnerRecorded;
+  Future<void>? _rightRecorded;
+  Future<void>? _preClaimSeen;
+  Future<void>? _claimSeen;
+
+  acp.AcpSessionInputBudgetOwner get owner =>
+      _owner ?? (throw StateError('Raw prompt has not dispatched.'));
+  int get promptCount => client.rawPromptDispatchCountForTesting;
+  int get cancelCount => client.rawPromptCancelCountForTesting;
+  int get beginPromptTurnCount => client.beginPromptTurnCountForTesting;
+  int get wirePromptCount => int.parse(promptSeenFile.readAsStringSync());
+  int get deliveryClaimCount => client.rawDeliveryClaimCountForTesting(owner);
+  int get streamCloseCount => client.rawStreamCloseCountForTesting(owner);
+
+  static Future<_RawStdioFixture> startRawWithBlockedAdmission({
+    acp.AcpTimeouts timeouts = const acp.AcpTimeouts(
+      request: Duration(milliseconds: 100),
+      permission: Duration(milliseconds: 100),
+      promptCancelGrace: Duration(milliseconds: 750),
+    ),
+    String providerMethod = 'fs/read_text_file',
+  }) async {
+    final tempDir = await Directory.systemTemp.createTemp('raw-stdio-');
+    File path(String name) => File('${tempDir.path}/$name');
+    final script = path('raw_agent.dart');
+    final promptSeen = path('prompt-seen');
+    final cancelSeen = path('cancel-seen');
+    final releaseResponse = path('release-response');
+    final lateTerminalSent = path('late-terminal-sent');
+    final control = path('control');
+    final providerResponse = path('provider-response');
+    final requestFatalSeen = path('request-fatal-seen');
+    await path('input.txt').writeAsString('fixed input');
+    await script.writeAsString(_rawAgentSource);
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[
+        script.path,
+        promptSeen.path,
+        cancelSeen.path,
+        releaseResponse.path,
+        lateTerminalSent.path,
+        control.path,
+        providerResponse.path,
+        requestFatalSeen.path,
+      ],
+      timeouts: timeouts,
+      enableFilesystemReadTextFile: true,
+      enableFilesystemWriteTextFile: true,
+      enableTerminalProvider: true,
+    );
+    await client.connect().timeout(const Duration(seconds: 2));
+    final session = await client.createSession(cwd: tempDir.path);
+    final unavailable = client.peerUnavailableForTesting.first;
+    final fixture = _RawStdioFixture._(
+      tempDir: tempDir,
+      client: client,
+      acpClient: client.acpClientForTesting,
+      session: session,
+      promptSeenFile: promptSeen,
+      cancelSeenFile: cancelSeen,
+      releaseResponseFile: releaseResponse,
+      lateTerminalSentFile: lateTerminalSent,
+      controlFile: control,
+      providerResponseFile: providerResponse,
+      requestFatalSeenFile: requestFatalSeen,
+      unavailable: unavailable,
+    );
+    fixture.admissionProbe = client.installRawAdmissionProbeForTesting();
+    fixture.permissionSubscription = client.permissionRequests.listen((
+      request,
+    ) {
+      unawaited(
+        client.respondToPermissionRequest(
+          id: request.id,
+          decision: AcpPermissionDecision.allow,
+        ),
+      );
+    });
+    client.onRawPromptDispatchedForTesting = (owner) {
+      if (fixture._owner != null) return;
+      fixture._owner = owner;
+      fixture._winnerRecorded = fixture.acpClient
+          .promptWinnerRecordedForTesting(owner);
+      fixture._rightRecorded = fixture.acpClient.promptRightRecordedForTesting(
+        owner,
+      );
+      fixture._preClaimSeen = fixture.acpClient.promptBarrierReleasedForTesting(
+        owner,
+      );
+      fixture._claimSeen = fixture.acpClient.promptClaimSeenForTesting(owner);
+    };
+    fixture._rawPromptSubscription = client
+        .sendPrompt(sessionId: session.id, prompt: 'raw fixture prompt')
+        .listen(
+          fixture._eventsController.add,
+          onError: fixture._eventsController.addError,
+          onDone: () {
+            if (!fixture._publicStreamDone.isCompleted) {
+              fixture._publicStreamDone.complete();
+            }
+            unawaited(fixture._eventsController.close());
+          },
+        );
+    await fixture.promptSeen.timeout(const Duration(seconds: 2));
+    fixture.startRawProviderAdmission(providerMethod);
+    await fixture.admissionBarrierSeen.timeout(const Duration(seconds: 2));
+    return fixture;
+  }
+
+  Future<void> get promptSeen => _waitForFile(promptSeenFile);
+  Future<void> get cancelSeen => _waitForFile(cancelSeenFile);
+  Future<void> get streamDone => _publicStreamDone.future;
+  bool get streamIsDone => _publicStreamDone.isCompleted;
+  Future<void> get admissionBarrierSeen => admissionProbe.admissionBarrierSeen;
+  Future<void> get graceStarted => admissionProbe.graceStarted;
+  Future<void> get winnerRecorded =>
+      _winnerRecorded ??
+      Future<void>.error(StateError('Raw prompt has not dispatched.'));
+  Future<void> get rightRecorded =>
+      _rightRecorded ??
+      Future<void>.error(StateError('Raw prompt has not dispatched.'));
+  Future<void> get cleanupFatalSeen => _unavailable.then<void>((state) {
+    if (state.reason != acp.AcpPeerUnavailableReason.fatalTimeout) {
+      throw StateError('Expected cleanup fatal, got ${state.reason}.');
+    }
+  });
+  Future<void> get backgroundReapDone =>
+      acpClient.sessionManagerForTesting.promptCleanupReapedForTesting(owner) ??
+      Future<void>.error(StateError('Raw prompt cleanup has not started.'));
+  Future<void> get lateTerminalSent => _waitForFile(lateTerminalSentFile);
+  Future<void> get sideEffectStarted =>
+      client.rawProviderSideEffectStartedForTesting(owner);
+  Future<void> get preClaimSeen =>
+      _preClaimSeen ??
+      Future<void>.error(StateError('Raw prompt has not dispatched.'));
+  Future<void> get claimSeen =>
+      _claimSeen ??
+      Future<void>.error(StateError('Raw prompt has not dispatched.'));
+  Future<void> get unavailableSeen => _unavailable.then<void>((_) {});
+  Future<Map<String, dynamic>> get providerResponse async {
+    await _waitForFile(providerResponseFile);
+    return Map<String, dynamic>.from(
+      jsonDecode(await providerResponseFile.readAsString()) as Map,
+    );
+  }
+
+  Future<void> get requestFatalSeen => _waitForFile(requestFatalSeenFile);
+  Future<void> get connectionResultErrorSeen =>
+      client.rawConnectionResultErrorSeenForTesting(owner);
+  Future<void> get unavailablePublicationPaused =>
+      client.rawUnavailablePublicationPausedForTesting;
+
+  void completePromptSuccess() =>
+      releaseResponseFile.writeAsStringSync('success');
+  void completePromptError({
+    int code = -32000,
+    String message = 'fixed remote error',
+    Map<String, Object?>? data,
+  }) => releaseResponseFile.writeAsStringSync(
+    jsonEncode(<String, Object?>{
+      'code': code,
+      'message': message,
+      'data': ?data,
+    }),
+  );
+  void releaseLateSuccess() => completePromptSuccess();
+  void releaseLateError() => completePromptError();
+  void releaseAdmissionReservationOnly() =>
+      admissionProbe.releaseReservationOnly();
+  void releaseAdmissionCommit() => admissionProbe.releaseCommit();
+  void requestTransportClose() =>
+      controlFile.writeAsStringSync('transport-close');
+  void startRawProviderAdmission(String method) =>
+      controlFile.writeAsStringSync('provider:$method');
+  void holdDeliveryClaim() => client.holdRawDeliveryClaimForTesting(owner);
+  void releaseDeliveryClaim() =>
+      client.releaseRawDeliveryClaimForTesting(owner);
+  void holdAfterManagerClaim() =>
+      client.holdRawAfterManagerClaimForTesting(owner);
+  Future<void> get afterManagerClaimSeen =>
+      client.rawAfterManagerClaimSeenForTesting(owner);
+  void releaseAfterManagerClaim() =>
+      client.releaseRawAfterManagerClaimForTesting(owner);
+  void holdUnavailablePublication() =>
+      client.holdNextRawUnavailablePublicationForTesting();
+  void releaseUnavailablePublication() =>
+      client.releaseRawUnavailablePublicationForTesting();
+  void pauseRawPrompt() => _rawPromptSubscription.pause();
+  void resumeRawPrompt() => _rawPromptSubscription.resume();
+
+  Future<void> requestFatal() async {
+    final request = acpClient.sendRaw(
+      '_raw/request-fatal',
+      const <String, dynamic>{},
+    );
+    await requestFatalSeen.timeout(const Duration(seconds: 2));
+    Object? failure;
+    try {
+      await request;
+    } on Object catch (error) {
+      failure = error;
+    }
+    if (failure == null) {
+      throw StateError('Request-fatal probe unexpectedly succeeded.');
+    }
+  }
+
+  Future<void> winUnavailableBeforeClaim(_RawUnavailableFirst first) async {
+    final unavailable = unavailableSeen;
+    switch (first) {
+      case _RawUnavailableFirst.transportClose:
+        requestTransportClose();
+      case _RawUnavailableFirst.requestFatal:
+        await requestFatal();
+      case _RawUnavailableFirst.explicitClose:
+        await client.closePeerExplicitlyForTesting();
+      case _RawUnavailableFirst.dispose:
+        final dispose = client.dispose();
+        await streamDone.timeout(const Duration(seconds: 2));
+        releaseDeliveryClaim();
+        await dispose;
+    }
+    await unavailable.timeout(const Duration(seconds: 2));
+    await streamDone.timeout(const Duration(seconds: 2));
+  }
+
+  Future<List<AgentEvent>> startReplacement() => client
+      .sendPrompt(sessionId: session.id, prompt: 'replacement')
+      .toList()
+      .timeout(const Duration(seconds: 2));
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    client.onRawPromptDispatchedForTesting = null;
+    client.releaseRawUnavailablePublicationForTesting();
+    await permissionSubscription.cancel();
+    await _rawPromptSubscription.cancel();
+    await client.dispose();
+    if (!_eventsController.isClosed) await _eventsController.close();
+    if (await tempDir.exists()) await tempDir.delete(recursive: true);
+  }
+}
+
+final class _RawPreOwnerFixture {
+  _RawPreOwnerFixture._({
+    required this.tempDir,
+    required this.client,
+    required this.session,
+    required this.attachment,
+  });
+
+  final Directory tempDir;
+  final DartAcpAgentClient client;
+  final AgentSession session;
+  final PromptAttachment attachment;
+
+  static Future<_RawPreOwnerFixture> start() async {
+    final tempDir = await Directory.systemTemp.createTemp('raw-pre-owner-');
+    File path(String name) => File('${tempDir.path}/$name');
+    final script = path('raw_agent.dart');
+    final attachmentFile = path('blocked.txt');
+    await attachmentFile.writeAsString('fixed attachment');
+    await script.writeAsString(_rawAgentSource);
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[
+        script.path,
+        path('prompt-seen').path,
+        path('cancel-seen').path,
+        path('release-response').path,
+        path('late-terminal-sent').path,
+        path('control').path,
+        path('provider-response').path,
+        path('request-fatal-seen').path,
+      ],
+    );
+    await client.connect().timeout(const Duration(seconds: 2));
+    final session = await client.createSession(cwd: tempDir.path);
+    return _RawPreOwnerFixture._(
+      tempDir: tempDir,
+      client: client,
+      session: session,
+      attachment: PromptAttachment.fromPath(
+        path: attachmentFile.path,
+        mimeType: 'text/plain',
+        size: await attachmentFile.length(),
+      ),
+    );
+  }
+
+  Future<void> dispose() async {
+    client.releaseRawAttachmentConversionForTesting();
+    await client.dispose();
+    if (await tempDir.exists()) await tempDir.delete(recursive: true);
+  }
+}
 
 void main() {
   group('DefaultPermissionProvider', () {
@@ -10493,16 +10995,18 @@ Future<void> main() async {
     },
   );
 
-  test('raw prompt immediate cancel is delivered before prompt RPC', () async {
-    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
-    final cancelSeenFile = File('${tempDir.path}/cancel_seen');
-    final promptSeenFile = File('${tempDir.path}/prompt_seen');
-    final agentScript = File(
-      '${tempDir.path}/fake_immediate_cancel_agent.dart',
-    );
-    final cancelSeenPath = jsonEncode(cancelSeenFile.path);
-    final promptSeenPath = jsonEncode(promptSeenFile.path);
-    await agentScript.writeAsString('''
+  test(
+    'raw prompt immediate cancel stays pre-owner and sends no RPC',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+      final promptSeenFile = File('${tempDir.path}/prompt_seen');
+      final agentScript = File(
+        '${tempDir.path}/fake_immediate_cancel_agent.dart',
+      );
+      final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+      final promptSeenPath = jsonEncode(promptSeenFile.path);
+      await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
 
@@ -10561,40 +11065,49 @@ Future<void> main() async {
 }
 ''');
 
-    final client = DartAcpAgentClient(
-      agentCommand: _dartExecutable(),
-      agentArgs: <String>[agentScript.path],
-    );
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
 
-    try {
-      await client.connect().timeout(const Duration(seconds: 5));
-      final session = await client.createSession(cwd: '/workspace');
-      final promptEvents = client
-          .sendPrompt(sessionId: session.id, prompt: 'cancel immediately')
-          .toList();
-      await client.cancel();
-      final replacement = await client
-          .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
-          .toList()
-          .timeout(const Duration(seconds: 5));
-      expect(replacement.last.metadata['stopReason'], 'endTurn');
-      expect(await promptEvents.timeout(const Duration(seconds: 5)), isEmpty);
-      await _waitForFile(cancelSeenFile);
-      expect(await promptSeenFile.exists(), isFalse);
-    } finally {
-      await client.dispose();
-      await tempDir.delete(recursive: true);
-    }
-  });
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        final promptEvents = client
+            .sendPrompt(sessionId: session.id, prompt: 'cancel immediately')
+            .toList();
+        await client.cancel();
+        expect(client.beginPromptTurnCountForTesting, 0);
+        expect(client.rawPromptDispatchCountForTesting, 0);
+        expect(client.rawPromptCancelCountForTesting, 0);
+        final replacement = await client
+            .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
+            .toList()
+            .timeout(const Duration(seconds: 5));
+        expect(replacement.last.metadata['stopReason'], 'endTurn');
+        expect(await promptEvents.timeout(const Duration(seconds: 5)), isEmpty);
+        expect(client.beginPromptTurnCountForTesting, 1);
+        expect(client.rawPromptDispatchCountForTesting, 1);
+        expect(client.rawPromptCancelCountForTesting, 0);
+        expect(await cancelSeenFile.exists(), isFalse);
+        expect(await promptSeenFile.exists(), isFalse);
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
-  test('paused raw prompt cancel releases identity before returning', () async {
-    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
-    final cancelSeenFile = File('${tempDir.path}/cancel_seen');
-    final unexpectedPromptFile = File('${tempDir.path}/unexpected_prompt');
-    final agentScript = File('${tempDir.path}/fake_paused_cancel_agent.dart');
-    final cancelSeenPath = jsonEncode(cancelSeenFile.path);
-    final unexpectedPromptPath = jsonEncode(unexpectedPromptFile.path);
-    await agentScript.writeAsString('''
+  test(
+    'paused pre-owner raw cancel releases identity without cancel RPC',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+      final unexpectedPromptFile = File('${tempDir.path}/unexpected_prompt');
+      final agentScript = File('${tempDir.path}/fake_paused_cancel_agent.dart');
+      final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+      final unexpectedPromptPath = jsonEncode(unexpectedPromptFile.path);
+      await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
 
@@ -10637,51 +11150,58 @@ Future<void> main() async {
   }
 }
 ''');
-    final client = DartAcpAgentClient(
-      agentCommand: _dartExecutable(),
-      agentArgs: <String>[agentScript.path],
-    );
-    StreamSubscription<AgentEvent>? subscription;
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      StreamSubscription<AgentEvent>? subscription;
 
-    try {
-      await client.connect().timeout(const Duration(seconds: 5));
-      final session = await client.createSession(cwd: '/workspace');
-      subscription = client
-          .sendPrompt(sessionId: session.id, prompt: 'paused cancel')
-          .listen((_) {});
-      subscription.pause();
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        subscription = client
+            .sendPrompt(sessionId: session.id, prompt: 'paused cancel')
+            .listen((_) {});
+        subscription.pause();
 
-      await client.cancel().timeout(const Duration(seconds: 5));
-      final replacement = await client
-          .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
-          .toList()
-          .timeout(const Duration(seconds: 5));
-      expect(replacement.last.metadata['stopReason'], 'endTurn');
-      await _waitForFile(cancelSeenFile);
-      expect(await unexpectedPromptFile.exists(), isFalse);
-    } finally {
-      subscription?.resume();
-      await subscription?.cancel();
-      await client.dispose();
-      await tempDir.delete(recursive: true);
-    }
-  });
+        await client.cancel().timeout(const Duration(seconds: 5));
+        final replacement = await client
+            .sendPrompt(sessionId: session.id, prompt: 'replacement barrier')
+            .toList()
+            .timeout(const Duration(seconds: 5));
+        expect(replacement.last.metadata['stopReason'], 'endTurn');
+        expect(client.beginPromptTurnCountForTesting, 1);
+        expect(client.rawPromptDispatchCountForTesting, 1);
+        expect(client.rawPromptCancelCountForTesting, 0);
+        expect(await cancelSeenFile.exists(), isFalse);
+        expect(await unexpectedPromptFile.exists(), isFalse);
+      } finally {
+        subscription?.resume();
+        await subscription?.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test(
-    'raw stream cancel sends exact cancel and releases the session',
+    'raw cancel notification precedes public done and background reap',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final promptSeenFile = File('${tempDir.path}/prompt_seen');
       final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+      final releaseResponseFile = File('${tempDir.path}/release_response');
       final agentScript = File('${tempDir.path}/fake_stream_cancel_agent.dart');
       final promptSeenPath = jsonEncode(promptSeenFile.path);
       final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+      final releaseResponsePath = jsonEncode(releaseResponseFile.path);
       await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
 
 Future<void> main() async {
   var promptCount = 0;
+  Object? firstPromptId;
   await for (final line in stdin
       .transform(utf8.decoder)
       .transform(const LineSplitter())) {
@@ -10705,6 +11225,7 @@ Future<void> main() async {
     } else if (message['method'] == 'session/prompt') {
       promptCount += 1;
       if (promptCount == 1) {
+        firstPromptId = message['id'];
         await File($promptSeenPath).writeAsString('prompted');
       } else {
         stdout.writeln(jsonEncode(<String, dynamic>{
@@ -10715,6 +11236,14 @@ Future<void> main() async {
       }
     } else if (message['method'] == 'session/cancel') {
       await File($cancelSeenPath).writeAsString('cancelled');
+      while (!await File($releaseResponsePath).exists()) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': firstPromptId,
+        'result': <String, dynamic>{'stopReason': 'cancelled'},
+      }));
     }
   }
 }
@@ -10724,17 +11253,35 @@ Future<void> main() async {
         agentArgs: <String>[agentScript.path],
       );
       StreamSubscription<AgentEvent>? first;
+      final firstDone = Completer<void>.sync();
+      acp.AcpSessionInputBudgetOwner? firstOwner;
+      client.onRawPromptDispatchedForTesting = (owner) {
+        firstOwner ??= owner;
+      };
 
       try {
         await client.connect().timeout(const Duration(seconds: 5));
         final session = await client.createSession(cwd: '/workspace');
         first = client
             .sendPrompt(sessionId: session.id, prompt: 'hold first')
-            .listen((_) {});
+            .listen((_) {}, onDone: firstDone.complete);
         await _waitForFile(promptSeenFile);
-        await first.cancel().timeout(const Duration(seconds: 5));
-        first = null;
+        await client.cancel().timeout(const Duration(seconds: 5));
         await _waitForFile(cancelSeenFile);
+        await firstDone.future.timeout(const Duration(seconds: 5));
+        final owner = firstOwner!;
+        final backgroundReap = client
+            .acpClientForTesting
+            .sessionManagerForTesting
+            .promptCleanupReapedForTesting(owner)!;
+        await expectLater(
+          client
+              .sendPrompt(sessionId: session.id, prompt: 'too early')
+              .toList(),
+          throwsA(isA<StateError>()),
+        );
+        await releaseResponseFile.writeAsString('release');
+        await backgroundReap.timeout(const Duration(seconds: 5));
 
         final events = await client
             .sendPrompt(sessionId: session.id, prompt: 'replacement')
@@ -10742,6 +11289,7 @@ Future<void> main() async {
             .timeout(const Duration(seconds: 5));
         expect(events.last.metadata['stopReason'], 'endTurn');
       } finally {
+        client.onRawPromptDispatchedForTesting = null;
         try {
           await first?.cancel().timeout(const Duration(seconds: 1));
         } on Object {
@@ -10761,6 +11309,7 @@ Future<void> main() async {
       final promptSeenFile = File('${tempDir.path}/prompt_seen');
       final cancelSeenFile = File('${tempDir.path}/cancel_seen');
       final releaseResponseFile = File('${tempDir.path}/release_response');
+      final releaseLateFile = File('${tempDir.path}/release_late');
       final lateSentFile = File('${tempDir.path}/late_sent');
       final agentScript = File(
         '${tempDir.path}/fake_post_owner_cancel_agent.dart',
@@ -10768,6 +11317,7 @@ Future<void> main() async {
       final promptSeenPath = jsonEncode(promptSeenFile.path);
       final cancelSeenPath = jsonEncode(cancelSeenFile.path);
       final releaseResponsePath = jsonEncode(releaseResponseFile.path);
+      final releaseLatePath = jsonEncode(releaseLateFile.path);
       final lateSentPath = jsonEncode(lateSentFile.path);
       await agentScript.writeAsString('''
 import 'dart:convert';
@@ -10797,6 +11347,26 @@ Future<void> main() async {
       }));
     } else if (message['method'] == 'session/cancel') {
       await File($cancelSeenPath).writeAsString('cancelled');
+      while (!await File($releaseLatePath).exists()) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      if ($lateError) {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': firstPromptId,
+          'error': <String, dynamic>{
+            'code': -32000,
+            'message': 'late failure',
+          },
+        }));
+      } else {
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': firstPromptId,
+          'result': <String, dynamic>{'stopReason': 'end_turn'},
+        }));
+      }
+      await File($lateSentPath).writeAsString('sent');
     } else if (message['method'] == 'session/prompt') {
       final params = message['params'] as Map<String, dynamic>;
       final prompt = params['prompt'] as List<dynamic>;
@@ -10828,23 +11398,6 @@ Future<void> main() async {
         'id': message['id'],
         'result': <String, dynamic>{'stopReason': 'end_turn'},
       }));
-      if ($lateError) {
-        stdout.writeln(jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': firstPromptId,
-          'error': <String, dynamic>{
-            'code': -32000,
-            'message': 'late failure',
-          },
-        }));
-      } else {
-        stdout.writeln(jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': firstPromptId,
-          'result': <String, dynamic>{'stopReason': 'end_turn'},
-        }));
-      }
-      await File($lateSentPath).writeAsString('sent');
     }
   }
 }
@@ -10855,11 +11408,16 @@ Future<void> main() async {
       );
       final firstEvents = <AgentEvent>[];
       final firstDone = Completer<void>();
+      var firstDoneCount = 0;
       final replacementEvents = <AgentEvent>[];
       final replacementCanary = Completer<void>();
       final replacementDone = Completer<void>();
       StreamSubscription<AgentEvent>? first;
       StreamSubscription<AgentEvent>? replacement;
+      acp.AcpSessionInputBudgetOwner? firstOwner;
+      client.onRawPromptDispatchedForTesting = (owner) {
+        firstOwner ??= owner;
+      };
 
       try {
         await client.connect().timeout(const Duration(seconds: 5));
@@ -10869,12 +11427,34 @@ Future<void> main() async {
             .listen(
               firstEvents.add,
               onError: firstDone.completeError,
-              onDone: firstDone.complete,
+              onDone: () {
+                firstDoneCount += 1;
+                if (!firstDone.isCompleted) firstDone.complete();
+              },
             );
         await _waitForFile(promptSeenFile);
         first.pause();
 
         await client.cancel().timeout(const Duration(seconds: 5));
+        expect(client.rawPromptCancelCountForTesting, 1);
+        expect(firstEvents, isEmpty);
+        await _waitForFile(cancelSeenFile);
+        first.resume();
+        await firstDone.future.timeout(const Duration(seconds: 5));
+        expect(firstDoneCount, 1);
+        final backgroundReap = client
+            .acpClientForTesting
+            .sessionManagerForTesting
+            .promptCleanupReapedForTesting(firstOwner!)!;
+        await expectLater(
+          client
+              .sendPrompt(sessionId: session.id, prompt: 'too early')
+              .toList(),
+          throwsA(isA<StateError>()),
+        );
+        await releaseLateFile.writeAsString('release');
+        await _waitForFile(lateSentFile);
+        await backgroundReap.timeout(const Duration(seconds: 5));
         replacement = client
             .sendPrompt(sessionId: session.id, prompt: 'replacement')
             .listen(
@@ -10896,13 +11476,10 @@ Future<void> main() async {
           contains('replacement-canary'),
         );
         expect(replacementEvents.last.metadata['stopReason'], 'endTurn');
-        await _waitForFile(cancelSeenFile);
-        await _waitForFile(lateSentFile);
-
-        first.resume();
-        await firstDone.future.timeout(const Duration(seconds: 5));
         expect(firstEvents, isEmpty);
+        expect(firstDoneCount, 1);
       } finally {
+        client.onRawPromptDispatchedForTesting = null;
         first?.resume();
         await first?.cancel();
         await replacement?.cancel();
@@ -10989,6 +11566,870 @@ Future<void> main() async {
     },
   );
 
+  test(
+    'raw pre-owner cancel reconnect and dispose settle blocked attachment once',
+    () async {
+      for (final cause in _RawPreOwnerExit.values) {
+        final fixture = await _RawPreOwnerFixture.start();
+        final events = <AgentEvent>[];
+        final streamErrors = <Object>[];
+        final done = Completer<void>.sync();
+        StreamSubscription<AgentEvent>? subscription;
+        var doneCount = 0;
+        try {
+          fixture.client.holdNextRawAttachmentConversionForTesting();
+          subscription = fixture.client
+              .sendPrompt(
+                sessionId: fixture.session.id,
+                prompt: 'pre-owner-${cause.name}',
+                attachments: <PromptAttachment>[fixture.attachment],
+              )
+              .listen(
+                events.add,
+                onError: (Object error, StackTrace _) =>
+                    streamErrors.add(error),
+                onDone: () {
+                  doneCount += 1;
+                  if (!done.isCompleted) done.complete();
+                },
+              );
+          await fixture.client.rawAttachmentConversionPausedForTesting.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw StateError(
+              'raw attachment conversion never reached the held gate',
+            ),
+          );
+
+          switch (cause) {
+            case _RawPreOwnerExit.cancel:
+              await fixture.client.cancel().timeout(
+                const Duration(seconds: 2),
+                onTimeout: () => throw StateError(
+                  'pre-owner cancel did not settle while attachment blocked',
+                ),
+              );
+            case _RawPreOwnerExit.reconnect:
+              await fixture.client.connect().timeout(
+                const Duration(seconds: 2),
+                onTimeout: () => throw StateError(
+                  'pre-owner reconnect did not settle while attachment blocked',
+                ),
+              );
+              expect(
+                done.isCompleted,
+                isTrue,
+                reason: 'replacement cannot cross the old finished barrier',
+              );
+            case _RawPreOwnerExit.dispose:
+              await fixture.client.dispose().timeout(
+                const Duration(seconds: 2),
+                onTimeout: () => throw StateError(
+                  'pre-owner dispose did not settle while attachment blocked',
+                ),
+              );
+          }
+
+          await done.future.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw StateError(
+              'pre-owner public stream did not close for ${cause.name}',
+            ),
+          );
+          expect(streamErrors, isEmpty, reason: cause.name);
+          expect(doneCount, 1, reason: cause.name);
+          if (cause == _RawPreOwnerExit.dispose) {
+            expect(events, hasLength(1));
+            expect(events.single.type, AgentEventType.error);
+            expect(events.single.text, 'ACP connection closed.');
+          } else {
+            expect(events, isEmpty, reason: cause.name);
+          }
+          expect(
+            fixture.client.rawPromptDispatchCountForTesting,
+            0,
+            reason: cause.name,
+          );
+          expect(
+            fixture.client.rawPromptCancelCountForTesting,
+            0,
+            reason: cause.name,
+          );
+          expect(
+            fixture.client.beginPromptTurnCountForTesting,
+            0,
+            reason: cause.name,
+          );
+        } finally {
+          fixture.client.releaseRawAttachmentConversionForTesting();
+          await subscription?.cancel();
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test('raw cleanup fatal preserves one cached success terminal', () async {
+    final fixture = await _RawStdioFixture.startRawWithBlockedAdmission(
+      timeouts: const acp.AcpTimeouts(
+        request: Duration(milliseconds: 100),
+        permission: Duration(milliseconds: 100),
+        promptCancelGrace: Duration(milliseconds: 75),
+      ),
+    );
+    try {
+      final eventsFuture = fixture.events.toList();
+      fixture.completePromptSuccess();
+      await fixture.winnerRecorded.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError(
+          'cached success did not record an owner-bound winner',
+        ),
+      );
+      await fixture.rightRecorded.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () =>
+            throw StateError('cached success did not record a delivery right'),
+      );
+      fixture.releaseAdmissionReservationOnly();
+      await fixture.graceStarted.timeout(const Duration(seconds: 2));
+      await fixture.cleanupFatalSeen.timeout(const Duration(seconds: 2));
+      final events = await eventsFuture.timeout(const Duration(seconds: 2));
+      expect(events, hasLength(1));
+      expect(events.single.type, AgentEventType.agentTextDone);
+      expect(events.single.text, isEmpty);
+      expect(events.single.metadata['kind'], 'turn');
+      expect(events.single.metadata['stopReason'], 'endTurn');
+      expect(fixture.deliveryClaimCount, 1);
+      expect(fixture.streamCloseCount, 1);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test(
+    'raw cleanup fatal preserves one cached remote error terminal',
+    () async {
+      final fixture = await _RawStdioFixture.startRawWithBlockedAdmission(
+        timeouts: const acp.AcpTimeouts(
+          request: Duration(milliseconds: 100),
+          permission: Duration(milliseconds: 100),
+          promptCancelGrace: Duration(milliseconds: 75),
+        ),
+      );
+      try {
+        final eventsFuture = fixture.events.toList();
+        const canary = 'raw-remote-secret-canary';
+        fixture.completePromptError(
+          code: -32000,
+          message: 'fixed remote error',
+          data: const <String, Object?>{
+            'path': '/private/raw-remote-secret-canary',
+            'payload': <String, Object?>{'token': 'raw-remote-secret-canary'},
+          },
+        );
+        await fixture.winnerRecorded.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError(
+            'cached remote error did not record an owner-bound winner',
+          ),
+        );
+        await fixture.rightRecorded.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError(
+            'cached remote error did not record a delivery right',
+          ),
+        );
+        fixture.releaseAdmissionReservationOnly();
+        await fixture.graceStarted.timeout(const Duration(seconds: 2));
+        await fixture.cleanupFatalSeen.timeout(const Duration(seconds: 2));
+        final events = await eventsFuture.timeout(const Duration(seconds: 2));
+        final errors = events
+            .where((event) => event.type == AgentEventType.error)
+            .toList();
+        expect(events, hasLength(1));
+        expect(errors, hasLength(1));
+        expect(errors.single.text, 'fixed remote error');
+        expect(errors.single.text, isNot('ACP connection closed.'));
+        expect(errors.single.metadata, const <String, Object?>{
+          'kind': 'turn',
+          'terminalKind': 'remoteError',
+        });
+        expect(
+          jsonEncode(<String, Object?>{
+            'text': errors.single.text,
+            'metadata': errors.single.metadata,
+          }),
+          isNot(contains(canary)),
+        );
+        expect(fixture.deliveryClaimCount, 1);
+        expect(fixture.streamCloseCount, 1);
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test('raw external close and terminal claim are first wins', () async {
+    for (final cause in _RawExternalUnavailableCause.values) {
+      for (final closeFirst in <bool>[true, false]) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.promptSeen.timeout(const Duration(seconds: 2));
+          fixture.holdDeliveryClaim();
+          fixture.completePromptSuccess();
+          await fixture.winnerRecorded.timeout(const Duration(seconds: 2));
+          await fixture.rightRecorded.timeout(const Duration(seconds: 2));
+          fixture.releaseAdmissionCommit();
+          await fixture.preClaimSeen.timeout(const Duration(seconds: 2));
+          final unavailable = fixture.unavailableSeen;
+
+          Future<void> makeUnavailable() => switch (cause) {
+            _RawExternalUnavailableCause.explicitClose =>
+              fixture.client.closePeerExplicitlyForTesting(),
+            _RawExternalUnavailableCause.dispose => fixture.client.dispose(),
+          };
+
+          if (closeFirst) {
+            if (cause == _RawExternalUnavailableCause.dispose) {
+              final dispose = makeUnavailable();
+              await fixture.streamDone.timeout(const Duration(seconds: 2));
+              fixture.releaseDeliveryClaim();
+              await dispose;
+            } else {
+              await makeUnavailable();
+              fixture.releaseDeliveryClaim();
+            }
+            await unavailable.timeout(const Duration(seconds: 2));
+          } else {
+            if (cause == _RawExternalUnavailableCause.dispose) {
+              fixture.holdAfterManagerClaim();
+            }
+            fixture.releaseDeliveryClaim();
+            await fixture.claimSeen.timeout(const Duration(seconds: 2));
+            if (cause == _RawExternalUnavailableCause.dispose) {
+              await fixture.afterManagerClaimSeen.timeout(
+                const Duration(seconds: 2),
+              );
+              final dispose = makeUnavailable();
+              await pumpEventQueue();
+              expect(
+                fixture.streamIsDone,
+                isFalse,
+                reason: 'dispose must not close output after manager claim',
+              );
+              fixture.releaseAfterManagerClaim();
+              await dispose;
+            } else {
+              await makeUnavailable();
+            }
+            await unavailable.timeout(const Duration(seconds: 2));
+          }
+          final events = await eventsFuture.timeout(const Duration(seconds: 2));
+          final connectionClosed = events.where(
+            (event) =>
+                event.type == AgentEventType.error &&
+                event.text == 'ACP connection closed.',
+          );
+          final cachedTerminal = events.where(
+            (event) => event.type == AgentEventType.agentTextDone,
+          );
+          expect(
+            connectionClosed,
+            closeFirst ? hasLength(1) : isEmpty,
+            reason: '${cause.name}/closeFirst=$closeFirst',
+          );
+          expect(
+            cachedTerminal,
+            closeFirst ? isEmpty : hasLength(1),
+            reason: '${cause.name}/closeFirst=$closeFirst',
+          );
+          expect(fixture.deliveryClaimCount, closeFirst ? 0 : 1);
+          expect(fixture.streamCloseCount, 1);
+        } finally {
+          fixture.releaseDeliveryClaim();
+          fixture.releaseAfterManagerClaim();
+          await fixture.dispose();
+        }
+      }
+    }
+  });
+
+  test(
+    'raw cancel after dispatch closes stream while background reap continues',
+    () async {
+      final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+      try {
+        final eventsFuture = fixture.events.toList();
+        await fixture.promptSeen.timeout(const Duration(seconds: 2));
+        await fixture.client.cancel().timeout(const Duration(seconds: 2));
+        await fixture.streamDone.timeout(const Duration(seconds: 2));
+        expect(await eventsFuture.timeout(const Duration(seconds: 2)), isEmpty);
+        expect(fixture.cancelCount, 1);
+        expect(fixture.deliveryClaimCount, 0);
+        expect(fixture.streamCloseCount, 1);
+        await expectLater(
+          fixture.startReplacement(),
+          throwsA(isA<StateError>()),
+        );
+        fixture.releaseLateSuccess();
+        fixture.releaseAdmissionCommit();
+        await fixture.backgroundReapDone.timeout(const Duration(seconds: 2));
+        expect(await fixture.startReplacement(), isNotEmpty);
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test(
+    'raw direct reconnect closes transport before waiting for in-flight finish',
+    () async {
+      final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+      Future<void>? reconnecting;
+      try {
+        final eventsFuture = fixture.events.toList();
+        var reconnectCompleted = false;
+        reconnecting = fixture.client.connect().whenComplete(
+          () => reconnectCompleted = true,
+        );
+        await fixture.streamDone.timeout(const Duration(seconds: 2));
+        expect(await eventsFuture.timeout(const Duration(seconds: 2)), isEmpty);
+        expect(fixture.cancelCount, 0);
+        expect(reconnectCompleted, isFalse);
+
+        await reconnecting.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError(
+            'direct reconnect waited for the old result before transport close',
+          ),
+        );
+        expect(reconnectCompleted, isTrue);
+        expect(fixture.client.rawInFlightPromptCountForTesting, 0);
+        expect(fixture.cancelCount, 0);
+      } finally {
+        fixture.releaseLateSuccess();
+        fixture.releaseAdmissionCommit();
+        try {
+          await reconnecting?.timeout(const Duration(seconds: 2));
+        } on Object {
+          // Keep the RED failure cleanup bounded.
+        }
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test('raw teardown snapshot rejects listeners on the old client', () async {
+    for (final cause in _RawPostOwnerExit.values) {
+      final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+      Future<void>? exiting;
+      try {
+        final otherSession = await fixture.client.createSession(
+          cwd: fixture.tempDir.path,
+        );
+        final snapshotTaken = Completer<void>.sync();
+        fixture.client.onRawTeardownSnapshotForTesting = () {
+          if (!snapshotTaken.isCompleted) snapshotTaken.complete();
+        };
+        fixture.pauseRawPrompt();
+
+        exiting = switch (cause) {
+          _RawPostOwnerExit.reconnect => fixture.client.connect(),
+          _RawPostOwnerExit.dispose => fixture.client.dispose(),
+        };
+        await snapshotTaken.future.timeout(const Duration(seconds: 2));
+        expect(fixture.client.rawInFlightPromptCountForTesting, 1);
+
+        await expectLater(
+          fixture.client
+              .sendPrompt(
+                sessionId: otherSession.id,
+                prompt: 'must not enter the frozen snapshot',
+              )
+              .toList()
+              .timeout(const Duration(seconds: 2)),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP raw prompt operations are not being accepted.',
+            ),
+          ),
+        );
+        expect(fixture.client.rawInFlightPromptCountForTesting, 1);
+        expect(fixture.beginPromptTurnCount, 1);
+        expect(fixture.wirePromptCount, 1);
+
+        fixture.resumeRawPrompt();
+        await exiting.timeout(const Duration(seconds: 2));
+        expect(fixture.client.rawInFlightPromptCountForTesting, 0);
+        expect(fixture.beginPromptTurnCount, 1);
+        expect(fixture.wirePromptCount, 1);
+      } finally {
+        fixture.client.onRawTeardownSnapshotForTesting = null;
+        fixture.resumeRawPrompt();
+        try {
+          await exiting?.timeout(const Duration(seconds: 2));
+        } on Object {
+          // Keep failure-path cleanup bounded.
+        }
+        await fixture.dispose();
+      }
+    }
+  });
+
+  test(
+    'raw local admission rejections emit one error without zone leaks',
+    () async {
+      final zoneErrors = <Object>[];
+      final bodyDone = Completer<void>();
+      runZonedGuarded(() async {
+        Future<void> expectRejected(
+          DartAcpAgentClient client,
+          String sessionId,
+          String expectedMessage,
+        ) async {
+          final events = <AgentEvent>[];
+          final errors = <Object>[];
+          final done = Completer<void>.sync();
+          var doneCount = 0;
+          client
+              .sendPrompt(sessionId: sessionId, prompt: 'must reject')
+              .listen(
+                events.add,
+                onError: (Object error, StackTrace _) => errors.add(error),
+                onDone: () {
+                  doneCount += 1;
+                  if (!done.isCompleted) done.complete();
+                },
+              );
+          await done.future.timeout(const Duration(seconds: 2));
+          await pumpEventQueue();
+          expect(events, isEmpty);
+          expect(errors, hasLength(1));
+          expect(errors.single, isA<StateError>());
+          expect((errors.single as StateError).message, expectedMessage);
+          expect(doneCount, 1);
+        }
+
+        final beforeConnect = DartAcpAgentClient(
+          agentCommand: _dartExecutable(),
+        );
+        await expectRejected(
+          beforeConnect,
+          'before-connect',
+          'ACP raw prompt operations are not being accepted.',
+        );
+        await beforeConnect.dispose();
+        await expectRejected(
+          beforeConnect,
+          'after-dispose',
+          'ACP raw prompt operations are not being accepted.',
+        );
+
+        final failedDir = await Directory.systemTemp.createTemp(
+          'raw-failed-connect-',
+        );
+        final failedScript = File('${failedDir.path}/failed_agent.dart');
+        await failedScript.writeAsString('void main() {}');
+        final failedConnect = DartAcpAgentClient(
+          agentCommand: _dartExecutable(),
+          agentArgs: <String>[failedScript.path],
+        );
+        try {
+          await expectLater(
+            failedConnect.connect().timeout(const Duration(seconds: 2)),
+            throwsA(anything),
+          );
+          await expectRejected(
+            failedConnect,
+            'failed-connect',
+            'ACP raw prompt operations are not being accepted.',
+          );
+        } finally {
+          await failedConnect.dispose();
+          await failedDir.delete(recursive: true);
+        }
+
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+        Future<void>? reconnecting;
+        try {
+          await expectRejected(
+            fixture.client,
+            fixture.session.id,
+            'An ACP prompt operation is already active.',
+          );
+          final otherSession = await fixture.client.createSession(
+            cwd: fixture.tempDir.path,
+          );
+          final snapshotTaken = Completer<void>.sync();
+          fixture.client.onRawTeardownSnapshotForTesting = () {
+            if (!snapshotTaken.isCompleted) snapshotTaken.complete();
+          };
+          fixture.pauseRawPrompt();
+          reconnecting = fixture.client.connect();
+          await snapshotTaken.future.timeout(const Duration(seconds: 2));
+          await expectRejected(
+            fixture.client,
+            otherSession.id,
+            'ACP raw prompt operations are not being accepted.',
+          );
+          fixture.resumeRawPrompt();
+          await reconnecting.timeout(const Duration(seconds: 2));
+        } finally {
+          fixture.client.onRawTeardownSnapshotForTesting = null;
+          fixture.resumeRawPrompt();
+          try {
+            await reconnecting?.timeout(const Duration(seconds: 2));
+          } on Object {
+            // Keep failure-path cleanup bounded.
+          }
+          await fixture.dispose();
+        }
+
+        await pumpEventQueue();
+        bodyDone.complete();
+      }, (error, _) => zoneErrors.add(error));
+
+      await bodyDone.future.timeout(const Duration(seconds: 15));
+      await pumpEventQueue();
+      expect(zoneErrors, isEmpty);
+    },
+  );
+
+  test(
+    'raw post-owner cancel reconnect and dispose wait for in-flight finish',
+    () async {
+      for (final cause in _RawPostOwnerExit.values) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.client.cancel().timeout(const Duration(seconds: 2));
+          await fixture.cancelSeen.timeout(const Duration(seconds: 2));
+          await fixture.streamDone.timeout(const Duration(seconds: 2));
+          expect(
+            await eventsFuture.timeout(const Duration(seconds: 2)),
+            isEmpty,
+          );
+          expect(
+            fixture.client.rawInFlightPromptCountForTesting,
+            1,
+            reason: cause.name,
+          );
+          var exitCompleted = false;
+          final exiting = switch (cause) {
+            _RawPostOwnerExit.reconnect => fixture.client.connect(),
+            _RawPostOwnerExit.dispose => fixture.client.dispose(),
+          }.whenComplete(() => exitCompleted = true);
+          expect(exitCompleted, isFalse, reason: cause.name);
+          expect(
+            fixture.client.rawInFlightPromptCountForTesting,
+            1,
+            reason: cause.name,
+          );
+
+          final backgroundReap = fixture.backgroundReapDone;
+          fixture.releaseLateSuccess();
+          fixture.releaseAdmissionCommit();
+          await backgroundReap.timeout(const Duration(seconds: 2));
+          await exiting.timeout(const Duration(seconds: 2));
+          expect(exitCompleted, isTrue, reason: cause.name);
+          expect(
+            fixture.client.rawInFlightPromptCountForTesting,
+            0,
+            reason: cause.name,
+          );
+        } finally {
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'raw cancel or close before terminal hook cannot backfill right',
+    () async {
+      for (final closePeer in <bool>[false, true]) {
+        for (final lateError in <bool>[false, true]) {
+          final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+          try {
+            final eventsFuture = fixture.events.toList();
+            await fixture.promptSeen.timeout(const Duration(seconds: 2));
+            if (closePeer) {
+              final unavailable = fixture.unavailableSeen;
+              await fixture.client.closePeerExplicitlyForTesting();
+              await unavailable.timeout(const Duration(seconds: 2));
+            } else {
+              await fixture.client.cancel().timeout(const Duration(seconds: 2));
+              await fixture.cancelSeen.timeout(const Duration(seconds: 2));
+            }
+            expect(
+              fixture.acpClient.hasPromptDeliveryRight(fixture.owner),
+              isFalse,
+            );
+            if (lateError) {
+              fixture.releaseLateError();
+            } else {
+              fixture.releaseLateSuccess();
+            }
+            await fixture.lateTerminalSent.timeout(const Duration(seconds: 2));
+            expect(
+              fixture.acpClient.hasPromptDeliveryRight(fixture.owner),
+              isFalse,
+            );
+            expect(fixture.deliveryClaimCount, 0);
+            expect(fixture.streamCloseCount, 1);
+            final events = await eventsFuture.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(
+              events.where(
+                (event) => event.type == AgentEventType.agentTextDone,
+              ),
+              isEmpty,
+            );
+            expect(
+              events.where((event) => event.type == AgentEventType.error),
+              closePeer ? hasLength(1) : isEmpty,
+            );
+          } finally {
+            await fixture.dispose();
+          }
+        }
+      }
+    },
+  );
+
+  test('raw late success and error after cancel emit zero terminals', () async {
+    for (final lateError in <bool>[false, true]) {
+      final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+      try {
+        final events = <AgentEvent>[];
+        var doneCount = 0;
+        final done = Completer<void>.sync();
+        fixture.events.listen(
+          events.add,
+          onDone: () {
+            doneCount += 1;
+            if (!done.isCompleted) done.complete();
+          },
+        );
+        await fixture.promptSeen.timeout(const Duration(seconds: 2));
+        await fixture.client.cancel().timeout(const Duration(seconds: 2));
+        await done.future.timeout(const Duration(seconds: 2));
+        expect(events, isEmpty);
+        expect(doneCount, 1);
+        expect(fixture.cancelCount, 1);
+        await expectLater(
+          fixture.startReplacement(),
+          throwsA(isA<StateError>()),
+        );
+        if (lateError) {
+          fixture.releaseLateError();
+        } else {
+          fixture.releaseLateSuccess();
+        }
+        fixture.releaseAdmissionCommit();
+        await fixture.backgroundReapDone.timeout(const Duration(seconds: 2));
+        expect(events, isEmpty);
+        expect(doneCount, 1);
+        expect(await fixture.startReplacement(), isNotEmpty);
+      } finally {
+        await fixture.dispose();
+      }
+    }
+  });
+
+  test(
+    'raw fs read write and terminal allow side effects before success',
+    () async {
+      for (final method in const <String>[
+        'fs/read_text_file',
+        'fs/write_text_file',
+        'terminal/create',
+      ]) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission(
+          providerMethod: method,
+        );
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.promptSeen.timeout(const Duration(seconds: 2));
+          await fixture.sideEffectStarted.timeout(const Duration(seconds: 2));
+          fixture.releaseAdmissionCommit();
+          final providerResponse = await fixture.providerResponse.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(providerResponse['error'], isNull, reason: method);
+          fixture.completePromptSuccess();
+          await fixture.winnerRecorded.timeout(const Duration(seconds: 2));
+          await fixture.rightRecorded.timeout(const Duration(seconds: 2));
+          final events = await eventsFuture.timeout(const Duration(seconds: 2));
+          expect(fixture.deliveryClaimCount, 1, reason: method);
+          expect(fixture.streamCloseCount, 1, reason: method);
+          final promptDone = events
+              .where((event) => event.type == AgentEventType.agentTextDone)
+              .toList();
+          final promptErrors = events
+              .where((event) => event.type == AgentEventType.error)
+              .toList();
+          expect(promptDone, hasLength(1), reason: method);
+          expect(promptErrors, isEmpty, reason: method);
+          expect(
+            <AgentEvent>[...promptDone, ...promptErrors],
+            hasLength(1),
+            reason: method,
+          );
+        } finally {
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'raw fs read write and terminal allow side effects before remote error',
+    () async {
+      for (final method in const <String>[
+        'fs/read_text_file',
+        'fs/write_text_file',
+        'terminal/create',
+      ]) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission(
+          providerMethod: method,
+        );
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.promptSeen.timeout(const Duration(seconds: 2));
+          await fixture.sideEffectStarted.timeout(const Duration(seconds: 2));
+          fixture.releaseAdmissionCommit();
+          final providerResponse = await fixture.providerResponse.timeout(
+            const Duration(seconds: 2),
+          );
+          expect(providerResponse['error'], isNull, reason: method);
+          fixture.completePromptError();
+          await fixture.winnerRecorded.timeout(const Duration(seconds: 2));
+          await fixture.rightRecorded.timeout(const Duration(seconds: 2));
+          final events = await eventsFuture.timeout(const Duration(seconds: 2));
+          expect(fixture.deliveryClaimCount, 1, reason: method);
+          expect(fixture.streamCloseCount, 1, reason: method);
+          final promptDone = events
+              .where((event) => event.type == AgentEventType.agentTextDone)
+              .toList();
+          final promptErrors = events
+              .where((event) => event.type == AgentEventType.error)
+              .toList();
+          expect(promptDone, isEmpty, reason: method);
+          expect(promptErrors, hasLength(1), reason: method);
+          expect(
+            <AgentEvent>[...promptDone, ...promptErrors],
+            hasLength(1),
+            reason: method,
+          );
+        } finally {
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'raw transport request fatal explicit close and dispose before claim revoke right',
+    () async {
+      for (final first in _RawUnavailableFirst.values) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission(
+          timeouts: const acp.AcpTimeouts(
+            request: Duration(milliseconds: 250),
+            permission: Duration(milliseconds: 100),
+            promptCancelGrace: Duration(milliseconds: 750),
+          ),
+        );
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.promptSeen.timeout(const Duration(seconds: 2));
+          fixture.holdDeliveryClaim();
+          fixture.completePromptSuccess();
+          await fixture.winnerRecorded.timeout(const Duration(seconds: 2));
+          await fixture.rightRecorded.timeout(const Duration(seconds: 2));
+          fixture.releaseAdmissionCommit();
+          await fixture.preClaimSeen.timeout(const Duration(seconds: 2));
+          await fixture.winUnavailableBeforeClaim(first);
+          fixture.releaseDeliveryClaim();
+          expect(
+            fixture.acpClient.hasPromptDeliveryRight(fixture.owner),
+            isFalse,
+            reason: first.name,
+          );
+          expect(fixture.deliveryClaimCount, 0, reason: first.name);
+          expect(fixture.streamCloseCount, 1, reason: first.name);
+          final events = await eventsFuture.timeout(const Duration(seconds: 2));
+          expect(events, hasLength(1), reason: first.name);
+          expect(events.single.type, AgentEventType.error, reason: first.name);
+          expect(
+            events.single.text,
+            'ACP connection closed.',
+            reason: first.name,
+          );
+        } finally {
+          fixture.releaseDeliveryClaim();
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test(
+    'raw connection closed and close are once across callback orders',
+    () async {
+      for (final order in _RawCloseRaceOrder.values) {
+        final fixture = await _RawStdioFixture.startRawWithBlockedAdmission();
+        try {
+          final eventsFuture = fixture.events.toList();
+          await fixture.promptSeen.timeout(const Duration(seconds: 2));
+          switch (order) {
+            case _RawCloseRaceOrder.listenerFirst:
+              fixture.requestTransportClose();
+              await fixture.unavailableSeen.timeout(const Duration(seconds: 2));
+            case _RawCloseRaceOrder.resultErrorFirst:
+              fixture.holdUnavailablePublication();
+              final resultError = fixture.connectionResultErrorSeen;
+              fixture.requestTransportClose();
+              await fixture.unavailablePublicationPaused.timeout(
+                const Duration(seconds: 2),
+              );
+              await resultError.timeout(const Duration(seconds: 2));
+              fixture.releaseUnavailablePublication();
+              await fixture.unavailableSeen.timeout(const Duration(seconds: 2));
+            case _RawCloseRaceOrder.userCancelFirst:
+              await fixture.client.cancel().timeout(const Duration(seconds: 2));
+              await fixture.cancelSeen.timeout(const Duration(seconds: 2));
+              await fixture.streamDone.timeout(const Duration(seconds: 2));
+              fixture.requestTransportClose();
+              await fixture.unavailableSeen.timeout(const Duration(seconds: 2));
+          }
+          final events = await eventsFuture.timeout(const Duration(seconds: 2));
+          final connectionClosed = events.where(
+            (event) =>
+                event.type == AgentEventType.error &&
+                event.text == 'ACP connection closed.',
+          );
+          expect(
+            connectionClosed,
+            order == _RawCloseRaceOrder.userCancelFirst
+                ? isEmpty
+                : hasLength(1),
+            reason: order.name,
+          );
+          expect(events.length, connectionClosed.length, reason: order.name);
+          expect(fixture.streamCloseCount, 1, reason: order.name);
+        } finally {
+          fixture.releaseUnavailablePublication();
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
   test('locally invalidated raw stream cancel has no zone leak', () async {
     final zoneErrors = <Object>[];
     final bodyDone = Completer<void>();
@@ -10998,11 +12439,14 @@ Future<void> main() async {
           'ianvs-acp-test-',
         );
         final promptSeenFile = File('${tempDir.path}/prompt_seen');
+        final releasePromptFile = File('${tempDir.path}/release_prompt');
         final agentScript = File(
           '${tempDir.path}/fake_stale_stream_cancel_agent.dart',
         );
         final promptSeenPath = jsonEncode(promptSeenFile.path);
+        final releasePromptPath = jsonEncode(releasePromptFile.path);
         await agentScript.writeAsString('''
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11031,6 +12475,17 @@ Future<void> main() async {
       }));
     } else if (message['method'] == 'session/prompt') {
       await File($promptSeenPath).writeAsString('prompted');
+      final promptId = message['id'];
+      unawaited(() async {
+        while (!await File($releasePromptPath).exists()) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': promptId,
+          'result': <String, dynamic>{'stopReason': 'cancelled'},
+        }));
+      }());
     } else if (message['method'] == 'session/close') {
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
@@ -11046,15 +12501,52 @@ Future<void> main() async {
           agentArgs: <String>[agentScript.path],
         );
         StreamSubscription<AgentEvent>? subscription;
+        final streamDone = Completer<void>.sync();
+        final streamErrors = <Object>[];
+        acp.AcpSessionInputBudgetOwner? owner;
+        client.onRawPromptDispatchedForTesting = (value) => owner ??= value;
+        final unavailableStates = <acp.AcpPeerUnavailableState>[];
+        final unavailableSubscription = client.peerUnavailableForTesting.listen(
+          unavailableStates.add,
+        );
 
         try {
           await client.connect().timeout(const Duration(seconds: 5));
           final session = await client.createSession(cwd: '/workspace');
           subscription = client
               .sendPrompt(sessionId: session.id, prompt: 'hold stale')
-              .listen((_) {});
+              .listen(
+                (_) {},
+                onError: (Object error, StackTrace _) =>
+                    streamErrors.add(error),
+                onDone: streamDone.complete,
+              );
           await _waitForFile(promptSeenFile);
-          await client.closeSession(sessionId: session.id);
+          final closing = client
+              .closeSession(sessionId: session.id)
+              .then<({Object? error, StackTrace? stackTrace})>(
+                (_) => (error: null, stackTrace: null),
+                onError: (Object error, StackTrace stackTrace) =>
+                    (error: error, stackTrace: stackTrace),
+              );
+          await streamDone.future.timeout(const Duration(seconds: 5));
+          expect(client.rawPromptCancelCountForTesting, 0);
+          expect(client.rawStreamCloseCountForTesting(owner!), 1);
+          final cleanup = client.acpClientForTesting.sessionManagerForTesting
+              .promptCleanupReapedForTesting(owner!);
+          await releasePromptFile.writeAsString('release');
+          if (cleanup != null) {
+            await cleanup.timeout(const Duration(seconds: 5));
+          }
+          final closeOutcome = await closing.timeout(
+            const Duration(seconds: 5),
+          );
+          final closeError = closeOutcome.error;
+          expect(
+            closeError,
+            isNull,
+            reason: 'peer unavailable states: $unavailableStates',
+          );
 
           Object? cancelError;
           try {
@@ -11064,14 +12556,16 @@ Future<void> main() async {
           }
           subscription = null;
           expect(cancelError, isNull);
-          await pumpEventQueue();
+          expect(streamErrors, isEmpty);
           expect(zoneErrors, isEmpty);
         } finally {
+          client.onRawPromptDispatchedForTesting = null;
           try {
             await subscription?.cancel().timeout(const Duration(seconds: 1));
           } on Object {
             // Keep failure-path cleanup bounded.
           }
+          await unavailableSubscription.cancel();
           await client.dispose();
           await tempDir.delete(recursive: true);
         }
@@ -11099,11 +12593,13 @@ Future<void> main() async {
           );
           final promptSeenFile = File('${tempDir.path}/prompt_seen');
           final cancelCountFile = File('${tempDir.path}/cancel_count');
+          final releaseFirstFile = File('${tempDir.path}/release_first');
           final agentScript = File(
             '${tempDir.path}/fake_concurrent_cancel_agent.dart',
           );
           final promptSeenPath = jsonEncode(promptSeenFile.path);
           final cancelCountPath = jsonEncode(cancelCountFile.path);
+          final releaseFirstPath = jsonEncode(releaseFirstFile.path);
           await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
@@ -11111,6 +12607,7 @@ import 'dart:io';
 Future<void> main() async {
   var promptCount = 0;
   var cancelCount = 0;
+  Object? firstPromptId;
   await for (final line in stdin
       .transform(utf8.decoder)
       .transform(const LineSplitter())) {
@@ -11134,6 +12631,7 @@ Future<void> main() async {
     } else if (message['method'] == 'session/prompt') {
       promptCount += 1;
       if (promptCount == 1) {
+        firstPromptId = message['id'];
         await File($promptSeenPath).writeAsString('prompted');
       } else {
         stdout.writeln(jsonEncode(<String, dynamic>{
@@ -11145,6 +12643,14 @@ Future<void> main() async {
     } else if (message['method'] == 'session/cancel') {
       cancelCount += 1;
       await File($cancelCountPath).writeAsString(cancelCount.toString());
+      while (!await File($releaseFirstPath).exists()) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': firstPromptId,
+        'result': <String, dynamic>{'stopReason': 'cancelled'},
+      }));
     }
   }
 }
@@ -11154,6 +12660,8 @@ Future<void> main() async {
             agentArgs: <String>[agentScript.path],
           );
           StreamSubscription<AgentEvent>? subscription;
+          acp.AcpSessionInputBudgetOwner? owner;
+          client.onRawPromptDispatchedForTesting = (value) => owner ??= value;
 
           try {
             await client.connect().timeout(const Duration(seconds: 5));
@@ -11172,7 +12680,13 @@ Future<void> main() async {
             subscription = null;
             await _waitForFile(cancelCountFile);
             expect(await cancelCountFile.readAsString(), '1');
-            await pumpEventQueue();
+            expect(client.rawStreamCloseCountForTesting(owner!), 1);
+            final backgroundReap = client
+                .acpClientForTesting
+                .sessionManagerForTesting
+                .promptCleanupReapedForTesting(owner!)!;
+            await releaseFirstFile.writeAsString('release');
+            await backgroundReap.timeout(const Duration(seconds: 5));
             expect(zoneErrors, isEmpty);
 
             final events = await client
@@ -11181,6 +12695,7 @@ Future<void> main() async {
                 .timeout(const Duration(seconds: 5));
             expect(events.last.metadata['stopReason'], 'endTurn');
           } finally {
+            client.onRawPromptDispatchedForTesting = null;
             await subscription?.cancel();
             await client.dispose();
             await tempDir.delete(recursive: true);
@@ -11306,9 +12821,7 @@ Future<void> main() async {
               .whenComplete(() => otherCompleted = true);
           await _waitForFile(otherSeenFile);
 
-          await client
-              .closeSession(sessionId: sessionA.id)
-              .timeout(const Duration(seconds: 5));
+          final closing = client.closeSession(sessionId: sessionA.id);
           expect(
             await firstEvents.timeout(const Duration(seconds: 5)),
             isEmpty,
@@ -11316,7 +12829,7 @@ Future<void> main() async {
           expect(otherCompleted, isFalse);
 
           await releaseLateFile.writeAsString('release');
-          await pumpEventQueue();
+          await closing.timeout(const Duration(seconds: 5));
           expect(otherCompleted, isFalse);
 
           await client.cancel().timeout(const Duration(seconds: 5));
@@ -11333,7 +12846,7 @@ Future<void> main() async {
   }
 
   test(
-    'raw dispose completes every held prompt without publishing error',
+    'raw dispose completes every held prompt with connection closed once',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
       final firstSeenFile = File('${tempDir.path}/first_seen');
@@ -11399,8 +12912,14 @@ Future<void> main() async {
         await _waitForFile(secondSeenFile);
 
         await client.dispose().timeout(const Duration(seconds: 5));
-        expect(await firstEvents.timeout(const Duration(seconds: 5)), isEmpty);
-        expect(await secondEvents.timeout(const Duration(seconds: 5)), isEmpty);
+        for (final events in <List<AgentEvent>>[
+          await firstEvents.timeout(const Duration(seconds: 5)),
+          await secondEvents.timeout(const Duration(seconds: 5)),
+        ]) {
+          expect(events, hasLength(1));
+          expect(events.single.type, AgentEventType.error);
+          expect(events.single.text, 'ACP connection closed.');
+        }
       } finally {
         await client.dispose();
         await tempDir.delete(recursive: true);
@@ -11408,12 +12927,15 @@ Future<void> main() async {
     },
   );
 
-  test('paused raw prompt does not block close invalidation', () async {
+  test('paused raw prompt close waits for public stream settlement', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final promptSeenFile = File('${tempDir.path}/prompt_seen');
+    final releasePromptFile = File('${tempDir.path}/release_prompt');
     final agentScript = File('${tempDir.path}/fake_paused_close_agent.dart');
     final promptSeenPath = jsonEncode(promptSeenFile.path);
+    final releasePromptPath = jsonEncode(releasePromptFile.path);
     await agentScript.writeAsString('''
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11442,6 +12964,17 @@ Future<void> main() async {
       }));
     } else if (message['method'] == 'session/prompt') {
       await File($promptSeenPath).writeAsString('seen');
+      final promptId = message['id'];
+      unawaited(() async {
+        while (!await File($releasePromptPath).exists()) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        stdout.writeln(jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': promptId,
+          'result': <String, dynamic>{'stopReason': 'cancelled'},
+        }));
+      }());
     } else if (message['method'] == 'session/close') {
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
@@ -11457,20 +12990,55 @@ Future<void> main() async {
       agentArgs: <String>[agentScript.path],
     );
     StreamSubscription<AgentEvent>? subscription;
+    final streamDone = Completer<void>.sync();
+    acp.AcpSessionInputBudgetOwner? owner;
+    client.onRawPromptDispatchedForTesting = (value) => owner ??= value;
 
     try {
       await client.connect().timeout(const Duration(seconds: 5));
       final session = await client.createSession(cwd: '/workspace');
       subscription = client
           .sendPrompt(sessionId: session.id, prompt: 'pause close')
-          .listen((_) {});
+          .listen((_) {}, onDone: streamDone.complete);
       await _waitForFile(promptSeenFile);
       subscription.pause();
 
-      await client
+      var closeCompleted = false;
+      final closing = client
           .closeSession(sessionId: session.id)
-          .timeout(const Duration(seconds: 2));
+          .then<({Object? error, StackTrace? stackTrace})>(
+            (_) {
+              closeCompleted = true;
+              return (error: null, stackTrace: null);
+            },
+            onError: (Object error, StackTrace stackTrace) {
+              closeCompleted = true;
+              return (error: error, stackTrace: stackTrace);
+            },
+          );
+      expect(closeCompleted, isFalse);
+      expect(client.rawPromptCancelCountForTesting, 0);
+      subscription.resume();
+      await streamDone.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('paused close public done timed out'),
+      );
+      final cleanup = client.acpClientForTesting.sessionManagerForTesting
+          .promptCleanupReapedForTesting(owner!);
+      await releasePromptFile.writeAsString('release');
+      if (cleanup != null) {
+        await cleanup.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError('paused close reap timed out'),
+        );
+      }
+      final closeOutcome = await closing.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('paused close completion timed out'),
+      );
+      expect(closeOutcome.error, isNull);
     } finally {
+      client.onRawPromptDispatchedForTesting = null;
       subscription?.resume();
       await subscription?.cancel();
       await client.dispose();
@@ -11478,12 +13046,16 @@ Future<void> main() async {
     }
   });
 
-  test('paused raw prompt does not block dispose invalidation', () async {
-    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
-    final promptSeenFile = File('${tempDir.path}/prompt_seen');
-    final agentScript = File('${tempDir.path}/fake_paused_dispose_agent.dart');
-    final promptSeenPath = jsonEncode(promptSeenFile.path);
-    await agentScript.writeAsString('''
+  test(
+    'paused raw prompt dispose waits for public stream settlement',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final promptSeenFile = File('${tempDir.path}/prompt_seen');
+      final agentScript = File(
+        '${tempDir.path}/fake_paused_dispose_agent.dart',
+      );
+      final promptSeenPath = jsonEncode(promptSeenFile.path);
+      await agentScript.writeAsString('''
 import 'dart:convert';
 import 'dart:io';
 
@@ -11514,29 +13086,47 @@ Future<void> main() async {
   }
 }
 ''');
-    final client = DartAcpAgentClient(
-      agentCommand: _dartExecutable(),
-      agentArgs: <String>[agentScript.path],
-    );
-    StreamSubscription<AgentEvent>? subscription;
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      StreamSubscription<AgentEvent>? subscription;
+      final events = <AgentEvent>[];
+      final streamDone = Completer<void>.sync();
+      acp.AcpSessionInputBudgetOwner? owner;
+      client.onRawPromptDispatchedForTesting = (value) => owner ??= value;
 
-    try {
-      await client.connect().timeout(const Duration(seconds: 5));
-      final session = await client.createSession(cwd: '/workspace');
-      subscription = client
-          .sendPrompt(sessionId: session.id, prompt: 'pause dispose')
-          .listen((_) {});
-      await _waitForFile(promptSeenFile);
-      subscription.pause();
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        subscription = client
+            .sendPrompt(sessionId: session.id, prompt: 'pause dispose')
+            .listen(events.add, onDone: streamDone.complete);
+        await _waitForFile(promptSeenFile);
+        subscription.pause();
 
-      await client.dispose().timeout(const Duration(seconds: 2));
-    } finally {
-      subscription?.resume();
-      await subscription?.cancel();
-      await client.dispose();
-      await tempDir.delete(recursive: true);
-    }
-  });
+        var disposeCompleted = false;
+        final disposing = client.dispose().whenComplete(
+          () => disposeCompleted = true,
+        );
+        expect(disposeCompleted, isFalse);
+        expect(client.rawPromptCancelCountForTesting, 0);
+        subscription.resume();
+        await streamDone.future.timeout(const Duration(seconds: 2));
+        await disposing.timeout(const Duration(seconds: 2));
+        expect(events, hasLength(1));
+        expect(events.single.type, AgentEventType.error);
+        expect(events.single.text, 'ACP connection closed.');
+        expect(owner, isNotNull);
+      } finally {
+        client.onRawPromptDispatchedForTesting = null;
+        subscription?.resume();
+        await subscription?.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test(
     'unlistened raw prompt does not reserve or cancel an operation',
@@ -11604,11 +13194,15 @@ Future<void> main() async {
   test('cancelled turn does not cancel permissions in the next turn', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final firstPromptStartedFile = File('${tempDir.path}/first_prompt_started');
+    final cancelSeenFile = File('${tempDir.path}/cancel_seen');
+    final releaseFirstFile = File('${tempDir.path}/release_first');
     final permissionResponseFile = File(
       '${tempDir.path}/permission_response.json',
     );
     final agentScript = File('${tempDir.path}/fake_cancelled_turn_agent.dart');
     final firstPromptStartedPath = jsonEncode(firstPromptStartedFile.path);
+    final cancelSeenPath = jsonEncode(cancelSeenFile.path);
+    final releaseFirstPath = jsonEncode(releaseFirstFile.path);
     final permissionResponsePath = jsonEncode(permissionResponseFile.path);
     await agentScript.writeAsString('''
 import 'dart:convert';
@@ -11671,6 +13265,10 @@ Future<void> main() async {
         }));
       }
     } else if (message['method'] == 'session/cancel') {
+      await File($cancelSeenPath).writeAsString('cancelled');
+      while (!await File($releaseFirstPath).exists()) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
       stdout.writeln(jsonEncode(<String, dynamic>{
         'jsonrpc': '2.0',
         'id': firstPromptId,
@@ -11693,6 +13291,10 @@ Future<void> main() async {
       agentArgs: [agentScript.path],
     );
     final secondPermission = Completer<AcpPermissionRequest>();
+    acp.AcpSessionInputBudgetOwner? firstOwner;
+    client.onRawPromptDispatchedForTesting = (owner) {
+      firstOwner ??= owner;
+    };
     final subscription = client.permissionRequests.listen((request) {
       if (!secondPermission.isCompleted) {
         secondPermission.complete(request);
@@ -11708,7 +13310,16 @@ Future<void> main() async {
           .toList();
       await _waitForFile(firstPromptStartedFile);
       await client.cancel();
+      await _waitForFile(cancelSeenFile);
       await firstTurn.timeout(const Duration(seconds: 5));
+      final backgroundReap = client.acpClientForTesting.sessionManagerForTesting
+          .promptCleanupReapedForTesting(firstOwner!)!;
+      await expectLater(
+        client.sendPrompt(sessionId: session.id, prompt: 'too early').toList(),
+        throwsA(isA<StateError>()),
+      );
+      await releaseFirstFile.writeAsString('release');
+      await backgroundReap.timeout(const Duration(seconds: 5));
 
       final secondTurn = client
           .sendPrompt(sessionId: session.id, prompt: 'second turn')
@@ -11733,6 +13344,7 @@ Future<void> main() async {
         containsPair('outcome', containsPair('optionId', 'allow-once')),
       );
     } finally {
+      client.onRawPromptDispatchedForTesting = null;
       await subscription.cancel();
       await client.dispose();
       await tempDir.delete(recursive: true);
@@ -14276,18 +15888,19 @@ Future<void> main() async {
         cwd: '/workspace',
       );
       await Future<void>.delayed(Duration.zero);
-      final promptEvents = await client
-          .sendPrompt(sessionId: session.id, prompt: 'fail now')
-          .toList();
+      await expectLater(
+        client.sendPrompt(sessionId: session.id, prompt: 'fail now').toList(),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'Session is closing or setup is active.',
+          ),
+        ),
+      );
       final loadEvents = await resumeFuture.timeout(const Duration(seconds: 5));
 
       expect(loadEvents, isEmpty);
-      expect(promptEvents, hasLength(1));
-      expect(promptEvents.single.type, AgentEventType.error);
-      expect(
-        promptEvents.single.text,
-        contains('Session is closing or setup is active.'),
-      );
     } finally {
       await client.dispose();
       await tempDir.delete(recursive: true);

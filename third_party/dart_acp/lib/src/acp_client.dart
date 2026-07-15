@@ -115,6 +115,14 @@ class AcpClient implements AcpBoundedObservationSource {
   late final SessionManager _sessionManager;
   Future<void>? _disposeFuture;
 
+  /// Read-only peer projection for integration tests.
+  @visibleForTesting
+  JsonRpcPeer get peerForTesting => _peer;
+
+  /// Read-only session-manager projection for integration tests.
+  @visibleForTesting
+  SessionManager get sessionManagerForTesting => _sessionManager;
+
   /// Whether the underlying ACP peer remains available.
   bool get isAvailable => _peer.isAvailable;
 
@@ -217,6 +225,10 @@ class AcpClient implements AcpBoundedObservationSource {
   Stream<AcpUpdate> sessionUpdates(String sessionId) =>
       _sessionManager.sessionUpdates(sessionId);
 
+  /// Subscribe only to updates published after this subscription.
+  Stream<AcpUpdate> liveSessionUpdates(String sessionId) =>
+      _sessionManager.liveSessionUpdates(sessionId);
+
   /// Mark a raw `session/prompt` request as active.
   AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) =>
       _sessionManager.beginPromptTurn(sessionId);
@@ -234,6 +246,78 @@ class AcpClient implements AcpBoundedObservationSource {
   /// Cancel the current turn only while [owner] still owns it.
   Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) =>
       _sessionManager.cancelPromptTurn(owner);
+
+  /// Whether [owner] currently has one pending terminal-delivery right.
+  bool hasPromptDeliveryRight(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.hasPromptDeliveryRight(owner);
+
+  /// Whether [owner] currently has one active terminal-delivery claim.
+  bool hasActivePromptDeliveryClaim(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.hasActivePromptDeliveryClaim(owner);
+
+  Future<bool> waitForPromptDeliveryBarrier(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.waitForPromptDeliveryBarrier(owner);
+
+  AcpPromptDeliveryClaim? tryClaimPromptDeliveryRight(
+    AcpSessionInputBudgetOwner owner,
+  ) => _sessionManager.tryClaimPromptDeliveryRight(owner);
+
+  void releasePromptDeliveryRight(AcpPromptDeliveryClaim claim) =>
+      _sessionManager.releasePromptDeliveryRight(claim);
+
+  @visibleForTesting
+  Future<void> promptWinnerRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptWinnerRecordedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptRightRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptRightRecordedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptBarrierReleasedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptBarrierReleasedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptClaimSeenForTesting(AcpSessionInputBudgetOwner owner) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptClaimSeenForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptGraceStartedForTesting(AcpSessionInputBudgetOwner owner) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptGraceStartedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> admissionResponseGraceStartedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.admissionResponseGraceStartedForTesting(owner);
+
+  @visibleForTesting
+  void expireOwnerAdmissionResponseGraceForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.expireOwnerAdmissionResponseGraceForTesting(owner);
+
+  @visibleForTesting
+  Future<void> closePeerExplicitlyForTesting() => _peer.close();
+
+  @visibleForTesting
+  // ignore: invalid_use_of_visible_for_testing_member
+  AcpPromptAdmissionProbeForTesting armNextPromptAdmissionForTesting() =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.armNextPromptAdmissionForTesting();
 
   /// Terminal events stream for UI.
   Stream<TerminalEvent> get terminalEvents => _sessionManager.terminalEvents;
@@ -331,13 +415,23 @@ class AcpClient implements AcpBoundedObservationSource {
   Future<Map<String, dynamic>> sendRaw(
     String method,
     Map<String, dynamic> params,
-  ) async => _peer.sendRaw(method, params);
+  ) async {
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
+    return _peer.sendRaw(method, params);
+  }
 
   /// Send a JSON-RPC notification (no response expected).
   Future<void> sendNotificationRaw(
     String method,
     Map<String, dynamic> params,
-  ) async => _peer.sendNotificationRaw(method, params);
+  ) async {
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
+    await _peer.sendNotificationRaw(method, params);
+  }
 
   // ===== Extension Methods =====
 

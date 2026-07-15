@@ -22,9 +22,13 @@ export 'src/rpc/peer.dart'
         AcpPeerUnavailableReason,
         AcpPromptCleanupIdentity,
         AcpPeerUnavailableState,
-        AcpPeerUnavailableListener;
+        AcpPeerUnavailableListener,
+        JsonRpcPromptTerminalKind,
+        JsonRpcPromptTerminalWinner;
 export 'src/session/session_manager.dart'
     show
+        AcpPromptAdmissionProbeForTesting,
+        AcpPromptDeliveryClaim,
         AcpSessionInputBudgetOwner,
         minimumSessionReplayBytes,
         SessionCloseCleanupException,

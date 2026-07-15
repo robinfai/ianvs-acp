@@ -544,6 +544,8 @@ final class _PromptLifecycle {
   final Completer<void> rightRecorded = Completer<void>.sync();
   final Completer<void> barrierReleased = Completer<void>.sync();
   final Completer<void> claimSeen = Completer<void>.sync();
+  final Completer<void> graceStarted = Completer<void>.sync();
+  AcpPromptDeliveryClaim? activeDeliveryClaim;
   Completer<void>? preclaimBarrierForTesting;
   final Completer<void> preclaimReachedForTesting = Completer<void>.sync();
   final Completer<void> _admissionsSettled = Completer<void>.sync();
@@ -577,6 +579,23 @@ final class _PromptLifecycle {
       _admissionsSettled.complete();
     }
   }
+}
+
+/// Opaque claim granting one owner-bound prompt terminal delivery.
+final class AcpPromptDeliveryClaim {
+  const AcpPromptDeliveryClaim._({
+    required this.owner,
+    required this.winner,
+    required Object rightIdentity,
+  }) : _rightIdentity = rightIdentity;
+
+  /// Exact prompt owner that holds the claim.
+  final AcpSessionInputBudgetOwner owner;
+
+  /// Cached terminal winner protected by the claim.
+  final JsonRpcPromptTerminalWinner winner;
+
+  final Object _rightIdentity;
 }
 
 final class _TypedPromptTurn {
@@ -797,6 +816,55 @@ final class _PermissionGateCancellation implements Exception {
   final PermissionCancellationReason reason;
 }
 
+/// Read-only and release-only probe for one real prompt admission.
+@visibleForTesting
+final class AcpPromptAdmissionProbeForTesting {
+  AcpPromptAdmissionProbeForTesting._(this._state);
+
+  final _ArmedPromptAdmissionProbeForTesting _state;
+
+  /// Exact owner captured by the production admission path.
+  AcpSessionInputBudgetOwner get owner => _state.owner;
+
+  /// Completes after the real admission has bound the probe gates.
+  Future<void> get admissionBarrierSeen => _state.admissionBarrierSeen.future;
+
+  /// Completes immediately before the allowed provider side effect starts.
+  Future<void> get sideEffectStarted => _state.sideEffectStarted.future;
+
+  /// Completes when the real owner cleanup grace starts.
+  Future<void> get graceStarted => _state.graceStarted.future;
+
+  /// Completes after admission, reservation, and response all reap.
+  Future<void> get reaped => _state.reaped.future;
+
+  /// Releases only the real reservation-release completion gate.
+  void releaseReservationOnly() => _state.releaseReservationOnly();
+
+  /// Releases both real admission completion gates.
+  void releaseCommit() => _state.releaseCommit();
+}
+
+final class _ArmedPromptAdmissionProbeForTesting {
+  late final AcpSessionInputBudgetOwner owner;
+  final Completer<void> admissionBarrierSeen = Completer<void>.sync();
+  final Completer<void> sideEffectStarted = Completer<void>.sync();
+  final Completer<void> graceStarted = Completer<void>.sync();
+  final Completer<void> reservationGate = Completer<void>.sync();
+  final Completer<void> responseCommitGate = Completer<void>.sync();
+  final Completer<void> reaped = Completer<void>.sync();
+  bool bound = false;
+
+  void releaseReservationOnly() {
+    if (!reservationGate.isCompleted) reservationGate.complete();
+  }
+
+  void releaseCommit() {
+    releaseReservationOnly();
+    if (!responseCommitGate.isCompleted) responseCommitGate.complete();
+  }
+}
+
 final class _InboundPermissionAdmission implements InboundAdmission {
   _InboundPermissionAdmission({
     required this.manager,
@@ -848,12 +916,59 @@ final class _InboundPermissionAdmission implements InboundAdmission {
   bool responseFinished = false;
   bool peerClosed = false;
   bool settledCompleted = false;
+  Future<void> _reservationReleaseTestingGate = Future<void>.value();
+  Future<void> _responseCommitTestingGate = Future<void>.value();
+  final Completer<void> _reservationReleasedForTesting = Completer<void>.sync();
+  final Completer<void> _responseCommittedForTesting = Completer<void>.sync();
 
   @override
   Future<InboundGateTerminal<dynamic>> get terminal => _terminal.future;
 
   @override
   Future<void> get settled => _settled.future;
+
+  Future<void> get reservationReleasedForTesting =>
+      _reservationReleasedForTesting.future;
+
+  Future<void> get responseCommittedForTesting =>
+      _responseCommittedForTesting.future;
+
+  void installTestingGates({
+    required Future<void> reservationRelease,
+    required Future<void> responseCommit,
+  }) {
+    if (reservationReleased || responseFinished) {
+      throw StateError(
+        'Admission testing gates must be installed before release.',
+      );
+    }
+    _reservationReleaseTestingGate = reservationRelease;
+    _responseCommitTestingGate = responseCommit;
+  }
+
+  Future<void> waitForReservationReleaseForTesting(Future<void> released) =>
+      released.then<void>(
+        (_) => _reservationReleaseTestingGate,
+        onError: (_, _) => _reservationReleaseTestingGate,
+      );
+
+  Future<void> waitForResponseCommitForTesting(Future<void> committed) =>
+      committed.then<void>(
+        (_) => _responseCommitTestingGate,
+        onError: (_, _) => _responseCommitTestingGate,
+      );
+
+  void markReservationReleasedForTesting() {
+    if (!_reservationReleasedForTesting.isCompleted) {
+      _reservationReleasedForTesting.complete();
+    }
+  }
+
+  void markResponseCommittedForTesting() {
+    if (!_responseCommittedForTesting.isCompleted) {
+      _responseCommittedForTesting.complete();
+    }
+  }
 
   Future<PermissionCancellationReason> get cancellation => _cancellation.future;
 
@@ -946,11 +1061,14 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     void finish() {
       if (reservationReleased) return;
       reservationReleased = true;
+      markReservationReleasedForTesting();
       manager._onAdmissionReservationReleased(this);
       tryCompleteSettled();
     }
 
-    released.then<void>((_) => finish(), onError: (_, _) => finish());
+    waitForReservationReleaseForTesting(
+      released,
+    ).then<void>((_) => finish(), onError: (_, _) => finish());
   }
 
   @override
@@ -958,11 +1076,14 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     void finish() {
       if (responseFinished) return;
       responseFinished = true;
+      markResponseCommittedForTesting();
       manager._onAdmissionResponseFinished(this);
       tryCompleteSettled();
     }
 
-    committed.then<void>((_) => finish(), onError: (_, _) => finish());
+    waitForResponseCommitForTesting(
+      committed,
+    ).then<void>((_) => finish(), onError: (_, _) => finish());
   }
 
   @override
@@ -970,6 +1091,7 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     if (peerClosed) return;
     peerClosed = true;
     responseFinished = true;
+    markResponseCommittedForTesting();
     deadlineTimer?.cancel();
     tryCancel(PermissionCancellationReason.connectionClosed);
     manager._onAdmissionResponseFinished(this);
@@ -1095,6 +1217,13 @@ class SessionManager implements AcpBoundedObservationSource {
       <String, _SessionGeneration>{};
   final Set<_InboundPermissionAdmission> _inboundAdmissions =
       HashSet<_InboundPermissionAdmission>.identity();
+  _ArmedPromptAdmissionProbeForTesting? _armedPromptAdmissionProbeForTesting;
+  final Map<_InboundPermissionAdmission, _ArmedPromptAdmissionProbeForTesting>
+  _promptAdmissionProbesForTesting =
+      HashMap<
+        _InboundPermissionAdmission,
+        _ArmedPromptAdmissionProbeForTesting
+      >.identity();
   final Map<Object, _OwnerCleanupWindow> _ownerCleanupWindows =
       HashMap<Object, _OwnerCleanupWindow>.identity();
   final Map<
@@ -1341,6 +1470,147 @@ class SessionManager implements AcpBoundedObservationSource {
   @visibleForTesting
   Future<void> promptClaimSeenForTesting(AcpSessionInputBudgetOwner owner) =>
       _promptLifecycleForOwnerForTesting(owner).claimSeen.future;
+
+  /// Completes when the real admission response grace starts for [owner].
+  @visibleForTesting
+  Future<void> promptGraceStartedForTesting(AcpSessionInputBudgetOwner owner) =>
+      admissionResponseGraceStartedForTesting(owner);
+
+  /// Completes when the real admission response grace starts for [owner].
+  @visibleForTesting
+  Future<void> admissionResponseGraceStartedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null || !identical(lifecycle.owner, owner)) {
+      return Future<void>.error(
+        StateError('ACP prompt phase owner is no longer active.'),
+      );
+    }
+    return lifecycle.graceStarted.future;
+  }
+
+  /// Fires the real active admission response grace timer for [owner].
+  @visibleForTesting
+  void expireOwnerAdmissionResponseGraceForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null || !identical(lifecycle.owner, owner)) {
+      throw StateError('ACP prompt phase owner is no longer active.');
+    }
+    final window = _ownerCleanupWindows[owner];
+    if (window == null || window.finished || window.blockers.isEmpty) {
+      throw StateError('ACP admission response grace is not active.');
+    }
+    final expire =
+        window.expireForTesting ??
+        (throw StateError(
+          'ACP admission response grace has no timer callback.',
+        ));
+    expire();
+  }
+
+  /// Arms a read-only/release-only probe for the next prompt admission.
+  @visibleForTesting
+  AcpPromptAdmissionProbeForTesting armNextPromptAdmissionForTesting() {
+    if (_armedPromptAdmissionProbeForTesting != null) {
+      throw StateError('A prompt admission probe is already armed.');
+    }
+    final state = _ArmedPromptAdmissionProbeForTesting();
+    _armedPromptAdmissionProbeForTesting = state;
+    return AcpPromptAdmissionProbeForTesting._(state);
+  }
+
+  bool hasPromptDeliveryRight(AcpSessionInputBudgetOwner owner) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    return lifecycle != null &&
+        identical(lifecycle.owner, owner) &&
+        lifecycle.deliveryRight?.state == _PromptDeliveryRightState.pending;
+  }
+
+  bool hasActivePromptDeliveryClaim(AcpSessionInputBudgetOwner owner) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    return lifecycle != null &&
+        identical(lifecycle.owner, owner) &&
+        lifecycle.activeDeliveryClaim != null &&
+        lifecycle.deliveryRight?.state == _PromptDeliveryRightState.claimed;
+  }
+
+  Future<bool> waitForPromptDeliveryBarrier(
+    AcpSessionInputBudgetOwner owner,
+  ) async {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    if (lifecycle == null || !identical(lifecycle.owner, owner)) {
+      return false;
+    }
+    final cleanup = lifecycle.cleanupFuture;
+    if (lifecycle.winner == null ||
+        lifecycle.deliveryRight == null ||
+        cleanup == null) {
+      return false;
+    }
+    try {
+      await cleanup;
+    } on Object {
+      if (lifecycle.winner == null || lifecycle.deliveryRight == null) {
+        rethrow;
+      }
+    }
+    if (!lifecycle.barrierReleased.isCompleted) {
+      lifecycle.barrierReleased.complete();
+    }
+    return true;
+  }
+
+  AcpPromptDeliveryClaim? tryClaimPromptDeliveryRight(
+    AcpSessionInputBudgetOwner owner,
+  ) {
+    final lifecycle = _promptLifecycles[owner.sessionId];
+    final right = lifecycle?.deliveryRight;
+    if (lifecycle == null ||
+        !identical(lifecycle.owner, owner) ||
+        lifecycle.activeDeliveryClaim != null ||
+        right == null ||
+        !right.tryClaim()) {
+      return null;
+    }
+    final claim = AcpPromptDeliveryClaim._(
+      owner: owner,
+      winner: right.winner,
+      rightIdentity: right,
+    );
+    lifecycle.activeDeliveryClaim = claim;
+    if (!lifecycle.claimSeen.isCompleted) lifecycle.claimSeen.complete();
+    return claim;
+  }
+
+  void releasePromptDeliveryRight(AcpPromptDeliveryClaim claim) {
+    final lifecycle = _promptLifecycles[claim.owner.sessionId];
+    final right = lifecycle?.deliveryRight;
+    if (lifecycle == null ||
+        !identical(lifecycle.owner, claim.owner) ||
+        !identical(lifecycle.activeDeliveryClaim, claim) ||
+        !identical(right, claim._rightIdentity)) {
+      return;
+    }
+    lifecycle.activeDeliveryClaim = null;
+    _releaseClaimedPromptLifecycle(lifecycle);
+  }
+
+  void _releaseClaimedPromptLifecycle(_PromptLifecycle lifecycle) {
+    final current = _promptLifecycles[lifecycle.owner.sessionId];
+    final right = lifecycle.deliveryRight;
+    if (!identical(current, lifecycle) ||
+        lifecycle.removed ||
+        lifecycle.activeDeliveryClaim != null ||
+        right == null ||
+        right.state != _PromptDeliveryRightState.claimed) {
+      return;
+    }
+    right.state = _PromptDeliveryRightState.revoked;
+    _releasePromptLifecycle(lifecycle);
+  }
 
   /// Pauses the existing typed delivery path at its preclaim observation point.
   @visibleForTesting
@@ -1681,6 +1951,7 @@ class SessionManager implements AcpBoundedObservationSource {
           _activeTypedTurns.containsKey(lifecycle.owner)) {
         continue;
       }
+      if (_isPromptDeliveryClaimed(lifecycle)) continue;
       lifecycle.cleanupIdentity = state.cleanupIdentity;
       final cleanup = state.cleanupIdentity;
       final preservesRawWinner =
@@ -1726,6 +1997,12 @@ class SessionManager implements AcpBoundedObservationSource {
           : admission.promptOwner,
       blockerIdentity: admission,
       blockerReaped: admission.settled,
+      onStarted: () {
+        final lifecycle = admission.promptLifecycle;
+        if (lifecycle != null && !lifecycle.graceStarted.isCompleted) {
+          lifecycle.graceStarted.complete();
+        }
+      },
     );
   }
 
@@ -1838,6 +2115,7 @@ class SessionManager implements AcpBoundedObservationSource {
     required AcpSessionInputBudgetOwner? fatalOwner,
     required Object blockerIdentity,
     required Future<void> blockerReaped,
+    void Function()? onStarted,
   }) {
     if (_disposed) {
       throw StateError('Cannot start ACP cleanup after manager disposal.');
@@ -1848,6 +2126,7 @@ class SessionManager implements AcpBoundedObservationSource {
         _bindOwnerCleanupFatalOwner(key, existing, fatalOwner);
       }
       _joinOwnerCleanupBlocker(key, existing, blockerIdentity, blockerReaped);
+      onStarted?.call();
       return existing;
     }
 
@@ -1861,6 +2140,7 @@ class SessionManager implements AcpBoundedObservationSource {
     _ownerCleanupWindows[key] = window;
     _ownerCleanupWindowStartCount += 1;
     _joinOwnerCleanupBlocker(key, window, blockerIdentity, blockerReaped);
+    onStarted?.call();
     void expire() => _expireOwnerCleanupWindow(key, identity);
     window.expireForTesting = expire;
     final remaining = deadline.difference(DateTime.now());
@@ -2011,6 +2291,7 @@ class SessionManager implements AcpBoundedObservationSource {
     for (final sessionId in generationsAtDispose.keys) {
       _invalidateSessionGeneration(sessionId);
     }
+    _disposePromptAdmissionProbesForTesting();
     for (final admission in _inboundAdmissions.toList(growable: false)) {
       admission.tryCancel(PermissionCancellationReason.disposed);
     }
@@ -2741,12 +3022,12 @@ class SessionManager implements AcpBoundedObservationSource {
       _releasePromptLifecycle(lifecycle);
       return;
     }
-    if (right == null || !right.tryClaim()) return;
-    if (!lifecycle.claimSeen.isCompleted) lifecycle.claimSeen.complete();
+    final claim = tryClaimPromptDeliveryRight(lifecycle.owner);
+    if (claim == null) return;
     await turn.enterTerminalOnly();
     try {
       if (turn.closed) return;
-      final winner = right.winner;
+      final winner = claim.winner;
       if (winner.kind == JsonRpcPromptTerminalKind.response) {
         final terminal = TurnEnded(
           stopReasonFromWire(
@@ -2772,7 +3053,7 @@ class SessionManager implements AcpBoundedObservationSource {
       }
     } finally {
       _closeTypedPromptTurn(turn);
-      _releasePromptLifecycle(lifecycle);
+      releasePromptDeliveryRight(claim);
     }
   }
 
@@ -2999,7 +3280,11 @@ class SessionManager implements AcpBoundedObservationSource {
   }
 
   void _releasePromptLifecycle(_PromptLifecycle lifecycle) {
-    if (!_isCurrentPromptLifecycle(lifecycle)) return;
+    if (!_isCurrentPromptLifecycle(lifecycle) ||
+        lifecycle.activeDeliveryClaim != null ||
+        _isPromptDeliveryClaimed(lifecycle)) {
+      return;
+    }
     _lastReleasedPromptLifecycleSnapshot = (
       owner: lifecycle.owner,
       snapshot: _snapshotPromptLifecycle(lifecycle),
@@ -3446,6 +3731,11 @@ class SessionManager implements AcpBoundedObservationSource {
         .putIfAbsent(sessionId, StreamController<AcpUpdate>.broadcast)
         .stream;
   }
+
+  /// Live session updates without replaying retained history.
+  Stream<AcpUpdate> liveSessionUpdates(String sessionId) => _sessionStreams
+      .putIfAbsent(sessionId, StreamController<AcpUpdate>.broadcast)
+      .stream;
 
   void _recordReplay(
     String sessionId,
@@ -4306,6 +4596,9 @@ class SessionManager implements AcpBoundedObservationSource {
       (_admissionsByOwner[owner] ??=
               HashSet<_InboundPermissionAdmission>.identity())
           .add(admission);
+      if (promptLifecycle != null) {
+        _attachPromptAdmissionProbeForTesting(promptLifecycle, admission);
+      }
       final settlingReason = _settlingPromptReasons[owner];
       final lifecycleReason = promptLifecycle?.settling ?? false
           ? promptLifecycle!.cancellationWinner
@@ -4553,6 +4846,59 @@ class SessionManager implements AcpBoundedObservationSource {
     }
   }
 
+  void _attachPromptAdmissionProbeForTesting(
+    _PromptLifecycle lifecycle,
+    _InboundPermissionAdmission admission,
+  ) {
+    final state = _armedPromptAdmissionProbeForTesting;
+    if (state == null) return;
+    _armedPromptAdmissionProbeForTesting = null;
+    state.bound = true;
+    state.owner = lifecycle.owner;
+    _promptAdmissionProbesForTesting[admission] = state;
+    admission.installTestingGates(
+      reservationRelease: state.reservationGate.future,
+      responseCommit: state.responseCommitGate.future,
+    );
+    if (!state.admissionBarrierSeen.isCompleted) {
+      state.admissionBarrierSeen.complete();
+    }
+    lifecycle.graceStarted.future.then<void>((_) {
+      if (!state.graceStarted.isCompleted) state.graceStarted.complete();
+    });
+    Future.wait<void>(<Future<void>>[
+      admission.settled,
+      admission.reservationReleasedForTesting,
+      admission.responseCommittedForTesting,
+    ]).then<void>((_) {
+      _promptAdmissionProbesForTesting.remove(admission);
+      if (!state.reaped.isCompleted) state.reaped.complete();
+    });
+  }
+
+  void _markPromptAdmissionSideEffectStartedForTesting(
+    _InboundPermissionAdmission admission,
+  ) {
+    final state = _promptAdmissionProbesForTesting[admission];
+    if (state != null && !state.sideEffectStarted.isCompleted) {
+      state.sideEffectStarted.complete();
+    }
+  }
+
+  void _disposePromptAdmissionProbesForTesting() {
+    final armed = _armedPromptAdmissionProbeForTesting;
+    _armedPromptAdmissionProbeForTesting = null;
+    if (armed != null) {
+      armed.releaseCommit();
+      if (!armed.reaped.isCompleted) armed.reaped.complete();
+    }
+    for (final state in _promptAdmissionProbesForTesting.values.toList(
+      growable: false,
+    )) {
+      state.releaseCommit();
+    }
+  }
+
   void _removeInboundAdmission(_InboundPermissionAdmission admission) {
     _inboundAdmissions.remove(admission);
     _admissionsByParams.removeWhere(
@@ -4625,6 +4971,7 @@ class SessionManager implements AcpBoundedObservationSource {
           if (decision.outcome != PermissionOutcome.allow) {
             throw Exception('Permission denied');
           }
+          _markPromptAdmissionSideEffectStartedForTesting(admission);
           final path = req['path'] as String;
           final line = (req['line'] as num?)?.toInt();
           final limit = (req['limit'] as num?)?.toInt();
@@ -4691,6 +5038,7 @@ class SessionManager implements AcpBoundedObservationSource {
           if (decision.outcome != PermissionOutcome.allow) {
             throw Exception('Permission denied');
           }
+          _markPromptAdmissionSideEffectStartedForTesting(admission);
           final path = req['path'] as String;
           final content = req['content'] as String? ?? '';
           if (_log.isLoggable(Level.FINE)) {
@@ -5024,6 +5372,8 @@ class SessionManager implements AcpBoundedObservationSource {
           if (decision.outcome != PermissionOutcome.allow) {
             throw Exception('Permission denied');
           }
+
+          _markPromptAdmissionSideEffectStartedForTesting(admission);
 
           _requireUsableTerminalLease(lease);
           var cwd = requestedCwd;

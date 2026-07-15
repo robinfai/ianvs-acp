@@ -299,6 +299,9 @@ class JsonRpcPeer {
   _PendingTransportTermination? _pendingTransportTermination;
   AcpPeerUnavailableState? _unavailableState;
   Future<void>? _closeFuture;
+  Future<void> Function(Future<void> Function() closeAction)?
+  _fatalCloseDriverForTesting;
+  var _fatalCloseDriverAttemptedForTesting = false;
   var _pendingTransportFinalizeScheduled = false;
   var _acceptingInbound = true;
   var _decodedIncomingClosed = false;
@@ -344,6 +347,22 @@ class JsonRpcPeer {
   @visibleForTesting
   void failNextCancelSubmissionForTesting() =>
       _outboundSink.failNextCancelSubmission();
+
+  /// Installs a one-peer test driver around fatal-timeout close.
+  @visibleForTesting
+  void installFatalCloseDriverForTesting(
+    Future<void> Function(Future<void> Function() closeAction) driver,
+  ) {
+    if (_fatalCloseDriverForTesting != null) {
+      throw StateError('An ACP fatal-close test driver is already installed.');
+    }
+    if (_fatalCloseDriverAttemptedForTesting || _closeFuture != null) {
+      throw StateError(
+        'An ACP fatal-close test driver must be installed before close.',
+      );
+    }
+    _fatalCloseDriverForTesting = driver;
+  }
 
   /// Completes when a paused session update has been captured.
   @visibleForTesting
@@ -406,10 +425,22 @@ class JsonRpcPeer {
   /// Close after a fatal timeout, optionally scoped to prompt cleanup.
   Future<void> closeForFatalTimeout({
     AcpPromptCleanupIdentity? cleanupIdentity,
-  }) => _becomeUnavailable(
-    AcpPeerUnavailableReason.fatalTimeout,
-    cleanupIdentity: cleanupIdentity,
-  );
+  }) {
+    final driver = _fatalCloseDriverForTesting;
+    if (driver == null) {
+      return _becomeUnavailable(
+        AcpPeerUnavailableReason.fatalTimeout,
+        cleanupIdentity: cleanupIdentity,
+      );
+    }
+    _fatalCloseDriverAttemptedForTesting = true;
+    return driver(
+      () => _becomeUnavailable(
+        AcpPeerUnavailableReason.fatalTimeout,
+        cleanupIdentity: cleanupIdentity,
+      ),
+    );
+  }
 
   /// Close with a selected reason for unavailable lifecycle tests.
   @visibleForTesting
@@ -1247,11 +1278,7 @@ class JsonRpcPeer {
 
   /// Send `session/prompt` and return the terminal result payload.
   Future<Json> prompt(Json params) async {
-    if (!isAvailable) throw const AcpConnectionClosedException();
-    return requireJsonRpcObjectResult(
-      await _peer.sendRequest('session/prompt', params),
-      resource: 'JSON-RPC session/prompt result',
-    );
+    throw StateError('session/prompt must use owner-bound API.');
   }
 
   /// Send an owner-bound prompt request without applying a prompt deadline.
@@ -1503,7 +1530,9 @@ class JsonRpcPeer {
 
   /// Send an arbitrary JSON-RPC request by method name with params.
   Future<Json> sendRaw(String method, Json params) async {
-    if (method == 'session/prompt') return prompt(params);
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
     return requireJsonRpcObjectResult(
       await _sendRequest(method, params),
       resource: 'JSON-RPC $method result',
@@ -1511,8 +1540,12 @@ class JsonRpcPeer {
   }
 
   /// Send an arbitrary JSON-RPC notification by method name with params.
-  Future<void> sendNotificationRaw(String method, Json params) async =>
-      _peer.sendNotification(method, params);
+  Future<void> sendNotificationRaw(String method, Json params) async {
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
+    _peer.sendNotification(method, params);
+  }
 
   Future<Object?> _sendRequest(
     String method,

@@ -338,41 +338,90 @@ final class _ObservedAdmission implements InboundAdmission {
   void markPeerClosed() => inner.markPeerClosed();
 }
 
-final class _FailingFatalClosePeer extends JsonRpcPeer {
-  _FailingFatalClosePeer(
-    super.channel, {
-    required super.timeouts,
-    required super.maxConcurrentHandlers,
-    required super.maxOrdinaryConcurrentHandlers,
-  });
+final class _HarnessTransport implements acp.AcpTransport {
+  _HarnessTransport()
+    : _controller = StreamChannelController<String>(sync: true) {
+    _agentSubscription = _controller.foreign.stream.listen((line) {
+      final decoded = jsonDecode(line);
+      if (decoded is List) {
+        for (final item in decoded.whereType<Map>()) {
+          _outbound.add(Map<String, dynamic>.from(item));
+        }
+      } else if (decoded is Map) {
+        _outbound.add(Map<String, dynamic>.from(decoded));
+      }
+    });
+  }
+
+  final StreamChannelController<String> _controller;
+  final StreamController<Map<String, dynamic>> _outbound =
+      StreamController<Map<String, dynamic>>.broadcast(sync: true);
+  late final StreamSubscription<String> _agentSubscription;
+  bool _stopped = false;
 
   @override
-  Future<void> closeForFatalTimeout({
-    AcpPromptCleanupIdentity? cleanupIdentity,
-  }) => super
-      .closeForFatalTimeout(cleanupIdentity: cleanupIdentity)
-      .then<void>((_) => throw StateError('fixed fatal close failure'));
+  StreamChannel<String> get channel => _controller.local;
+
+  Stream<Map<String, dynamic>> get outbound => _outbound.stream;
+
+  Future<Map<String, dynamic>> nextOutbound(String method) => _outbound.stream
+      .firstWhere((message) => message['method'] == method)
+      .timeout(const Duration(seconds: 2));
+
+  void sendAgentMessage(Map<String, dynamic> message) {
+    if (_stopped) throw StateError('Harness transport is stopped.');
+    _controller.foreign.sink.add(jsonEncode(message));
+  }
+
+  void sendAgentBatch(List<Map<String, dynamic>> messages) {
+    if (_stopped) throw StateError('Harness transport is stopped.');
+    _controller.foreign.sink.add(jsonEncode(messages));
+  }
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> stop() async {
+    if (_stopped) return;
+    _stopped = true;
+    await _controller.foreign.sink.close();
+    await _agentSubscription.cancel();
+    await _outbound.close();
+  }
 }
 
-final class _SynchronouslyFailingFatalClosePeer extends JsonRpcPeer {
-  _SynchronouslyFailingFatalClosePeer(
-    super.channel, {
-    required super.timeouts,
-    required super.maxConcurrentHandlers,
-    required super.maxOrdinaryConcurrentHandlers,
+final class _RawPromptProbe {
+  _RawPromptProbe({
+    required this.acpClient,
+    required this.owner,
+    required this.requestId,
+    required this.result,
+    required this.winnerRecorded,
+    required this.rightRecorded,
+    required this.preClaimSeen,
+    required this.claimSeen,
+    required this.graceStarted,
+    required this.unavailableSeen,
   });
 
-  @override
-  Future<void> closeForFatalTimeout({
-    AcpPromptCleanupIdentity? cleanupIdentity,
-  }) {
-    throw StateError('fixed synchronous fatal close failure');
-  }
+  final acp.AcpClient acpClient;
+  final acp.AcpSessionInputBudgetOwner owner;
+  final Object requestId;
+  final Future<Map<String, dynamic>> result;
+  final Future<void> winnerRecorded;
+  final Future<void> rightRecorded;
+  final Future<void> preClaimSeen;
+  final Future<void> claimSeen;
+  final Future<void> graceStarted;
+  final Future<void> unavailableSeen;
 }
 
 class _PermissionAdmissionHarness {
   _PermissionAdmissionHarness._({
-    required this.channel,
+    required this.acpClient,
+    required this.config,
+    required this.transport,
     required this.peer,
     required this.manager,
     required this.permissions,
@@ -392,7 +441,7 @@ class _PermissionAdmissionHarness {
     List<String> initialAdditionalDirectories = const <String>[],
   }) async {
     assert(!(failFatalCloseFuture && throwSynchronouslyOnFatalClose));
-    final channel = StreamChannelController<String>(sync: synchronousChannel);
+    final transport = _HarnessTransport();
     final permissions = _ControlledPermissionProvider();
     final fs = _CountingFsProvider();
     final terminals = _CountingTerminalProvider();
@@ -405,39 +454,39 @@ class _PermissionAdmissionHarness {
             permission: timeouts.permission,
             promptCancelGrace: promptCancelGrace,
           );
-    final JsonRpcPeer peer = throwSynchronouslyOnFatalClose
-        ? _SynchronouslyFailingFatalClosePeer(
-            channel.foreign,
-            timeouts: effective,
-            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
-            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
-          )
-        : failFatalCloseFuture
-        ? _FailingFatalClosePeer(
-            channel.foreign,
-            timeouts: effective,
-            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
-            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
-          )
-        : JsonRpcPeer(
-            channel.foreign,
-            timeouts: effective,
-            maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
-            maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
-          );
-    final manager = SessionManager(
-      config: acp.AcpConfig(
-        timeouts: effective,
-        permissionProvider: permissions,
-        fsProvider: fs,
-        terminalProvider: terminals,
-      ),
-      peer: peer,
+    final config = acp.AcpConfig(
+      timeouts: effective,
+      permissionProvider: permissions,
+      fsProvider: fs,
+      terminalProvider: terminals,
+    );
+    final acpClient = await acp.AcpClient.start(
+      config: config,
+      transport: transport,
+      maxConcurrentHandlers: maxOrdinaryConcurrentHandlers + 2,
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
       maxTerminalHandles: 2,
       maxTerminalHandlesPerSession: 1,
+      beforeSessionManagerForTesting: (peer) {
+        if (throwSynchronouslyOnFatalClose) {
+          peer.installFatalCloseDriverForTesting((_) {
+            throw StateError('fixed synchronous fatal close failure');
+          });
+        } else if (failFatalCloseFuture) {
+          peer.installFatalCloseDriverForTesting(
+            (close) => close().then<void>(
+              (_) => throw StateError('fixed fatal close failure'),
+            ),
+          );
+        }
+      },
     );
+    final peer = acpClient.peerForTesting;
+    final manager = acpClient.sessionManagerForTesting;
     final harness = _PermissionAdmissionHarness._(
-      channel: channel,
+      acpClient: acpClient,
+      config: config,
+      transport: transport,
       peer: peer,
       manager: manager,
       permissions: permissions,
@@ -445,9 +494,12 @@ class _PermissionAdmissionHarness {
       terminals: terminals,
     );
     harness._installAdmissionObserver();
-    harness._wireSubscription = channel.local.stream.listen(harness._onWire);
+    harness._installPeerUnavailableObserver();
+    harness._wireSubscription = transport.outbound.listen(
+      harness._dispatchWireMap,
+    );
     if (registerInitialSession) {
-      await manager.resumeSession(
+      await acpClient.resumeSession(
         sessionId: harness.sessionId,
         workspaceRoot: '/tmp',
         additionalDirectories: initialAdditionalDirectories,
@@ -457,7 +509,9 @@ class _PermissionAdmissionHarness {
     return harness;
   }
 
-  final StreamChannelController<String> channel;
+  final acp.AcpClient acpClient;
+  final acp.AcpConfig config;
+  final _HarnessTransport transport;
   final JsonRpcPeer peer;
   final SessionManager manager;
   final _ControlledPermissionProvider permissions;
@@ -475,7 +529,12 @@ class _PermissionAdmissionHarness {
       StreamController<int>.broadcast();
   final Completer<void> _ordinaryStarted = Completer<void>();
   final Completer<void> _releaseOrdinary = Completer<void>();
-  late StreamSubscription<String> _wireSubscription;
+  late StreamSubscription<Map<String, dynamic>> _wireSubscription;
+  late final AcpPeerUnavailableListener _peerUnavailableListener;
+  final Map<acp.AcpSessionInputBudgetOwner, Completer<AcpPeerUnavailableState>>
+  _unavailableByOwner =
+      <acp.AcpSessionInputBudgetOwner, Completer<AcpPeerUnavailableState>>{};
+  AcpPeerUnavailableState? _lastPeerUnavailable;
   void Function(Map<String, dynamic>)? _wireDelegate;
   int _nextId = 100;
   bool _holdSetupResponses = false;
@@ -497,15 +556,100 @@ class _PermissionAdmissionHarness {
     };
   }
 
-  void _onWire(String line) {
-    final decoded = jsonDecode(line);
-    if (decoded is List) {
-      for (final item in decoded.whereType<Map>()) {
-        _dispatchWireMap(Map<String, dynamic>.from(item));
+  bool _unavailableMatchesOwner(
+    AcpPeerUnavailableState state,
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final cleanup = state.cleanupIdentity;
+    return cleanup == null ||
+        (identical(cleanup.ownerToken, owner) &&
+            cleanup.generation == owner.generation);
+  }
+
+  void _installPeerUnavailableObserver() {
+    _peerUnavailableListener = (state) {
+      _lastPeerUnavailable = state;
+      for (final entry in _unavailableByOwner.entries.toList(growable: false)) {
+        if (!_unavailableMatchesOwner(state, entry.key)) continue;
+        _unavailableByOwner.remove(entry.key);
+        if (!entry.value.isCompleted) entry.value.complete(state);
       }
-      return;
+    };
+    peer.addUnavailableListener(_peerUnavailableListener);
+  }
+
+  Future<AcpPeerUnavailableState> unavailableSeen(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) {
+    final current = _lastPeerUnavailable;
+    if (current != null && _unavailableMatchesOwner(current, owner)) {
+      return Future<AcpPeerUnavailableState>.value(current);
     }
-    if (decoded is Map) _dispatchWireMap(Map<String, dynamic>.from(decoded));
+    return _unavailableByOwner
+        .putIfAbsent(owner, Completer<AcpPeerUnavailableState>.sync)
+        .future;
+  }
+
+  AcpPeerUnavailableState get peerUnavailable =>
+      _lastPeerUnavailable ??
+      (throw StateError('ACP peer is still available.'));
+
+  Future<_RawPromptProbe> startRawPrompt() async {
+    final outbound = transport.nextOutbound('session/prompt');
+    final owner = acpClient.beginPromptTurn(sessionId);
+    final result = acpClient.sendPromptRequest(
+      owner: owner,
+      content: const <Map<String, dynamic>>[
+        <String, dynamic>{'type': 'text', 'text': 'raw-probe'},
+      ],
+    );
+    unawaited(result.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    final request = await outbound.timeout(const Duration(seconds: 2));
+    return _RawPromptProbe(
+      acpClient: acpClient,
+      owner: owner,
+      requestId: request['id']!,
+      result: result,
+      winnerRecorded: acpClient.promptWinnerRecordedForTesting(owner),
+      rightRecorded: acpClient.promptRightRecordedForTesting(owner),
+      preClaimSeen: acpClient.promptBarrierReleasedForTesting(owner),
+      claimSeen: acpClient.promptClaimSeenForTesting(owner),
+      graceStarted: acpClient.promptGraceStartedForTesting(owner),
+      unavailableSeen: unavailableSeen(owner),
+    );
+  }
+
+  void completeRawPromptSuccess(_RawPromptProbe probe) {
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': probe.requestId,
+      'result': <String, dynamic>{'stopReason': 'end_turn'},
+    });
+  }
+
+  void completeRawPromptError(_RawPromptProbe probe) {
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': probe.requestId,
+      'error': <String, dynamic>{
+        'code': -32000,
+        'message': 'fixed remote error',
+      },
+    });
+  }
+
+  Future<void> closePeer() => acpClient.closePeerExplicitlyForTesting();
+
+  Future<void> admissionResponseGraceStarted(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) => acpClient.admissionResponseGraceStartedForTesting(owner);
+
+  Future<void> expireOwnerAdmissionResponseGrace(
+    acp.AcpSessionInputBudgetOwner owner,
+  ) async {
+    final unavailable = unavailableSeen(owner);
+    acpClient.expireOwnerAdmissionResponseGraceForTesting(owner);
+    await unavailable;
   }
 
   void _dispatchWireMap(Map<String, dynamic> message) {
@@ -521,13 +665,13 @@ class _PermissionAdmissionHarness {
     final method = message['method'];
     if (method is String) wireRequests.add(message);
     if (method == 'session/close') {
-      channel.local.sink.add(
-        jsonEncode(<String, dynamic>{
+      scheduleMicrotask(() {
+        transport.sendAgentMessage(<String, dynamic>{
           'jsonrpc': '2.0',
           'id': message['id'],
           'result': <String, dynamic>{},
-        }),
-      );
+        });
+      });
       return;
     }
     if (method == 'session/resume' ||
@@ -538,7 +682,9 @@ class _PermissionAdmissionHarness {
         setupRequests.add(message);
         setupRequestEvents.add(setupRequests.length - 1);
       } else {
-        _completeSetup(message, result: const <String, dynamic>{});
+        scheduleMicrotask(
+          () => _completeSetup(message, result: const <String, dynamic>{}),
+        );
       }
       return;
     }
@@ -561,26 +707,22 @@ class _PermissionAdmissionHarness {
 
   void completeSetupError(int index, String message) {
     final request = setupRequests[index];
-    channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': request['id'],
-        'error': <String, dynamic>{'code': -32000, 'message': message},
-      }),
-    );
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': request['id'],
+      'error': <String, dynamic>{'code': -32000, 'message': message},
+    });
   }
 
   void _completeSetup(
     Map<String, dynamic> request, {
     required Map<String, dynamic> result,
   }) {
-    channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': request['id'],
-        'result': result,
-      }),
-    );
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': request['id'],
+      'result': result,
+    });
   }
 
   Map<String, dynamic> paramsFor(String method) => switch (method) {
@@ -623,14 +765,12 @@ class _PermissionAdmissionHarness {
     final probe = _PermissionRequestProbe(id, response);
     _responses[id] = response;
     _admissionQueue.add(probe);
-    channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': id,
-        'method': method,
-        'params': params,
-      }),
-    );
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      'params': params,
+    });
     await probe.admissionSeen.future.timeout(const Duration(seconds: 2));
     return probe;
   }
@@ -645,14 +785,12 @@ class _PermissionAdmissionHarness {
     final response = Completer<_RpcReply>();
     _responses[id] = response;
     _ordinaryResponse = response.future;
-    channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': id,
-        'method': 'terminal/output',
-        'params': <String, dynamic>{'sessionId': sessionId},
-      }),
-    );
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': 'terminal/output',
+      'params': <String, dynamic>{'sessionId': sessionId},
+    });
     await _ordinaryStarted.future.timeout(const Duration(seconds: 2));
   }
 
@@ -696,16 +834,14 @@ class _PermissionAdmissionHarness {
       case 'ownerlessAdmission':
         unawaited(
           _releaseRemoteClose.future.then<void>((_) {
-            channel.local.sink.add(
-              jsonEncode(<String, dynamic>{
-                'jsonrpc': '2.0',
-                'id': message['id'],
-                'error': <String, dynamic>{
-                  'code': -32000,
-                  'message': 'fixed session close failure',
-                },
-              }),
-            );
+            transport.sendAgentMessage(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'error': <String, dynamic>{
+                'code': -32000,
+                'message': 'fixed session close failure',
+              },
+            });
           }),
         );
         break;
@@ -810,22 +946,20 @@ class _PermissionAdmissionHarness {
     _responses[permissionId] = permissionReply;
     _responses[siblingId] = siblingReply;
     _admissionQueue.add(admission);
-    channel.local.sink.add(
-      jsonEncode(<Object?>[
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': permissionId,
-          'method': 'fs/read_text_file',
-          'params': paramsFor('fs/read_text_file'),
-        },
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': siblingId,
-          'method': 'terminal/output',
-          'params': <String, dynamic>{'sessionId': sessionId},
-        },
-      ]),
-    );
+    transport.sendAgentBatch(<Map<String, dynamic>>[
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': permissionId,
+        'method': 'fs/read_text_file',
+        'params': paramsFor('fs/read_text_file'),
+      },
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': siblingId,
+        'method': 'terminal/output',
+        'params': <String, dynamic>{'sessionId': sessionId},
+      },
+    ]);
     await admission.admissionSeen.future.timeout(const Duration(seconds: 2));
     final observed = admission.admission! as _ObservedAdmission;
     expect(manager.admissionHasPromptOwnerForTesting(observed.inner), isFalse);
@@ -909,10 +1043,10 @@ class _PermissionAdmissionHarness {
     if (write != null && !write.isCompleted) {
       write.complete();
     }
-    await manager.dispose();
-    await peer.close();
+    peer.removeUnavailableListener(_peerUnavailableListener);
+    await acpClient.dispose();
     await _wireSubscription.cancel();
-    await channel.local.sink.close();
+    await transport.stop();
     await permissions.requestEvents.close();
     await setupRequestEvents.close();
     await wireRequests.close();
@@ -1095,22 +1229,20 @@ final class _PermissionBatchHarness {
     base._responses[permissionId] = permissionReply;
     base._responses[siblingId] = siblingReply;
     base._admissionQueue.add(probe);
-    base.channel.local.sink.add(
-      jsonEncode(<Object?>[
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': permissionId,
-          'method': method,
-          'params': base.paramsFor(method),
-        },
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': siblingId,
-          'method': 'terminal/output',
-          'params': <String, dynamic>{'sessionId': base.sessionId},
-        },
-      ]),
-    );
+    base.transport.sendAgentBatch(<Map<String, dynamic>>[
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': permissionId,
+        'method': method,
+        'params': base.paramsFor(method),
+      },
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': siblingId,
+        'method': 'terminal/output',
+        'params': <String, dynamic>{'sessionId': base.sessionId},
+      },
+    ]);
     await probe.admissionSeen.future.timeout(const Duration(seconds: 2));
     if (reason != null && owner != null) base.cancelOwner(owner, reason);
     return _BlockedBatchProbe(
@@ -1736,22 +1868,20 @@ class _PromptLifecycleHarness {
     base._responses[permissionId] = permissionReply;
     base._responses[siblingId] = siblingReply;
     base._admissionQueue.add(admission);
-    base.channel.local.sink.add(
-      jsonEncode(<Object?>[
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': permissionId,
-          'method': method,
-          'params': base.paramsFor(method),
-        },
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': siblingId,
-          'method': 'terminal/output',
-          'params': <String, dynamic>{'sessionId': sessionId},
-        },
-      ]),
-    );
+    base.transport.sendAgentBatch(<Map<String, dynamic>>[
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': permissionId,
+        'method': method,
+        'params': base.paramsFor(method),
+      },
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': siblingId,
+        'method': 'terminal/output',
+        'params': <String, dynamic>{'sessionId': sessionId},
+      },
+    ]);
     await admission.admissionSeen.future;
     operation.admission = admission;
     admission.reservationReleased.future.then<void>((_) {
@@ -1781,22 +1911,20 @@ class _PromptLifecycleHarness {
     final admission = _PermissionRequestProbe(permissionId, permissionReply);
     base._responses[permissionId] = permissionReply;
     base._admissionQueue.add(admission);
-    base.channel.local.sink.add(
-      jsonEncode(<Object?>[
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': permissionId,
-          'method': 'fs/read_text_file',
-          'params': base.paramsFor('fs/read_text_file'),
-        },
-        <String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': siblingId,
-          'method': 'terminal/output',
-          'params': <String, dynamic>{'sessionId': sessionId},
-        },
-      ]),
-    );
+    base.transport.sendAgentBatch(<Map<String, dynamic>>[
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': permissionId,
+        'method': 'fs/read_text_file',
+        'params': base.paramsFor('fs/read_text_file'),
+      },
+      <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': siblingId,
+        'method': 'terminal/output',
+        'params': <String, dynamic>{'sessionId': sessionId},
+      },
+    ]);
     await admission.admissionSeen.future.timeout(const Duration(seconds: 2));
     return (admission: admission, releaseResponseCommit: releaseResponseCommit);
   }
@@ -1828,37 +1956,31 @@ class _PromptLifecycleHarness {
       throw StateError('prompt request was not observed');
     }
     _promptResponded = true;
-    base.channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': _promptRequestId,
-        'result': <String, dynamic>{'stopReason': stopReason},
-      }),
-    );
+    base.transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': _promptRequestId,
+      'result': <String, dynamic>{'stopReason': stopReason},
+    });
   }
 
   void respondPromptError({required int code, required String message}) {
     if (_promptResponded || _promptRequestId == null) return;
     _promptResponded = true;
-    base.channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': _promptRequestId,
-        'error': <String, dynamic>{'code': code, 'message': message},
-      }),
-    );
+    base.transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': _promptRequestId,
+      'error': <String, dynamic>{'code': code, 'message': message},
+    });
   }
 
   void respondPromptMalformed() {
     if (_promptResponded || _promptRequestId == null) return;
     _promptResponded = true;
-    base.channel.local.sink.add(
-      jsonEncode(<String, dynamic>{
-        'jsonrpc': '2.0',
-        'id': _promptRequestId,
-        'result': <Object?>['not-an-object'],
-      }),
-    );
+    base.transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': _promptRequestId,
+      'result': <Object?>['not-an-object'],
+    });
   }
 
   Future<void> recordPromptWinner(
@@ -2151,10 +2273,22 @@ final class _RequestHarness {
       );
 
   Future<void> dispose() async {
-    await peer.close();
-    await outbound.cancel();
-    await input.close();
-    await outputController.close();
+    final unavailable = Completer<void>.sync();
+    void observeUnavailable(AcpPeerUnavailableState _) {
+      if (!unavailable.isCompleted) unavailable.complete();
+    }
+
+    peer.addUnavailableListener(observeUnavailable);
+    try {
+      await input.close();
+      await unavailable.future;
+      await peer.close();
+      while (await outbound.moveNext()) {}
+      await outputController.close();
+      await outbound.cancel();
+    } finally {
+      peer.removeUnavailableListener(observeUnavailable);
+    }
   }
 }
 
@@ -3984,6 +4118,36 @@ void main() {
       }
     }
   });
+
+  test(
+    'fatal close test driver rejects repeated and late installation',
+    () async {
+      final repeated = await _PermissionAdmissionHarness.start(
+        failFatalCloseFuture: true,
+      );
+      try {
+        expect(
+          () => repeated.peer.installFatalCloseDriverForTesting(
+            (close) => close(),
+          ),
+          throwsStateError,
+        );
+      } finally {
+        await repeated.dispose();
+      }
+
+      final late = await _PermissionAdmissionHarness.start();
+      try {
+        await late.peer.close();
+        expect(
+          () => late.peer.installFatalCloseDriverForTesting((close) => close()),
+          throwsStateError,
+        );
+      } finally {
+        await late.dispose();
+      }
+    },
+  );
 
   test('blocked permission batch outcomes start one response grace', () async {
     const outcomes = <_BlockedOutcome>[
@@ -6895,6 +7059,8 @@ void main() {
             sessionId: harness.sessionId,
           );
         };
+        final registrationSeen = harness.manager
+            .holdNextGeneratedRegistrationDrainForTesting();
         final generated = harness.manager.forkSession(
           sessionId: harness.sessionId,
           workspaceRoot: '/tmp',
@@ -6907,6 +7073,10 @@ void main() {
             .waitForSetupRequest(0)
             .timeout(const Duration(seconds: 2));
         harness.completeSetupSuccess(0, sessionId: generatedSessionId);
+        expect(
+          await registrationSeen.timeout(const Duration(seconds: 2)),
+          generatedSessionId,
+        );
         final stale = await harness.admit(
           'fs/read_text_file',
           params: <String, dynamic>{
@@ -6923,6 +7093,7 @@ void main() {
           harness.manager.sessionGenerationForTesting(generatedSessionId),
           isNull,
         );
+        harness.manager.releaseGeneratedRegistrationDrainForTesting();
         expect(
           await generatedError.timeout(const Duration(seconds: 2)),
           isNotNull,
@@ -6999,6 +7170,7 @@ void main() {
         expect(harness.fs.readCalls, 1);
         expect(harness.permissions.cancellations, hasLength(1));
       } finally {
+        harness.manager.releaseGeneratedRegistrationDrainForTesting();
         await sourceClose;
         await harness.dispose();
       }
@@ -7028,6 +7200,8 @@ void main() {
           provisionalOwner = owner;
           harness.manager.endPromptTurn(owner);
         };
+        final registrationSeen = harness.manager
+            .holdNextGeneratedRegistrationDrainForTesting();
         final generated = harness.manager.newSession(workspaceRoot: '/tmp');
         final generatedError = generated.then<Object?>(
           (_) => null,
@@ -7037,6 +7211,10 @@ void main() {
             .waitForSetupRequest(0)
             .timeout(const Duration(seconds: 2));
         harness.completeSetupSuccess(0, sessionId: generatedSessionId);
+        expect(
+          await registrationSeen.timeout(const Duration(seconds: 2)),
+          generatedSessionId,
+        );
         final stale = await harness.admit(
           'fs/read_text_file',
           params: <String, dynamic>{
@@ -7050,6 +7228,7 @@ void main() {
         final staleCancellationToken =
             harness.permissions.requests.single.cancellationToken!;
         expect(provisionalOwner, isNotNull);
+        harness.manager.releaseGeneratedRegistrationDrainForTesting();
         expect(
           await generatedError.timeout(const Duration(seconds: 2)),
           isNotNull,
@@ -7114,6 +7293,7 @@ void main() {
         expect(harness.fs.readCalls, 1);
         expect(harness.permissions.cancellations, hasLength(1));
       } finally {
+        harness.manager.releaseGeneratedRegistrationDrainForTesting();
         await harness.dispose();
       }
     },
@@ -7476,7 +7656,14 @@ void main() {
         expect(sink.events, isEmpty);
         expect(await pendingSettled, isA<acp.AcpConnectionClosedException>());
         expect(await rawSettled, isA<acp.AcpConnectionClosedException>());
-        expect(await promptSettled, isA<acp.AcpConnectionClosedException>());
+        expect(
+          await promptSettled,
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'session/prompt must use owner-bound API.',
+          ),
+        );
         expect(await cancelSettled, isNull);
         expect(await notificationSettled, isNull);
         expect(
@@ -7622,7 +7809,7 @@ void main() {
     },
   );
 
-  test('sendRaw session/prompt keeps its legacy ownerless path', () async {
+  test('sendRaw session/prompt rejects the legacy ownerless path', () async {
     final harness = _RequestHarness(const acp.AcpTimeouts());
     try {
       final result = harness.peer.sendRaw('session/prompt', <String, dynamic>{
@@ -7631,16 +7818,133 @@ void main() {
           <String, dynamic>{'type': 'text', 'text': 'legacy'},
         ],
       });
-      final sent = await harness.takeRequest();
-      expect(sent['method'], 'session/prompt');
-      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
-      expect(harness.peer.promptSessionOperationCountForTesting, 0);
-      harness.respond(sent['id'], <String, dynamic>{'stopReason': 'end_turn'});
-      expect(await result, <String, dynamic>{'stopReason': 'end_turn'});
+      await expectLater(
+        result,
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'session/prompt must use owner-bound API.',
+          ),
+        ),
+      );
+      expect(harness.sink.events, isEmpty);
       expect(harness.peer.promptOwnerOperationCountForTesting, 0);
       expect(harness.peer.promptSessionOperationCountForTesting, 0);
     } finally {
       await harness.dispose();
+    }
+  });
+
+  test(
+    'raw admission fatal before terminal winner cannot backfill a delivery right',
+    () async {
+      final core = await _PermissionAdmissionHarness.start(
+        timeouts: const acp.AcpTimeouts(
+          permission: Duration(milliseconds: 100),
+          promptCancelGrace: Duration(milliseconds: 75),
+        ),
+      );
+      _BlockedBatchProbe? admission;
+      try {
+        final operation = await core.startRawPrompt();
+        admission = await _PermissionBatchHarness._(
+          core,
+        ).blockResponseCommit(owner: operation.owner);
+        await operation.graceStarted.timeout(const Duration(seconds: 2));
+        await core.expireOwnerAdmissionResponseGrace(operation.owner);
+        expect(
+          core.peerUnavailable.reason,
+          AcpPeerUnavailableReason.fatalTimeout,
+        );
+        expect(
+          operation.acpClient.hasPromptDeliveryRight(operation.owner),
+          isFalse,
+        );
+        core.completeRawPromptSuccess(operation);
+        await expectLater(
+          operation.result,
+          throwsA(isA<acp.AcpConnectionClosedException>()),
+        );
+        expect(
+          operation.acpClient.hasPromptDeliveryRight(operation.owner),
+          isFalse,
+        );
+      } finally {
+        await admission?.finishLateSibling();
+        await core.dispose();
+      }
+    },
+  );
+
+  test('raw session prompt cannot bypass owner bound api', () async {
+    final core = await _PermissionAdmissionHarness.start(
+      timeouts: const acp.AcpTimeouts(request: Duration(milliseconds: 100)),
+    );
+    final promptRequests = <Map<String, dynamic>>[];
+    final subscription = core.wireRequests.stream
+        .where((message) => message['method'] == 'session/prompt')
+        .listen(promptRequests.add);
+    Future<Object> capture<T>(Future<T> operation) => operation.then<Object>(
+      (_) => StateError('session/prompt unexpectedly succeeded'),
+      onError: (Object error, StackTrace _) => error,
+    );
+    try {
+      final errors =
+          await Future.wait<Object>(<Future<Object>>[
+            capture(
+              core.acpClient.sendRaw('session/prompt', <String, dynamic>{
+                'sessionId': core.sessionId,
+                'prompt': const <Map<String, dynamic>>[],
+              }),
+            ),
+            capture(
+              core.peer.sendRaw('session/prompt', <String, dynamic>{
+                'sessionId': core.sessionId,
+                'prompt': const <Map<String, dynamic>>[],
+              }),
+            ),
+            capture(
+              core.peer.prompt(<String, dynamic>{
+                'sessionId': core.sessionId,
+                'prompt': const <Map<String, dynamic>>[],
+              }),
+            ),
+            capture(
+              core.acpClient.sendNotificationRaw(
+                'session/prompt',
+                <String, dynamic>{
+                  'sessionId': core.sessionId,
+                  'prompt': const <Map<String, dynamic>>[],
+                },
+              ),
+            ),
+            capture(
+              core.peer.sendNotificationRaw('session/prompt', <String, dynamic>{
+                'sessionId': core.sessionId,
+                'prompt': const <Map<String, dynamic>>[],
+              }),
+            ),
+          ]).timeout(
+            const Duration(seconds: 2),
+            onTimeout: () =>
+                throw StateError('raw session/prompt bypass was not rejected'),
+          );
+      for (final error in errors) {
+        expect(
+          error,
+          isA<StateError>().having(
+            (value) => value.message,
+            'message',
+            'session/prompt must use owner-bound API.',
+          ),
+        );
+      }
+      await pumpEventQueue();
+      expect(promptRequests, isEmpty);
+    } finally {
+      await subscription.cancel();
+      await core.dispose();
     }
   });
 
