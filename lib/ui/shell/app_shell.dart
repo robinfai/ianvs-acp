@@ -754,27 +754,37 @@ class AppShell extends StatelessWidget {
       updatedAt: selection.conversation.updatedAt,
       agentName: _resumeSelectionAgentName(selection),
     );
+    final selectedAgentName = selectedSession.agentName?.trim();
+    final trustedTargetController = _controllerForAgentName(
+      sessionControllerList,
+      selectedSession.agentName,
+    );
     final externalSelectSession = onSelectSession;
-    if (externalSelectSession != null) {
-      externalSelectSession(selectedSession);
-      return;
-    }
-
-    final targetController =
-        _controllerForAgentName(
-          sessionControllerList,
-          selectedSession.agentName,
-        ) ??
-        controller;
-    final activeSession = targetController.currentSession;
-    if (activeSession != null &&
-        activeSession.id.trim() == selectedSession.id.trim()) {
-      if (sameSessionWorkspaceIdentity(activeSession, selectedSession)) return;
+    final conflictController =
+        trustedTargetController ??
+        (externalSelectSession == null ||
+                selectedAgentName == null ||
+                selectedAgentName.isEmpty
+            ? controller
+            : null);
+    if (conflictController?.hasBoundSessionWorkspaceConflict(selectedSession) ==
+        true) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(sessionWorkspaceConflictMessage(selectedSession.id)),
         ),
       );
+      return;
+    }
+    if (externalSelectSession != null) {
+      externalSelectSession(selectedSession);
+      return;
+    }
+
+    final targetController = trustedTargetController ?? controller;
+    final activeSession = targetController.currentSession;
+    if (activeSession != null &&
+        activeSession.id.trim() == selectedSession.id.trim()) {
       return;
     }
 

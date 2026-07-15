@@ -2800,13 +2800,13 @@ class ChatController extends ChangeNotifier {
         });
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (messages.isEmpty) {
-          _localUnstartedSessionIds.add(session.id);
+          _addLocalUnstartedSessionId(session.id);
         } else {
-          _localUnstartedSessionIds.remove(session.id);
+          _removeLocalUnstartedSessionId(session.id);
         }
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
-          created = currentSession?.id == session.id;
+          created = _sessionIdsMatch(currentSession?.id, session.id);
         }
         _notifyListeners();
         await _loadSessionSettings(session.id, notify: false);
@@ -2832,29 +2832,31 @@ class ChatController extends ChangeNotifier {
       return;
     }
     final explicitCwd = cwd?.trim();
-    final activeSession = currentSession;
-    if (activeSession != null && activeSession.id.trim() == trimmedSessionId) {
-      final requestedCwd = explicitCwd == null || explicitCwd.isEmpty
-          ? activeSession.cwd
-          : explicitCwd;
-      final requestedDirectories =
-          additionalDirectories ?? activeSession.additionalDirectories;
-      if (sessionWorkspaceIdentityMatches(
-        activeSession,
-        sessionId: trimmedSessionId,
-        cwd: requestedCwd,
-        additionalDirectories: requestedDirectories,
-      )) {
-        return;
-      }
-      _setError(StateError(sessionWorkspaceConflictMessage(trimmedSessionId)));
-      return;
-    }
+    final boundSession = _boundSessionWithId(trimmedSessionId);
     final workspaceCwd = explicitCwd == null || explicitCwd.isEmpty
-        ? this.cwd
+        ? boundSession?.cwd ?? this.cwd
         : explicitCwd;
     final workspaceAdditionalDirectories =
-        additionalDirectories ?? this.additionalDirectories;
+        additionalDirectories ??
+        boundSession?.additionalDirectories ??
+        this.additionalDirectories;
+    if (boundSession != null &&
+        !sessionWorkspaceIdentityMatches(
+          boundSession,
+          sessionId: trimmedSessionId,
+          cwd: workspaceCwd,
+          additionalDirectories: workspaceAdditionalDirectories,
+        )) {
+      _setActionError(
+        StateError(sessionWorkspaceConflictMessage(trimmedSessionId)),
+        preserveConnectionStatus: true,
+      );
+      return;
+    }
+    final activeSession = currentSession;
+    if (activeSession != null && activeSession.id.trim() == trimmedSessionId) {
+      return;
+    }
     _finishTurnBudget();
 
     final operationGeneration = _beginSessionOperationGeneration();
@@ -2897,10 +2899,10 @@ class ChatController extends ChangeNotifier {
           if (targetSnapshot case final snapshot?) {
             _activateSessionViewSnapshot(
               snapshot,
-              cwd: explicitCwd == null || explicitCwd.isEmpty
-                  ? null
-                  : explicitCwd,
-              additionalDirectories: additionalDirectories,
+              cwd: boundSession == null ? explicitCwd : null,
+              additionalDirectories: boundSession == null
+                  ? additionalDirectories
+                  : null,
               title: title,
               updatedAt: updatedAt,
             );
@@ -2908,13 +2910,13 @@ class ChatController extends ChangeNotifier {
             return;
           }
           if (existingSession != null &&
-              _localUnstartedSessionIds.contains(trimmedSessionId)) {
+              _isLocalUnstartedSessionId(trimmedSessionId)) {
             _activateLocalUnstartedSession(
               existingSession,
-              cwd: explicitCwd == null || explicitCwd.isEmpty
-                  ? null
-                  : explicitCwd,
-              additionalDirectories: additionalDirectories,
+              cwd: boundSession == null ? explicitCwd : null,
+              additionalDirectories: boundSession == null
+                  ? additionalDirectories
+                  : null,
               title: title,
               updatedAt: updatedAt,
             );
@@ -2978,7 +2980,7 @@ class ChatController extends ChangeNotifier {
           additionalDirectories: workspaceAdditionalDirectories,
         );
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
-        _localUnstartedSessionIds.remove(trimmedSessionId);
+        _removeLocalUnstartedSessionId(trimmedSessionId);
         await _replaySessionEvents(replay);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _loadSessionSettings(trimmedSessionId, notify: false);
@@ -3091,7 +3093,9 @@ class ChatController extends ChangeNotifier {
         continue;
       }
 
-      if (currentSession?.id == nextSession.id) currentSession = nextSession;
+      if (_sessionIdsMatch(currentSession?.id, nextSession.id)) {
+        currentSession = nextSession;
+      }
       _upsertSession(nextSession);
       didChange = true;
     }
@@ -3125,12 +3129,12 @@ class ChatController extends ChangeNotifier {
     if (isStreaming || isSessionOperationRunning) return null;
     final session = _sessionWithId(sessionId);
     if (session == null || session.archived) return null;
-    final wasCurrent = currentSession?.id == sessionId;
+    final wasCurrent = _sessionIdsMatch(currentSession?.id, sessionId);
     if (wasCurrent) _finishTurnBudget();
     _refreshActiveUiStateBudget();
     final inactiveSnapshot = wasCurrent
         ? null
-        : _sessionViewSnapshots[sessionId];
+        : _sessionViewSnapshotWithId(sessionId);
     final snapshot = ArchivedSessionSnapshot(
       session: session,
       wasCurrent: wasCurrent,
@@ -3283,11 +3287,15 @@ class ChatController extends ChangeNotifier {
     String sessionId,
     _SessionViewSnapshot snapshot,
   ) {
-    final previous = _sessionViewSnapshots.remove(sessionId);
+    final normalizedSessionId = sessionId.trim();
+    final previousKey = _sessionViewSnapshotKeyWithId(normalizedSessionId);
+    final previous = previousKey == null
+        ? null
+        : _sessionViewSnapshots.remove(previousKey);
     if (previous != null) {
       _inactiveSnapshotRetainedBytes -= previous.retainedBytes;
     }
-    _sessionViewSnapshots[sessionId] = snapshot;
+    _sessionViewSnapshots[normalizedSessionId] = snapshot;
     _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
       _inactiveSnapshotRetainedBytes,
       snapshot.retainedBytes,
@@ -3300,7 +3308,8 @@ class ChatController extends ChangeNotifier {
   }
 
   _SessionViewSnapshot? _takeSessionViewSnapshot(String sessionId) {
-    final snapshot = _sessionViewSnapshots.remove(sessionId);
+    final key = _sessionViewSnapshotKeyWithId(sessionId);
+    final snapshot = key == null ? null : _sessionViewSnapshots.remove(key);
     if (snapshot != null) {
       _inactiveSnapshotRetainedBytes -= snapshot.retainedBytes;
     }
@@ -3314,12 +3323,25 @@ class ChatController extends ChangeNotifier {
   _SessionViewSnapshot? _touchSessionViewSnapshot(String sessionId) {
     final snapshot = _takeSessionViewSnapshot(sessionId);
     if (snapshot == null) return null;
-    _sessionViewSnapshots[sessionId] = snapshot;
+    _sessionViewSnapshots[sessionId.trim()] = snapshot;
     _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
       _inactiveSnapshotRetainedBytes,
       snapshot.retainedBytes,
     );
     return snapshot;
+  }
+
+  _SessionViewSnapshot? _sessionViewSnapshotWithId(String sessionId) {
+    final key = _sessionViewSnapshotKeyWithId(sessionId);
+    return key == null ? null : _sessionViewSnapshots[key];
+  }
+
+  String? _sessionViewSnapshotKeyWithId(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    for (final key in _sessionViewSnapshots.keys) {
+      if (key.trim() == normalizedSessionId) return key;
+    }
+    return null;
   }
 
   void _clearSessionViewSnapshots() {
@@ -3658,6 +3680,12 @@ class ChatController extends ChangeNotifier {
     return projects;
   }
 
+  bool hasBoundSessionWorkspaceConflict(AgentSession candidate) {
+    final boundSession = _boundSessionWithId(candidate.id);
+    return boundSession != null &&
+        !sameSessionWorkspaceIdentity(boundSession, candidate);
+  }
+
   Future<ChatPromptSubmissionResult> sendPrompt(
     String text, {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
@@ -3679,7 +3707,7 @@ class ChatController extends ChangeNotifier {
 
     final session = currentSession;
     if (session == null) return ChatPromptSubmissionResult.sessionUnavailable;
-    _localUnstartedSessionIds.remove(session.id);
+    _removeLocalUnstartedSessionId(session.id);
     _finishTurnBudget();
     _startLocalTurn();
     _turnBudget = _TurnBudgetState(inputBudget);
@@ -3977,10 +4005,10 @@ class ChatController extends ChangeNotifier {
         _promptSubscription = null;
         await client.closeSession(sessionId: session.id);
         _retiredSessionIds.add(session.id);
-        _localUnstartedSessionIds.remove(session.id);
+        _removeLocalUnstartedSessionId(session.id);
         _removeSessionViewSnapshot(session.id);
         currentSession = null;
-        sessions.removeWhere((item) => item.id == session.id);
+        sessions.removeWhere((item) => _sessionIdsMatch(item.id, session.id));
         _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
@@ -6633,7 +6661,9 @@ class ChatController extends ChangeNotifier {
   }
 
   void _upsertSession(AgentSession session) {
-    final index = sessions.indexWhere((item) => item.id == session.id);
+    final index = sessions.indexWhere(
+      (item) => _sessionIdsMatch(item.id, session.id),
+    );
     if (index != -1) {
       sessions[index] = session;
       return;
@@ -6648,25 +6678,40 @@ class ChatController extends ChangeNotifier {
         final sessionId = entry.id.trim();
         if (sessionId.isEmpty) continue;
 
+        final boundSession = _boundSessionWithId(sessionId);
         final existing = _sessionWithId(sessionId);
         final workspaceCwd = entry.cwd.trim().isEmpty ? project.cwd : entry.cwd;
+        final boundAgentName = boundSession?.agentName?.trim();
+        final catalogAgentName = _agentNameFromSessionCatalog(entry);
         final session = AgentSession(
           id: sessionId,
-          cwd: workspaceCwd.trim().isEmpty ? cwd : workspaceCwd,
-          createdAt: existing?.createdAt ?? entry.updatedAt ?? now,
-          additionalDirectories: entry.additionalDirectories,
+          cwd:
+              boundSession?.cwd ??
+              (workspaceCwd.trim().isEmpty ? cwd : workspaceCwd),
+          createdAt:
+              boundSession?.createdAt ??
+              existing?.createdAt ??
+              entry.updatedAt ??
+              now,
+          additionalDirectories:
+              boundSession?.additionalDirectories ??
+              entry.additionalDirectories,
           title: entry.title,
           titleOverride: existing?.titleOverride,
-          updatedAt: entry.updatedAt,
-          agentName: _agentNameFromSessionCatalog(entry) ?? existing?.agentName,
+          updatedAt: entry.updatedAt ?? existing?.updatedAt,
+          agentName: boundAgentName != null && boundAgentName.isNotEmpty
+              ? boundSession!.agentName
+              : catalogAgentName ?? existing?.agentName,
           initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
           pinned: existing?.pinned ?? false,
           archived: existing?.archived ?? false,
           unread: existing?.unread ?? false,
         );
         _retiredSessionIds.remove(session.id);
-        _localUnstartedSessionIds.remove(session.id);
-        if (currentSession?.id == session.id) currentSession = session;
+        if (boundSession == null) {
+          _removeLocalUnstartedSessionId(session.id);
+        }
+        if (currentSession?.id.trim() == sessionId) currentSession = session;
         _upsertSession(session);
       }
     }
@@ -6675,7 +6720,51 @@ class ChatController extends ChangeNotifier {
 
   AgentSession? _sessionWithId(String id) {
     for (final session in sessions) {
-      if (session.id == id) return session;
+      if (_sessionIdsMatch(session.id, id)) return session;
+    }
+    return null;
+  }
+
+  bool _sessionIdsMatch(String? left, String right) {
+    if (left == null) return false;
+    final normalizedLeft = left.trim();
+    return normalizedLeft.isNotEmpty && normalizedLeft == right.trim();
+  }
+
+  bool _isLocalUnstartedSessionId(String sessionId) {
+    return _localUnstartedSessionIds.any(
+      (localId) => _sessionIdsMatch(localId, sessionId),
+    );
+  }
+
+  void _addLocalUnstartedSessionId(String sessionId) {
+    _removeLocalUnstartedSessionId(sessionId);
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isNotEmpty) {
+      _localUnstartedSessionIds.add(normalizedSessionId);
+    }
+  }
+
+  void _removeLocalUnstartedSessionId(String sessionId) {
+    _localUnstartedSessionIds.removeWhere(
+      (localId) => _sessionIdsMatch(localId, sessionId),
+    );
+  }
+
+  AgentSession? _boundSessionWithId(String id) {
+    final sessionId = id.trim();
+    if (sessionId.isEmpty) return null;
+
+    final activeSession = currentSession;
+    if (activeSession != null && activeSession.id.trim() == sessionId) {
+      return activeSession;
+    }
+    for (final snapshot in _sessionViewSnapshots.values) {
+      if (snapshot.session.id.trim() == sessionId) return snapshot.session;
+    }
+    if (!_isLocalUnstartedSessionId(sessionId)) return null;
+    for (final session in sessions) {
+      if (session.id.trim() == sessionId) return session;
     }
     return null;
   }
@@ -6686,7 +6775,7 @@ class ChatController extends ChangeNotifier {
   ) {
     final existingAgentName = existing.agentName?.trim();
     final indexedAgentName = indexed.agentName?.trim();
-    final isCurrent = currentSession?.id == existing.id;
+    final isCurrent = _sessionIdsMatch(currentSession?.id, existing.id);
     final titleOverride = indexed.titleOverride?.trim().isNotEmpty == true
         ? indexed.titleOverride
         : existing.titleOverride;
@@ -6722,7 +6811,9 @@ class ChatController extends ChangeNotifier {
     if (identical(updated, session) || _sameSessionIndex(updated, session)) {
       return;
     }
-    if (currentSession?.id == sessionId) currentSession = updated;
+    if (_sessionIdsMatch(currentSession?.id, sessionId)) {
+      currentSession = updated;
+    }
     _upsertSession(updated);
     _notifyListeners();
   }
@@ -6950,7 +7041,7 @@ class ChatController extends ChangeNotifier {
   }
 
   bool _isActiveSession(String sessionId) {
-    return !_isDisposed && currentSession?.id == sessionId;
+    return !_isDisposed && _sessionIdsMatch(currentSession?.id, sessionId);
   }
 
   Future<void> shutdown({

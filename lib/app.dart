@@ -1704,13 +1704,14 @@ class _AcpClientAppState extends State<AcpClientApp>
     final existingTargetController = _existingControllerForAgentName(
       session.agentName,
     );
+    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
+        true) {
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
+    }
     final existingTargetSession = existingTargetController?.currentSession;
     if (existingTargetSession != null &&
         existingTargetSession.id.trim() == session.id.trim()) {
-      if (!sameSessionWorkspaceIdentity(existingTargetSession, session)) {
-        _showSnackBar(sessionWorkspaceConflictMessage(session.id));
-        return;
-      }
       if (identical(existingTargetController, _controller)) return;
     }
 
@@ -1722,6 +1723,11 @@ class _AcpClientAppState extends State<AcpClientApp>
       session,
     );
     if (!approved || !mounted) return;
+    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
+        true) {
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
+    }
 
     var controller = _controller;
     if (widget.controller == null) {

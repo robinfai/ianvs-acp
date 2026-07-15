@@ -6672,6 +6672,464 @@ void main() {
     expect(controller.sessions.single.agentName, 'codex-fast');
   });
 
+  test(
+    'session catalog preserves active workspace identity while refreshing remote metadata',
+    () async {
+      final fake = _MutableBindingCatalogClient(
+        projects: <AcpProjectSessions>[
+          AcpProjectSessions(
+            cwd: '/workspace/catalog',
+            sessions: <AcpSessionEntry>[
+              AcpSessionEntry(
+                id: 'bound-session',
+                cwd: '/workspace/catalog',
+                title: 'Catalog title',
+                additionalDirectories: <String>['/workspace/catalog-extra'],
+                updatedAt: DateTime(2026, 7, 15, 10),
+                meta: <String, Object?>{'agentName': 'Other Agent'},
+              ),
+            ],
+          ),
+        ],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.resumeSession(
+        'bound-session',
+        cwd: '/workspace/current',
+        additionalDirectories: const ['/workspace/current-extra'],
+      );
+      await controller.loadSessionCatalog();
+
+      final indexed = controller.sessions.singleWhere(
+        (session) => session.id == 'bound-session',
+      );
+      expect(controller.currentSession?.title, 'Catalog title');
+      expect(controller.currentSession?.updatedAt, DateTime(2026, 7, 15, 10));
+      expect(indexed.title, 'Catalog title');
+      expect(indexed.updatedAt, DateTime(2026, 7, 15, 10));
+      expect(
+        <String, Object?>{
+          'currentCwd': controller.currentSession?.cwd,
+          'currentDirectories':
+              controller.currentSession?.additionalDirectories,
+          'currentAgent': controller.currentSession?.agentName,
+          'indexedCwd': indexed.cwd,
+          'indexedDirectories': indexed.additionalDirectories,
+          'indexedAgent': indexed.agentName,
+        },
+        <String, Object?>{
+          'currentCwd': '/workspace/current',
+          'currentDirectories': const ['/workspace/current-extra'],
+          'currentAgent': 'Codex',
+          'indexedCwd': '/workspace/current',
+          'indexedDirectories': const ['/workspace/current-extra'],
+          'indexedAgent': 'Codex',
+        },
+      );
+      expect(fake.resumeCalls, 1);
+    },
+  );
+
+  test(
+    'session catalog preserves an empty bound additional directory list',
+    () async {
+      final fake = _MutableBindingCatalogClient(
+        projects: <AcpProjectSessions>[
+          AcpProjectSessions(
+            cwd: '/workspace/catalog',
+            sessions: const <AcpSessionEntry>[
+              AcpSessionEntry(
+                id: 'empty-directories',
+                cwd: '/workspace/catalog',
+                title: 'Catalog empty directories',
+                additionalDirectories: <String>['/workspace/catalog-extra'],
+                meta: <String, Object?>{'agentName': 'Catalog Agent'},
+              ),
+            ],
+          ),
+        ],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: '',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.resumeSession(
+        'empty-directories',
+        cwd: '/workspace/bound',
+        additionalDirectories: const <String>[],
+      );
+      await controller.loadSessionCatalog();
+
+      expect(controller.currentSession?.cwd, '/workspace/bound');
+      expect(controller.currentSession?.additionalDirectories, isEmpty);
+      expect(controller.currentSession?.agentName, 'Catalog Agent');
+      expect(
+        controller.sessions
+            .singleWhere((session) => session.id == 'empty-directories')
+            .additionalDirectories,
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'catalog and resume preserve an inactive snapshot workspace binding',
+    () async {
+      final originalUpdatedAt = DateTime(2026, 7, 15, 9);
+      final fake = _MutableBindingCatalogClient(
+        projects: <AcpProjectSessions>[
+          AcpProjectSessions(
+            cwd: '/workspace/catalog-a',
+            sessions: const <AcpSessionEntry>[
+              AcpSessionEntry(
+                id: 'snapshot-a',
+                cwd: '/workspace/catalog-a',
+                title: 'Refreshed snapshot title',
+                additionalDirectories: <String>['/workspace/catalog-extra'],
+                meta: <String, Object?>{'agentName': 'Other Agent'},
+              ),
+            ],
+          ),
+        ],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.resumeSession(
+        'snapshot-a',
+        cwd: '/workspace/bound-a',
+        additionalDirectories: const <String>['/workspace/bound-extra'],
+        updatedAt: originalUpdatedAt,
+      );
+      await controller.resumeSession('active-b', cwd: '/workspace/b');
+      expect(controller.debugInactiveSnapshotIds, contains('snapshot-a'));
+      expect(fake.resumeCalls, 2);
+
+      await controller.loadSessionCatalog();
+
+      final indexed = controller.sessions.singleWhere(
+        (session) => session.id == 'snapshot-a',
+      );
+      expect(indexed.cwd, '/workspace/bound-a');
+      expect(indexed.additionalDirectories, ['/workspace/bound-extra']);
+      expect(indexed.agentName, 'Codex');
+      expect(indexed.title, 'Refreshed snapshot title');
+      expect(indexed.updatedAt, originalUpdatedAt);
+
+      controller.addMessageForTesting(
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Active B state must survive a rejected resume.',
+        ),
+        startsNewTurn: true,
+      );
+      controller.availableCommands = const <Map<String, Object?>>[
+        <String, Object?>{'name': 'review-snapshot-conflict'},
+      ];
+      controller.sessionSettings = _settingsWithMode('edit');
+      final statusBeforeConflict = controller.status;
+      final messagesBeforeConflict = controller.messages
+          .map((message) => message.text)
+          .toList(growable: false);
+      final turnItemsBeforeConflict = controller.debugCurrentTurnItems;
+      final turnBytesBeforeConflict = controller.debugCurrentTurnRetainedBytes;
+      final commandsBeforeConflict = controller.availableCommands;
+      final settingsBeforeConflict = controller.sessionSettings;
+      final snapshotsBeforeConflict = controller.debugInactiveSnapshotIds;
+
+      await controller.resumeSession(
+        'snapshot-a',
+        cwd: '/workspace/catalog-a',
+        additionalDirectories: const <String>['/workspace/catalog-extra'],
+      );
+
+      expect(controller.currentSession?.id, 'active-b');
+      expect(controller.status, statusBeforeConflict);
+      expect(controller.isStreaming, isFalse);
+      expect(
+        controller.messages.map((message) => message.text),
+        messagesBeforeConflict,
+      );
+      expect(controller.debugCurrentTurnItems, turnItemsBeforeConflict);
+      expect(controller.debugCurrentTurnRetainedBytes, turnBytesBeforeConflict);
+      expect(controller.availableCommands, commandsBeforeConflict);
+      expect(controller.sessionSettings, same(settingsBeforeConflict));
+      expect(controller.debugInactiveSnapshotIds, snapshotsBeforeConflict);
+      expect(controller.lastError, contains('different workspace'));
+      expect(fake.resumeCalls, 2);
+
+      await controller.resumeSession(
+        'snapshot-a',
+        cwd: '/workspace/bound-a',
+        additionalDirectories: const <String>['/workspace/bound-extra'],
+      );
+
+      expect(controller.currentSession?.id, 'snapshot-a');
+      expect(controller.currentSession?.cwd, '/workspace/bound-a');
+      expect(
+        controller.debugInactiveSnapshotIds,
+        isNot(contains('snapshot-a')),
+      );
+      expect(fake.resumeCalls, 2);
+    },
+  );
+
+  test(
+    'catalog and resume preserve an archived local unstarted workspace binding',
+    () async {
+      final fake = _MutableBindingCatalogClient(
+        projects: const <AcpProjectSessions>[],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession(cwd: '/workspace/local');
+      final localSession = controller.currentSession!;
+      final archived = controller.archiveSessionLocally(localSession.id)!;
+      addTearDown(archived.discard);
+      expect(controller.currentSession, isNull);
+      expect(controller.debugInactiveSnapshotIds, isEmpty);
+
+      fake.projects = <AcpProjectSessions>[
+        AcpProjectSessions(
+          cwd: '/workspace/catalog-local',
+          sessions: <AcpSessionEntry>[
+            AcpSessionEntry(
+              id: localSession.id,
+              cwd: '/workspace/catalog-local',
+              title: 'Refreshed local title',
+              additionalDirectories: const <String>['/workspace/catalog-extra'],
+              meta: const <String, Object?>{'agentName': 'Other Agent'},
+            ),
+          ],
+        ),
+      ];
+      await controller.loadSessionCatalog();
+
+      final indexed = controller.sessions.singleWhere(
+        (session) => session.id == localSession.id,
+      );
+      expect(indexed.cwd, '/workspace/local');
+      expect(indexed.additionalDirectories, isEmpty);
+      expect(indexed.agentName, 'Codex');
+      expect(indexed.title, 'Refreshed local title');
+      final statusBeforeConflict = controller.status;
+      final retainedBytesBeforeConflict = controller.debugUiStateRetainedBytes;
+      final sessionsBeforeConflict = controller.sessions
+          .map((session) => (session.id, session.cwd, session.archived))
+          .toList(growable: false);
+
+      await controller.resumeSession(
+        localSession.id,
+        cwd: '/workspace/catalog-local',
+        additionalDirectories: const <String>['/workspace/catalog-extra'],
+      );
+
+      expect(controller.currentSession, isNull);
+      expect(controller.status, statusBeforeConflict);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.messages, isEmpty);
+      expect(controller.debugInactiveSnapshotIds, isEmpty);
+      expect(controller.debugUiStateRetainedBytes, retainedBytesBeforeConflict);
+      expect(
+        controller.sessions.map(
+          (session) => (session.id, session.cwd, session.archived),
+        ),
+        sessionsBeforeConflict,
+      );
+      expect(controller.lastError, contains('different workspace'));
+      expect(fake.resumeCalls, 0);
+
+      await controller.resumeSession(
+        localSession.id,
+        cwd: '/workspace/local',
+        additionalDirectories: const <String>[],
+      );
+
+      expect(controller.currentSession?.id, localSession.id);
+      expect(controller.currentSession?.cwd, '/workspace/local');
+      expect(controller.currentSession?.additionalDirectories, isEmpty);
+      expect(fake.resumeCalls, 0);
+    },
+  );
+
+  test(
+    'trimmed resume restores a snapshot created with a raw session id',
+    () async {
+      final fake = _WhitespaceCreatedSessionCatalogClient(
+        projects: const <AcpProjectSessions>[],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession(cwd: '/workspace/raw-snapshot');
+      controller.addMessageForTesting(
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Raw snapshot history',
+        ),
+        startsNewTurn: true,
+      );
+      await controller.resumeSession('active-b', cwd: '/workspace/b');
+      expect(
+        controller.debugInactiveSnapshotIds.map((id) => id.trim()),
+        contains('raw-session'),
+      );
+      expect(fake.resumeCalls, 1);
+
+      await controller.resumeSession('raw-session');
+
+      expect(fake.resumeCalls, 1);
+      expect(controller.currentSession?.id.trim(), 'raw-session');
+      expect(controller.currentSession?.cwd, '/workspace/raw-snapshot');
+      expect(
+        controller.debugInactiveSnapshotIds.map((id) => id.trim()),
+        contains('active-b'),
+      );
+      expect(
+        controller.debugInactiveSnapshotIds.map((id) => id.trim()),
+        isNot(contains('raw-session')),
+      );
+      expect(
+        controller.messages.map((message) => message.text),
+        contains('Raw snapshot history'),
+      );
+    },
+  );
+
+  test(
+    'trimmed resume restores a raw local unstarted session without ACP resume',
+    () async {
+      final fake = _WhitespaceCreatedSessionCatalogClient(
+        projects: const <AcpProjectSessions>[],
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession(cwd: '/workspace/raw-local');
+      final rawSession = controller.currentSession!;
+      final archived = controller.archiveSessionLocally(rawSession.id)!;
+      addTearDown(archived.discard);
+      expect(controller.currentSession, isNull);
+
+      await controller.resumeSession('raw-session');
+
+      expect(fake.resumeCalls, 0);
+      expect(controller.currentSession?.id.trim(), 'raw-session');
+      expect(controller.currentSession?.cwd, '/workspace/raw-local');
+      expect(controller.messages, isEmpty);
+    },
+  );
+
+  test('catalog merge deduplicates a raw bound session id', () async {
+    final fake = _WhitespaceCreatedSessionCatalogClient(
+      projects: const <AcpProjectSessions>[],
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.newSession(cwd: '/workspace/raw-bound');
+    final archived = controller.archiveSessionLocally(
+      controller.currentSession!.id,
+    )!;
+    addTearDown(archived.discard);
+    fake.projects = <AcpProjectSessions>[
+      AcpProjectSessions(
+        cwd: '/workspace/catalog',
+        sessions: const <AcpSessionEntry>[
+          AcpSessionEntry(
+            id: 'raw-session',
+            cwd: '/workspace/catalog',
+            title: 'Catalog raw session',
+            meta: <String, Object?>{'agentName': 'Other Agent'},
+          ),
+        ],
+      ),
+    ];
+
+    await controller.loadSessionCatalog();
+
+    final matching = controller.sessions
+        .where((session) => session.id.trim() == 'raw-session')
+        .toList(growable: false);
+    expect(matching, hasLength(1));
+    expect(matching.single.cwd, '/workspace/raw-bound');
+    expect(matching.single.agentName, 'Codex');
+    expect(matching.single.title, 'Catalog raw session');
+  });
+
+  test('pure catalog candidates refresh their workspace and agent', () async {
+    final fake = _MutableBindingCatalogClient(
+      projects: <AcpProjectSessions>[
+        AcpProjectSessions(
+          cwd: '/workspace/first',
+          sessions: const <AcpSessionEntry>[
+            AcpSessionEntry(
+              id: 'catalog-only',
+              cwd: '/workspace/first',
+              title: 'First catalog title',
+              additionalDirectories: <String>['/workspace/first-extra'],
+              meta: <String, Object?>{'agentName': 'First Agent'},
+            ),
+          ],
+        ),
+      ],
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.loadSessionCatalog();
+    fake.projects = <AcpProjectSessions>[
+      AcpProjectSessions(
+        cwd: '/workspace/second',
+        sessions: const <AcpSessionEntry>[
+          AcpSessionEntry(
+            id: 'catalog-only',
+            cwd: '/workspace/second',
+            title: 'Second catalog title',
+            additionalDirectories: <String>['/workspace/second-extra'],
+            meta: <String, Object?>{'agentName': 'Second Agent'},
+          ),
+        ],
+      ),
+    ];
+    await controller.loadSessionCatalog();
+
+    final candidate = controller.sessions.single;
+    expect(candidate.cwd, '/workspace/second');
+    expect(candidate.additionalDirectories, ['/workspace/second-extra']);
+    expect(candidate.agentName, 'Second Agent');
+  });
+
   test('merge session index restores local sidebar metadata', () {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -8329,6 +8787,52 @@ void main() {
       expect(fake.resumedSessionIds, ['bound-session']);
       expect(controller.lastError, isNull);
 
+      controller.addMessageForTesting(
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'Active state must survive a rejected resume.',
+        ),
+        startsNewTurn: true,
+      );
+      controller.availableCommands = const <Map<String, Object?>>[
+        <String, Object?>{'name': 'review-active-conflict'},
+      ];
+      controller.sessionSettings = _settingsWithMode('edit');
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-active-conflict',
+          lifecycleId: 'lifecycle-active-conflict',
+          title: 'Run bound workspace command',
+          rationale: 'Requested by the current bound session',
+          sessionId: 'bound-session',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 7, 15, 12),
+        ),
+      );
+      await pumpEventQueue();
+      final pendingBindingKeyBeforeConflict =
+          controller.pendingPermissionRequest!.bindingKey;
+      final permissionHistoryBeforeConflict = List<AcpPermissionAuditEntry>.of(
+        controller.permissionHistory,
+      );
+      expect(permissionHistoryBeforeConflict, hasLength(1));
+      expect(
+        permissionHistoryBeforeConflict.single.status,
+        AcpPermissionAuditStatus.pending,
+      );
+      expect(fake.lastPermissionRequestId, isNull);
+      final statusBeforeConflict = controller.status;
+      final messagesBeforeConflict = controller.messages
+          .map((message) => message.text)
+          .toList(growable: false);
+      final turnItemsBeforeConflict = controller.debugCurrentTurnItems;
+      final turnBytesBeforeConflict = controller.debugCurrentTurnRetainedBytes;
+      final commandsBeforeConflict = controller.availableCommands;
+      final settingsBeforeConflict = controller.sessionSettings;
+      final snapshotsBeforeConflict = controller.debugInactiveSnapshotIds;
+
       await controller.resumeSession(
         'bound-session',
         cwd: '/workspace/changed',
@@ -8336,11 +8840,36 @@ void main() {
       );
 
       expect(fake.resumedSessionIds, ['bound-session']);
+      expect(controller.status, statusBeforeConflict);
+      expect(controller.isStreaming, isFalse);
       expect(controller.currentSession?.cwd, '/workspace/current');
       expect(controller.currentSession?.additionalDirectories, [
         '/workspace/a',
         '/workspace/b',
       ]);
+      expect(
+        controller.messages.map((message) => message.text),
+        messagesBeforeConflict,
+      );
+      expect(controller.debugCurrentTurnItems, turnItemsBeforeConflict);
+      expect(controller.debugCurrentTurnRetainedBytes, turnBytesBeforeConflict);
+      expect(controller.availableCommands, commandsBeforeConflict);
+      expect(controller.sessionSettings, same(settingsBeforeConflict));
+      expect(controller.debugInactiveSnapshotIds, snapshotsBeforeConflict);
+      expect(
+        controller.pendingPermissionRequest?.bindingKey,
+        pendingBindingKeyBeforeConflict,
+      );
+      expect(controller.permissionHistory, permissionHistoryBeforeConflict);
+      expect(
+        controller.permissionHistory.single.status,
+        AcpPermissionAuditStatus.pending,
+      );
+      expect(controller.permissionHistory.single.decisionSource, isNull);
+      expect(controller.permissionHistory.single.resolvedAt, isNull);
+      expect(fake.lastPermissionRequestId, isNull);
+      expect(fake.lastPermissionDecision, isNull);
+      expect(fake.lastPermissionOptionId, isNull);
       expect(controller.lastError, contains('different workspace'));
     },
   );
@@ -12944,6 +13473,56 @@ class _AgentNamedCatalogClient extends FakeAgentClient {
         ],
       ),
     ];
+  }
+}
+
+class _MutableBindingCatalogClient extends FakeAgentClient {
+  _MutableBindingCatalogClient({required this.projects});
+
+  List<AcpProjectSessions> projects;
+  int resumeCalls = 0;
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    resumeCalls += 1;
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return projects;
+  }
+}
+
+class _WhitespaceCreatedSessionCatalogClient
+    extends _MutableBindingCatalogClient {
+  _WhitespaceCreatedSessionCatalogClient({required super.projects});
+
+  @override
+  Future<AgentSession> createSession({
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) async {
+    if (!connected) {
+      throw StateError('Fake client is not connected.');
+    }
+    return AgentSession(
+      id: ' raw-session ',
+      cwd: cwd,
+      createdAt: DateTime(2026, 7, 15, 11),
+      additionalDirectories: additionalDirectories,
+    );
   }
 }
 
