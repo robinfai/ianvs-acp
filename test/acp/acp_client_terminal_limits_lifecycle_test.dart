@@ -189,6 +189,502 @@ void main() {
       );
     },
   );
+
+  test('terminal/output drops output released during provider read', () async {
+    final provider = _ControlledTerminalProvider();
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final outputResult = Completer<String>();
+      provider.nextCurrentOutput = outputResult;
+
+      final output = harness.terminalRequest(
+        method: 'terminal/output',
+        params: <String, dynamic>{'terminalId': terminalId},
+      );
+      await provider.currentOutputStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      await harness.client.terminalRelease(terminalId);
+      outputResult.complete('late-output-canary');
+
+      expect(
+        (await output.timeout(const Duration(seconds: 2)))['result'],
+        <String, dynamic>{'output': '', 'truncated': false, 'exitStatus': null},
+      );
+      expect(harness.events.whereType<TerminalOutputEvent>(), isEmpty);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('terminal/wait drops exit released during provider wait', () async {
+    final provider = _ControlledTerminalProvider(
+      currentOutputValue: 'late-wait-output-canary',
+    );
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final waitResult = Completer<int>();
+      provider.nextWaitForExit = waitResult;
+
+      final waiting = harness.terminalRequest(
+        method: 'terminal/wait_for_exit',
+        params: <String, dynamic>{'terminalId': terminalId},
+      );
+      await provider.waitForExitStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      await harness.client.terminalRelease(terminalId);
+      waitResult.complete(37);
+
+      expect(
+        (await waiting.timeout(const Duration(seconds: 2)))['result'],
+        <String, dynamic>{
+          'output': '',
+          'truncated': false,
+          'exitStatus': <String, dynamic>{'exitCode': 0},
+        },
+      );
+      expect(provider.currentOutputCalls, 0);
+      expect(harness.events.whereType<TerminalExited>(), isEmpty);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('terminalOutput drops output released during provider read', () async {
+    final provider = _ControlledTerminalProvider();
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final outputResult = Completer<String>();
+      provider.nextCurrentOutput = outputResult;
+
+      final output = harness.client.terminalOutput(terminalId);
+      await provider.currentOutputStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      await harness.client.terminalRelease(terminalId);
+      outputResult.complete('late-public-output-canary');
+
+      expect(await output.timeout(const Duration(seconds: 2)), '');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'terminalWaitForExit drops exit released during provider wait',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final waitResult = Completer<int>();
+        provider.nextWaitForExit = waitResult;
+
+        final waiting = harness.client.terminalWaitForExit(terminalId);
+        await provider.waitForExitStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await harness.client.terminalRelease(terminalId);
+        waitResult.complete(41);
+
+        expect(await waiting.timeout(const Duration(seconds: 2)), isNull);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test('session close invalidates a pending terminal output read', () async {
+    final provider = _ControlledTerminalProvider();
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final outputResult = Completer<String>();
+      provider.nextCurrentOutput = outputResult;
+
+      final output = harness.terminalRequest(
+        method: 'terminal/output',
+        params: <String, dynamic>{'terminalId': terminalId},
+      );
+      await provider.currentOutputStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      await harness.client.closeSession(
+        sessionId: _TerminalRaceHarness.sessionId,
+      );
+      outputResult.complete('late-close-output-canary');
+
+      expect(
+        (await output.timeout(const Duration(seconds: 2)))['result'],
+        <String, dynamic>{'output': '', 'truncated': false, 'exitStatus': null},
+      );
+      expect(harness.events.whereType<TerminalOutputEvent>(), isEmpty);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'terminal/output drops a provider error after terminal release',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final outputResult = Completer<String>();
+        provider.nextCurrentOutput = outputResult;
+
+        final output = harness.terminalRequest(
+          method: 'terminal/output',
+          params: <String, dynamic>{'terminalId': terminalId},
+        );
+        await provider.currentOutputStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await harness.client.terminalRelease(terminalId);
+        outputResult.completeError(
+          StateError('late-output-error-canary'),
+          StackTrace.fromString('late-output-error-stack-canary'),
+        );
+
+        expect(
+          (await output.timeout(const Duration(seconds: 2)))['result'],
+          <String, dynamic>{
+            'output': '',
+            'truncated': false,
+            'exitStatus': null,
+          },
+        );
+        expect(harness.events.whereType<TerminalOutputEvent>(), isEmpty);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'terminal/wait drops a provider wait error after terminal release',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final waitResult = Completer<int>();
+        provider.nextWaitForExit = waitResult;
+
+        final waiting = harness.terminalRequest(
+          method: 'terminal/wait_for_exit',
+          params: <String, dynamic>{'terminalId': terminalId},
+        );
+        await provider.waitForExitStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await harness.client.terminalRelease(terminalId);
+        waitResult.completeError(
+          StateError('late-wait-error-canary'),
+          StackTrace.fromString('late-wait-error-stack-canary'),
+        );
+
+        expect(
+          (await waiting.timeout(const Duration(seconds: 2)))['result'],
+          <String, dynamic>{
+            'output': '',
+            'truncated': false,
+            'exitStatus': <String, dynamic>{'exitCode': 0},
+          },
+        );
+        expect(provider.currentOutputCalls, 0);
+        expect(harness.events.whereType<TerminalExited>(), isEmpty);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test('terminal/wait drops an output error after session close', () async {
+    final provider = _ControlledTerminalProvider();
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final waitResult = Completer<int>();
+      final outputResult = Completer<String>();
+      provider.nextWaitForExit = waitResult;
+      provider.nextCurrentOutput = outputResult;
+
+      final waiting = harness.terminalRequest(
+        method: 'terminal/wait_for_exit',
+        params: <String, dynamic>{'terminalId': terminalId},
+      );
+      await provider.waitForExitStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      waitResult.complete(53);
+      await provider.currentOutputStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      await harness.client.closeSession(
+        sessionId: _TerminalRaceHarness.sessionId,
+      );
+      outputResult.completeError(
+        StateError('late-wait-output-error-canary'),
+        StackTrace.fromString('late-wait-output-error-stack-canary'),
+      );
+
+      expect(
+        (await waiting.timeout(const Duration(seconds: 2)))['result'],
+        <String, dynamic>{
+          'output': '',
+          'truncated': false,
+          'exitStatus': <String, dynamic>{'exitCode': 0},
+        },
+      );
+      expect(harness.events.whereType<TerminalExited>(), isEmpty);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'terminalOutput drops a provider error after terminal release',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final outputResult = Completer<String>();
+        provider.nextCurrentOutput = outputResult;
+
+        final output = harness.client.terminalOutput(terminalId);
+        await provider.currentOutputStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await harness.client.terminalRelease(terminalId);
+        outputResult.completeError(
+          StateError('late-public-output-error-canary'),
+          StackTrace.fromString('late-public-output-error-stack-canary'),
+        );
+
+        expect(await output.timeout(const Duration(seconds: 2)), '');
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'terminalWaitForExit drops a provider error after terminal release',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final waitResult = Completer<int>();
+        provider.nextWaitForExit = waitResult;
+
+        final waiting = harness.client.terminalWaitForExit(terminalId);
+        await provider.waitForExitStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        await harness.client.terminalRelease(terminalId);
+        waitResult.completeError(
+          StateError('late-public-wait-error-canary'),
+          StackTrace.fromString('late-public-wait-error-stack-canary'),
+        );
+
+        expect(await waiting.timeout(const Duration(seconds: 2)), isNull);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test('terminalOutput preserves a current provider error and stack', () async {
+    final provider = _ControlledTerminalProvider();
+    final harness = await _TerminalRaceHarness.start(provider);
+    try {
+      final terminalId = await harness.createTerminal();
+      final outputResult = Completer<String>();
+      final providerError = StateError('current-output-error-canary');
+      final providerStack = StackTrace.fromString(
+        'current-output-error-stack-canary',
+      );
+      provider.nextCurrentOutput = outputResult;
+
+      final output = harness.client.terminalOutput(terminalId);
+      await provider.currentOutputStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      outputResult.completeError(providerError, providerStack);
+
+      Object? caughtError;
+      StackTrace? caughtStack;
+      try {
+        await output.timeout(const Duration(seconds: 2));
+      } on Object catch (error, stackTrace) {
+        caughtError = error;
+        caughtStack = stackTrace;
+      }
+      expect(caughtError, same(providerError));
+      expect(
+        caughtStack.toString(),
+        contains('current-output-error-stack-canary'),
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test(
+    'terminalWaitForExit preserves a current provider error and stack',
+    () async {
+      final provider = _ControlledTerminalProvider();
+      final harness = await _TerminalRaceHarness.start(provider);
+      try {
+        final terminalId = await harness.createTerminal();
+        final waitResult = Completer<int>();
+        final providerError = StateError('current-wait-error-canary');
+        final providerStack = StackTrace.fromString(
+          'current-wait-error-stack-canary',
+        );
+        provider.nextWaitForExit = waitResult;
+
+        final waiting = harness.client.terminalWaitForExit(terminalId);
+        await provider.waitForExitStarted.future.timeout(
+          const Duration(seconds: 2),
+        );
+        waitResult.completeError(providerError, providerStack);
+
+        Object? caughtError;
+        StackTrace? caughtStack;
+        try {
+          await waiting.timeout(const Duration(seconds: 2));
+        } on Object catch (error, stackTrace) {
+          caughtError = error;
+          caughtStack = stackTrace;
+        }
+        expect(caughtError, same(providerError));
+        expect(
+          caughtStack.toString(),
+          contains('current-wait-error-stack-canary'),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+}
+
+class _TerminalRaceHarness {
+  _TerminalRaceHarness._({
+    required this.client,
+    required this.transport,
+    required this.server,
+    required this.eventSubscription,
+    required this.events,
+    required this.responses,
+  });
+
+  static const String sessionId = 'terminal-race-session';
+
+  final AcpClient client;
+  final _TrackingLifecycleTransport transport;
+  final StreamSubscription<String> server;
+  final StreamSubscription<TerminalEvent> eventSubscription;
+  final List<TerminalEvent> events;
+  final Map<String, Completer<Map<String, dynamic>>> responses;
+  var _nextRequestId = 0;
+
+  static Future<_TerminalRaceHarness> start(
+    _ControlledTerminalProvider provider,
+  ) async {
+    final transport = _TrackingLifecycleTransport();
+    final responses = <String, Completer<Map<String, dynamic>>>{};
+    late final StreamSubscription<String> server;
+    server = transport.outbound.listen((line) {
+      final message = jsonDecode(line) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'session/resume' || method == 'session/close') {
+        transport.addInbound(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': method == 'session/resume'
+                ? <String, dynamic>{'sessionId': sessionId}
+                : <String, dynamic>{},
+          }),
+        );
+        return;
+      }
+      final id = message['id']?.toString();
+      if (id != null) responses[id]?.complete(message);
+    });
+    final client = await AcpClient.start(
+      config: AcpConfig(
+        terminalProvider: provider,
+        permissionProvider: DefaultPermissionProvider(
+          onRequest: (_) async => const PermissionDecision.allow(),
+        ),
+      ),
+      transport: transport,
+      maxTerminalHandles: 4,
+      maxTerminalHandlesPerSession: 4,
+    );
+    final events = <TerminalEvent>[];
+    final eventSubscription = client.terminalEvents.listen(events.add);
+    await client.resumeSession(
+      sessionId: sessionId,
+      workspaceRoot: '/workspace',
+    );
+    return _TerminalRaceHarness._(
+      client: client,
+      transport: transport,
+      server: server,
+      eventSubscription: eventSubscription,
+      events: events,
+      responses: responses,
+    );
+  }
+
+  Future<Map<String, dynamic>> terminalRequest({
+    required String method,
+    required Map<String, dynamic> params,
+  }) {
+    final id = 'terminal-race-${++_nextRequestId}';
+    final response = Completer<Map<String, dynamic>>();
+    responses[id] = response;
+    transport.addInbound(
+      jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': method,
+        'params': params,
+      }),
+    );
+    return response.future;
+  }
+
+  Future<String> createTerminal() async {
+    final response = await terminalRequest(
+      method: 'terminal/create',
+      params: <String, dynamic>{
+        'sessionId': sessionId,
+        'command': 'terminal-race-command',
+        'args': <String>[],
+      },
+    ).timeout(const Duration(seconds: 2));
+    return (response['result'] as Map<String, dynamic>)['terminalId'] as String;
+  }
+
+  Future<void> dispose() async {
+    await eventSubscription.cancel();
+    await client.dispose();
+    await server.cancel();
+    await transport.closeInput();
+  }
 }
 
 class _TrackingLifecycleTransport implements AcpTransport {
@@ -263,4 +759,58 @@ class _RecordingTerminalProvider implements TerminalProvider {
 
   @override
   Future<int> waitForExit(TerminalProcessHandle handle) async => 0;
+}
+
+class _ControlledTerminalProvider implements TerminalProvider {
+  _ControlledTerminalProvider({this.currentOutputValue = ''});
+
+  final String currentOutputValue;
+  Completer<String>? nextCurrentOutput;
+  Completer<int>? nextWaitForExit;
+  Completer<void> currentOutputStarted = Completer<void>();
+  Completer<void> waitForExitStarted = Completer<void>();
+  final List<TerminalProcessHandle> createdHandles = <TerminalProcessHandle>[];
+  int currentOutputCalls = 0;
+  int _nextTerminalId = 0;
+
+  @override
+  Future<TerminalProcessHandle> create({
+    required String sessionId,
+    required String command,
+    List<String> args = const <String>[],
+    String? cwd,
+    Map<String, String>? env,
+  }) async {
+    final process = await Process.start('/bin/sh', const <String>[
+      '-c',
+      'sleep 30',
+    ]);
+    final handle = TerminalProcessHandle(
+      terminalId: 'controlled-terminal-${++_nextTerminalId}',
+      process: process,
+    );
+    createdHandles.add(handle);
+    return handle;
+  }
+
+  @override
+  Future<String> currentOutput(TerminalProcessHandle handle) {
+    currentOutputCalls += 1;
+    if (!currentOutputStarted.isCompleted) currentOutputStarted.complete();
+    final controlled = nextCurrentOutput;
+    return controlled?.future ?? Future<String>.value(currentOutputValue);
+  }
+
+  @override
+  Future<void> kill(TerminalProcessHandle handle) => handle.kill();
+
+  @override
+  Future<void> release(TerminalProcessHandle handle) => handle.release();
+
+  @override
+  Future<int> waitForExit(TerminalProcessHandle handle) {
+    if (!waitForExitStarted.isCompleted) waitForExitStarted.complete();
+    final controlled = nextWaitForExit;
+    return controlled?.future ?? Future<int>.value(0);
+  }
 }

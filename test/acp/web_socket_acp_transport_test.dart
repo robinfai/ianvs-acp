@@ -212,6 +212,64 @@ void main() {
     }
   });
 
+  test(
+    'stop waits for the default frame write before closing and restarting',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      final firstSocketClosed = Completer<void>();
+      var activeSockets = 0;
+      var maxActiveSockets = 0;
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        sockets.add(socket);
+        activeSockets += 1;
+        if (activeSockets > maxActiveSockets) {
+          maxActiveSockets = activeSockets;
+        }
+        final socketNumber = sockets.length;
+        socket.listen(
+          (_) {},
+          onDone: () {
+            activeSockets -= 1;
+            if (socketNumber == 1 && !firstSocketClosed.isCompleted) {
+              firstSocketClosed.complete();
+            }
+          },
+        );
+      });
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      );
+
+      try {
+        await transport.start();
+        await _waitFor(() => sockets.length == 1);
+
+        transport.channel.sink.add('frame');
+        final stopping = transport.stop();
+        final restarting = transport.start();
+
+        await Future.wait<void>(<Future<void>>[
+          stopping,
+          restarting,
+        ]).timeout(const Duration(seconds: 2));
+        await firstSocketClosed.future.timeout(const Duration(seconds: 2));
+        await _waitFor(() => sockets.length == 2);
+
+        expect(maxActiveSockets, 1);
+        expect(() => transport.channel, returnsNormally);
+      } finally {
+        await transport.stop();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
   test('a websocket that connects after timeout is closed', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requestStarted = Completer<void>();

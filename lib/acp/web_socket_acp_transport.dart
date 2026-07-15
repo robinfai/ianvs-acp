@@ -508,7 +508,15 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _outboundSubscription = null;
     await cleanUp(() async => _socketSubscription?.cancel());
     _socketSubscription = null;
-    await cleanUp(() async => _socket?.close(WebSocketStatus.normalClosure));
+    await cleanUp(() async {
+      final socket = _socket;
+      if (socket != null) {
+        await _closeSocketAfterActiveWrite(
+          socket,
+          WebSocketStatus.normalClosure,
+        );
+      }
+    });
     _socket = null;
     await cleanUp(() async => _outboundDrainFuture);
     _outboundDrainFuture = null;
@@ -530,6 +538,28 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     if (cleanupError != null) {
       Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
+  }
+
+  Future<void> _closeSocketAfterActiveWrite(
+    WebSocket socket,
+    int closeCode,
+  ) async {
+    try {
+      await socket.close(closeCode);
+      return;
+    } on StateError {
+      // addStream temporarily binds the socket sink. Let that write settle
+      // before retrying so stop cannot leave the old socket open.
+    }
+    final write = _activeWrite;
+    if (write != null) {
+      try {
+        await write;
+      } on Object {
+        // Closing still owns final cleanup after a failed write.
+      }
+    }
+    await socket.close(closeCode);
   }
 
   void _resetQueues() {

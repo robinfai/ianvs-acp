@@ -5673,18 +5673,27 @@ class SessionManager implements AcpBoundedObservationSource {
   Future<Json> _onTerminalOutput(Json req) async {
     final provider = config.terminalProvider;
     if (provider == null) {
-      return {'output': '', 'truncated': false, 'exitStatus': null};
+      return _unavailableTerminalOutput();
     }
     final termId = req['terminalId'] as String;
     final record = _terminals[termId];
     if (record == null) {
-      return {'output': '', 'truncated': false, 'exitStatus': null};
+      return _unavailableTerminalOutput();
     }
     final handle = record.handle;
-    final output = _boundedTerminalOutput(
-      record,
-      await provider.currentOutput(handle),
-    );
+    late final String source;
+    try {
+      source = await provider.currentOutput(handle);
+    } on Object {
+      if (!_isCurrentTerminalRecord(termId, record)) {
+        return _unavailableTerminalOutput();
+      }
+      rethrow;
+    }
+    if (!_isCurrentTerminalRecord(termId, record)) {
+      return _unavailableTerminalOutput();
+    }
+    final output = _boundedTerminalOutput(record, source);
     int? exitCode;
     try {
       exitCode = await handle.process.exitCode.timeout(
@@ -5692,6 +5701,9 @@ class SessionManager implements AcpBoundedObservationSource {
       );
     } on TimeoutException {
       exitCode = null;
+    }
+    if (!_isCurrentTerminalRecord(termId, record)) {
+      return _unavailableTerminalOutput();
     }
     _terminalEvents.add(
       TerminalOutputEvent(
@@ -5711,27 +5723,39 @@ class SessionManager implements AcpBoundedObservationSource {
   Future<Json> _onTerminalWaitForExit(Json req) async {
     final provider = config.terminalProvider;
     if (provider == null) {
-      return {
-        'output': '',
-        'truncated': false,
-        'exitStatus': {'exitCode': 0},
-      };
+      return _unavailableTerminalWait();
     }
     final termId = req['terminalId'] as String;
     final record = _terminals[termId];
     if (record == null) {
-      return {
-        'output': '',
-        'truncated': false,
-        'exitStatus': {'exitCode': 0},
-      };
+      return _unavailableTerminalWait();
     }
     final handle = record.handle;
-    final code = await provider.waitForExit(handle);
-    final output = _boundedTerminalOutput(
-      record,
-      await provider.currentOutput(handle),
-    );
+    late final int code;
+    try {
+      code = await provider.waitForExit(handle);
+    } on Object {
+      if (!_isCurrentTerminalRecord(termId, record)) {
+        return _unavailableTerminalWait();
+      }
+      rethrow;
+    }
+    if (!_isCurrentTerminalRecord(termId, record)) {
+      return _unavailableTerminalWait();
+    }
+    late final String source;
+    try {
+      source = await provider.currentOutput(handle);
+    } on Object {
+      if (!_isCurrentTerminalRecord(termId, record)) {
+        return _unavailableTerminalWait();
+      }
+      rethrow;
+    }
+    if (!_isCurrentTerminalRecord(termId, record)) {
+      return _unavailableTerminalWait();
+    }
+    final output = _boundedTerminalOutput(record, source);
     _terminalEvents.add(TerminalExited(terminalId: termId, code: code));
     return {
       'output': output.output,
@@ -5763,6 +5787,21 @@ class SessionManager implements AcpBoundedObservationSource {
     );
   }
 
+  bool _isCurrentTerminalRecord(String terminalId, _ManagedTerminal record) =>
+      identical(_terminals[terminalId], record);
+
+  Json _unavailableTerminalOutput() => <String, dynamic>{
+    'output': '',
+    'truncated': false,
+    'exitStatus': null,
+  };
+
+  Json _unavailableTerminalWait() => <String, dynamic>{
+    'output': '',
+    'truncated': false,
+    'exitStatus': <String, dynamic>{'exitCode': 0},
+  };
+
   Future<Json?> _onTerminalKill(Json req) async {
     final provider = config.terminalProvider;
     final termId = req['terminalId'] as String;
@@ -5789,7 +5828,14 @@ class SessionManager implements AcpBoundedObservationSource {
     final record = _terminals[terminalId];
     final provider = config.terminalProvider;
     if (record == null || provider == null) return '';
-    final source = await provider.currentOutput(record.handle);
+    late final String source;
+    try {
+      source = await provider.currentOutput(record.handle);
+    } on Object {
+      if (!_isCurrentTerminalRecord(terminalId, record)) return '';
+      rethrow;
+    }
+    if (!_isCurrentTerminalRecord(terminalId, record)) return '';
     return _boundedTerminalOutput(record, source).output;
   }
 
@@ -5807,7 +5853,14 @@ class SessionManager implements AcpBoundedObservationSource {
     final provider = config.terminalProvider;
     final record = _terminals[terminalId];
     if (provider != null && record != null) {
-      final code = await provider.waitForExit(record.handle);
+      late final int code;
+      try {
+        code = await provider.waitForExit(record.handle);
+      } on Object {
+        if (!_isCurrentTerminalRecord(terminalId, record)) return null;
+        rethrow;
+      }
+      if (!_isCurrentTerminalRecord(terminalId, record)) return null;
       return code;
     }
     return null;
