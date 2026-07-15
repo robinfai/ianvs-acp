@@ -8,6 +8,135 @@ import 'package:ianvs_acp/acp/no_redirect_mcp_http_transport.dart';
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 void main() {
+  test('transport byte budgets stay const and validate at runtime', () {
+    const validBudget = acp.TransportByteBudget();
+    expect(validBudget.maxBodyBytes, acp.defaultTransportByteLimit);
+
+    final cases =
+        <
+          ({
+            String name,
+            int invalidValue,
+            acp.TransportByteBudget Function(dynamic value) create,
+          })
+        >[
+          (
+            name: 'maxBodyBytes',
+            invalidValue: 0,
+            create: (value) => acp.TransportByteBudget(maxBodyBytes: value),
+          ),
+          (
+            name: 'maxLineBytes',
+            invalidValue: -1,
+            create: (value) => acp.TransportByteBudget(maxLineBytes: value),
+          ),
+          (
+            name: 'maxSseEventBytes',
+            invalidValue: 0,
+            create: (value) => acp.TransportByteBudget(maxSseEventBytes: value),
+          ),
+        ];
+
+    for (final testCase in cases) {
+      expect(
+        () {
+          final dynamic budget = testCase.create(testCase.invalidValue);
+          budget.validate();
+        },
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', testCase.name)
+              .having(
+                (error) => error.invalidValue,
+                'invalidValue',
+                testCase.invalidValue,
+              ),
+        ),
+        reason: testCase.name,
+      );
+    }
+  });
+
+  test('direct SSE decoding validates its byte budget', () async {
+    final dynamic invalidLineBytes = 0;
+
+    await expectLater(
+      acp.decodeBoundedSse(
+        Stream<List<int>>.value(utf8.encode('data: value\n\n')),
+        budget: acp.TransportByteBudget(maxLineBytes: invalidLineBytes),
+        resource: 'test SSE',
+      ),
+      emitsError(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxLineBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+  });
+
+  test('MCP HTTP transport limits must be positive at runtime', () {
+    final endpoint = Uri.parse('http://127.0.0.1:1/mcp');
+    final cases =
+        <
+          ({
+            String name,
+            Duration invalidValue,
+            NoRedirectMcpHttpTransport Function(dynamic value) create,
+          })
+        >[
+          (
+            name: 'requestTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => NoRedirectMcpHttpTransport(
+              endpoint: endpoint,
+              requestTimeout: value,
+            ),
+          ),
+          (
+            name: 'teardownTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => NoRedirectMcpHttpTransport(
+              endpoint: endpoint,
+              teardownTimeout: value,
+            ),
+          ),
+        ];
+
+    for (final testCase in cases) {
+      expect(
+        () => testCase.create(testCase.invalidValue),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', testCase.name)
+              .having(
+                (error) => error.invalidValue,
+                'invalidValue',
+                testCase.invalidValue,
+              ),
+        ),
+        reason: testCase.name,
+      );
+    }
+  });
+
+  test('MCP HTTP transport validates its byte budget at runtime', () {
+    final dynamic invalidEventBytes = 0;
+
+    expect(
+      () => NoRedirectMcpHttpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:1/mcp'),
+        byteBudget: acp.TransportByteBudget(
+          maxSseEventBytes: invalidEventBytes,
+        ),
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxSseEventBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+  });
+
   test(
     'bounded UTF-8 bodies count raw bytes without retaining overflow',
     () async {

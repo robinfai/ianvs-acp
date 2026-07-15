@@ -6,6 +6,81 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/web_socket_acp_transport.dart';
 
 void main() {
+  test('websocket transport limits must be positive at runtime', () {
+    final endpoint = Uri.parse('ws://127.0.0.1:1/acp');
+    final cases =
+        <
+          ({
+            String name,
+            Object invalidValue,
+            WebSocketAcpTransport Function(dynamic value) create,
+          })
+        >[
+          (
+            name: 'connectTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              connectTimeout: value,
+            ),
+          ),
+          (
+            name: 'maxFrameBytes',
+            invalidValue: 0,
+            create: (value) =>
+                WebSocketAcpTransport(endpoint: endpoint, maxFrameBytes: value),
+          ),
+          (
+            name: 'maxInboundQueueItems',
+            invalidValue: 0,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              maxInboundQueueItems: value,
+            ),
+          ),
+          (
+            name: 'maxInboundQueueBytes',
+            invalidValue: -1,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              maxInboundQueueBytes: value,
+            ),
+          ),
+          (
+            name: 'maxOutboundQueueItems',
+            invalidValue: 0,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              maxOutboundQueueItems: value,
+            ),
+          ),
+          (
+            name: 'maxOutboundQueueBytes',
+            invalidValue: -1,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              maxOutboundQueueBytes: value,
+            ),
+          ),
+        ];
+
+    for (final testCase in cases) {
+      expect(
+        () => testCase.create(testCase.invalidValue),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', testCase.name)
+              .having(
+                (error) => error.invalidValue,
+                'invalidValue',
+                testCase.invalidValue,
+              ),
+        ),
+        reason: testCase.name,
+      );
+    }
+  });
+
   test('websocket handshake does not follow redirects', () async {
     final redirectTarget = await HttpServer.bind(
       InternetAddress.loopbackIPv4,

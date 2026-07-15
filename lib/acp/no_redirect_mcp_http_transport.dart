@@ -15,11 +15,12 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
   NoRedirectMcpHttpTransport({
     required this.endpoint,
     this.headers = const <String, String>{},
-    this.requestTimeout = const Duration(seconds: 30),
-    this.teardownTimeout = const Duration(seconds: 2),
+    Duration requestTimeout = const Duration(seconds: 30),
+    Duration teardownTimeout = const Duration(seconds: 2),
     this.byteBudget = const acp.TransportByteBudget(),
-  }) : assert(requestTimeout > Duration.zero),
-       assert(teardownTimeout > Duration.zero) {
+  }) : requestTimeout = _positiveDuration(requestTimeout, 'requestTimeout'),
+       teardownTimeout = _positiveDuration(teardownTimeout, 'teardownTimeout') {
+    byteBudget.validate();
     validateAcpEndpoint(
       endpoint,
       allowedSchemes: const <String>{'http', 'https'},
@@ -451,4 +452,11 @@ class NoRedirectMcpHttpTransport implements mcp.Transport {
       timeout: teardownTimeout,
     );
   }
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
 }

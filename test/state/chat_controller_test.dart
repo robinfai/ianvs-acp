@@ -10365,6 +10365,23 @@ void main() {
     },
   );
 
+  test('permission history limit must be positive at runtime', () {
+    final dynamic invalidLimit = 0;
+
+    expect(
+      () => ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        permissionHistoryLimit: invalidLimit,
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'permissionHistoryLimit')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+  });
+
   test('permission policy defaults to manual confirmation', () {
     final controller = ChatController(
       client: FakeAgentClient(),

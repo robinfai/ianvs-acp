@@ -13,19 +13,23 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.headers = const <String, String>{},
     this.onProtocolOut,
     this.onProtocolIn,
-    this.requestTimeout = const Duration(seconds: 30),
-    this.firstByteTimeout = const Duration(seconds: 15),
-    this.sseIdleTimeout = const Duration(minutes: 5),
+    Duration requestTimeout = const Duration(seconds: 30),
+    Duration firstByteTimeout = const Duration(seconds: 15),
+    Duration sseIdleTimeout = const Duration(minutes: 5),
     this.byteBudget = const acp.TransportByteBudget(),
     int maxCookieCount = 128,
     int maxCookieBytes = 64 * 1024,
     DateTime Function()? clock,
-  }) : maxCookieCount = _positiveCookieLimit(maxCookieCount, 'maxCookieCount'),
+  }) : requestTimeout = _positiveDuration(requestTimeout, 'requestTimeout'),
+       firstByteTimeout = _positiveDuration(
+         firstByteTimeout,
+         'firstByteTimeout',
+       ),
+       sseIdleTimeout = _positiveDuration(sseIdleTimeout, 'sseIdleTimeout'),
+       maxCookieCount = _positiveCookieLimit(maxCookieCount, 'maxCookieCount'),
        maxCookieBytes = _positiveCookieLimit(maxCookieBytes, 'maxCookieBytes'),
-       _clock = clock ?? DateTime.now,
-       assert(requestTimeout > Duration.zero),
-       assert(firstByteTimeout > Duration.zero),
-       assert(sseIdleTimeout > Duration.zero) {
+       _clock = clock ?? DateTime.now {
+    byteBudget.validate();
     validateAcpEndpoint(
       endpoint,
       allowedSchemes: const <String>{'http', 'https'},
@@ -720,6 +724,13 @@ bool _isCookieHeader(String name) =>
 
 int _positiveCookieLimit(int value, String name) {
   if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
   }
   return value;

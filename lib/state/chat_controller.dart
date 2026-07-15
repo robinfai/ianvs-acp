@@ -2470,8 +2470,14 @@ class ChatController extends ChangeNotifier {
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
     this.permissionReviewer,
-  }) : assert(permissionHistoryLimit > 0),
-       permissionTrustRules = List.unmodifiable(permissionTrustRules) {
+  }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
+    if (permissionHistoryLimit <= 0) {
+      throw ArgumentError.value(
+        permissionHistoryLimit,
+        'permissionHistoryLimit',
+        'must be greater than zero',
+      );
+    }
     inputBudget.validate();
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,

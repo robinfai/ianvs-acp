@@ -11,13 +11,18 @@ class TransportByteBudget {
     this.maxBodyBytes = defaultTransportByteLimit,
     this.maxLineBytes = defaultTransportByteLimit,
     this.maxSseEventBytes = defaultTransportByteLimit,
-  }) : assert(maxBodyBytes > 0),
-       assert(maxLineBytes > 0),
-       assert(maxSseEventBytes > 0);
+  });
 
   final int maxBodyBytes;
   final int maxLineBytes;
   final int maxSseEventBytes;
+
+  /// Reject invalid dynamic budgets in debug and release builds.
+  void validate() {
+    _requirePositiveTransportByteLimit(maxBodyBytes, 'maxBodyBytes');
+    _requirePositiveTransportByteLimit(maxLineBytes, 'maxLineBytes');
+    _requirePositiveTransportByteLimit(maxSseEventBytes, 'maxSseEventBytes');
+  }
 }
 
 /// Payload-free error raised when a transport byte limit is exceeded.
@@ -316,6 +321,7 @@ Stream<TransportSseEvent> decodeBoundedSse(
   required TransportByteBudget budget,
   required String resource,
 }) async* {
+  budget.validate();
   final state = _SseDecodeState(budget: budget, resource: resource);
   await for (final chunk in stream) {
     for (final byte in chunk) {
@@ -325,6 +331,12 @@ Stream<TransportSseEvent> decodeBoundedSse(
   }
   final event = state.close();
   if (event != null) yield event;
+}
+
+void _requirePositiveTransportByteLimit(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
 }
 
 class _SseDecodeState {

@@ -16,19 +16,31 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     this.headers = const <String, String>{},
     this.onProtocolOut,
     this.onProtocolIn,
-    this.connectTimeout = const Duration(seconds: 10),
-    this.maxFrameBytes = acp.defaultTransportByteLimit,
-    this.maxInboundQueueItems = 128,
-    this.maxInboundQueueBytes = 32 * 1024 * 1024,
-    this.maxOutboundQueueItems = 128,
-    this.maxOutboundQueueBytes = 32 * 1024 * 1024,
+    Duration connectTimeout = const Duration(seconds: 10),
+    int maxFrameBytes = acp.defaultTransportByteLimit,
+    int maxInboundQueueItems = 128,
+    int maxInboundQueueBytes = 32 * 1024 * 1024,
+    int maxOutboundQueueItems = 128,
+    int maxOutboundQueueBytes = 32 * 1024 * 1024,
     WebSocketFrameWriter? frameWriter,
-  }) : assert(connectTimeout > Duration.zero),
-       assert(maxFrameBytes > 0),
-       assert(maxInboundQueueItems > 0),
-       assert(maxInboundQueueBytes > 0),
-       assert(maxOutboundQueueItems > 0),
-       assert(maxOutboundQueueBytes > 0),
+  }) : connectTimeout = _positiveDuration(connectTimeout, 'connectTimeout'),
+       maxFrameBytes = _positiveLimit(maxFrameBytes, 'maxFrameBytes'),
+       maxInboundQueueItems = _positiveLimit(
+         maxInboundQueueItems,
+         'maxInboundQueueItems',
+       ),
+       maxInboundQueueBytes = _positiveLimit(
+         maxInboundQueueBytes,
+         'maxInboundQueueBytes',
+       ),
+       maxOutboundQueueItems = _positiveLimit(
+         maxOutboundQueueItems,
+         'maxOutboundQueueItems',
+       ),
+       maxOutboundQueueBytes = _positiveLimit(
+         maxOutboundQueueBytes,
+         'maxOutboundQueueBytes',
+       ),
        _frameWriter = frameWriter ?? _writeFrame {
     validateAcpEndpoint(endpoint, allowedSchemes: const <String>{'ws', 'wss'});
   }
@@ -505,6 +517,20 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   static Future<void> _writeFrame(WebSocket socket, String frame) {
     return socket.addStream(Stream<Object?>.value(frame));
   }
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
+}
+
+int _positiveLimit(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
 }
 
 class _QueuedFrame {

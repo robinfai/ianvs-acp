@@ -2438,6 +2438,75 @@ void main() {
     );
   });
 
+  test('HTTP transport timeouts must be positive at runtime', () {
+    final endpoint = Uri.parse('http://127.0.0.1:1/acp');
+    final cases =
+        <
+          ({
+            String name,
+            Duration invalidValue,
+            StreamableHttpAcpTransport Function(dynamic value) create,
+          })
+        >[
+          (
+            name: 'requestTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => StreamableHttpAcpTransport(
+              endpoint: endpoint,
+              requestTimeout: value,
+            ),
+          ),
+          (
+            name: 'firstByteTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => StreamableHttpAcpTransport(
+              endpoint: endpoint,
+              firstByteTimeout: value,
+            ),
+          ),
+          (
+            name: 'sseIdleTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => StreamableHttpAcpTransport(
+              endpoint: endpoint,
+              sseIdleTimeout: value,
+            ),
+          ),
+        ];
+
+    for (final testCase in cases) {
+      expect(
+        () => testCase.create(testCase.invalidValue),
+        throwsA(
+          isA<ArgumentError>()
+              .having((error) => error.name, 'name', testCase.name)
+              .having(
+                (error) => error.invalidValue,
+                'invalidValue',
+                testCase.invalidValue,
+              ),
+        ),
+        reason: testCase.name,
+      );
+    }
+  });
+
+  test('HTTP transport validates its byte budget at runtime', () {
+    final dynamic invalidBodyBytes = 0;
+
+    expect(
+      () => StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:1/acp'),
+        byteBudget: acp.TransportByteBudget(maxBodyBytes: invalidBodyBytes),
+      ),
+      throwsA(
+        isA<ArgumentError>()
+            .having((error) => error.name, 'name', 'maxBodyBytes')
+            .having((error) => error.invalidValue, 'invalidValue', 0),
+      ),
+    );
+  });
+
   test(
     'configured Cookie bytes are rejected before creating a request',
     () async {
