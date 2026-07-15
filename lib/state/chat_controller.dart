@@ -2466,6 +2466,10 @@ class ChatController extends ChangeNotifier {
     this.additionalDirectories = const <String>[],
     this.agentName = 'Codex',
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
+    this.permissionReviewResultEncodedByteLimit =
+        defaultPermissionReviewResultEncodedByteLimit,
+    this.permissionHistoryEncodedByteLimit =
+        defaultPermissionHistoryEncodedByteLimit,
     this.inputBudget = const acp.AcpInputBudget(),
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
@@ -2475,6 +2479,21 @@ class ChatController extends ChangeNotifier {
       throw ArgumentError.value(
         permissionHistoryLimit,
         'permissionHistoryLimit',
+        'must be greater than zero',
+      );
+    }
+    if (permissionReviewResultEncodedByteLimit <
+        minimumPermissionReviewResultEncodedByteLimit) {
+      throw ArgumentError.value(
+        permissionReviewResultEncodedByteLimit,
+        'permissionReviewResultEncodedByteLimit',
+        'must be at least $minimumPermissionReviewResultEncodedByteLimit',
+      );
+    }
+    if (permissionHistoryEncodedByteLimit <= 0) {
+      throw ArgumentError.value(
+        permissionHistoryEncodedByteLimit,
+        'permissionHistoryEncodedByteLimit',
         'must be greater than zero',
       );
     }
@@ -2498,6 +2517,8 @@ class ChatController extends ChangeNotifier {
   final List<String> additionalDirectories;
   final String agentName;
   final int permissionHistoryLimit;
+  final int permissionReviewResultEncodedByteLimit;
+  final int permissionHistoryEncodedByteLimit;
   final acp.AcpInputBudget inputBudget;
   final List<AcpPermissionTrustRule> permissionTrustRules;
   final AcpPermissionReviewer? permissionReviewer;
@@ -2548,6 +2569,8 @@ class ChatController extends ChangeNotifier {
       AcpToolCallExecutionPolicy.defaultPermissions;
   final List<AcpPermissionAuditEntry> _permissionHistory =
       <AcpPermissionAuditEntry>[];
+  final List<int> _permissionHistoryEntryEncodedBytes = <int>[];
+  int _permissionHistoryEncodedBytes = 0;
   final Set<String> _resolvingPermissionRequestIds = <String>{};
   final Set<String> _reviewingPermissionRequestIds = <String>{};
   final Set<String> _retiredSessionIds = <String>{};
@@ -2708,6 +2731,8 @@ class ChatController extends ChangeNotifier {
   List<AcpPermissionAuditEntry> get permissionHistory {
     return List.unmodifiable(_permissionHistory);
   }
+
+  int get permissionHistoryEncodedBytes => _permissionHistoryEncodedBytes;
 
   StreamSubscription<AgentEvent>? _promptSubscription;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
@@ -4922,15 +4947,20 @@ class ChatController extends ChangeNotifier {
         );
         if (_isDisposed) return;
         if (result == null) return;
-        _recordPermissionReview(request, result);
-        final decision = result.decision;
+        final boundedResult = sanitizeAcpPermissionReviewResult(
+          result,
+          inputBudget: inputBudget,
+          maxEncodedBytes: permissionReviewResultEncodedByteLimit,
+        );
+        _recordPermissionReview(request, boundedResult);
+        final decision = boundedResult.decision;
         if (decision == null) {
           _notifyListeners();
           return;
         }
         if (decision == AcpPermissionDecision.allow &&
             (!reviewer.canAutoApprove ||
-                result.risk.trim().toLowerCase() != 'low')) {
+                boundedResult.risk.trim().toLowerCase() != 'low')) {
           _notifyListeners();
           return;
         }
@@ -4939,7 +4969,7 @@ class ChatController extends ChangeNotifier {
           request,
           decision,
           source: AcpPermissionDecisionSource.reviewAgent,
-          reviewResult: result,
+          reviewResult: boundedResult,
         );
       } catch (error) {
         if (!_isDisposed && _isCurrentPermissionRequest(request)) {
@@ -5044,6 +5074,9 @@ class ChatController extends ChangeNotifier {
       recordedAt: request.requestedAt,
     );
     _permissionHistory.insert(0, entry);
+    final encodedBytes = acpPermissionAuditEntryEncodedBytes(entry);
+    _permissionHistoryEntryEncodedBytes.insert(0, encodedBytes);
+    _permissionHistoryEncodedBytes += encodedBytes;
     _trimPermissionHistory();
   }
 
@@ -5058,11 +5091,24 @@ class ChatController extends ChangeNotifier {
   }
 
   void _trimPermissionHistory() {
-    if (_permissionHistory.length <= permissionHistoryLimit) return;
-    _permissionHistory.removeRange(
-      permissionHistoryLimit,
-      _permissionHistory.length,
-    );
+    while (_permissionHistory.length > permissionHistoryLimit ||
+        _permissionHistoryEncodedBytes > permissionHistoryEncodedByteLimit) {
+      _permissionHistory.removeLast();
+      _permissionHistoryEncodedBytes -= _permissionHistoryEntryEncodedBytes
+          .removeLast();
+    }
+  }
+
+  void _replacePermissionHistoryEntry(
+    int index,
+    AcpPermissionAuditEntry replacement,
+  ) {
+    final replacementBytes = acpPermissionAuditEntryEncodedBytes(replacement);
+    final previousBytes = _permissionHistoryEntryEncodedBytes[index];
+    _permissionHistory[index] = replacement;
+    _permissionHistoryEntryEncodedBytes[index] = replacementBytes;
+    _permissionHistoryEncodedBytes += replacementBytes - previousBytes;
+    _trimPermissionHistory();
   }
 
   void _recordPermissionDecision(
@@ -5078,12 +5124,22 @@ class ChatController extends ChangeNotifier {
     if (index == -1) return;
     final recordedRequest = _permissionHistory[index].request;
     final status = _permissionAuditStatus(decision);
-    _permissionHistory[index] = _permissionHistory[index].copyWith(
-      status: _permissionAuditStatus(decision),
-      resolvedAt: DateTime.now(),
-      decisionSource: source,
-      reviewResult: reviewResult,
-      selectedOptionId: selectedOptionId,
+    final boundedReviewResult = reviewResult == null
+        ? null
+        : sanitizeAcpPermissionReviewResult(
+            reviewResult,
+            inputBudget: inputBudget,
+            maxEncodedBytes: permissionReviewResultEncodedByteLimit,
+          );
+    _replacePermissionHistoryEntry(
+      index,
+      _permissionHistory[index].copyWith(
+        status: _permissionAuditStatus(decision),
+        resolvedAt: DateTime.now(),
+        decisionSource: source,
+        reviewResult: boundedReviewResult,
+        selectedOptionId: selectedOptionId,
+      ),
     );
     _notifyPermissionEventObservers(
       ChatPermissionEvent.resolved(
@@ -5103,8 +5159,14 @@ class ChatController extends ChangeNotifier {
       (entry) => entry.request.bindingKey == request.bindingKey,
     );
     if (index == -1) return;
-    _permissionHistory[index] = _permissionHistory[index].copyWith(
-      reviewResult: reviewResult,
+    final boundedReviewResult = sanitizeAcpPermissionReviewResult(
+      reviewResult,
+      inputBudget: inputBudget,
+      maxEncodedBytes: permissionReviewResultEncodedByteLimit,
+    );
+    _replacePermissionHistoryEntry(
+      index,
+      _permissionHistory[index].copyWith(reviewResult: boundedReviewResult),
     );
   }
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 import '../config/acp_client_config.dart';
@@ -89,23 +90,12 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     );
     if (_disposed || _quarantined) {
       return Future<AcpPermissionReviewResult?>.value(
-        _failedReview(
-          _unavailableError(),
-          effectiveModel: effectiveModel,
-          payload: payload,
-        ),
+        _failedReview(category: 'unavailable', effectiveModel: effectiveModel),
       );
     }
     if (_pendingReviews.length >= maxPendingReviews) {
       return Future<AcpPermissionReviewResult?>.value(
-        _failedReview(
-          StateError(
-            'Permission reviewer pending review limit '
-            '($maxPendingReviews) reached.',
-          ),
-          effectiveModel: effectiveModel,
-          payload: payload,
-        ),
+        _failedReview(category: 'capacity', effectiveModel: effectiveModel),
       );
     }
 
@@ -127,9 +117,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
       if (!queued.result.isCompleted) {
         queued.result.complete(
           _failedReview(
-            StateError('Permission review queue failed.'),
+            category: 'queue_failure',
             effectiveModel: queued.effectiveModel,
-            payload: queued.payload,
           ),
         );
       }
@@ -144,9 +133,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
       if (!queued.result.isCompleted) {
         queued.result.complete(
           _failedReview(
-            _unavailableError(),
+            category: 'unavailable',
             effectiveModel: queued.effectiveModel,
-            payload: queued.payload,
           ),
         );
       }
@@ -187,9 +175,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     if (!queued.result.isCompleted) {
       queued.result.complete(
         _failedReview(
-          outcome.error!,
+          category: outcome.timedOut ? 'timeout' : 'remote_failure',
           effectiveModel: queued.effectiveModel,
-          payload: queued.payload,
         ),
       );
     }
@@ -218,39 +205,40 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     );
     _requireOwnedContext(context);
     final data = _reviewDataFromText(response);
-    return AcpPermissionReviewResult(
-      decision: _reviewDecisionFromData(data),
-      risk:
-          _reviewStringField(data, const ['risk', 'riskLevel', 'severity']) ??
-          'unknown',
-      rationale:
-          _reviewStringField(data, const ['rationale', 'reason', 'summary']) ??
-          response.trim(),
-      reviewer:
-          _reviewStringField(data, const ['reviewer', 'reviewAgent']) ??
-          agentName,
-      model: _reviewStringField(data, const ['model']) ?? effectiveModel,
-      details: <String, Object?>{
-        if (data.isNotEmpty) 'raw': data,
-        'localAnalysis': payload['analysis'],
-      },
+    return sanitizeAcpPermissionReviewResult(
+      AcpPermissionReviewResult(
+        decision: _reviewDecisionFromData(data),
+        risk:
+            _reviewStringField(data, const ['risk', 'riskLevel', 'severity']) ??
+            'unknown',
+        rationale:
+            _reviewStringField(data, const [
+              'rationale',
+              'reason',
+              'summary',
+            ]) ??
+            'Permission review agent returned an invalid response.',
+        reviewer:
+            _reviewStringField(data, const ['reviewer', 'reviewAgent']) ??
+            agentName,
+        model: _reviewStringField(data, const ['model']) ?? effectiveModel,
+        details: <String, Object?>{'localAnalysis': payload['analysis']},
+      ),
     );
   }
 
-  AcpPermissionReviewResult _failedReview(
-    Object error, {
+  AcpPermissionReviewResult _failedReview({
+    required String category,
     required String? effectiveModel,
-    required Map<String, dynamic> payload,
   }) {
-    return AcpPermissionReviewResult(
-      risk: 'unknown',
-      rationale: 'Review agent failed: $error',
-      reviewer: agentName,
-      model: effectiveModel,
-      details: <String, Object?>{
-        'error': error.toString(),
-        'localAnalysis': payload['analysis'],
-      },
+    return sanitizeAcpPermissionReviewResult(
+      AcpPermissionReviewResult(
+        risk: 'unknown',
+        rationale: 'Permission review agent failed.',
+        reviewer: agentName,
+        model: effectiveModel,
+        details: <String, Object?>{'failure': category},
+      ),
     );
   }
 
@@ -418,7 +406,7 @@ ${encoder.convert(payload)}
         continue;
       }
     }
-    return <String, Object?>{'summary': trimmed};
+    return const <String, Object?>{};
   }
 
   String _stripJsonFence(String text) {
@@ -445,9 +433,8 @@ ${encoder.convert(payload)}
       if (queued.started || queued.result.isCompleted) continue;
       queued.result.complete(
         _failedReview(
-          _unavailableError(),
+          category: 'unavailable',
           effectiveModel: queued.effectiveModel,
-          payload: queued.payload,
         ),
       );
     }
@@ -619,15 +606,20 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
       }()).timeout(config.timeout);
     } catch (error) {
       await _resetClient();
-      return AcpPermissionReviewResult(
-        risk: 'unknown',
-        rationale: 'Review agent failed: $error',
-        reviewer: mcpServer.name,
-        model: effectiveModel,
-        details: <String, Object?>{
-          'error': error.toString(),
-          'localAnalysis': payload['analysis'],
-        },
+      return sanitizeAcpPermissionReviewResult(
+        AcpPermissionReviewResult(
+          risk: 'unknown',
+          rationale: 'Permission review service failed.',
+          reviewer: mcpServer.name,
+          model: effectiveModel,
+          details: <String, Object?>{
+            'failure': error is mcp.McpError
+                ? 'mcp_error'
+                : error is TimeoutException
+                ? 'timeout'
+                : 'unavailable',
+          },
+        ),
       );
     }
   }
@@ -755,58 +747,78 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     mcp.CallToolResult result, {
     String? model,
   }) {
-    final data = _structuredResult(result);
     if (result.isError) {
-      return AcpPermissionReviewResult(
+      return sanitizeAcpPermissionReviewResult(
+        AcpPermissionReviewResult(
+          risk: 'unknown',
+          rationale: 'Permission review service returned a tool error.',
+          reviewer: mcpServer.name,
+          model: model,
+          details: const <String, Object?>{'failure': 'tool_error'},
+        ),
+      );
+    }
+    final Map<String, Object?> data;
+    try {
+      data = _structuredResult(result);
+    } on acp.AcpInputLimitExceeded {
+      return const AcpPermissionReviewResult(
+        risk: 'unknown',
+        rationale:
+            'Permission review result omitted because it exceeded safety limits.',
+        reviewer: 'permission-review-safety',
+        details: <String, Object?>{'omission': 'size_limit'},
+      );
+    } on Object {
+      return sanitizeAcpPermissionReviewResult(
+        AcpPermissionReviewResult(
+          risk: 'unknown',
+          rationale: 'Permission review service returned an invalid result.',
+          reviewer: mcpServer.name,
+          model: model,
+          details: const <String, Object?>{'failure': 'invalid_result'},
+        ),
+      );
+    }
+    return sanitizeAcpPermissionReviewResult(
+      AcpPermissionReviewResult(
+        decision: _decisionFromReview(data),
         risk:
             _stringField(data, const ['risk', 'riskLevel', 'severity']) ??
             'unknown',
         rationale:
-            _stringField(data, const ['rationale', 'reason', 'summary']) ??
-            _textResult(result) ??
-            'Review agent returned an MCP tool error.',
+            _stringField(data, const ['rationale', 'reason', 'summary']) ?? '',
         reviewer: mcpServer.name,
         model: model,
-        details: <String, Object?>{'raw': data},
-      );
-    }
-    return AcpPermissionReviewResult(
-      decision: _decisionFromReview(data),
-      risk:
-          _stringField(data, const ['risk', 'riskLevel', 'severity']) ??
-          'unknown',
-      rationale:
-          _stringField(data, const ['rationale', 'reason', 'summary']) ??
-          _textResult(result) ??
-          '',
-      reviewer:
-          _stringField(data, const ['reviewer', 'reviewAgent']) ??
-          mcpServer.name,
-      model: _stringField(data, const ['model']) ?? model,
-      details: data.isEmpty ? const <String, Object?>{} : data,
+      ),
     );
   }
 
   Map<String, Object?> _structuredResult(mcp.CallToolResult result) {
+    final guard = acp.AcpStructuredUpdateGuard(
+      budget: const acp.AcpInputBudget(),
+      resource: 'MCP permission review result',
+    );
     final structured = result.structuredContent;
     if (structured != null) {
-      return structured.map((key, value) => MapEntry(key, value as Object?));
+      return guard.copyMetadata(structured, field: 'structuredContent');
     }
     final extra = result.extra;
     if (extra != null && extra.isNotEmpty) {
-      return extra.map((key, value) => MapEntry(key, value as Object?));
+      return guard.copyMetadata(extra, field: 'extra');
     }
     final text = _textResult(result);
     if (text == null) return const <String, Object?>{};
+    guard.copyString(text, field: 'text');
     try {
       final decoded = jsonDecode(text);
       if (decoded is Map) {
-        return decoded.map((key, value) => MapEntry(key.toString(), value));
+        return guard.copyMetadata(decoded, field: 'decodedText');
       }
     } on FormatException {
-      return <String, Object?>{'summary': text};
+      return const <String, Object?>{};
     }
-    return <String, Object?>{'summary': text};
+    return const <String, Object?>{};
   }
 
   String? _textResult(mcp.CallToolResult result) {

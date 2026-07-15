@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
@@ -10364,6 +10365,175 @@ void main() {
       );
     },
   );
+
+  test(
+    'permission history encoded byte limit accepts exact and drops plus one',
+    () async {
+      final request = AcpPermissionRequest(
+        id: 'permission-sized',
+        title: 'Read file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'read_text_file',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 7, 15),
+      );
+      final probeClient = FakeAgentClient();
+      final probe = ChatController(client: probeClient, cwd: '/workspace');
+      addTearDown(probe.dispose);
+      probeClient.emitPermissionRequest(request);
+      await pumpEventQueue();
+      final exactBytes = acpPermissionAuditEntryEncodedBytes(
+        probe.permissionHistory.single,
+      );
+
+      Future<ChatController> recordWithLimit(int limit) async {
+        final client = FakeAgentClient();
+        final controller = ChatController(
+          client: client,
+          cwd: '/workspace',
+          permissionHistoryEncodedByteLimit: limit,
+        );
+        client.emitPermissionRequest(request);
+        await pumpEventQueue();
+        return controller;
+      }
+
+      final exact = await recordWithLimit(exactBytes);
+      final plusOne = await recordWithLimit(exactBytes - 1);
+      addTearDown(exact.dispose);
+      addTearDown(plusOne.dispose);
+
+      expect(exact.permissionHistory, hasLength(1));
+      expect(exact.permissionHistoryEncodedBytes, exactBytes);
+      expect(plusOne.permissionHistory, isEmpty);
+      expect(plusOne.permissionHistoryEncodedBytes, 0);
+    },
+  );
+
+  test(
+    'oversized review results cannot accumulate in 500-entry history',
+    () async {
+      const tokenCanary = 'token-canary-review-history';
+      final huge =
+          '$tokenCanary${List<String>.filled(2 * 1024 * 1024, 'x').join()}';
+      final fake = FakeAgentClient();
+      final reviewer = _FakePermissionReviewer(
+        AcpPermissionReviewResult(
+          risk: 'unknown',
+          rationale: huge,
+          reviewer: 'remote-reviewer',
+          details: <String, Object?>{
+            'raw': <String, Object?>{'body': huge},
+          },
+        ),
+      );
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        permissionReviewer: reviewer,
+        permissionReviewResultEncodedByteLimit: 1024,
+        permissionHistoryEncodedByteLimit: 128 * 1024,
+      );
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.autoReview,
+      );
+
+      for (var index = 0; index < 500; index += 1) {
+        fake.emitPermissionRequest(
+          AcpPermissionRequest(
+            id: 'permission-$index',
+            title: 'Read file $index',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'read_text_file',
+            options: const <String>['Allow', 'Deny'],
+            requestedAt: DateTime.utc(
+              2026,
+              7,
+              15,
+            ).add(Duration(seconds: index)),
+          ),
+        );
+        await pumpEventQueue(times: 2);
+      }
+
+      final exported = acpPermissionAuditEntriesToJson(
+        controller.permissionHistory,
+        maxEncodedBytes: 128 * 1024,
+      );
+      expect(reviewer.requests, hasLength(500));
+      expect(controller.permissionHistory.length, greaterThan(0));
+      expect(controller.permissionHistory.length, lessThan(500));
+      final retainedIds = controller.permissionHistory
+          .map((entry) => entry.request.id)
+          .toList(growable: false);
+      expect(retainedIds.first, 'permission-499');
+      expect(
+        retainedIds,
+        List<String>.generate(
+          retainedIds.length,
+          (index) => 'permission-${499 - index}',
+        ),
+      );
+      for (final entry in controller.permissionHistory) {
+        expect(entry.reviewResult, isNotNull);
+        expect(entry.reviewResult?.decision, isNull);
+        expect(entry.reviewResult?.details, const <String, Object?>{
+          'omission': 'size_limit',
+        });
+      }
+      expect(
+        controller.permissionHistoryEncodedBytes,
+        lessThanOrEqualTo(128 * 1024),
+      );
+      expect(
+        controller.permissionHistoryEncodedBytes,
+        controller.permissionHistory.fold<int>(
+          0,
+          (total, entry) => total + acpPermissionAuditEntryEncodedBytes(entry),
+        ),
+      );
+      expect(utf8.encode(exported).length, lessThanOrEqualTo(128 * 1024));
+      expect(exported, isNot(contains(tokenCanary)));
+    },
+  );
+
+  test('permission result limits must be positive at runtime', () {
+    final exact = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+      permissionReviewResultEncodedByteLimit:
+          minimumPermissionReviewResultEncodedByteLimit,
+    );
+    addTearDown(exact.dispose);
+    expect(
+      () => ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        permissionReviewResultEncodedByteLimit: 0,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        permissionReviewResultEncodedByteLimit:
+            minimumPermissionReviewResultEncodedByteLimit - 1,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        permissionHistoryEncodedByteLimit: 0,
+      ),
+      throwsArgumentError,
+    );
+  });
 
   test('permission history limit must be positive at runtime', () {
     final dynamic invalidLimit = 0;

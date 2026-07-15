@@ -575,7 +575,7 @@ void main() {
           .timeout(const Duration(milliseconds: 100));
 
       expect(overflow?.risk, 'unknown');
-      expect(overflow?.rationale, contains('pending review limit'));
+      expect(overflow?.details, containsPair('failure', 'capacity'));
       expect(factoryCalls, 1);
       expect(client.promptCalls, 1);
 
@@ -635,8 +635,8 @@ void main() {
       );
 
       expect(firstResult?.risk, 'unknown');
-      expect(whilePromptBlocked?.rationale, contains('pending review limit'));
-      expect(whileCleanupBlocked?.rationale, contains('pending review limit'));
+      expect(whilePromptBlocked?.details, containsPair('failure', 'capacity'));
+      expect(whileCleanupBlocked?.details, containsPair('failure', 'capacity'));
       expect(factoryCalls, 1);
 
       firstClient.finishDispose();
@@ -1036,6 +1036,176 @@ void main() {
     expect(reviewer.canAutoApprove, isTrue);
   });
 
+  test(
+    'MCP error data is replaced by a fixed low-sensitivity failure',
+    () async {
+      const tokenCanary = 'token-canary-should-not-survive';
+      const pathCanary = '/private/reviewer/secret.json';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'GET') {
+          request.response.statusCode = HttpStatus.methodNotAllowed;
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'DELETE') {
+          request.response.statusCode = HttpStatus.ok;
+          await request.response.close();
+          return;
+        }
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        final method = message['method'];
+        if (method == 'notifications/initialized') {
+          request.response.statusCode = HttpStatus.accepted;
+        } else if (method == 'initialize') {
+          request.response
+            ..headers.contentType = ContentType.json
+            ..write(jsonEncode(_mcpInitializeResponse(message['id'])));
+        } else {
+          request.response
+            ..headers.contentType = ContentType.json
+            ..write(
+              jsonEncode(<String, Object?>{
+                'jsonrpc': '2.0',
+                'id': message['id'],
+                'error': <String, Object?>{
+                  'code': -32603,
+                  'message': 'remote failure $tokenCanary',
+                  'data': <String, Object?>{
+                    'token': tokenCanary,
+                    'path': pathCanary,
+                    'stack': 'at reviewer ($pathCanary:1)',
+                  },
+                },
+              }),
+            );
+        }
+        await request.response.close();
+      });
+      final reviewer = _localMcpReviewer(server.port);
+
+      try {
+        final result = await reviewer.review(
+          _reviewRequest('mcp-error-data'),
+          workspaceRoot: '/workspace',
+        );
+        final encoded = jsonEncode(result?.toJson());
+
+        expect(result?.risk, 'unknown');
+        expect(result?.rationale, 'Permission review service failed.');
+        expect(result?.details, const <String, Object?>{
+          'failure': 'mcp_error',
+        });
+        expect(encoded, isNot(contains(tokenCanary)));
+        expect(encoded, isNot(contains(pathCanary)));
+        final history =
+            acpPermissionAuditEntriesToJson(<AcpPermissionAuditEntry>[
+              AcpPermissionAuditEntry(
+                request: _reviewRequest('mcp-error-history'),
+                status: AcpPermissionAuditStatus.pending,
+                recordedAt: DateTime.utc(2026, 7, 15),
+                reviewResult: result,
+              ),
+            ]);
+        expect(history, isNot(contains(tokenCanary)));
+        expect(history, isNot(contains(pathCanary)));
+      } finally {
+        await reviewer.dispose();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test('MCP tool result channels retain only fixed bounded outcomes', () async {
+    const canary = 'mcp-result-canary-should-not-survive';
+    final huge = '$canary${List<String>.filled(70 * 1024, 'x').join()}';
+    final toolResults = <Map<String, Object?>>[
+      <String, Object?>{
+        'content': <Object?>[
+          <String, Object?>{'type': 'text', 'text': huge},
+        ],
+        'isError': true,
+        'structuredContent': <String, Object?>{'raw': huge},
+        'unknownExtra': <String, Object?>{'raw': huge},
+      },
+      <String, Object?>{
+        'content': const <Object?>[],
+        'structuredContent': <String, Object?>{'rationale': huge},
+      },
+      <String, Object?>{
+        'content': const <Object?>[],
+        'unknownExtra': <String, Object?>{'rationale': huge},
+      },
+      <String, Object?>{
+        'content': <Object?>[
+          <String, Object?>{'type': 'text', 'text': huge},
+        ],
+      },
+    ];
+    var toolCallIndex = 0;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'GET') {
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'notifications/initialized') {
+        request.response.statusCode = HttpStatus.accepted;
+      } else if (method == 'initialize') {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(_mcpInitializeResponse(message['id'])));
+      } else {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': toolResults[toolCallIndex++],
+            }),
+          );
+      }
+      await request.response.close();
+    });
+    final reviewer = _localMcpReviewer(server.port);
+
+    try {
+      final results = <AcpPermissionReviewResult?>[];
+      for (var index = 0; index < toolResults.length; index += 1) {
+        results.add(
+          await reviewer.review(
+            _reviewRequest('bounded-channel-$index'),
+            workspaceRoot: '/workspace',
+          ),
+        );
+      }
+
+      expect(results.first?.details, containsPair('failure', 'tool_error'));
+      for (final result in results.skip(1)) {
+        expect(result?.details, containsPair('omission', 'size_limit'));
+      }
+      for (final result in results) {
+        expect(jsonEncode(result?.toJson()), isNot(contains(canary)));
+      }
+    } finally {
+      await reviewer.dispose();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('MCP permission reviewer refuses endpoint credentials', () {
     expect(
       () => McpPermissionReviewAgent(
@@ -1133,7 +1303,7 @@ void main() {
       expect(originRequests, 1);
       expect(targetRequests, 0);
       expect(result?.risk, 'unknown');
-      expect(result?.rationale, contains('303'));
+      expect(result?.details, containsPair('failure', 'mcp_error'));
     } finally {
       await reviewer.dispose();
       await originSubscription.cancel();

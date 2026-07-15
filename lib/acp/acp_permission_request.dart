@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:dart_acp/dart_acp.dart' as acp;
 
 enum AcpPermissionDecision { allow, deny, cancel }
 
@@ -425,6 +426,60 @@ class AcpPermissionReviewResult {
   }
 }
 
+const int defaultPermissionReviewResultEncodedByteLimit = 64 * 1024;
+const int defaultPermissionHistoryEncodedByteLimit = 4 * 1024 * 1024;
+const String _permissionReviewSizeOmissionRationale =
+    'Permission review result omitted because it exceeded safety limits.';
+final int minimumPermissionReviewResultEncodedByteLimit = _encodedJsonBytes(
+  _permissionReviewSizeOmission().toJson(),
+);
+
+AcpPermissionReviewResult sanitizeAcpPermissionReviewResult(
+  AcpPermissionReviewResult result, {
+  acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
+  int maxEncodedBytes = defaultPermissionReviewResultEncodedByteLimit,
+}) {
+  inputBudget.validate();
+  if (maxEncodedBytes < minimumPermissionReviewResultEncodedByteLimit) {
+    throw ArgumentError.value(
+      maxEncodedBytes,
+      'maxEncodedBytes',
+      'must be at least $minimumPermissionReviewResultEncodedByteLimit',
+    );
+  }
+  try {
+    final guard = acp.AcpStructuredUpdateGuard(
+      budget: inputBudget,
+      resource: 'permission review result',
+    );
+    final copied = guard.copyMetadata(result.toJson(), field: 'value');
+    if (_encodedJsonBytes(copied) > maxEncodedBytes) {
+      return _permissionReviewSizeOmission();
+    }
+    return AcpPermissionReviewResult(
+      decision: result.decision,
+      risk: copied['risk'] as String? ?? '',
+      rationale: copied['rationale'] as String? ?? '',
+      reviewer: copied['reviewer'] as String? ?? '',
+      model: copied['model'] as String?,
+      details:
+          copied['details'] as Map<String, Object?>? ??
+          const <String, Object?>{},
+    );
+  } on Object {
+    return _permissionReviewSizeOmission();
+  }
+}
+
+AcpPermissionReviewResult _permissionReviewSizeOmission() {
+  return const AcpPermissionReviewResult(
+    risk: 'unknown',
+    rationale: _permissionReviewSizeOmissionRationale,
+    reviewer: 'permission-review-safety',
+    details: <String, Object?>{'omission': 'size_limit'},
+  );
+}
+
 class AcpPermissionAuditEntry {
   const AcpPermissionAuditEntry({
     required this.request,
@@ -498,14 +553,160 @@ class AcpPermissionAuditEntry {
   }
 }
 
-String acpPermissionAuditEntriesToJson(List<AcpPermissionAuditEntry> entries) {
-  const encoder = JsonEncoder.withIndent('  ');
-  return encoder.convert(<String, Object?>{
-    'schema': 'ianvs-acp.permission-history.v1',
-    'exportedAt': DateTime.now().toUtc().toIso8601String(),
-    'entries': entries.map((entry) => entry.toJson()).toList(growable: false),
-  });
+int acpPermissionAuditEntryEncodedBytes(AcpPermissionAuditEntry entry) {
+  return _encodedJsonBytes(entry.toJson());
 }
+
+Map<String, Object?>? _permissionAuditEntryForExport(
+  AcpPermissionAuditEntry entry,
+) {
+  try {
+    final request = entry.request;
+    final guard = acp.AcpStructuredUpdateGuard(
+      budget: const acp.AcpInputBudget(),
+      resource: 'permission audit export entry',
+    );
+    guard.checkCollection(request.choices, field: 'request.choices');
+    final choices = <Map<String, Object?>>[
+      for (final choice in request.choices)
+        <String, Object?>{
+          'optionId': choice.optionId,
+          'name': choice.name,
+          if (choice.kind != null) 'kind': choice.kind,
+        },
+    ];
+    final reviewResult = entry.reviewResult;
+    final source = <String, Object?>{
+      'status': entry.status.name,
+      'recordedAt': entry.recordedAt.toUtc().toIso8601String(),
+      if (entry.resolvedAt != null)
+        'resolvedAt': entry.resolvedAt!.toUtc().toIso8601String(),
+      if (entry.decisionSource != null)
+        'decisionSource': entry.decisionSource!.name,
+      if (entry.selectedOptionId != null)
+        'selectedOptionId': entry.selectedOptionId,
+      if (reviewResult != null)
+        'review': sanitizeAcpPermissionReviewResult(reviewResult).toJson(),
+      'request': <String, Object?>{
+        'id': request.id,
+        '_lifecycleId': request.lifecycleId,
+        'title': request.title,
+        'rationale': request.rationale,
+        'sessionId': request.sessionId,
+        'toolName': request.toolName,
+        if (request.toolKind != null) 'toolKind': request.toolKind,
+        'options': request.options,
+        if (choices.isNotEmpty) 'choices': choices,
+        'requestedAt': request.requestedAt.toUtc().toIso8601String(),
+        'metadata': request.metadata,
+        '_transientPolicyContext': request.transientPolicyContext,
+        'generation': request.generation,
+        if (request._transientPolicyContextHash != null)
+          '_transientPolicyContextHash': request._transientPolicyContextHash,
+        if (request._contentFingerprintOverride != null)
+          '_contentFingerprintOverride': request._contentFingerprintOverride,
+      },
+    };
+    final copied = guard.copyMetadata(source, field: 'value');
+    final copiedRequest = copied['request']! as Map<String, Object?>;
+    final copiedChoices =
+        (copiedRequest['choices'] as List<Object?>? ?? const <Object?>[])
+            .map((value) {
+              final choice = value! as Map<String, Object?>;
+              return AcpPermissionChoice(
+                optionId: choice['optionId']! as String,
+                name: choice['name']! as String,
+                kind: choice['kind'] as String?,
+              );
+            })
+            .toList(growable: false);
+    final boundedRequest = AcpPermissionRequest._retained(
+      id: copiedRequest['id']! as String,
+      lifecycleId: copiedRequest['_lifecycleId']! as String,
+      title: copiedRequest['title']! as String,
+      rationale: copiedRequest['rationale']! as String,
+      sessionId: copiedRequest['sessionId']! as String,
+      toolName: copiedRequest['toolName']! as String,
+      options: List<String>.unmodifiable(
+        (copiedRequest['options']! as List<Object?>).cast<String>(),
+      ),
+      requestedAt: DateTime.parse(copiedRequest['requestedAt']! as String),
+      choices: List<AcpPermissionChoice>.unmodifiable(copiedChoices),
+      toolKind: copiedRequest['toolKind'] as String?,
+      metadata: copiedRequest['metadata']! as Map<String, Object?>,
+      transientPolicyContext:
+          copiedRequest['_transientPolicyContext']! as Map<String, Object?>,
+      generation: copiedRequest['generation']! as int,
+      transientPolicyContextHash:
+          copiedRequest['_transientPolicyContextHash'] as String?,
+      contentFingerprintOverride:
+          copiedRequest['_contentFingerprintOverride'] as String?,
+    );
+    return Map<String, Object?>.of(copied)
+      ..['request'] = boundedRequest.toJson();
+  } on Object {
+    return null;
+  }
+}
+
+String acpPermissionAuditEntriesToJson(
+  List<AcpPermissionAuditEntry> entries, {
+  int maxEncodedBytes = defaultPermissionHistoryEncodedByteLimit,
+}) {
+  if (maxEncodedBytes <= 0) {
+    throw ArgumentError.value(
+      maxEncodedBytes,
+      'maxEncodedBytes',
+      'must be greater than zero',
+    );
+  }
+  const encoder = JsonEncoder.withIndent('  ');
+  final exportedAt = DateTime.now().toUtc().toIso8601String();
+  final retained = <Map<String, Object?>>[];
+  var compactEntryBytes = 0;
+  for (final entry in entries) {
+    final encodedEntry = _permissionAuditEntryForExport(entry);
+    if (encodedEntry == null) break;
+    final entryBytes = _encodedJsonBytes(encodedEntry);
+    final separatorBytes = retained.isEmpty ? 0 : 1;
+    if (entryBytes + separatorBytes > maxEncodedBytes - compactEntryBytes) {
+      break;
+    }
+    retained.add(encodedEntry);
+    compactEntryBytes += entryBytes + separatorBytes;
+  }
+  String encode(int count) => encoder.convert(<String, Object?>{
+    'schema': 'ianvs-acp.permission-history.v1',
+    'exportedAt': exportedAt,
+    'entries': retained.take(count).toList(growable: false),
+  });
+
+  var lower = 0;
+  var upper = retained.length;
+  var encoded = encode(0);
+  while (lower <= upper) {
+    final midpoint = lower + ((upper - lower) ~/ 2);
+    final candidate = encode(midpoint);
+    if (_encodedStringBytes(candidate) <= maxEncodedBytes) {
+      encoded = candidate;
+      lower = midpoint + 1;
+    } else {
+      upper = midpoint - 1;
+    }
+  }
+  if (_encodedStringBytes(encoded) > maxEncodedBytes) {
+    throw ArgumentError.value(
+      maxEncodedBytes,
+      'maxEncodedBytes',
+      'is too small for the permission history export envelope',
+    );
+  }
+  return encoded;
+}
+
+int _encodedJsonBytes(Object? value) => _encodedStringBytes(jsonEncode(value));
+
+int _encodedStringBytes(String value) => utf8.encode(value).length;
 
 String _permissionOptionLabel(
   List<String> options, {
