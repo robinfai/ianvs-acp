@@ -587,7 +587,7 @@ void main() {
     final output = _ReentrantSink();
     final peer = JsonRpcPeer(
       StreamChannel<String>(input, output),
-      maxPendingItems: 1,
+      maxPendingItems: 2,
     );
     final processingMarkers = <String>[];
     var injected = false;
@@ -653,6 +653,180 @@ void main() {
       input.close();
     }
   });
+
+  for (final byteLimited in <bool>[false, true]) {
+    test(
+      'direct response reentrant ${byteLimited ? 'byte' : 'item'} overflow fails closed',
+      () async {
+        const canary = 'DIRECT-DEFERRED-OVERFLOW-CANARY';
+        final input = _ManualInputStream();
+        final output = _ReentrantSink();
+        final zoneErrors = <Object>[];
+        final unavailableStates = <AcpPeerUnavailableState>[];
+        final requestLines = List<String>.generate(
+          byteLimited ? 2 : 3,
+          (index) => jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': index + 1,
+            'method': 'fs/read_text_file',
+            'params': <String, dynamic>{
+              'marker': index == (byteLimited ? 1 : 2) ? canary : 'queued',
+            },
+          }),
+          growable: false,
+        );
+        late JsonRpcPeer peer;
+        var handlerStarts = 0;
+
+        runZonedGuarded<void>(
+          () {
+            peer = JsonRpcPeer(
+              StreamChannel<String>(input, output),
+              maxPendingItems: byteLimited ? 8 : 2,
+              maxPendingBytes: byteLimited
+                  ? utf8.encode(requestLines.first).length +
+                        utf8.encode(requestLines.last).length -
+                        1
+                  : 1024 * 1024,
+            );
+            peer.addUnavailableListener(unavailableStates.add);
+            _installPassThroughAdmissions(peer);
+            peer.onReadTextFile = (params, _) {
+              handlerStarts += 1;
+              return SynchronousFuture<dynamic>(<String, dynamic>{
+                'marker': params['marker'],
+              });
+            };
+            output.onAdd = (_) {
+              output.onAdd = null;
+              for (final line in requestLines) {
+                input.add(line);
+              }
+            };
+            input.add('{');
+          },
+          (Object error, StackTrace _) {
+            zoneErrors.add(error);
+          },
+        );
+
+        try {
+          await pumpEventQueue();
+          expect(peer.isAvailable, isFalse);
+          expect(unavailableStates, hasLength(1));
+          expect(
+            unavailableStates.single.reason,
+            AcpPeerUnavailableReason.transportClosed,
+          );
+          expect(handlerStarts, 0);
+          expect(output.events, hasLength(1));
+          expect(output.events.single, isNot(contains(canary)));
+          expect(peer.deferredInboundItemsForTesting, 0);
+          expect(peer.deferredInboundBytesForTesting, 0);
+          expect(peer.inboundPendingItemsForTesting, 0);
+          expect(peer.correlationPendingItemsForTesting, 0);
+          expect(peer.correlationPendingBytesForTesting, 0);
+          expect(zoneErrors, isEmpty);
+        } finally {
+          await peer.close();
+          input.close();
+        }
+      },
+    );
+  }
+
+  for (final byteLimited in <bool>[false, true]) {
+    test(
+      'correlated response reentrant ${byteLimited ? 'byte' : 'item'} overflow fails closed',
+      () async {
+        const canary = 'CORRELATED-DEFERRED-OVERFLOW-CANARY';
+        final input = _ManualInputStream();
+        final output = _ReentrantSink();
+        final zoneErrors = <Object>[];
+        final unavailableStates = <AcpPeerUnavailableState>[];
+        final initialLine = jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'fs/read_text_file',
+          'params': <String, dynamic>{'marker': 'initial'},
+        });
+        final requestLines = List<String>.generate(
+          byteLimited ? 2 : 3,
+          (index) => jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': index + 2,
+            'method': 'fs/read_text_file',
+            'params': <String, dynamic>{
+              'marker': index == (byteLimited ? 1 : 2) ? canary : 'queued',
+            },
+          }),
+          growable: false,
+        );
+        late JsonRpcPeer peer;
+        var initialHandlerStarts = 0;
+        var overflowHandlerStarts = 0;
+
+        runZonedGuarded<void>(
+          () {
+            peer = JsonRpcPeer(
+              StreamChannel<String>(input, output),
+              maxPendingItems: byteLimited ? 8 : 2,
+              maxPendingBytes: byteLimited
+                  ? utf8.encode(requestLines.first).length +
+                        utf8.encode(requestLines.last).length -
+                        1
+                  : 1024 * 1024,
+            );
+            peer.addUnavailableListener(unavailableStates.add);
+            _installPassThroughAdmissions(peer);
+            peer.onReadTextFile = (params, _) {
+              if (params['marker'] == 'initial') {
+                initialHandlerStarts += 1;
+              } else {
+                overflowHandlerStarts += 1;
+              }
+              return SynchronousFuture<dynamic>(<String, dynamic>{
+                'marker': params['marker'],
+              });
+            };
+            output.onAdd = (_) {
+              output.onAdd = null;
+              for (final line in requestLines) {
+                input.add(line);
+              }
+            };
+            input.add(initialLine);
+          },
+          (Object error, StackTrace _) {
+            zoneErrors.add(error);
+          },
+        );
+
+        try {
+          await pumpEventQueue();
+          expect(peer.isAvailable, isFalse);
+          expect(unavailableStates, hasLength(1));
+          expect(
+            unavailableStates.single.reason,
+            AcpPeerUnavailableReason.transportClosed,
+          );
+          expect(initialHandlerStarts, 1);
+          expect(overflowHandlerStarts, 0);
+          expect(output.events, hasLength(1));
+          expect(output.events.single, isNot(contains(canary)));
+          expect(peer.deferredInboundItemsForTesting, 0);
+          expect(peer.deferredInboundBytesForTesting, 0);
+          expect(peer.inboundPendingItemsForTesting, 0);
+          expect(peer.correlationPendingItemsForTesting, 0);
+          expect(peer.correlationPendingBytesForTesting, 0);
+          expect(zoneErrors, isEmpty);
+        } finally {
+          await peer.close();
+          input.close();
+        }
+      },
+    );
+  }
 
   test('peer close drops raw lines queued inside sink add', () async {
     final input = _ManualInputStream();

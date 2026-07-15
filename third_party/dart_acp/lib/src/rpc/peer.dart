@@ -277,7 +277,8 @@ class JsonRpcPeer {
   );
   final ListQueue<_DecodedDelivery> _decodedDeliveries =
       ListQueue<_DecodedDelivery>();
-  final ListQueue<String> _deferredInboundLines = ListQueue<String>();
+  final ListQueue<_DeferredInboundLine> _deferredInboundLines =
+      ListQueue<_DeferredInboundLine>();
   final Map<String, _InboundCorrelation> _correlations =
       <String, _InboundCorrelation>{};
   final Set<AcpPeerUnavailableListener> _unavailableListeners =
@@ -316,6 +317,7 @@ class JsonRpcPeer {
   var _inboundResponseWriteEpoch = 0;
   var _drainingDeferredInbound = false;
   var _deferredInboundDrainScheduled = false;
+  var _deferredInboundBytes = 0;
   var _nextCorrelationId = 0;
   var _correlationPendingBytes = 0;
 
@@ -327,6 +329,12 @@ class JsonRpcPeer {
 
   @visibleForTesting
   int get inboundPendingItemsForTesting => _gate.pendingItems;
+
+  @visibleForTesting
+  int get deferredInboundItemsForTesting => _deferredInboundLines.length;
+
+  @visibleForTesting
+  int get deferredInboundBytesForTesting => _deferredInboundBytes;
 
   /// Number of owner-bound prompt operations retained by the peer.
   @visibleForTesting
@@ -521,7 +529,7 @@ class JsonRpcPeer {
   Future<void> _closeUnavailableResources(Completer<void> closeOwner) async {
     try {
       _acceptingInbound = false;
-      _deferredInboundLines.clear();
+      _clearDeferredInboundLines();
       await _gate.close();
       _finishAllCorrelationsForPeerClose();
       await _closeUnderlyingPeerAfterGate();
@@ -583,10 +591,35 @@ class JsonRpcPeer {
   void _handleInboundLine(String line) {
     if (!_acceptingInbound) return;
     if (_inboundResponseWriteInProgress) {
-      _deferredInboundLines.addLast(line);
+      if (!_tryDeferInboundLine(line)) {
+        final closing = _becomeUnavailable(
+          AcpPeerUnavailableReason.transportClosed,
+        );
+        unawaited(
+          closing.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+      }
       return;
     }
     _processInboundLine(line);
+  }
+
+  bool _tryDeferInboundLine(String line) {
+    if (_deferredInboundLines.length >= _gate.maxPendingItems) return false;
+    final byteLength = utf8.encode(line).length;
+    if (byteLength > _gate.maxPendingBytes - _deferredInboundBytes) {
+      return false;
+    }
+    _deferredInboundLines.addLast(
+      _DeferredInboundLine(line: line, byteLength: byteLength),
+    );
+    _deferredInboundBytes += byteLength;
+    return true;
+  }
+
+  void _clearDeferredInboundLines() {
+    _deferredInboundLines.clear();
+    _deferredInboundBytes = 0;
   }
 
   void _processInboundLine(String line) {
@@ -823,7 +856,7 @@ class JsonRpcPeer {
 
   void _drainDeferredInboundLines() {
     if (!_acceptingInbound) {
-      _deferredInboundLines.clear();
+      _clearDeferredInboundLines();
       return;
     }
     if (_drainingDeferredInbound) {
@@ -837,7 +870,9 @@ class JsonRpcPeer {
           !_inboundResponseWriteInProgress &&
           _deferredInboundLines.isNotEmpty) {
         final writeEpochBefore = _inboundResponseWriteEpoch;
-        _processInboundLine(_deferredInboundLines.removeFirst());
+        final deferred = _deferredInboundLines.removeFirst();
+        _deferredInboundBytes -= deferred.byteLength;
+        _processInboundLine(deferred.line);
         enteredResponseWrite = _inboundResponseWriteEpoch != writeEpochBefore;
       }
     } finally {
@@ -1103,7 +1138,7 @@ class JsonRpcPeer {
 
   void _stopRawAdmission() {
     _acceptingInbound = false;
-    _deferredInboundLines.clear();
+    _clearDeferredInboundLines();
   }
 
   void _closeInboundGate() => unawaited(_gate.close());
@@ -1830,6 +1865,13 @@ class _DecodedDelivery {
       reservation.release();
     }
   }
+}
+
+final class _DeferredInboundLine {
+  const _DeferredInboundLine({required this.line, required this.byteLength});
+
+  final String line;
+  final int byteLength;
 }
 
 final class _InboundCorrelation {
