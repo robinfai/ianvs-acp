@@ -15433,9 +15433,7 @@ Future<void> main() async {
       final permissionResponseFile = File(
         '${tempDir.path}/permission_response.json',
       );
-      final agentScript = File(
-        '${tempDir.path}/fake_failed_close_agent.dart',
-      );
+      final agentScript = File('${tempDir.path}/fake_failed_close_agent.dart');
       final permissionResponsePath = jsonEncode(permissionResponseFile.path);
       await agentScript.writeAsString('''
 import 'dart:convert';
@@ -15613,9 +15611,7 @@ Future<void> main() async {
     final client = DartAcpAgentClient(
       agentCommand: _dartExecutable(),
       agentArgs: <String>[agentScript.path],
-      timeouts: const acp.AcpTimeouts(
-        request: Duration(milliseconds: 75),
-      ),
+      timeouts: const acp.AcpTimeouts(request: Duration(milliseconds: 75)),
     );
 
     try {
