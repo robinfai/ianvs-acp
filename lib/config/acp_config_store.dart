@@ -340,10 +340,11 @@ Future<void> _writeSecretCleanupQueue(
   File queue,
   List<SecretCleanupIntent> intents,
 ) {
-  intents.sort((a, b) => a.reference.compareTo(b.reference));
+  final sortedIntents = List<SecretCleanupIntent>.of(intents)
+    ..sort((a, b) => a.reference.compareTo(b.reference));
   return SecureAtomicFile.writeString(
     queue,
-    '${jsonEncode(<String, Object?>{'version': 1, 'intents': intents.map((intent) => intent.toJson()).toList()})}\n',
+    '${jsonEncode(<String, Object?>{'version': 1, 'intents': sortedIntents.map((intent) => intent.toJson()).toList()})}\n',
     protectExistingParent: false,
   );
 }

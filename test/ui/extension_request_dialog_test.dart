@@ -229,7 +229,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Send'));
       await tester.pumpAndSettle();
 
-      expect(error.toStringCalls, 2);
+      expect(error.toStringCalls, 1);
       expect(controller.lastError, isNotNull);
       expect(find.text(controller.lastError!), findsOneWidget);
       expect(find.textContaining(canary), findsNothing);
@@ -257,8 +257,9 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(error.toStringCalls, 1);
-      expect(controller.lastError, isNull);
-      expect(find.text('Extension request failed.'), findsOneWidget);
+      expect(controller.lastError, 'An unexpected error occurred.');
+      expect(find.text('An unexpected error occurred.'), findsOneWidget);
+      expect(find.text('Extension request failed.'), findsNothing);
       expect(find.text('Error'), findsOneWidget);
     },
   );
@@ -283,7 +284,7 @@ void main() {
 
       final previousError = controller.lastError;
       expect(previousError, 'STALE-CONTROLLER-ERROR');
-      expect(staleError.toStringCalls, 2);
+      expect(staleError.toStringCalls, 1);
       expect(find.text(previousError!), findsOneWidget);
 
       final fields = find.byType(TextField);
@@ -292,7 +293,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(controller.lastError, previousError);
-      expect(staleError.toStringCalls, 2);
+      expect(staleError.toStringCalls, 1);
       expect(find.text(previousError), findsNothing);
       expect(find.text('Extension request failed.'), findsOneWidget);
     },
@@ -353,13 +354,13 @@ void main() {
       await tester.tap(send);
       await tester.pumpAndSettle();
 
-      expect(error.toStringCalls, 2);
+      expect(error.toStringCalls, 1);
       expect(find.text('REPEATED-EXTENSION-ERROR'), findsOneWidget);
 
       await tester.tap(send);
       await tester.pumpAndSettle();
 
-      expect(error.toStringCalls, 4);
+      expect(error.toStringCalls, 2);
       expect(find.text('REPEATED-EXTENSION-ERROR'), findsOneWidget);
       expect(find.text('Extension request failed.'), findsNothing);
     },
