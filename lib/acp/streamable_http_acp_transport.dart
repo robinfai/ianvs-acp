@@ -66,6 +66,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   Future<void>? _stopFuture;
   String? _connectionId;
   bool _stopping = false;
+  int _nextGeneration = 0;
+  int? _activeGeneration;
 
   @override
   StreamChannel<String> get channel {
@@ -89,17 +91,43 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     if (_controller != null) return;
     _stopping = false;
     _client ??= HttpClient();
+    final client = _client!;
     final controller = StreamChannelController<String>();
+    final generation = ++_nextGeneration;
     _controller = controller;
-    _outboundSubscription = controller.local.stream.listen((line) {
-      unawaited(_sendLine(line));
-    }, onError: controller.local.sink.addError);
+    _activeGeneration = generation;
+    _outboundSubscription = controller.local.stream.listen(
+      (line) {
+        unawaited(_sendLine(generation, client, controller, line));
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (_ownsGeneration(generation, client, controller)) {
+          controller.local.sink.addError(error, stackTrace);
+        }
+      },
+    );
   }
 
-  Future<void> _sendLine(String line) async {
-    final client = _client;
-    if (_stopping || client == null) return;
-    _notifyProtocolOut(line);
+  bool _ownsGeneration(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+  ) {
+    return !_stopping &&
+        _activeGeneration == generation &&
+        identical(_client, client) &&
+        identical(_controller, controller);
+  }
+
+  Future<void> _sendLine(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) async {
+    if (!_ownsGeneration(generation, client, controller)) return;
+    _notifyProtocolOut(generation, client, controller, line);
+    if (!_ownsGeneration(generation, client, controller)) return;
     String? pendingMethodIdKey;
     try {
       final message = jsonDecode(line);
@@ -118,14 +146,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final sessionId = _sessionIdForOutbound(message, idKey);
       final isInitialize = method == 'initialize';
       if (!isInitialize) {
-        await _ensureInboundStream(null);
+        await _ensureInboundStream(generation, client, controller, null);
+        if (!_ownsGeneration(generation, client, controller)) return;
       }
       if (sessionId != null) {
-        await _ensureInboundStream(sessionId);
+        await _ensureInboundStream(generation, client, controller, sessionId);
+        if (!_ownsGeneration(generation, client, controller)) return;
       }
 
       final cookieHeader = _prepareCookieHeader();
       final request = await client.postUrl(endpoint).timeout(requestTimeout);
+      if (!_ownsGeneration(generation, client, controller)) {
+        request.abort();
+        return;
+      }
       request.followRedirects = false;
       _applyRequestHeaders(
         request,
@@ -135,22 +169,43 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       );
       request.write(line);
       final response = await request.close().timeout(firstByteTimeout);
+      if (!_ownsGeneration(generation, client, controller)) {
+        await _cancelResponse(response);
+        return;
+      }
       await _storeResponseCookies(response);
+      if (!_ownsGeneration(generation, client, controller)) {
+        await _cancelResponse(response);
+        return;
+      }
 
       final body = await _readResponseBody(
         response,
         resource: 'ACP HTTP POST response body',
         timeout: requestTimeout,
       );
+      if (!_ownsGeneration(generation, client, controller)) return;
       if (isInitialize) {
-        _handleInitializeResponse(response, body);
+        _handleInitializeResponse(
+          generation,
+          client,
+          controller,
+          response,
+          body,
+        );
         return;
       }
       if (response.statusCode == HttpStatus.accepted && body.trim().isEmpty) {
         return;
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        _addInboundLine(body, resource: 'ACP HTTP POST JSON');
+        _addInboundLine(
+          generation,
+          client,
+          controller,
+          body,
+          resource: 'ACP HTTP POST JSON',
+        );
         return;
       }
       throw HttpException(
@@ -158,12 +213,11 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         uri: endpoint,
       );
     } catch (error, stackTrace) {
+      if (!_ownsGeneration(generation, client, controller)) return;
       if (pendingMethodIdKey != null) {
         _pendingMethodsById.remove(pendingMethodIdKey);
       }
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
-      }
+      controller.local.sink.addError(error, stackTrace);
     }
   }
 
@@ -181,7 +235,14 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return _serverRequestSessionsById.remove(idKey);
   }
 
-  void _handleInitializeResponse(HttpClientResponse response, String body) {
+  void _handleInitializeResponse(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    HttpClientResponse response,
+    String body,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException(
         'ACP HTTP initialize failed with ${response.statusCode}: ${response.reasonPhrase}',
@@ -202,40 +263,61 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       );
     }
     _connectionId = connectionId.trim();
-    _startInboundStream(null);
+    _startInboundStream(generation, client, controller, null);
     _addInboundLine(
+      generation,
+      client,
+      controller,
       body,
       resource: 'ACP HTTP initialize JSON',
       decoded: decoded,
     );
   }
 
-  void _startInboundStream(String? sessionId) {
+  void _startInboundStream(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String? sessionId,
+  ) {
     unawaited(
-      _ensureInboundStream(sessionId).catchError((
-        Object error,
-        StackTrace stackTrace,
-      ) {
+      _ensureInboundStream(
+        generation,
+        client,
+        controller,
+        sessionId,
+      ).catchError((Object error, StackTrace stackTrace) {
         // _ensureInboundStream has already forwarded this failure to the
         // transport channel.
       }),
     );
   }
 
-  Future<void> _ensureInboundStream(String? sessionId) {
+  Future<void> _ensureInboundStream(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String? sessionId,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) {
+      return Future<void>.value();
+    }
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) {
       throw StateError('ACP HTTP transport is not initialized.');
     }
-    final client = _client;
-    if (_stopping || client == null) {
-      throw StateError('ACP HTTP transport is not started.');
-    }
     final key = sessionId ?? '';
-    return _streamStartsByKey.putIfAbsent(key, () async {
+    final existing = _streamStartsByKey[key];
+    if (existing != null) return existing;
+    late final Future<void> operation;
+    operation = () async {
       try {
         final cookieHeader = _prepareCookieHeader();
         final request = await client.getUrl(endpoint).timeout(requestTimeout);
+        if (!_ownsGeneration(generation, client, controller)) {
+          request.abort();
+          return;
+        }
         request.followRedirects = false;
         _applyRequestHeaders(
           request,
@@ -247,13 +329,22 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
           request.headers.set('Acp-Session-Id', sessionId);
         }
         final response = await request.close().timeout(firstByteTimeout);
+        if (!_ownsGeneration(generation, client, controller)) {
+          await _cancelResponse(response);
+          return;
+        }
         await _storeResponseCookies(response);
+        if (!_ownsGeneration(generation, client, controller)) {
+          await _cancelResponse(response);
+          return;
+        }
         if (response.statusCode < 200 || response.statusCode >= 300) {
           await _drainResponse(
             response,
             resource: 'ACP HTTP SSE error response body',
             timeout: requestTimeout,
           );
+          if (!_ownsGeneration(generation, client, controller)) return;
           throw HttpException(
             'ACP HTTP SSE stream failed with ${response.statusCode}: ${response.reasonPhrase}',
             uri: endpoint,
@@ -266,17 +357,20 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
               _withSseIdleTimeout(response),
               resource: 'ACP HTTP SSE',
             ).listen(
-              _handleSseEvent,
+              (event) => _handleSseEvent(generation, client, controller, event),
               onError: (Object error, StackTrace stackTrace) {
-                if (_stopping) return;
+                if (!_ownsGeneration(generation, client, controller)) return;
                 streamFailed = true;
-                _controller?.local.sink.addError(error, stackTrace);
+                controller.local.sink.addError(error, stackTrace);
               },
               onDone: () {
-                _streamStartsByKey.remove(key);
+                if (identical(_streamStartsByKey[key], operation)) {
+                  _streamStartsByKey.remove(key);
+                }
                 _streamSubscriptions.remove(subscription);
-                if (!_stopping && !streamFailed) {
-                  _controller?.local.sink.addError(
+                if (_ownsGeneration(generation, client, controller) &&
+                    !streamFailed) {
+                  controller.local.sink.addError(
                     StateError(
                       sessionId == null
                           ? 'ACP connection SSE stream closed'
@@ -287,14 +381,22 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
                 }
               },
             );
+        if (!_ownsGeneration(generation, client, controller)) {
+          await subscription.cancel();
+          return;
+        }
         _streamSubscriptions.add(subscription);
       } catch (error, stackTrace) {
-        _streamStartsByKey.remove(key);
-        if (_stopping) return;
-        _controller?.local.sink.addError(error, stackTrace);
+        if (identical(_streamStartsByKey[key], operation)) {
+          _streamStartsByKey.remove(key);
+        }
+        if (!_ownsGeneration(generation, client, controller)) return;
+        controller.local.sink.addError(error, stackTrace);
         rethrow;
       }
-    });
+    }();
+    _streamStartsByKey[key] = operation;
+    return operation;
   }
 
   Stream<List<int>> _withSseIdleTimeout(Stream<List<int>> response) {
@@ -394,29 +496,47 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     }
   }
 
-  void _handleSseEvent(String event) {
-    if (_stopping) return;
+  void _handleSseEvent(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String event,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (event.trim().isEmpty) return;
     try {
-      _addInboundLine(event, resource: 'ACP HTTP SSE JSON');
+      _addInboundLine(
+        generation,
+        client,
+        controller,
+        event,
+        resource: 'ACP HTTP SSE JSON',
+      );
     } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
+      if (_ownsGeneration(generation, client, controller)) {
+        controller.local.sink.addError(error, stackTrace);
       }
     }
   }
 
   void _addInboundLine(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
     String line, {
     required String resource,
     Map<String, dynamic>? decoded,
   }) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (line.trim().isEmpty) return;
     final message =
         decoded ?? _decodeRemoteJsonObject(line, resource: resource);
-    _captureInboundMetadata(message);
-    _notifyProtocolIn(line);
-    _controller?.local.sink.add(line);
+    if (!_ownsGeneration(generation, client, controller)) return;
+    _captureInboundMetadata(generation, client, controller, message);
+    _notifyProtocolIn(generation, client, controller, line);
+    if (_ownsGeneration(generation, client, controller)) {
+      controller.local.sink.add(line);
+    }
   }
 
   Map<String, dynamic> _decodeRemoteJsonObject(
@@ -430,27 +550,43 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return decoded.map((key, value) => MapEntry(key.toString(), value));
   }
 
-  void _notifyProtocolOut(String line) {
+  void _notifyProtocolOut(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) {
     try {
       onProtocolOut?.call(line);
     } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
+      if (_ownsGeneration(generation, client, controller)) {
+        controller.local.sink.addError(error, stackTrace);
       }
     }
   }
 
-  void _notifyProtocolIn(String line) {
+  void _notifyProtocolIn(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) {
     try {
       onProtocolIn?.call(line);
     } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
+      if (_ownsGeneration(generation, client, controller)) {
+        controller.local.sink.addError(error, stackTrace);
       }
     }
   }
 
-  void _captureInboundMetadata(Map<String, dynamic> decoded) {
+  void _captureInboundMetadata(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    Map<String, dynamic> decoded,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     final idKey = _idKey(decoded['id']);
     final isResponse =
         decoded.containsKey('result') || decoded.containsKey('error');
@@ -463,7 +599,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
               method == 'session/fork')) {
         final sessionId = _sessionIdFromResult(decoded);
         if (sessionId != null) {
-          _startInboundStream(sessionId);
+          _startInboundStream(generation, client, controller, sessionId);
         }
       }
     }
@@ -651,6 +787,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   }
 
   Future<void> _stop() async {
+    _activeGeneration = null;
     _stopping = true;
     final sseCancellations = _cancelSseSubscriptions();
     await _outboundSubscription?.cancel();

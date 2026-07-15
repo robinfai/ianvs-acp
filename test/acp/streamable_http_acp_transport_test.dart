@@ -1793,6 +1793,262 @@ void main() {
     }
   });
 
+  test('stale POST failure cannot reach a restarted HTTP channel', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final openResponses = <HttpResponse>[];
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.accepted;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET') {
+        request.response
+          ..bufferOutput = false
+          ..headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          )
+          ..write(': connected\n\n');
+        openResponses.add(request.response);
+        await request.response.flush();
+        return;
+      }
+
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..headers.set('Acp-Connection-Id', 'connection-${message['id']}')
+        ..write(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{
+              'connectionId': 'connection-${message['id']}',
+            },
+          }),
+        );
+      await request.response.close();
+    });
+    final stalePost = Completer<HttpClientRequest>();
+    final stalePostStarted = Completer<void>();
+    final oldDelegate = HttpClient();
+    final newClient = HttpClient();
+    final oldClient = _DeferredHttpClient(
+      oldDelegate,
+      onPostUrl: (url) {
+        if (!stalePostStarted.isCompleted) stalePostStarted.complete();
+        return stalePost.future;
+      },
+      holdClose: true,
+    );
+    var clientCount = 0;
+
+    await HttpOverrides.runZoned(
+      () async {
+        final transport = StreamableHttpAcpTransport(
+          endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        );
+        StreamSubscription<String>? oldSubscription;
+        StreamSubscription<String>? newSubscription;
+        var disposed = false;
+        try {
+          await transport.start();
+          oldSubscription = transport.channel.stream.listen((_) {});
+          transport.channel.sink.add(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+          );
+          await stalePostStarted.future.timeout(const Duration(seconds: 1));
+
+          await oldSubscription.cancel();
+          oldSubscription = null;
+          await transport.stop().timeout(const Duration(seconds: 1));
+          await transport.start();
+
+          final inbound = <Map<String, dynamic>>[];
+          final errors = <Object>[];
+          newSubscription = transport.channel.stream.listen(
+            (line) => inbound.add(jsonDecode(line) as Map<String, dynamic>),
+            onError: errors.add,
+          );
+          transport.channel.sink.add(
+            '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}',
+          );
+          await _waitFor(() => inbound.any((message) => message['id'] == 2));
+
+          stalePost.completeError(StateError('stale POST failure'));
+          await pumpEventQueue(times: 4);
+
+          expect(inbound.map((message) => message['id']), [2]);
+          expect(errors, isEmpty);
+
+          await newSubscription.cancel();
+          newSubscription = null;
+          await transport.stop().timeout(const Duration(seconds: 1));
+          disposed = true;
+        } finally {
+          await oldSubscription?.cancel();
+          await newSubscription?.cancel();
+          if (!stalePost.isCompleted) {
+            stalePost.completeError(StateError('test cleanup'));
+          }
+          if (!disposed) await transport.stop();
+        }
+      },
+      createHttpClient: (_) {
+        clientCount += 1;
+        return clientCount == 1 ? oldClient : newClient;
+      },
+    );
+
+    oldDelegate.close(force: true);
+    newClient.close(force: true);
+    for (final response in openResponses) {
+      try {
+        await response.close();
+      } on Object {
+        // The restarted client may already own the response sink.
+      }
+    }
+    await serverSubscription.cancel();
+    await server.close(force: true);
+  });
+
+  test(
+    'stale SSE start failure cannot reach a restarted HTTP channel',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final openResponses = <HttpResponse>[];
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          request.response.statusCode = HttpStatus.accepted;
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response
+            ..bufferOutput = false
+            ..headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            )
+            ..write(': connected\n\n');
+          openResponses.add(request.response);
+          await request.response.flush();
+          return;
+        }
+
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'connection-${message['id']}')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{
+                'connectionId': 'connection-${message['id']}',
+              },
+            }),
+          );
+        await request.response.close();
+      });
+      final staleGet = Completer<HttpClientRequest>();
+      final staleGetStarted = Completer<void>();
+      final oldDelegate = HttpClient();
+      final newClient = HttpClient();
+      final oldClient = _DeferredHttpClient(
+        oldDelegate,
+        onGetUrl: (url) {
+          if (!staleGetStarted.isCompleted) staleGetStarted.complete();
+          return staleGet.future;
+        },
+        holdClose: true,
+      );
+      var clientCount = 0;
+
+      await HttpOverrides.runZoned(
+        () async {
+          final transport = StreamableHttpAcpTransport(
+            endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+          );
+          StreamSubscription<String>? oldSubscription;
+          StreamSubscription<String>? newSubscription;
+          var disposed = false;
+          try {
+            final oldInbound = <Map<String, dynamic>>[];
+            await transport.start();
+            oldSubscription = transport.channel.stream.listen(
+              (line) =>
+                  oldInbound.add(jsonDecode(line) as Map<String, dynamic>),
+            );
+            transport.channel.sink.add(
+              '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+            );
+            await _waitFor(
+              () => oldInbound.any((message) => message['id'] == 1),
+            );
+            await staleGetStarted.future.timeout(const Duration(seconds: 1));
+
+            await oldSubscription.cancel();
+            oldSubscription = null;
+            await transport.stop().timeout(const Duration(seconds: 1));
+            await transport.start();
+
+            final inbound = <Map<String, dynamic>>[];
+            final errors = <Object>[];
+            newSubscription = transport.channel.stream.listen(
+              (line) => inbound.add(jsonDecode(line) as Map<String, dynamic>),
+              onError: errors.add,
+            );
+            transport.channel.sink.add(
+              '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}',
+            );
+            await _waitFor(() => inbound.any((message) => message['id'] == 2));
+
+            staleGet.completeError(StateError('stale SSE start failure'));
+            await pumpEventQueue(times: 4);
+
+            expect(inbound.map((message) => message['id']), [2]);
+            expect(errors, isEmpty);
+
+            await newSubscription.cancel();
+            newSubscription = null;
+            await transport.stop().timeout(const Duration(seconds: 1));
+            disposed = true;
+          } finally {
+            await oldSubscription?.cancel();
+            await newSubscription?.cancel();
+            if (!staleGet.isCompleted) {
+              staleGet.completeError(StateError('test cleanup'));
+            }
+            if (!disposed) await transport.stop();
+          }
+        },
+        createHttpClient: (_) {
+          clientCount += 1;
+          return clientCount == 1 ? oldClient : newClient;
+        },
+      );
+
+      oldDelegate.close(force: true);
+      newClient.close(force: true);
+      for (final response in openResponses) {
+        try {
+          await response.close();
+        } on Object {
+          // The restarted client may already own the response sink.
+        }
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    },
+  );
+
   test('stop tolerates inbound streams ending during teardown', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
@@ -3398,4 +3654,38 @@ Future<void> _waitFor(bool Function() predicate) async {
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
   fail('Timed out waiting for condition.');
+}
+
+final class _DeferredHttpClient implements HttpClient {
+  _DeferredHttpClient(
+    this._delegate, {
+    this.onPostUrl,
+    this.onGetUrl,
+    this.holdClose = false,
+  });
+
+  final HttpClient _delegate;
+  final Future<HttpClientRequest> Function(Uri url)? onPostUrl;
+  final Future<HttpClientRequest> Function(Uri url)? onGetUrl;
+  final bool holdClose;
+
+  @override
+  Future<HttpClientRequest> deleteUrl(Uri url) => _delegate.deleteUrl(url);
+
+  @override
+  Future<HttpClientRequest> getUrl(Uri url) =>
+      onGetUrl?.call(url) ?? _delegate.getUrl(url);
+
+  @override
+  Future<HttpClientRequest> postUrl(Uri url) =>
+      onPostUrl?.call(url) ?? _delegate.postUrl(url);
+
+  @override
+  void close({bool force = false}) {
+    if (!holdClose) _delegate.close(force: force);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      _delegate.noSuchMethod(invocation);
 }
