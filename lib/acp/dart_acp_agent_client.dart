@@ -2178,7 +2178,13 @@ class DartAcpAgentClient implements AcpAgentClient {
         return;
       }
       acceptingUpdates = true;
-      owner = client.beginPromptTurn(operation.sessionId);
+      try {
+        owner = client.beginPromptTurn(operation.sessionId);
+      } on StateError {
+        if (client.isAvailable) rethrow;
+        await operation.finishOutput(emitConnectionClosed: true);
+        return;
+      }
       _beginPromptTurnCount += 1;
       operation.owner = owner;
       onRawPromptDispatchedForTesting?.call(owner);
