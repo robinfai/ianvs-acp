@@ -11,6 +11,7 @@ import 'package:dart_acp/src/session/session_manager.dart' show SessionManager;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 // Test-only access to the path dependency's logger contract.
 // ignore: depend_on_referenced_packages
 import 'package:logging/logging.dart';
@@ -821,6 +822,7 @@ void main() {
         },
       );
 
+      expect(response['error'], isNull);
       expect(response['result'], isNull);
       expect(messages, contains(contains('fs/write_text_file <- bytes=4')));
     });
@@ -1210,7 +1212,7 @@ Future<void> main() async {
       expect(marker.bindCount, 3);
     });
 
-    test('keeps cached provider when remote close fails', () async {
+    test('cleans cached provider when remote close fails', () async {
       final temp = await Directory.systemTemp.createTemp('acp-fs-close-fail-');
       addTearDown(() => temp.delete(recursive: true));
       final workspace = Directory('${temp.path}/workspace');
@@ -1220,6 +1222,7 @@ Future<void> main() async {
         workspaceRoot: workspace.path,
         provider: marker,
         failCloseRequests: true,
+        sessionIds: const <String>['fs-session', 'fs-session'],
       );
       addTearDown(harness.close);
       await harness.request('fs/write_text_file', <String, dynamic>{
@@ -1230,15 +1233,28 @@ Future<void> main() async {
 
       await expectLater(
         harness.manager.closeSession(sessionId: harness.sessionId),
-        throwsA(anything),
+        throwsA(
+          isA<rpc.RpcException>()
+              .having((error) => error.code, 'code', -32000)
+              .having((error) => error.message, 'message', 'close failed'),
+        ),
       );
       final read = await harness.request('fs/read_text_file', <String, dynamic>{
         'sessionId': harness.sessionId,
         'path': 'state',
       });
 
-      expect(read['result'], <String, dynamic>{'content': 'retained'});
-      expect(marker.bindCount, 1);
+      expect(read['result'], isNull);
+      expect(read['error'], isNotNull);
+
+      final reused = await harness.newSession(workspace.path);
+      expect(reused, harness.sessionId);
+      final reusedRead = await harness.request(
+        'fs/read_text_file',
+        <String, dynamic>{'sessionId': reused, 'path': 'state'},
+      );
+      expect(reusedRead['result'], <String, dynamic>{'content': ''});
+      expect(marker.bindCount, 2);
     });
 
     test('drops provider created during first setup rollback', () async {

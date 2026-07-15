@@ -28,6 +28,10 @@ import '../security/workspace_jail.dart';
 /// Alias for a JSON map used in requests/responses.
 typedef Json = Map<String, dynamic>;
 
+Future<int> _utf8LengthInBackground(String value) {
+  return Isolate.run<int>(() => utf8.encode(value).length);
+}
+
 final class _PayloadFreeRpcException extends rpc.RpcException {
   _PayloadFreeRpcException(super.code, super.message);
 
@@ -5042,9 +5046,7 @@ class SessionManager implements AcpBoundedObservationSource {
           final path = req['path'] as String;
           final content = req['content'] as String? ?? '';
           if (_log.isLoggable(Level.FINE)) {
-            final contentBytes = await Isolate.run<int>(
-              () => utf8.encode(content).length,
-            );
+            final contentBytes = await _utf8LengthInBackground(content);
             final cancellationReason = _inactivePermissionAdmissionReason(
               admission,
             );
