@@ -11,52 +11,55 @@ import 'package:ianvs_acp/tasks/runtime_registry.dart';
 import 'package:ianvs_acp/tasks/task_agent_pool.dart';
 
 void main() {
-  test('TaskAgentPool leases each agent atomically and independently', () async {
-    final controllers = <String, ChatController>{};
-    final pool = LocalTaskAgentPool(
-      controllerFactory: (agentName) => controllers.putIfAbsent(
-        agentName,
-        () => ChatController(
-          client: FakeAgentClient(),
-          cwd: '/workspace',
-          agentName: agentName,
+  test(
+    'TaskAgentPool leases each agent atomically and independently',
+    () async {
+      final controllers = <String, ChatController>{};
+      final pool = LocalTaskAgentPool(
+        controllerFactory: (agentName) => controllers.putIfAbsent(
+          agentName,
+          () => ChatController(
+            client: FakeAgentClient(),
+            cwd: '/workspace',
+            agentName: agentName,
+          ),
         ),
-      ),
-      clock: () => DateTime(2026, 7, 10, 12),
-    );
-    addTearDown(pool.dispose);
+        clock: () => DateTime(2026, 7, 10, 12),
+      );
+      addTearDown(pool.dispose);
 
-    final firstCodex = await pool.tryAcquire('Codex');
-    final secondCodex = await pool.tryAcquire('Codex');
-    final kimi = await pool.tryAcquire('Kimi');
+      final firstCodex = await pool.tryAcquire('Codex');
+      final secondCodex = await pool.tryAcquire('Codex');
+      final kimi = await pool.tryAcquire('Kimi');
 
-    expect(firstCodex, isNotNull);
-    expect(secondCodex, isNull);
-    expect(kimi, isNotNull);
-    expect(
-      (await pool.probeAgent('Codex')).availability,
-      RuntimeAvailability.busy,
-    );
-    expect(
-      (await pool.probeAgent('Kimi')).availability,
-      RuntimeAvailability.busy,
-    );
+      expect(firstCodex, isNotNull);
+      expect(secondCodex, isNull);
+      expect(kimi, isNotNull);
+      expect(
+        (await pool.probeAgent('Codex')).availability,
+        RuntimeAvailability.busy,
+      );
+      expect(
+        (await pool.probeAgent('Kimi')).availability,
+        RuntimeAvailability.busy,
+      );
 
-    await firstCodex!.release();
-    await firstCodex.release();
-    final nextCodex = await pool.tryAcquire('Codex');
-    expect(nextCodex, isNotNull);
-    expect(identical(nextCodex!.controller, firstCodex.controller), isTrue);
-    await firstCodex.release();
-    expect(await pool.tryAcquire('Codex'), isNull);
+      await firstCodex!.release();
+      await firstCodex.release();
+      final nextCodex = await pool.tryAcquire('Codex');
+      expect(nextCodex, isNotNull);
+      expect(identical(nextCodex!.controller, firstCodex.controller), isTrue);
+      await firstCodex.release();
+      expect(await pool.tryAcquire('Codex'), isNull);
 
-    await nextCodex.release();
-    await kimi!.release();
-    expect(
-      (await pool.probeAgent('Codex')).availability,
-      RuntimeAvailability.available,
-    );
-  });
+      await nextCodex.release();
+      await kimi!.release();
+      expect(
+        (await pool.probeAgent('Codex')).availability,
+        RuntimeAvailability.available,
+      );
+    },
+  );
 
   test('TaskAgentPool disposal is awaitable and rejects new leases', () async {
     final clients = <_TrackingAgentClient>[];
@@ -97,38 +100,41 @@ void main() {
     );
   });
 
-  test('TaskAgentPool waits for an explicit reset after authentication', () async {
-    var authenticationRequired = true;
-    final clients = <_RecoveringAuthAgentClient>[];
-    final pool = LocalTaskAgentPool(
-      controllerFactory: (agentName) {
-        final client = _RecoveringAuthAgentClient()
-          ..authenticationRequired = authenticationRequired;
-        clients.add(client);
-        return ChatController(
-          client: client,
-          cwd: '/workspace',
-          agentName: agentName,
-        );
-      },
-    );
-    addTearDown(pool.dispose);
+  test(
+    'TaskAgentPool waits for an explicit reset after authentication',
+    () async {
+      var authenticationRequired = true;
+      final clients = <_RecoveringAuthAgentClient>[];
+      final pool = LocalTaskAgentPool(
+        controllerFactory: (agentName) {
+          final client = _RecoveringAuthAgentClient()
+            ..authenticationRequired = authenticationRequired;
+          clients.add(client);
+          return ChatController(
+            client: client,
+            cwd: '/workspace',
+            agentName: agentName,
+          );
+        },
+      );
+      addTearDown(pool.dispose);
 
-    final blocked = await pool.probeAgent('Codex');
-    authenticationRequired = false;
-    final stillBlocked = await pool.probeAgent('Codex');
-    await pool.resetAgent('Codex');
-    final recovered = await pool.probeAgent('Codex');
+      final blocked = await pool.probeAgent('Codex');
+      authenticationRequired = false;
+      final stillBlocked = await pool.probeAgent('Codex');
+      await pool.resetAgent('Codex');
+      final recovered = await pool.probeAgent('Codex');
 
-    expect(blocked.availability, RuntimeAvailability.authRequired);
-    expect(stillBlocked.availability, RuntimeAvailability.authRequired);
-    expect(recovered.availability, RuntimeAvailability.available);
-    expect(clients, hasLength(2));
-    expect(
-      clients.fold<int>(0, (total, client) => total + client.connectCalls),
-      2,
-    );
-  });
+      expect(blocked.availability, RuntimeAvailability.authRequired);
+      expect(stillBlocked.availability, RuntimeAvailability.authRequired);
+      expect(recovered.availability, RuntimeAvailability.available);
+      expect(clients, hasLength(2));
+      expect(
+        clients.fold<int>(0, (total, client) => total + client.connectCalls),
+        2,
+      );
+    },
+  );
 
   test('TaskAgentPool authenticates the existing background process', () async {
     final client = _ProcessScopedAuthAgentClient();
@@ -159,27 +165,30 @@ void main() {
     );
   });
 
-  test('TaskAgentPool does not treat advertised auth as an auth error', () async {
-    late final _RetainingAuthErrorController controller;
-    final pool = LocalTaskAgentPool(
-      controllerFactory: (agentName) => controller =
-          _RetainingAuthErrorController(agentName),
-    );
-    addTearDown(pool.dispose);
+  test(
+    'TaskAgentPool does not treat advertised auth as an auth error',
+    () async {
+      late final _RetainingAuthErrorController controller;
+      final pool = LocalTaskAgentPool(
+        controllerFactory: (agentName) =>
+            controller = _RetainingAuthErrorController(agentName),
+      );
+      addTearDown(pool.dispose);
 
-    expect(
-      (await pool.probeAgent('Codex')).availability,
-      RuntimeAvailability.available,
-    );
-    controller.failReconnect = true;
-    controller.status = ConnectionStatus.error;
-    controller.lastError = 'workspace path is invalid';
+      expect(
+        (await pool.probeAgent('Codex')).availability,
+        RuntimeAvailability.available,
+      );
+      controller.failReconnect = true;
+      controller.status = ConnectionStatus.error;
+      controller.lastError = 'workspace path is invalid';
 
-    expect(
-      (await pool.probeAgent('Codex')).availability,
-      RuntimeAvailability.unavailable,
-    );
-  });
+      expect(
+        (await pool.probeAgent('Codex')).availability,
+        RuntimeAvailability.unavailable,
+      );
+    },
+  );
 
   test('TaskAgentPool can retry after controller factory failure', () async {
     var attempts = 0;

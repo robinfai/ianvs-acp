@@ -274,10 +274,7 @@ class TaskPersistenceQuarantineRegistry {
 }
 
 class _BoundedAsyncCleanup {
-  _BoundedAsyncCleanup({
-    required this.operationName,
-    required this.watchdog,
-  });
+  _BoundedAsyncCleanup({required this.operationName, required this.watchdog});
 
   final String operationName;
   final Duration watchdog;
@@ -350,7 +347,8 @@ Future<void> prepareTaskPersistenceTarget({
     try {
       await previousCleanup;
     } on Object {
-      final errorIsIsolated = registry.hasOwners &&
+      final errorIsIsolated =
+          registry.hasOwners &&
           (injectedController || !registry.blocksPath(targetPath));
       if (!errorIsIsolated) rethrow;
     }

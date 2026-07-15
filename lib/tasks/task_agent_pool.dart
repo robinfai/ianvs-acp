@@ -4,8 +4,7 @@ import '../state/chat_controller.dart';
 import '../state/connection_state.dart';
 import 'runtime_registry.dart';
 
-typedef TaskAgentControllerFactory =
-    ChatController? Function(String agentName);
+typedef TaskAgentControllerFactory = ChatController? Function(String agentName);
 
 abstract interface class TaskAgentLease {
   String get agentName;
@@ -81,12 +80,8 @@ class LocalTaskAgentPool
       agentName: key,
       controller: entry.controller,
       releaseCallback: () => _release(key, entry, token),
-      invalidateCallback: (cancellationTimeout) => _invalidate(
-        key,
-        entry,
-        token,
-        cancellationTimeout,
-      ),
+      invalidateCallback: (cancellationTimeout) =>
+          _invalidate(key, entry, token, cancellationTimeout),
     );
   }
 
@@ -299,9 +294,7 @@ class LocalTaskAgentPool
       _entries.remove(key);
     }
     try {
-      await entry.controller.shutdown(
-        cancellationTimeout: cancellationTimeout,
-      );
+      await entry.controller.shutdown(cancellationTimeout: cancellationTimeout);
     } on Object {
       // A failed agent instance must not remain available for another task.
     }

@@ -86,7 +86,9 @@ void main() {
     );
 
     await tester.tap(
-      find.byKey(const ValueKey<String>('workspace-actions:/workspace/current')),
+      find.byKey(
+        const ValueKey<String>('workspace-actions:/workspace/current'),
+      ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));

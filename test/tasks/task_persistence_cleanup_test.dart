@@ -229,10 +229,7 @@ void main() {
       '<default-task-persistence>',
     );
     expect(registry.blocksPath(null), isTrue);
-    await expectLater(
-      registry.ensurePathAvailable(null),
-      throwsStateError,
-    );
+    await expectLater(registry.ensurePathAvailable(null), throwsStateError);
 
     release.complete(1);
     await owner.result;
@@ -255,12 +252,8 @@ void main() {
       await linkedParent.create(realParent.path);
 
       expect(
-        taskPersistencePathKey(
-          '${linkedParent.path}/task_inbox.sqlite3',
-        ),
-        taskPersistencePathKey(
-          '${realParent.path}/task_inbox.sqlite3',
-        ),
+        taskPersistencePathKey('${linkedParent.path}/task_inbox.sqlite3'),
+        taskPersistencePathKey('${realParent.path}/task_inbox.sqlite3'),
       );
     },
     skip: Platform.isWindows
@@ -323,49 +316,45 @@ void main() {
     },
   );
 
-  test(
-    'cleanup errors isolate different owned and injected targets',
-    () async {
-      final registry = TaskPersistenceQuarantineRegistry();
-      final releaseOldOwner = Completer<int>();
-      final owner = TaskPersistencePendingOperation<int>(
-        path: '/state/old.sqlite3',
-        operationName: 'oldOwner',
-        watchdog: const Duration(minutes: 1),
-        operation: () => releaseOldOwner.future,
-        closeRepository: () async {},
-      );
-      registry.retain(owner);
+  test('cleanup errors isolate different owned and injected targets', () async {
+    final registry = TaskPersistenceQuarantineRegistry();
+    final releaseOldOwner = Completer<int>();
+    final owner = TaskPersistencePendingOperation<int>(
+      path: '/state/old.sqlite3',
+      operationName: 'oldOwner',
+      watchdog: const Duration(minutes: 1),
+      operation: () => releaseOldOwner.future,
+      closeRepository: () async {},
+    );
+    registry.retain(owner);
 
-      Future<void> cleanupError() => Future<void>.error(
-        StateError('old owner cleanup failed'),
-      );
-      await prepareTaskPersistenceTarget(
+    Future<void> cleanupError() =>
+        Future<void>.error(StateError('old owner cleanup failed'));
+    await prepareTaskPersistenceTarget(
+      registry: registry,
+      previousCleanup: cleanupError(),
+      targetPath: '/state/new.sqlite3',
+    );
+    await prepareTaskPersistenceTarget(
+      registry: registry,
+      previousCleanup: cleanupError(),
+      injectedController: true,
+    );
+    await expectLater(
+      prepareTaskPersistenceTarget(
         registry: registry,
         previousCleanup: cleanupError(),
-        targetPath: '/state/new.sqlite3',
-      );
-      await prepareTaskPersistenceTarget(
-        registry: registry,
-        previousCleanup: cleanupError(),
-        injectedController: true,
-      );
-      await expectLater(
-        prepareTaskPersistenceTarget(
-          registry: registry,
-          previousCleanup: cleanupError(),
-          targetPath: '/state/old.sqlite3',
-        ),
-        throwsStateError,
-      );
+        targetPath: '/state/old.sqlite3',
+      ),
+      throwsStateError,
+    );
 
-      releaseOldOwner.complete(1);
-      await owner.result;
-      owner.transfer();
-      registry.release(owner);
-      expect(registry.hasOwners, isFalse);
-    },
-  );
+    releaseOldOwner.complete(1);
+    await owner.result;
+    owner.transfer();
+    registry.release(owner);
+    expect(registry.hasOwners, isFalse);
+  });
 }
 
 bool _directoryIsCaseInsensitive(Directory directory) {
@@ -376,7 +365,8 @@ bool _directoryIsCaseInsensitive(Directory directory) {
   final alternateName = first == first.toUpperCase()
       ? '${first.toLowerCase()}${name.substring(1)}'
       : '${first.toUpperCase()}${name.substring(1)}';
-  final alternate = '${directory.parent.path}'
+  final alternate =
+      '${directory.parent.path}'
       '${Platform.pathSeparator}$alternateName';
   try {
     return FileSystemEntity.identicalSync(directory.path, alternate);
