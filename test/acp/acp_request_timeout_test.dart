@@ -213,7 +213,6 @@ final class _CountingTerminalProvider implements acp.TerminalProvider {
     List<String> args = const <String>[],
     String? cwd,
     Map<String, String>? env,
-    int outputByteLimit = acp.defaultTerminalOutputByteLimit,
   }) {
     createCalls += 1;
     if (!createStarted.isCompleted) createStarted.complete();
@@ -226,7 +225,6 @@ final class _CountingTerminalProvider implements acp.TerminalProvider {
       args: args,
       cwd: cwd,
       env: env,
-      outputByteLimit: outputByteLimit,
     );
   }
 

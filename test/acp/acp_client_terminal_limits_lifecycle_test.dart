@@ -47,7 +47,9 @@ void main() {
     'AcpClient terminal handle limits reach the live session manager',
     () async {
       final transport = _TrackingLifecycleTransport();
-      final provider = _RecordingTerminalProvider();
+      final provider = _RecordingTerminalProvider(
+        currentOutputValue: 'aé中-secret-must-be-truncated',
+      );
       final responses = <String, Completer<Map<String, dynamic>>>{};
       final server = transport.outbound.listen((line) {
         final message = jsonDecode(line) as Map<String, dynamic>;
@@ -75,10 +77,15 @@ void main() {
         maxTerminalHandles: 1,
         maxTerminalHandlesPerSession: 1,
       );
+      final terminalEvents = <TerminalEvent>[];
+      final terminalEventsSubscription = client.terminalEvents.listen(
+        terminalEvents.add,
+      );
 
-      Future<Map<String, dynamic>> createTerminal({
+      Future<Map<String, dynamic>> terminalRequest({
         required String id,
-        required String command,
+        required String method,
+        required Map<String, dynamic> params,
       }) async {
         final response = Completer<Map<String, dynamic>>();
         responses[id] = response;
@@ -86,18 +93,8 @@ void main() {
           jsonEncode(<String, dynamic>{
             'jsonrpc': '2.0',
             'id': id,
-            'method': 'terminal/create',
-            'params': <String, dynamic>{
-              'sessionId': 'session-limit',
-              'command': command,
-              'args': <String>[],
-              'env': <Map<String, String>>[
-                <String, String>{
-                  'name': 'TERMINAL_LIMIT_CANARY',
-                  'value': 'terminal-limit-secret',
-                },
-              ],
-            },
+            'method': method,
+            'params': params,
           }),
         );
         return response.future.timeout(const Duration(seconds: 5));
@@ -108,16 +105,60 @@ void main() {
           sessionId: 'session-limit',
           workspaceRoot: '/workspace',
         );
-        final first = await createTerminal(
+        final first = await terminalRequest(
           id: 'terminal-limit-first',
-          command: 'first-command',
+          method: 'terminal/create',
+          params: <String, dynamic>{
+            'sessionId': 'session-limit',
+            'command': 'first-command',
+            'args': <String>[],
+            'outputByteLimit': 4,
+            'env': <Map<String, String>>[
+              <String, String>{
+                'name': 'TERMINAL_LIMIT_CANARY',
+                'value': 'terminal-limit-secret',
+              },
+            ],
+          },
         );
-        final second = await createTerminal(
+        final terminalId =
+            (first['result'] as Map<String, dynamic>)['terminalId'];
+        final output = await terminalRequest(
+          id: 'terminal-output',
+          method: 'terminal/output',
+          params: <String, dynamic>{'terminalId': terminalId},
+        );
+        final waited = await terminalRequest(
+          id: 'terminal-wait',
+          method: 'terminal/wait_for_exit',
+          params: <String, dynamic>{'terminalId': terminalId},
+        );
+        final second = await terminalRequest(
           id: 'terminal-limit-second',
-          command: 'second-command-canary',
+          method: 'terminal/create',
+          params: <String, dynamic>{
+            'sessionId': 'session-limit',
+            'command': 'second-command-canary',
+            'args': <String>[],
+          },
         );
 
         expect(first, contains('result'));
+        expect(output['result'], <String, dynamic>{
+          'output': 'aé',
+          'truncated': true,
+          'exitStatus': null,
+        });
+        expect(waited['result'], <String, dynamic>{
+          'output': 'aé',
+          'truncated': true,
+          'exitStatus': <String, dynamic>{'exitCode': 0},
+        });
+        final outputEvent = terminalEvents
+            .whereType<TerminalOutputEvent>()
+            .single;
+        expect(outputEvent.output, 'aé');
+        expect(outputEvent.truncated, isTrue);
         expect(second['error'], <String, dynamic>{
           'code': -32001,
           'message': 'Terminal handle limit exceeded.',
@@ -125,7 +166,12 @@ void main() {
         expect(second.toString(), isNot(contains('terminal-limit-secret')));
         expect(second.toString(), isNot(contains('second-command-canary')));
         expect(provider.createCalls, 1);
+        expect(
+          provider.createdHandles.single.outputByteLimit,
+          defaultTerminalOutputByteLimit,
+        );
       } finally {
+        await terminalEventsSubscription.cancel();
         await client.dispose();
         await server.cancel();
         await transport.closeInput();
@@ -169,6 +215,9 @@ class _TrackingLifecycleTransport implements AcpTransport {
 }
 
 class _RecordingTerminalProvider implements TerminalProvider {
+  _RecordingTerminalProvider({this.currentOutputValue = ''});
+
+  final String currentOutputValue;
   var createCalls = 0;
   var releaseAttempts = 0;
   final List<TerminalProcessHandle> createdHandles = <TerminalProcessHandle>[];
@@ -181,7 +230,6 @@ class _RecordingTerminalProvider implements TerminalProvider {
     List<String> args = const <String>[],
     String? cwd,
     Map<String, String>? env,
-    int outputByteLimit = defaultTerminalOutputByteLimit,
   }) async {
     createCalls += 1;
     final process = await Process.start('/bin/sh', const <String>[
@@ -191,7 +239,6 @@ class _RecordingTerminalProvider implements TerminalProvider {
     final handle = TerminalProcessHandle(
       terminalId: 'terminal-$createCalls',
       process: process,
-      outputByteLimit: outputByteLimit,
     );
     createdHandles.add(handle);
     return handle;
@@ -199,7 +246,7 @@ class _RecordingTerminalProvider implements TerminalProvider {
 
   @override
   Future<String> currentOutput(TerminalProcessHandle handle) async =>
-      handle.currentOutput();
+      currentOutputValue;
 
   @override
   Future<void> kill(TerminalProcessHandle handle) => handle.kill();
@@ -212,5 +259,5 @@ class _RecordingTerminalProvider implements TerminalProvider {
   }
 
   @override
-  Future<int> waitForExit(TerminalProcessHandle handle) => handle.waitForExit();
+  Future<int> waitForExit(TerminalProcessHandle handle) async => 0;
 }

@@ -5,6 +5,22 @@ import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'legacy terminal provider and handle construction remain compatible',
+    () async {
+      final provider = _LegacyTerminalProvider();
+      final handle = await provider.create(
+        sessionId: 'legacy-session',
+        command: '/bin/sh',
+        args: const ['-c', 'exit 0'],
+      );
+      addTearDown(() => provider.release(handle));
+
+      expect(handle.outputByteLimit, defaultTerminalOutputByteLimit);
+      expect(await provider.waitForExit(handle), 0);
+    },
+  );
+
   test('exports safe terminal handle defaults', () {
     expect(defaultMaxTerminalHandles, 32);
     expect(defaultMaxTerminalHandlesPerSession, 8);
@@ -37,6 +53,28 @@ void main() {
       () => validateTerminalHandleLimits(
         maxTerminalHandles: -1,
         maxTerminalHandlesPerSession: 1,
+      ),
+      throwsArgumentError,
+    );
+  });
+
+  test('terminal handle rejects a non-positive output byte limit', () async {
+    final process = await Process.start('/bin/sh', const ['-c', 'sleep 30']);
+    TerminalProcessHandle? unexpected;
+    addTearDown(() async {
+      if (unexpected case final handle?) {
+        await handle.release();
+      } else {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode;
+      }
+    });
+
+    expect(
+      () => unexpected = TerminalProcessHandle(
+        terminalId: 'invalid-limit',
+        process: process,
+        outputByteLimit: 0,
       ),
       throwsArgumentError,
     );
@@ -275,7 +313,8 @@ void main() {
 
   test('bounds terminal output and release terminates the process', () async {
     final provider = DefaultTerminalProvider();
-    final handle = await provider.create(
+    expect(provider, isA<OutputBoundedTerminalProvider>());
+    final handle = await provider.createWithOutputByteLimit(
       sessionId: 'session-1',
       command: '/bin/sh',
       args: const ['-c', "printf '1234567890'; sleep 30"],
@@ -298,7 +337,8 @@ void main() {
 
   test('terminal output truncation preserves UTF-8 boundaries', () async {
     final provider = DefaultTerminalProvider();
-    final handle = await provider.create(
+    expect(provider, isA<OutputBoundedTerminalProvider>());
+    final handle = await provider.createWithOutputByteLimit(
       sessionId: 'session-1',
       command: '/bin/sh',
       args: const ['-c', "printf 'aé中'"],
@@ -312,6 +352,43 @@ void main() {
     expect(handle.currentOutput(), '中');
     expect(handle.truncated, isTrue);
   });
+}
+
+class _LegacyTerminalProvider implements TerminalProvider {
+  var _nextId = 0;
+
+  @override
+  Future<TerminalProcessHandle> create({
+    required String sessionId,
+    required String command,
+    List<String> args = const <String>[],
+    String? cwd,
+    Map<String, String>? env,
+  }) async {
+    final process = await Process.start(
+      command,
+      args,
+      workingDirectory: cwd,
+      environment: env,
+    );
+    return TerminalProcessHandle(
+      terminalId: 'legacy-${++_nextId}',
+      process: process,
+    );
+  }
+
+  @override
+  Future<String> currentOutput(TerminalProcessHandle handle) async =>
+      handle.currentOutput();
+
+  @override
+  Future<void> kill(TerminalProcessHandle handle) => handle.kill();
+
+  @override
+  Future<void> release(TerminalProcessHandle handle) => handle.release();
+
+  @override
+  Future<int> waitForExit(TerminalProcessHandle handle) => handle.waitForExit();
 }
 
 Future<TerminalProcessHandle> _createSleepingTerminal(

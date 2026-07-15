@@ -66,8 +66,9 @@ class TerminalProcessHandle {
   TerminalProcessHandle({
     required this.terminalId,
     required this.process,
-    required this.outputByteLimit,
-  }) : _stdoutSub = process.stdout.listen((data) {}),
+    int outputByteLimit = defaultTerminalOutputByteLimit,
+  }) : outputByteLimit = _validatedTerminalOutputByteLimit(outputByteLimit),
+       _stdoutSub = process.stdout.listen((data) {}),
        _stderrSub = process.stderr.listen((data) {}) {
     _stdoutSub.onData(_appendOutput);
     _stderrSub.onData(_appendOutput);
@@ -143,6 +144,17 @@ class TerminalProcessHandle {
   }
 }
 
+int _validatedTerminalOutputByteLimit(int value) {
+  if (value <= 0) {
+    throw ArgumentError.value(
+      value,
+      'outputByteLimit',
+      'must be greater than zero',
+    );
+  }
+  return value;
+}
+
 /// Provider interface for creating and managing terminal processes.
 abstract class TerminalProvider {
   /// Create a new terminal process.
@@ -152,7 +164,6 @@ abstract class TerminalProvider {
     List<String> args,
     String? cwd,
     Map<String, String>? env,
-    int outputByteLimit = defaultTerminalOutputByteLimit,
   });
 
   /// Read the current buffered output for the terminal.
@@ -166,6 +177,20 @@ abstract class TerminalProvider {
 
   /// Release resources for the terminal process.
   Future<void> release(TerminalProcessHandle handle);
+}
+
+/// Optional capability for providers that support a caller-selected output cap.
+abstract interface class OutputBoundedTerminalProvider
+    implements TerminalProvider {
+  /// Create a terminal whose retained output is capped at [outputByteLimit].
+  Future<TerminalProcessHandle> createWithOutputByteLimit({
+    required String sessionId,
+    required String command,
+    List<String> args,
+    String? cwd,
+    Map<String, String>? env,
+    required int outputByteLimit,
+  });
 }
 
 class _ProviderTerminalReservation {
@@ -190,7 +215,7 @@ class _ProviderTerminalRecord {
 }
 
 /// Default implementation backed by dart:io Process.
-class DefaultTerminalProvider implements TerminalProvider {
+class DefaultTerminalProvider implements OutputBoundedTerminalProvider {
   /// Create a provider with global and per-session handle limits.
   DefaultTerminalProvider({
     this.maxActiveHandles = defaultMaxTerminalHandles,
@@ -228,7 +253,23 @@ class DefaultTerminalProvider implements TerminalProvider {
     List<String> args = const [],
     String? cwd,
     Map<String, String>? env,
-    int outputByteLimit = defaultOutputByteLimit,
+  }) => createWithOutputByteLimit(
+    sessionId: sessionId,
+    command: command,
+    args: args,
+    cwd: cwd,
+    env: env,
+    outputByteLimit: defaultOutputByteLimit,
+  );
+
+  @override
+  Future<TerminalProcessHandle> createWithOutputByteLimit({
+    required String sessionId,
+    required String command,
+    List<String> args = const [],
+    String? cwd,
+    Map<String, String>? env,
+    required int outputByteLimit,
   }) async {
     if (outputByteLimit <= 0) {
       throw ArgumentError.value(

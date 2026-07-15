@@ -733,11 +733,22 @@ final class _ManagedTerminal {
     required this.handle,
     required this.sessionId,
     required this.lease,
+    required this.requestedOutputByteLimit,
+    required this.effectiveOutputByteLimit,
   });
 
   final TerminalProcessHandle handle;
   final String sessionId;
   final _TerminalQuotaLease lease;
+  final int requestedOutputByteLimit;
+  final int effectiveOutputByteLimit;
+}
+
+final class _BoundedTerminalOutput {
+  const _BoundedTerminalOutput({required this.output, required this.truncated});
+
+  final String output;
+  final bool truncated;
 }
 
 final class _SessionGeneration {
@@ -5516,14 +5527,22 @@ class SessionManager implements AcpBoundedObservationSource {
           final release = _UnregisteredTerminalRelease();
           late final _TerminalCreateResult createResult;
           try {
-            final createFuture = provider.create(
-              sessionId: sessionId,
-              command: cmd,
-              args: args,
-              cwd: cwd,
-              env: env.isEmpty ? null : env,
-              outputByteLimit: outputByteLimit,
-            );
+            final createFuture = provider is OutputBoundedTerminalProvider
+                ? provider.createWithOutputByteLimit(
+                    sessionId: sessionId,
+                    command: cmd,
+                    args: args,
+                    cwd: cwd,
+                    env: env.isEmpty ? null : env,
+                    outputByteLimit: outputByteLimit,
+                  )
+                : provider.create(
+                    sessionId: sessionId,
+                    command: cmd,
+                    args: args,
+                    cwd: cwd,
+                    env: env.isEmpty ? null : env,
+                  );
             createResult = await _createTerminalWithLateConsumer(
               admission: admission,
               provider: provider,
@@ -5618,6 +5637,8 @@ class SessionManager implements AcpBoundedObservationSource {
                 handle: handle,
                 sessionId: sessionId,
                 lease: lease,
+                requestedOutputByteLimit: requestedPositiveOutputByteLimit,
+                effectiveOutputByteLimit: outputByteLimit,
               );
               inserted = true;
               registered = true;
@@ -5662,7 +5683,10 @@ class SessionManager implements AcpBoundedObservationSource {
       return {'output': '', 'truncated': false, 'exitStatus': null};
     }
     final handle = record.handle;
-    final output = await provider.currentOutput(handle);
+    final output = _boundedTerminalOutput(
+      record,
+      await provider.currentOutput(handle),
+    );
     int? exitCode;
     try {
       exitCode = await handle.process.exitCode.timeout(
@@ -5674,14 +5698,14 @@ class SessionManager implements AcpBoundedObservationSource {
     _terminalEvents.add(
       TerminalOutputEvent(
         terminalId: termId,
-        output: output,
-        truncated: handle.truncated,
+        output: output.output,
+        truncated: output.truncated,
         exitCode: exitCode,
       ),
     );
     return {
-      'output': output,
-      'truncated': handle.truncated,
+      'output': output.output,
+      'truncated': output.truncated,
       'exitStatus': exitCode == null ? null : {'exitCode': exitCode},
     };
   }
@@ -5706,12 +5730,39 @@ class SessionManager implements AcpBoundedObservationSource {
     }
     final handle = record.handle;
     final code = await provider.waitForExit(handle);
+    final output = _boundedTerminalOutput(
+      record,
+      await provider.currentOutput(handle),
+    );
     _terminalEvents.add(TerminalExited(terminalId: termId, code: code));
     return {
-      'output': handle.currentOutput(),
-      'truncated': handle.truncated,
+      'output': output.output,
+      'truncated': output.truncated,
       'exitStatus': {'exitCode': code},
     };
+  }
+
+  _BoundedTerminalOutput _boundedTerminalOutput(
+    _ManagedTerminal terminal,
+    String source,
+  ) {
+    assert(
+      terminal.effectiveOutputByteLimit <= terminal.requestedOutputByteLimit,
+    );
+    final counter = AcpUtf8LineBudgetCounter(
+      maxBytes: terminal.effectiveOutputByteLimit,
+      maxLines: 0x1fffffffffffff,
+      resource: 'terminal output',
+    );
+    final appended = counter.append(source);
+    final finished = counter.finish();
+    return _BoundedTerminalOutput(
+      output: '${appended.safePrefix}${finished.safePrefix}',
+      truncated:
+          terminal.handle.truncated ||
+          appended.omission != null ||
+          finished.omission != null,
+    );
   }
 
   Future<Json?> _onTerminalKill(Json req) async {
