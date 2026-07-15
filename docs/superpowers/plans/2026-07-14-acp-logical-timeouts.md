@@ -1,5 +1,7 @@
 # ACP 逻辑请求超时 Implementation Plan
 
+历史对账：2026-07-15 已复核并批准 Task 13 同步后的实施计划；本次仅重建规格与计划共同、独立的文档提交边界，不改变技术要求。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 ACP initialize、普通请求、typed/raw prompt 和四类权限请求增加统一且有限的逻辑截止时间，并在 timeout、cancel、close、dispose、迟到结果竞态下精确释放 peer pending、入站门禁、权限卡片和 terminal 租约。
