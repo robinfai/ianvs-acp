@@ -2425,7 +2425,7 @@ test(
 
 - [ ] 3. 运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission deadline starts at admission for ownerless and owner scoped requests"`。Expected: FAIL；旧实现从 handler 启动后才等待 provider，排队 admission 在 2 秒 watchdog 内不结算。
 
-- [ ] 4. 写 named RED `all permission entries settle queued and running permit races once`；它必须完整覆盖四入口 × 三种本地原因 × queued/running 两种 permit 顺序，并对每个 case 断言一次 reservation release、一次 response commit、一次 provider cancellation，queued 的 provider/副作用为零。同一步增加独立 named RED `queued fs and terminal timeout or cancellation do not leak zone errors` 与 `throwing cancellable provider cannot break permission settlement`。前者把 fs read/terminal create 保持在 ordinary queue，分别让 admission deadline 与 `promptCancelled` 获胜；后者让 cancel callback 抛出含 canary 异常，精确覆盖 timeout、prompt cancel 与真实 session close。两条都在 guarded zone 内运行，并断言无 zone error、无 canary 外泄、固定 wire 终态与 `settled` 完成：
+- [ ] 4. 写 named RED `all permission entries settle queued and running permit races once`；它必须完整覆盖四入口 × 三种本地原因 × queued/running 两种 permit 顺序，并对每个 case 断言一次 reservation release、一次 response commit；只有 provider 已启动的 running case 才有一次 provider cancellation，queued case 必须是零 provider request、零 cancellation callback 与零副作用。同一步增加独立 named RED `queued fs and terminal timeout or cancellation do not leak zone errors` 与 `throwing cancellable provider cannot break permission settlement`。前者把 fs read/terminal create 保持在 ordinary queue，分别让 admission deadline 与 `promptCancelled` 获胜；后者让 cancel callback 抛出含 canary 异常，精确覆盖 timeout、prompt cancel 与真实 session close。两条都在 guarded zone 内运行，并断言无 zone error、无 canary 外泄、固定 wire 终态与 `settled` 完成：
 
 ```dart
 test('all permission entries settle queued and running permit races once', () async {
@@ -2452,7 +2452,10 @@ test('all permission entries settle queued and running permit races once', () as
           );
           expect(request.reservationReleaseCount, 1);
           expect(request.responseCommitCount, 1);
-          expect(harness.permissions.cancellations, hasLength(1));
+          expect(
+            harness.permissions.cancellations,
+            hasLength(permitFirst ? 1 : 0),
+          );
           expect(harness.permissions.requests, hasLength(permitFirst ? 1 : 0));
           expect(harness.fs.readCalls + harness.fs.writeCalls, 0);
           expect(harness.terminals.createCalls, 0);
@@ -3787,7 +3790,7 @@ finally {
 }
 ```
 
-`_settleSessionAdmissionsForClose` 是 Task 6–9 过渡版 close 接线：它在 `_beginSessionClose` 的同步前缀内、任何远端 RPC 或首个 `await` 之前快照并结算该 session 的 admissions，使本 Task 的 generation close/resume、terminal lease replacement 和抛错 cancellable provider 三条 close GREEN 在 Task 6 独立提交就能收敛。provider cancel callback 已由 Step 19 的 `_notifyPermissionProviderCancellation` 隔离，单个第三方抛错不得中断这个 snapshot 循环。
+`_settleSessionAdmissionsForClose` 是 Task 6–9 过渡版 close 接线：它在 `_beginSessionClose` 的同步前缀内、任何远端 RPC 或首个 `await` 之前快照并结算该 session 的 admissions，使本 Task 的 generation close/resume、terminal lease replacement 和抛错 cancellable provider 三条 close GREEN 在 Task 6 独立提交就能收敛。只有已经启动的 provider 才会收到 cancel callback，且该 callback 已由 Step 19 的 `_notifyPermissionProviderCancellation` 隔离；queued admission 保持零 callback，单个第三方抛错也不得中断这个 snapshot 循环。
 
 Task 10 完整替换 close 时必须从 `_beginSessionClose` **删除**这一过渡调用：先选出并登记 ordinary/frozen cleanup key，再且只在 `_prepareSessionClose` 调用一次 `_settleSessionAdmissionsForClose(sessionId)`。不得在 begin 与 prepare 各保留一次；否则 admission response grace 会在 frozen selection 前按 admission identity 建第二个 window。
 
@@ -3975,7 +3978,9 @@ void _notifyPermissionProviderCancellation(
   _InboundPermissionAdmission admission,
   PermissionCancellationReason reason,
 ) {
-  if (admission.providerCancellationSent) return;
+  if (!admission.providerStarted || admission.providerCancellationSent) {
+    return;
+  }
   final provider = config.permissionProvider;
   if (provider is! CancellablePermissionProvider) return;
   admission.providerCancellationSent = true;
@@ -4001,7 +4006,7 @@ void _removeInboundAdmission(_InboundPermissionAdmission admission) {
 }
 ```
 
-`providerCancellationSent` 必须在调用第三方 callback 之前同步置位，保证 callback 抛错时也不会重试。`catch` 不得带 `error`、`stackTrace`、token、provider 类名或 permission 内容记录日志；它返回后 `tryCompleteLocal` 必须继续到 `tryCompleteSettled()`，保留 timeout/cancel/session-close 已获胜的固定终态。
+provider 尚未开始时必须直接返回：不调用第三方 callback，也不把 `providerCancellationSent` 置位；只有 `providerStarted` 为 true 的 running admission 才可能通知一次。`providerCancellationSent` 必须在调用第三方 callback 之前同步置位，保证 callback 抛错时也不会重试。`catch` 不得带 `error`、`stackTrace`、token、provider 类名或 permission 内容记录日志；它返回后 `tryCompleteLocal` 必须继续到 `tryCompleteSettled()`，保留 timeout/cancel/session-close 已获胜的固定终态。
 
 - [ ] 20. 把 `_onReadTextFile`、`_onWriteTextFile`、`_onRequestPermission`、`_onTerminalCreate` 改为第二参数接收 `InboundAdmission`，在入口做一次 checked cast 到 `_InboundPermissionAdmission`，只消费 admission 快照并调用 `_runPermissionHandler`；不得另建 timer/token或重查当前 owner。四个外层 handler 的 `operation` callback 必须 `await` 完整 fs/request/terminal value 或 error；唯一 local-settle 路径是 Step 16 的 `runLocalOperation → tryCompleteLocal`，provider allow 不能提前结算。malformed params、缺失 handler、正常 value/error 与副作用开始后的 `promptEnded`、`promptCancelled`、`sessionClosed` 全部在这个同步首赢点竞争，并按原 reason 生成固定 mapping。
 
@@ -4011,7 +4016,7 @@ void _removeInboundAdmission(_InboundPermissionAdmission admission) {
 
 - [ ] 23. 运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission deadline starts at admission for ownerless and owner scoped requests"`。Expected: PASS。
 
-- [ ] 24. 分别运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "all permission entries settle queued and running permit races once"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "queued fs and terminal timeout or cancellation do not leak zone errors"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission cancellation keeps its reason after side effect starts"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission operation and cancellation atomically consume late value and error"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "malformed and missing admitted handlers always locally settle"` 与 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "throwing cancellable provider cannot break permission settlement"`。Expected: 六者均 PASS；其中 `queued fs and terminal timeout or cancellation do not leak zone errors` 完整跑 fs read/terminal create × timeout/cancel 四个 guarded-zone case，`zoneErrors` 最终严格等于 0；`throwing cancellable provider cannot break permission settlement` 的 timeout/prompt-cancel/session-close 三个子流程均保留固定 code/message、无 data、无 canary/zone error，且 `settled` 完成；其余覆盖 24 个 queued/running case、fs read/write/terminal × 3 个 side-effect-started reason、operation-first/cancel-late、cancel-first/late value/error 与两条 malformed/missing local-settle 路径。running reservation 先 detach/release，迟到 provider error 被消费且不进入 zone。
+- [ ] 24. 分别运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "all permission entries settle queued and running permit races once"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "queued fs and terminal timeout or cancellation do not leak zone errors"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission cancellation keeps its reason after side effect starts"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission operation and cancellation atomically consume late value and error"`、`./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "malformed and missing admitted handlers always locally settle"` 与 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "throwing cancellable provider cannot break permission settlement"`。Expected: 六者均 PASS；其中 `queued fs and terminal timeout or cancellation do not leak zone errors` 完整跑 fs read/terminal create × timeout/cancel 四个 guarded-zone case，`zoneErrors` 最终严格等于 0；`throwing cancellable provider cannot break permission settlement` 的 timeout/prompt-cancel/session-close 三个子流程均保留固定 code/message、无 data、无 canary/zone error，且 `settled` 完成；其余覆盖 24 个 queued/running case，并明确 queued 为零 provider request/零 cancellation callback、running 才恰一次 callback；同时覆盖 fs read/write/terminal × 3 个 side-effect-started reason、operation-first/cancel-late、cancel-first/late value/error 与两条 malformed/missing local-settle 路径。running reservation 先 detach/release，迟到 provider error 被消费且不进入 zone。
 
 - [ ] 25. 运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "queued permission admissions keep their original owner and generation snapshot"`。Expected: PASS。
 
@@ -5767,7 +5772,7 @@ test('prompt timeout shares one cancel and one cleanup grace with admissions', (
 
 - [ ] 6. 运行 `./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "prompt timeout shares one cancel and one cleanup grace with admissions"`。Expected: FAIL；缺统一 prompt deadline、cancel-once 与共享 grace。
 
-- [ ] 7. 写 named RED `prompt cancellation keeps replacement settling and stale cancel is isolated`；queued/running permission 各跑一次，用户取消立即返回但后台 reap 保留 barrier，旧 response/permission 全结算后 replacement 成功，旧 owner 再 cancel 不影响新 owner：
+- [ ] 7. 写 named RED `prompt cancellation keeps replacement settling and stale cancel is isolated`；queued/running permission 各跑一次，用户取消立即返回但后台 reap 保留 barrier；queued provider 从未启动，因此 cancellation callback reason 保持 null，running provider 才收到 `promptCancelled`。旧 response/permission 全结算后 replacement 成功，旧 owner 再 cancel 不影响新 owner：
 
 ```dart
 test('prompt cancellation keeps replacement settling and stale cancel is isolated', () async {
@@ -5777,7 +5782,10 @@ test('prompt cancellation keeps replacement settling and stale cancel is isolate
       final first = await harness.startPromptWithAdmission(running: running);
       await harness.manager.cancelPromptTurn(first.owner);
       expect(first.cancelWireCount, 1);
-      expect(first.permissionReason, PermissionCancellationReason.promptCancelled);
+      expect(
+        first.permissionReason,
+        running ? PermissionCancellationReason.promptCancelled : null,
+      );
       expect(
         () => harness.manager.beginPromptTurn(harness.sessionId),
         throwsA(isA<StateError>()),
@@ -12038,6 +12046,13 @@ final class _CapturedWireResponse {
     }
     return null;
   }
+  String? get selectedOptionId {
+    final outcome = _result?['outcome'];
+    if (outcome is Map<String, Object?>) {
+      return outcome['optionId'] as String?;
+    }
+    return null;
+  }
 }
 
 enum _PermissionFileWaitSignal { retry, disposed, unavailable }
@@ -12064,8 +12079,8 @@ _PermissionStdioFixture._({
   required this.markerDirectory,
   required this.transportClosedFile,
   required this.transientMetadata,
-  required Future<acp.AcpPeerUnavailableState> unavailable,
-}) : _unavailable = unavailable;
+  required this._unavailable,
+});
 
 final Directory tempDir;
 final Directory workspaceDirectory;
@@ -12078,7 +12093,7 @@ final Directory responseDirectory;
 final Directory markerDirectory;
 final File transportClosedFile;
 final Map<String, Object?> transientMetadata;
-final Future<acp.AcpPeerUnavailableState> _unavailable;
+Future<acp.AcpPeerUnavailableState> _unavailable;
 late final StreamSubscription<acp.AcpPeerUnavailableState>
     _peerUnavailableSubscription;
 late final StreamSubscription<AcpPermissionInvalidation>
@@ -12175,6 +12190,8 @@ File responseFile(String method, int sequence) => File(
       '${responseDirectory.path}/'
       '${method.replaceAll('/', '_')}-$sequence.json',
     );
+File responseLogFile(int sequence) =>
+    File('${responseDirectory.path}/wire-$sequence.jsonl');
 File agentParamsFile(int sequence) =>
     File('${responseDirectory.path}/request-$sequence.json');
 File get requestFatalSeenFile =>
@@ -12192,7 +12209,7 @@ File get ownerPromptSeenFile =>
 // JSON actually captured from the fake agent's stdin. Absence of a response
 // is never inferred from these asynchronous counters; the stopped-agent check
 // reads `_PermissionWireProbe.responseCapture` directly.
-final Map<String, int> responseCommitsByLifecycle = <String, int>{};
+final Map<String, File> responseLogsByLifecycle = <String, File>{};
 int _peerCloseCount = 0;
 
 void injectCancellationTokenCanary(String canary) {
@@ -12288,6 +12305,10 @@ Future<void> bridgeSettledFor(AcpPermissionRequest request) =>
     _waitForScenarioFile(bridgeSettledFile(request.lifecycleId));
 Future<void> get peerUnavailable => _unavailable.then<void>((_) {});
 
+void refreshUnavailableWatcherAfterReconnect() {
+  _unavailable = client.peerUnavailableForTesting.first;
+}
+
 Future<_PermissionWireProbe> sendPermission({
   required String method,
   String canary = '',
@@ -12304,10 +12325,11 @@ Future<_PermissionWireProbe> sendPermission({
   final requestSeen = client.permissionRequests.first;
   final responseSequence = ++_responseSequence;
   final responseCapture = responseFile(method, responseSequence);
+  final responseLog = responseLogFile(responseSequence);
   final response = nextWireResponse(responseCapture);
   unawaited(response.then<void>(
     (_) {},
-    onError: (Object _, StackTrace __) {
+    onError: (Object _, StackTrace _) {
       // Install the error consumer before any awaited control-file work.
     },
   ));
@@ -12318,7 +12340,7 @@ Future<_PermissionWireProbe> sendPermission({
     'ownerScoped': ownerScoped,
     'responseSequence': responseSequence,
     'workspacePath': effectiveWorkspace,
-    if (sessionId != null) 'sessionId': sessionId,
+    'sessionId': ?sessionId,
   };
   final controlSequence =
       await _sendAgentControl('permission', controlFields);
@@ -12334,16 +12356,12 @@ Future<_PermissionWireProbe> sendPermission({
     ),
   );
   final request = await requestSeen.timeout(const Duration(seconds: 2));
+  responseLogsByLifecycle[request.lifecycleId] = responseLog;
   unawaited(response.then<void>(
     (captured) async {
-      responseCommitsByLifecycle.update(
-        request.lifecycleId,
-        (count) => count + 1,
-        ifAbsent: () => 1,
-      );
       await bridgeSettledFile(request.lifecycleId).writeAsString('seen');
     },
-    onError: (Object _, StackTrace __) {
+    onError: (Object _, StackTrace _) {
       // A peer-unavailable/dispose race intentionally aborts file polling.
       // Consume that branch here; tests that need the response still await
       // probe.response and assert its concrete result/error themselves.
@@ -12389,8 +12407,14 @@ Future<void> deliverLateCancellation(
   acp.PermissionCancellationReason reason,
 ) => cancelFromManager(request, reason);
 
-int responseCommitCountFor(AcpPermissionRequest request) =>
-    responseCommitsByLifecycle[request.lifecycleId] ?? 0;
+Future<int> responseCommitCountFor(AcpPermissionRequest request) async {
+  final log = responseLogsByLifecycle[request.lifecycleId];
+  if (log == null || !await log.exists()) return 0;
+  return const LineSplitter()
+      .convert(await log.readAsString())
+      .where((line) => line.trim().isNotEmpty)
+      .length;
+}
 
 int get peerCloseCount => _peerCloseCount;
 
@@ -12516,7 +12540,7 @@ Future<void> ensureOwnerPromptStarted() {
           sessionId: session.id,
           prompt: 'permission owner scope',
         )
-        .listen((_) {}, onError: (Object _, StackTrace __) {});
+        .listen((_) {}, onError: (Object _, StackTrace _) {});
     await _waitForScenarioFile(ownerPromptSeenFile).timeout(
       const Duration(seconds: 2),
     );
@@ -12578,6 +12602,7 @@ Future<void> main(List<String> args) async {
   Object? activePromptId;
   var controlBusy = false;
   final responseTargets = <Object?, File>{};
+  final responseLogs = <Object?, File>{};
 
   void send(Map<String, Object?> message) {
     stdout.writeln(jsonEncode(message));
@@ -12653,6 +12678,9 @@ Future<void> main(List<String> args) async {
         responseTargets[id] = File(
           '${responseDirectory.path}/'
           '${method.replaceAll('/', '_')}-$responseSequence.json',
+        );
+        responseLogs[id] = File(
+          '${responseDirectory.path}/wire-$responseSequence.jsonl',
         );
         send(<String, Object?>{
           'jsonrpc': '2.0',
@@ -12739,8 +12767,18 @@ Future<void> main(List<String> args) async {
       // Intentionally no response: the real request deadline closes the peer.
     } else if (!message.containsKey('method') &&
         message.containsKey('id')) {
-      final target = responseTargets.remove(message['id']);
-      if (target != null) await target.writeAsString(jsonEncode(message));
+      final target = responseTargets[message['id']];
+      final log = responseLogs[message['id']];
+      if (target != null && log != null) {
+        await log.writeAsString(
+          '${jsonEncode(message)}\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+        if (!await target.exists()) {
+          await target.writeAsString(jsonEncode(message), flush: true);
+        }
+      }
     }
     }
   } finally {
@@ -12754,7 +12792,7 @@ Future<void> main(List<String> args) async {
 
 fixture 不声明无法从 `DartAcpAgentClient` 取得的 `agentProcess`；transport-close 完全由上述真实 agent control loop 写 marker、ack 后 `exit(0)`。同理，不保留没有真实 callback 来源的 provider error/UI response/log/pending-set 计数，相关断言只使用 agent 捕获 response、公开 invalidation/unavailable 与 ChatController audit。
 
-`_PermissionStdioFixture` 的 bridge 断言统一使用上面已定义的 `responseCommitCountFor(request)`。`_PermissionAdmissionHarness` 对应提供同名真实观察 API，并把 permit 释放动作放在 harness，而不是虚构 probe 方法：
+`_PermissionStdioFixture` 的 bridge 断言统一使用上面已定义的异步 `responseCommitCountFor(request)`；处理完迟到动作后必须先 await 幂等的 `quiesceForResponseCaptureCheck()`，再读取 agent 侧 append-only JSONL 的真实行数，不能用单个 response Future 的回调次数代替 wire 次数。`_PermissionAdmissionHarness` 对应提供同名真实观察 API，并把 permit 释放动作放在 harness，而不是虚构 probe 方法：
 
 ```dart
 int responseCommitCountFor(_PermissionRequestProbe probe) =>
@@ -12819,7 +12857,8 @@ try {
     AcpPermissionInvalidationReason.timedOut,
   );
   expect(response.selectedOutcome, 'cancelled');
-  expect(fixture.responseCommitCountFor(probe.request), 1);
+  await fixture.quiesceForResponseCaptureCheck();
+  expect(await fixture.responseCommitCountFor(probe.request), 1);
 } finally {
   await subscription.cancel();
   await fixture.dispose();
@@ -12857,9 +12896,11 @@ try {
     acp.PermissionCancellationReason.sessionClosed,
   );
   final response = await probe.response.timeout(const Duration(seconds: 2));
-  expect(response.selectedOutcome, 'allow');
+  expect(response.selectedOutcome, 'selected');
+  expect(response.selectedOptionId, 'allow');
   expect(invalidations, isEmpty);
-  expect(fixture.responseCommitCountFor(probe.request), 1);
+  await fixture.quiesceForResponseCaptureCheck();
+  expect(await fixture.responseCommitCountFor(probe.request), 1);
 } finally {
   await sub.cancel();
   await fixture.dispose();
@@ -13115,8 +13156,8 @@ enum _DeadlineConsumer {
 }
 
 const timeouts = AcpTimeouts(
-  initialize: Duration(milliseconds: 80),
-  request: Duration(milliseconds: 240),
+  initialize: Duration(milliseconds: 180),
+  request: Duration(milliseconds: 480),
   prompt: Duration(milliseconds: 520),
   permission: Duration(milliseconds: 900),
   promptCancelGrace: Duration(milliseconds: 1500),
@@ -13139,10 +13180,10 @@ for (final consumer in _DeadlineConsumer.values) {
         await probe.started.future.timeout(const Duration(seconds: 2));
         await expectStillPending(
           probe.completed.future,
-          const Duration(milliseconds: 35),
+          const Duration(milliseconds: 75),
         );
         await probe.completed.future.timeout(
-          const Duration(milliseconds: 100),
+          const Duration(milliseconds: 180),
         );
         expect(probe.terminalError, isA<AcpRequestTimeoutException>());
         break;
@@ -13151,10 +13192,10 @@ for (final consumer in _DeadlineConsumer.values) {
         await probe.started.future.timeout(const Duration(seconds: 2));
         await expectStillPending(
           probe.completed.future,
-          const Duration(milliseconds: 160),
+          const Duration(milliseconds: 320),
         );
         await probe.completed.future.timeout(
-          const Duration(milliseconds: 180),
+          const Duration(milliseconds: 260),
         );
         expect(probe.terminalError, isA<AcpRequestTimeoutException>());
         break;
@@ -13256,7 +13297,7 @@ bridge consumer 位于 `dart_acp_agent_client_test.dart`，必须使用真实 `D
 ```dart
 test('custom ACP permission timeout reaches real interactive bridge', () async {
   const timeouts = acp.AcpTimeouts(
-    initialize: Duration(milliseconds: 80),
+    initialize: Duration(milliseconds: 180),
     request: Duration(milliseconds: 240),
     prompt: Duration(milliseconds: 520),
     permission: Duration(milliseconds: 900),
@@ -13287,7 +13328,8 @@ test('custom ACP permission timeout reaches real interactive bridge', () async {
       invalidations.single.reason,
       AcpPermissionInvalidationReason.timedOut,
     );
-    expect(fixture.responseCommitCountFor(probe.request), 1);
+    await fixture.quiesceForResponseCaptureCheck();
+    expect(await fixture.responseCommitCountFor(probe.request), 1);
   } finally {
     await subscription.cancel();
     await fixture.dispose();
@@ -13367,7 +13409,12 @@ try {
     AcpPermissionInvalidationReason.connectionClosed,
   );
   expect(fixture.peerCloseCount, 0);
+  final response = await probe.response.timeout(const Duration(seconds: 2));
+  expect(response.hasError, isFalse);
+  expect(response.selectedOutcome, 'cancelled');
   expect(await fixture.sendExtensionEcho(), <String, Object?>{'value': 'ok'});
+  await fixture.quiesceForResponseCaptureCheck();
+  expect(await fixture.responseCommitCountFor(probe.request), 1);
 } finally {
   await sub.cancel();
   await fixture.dispose();
@@ -13413,7 +13460,7 @@ try {
   expect(responseB.hasError, isFalse);
   expect(responseB.terminalId, isNotNull);
   expect(responseB.terminalId, isNotEmpty);
-  expect(fixture.responseCommitCountFor(b.request), 1);
+  // Read the append-only wire count only after the late action and quiesce.
   expect(invalidations, isEmpty,
       reason: 'B must settle before A reaches its short permission deadline');
   await fixture.permissionTimedOutFor(a.request).timeout(
@@ -13433,8 +13480,9 @@ try {
   expect(responseA.errorText, 'Permission request timed out.');
   expect(invalidations.map((e) => e.lifecycleId),
       <String>[a.request.lifecycleId]);
-  expect(fixture.responseCommitCountFor(a.request), 1);
-  expect(fixture.responseCommitCountFor(b.request), 1);
+  await fixture.quiesceForResponseCaptureCheck();
+  expect(await fixture.responseCommitCountFor(a.request), 1);
+  expect(await fixture.responseCommitCountFor(b.request), 1);
 } finally {
   await sub.cancel();
   await fixture.dispose();
@@ -13503,10 +13551,11 @@ try {
   );
   await second.deliverLateCancellation(
     a.request,
-    acp.PermissionCancellationReason.timedOut,
+    acp.PermissionCancellationReason.connectionClosed,
   );
-  expect(second.responseCommitCountFor(a.request), 1);
-  expect(second.responseCommitCountFor(b.request), 1);
+  await second.quiesceForResponseCaptureCheck();
+  expect(await second.responseCommitCountFor(a.request), 1);
+  expect(await second.responseCommitCountFor(b.request), 1);
 } finally {
   await secondSub.cancel();
   await second.dispose();
@@ -13611,6 +13660,11 @@ for (final method in bridgePermissionMethods) {
         expect(jsonEncode(response.raw), isNot(contains(canary)));
       }
       expect(invalidations, hasLength(1));
+      final invalidation = invalidations.single;
+      expect(invalidation.requestId, probe.request.id);
+      expect(invalidation.lifecycleId, probe.request.lifecycleId);
+      expect(invalidation.sessionId, probe.request.sessionId);
+      expect(invalidation.reason, reason);
       expect(jsonEncode(invalidations.map((e) => <String, Object?>{
         'requestId': e.requestId,
         'lifecycleId': e.lifecycleId,
@@ -13860,7 +13914,9 @@ void cancelPendingPermission({
   required acp.PermissionCancellationReason reason,
 }) {
   final pending = _pendingByToken[cancellationToken];
-  if (pending != null) _invalidatePending(pending, reason);
+  if (pending == null) return;
+  _invalidatePending(pending, reason);
+  _completeDeferredProviderDecision(pending);
 }
 
 AcpPermissionInvalidation _invalidationFor(
@@ -13892,8 +13948,9 @@ AcpPermissionInvalidation _invalidationFor(
 
 bool _invalidatePending(
   _PendingPermissionRequest pending,
-  acp.PermissionCancellationReason reason,
-) {
+  acp.PermissionCancellationReason reason, {
+  bool deferProviderCompletion = false,
+}) {
   if (pending.state != _PendingPermissionState.pending) return false;
   pending.state = _PendingPermissionState.invalidated;
   pending.timer?.cancel();
@@ -13902,41 +13959,28 @@ bool _invalidatePending(
     pending.completer.completeError(
       const acp.PermissionRequestTimeoutException(),
     );
-  } else {
+  } else if (!deferProviderCompletion) {
     pending.completer.complete(const acp.PermissionDecision.cancelled());
   }
   return true;
 }
-```
 
-pending 保存 id/lifecycleId/sessionId/token/choices/completer/timer/state；`finally` 只在 identity 仍相同时删除两个索引。UI respond 走 `userResolved` 且不发 invalidation。
-
-- [ ] 17. 接正常 prompt terminal 调用点：只传 `promptEnded`，并确认同 token 的后到 timeout/cancel 被 `_invalidatePending` 拒绝。完整入口为：
-
-```dart
-void cancelForPromptTerminal(Object token) {
-  final pending = _pendingByToken[token];
-  if (pending == null) return;
-  _invalidatePending(
-    pending,
-    acp.PermissionCancellationReason.promptEnded,
-  );
-}
-```
-
-- [ ] 18. 接用户 cancel 与 session close 调用点：分别只传 `promptCancelled`、`sessionClosed`；必须按 token identity 逐个调用 first-wins，不得按 sessionId 覆盖其他 token 的先前 winner：
-
-```dart
-void cancelForUser(Object token) {
-  final pending = _pendingByToken[token];
-  if (pending != null) {
-    _invalidatePending(
-      pending,
-      acp.PermissionCancellationReason.promptCancelled,
-    );
+void _completeDeferredProviderDecision(_PendingPermissionRequest pending) {
+  if (pending.state != _PendingPermissionState.invalidated ||
+      pending.completer.isCompleted) {
+    return;
   }
+  pending.completer.complete(const acp.PermissionDecision.cancelled());
 }
+```
 
+pending 保存 id/lifecycleId/sessionId/token/choices/completer/timer/state；`finally` 只在 identity 仍相同时删除两个索引。UI respond 走 `userResolved` 且不发 invalidation。manager 的 cancellation callback 必须先捕获 token 对应的 pending，再对全部 reason 统一尝试 `_invalidatePending`，最后调用 `_completeDeferredProviderDecision`；因此 reconnect/dispose 预先只抢占 invalidation CAS 时，后到的真实 provider callback 仍能完成原 provider Future，而重复 callback 不会改写首因或重复完成。
+
+- [ ] 17. 正常 prompt terminal 与用户 cancel 都沿 manager 的 `CancellablePermissionProvider.cancelPendingPermission` 传入同一个 token，reason 分别为 `promptEnded`、`promptCancelled`；bridge 不再另建 `cancelForPromptTerminal`/`cancelForUser` 入口。`cancelPendingPermission` 对全部 reason 都执行“捕获 pending → invalidate first-wins → complete deferred provider decision”，同 token 的后到 timeout/cancel 只能幂等完成 deferred Future，不能改写首因。
+
+- [ ] 18. session close 同时保留 wrapper 的 session 快照入口；它按 pending identity 逐个调用 first-wins，不得按 sessionId 覆盖其他 token 的先前 winner。manager 后到的 `sessionClosed` callback 仍走 Step 17 的 token 入口：
+
+```dart
 void cancelForSession(String sessionId) {
   final snapshot = _pendingByToken.values
       .where((pending) => pending.sessionId == sessionId)
@@ -13950,25 +13994,40 @@ void cancelForSession(String sessionId) {
 }
 ```
 
-- [ ] 19. 接 unavailable 调用点：reconnect/request fatal/transport/真实 explicit peer close 传 `connectionClosed`；wrapper dispose 传 `disposed`。logout 单独在 logout success 后以 `connectionClosed` 结算 bridge，但不得触发 peer-close bookkeeping。`cancelAllForUnavailable` 的同步段先用 CAS 抢占全部 pending，返回的 Future 则表示这些 invalidation 已被同步 broadcast listener 接收；dispose 必须等待该 Future 后才能关闭 invalidation stream。完整 bridge 方法体为：
+- [ ] 19. 接 unavailable 调用点：reconnect/request fatal/transport/真实 explicit peer close 传 `connectionClosed`；只有 wrapper 自身 `_disposed == true` 时，core 的 `disposed` publication 才映射为 bridge `disposed`，reconnect 触发的旧 core dispose 仍映射 `connectionClosed`。logout 单独在 logout success 后以 `connectionClosed` 结算 bridge，但不得触发 peer-close bookkeeping。`cancelAllForUnavailable` 的同步段先用 CAS 抢占全部 pending，返回的 Future 表示这些 invalidation 已被同步 broadcast listener 接收；reconnect 与 public dispose 使用 `deferProviderCompletion: true`，只预先固定首因，等待 manager 的真实 cancellation callback 完成 provider Future。public dispose 必须等待 invalidation commit 后才能关闭 invalidation stream；reconnect 不关闭共享 bridge 的 request/invalidation stream，也不得抑制旧 core 的公共 unavailable publication。完整 bridge 方法体为：
 
 ```dart
-Future<void> cancelAllForUnavailable({required bool disposed}) async {
+Future<void> cancelAllForUnavailable({
+  required bool disposed,
+  bool deferProviderCompletion = false,
+}) async {
   if (disposed) _isClosed = true;
   final reason = disposed
       ? acp.PermissionCancellationReason.disposed
       : acp.PermissionCancellationReason.connectionClosed;
   final snapshot = _pendingByToken.values.toList(growable: false);
   for (final pending in snapshot) {
-    _invalidatePending(pending, reason);
+    _invalidatePending(
+      pending,
+      reason,
+      deferProviderCompletion: deferProviderCompletion,
+    );
   }
   await _invalidationCommitTail;
 }
 
-// reconnect/request fatal/transport/explicit peer close:
+// request fatal/transport/explicit peer close/logout:
 await cancelAllForUnavailable(disposed: false);
-// DartAcpAgentClient.dispose only:
-await cancelAllForUnavailable(disposed: true);
+// reconnect:
+await cancelAllForUnavailable(
+  disposed: false,
+  deferProviderCompletion: true,
+);
+// DartAcpAgentClient.dispose:
+await cancelAllForUnavailable(
+  disposed: true,
+  deferProviderCompletion: true,
+);
 ```
 
 第三方 `AcpClient.closePeerExplicitlyForTesting` 与 wrapper 代理均沿用 Task 11 已有定义，Task 13 不再重复声明。Task 13 也不首次声明、安装或替换 listener；这里只替换 Task 11 已定义且由原 listener 调用的 `_handleTask11PeerUnavailable(source, state)` body。固定顺序是 permission bridge first-wins/commit → Task 11 publication gate → Task 11 现有 `_publishPeerUnavailable(state)`；不得调用或新增任何 `ForTesting` publish 方法：
@@ -13980,7 +14039,7 @@ void _handleTask11PeerUnavailable(
 ) {
   if (!_isCurrentPeerSource(source)) return;
   final disposed = switch (state.reason) {
-    acp.AcpPeerUnavailableReason.disposed => true,
+    acp.AcpPeerUnavailableReason.disposed => _disposed,
     acp.AcpPeerUnavailableReason.fatalTimeout ||
     acp.AcpPeerUnavailableReason.transportClosed ||
     acp.AcpPeerUnavailableReason.explicitClose => false,
@@ -14016,13 +14075,16 @@ Future<void> _finishLogout() async {
 Future<void> dispose() {
   final existing = _disposeFuture;
   if (existing != null) return existing;
+  _acceptingRawPromptOperations = false;
   _disposed = true;
   _invalidateAllConfigMutationQueues();
 
   // cancelAll performs every pending CAS synchronously before returning.
   // Keep this before clearing either connecting or active client identity.
-  final invalidationsCommitted =
-      _permissionBridge.cancelAllForUnavailable(disposed: true);
+  final invalidationsCommitted = _permissionBridge.cancelAllForUnavailable(
+    disposed: true,
+    deferProviderCompletion: true,
+  );
 
   final connectingClient = _connectingClient;
   final connectingTransport = _connectingTransport;
@@ -14114,9 +14176,12 @@ Future<void> _disposeActiveClient({
     // position here by closing only its request stream.
     await _permissionBridge.closeRequests();
   } else {
-    // reconnect: invalidate the old active client's prompts, keep both bridge
-    // streams reusable, then dispose that exact core identity.
-    await _permissionBridge.cancelAllForUnavailable(disposed: false);
+    // reconnect: fix connectionClosed first, keep both bridge streams reusable,
+    // then let the manager callback complete each deferred provider Future.
+    await _permissionBridge.cancelAllForUnavailable(
+      disposed: false,
+      deferProviderCompletion: true,
+    );
   }
   await _disposeClient(
     client,
@@ -14151,9 +14216,10 @@ Future<void> _disposeClient(
     firstError ??= error;
     firstStackTrace ??= stackTrace;
   } finally {
-    // Removal is deliberately after the core dispose attempt. If core emits a
-    // late connectionClosed while wrapper dispose is running, source identity
-    // is no longer current and disposed already won every bridge CAS.
+    // Removal is deliberately after the core dispose attempt. The source stays
+    // in _disposingPeerSources until then, so its public unavailable event is
+    // not suppressed; wrapper dispose has already won bridge disposed, while
+    // reconnect keeps the mapping connectionClosed.
     if (client != null && peerUnavailableListener != null) {
       _removePeerUnavailableListenerAfterCoreDispose(
         client,
@@ -14169,7 +14235,7 @@ Future<void> _disposeClient(
 }
 ```
 
-Task 11 既有 listener closure 调 `_handleTask11PeerUnavailable(source, state)`，不得在 Task 13 再加安装点或第二个 listener；connect 异常清理仍把 Task 11 的 `_listenerFor(client)` 传给 `_disposeClient`。这保持现有 `dispose → _disposeAll → _disposeActiveClient`、同步 `_disposed = true`、connecting client/transport 捕获、config queue 失效和全部 session cache 清理不变。public dispose 已同步让 bridge `disposed` first-wins；随后 `_disposeActiveClient(true)` 的首个 await 是 `_finishAllRawOutputsForUnavailable()`，每个 operation 都调用 Task 11 已安装的 `_finishRawOutput(..., emitConnectionClosed: true)` action并等待 `finished`，绝不走 cancel-style invalidate。reconnect 的 `_disposeActiveClient(false)` 首个 await 才是 `_invalidateAllRawPromptOperations(sendCancel: false)`，并在 `_client = null`、raw map clear、任一 core/transport dispose 前等待旧 raw done/owner脱离。active/connecting source 均在清字段前加入 `_disposingPeerSources`，`_disposeClient` finally 在 core dispose尝试与 listener移除后删除 source。迟到 `connectionClosed` 不能改写 permission disposed首因。
+Task 11 既有 listener closure 调 `_handleTask11PeerUnavailable(source, state)`，不得在 Task 13 再加安装点或第二个 listener；connect 异常清理仍把 Task 11 的 `_listenerFor(client)` 传给 `_disposeClient`。这保持现有 `dispose → _disposeAll → _disposeActiveClient`、同步 `_disposed = true`、connecting client/transport 捕获、config queue 失效和全部 session cache 清理不变。public dispose 先以 `disposed + deferProviderCompletion` 同步固定 bridge 首因；随后 `_disposeActiveClient(true)` 的首个 await 是 `_finishAllRawOutputsForUnavailable()`，每个 operation 都调用 Task 11 已安装的 `_finishRawOutput(..., emitConnectionClosed: true)` action并等待 `finished`，绝不走 cancel-style invalidate。reconnect 的 `_disposeActiveClient(false)` 首个 await 才是 `_invalidateAllRawPromptOperations(sendCancel: false)`，并在 `_client = null`、raw map clear、任一 core/transport dispose 前等待旧 raw done/owner脱离；之后以 `connectionClosed + deferProviderCompletion` 结算旧权限，但不关闭共享 bridge stream。active/connecting source 均在清字段前加入 `_disposingPeerSources`，`_disposeClient` finally 只在 core dispose尝试完成后移除 listener 与 source，因此旧 core 的公共 unavailable publication 仍会发出；`_disposed` 为 false 的 reconnect core-disposed 映射 `connectionClosed`，只有 wrapper public dispose 才映射 `disposed`。迟到原因不能改写 permission 首因。
 
 - [ ] 20. 固定唯一传递链为公开 `final timeouts → AcpConfig → AcpClient.start`。wrapper 构造器校验后保存现有公开字段 `final acp.AcpTimeouts timeouts;`；connect 必须是：
 
@@ -14200,9 +14266,11 @@ AcpTimeouts get peerTimeoutsForTesting => _peer.timeouts;
 AcpConfig get sessionManagerConfigForTesting => _sessionManager.config;
 ```
 
-- [ ] 22. 复核 Step 12 的 4×6 canary 精确表仍完整保留，不得在实现后退化成只检查 `hasErrorData`/canary：24 个 case 的 factory 都恰调用一次并返回注入 token identity；permission 方法的四个非断连原因均为 cancelled result；fs read/write 与 terminal 的 timedOut 为 `-32002` 固定文本，三个本地取消原因为 `-32003` 固定文本；上述全部无 data；connectionClosed/disposed 两列都先完全 quiesce真实 client/stdio agent，再对各自 `probe.responseCapture.exists()` 直接断言 false，异步 response map/count不参与零-wire证据。触发前 controller binding/lifecycle 匹配 probe；触发后 invalidation恰一次，唯一 audit 与同 lifecycle/binding一致、cancelled/system，且非空 audit map序列化不含 canary。control/agent params 也没有 token marker或 token key。
+- [ ] 22. 复核 Step 12 的 4×6 canary 精确表仍完整保留，不得在实现后退化成只检查 `hasErrorData`/canary：24 个 case 的 factory 都恰调用一次并返回注入 token identity；permission 方法的四个非断连原因均为 cancelled result；fs read/write 与 terminal 的 timedOut 为 `-32002` 固定文本，三个本地取消原因为 `-32003` 固定文本；上述全部无 data；connectionClosed/disposed 两列都先完全 quiesce真实 client/stdio agent，再对各自 `probe.responseCapture.exists()` 直接断言 false，异步 response map/count不参与零-wire证据。触发前 controller binding/lifecycle 匹配 probe；触发后 invalidation恰一次，且 `requestId/lifecycleId/sessionId/reason` 分别精确等于 probe 与当前矩阵格；唯一 audit 与同 lifecycle/binding一致、cancelled/system，且非空 audit map序列化不含 canary。control/agent params 也没有 token marker或 token key。
 
-- [ ] 23. 依次重跑本任务十个 named tests：
+- [ ] 22a. 增加两条生产复审回归：`permission provider never started receives no cancellation callback` 用 admission harness 遍历全部 `PermissionCancellationReason`，在 provider 尚未开始时断言零 request、零 cancellation callback、零 retained admission 与一次 response commit；`deferred reconnect and dispose complete owner permission futures` 用真实 owner-scoped stdio permission，断言 reconnect/dispose 均有界完成，reconnect 成功后先把 fixture 的 `_unavailable` watcher 刷新为新一轮 `client.peerUnavailableForTesting.first`，再证明新 lifecycle 可正常响应且旧索引不阻塞，dispose 后零 wire。旧 peer 的 unavailable publication 必须保留，不能靠生产代码抑制来让 fixture 通过。
+
+- [ ] 23. 依次重跑本任务十二个 named tests：
 
 ```bash
 ./tool/flutter_test_isolated.sh test/acp/dart_acp_agent_client_test.dart --plain-name "permission fixture commits consecutive controls and exact acknowledgements"
@@ -14215,6 +14283,8 @@ AcpConfig get sessionManagerConfigForTesting => _sessionManager.config;
 ./tool/flutter_test_isolated.sh test/acp/dart_acp_agent_client_test.dart --plain-name "logout invalidates pending permission once without closing peer"
 ./tool/flutter_test_isolated.sh test/acp/dart_acp_agent_client_test.dart --plain-name "concurrent permission tokens settle independently"
 ./tool/flutter_test_isolated.sh test/acp/dart_acp_agent_client_test.dart --plain-name "permission invalidation canaries never reach wire or audit events"
+./tool/flutter_test_isolated.sh test/acp/acp_request_timeout_test.dart --plain-name "permission provider never started receives no cancellation callback"
+./tool/flutter_test_isolated.sh test/acp/dart_acp_agent_client_test.dart --plain-name "deferred reconnect and dispose complete owner permission futures"
 ```
 
 Expected: 全部 PASS。

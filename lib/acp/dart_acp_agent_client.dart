@@ -286,20 +286,33 @@ class DartAcpAgentClient implements AcpAgentClient {
     acp.AcpPeerUnavailableState state,
   ) {
     if (!_isCurrentPeerSource(source)) return;
-    final gate = _rawUnavailablePublicationGateForTesting;
-    if (gate == null) {
-      _publishPeerUnavailable(state);
-      return;
-    }
-    if (!_rawUnavailablePublicationPausedForTesting.isCompleted) {
-      _rawUnavailablePublicationPausedForTesting.complete();
-    }
+    final disposed = switch (state.reason) {
+      acp.AcpPeerUnavailableReason.disposed => _disposed,
+      acp.AcpPeerUnavailableReason.fatalTimeout ||
+      acp.AcpPeerUnavailableReason.transportClosed ||
+      acp.AcpPeerUnavailableReason.explicitClose => false,
+    };
+    final committed = _permissionBridge.cancelAllForUnavailable(
+      disposed: disposed,
+    );
     unawaited(
-      gate.future.then<void>((_) {
-        if (identical(_rawUnavailablePublicationGateForTesting, gate)) {
-          _rawUnavailablePublicationGateForTesting = null;
+      committed.then<void>((_) {
+        final gate = _rawUnavailablePublicationGateForTesting;
+        if (gate == null) {
+          if (_isCurrentPeerSource(source)) _publishPeerUnavailable(state);
+          return;
         }
-        if (_isCurrentPeerSource(source)) _publishPeerUnavailable(state);
+        if (!_rawUnavailablePublicationPausedForTesting.isCompleted) {
+          _rawUnavailablePublicationPausedForTesting.complete();
+        }
+        unawaited(
+          gate.future.then<void>((_) {
+            if (identical(_rawUnavailablePublicationGateForTesting, gate)) {
+              _rawUnavailablePublicationGateForTesting = null;
+            }
+            if (_isCurrentPeerSource(source)) _publishPeerUnavailable(state);
+          }),
+        );
       }),
     );
   }
@@ -553,6 +566,7 @@ class DartAcpAgentClient implements AcpAgentClient {
             : null,
         permissionProvider: _InteractivePermissionProvider(
           _permissionBridge,
+          permissionTimeout: timeouts.permission,
           allowFilesystemReadTextFile: enableFilesystemReadTextFile,
           allowFilesystemWriteTextFile: enableFilesystemWriteTextFile,
         ),
@@ -1032,7 +1046,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     _configUpdateOmissionsBySession.remove(sessionId);
     _settingsOmissionsBySession.remove(sessionId);
     _boundedModesBySession.remove(sessionId);
-    _permissionBridge.cancelSession(sessionId);
+    _permissionBridge.cancelForSession(sessionId);
   }
 
   @override
@@ -1066,6 +1080,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
     _invalidateAllConfigMutationQueues();
     await client.sendRaw('logout', const <String, dynamic>{});
+    await _finishLogout();
+  }
+
+  Future<void> _finishLogout() async {
+    await _permissionBridge.cancelAllForUnavailable(disposed: false);
     _activeSessionId = null;
     _modesBySession.clear();
     _cwdBySession.clear();
@@ -1075,7 +1094,6 @@ class DartAcpAgentClient implements AcpAgentClient {
     _configUpdateOmissionsBySession.clear();
     _settingsOmissionsBySession.clear();
     _boundedModesBySession.clear();
-    _permissionBridge.cancelAll();
   }
 
   @override
@@ -3078,18 +3096,11 @@ class DartAcpAgentClient implements AcpAgentClient {
     return snapshot;
   }
 
-  Future<void> _waitForRawPromptOperationsFinished(
-    List<_RawPromptOperation> snapshot,
-  ) => Future.wait<void>(<Future<void>>[
-    for (final operation in snapshot) operation.finished,
-  ], eagerError: false);
-
   @override
   Future<void> cancel() async {
     final sessionId = _activeSessionId;
     final client = _client;
     if (client == null || sessionId == null) return;
-    _permissionBridge.cancelSession(sessionId);
     final operation = _rawPromptOperationsBySession[sessionId];
     if (operation == null) return;
     await _cancelRawPromptOperation(client, operation);
@@ -3125,6 +3136,10 @@ class DartAcpAgentClient implements AcpAgentClient {
     _acceptingRawPromptOperations = false;
     _disposed = true;
     _invalidateAllConfigMutationQueues();
+    final invalidationsCommitted = _permissionBridge.cancelAllForUnavailable(
+      disposed: true,
+      deferProviderCompletion: true,
+    );
     final connectingClient = _connectingClient;
     final connectingTransport = _connectingTransport;
     final connectingListener = _connectingBoundedObservationListener;
@@ -3138,6 +3153,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       connectingTransport,
       connectingListener,
       connectingPeerUnavailableListener,
+      invalidationsCommitted,
     );
   }
 
@@ -3146,19 +3162,27 @@ class DartAcpAgentClient implements AcpAgentClient {
     acp.AcpTransport? connectingTransport,
     acp.AcpBoundedObservationListener? connectingListener,
     acp.AcpPeerUnavailableListener? connectingPeerUnavailableListener,
+    Future<void> invalidationsCommitted,
   ) async {
     try {
-      await _disposeClient(
-        connectingClient,
-        connectingTransport,
-        connectingListener,
-        connectingPeerUnavailableListener,
-      );
+      await invalidationsCommitted;
+      await _permissionBridge.closeInvalidations();
     } finally {
       try {
-        await _disposeActiveClient(closePermissionStream: true);
+        await _disposeClient(
+          connectingClient,
+          connectingTransport,
+          connectingListener,
+          connectingPeerUnavailableListener,
+        );
       } finally {
-        await _peerUnavailableStates.close();
+        try {
+          await _disposeActiveClient(closePermissionStream: true);
+        } finally {
+          if (!_peerUnavailableStates.isClosed) {
+            await _peerUnavailableStates.close();
+          }
+        }
       }
     }
   }
@@ -3166,13 +3190,10 @@ class DartAcpAgentClient implements AcpAgentClient {
   Future<void> _disposeActiveClient({
     required bool closePermissionStream,
   }) async {
-    late final List<_RawPromptOperation> invalidatedOperations;
     if (closePermissionStream) {
-      invalidatedOperations = await _finishAllRawOutputsForUnavailable();
+      await _finishAllRawOutputsForUnavailable();
     } else {
-      invalidatedOperations = await _invalidateAllRawPromptOperations(
-        sendCancel: false,
-      );
+      await _invalidateAllRawPromptOperations(sendCancel: false);
     }
     _invalidateAllConfigMutationQueues();
     final client = _client;
@@ -3198,20 +3219,19 @@ class DartAcpAgentClient implements AcpAgentClient {
     _settingsOmissionsBySession.clear();
     _boundedModesBySession.clear();
     if (closePermissionStream) {
-      await _permissionBridge.dispose();
+      await _permissionBridge.closeRequests();
     } else {
-      _permissionBridge.cancelAll();
-    }
-    try {
-      await _disposeClient(
-        client,
-        transport,
-        observationListener,
-        peerUnavailableListener,
+      await _permissionBridge.cancelAllForUnavailable(
+        disposed: false,
+        deferProviderCompletion: true,
       );
-    } finally {
-      await _waitForRawPromptOperationsFinished(invalidatedOperations);
     }
+    await _disposeClient(
+      client,
+      transport,
+      observationListener,
+      peerUnavailableListener,
+    );
   }
 
   acp.AcpClient _requireClient() {
@@ -3348,14 +3368,17 @@ final class _ConfigOptionMutationQueue {
   }
 }
 
-class _InteractivePermissionProvider implements acp.PermissionProvider {
+class _InteractivePermissionProvider
+    implements acp.CancellablePermissionProvider {
   const _InteractivePermissionProvider(
     this.bridge, {
+    required this.permissionTimeout,
     required this.allowFilesystemReadTextFile,
     required this.allowFilesystemWriteTextFile,
   });
 
   final _AcpPermissionBridge bridge;
+  final Duration permissionTimeout;
   final bool allowFilesystemReadTextFile;
   final bool allowFilesystemWriteTextFile;
 
@@ -3368,7 +3391,18 @@ class _InteractivePermissionProvider implements acp.PermissionProvider {
         !allowFilesystemWriteTextFile) {
       return const acp.PermissionDecision.deny();
     }
-    return bridge.request(options);
+    return bridge.request(options, timeout: permissionTimeout);
+  }
+
+  @override
+  void cancelPendingPermission({
+    required Object cancellationToken,
+    required acp.PermissionCancellationReason reason,
+  }) {
+    bridge.cancelPendingPermission(
+      cancellationToken: cancellationToken,
+      reason: reason,
+    );
   }
 }
 
@@ -3554,30 +3588,87 @@ class _AcpPermissionBridge {
       StreamController<AcpPermissionRequest>.broadcast(sync: true);
   final StreamController<AcpPermissionInvalidation> _invalidations =
       StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
-  final Map<String, _PendingPermissionRequest> _pending =
+  final Map<String, _PendingPermissionRequest> _pendingById =
       <String, _PendingPermissionRequest>{};
+  final Map<Object, _PendingPermissionRequest> _pendingByToken =
+      HashMap<Object, _PendingPermissionRequest>.identity();
   int _nextId = 0;
+  int _nextLifecycleId = 0;
+  Future<void> _invalidationCommitTail = Future<void>.value();
+  bool _invalidationsClosed = false;
+  bool _requestsClosed = false;
   bool _isClosed = false;
 
   Stream<AcpPermissionRequest> get requests => _requests.stream;
 
   Stream<AcpPermissionInvalidation> get invalidations => _invalidations.stream;
 
-  Future<acp.PermissionDecision> request(acp.PermissionOptions options) async {
+  void _emitInvalidation(AcpPermissionInvalidation event) {
+    if (_invalidationsClosed) {
+      throw StateError('Permission invalidation stream is closed.');
+    }
+    final previous = _invalidationCommitTail;
+    final committed = Completer<void>.sync();
+    _invalidationCommitTail = Future.wait<void>(<Future<void>>[
+      previous,
+      committed.future,
+    ]);
+    try {
+      _invalidations.add(event);
+      committed.complete();
+    } on Object catch (error, stackTrace) {
+      committed.completeError(error, stackTrace);
+      rethrow;
+    }
+  }
+
+  Future<void> closeInvalidations() async {
+    if (_invalidationsClosed) return;
+    await _invalidationCommitTail;
+    _invalidationsClosed = true;
+    await _invalidations.close();
+  }
+
+  Future<void> closeRequests() async {
+    if (_requestsClosed) return;
+    _isClosed = true;
+    _requestsClosed = true;
+    await _requests.close();
+  }
+
+  Future<acp.PermissionDecision> request(
+    acp.PermissionOptions options, {
+    required Duration timeout,
+  }) async {
     if (_isClosed || !_requests.hasListener) {
       return const acp.PermissionDecision.cancelled();
     }
-
+    final token = options.cancellationToken;
+    if (token == null) {
+      return const acp.PermissionDecision.cancelled();
+    }
     final id = 'permission-${++_nextId}';
-    final completer = Completer<acp.PermissionDecision>();
-    _pending[id] = _PendingPermissionRequest(
+    final lifecycleId = 'permission-lifecycle-${++_nextLifecycleId}';
+    if (_pendingById.containsKey(id) || _pendingByToken.containsKey(token)) {
+      throw StateError('Duplicate ACP permission identity.');
+    }
+    final pending = _PendingPermissionRequest(
+      id: id,
+      lifecycleId: lifecycleId,
       sessionId: options.sessionId,
+      token: token,
       choices: List<acp.PermissionChoice>.unmodifiable(options.choices),
-      completer: completer,
+      completer: Completer<acp.PermissionDecision>.sync(),
     );
+    _pendingById[id] = pending;
+    _pendingByToken[token] = pending;
+    pending.timer = Timer(timeout, () {
+      _invalidatePending(pending, acp.PermissionCancellationReason.timedOut);
+    });
     _requests.add(
       AcpPermissionRequest(
         id: id,
+        lifecycleId: lifecycleId,
         title: options.title,
         rationale: options.rationale,
         sessionId: options.sessionId,
@@ -3602,9 +3693,13 @@ class _AcpPermissionBridge {
     );
 
     try {
-      return await completer.future;
+      return await pending.completer.future;
     } finally {
-      _pending.remove(id);
+      pending.timer?.cancel();
+      if (identical(_pendingById[id], pending)) _pendingById.remove(id);
+      if (identical(_pendingByToken[token], pending)) {
+        _pendingByToken.remove(token);
+      }
     }
   }
 
@@ -3613,54 +3708,129 @@ class _AcpPermissionBridge {
     required AcpPermissionDecision decision,
     String? selectedOptionId,
   }) {
-    final pending = _pending[id];
-    if (pending == null || pending.completer.isCompleted) return;
+    final pending = _pendingById[id];
+    if (pending == null || pending.state != _PendingPermissionState.pending) {
+      return;
+    }
     final optionId = selectedOptionId?.trim();
     if (optionId != null && optionId.isNotEmpty) {
       final choice = pending.choiceById(optionId);
-      final choiceDecision = choice == null ? null : _decisionForChoice(choice);
-      if (choiceDecision == null || choiceDecision != decision) {
+      if (choice == null || _decisionForChoice(choice) != decision) {
+        pending.state = _PendingPermissionState.userResolved;
+        pending.timer?.cancel();
         pending.completer.complete(const acp.PermissionDecision.cancelled());
         return;
       }
+      pending.state = _PendingPermissionState.userResolved;
+      pending.timer?.cancel();
       pending.completer.complete(
         acp.PermissionDecision(
           _outcomeForDecision(decision),
-          optionId: choice!.optionId,
+          optionId: choice.optionId,
         ),
       );
       return;
     }
+    pending.state = _PendingPermissionState.userResolved;
+    pending.timer?.cancel();
     pending.completer.complete(
       acp.PermissionDecision(_outcomeForDecision(decision)),
     );
   }
 
-  void cancelSession(String sessionId) {
-    final ids = _pending.entries
-        .where((entry) => entry.value.sessionId == sessionId)
-        .map((entry) => entry.key)
-        .toList();
-    for (final id in ids) {
-      respond(id: id, decision: AcpPermissionDecision.cancel);
+  void cancelPendingPermission({
+    required Object cancellationToken,
+    required acp.PermissionCancellationReason reason,
+  }) {
+    final pending = _pendingByToken[cancellationToken];
+    if (pending == null) return;
+    _invalidatePending(pending, reason);
+    _completeDeferredProviderDecision(pending);
+  }
+
+  void cancelForSession(String sessionId) {
+    final snapshot = _pendingByToken.values
+        .where((pending) => pending.sessionId == sessionId)
+        .toList(growable: false);
+    for (final pending in snapshot) {
+      _invalidatePending(
+        pending,
+        acp.PermissionCancellationReason.sessionClosed,
+      );
     }
   }
 
-  void cancelAll() {
-    final ids = _pending.keys.toList();
-    for (final id in ids) {
-      respond(id: id, decision: AcpPermissionDecision.cancel);
+  Future<void> cancelAllForUnavailable({
+    required bool disposed,
+    bool deferProviderCompletion = false,
+  }) async {
+    if (disposed) _isClosed = true;
+    final reason = disposed
+        ? acp.PermissionCancellationReason.disposed
+        : acp.PermissionCancellationReason.connectionClosed;
+    final snapshot = _pendingByToken.values.toList(growable: false);
+    for (final pending in snapshot) {
+      _invalidatePending(
+        pending,
+        reason,
+        deferProviderCompletion: deferProviderCompletion,
+      );
     }
+    await _invalidationCommitTail;
   }
 
-  Future<void> dispose() async {
-    if (_isClosed) return;
-    _isClosed = true;
-    cancelAll();
-    await Future.wait<void>(<Future<void>>[
-      _requests.close(),
-      _invalidations.close(),
-    ]);
+  AcpPermissionInvalidation _invalidationFor(
+    _PendingPermissionRequest pending,
+    acp.PermissionCancellationReason reason,
+  ) {
+    final appReason = switch (reason) {
+      acp.PermissionCancellationReason.timedOut =>
+        AcpPermissionInvalidationReason.timedOut,
+      acp.PermissionCancellationReason.promptEnded =>
+        AcpPermissionInvalidationReason.promptEnded,
+      acp.PermissionCancellationReason.promptCancelled =>
+        AcpPermissionInvalidationReason.promptCancelled,
+      acp.PermissionCancellationReason.sessionClosed =>
+        AcpPermissionInvalidationReason.sessionClosed,
+      acp.PermissionCancellationReason.connectionClosed =>
+        AcpPermissionInvalidationReason.connectionClosed,
+      acp.PermissionCancellationReason.disposed =>
+        AcpPermissionInvalidationReason.disposed,
+    };
+    return AcpPermissionInvalidation(
+      requestId: pending.id,
+      lifecycleId: pending.lifecycleId,
+      sessionId: pending.sessionId,
+      reason: appReason,
+      invalidatedAt: DateTime.now(),
+    );
+  }
+
+  bool _invalidatePending(
+    _PendingPermissionRequest pending,
+    acp.PermissionCancellationReason reason, {
+    bool deferProviderCompletion = false,
+  }) {
+    if (pending.state != _PendingPermissionState.pending) return false;
+    pending.state = _PendingPermissionState.invalidated;
+    pending.timer?.cancel();
+    _emitInvalidation(_invalidationFor(pending, reason));
+    if (reason == acp.PermissionCancellationReason.timedOut) {
+      pending.completer.completeError(
+        const acp.PermissionRequestTimeoutException(),
+      );
+    } else if (!deferProviderCompletion) {
+      pending.completer.complete(const acp.PermissionDecision.cancelled());
+    }
+    return true;
+  }
+
+  void _completeDeferredProviderDecision(_PendingPermissionRequest pending) {
+    if (pending.state != _PendingPermissionState.invalidated ||
+        pending.completer.isCompleted) {
+      return;
+    }
+    pending.completer.complete(const acp.PermissionDecision.cancelled());
   }
 
   acp.PermissionOutcome _outcomeForDecision(AcpPermissionDecision decision) {
@@ -3727,16 +3897,26 @@ class _AcpPermissionBridge {
   }
 }
 
-class _PendingPermissionRequest {
-  const _PendingPermissionRequest({
+enum _PendingPermissionState { pending, userResolved, invalidated }
+
+final class _PendingPermissionRequest {
+  _PendingPermissionRequest({
+    required this.id,
+    required this.lifecycleId,
     required this.sessionId,
+    required this.token,
     required this.choices,
     required this.completer,
   });
 
+  final String id;
+  final String lifecycleId;
   final String sessionId;
+  final Object token;
   final List<acp.PermissionChoice> choices;
   final Completer<acp.PermissionDecision> completer;
+  Timer? timer;
+  _PendingPermissionState state = _PendingPermissionState.pending;
 
   acp.PermissionChoice? choiceById(String optionId) {
     for (final choice in choices) {

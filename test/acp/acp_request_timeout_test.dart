@@ -417,6 +417,88 @@ final class _RawPromptProbe {
   final Future<void> unavailableSeen;
 }
 
+final class _LogicalDeadlineProbe {
+  final Completer<void> started = Completer<void>.sync();
+  final Completer<void> completed = Completer<void>.sync();
+  final List<Object?> terminalValues = <Object?>[];
+  Map<String, dynamic>? outboundRequest;
+  acp.AcpSessionInputBudgetOwner? owner;
+  Map<String, Object?>? responseResult;
+  Object? terminalError;
+  StreamSubscription<Map<String, dynamic>>? wireSubscription;
+
+  void observeWire(Map<String, dynamic> request) {
+    outboundRequest = request;
+    if (!started.isCompleted) started.complete();
+  }
+
+  void bindFuture(Future<Object?> operation) {
+    unawaited(
+      operation.then<void>(
+        (value) {
+          terminalValues.add(value);
+          if (!completed.isCompleted) completed.complete();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          terminalError = error;
+          if (!completed.isCompleted) completed.complete();
+        },
+      ),
+    );
+  }
+
+  void bindStream(Stream<Object?> operation) {
+    late final StreamSubscription<Object?> subscription;
+    subscription = operation.listen(
+      terminalValues.add,
+      onError: (Object error, StackTrace stackTrace) {
+        terminalError = error;
+      },
+      onDone: () {
+        if (!completed.isCompleted) completed.complete();
+      },
+      cancelOnError: false,
+    );
+    unawaited(completed.future.whenComplete(subscription.cancel));
+  }
+}
+
+final class _PromptDeadlineProbe {
+  const _PromptDeadlineProbe({required this.prompt, required this.cancelSeen});
+
+  final _LogicalDeadlineProbe prompt;
+  final Future<Map<String, dynamic>> cancelSeen;
+}
+
+final class _PromptCleanupGraceProbe {
+  const _PromptCleanupGraceProbe({
+    required this.deadline,
+    required this.unavailable,
+    required this.unavailableStates,
+  });
+
+  final _PromptDeadlineProbe deadline;
+  final Future<acp.AcpPeerUnavailableState> unavailable;
+  final List<acp.AcpPeerUnavailableState> unavailableStates;
+}
+
+enum _DeadlineConsumer {
+  initialize,
+  ordinaryRequest,
+  typedPrompt,
+  rawPrompt,
+  managerAdmission,
+  promptCleanupGrace,
+}
+
+Future<void> _expectStillPending(
+  Future<void> completion,
+  Duration lowerBound,
+) => expectLater(
+  completion.timeout(lowerBound),
+  throwsA(isA<TimeoutException>()),
+);
+
 class _PermissionAdmissionHarness {
   _PermissionAdmissionHarness._({
     required this.acpClient,
@@ -803,6 +885,135 @@ class _PermissionAdmissionHarness {
     acp.PermissionCancellationReason reason,
   ) {
     manager.settlePromptAdmissions(owner: owner, reason: reason);
+  }
+
+  int responseCommitCountFor(_PermissionRequestProbe probe) =>
+      probe.responseCommitCount;
+
+  void releasePermit(_PermissionRequestProbe probe) {
+    if (probe.admission == null) {
+      throw StateError('Cannot release a permit before admission is observed.');
+    }
+    releaseOrdinaryPermits();
+  }
+
+  _LogicalDeadlineProbe _outboundDeadlineProbe({required String method}) {
+    final probe = _LogicalDeadlineProbe();
+    late final StreamSubscription<Map<String, dynamic>> subscription;
+    subscription = wireRequests.stream.listen((request) {
+      if (request['method'] != method) return;
+      probe.observeWire(request);
+      unawaited(subscription.cancel());
+    });
+    probe.wireSubscription = subscription;
+    return probe;
+  }
+
+  Future<Map<String, dynamic>> _nextWireRequest(String method) {
+    final seen = Completer<Map<String, dynamic>>.sync();
+    late final StreamSubscription<Map<String, dynamic>> subscription;
+    subscription = wireRequests.stream.listen((request) {
+      if (request['method'] != method) return;
+      if (!seen.isCompleted) seen.complete(request);
+      unawaited(subscription.cancel());
+    });
+    return seen.future;
+  }
+
+  _LogicalDeadlineProbe startInitializeWithoutResponse() {
+    final probe = _outboundDeadlineProbe(method: 'initialize');
+    probe.bindFuture(peer.initialize(<String, dynamic>{}));
+    return probe;
+  }
+
+  _LogicalDeadlineProbe startOrdinaryRequestWithoutResponse() {
+    final probe = _outboundDeadlineProbe(method: '_deadline_probe');
+    probe.bindFuture(
+      peer.sendRaw('_deadline_probe', const <String, dynamic>{}),
+    );
+    return probe;
+  }
+
+  _PromptDeadlineProbe startTypedPromptWithoutResponse() {
+    final cancelSeen = _nextWireRequest('session/cancel');
+    final probe = _outboundDeadlineProbe(method: 'session/prompt');
+    probe.bindStream(
+      manager.prompt(
+        sessionId: sessionId,
+        content: const <Map<String, dynamic>>[
+          <String, dynamic>{'type': 'text', 'text': 'typed deadline'},
+        ],
+      ),
+    );
+    return _PromptDeadlineProbe(prompt: probe, cancelSeen: cancelSeen);
+  }
+
+  _PromptDeadlineProbe startRawPromptWithoutResponse() {
+    final cancelSeen = _nextWireRequest('session/cancel');
+    final probe = _outboundDeadlineProbe(method: 'session/prompt');
+    final owner = manager.beginPromptTurn(sessionId);
+    probe.owner = owner;
+    probe.bindFuture(() async {
+      try {
+        return await manager.sendPromptRequest(
+          owner: owner,
+          content: const <Map<String, dynamic>>[
+            <String, dynamic>{'type': 'text', 'text': 'raw deadline'},
+          ],
+        );
+      } finally {
+        manager.endPromptTurn(owner);
+      }
+    }());
+    return _PromptDeadlineProbe(prompt: probe, cancelSeen: cancelSeen);
+  }
+
+  Future<_LogicalDeadlineProbe> startManagerAdmissionWithoutResponse() async {
+    final probe = _LogicalDeadlineProbe();
+    final admission = await admit('session/request_permission');
+    await admission.admissionSeen.future;
+    probe.started.complete();
+    unawaited(
+      admission.response.then<void>(
+        (response) {
+          final result = response.result;
+          probe.responseResult = result is Map
+              ? Map<String, Object?>.from(result)
+              : null;
+          if (!probe.completed.isCompleted) probe.completed.complete();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          probe.terminalError = error;
+          if (!probe.completed.isCompleted) probe.completed.complete();
+        },
+      ),
+    );
+    return probe;
+  }
+
+  _PromptCleanupGraceProbe startPromptCleanupGraceProbe() {
+    final unavailableStates = <acp.AcpPeerUnavailableState>[];
+    final unavailableSeen = Completer<acp.AcpPeerUnavailableState>.sync();
+    void unavailable(acp.AcpPeerUnavailableState state) {
+      unavailableStates.add(state);
+      if (!unavailableSeen.isCompleted) unavailableSeen.complete(state);
+    }
+
+    peer.addUnavailableListener(unavailable);
+    final deadline = startTypedPromptWithoutResponse();
+    return _PromptCleanupGraceProbe(
+      deadline: deadline,
+      unavailable: unavailableSeen.future,
+      unavailableStates: unavailableStates,
+    );
+  }
+
+  void completeOriginalPromptSuccess(_PromptDeadlineProbe probe) {
+    transport.sendAgentMessage(<String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': probe.prompt.outboundRequest!['id'],
+      'result': <String, dynamic>{'stopReason': 'end_turn'},
+    });
   }
 
   Future<void> configureRemoteSessionCloseFailureForTesting(
@@ -2182,11 +2393,7 @@ Future<void> _expectSealedPromptAdmissionRejected(
   expect(harness.base.permissions.requests.length, providerRequestsBefore);
   expect(
     harness.base.permissions.cancellations.length,
-    providerCancellationsBefore + 1,
-  );
-  expect(
-    harness.base.permissions.cancellations.last.$2,
-    operation.lifecycle.cancellationWinner,
+    providerCancellationsBefore,
   );
   expect(harness.base.fs.readCalls, sideEffectsBefore);
   expect(manager.promptLifecycleIsCurrentForTesting(operation.owner), isTrue);
@@ -4982,11 +5189,7 @@ void main() {
             expect(reply.errorMessage, 'Permission request cancelled.');
             expect(reply.hasErrorData, isFalse);
             await stale.settled.timeout(const Duration(seconds: 2));
-            expect(harness.permissions.cancellations, hasLength(1));
-            expect(
-              harness.permissions.cancellations.single.$2,
-              acp.PermissionCancellationReason.sessionClosed,
-            );
+            expect(harness.permissions.cancellations, isEmpty);
             expect(stale.reservationReleaseCount, 1);
             expect(stale.responseCommitCount, 1);
             expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
@@ -5236,14 +5439,14 @@ void main() {
             expect(probe.responseCommitCount, 1);
           }
           expect(harness.permissions.requests, hasLength(1));
-          expect(harness.permissions.cancellations, hasLength(2));
+          expect(harness.permissions.cancellations, hasLength(1));
           expect(
             harness.permissions.cancellations.map((entry) => entry.$2),
             everyElement(acp.PermissionCancellationReason.sessionClosed),
           );
           expect(
             harness.permissions.cancellations.map((entry) => entry.$1).toSet(),
-            hasLength(2),
+            hasLength(1),
           );
           expect(harness.fs.readCalls, 0);
           expect(harness.terminals.createCalls, 0);
@@ -5690,7 +5893,7 @@ void main() {
           expect(first.cancelWireCount, 1);
           expect(
             first.permissionReason,
-            acp.PermissionCancellationReason.promptCancelled,
+            running ? acp.PermissionCancellationReason.promptCancelled : null,
           );
           expect(
             () => harness.manager.beginPromptTurn(harness.sessionId),
@@ -5748,14 +5951,14 @@ void main() {
       );
       expect(reentrantCreationCount, 1);
       expect(harness.base.permissions.requests, hasLength(1));
-      expect(harness.base.permissions.cancellations, hasLength(2));
+      expect(harness.base.permissions.cancellations, hasLength(1));
       expect(
         harness.base.permissions.cancellations.map((entry) => entry.$2),
         everyElement(acp.PermissionCancellationReason.promptCancelled),
       );
       expect(
         harness.base.permissions.cancellations.map((entry) => entry.$1).toSet(),
-        hasLength(2),
+        hasLength(1),
       );
 
       await operation.finishPromptAndAdmission();
@@ -6239,7 +6442,10 @@ void main() {
               );
               expect(request.reservationReleaseCount, 1);
               expect(request.responseCommitCount, 1);
-              expect(harness.permissions.cancellations, hasLength(1));
+              expect(
+                harness.permissions.cancellations,
+                hasLength(permitFirst ? 1 : 0),
+              );
               expect(
                 harness.permissions.requests,
                 hasLength(permitFirst ? 1 : 0),
@@ -7947,6 +8153,253 @@ void main() {
       await core.dispose();
     }
   });
+
+  test('custom ACP timeouts reach every logical deadline consumer', () async {
+    const timeouts = acp.AcpTimeouts(
+      initialize: Duration(milliseconds: 180),
+      request: Duration(milliseconds: 480),
+      prompt: Duration(milliseconds: 520),
+      permission: Duration(milliseconds: 900),
+      promptCancelGrace: Duration(milliseconds: 1500),
+    );
+    for (final consumer in _DeadlineConsumer.values) {
+      final fresh = await _PermissionAdmissionHarness.start(timeouts: timeouts);
+      try {
+        expect(identical(fresh.config.timeouts, timeouts), isTrue);
+        expect(
+          identical(
+            fresh.acpClient.peerTimeoutsForTesting,
+            fresh.config.timeouts,
+          ),
+          isTrue,
+        );
+        expect(
+          identical(
+            fresh.acpClient.sessionManagerConfigForTesting,
+            fresh.config,
+          ),
+          isTrue,
+        );
+        switch (consumer) {
+          case _DeadlineConsumer.initialize:
+            final probe = fresh.startInitializeWithoutResponse();
+            await probe.started.future.timeout(const Duration(seconds: 2));
+            await _expectStillPending(
+              probe.completed.future,
+              const Duration(milliseconds: 75),
+            );
+            await probe.completed.future.timeout(
+              const Duration(milliseconds: 180),
+            );
+            expect(probe.terminalError, isA<acp.AcpRequestTimeoutException>());
+            break;
+          case _DeadlineConsumer.ordinaryRequest:
+            final probe = fresh.startOrdinaryRequestWithoutResponse();
+            await probe.started.future.timeout(const Duration(seconds: 2));
+            await _expectStillPending(
+              probe.completed.future,
+              const Duration(milliseconds: 320),
+            );
+            await probe.completed.future.timeout(
+              const Duration(milliseconds: 260),
+            );
+            expect(probe.terminalError, isA<acp.AcpRequestTimeoutException>());
+            break;
+          case _DeadlineConsumer.typedPrompt:
+            final probe = fresh.startTypedPromptWithoutResponse();
+            await probe.prompt.started.future.timeout(
+              const Duration(seconds: 2),
+            );
+            await _expectStillPending(
+              probe.prompt.completed.future,
+              const Duration(milliseconds: 400),
+            );
+            await probe.cancelSeen.timeout(const Duration(milliseconds: 250));
+            expect(fresh.peer.isAvailable, isTrue);
+            fresh.completeOriginalPromptSuccess(probe);
+            await probe.prompt.completed.future.timeout(
+              const Duration(seconds: 1),
+            );
+            expect(
+              probe.prompt.terminalError,
+              isA<acp.AcpPromptTimeoutException>(),
+            );
+            expect(
+              probe.prompt.terminalValues.whereType<acp.TurnEnded>(),
+              hasLength(1),
+            );
+            expect(
+              fresh.peer.isAvailable,
+              isTrue,
+              reason:
+                  'late original response reaps cleanup without changing timeout',
+            );
+            break;
+          case _DeadlineConsumer.rawPrompt:
+            final probe = fresh.startRawPromptWithoutResponse();
+            await probe.prompt.started.future.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(probe.prompt.owner, isNotNull);
+            await _expectStillPending(
+              probe.prompt.completed.future,
+              const Duration(milliseconds: 400),
+            );
+            await probe.cancelSeen.timeout(const Duration(milliseconds: 250));
+            expect(fresh.peer.isAvailable, isTrue);
+            fresh.completeOriginalPromptSuccess(probe);
+            await probe.prompt.completed.future.timeout(
+              const Duration(seconds: 1),
+            );
+            expect(
+              probe.prompt.terminalError,
+              isA<acp.AcpPromptTimeoutException>(),
+            );
+            expect(fresh.peer.isAvailable, isTrue);
+            break;
+          case _DeadlineConsumer.managerAdmission:
+            final probe = await fresh.startManagerAdmissionWithoutResponse();
+            await probe.started.future.timeout(const Duration(seconds: 2));
+            await _expectStillPending(
+              probe.completed.future,
+              const Duration(milliseconds: 750),
+            );
+            await probe.completed.future.timeout(
+              const Duration(milliseconds: 300),
+            );
+            expect(probe.terminalError, isNull);
+            expect(probe.responseResult, <String, Object?>{
+              'outcome': <String, Object?>{'outcome': 'cancelled'},
+            });
+            break;
+          case _DeadlineConsumer.promptCleanupGrace:
+            final probe = fresh.startPromptCleanupGraceProbe();
+            await probe.deadline.prompt.started.future.timeout(
+              const Duration(seconds: 2),
+            );
+            await _expectStillPending(
+              probe.deadline.prompt.completed.future,
+              const Duration(milliseconds: 400),
+            );
+            await probe.deadline.cancelSeen.timeout(
+              const Duration(milliseconds: 250),
+            );
+            await _expectStillPending(
+              probe.deadline.prompt.completed.future,
+              const Duration(milliseconds: 100),
+            );
+            expect(
+              fresh.peer.isAvailable,
+              isTrue,
+              reason: 'caller remains pending throughout cleanup grace',
+            );
+            await _expectStillPending(
+              probe.unavailable.then<void>((_) {}),
+              const Duration(milliseconds: 900),
+            );
+            final unavailable = await probe.unavailable.timeout(
+              const Duration(milliseconds: 800),
+            );
+            expect(
+              unavailable.reason,
+              acp.AcpPeerUnavailableReason.fatalTimeout,
+            );
+            await probe.deadline.prompt.completed.future.timeout(
+              const Duration(milliseconds: 250),
+            );
+            expect(
+              probe.deadline.prompt.terminalError,
+              isA<acp.AcpPromptTimeoutException>(),
+            );
+            expect(probe.unavailableStates, hasLength(1));
+            expect(fresh.peer.isAvailable, isFalse);
+            break;
+        }
+      } finally {
+        await fresh.dispose();
+      }
+    }
+  });
+
+  test('permission manager-first settlement stays first wins', () async {
+    final core = await _PermissionAdmissionHarness.start(
+      timeouts: const acp.AcpTimeouts(permission: Duration(milliseconds: 75)),
+    );
+    try {
+      await core.occupyAllOrdinaryPermits();
+      final admission = await core.admit('session/request_permission');
+      await admission.admissionSeen.future.timeout(const Duration(seconds: 2));
+      final response = await admission.response.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(core.permissions.requests, isEmpty);
+      expect(
+        core.permissions.cancellations,
+        isEmpty,
+        reason: 'provider never received a token before admission timed out',
+      );
+      expect(core.responseCommitCountFor(admission), 1);
+      core.releasePermit(admission);
+      await admission.settled.timeout(const Duration(seconds: 2));
+      expect(core.permissions.requests, isEmpty);
+      expect(core.permissions.cancellations, isEmpty);
+      expect(core.responseCommitCountFor(admission), 1);
+      expect(response.result, <String, Object?>{
+        'outcome': <String, Object?>{'outcome': 'cancelled'},
+      });
+    } finally {
+      await core.dispose();
+    }
+  });
+
+  test(
+    'permission provider never started receives no cancellation callback',
+    () async {
+      for (final reason in acp.PermissionCancellationReason.values) {
+        final core = await _PermissionAdmissionHarness.start();
+        try {
+          await core.occupyAllOrdinaryPermits();
+          final owner = core.manager.beginPromptTurn(core.sessionId);
+          final admission = await core.admit(
+            'session/request_permission',
+            owner: owner,
+          );
+          await admission.admissionSeen.future.timeout(
+            const Duration(seconds: 2),
+          );
+
+          core.cancelOwner(owner, reason);
+          core.releasePermit(admission);
+
+          final response = await admission.response.timeout(
+            const Duration(seconds: 2),
+          );
+          await admission.settled.timeout(const Duration(seconds: 2));
+          expect(
+            core.permissions.requests,
+            isEmpty,
+            reason: 'provider request for $reason',
+          );
+          expect(
+            core.permissions.cancellations,
+            isEmpty,
+            reason: 'provider cancellation for $reason',
+          );
+          expect(
+            core.manager.pendingPermissionCountForTesting(core.sessionId),
+            0,
+          );
+          expect(core.responseCommitCountFor(admission), 1);
+          expect(response.result, <String, Object?>{
+            'outcome': <String, Object?>{'outcome': 'cancelled'},
+          });
+          core.manager.endPromptTurn(owner);
+        } finally {
+          await core.dispose();
+        }
+      }
+    },
+  );
 
   test('ACP timeout defaults and validation are exact', () {
     const defaults = acp.AcpTimeouts();

@@ -880,6 +880,7 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     required this.promptLifecycle,
     required this.ownerAdmissionsSealedAtArrival,
     required this.peerEpoch,
+    required this.cancellationToken,
   }) {
     unawaited(
       _localResult.future.then<void>(
@@ -901,7 +902,7 @@ final class _InboundPermissionAdmission implements InboundAdmission {
   final _PromptLifecycle? promptLifecycle;
   final bool ownerAdmissionsSealedAtArrival;
   final _PeerEpoch peerEpoch;
-  final Object cancellationToken = Object();
+  final Object cancellationToken;
   final Completer<InboundGateTerminal<dynamic>> _terminal =
       Completer<InboundGateTerminal<dynamic>>.sync();
   final Completer<PermissionCancellationReason> _cancellation =
@@ -1176,7 +1177,16 @@ class SessionManager implements AcpBoundedObservationSource {
   final AcpInputBudget inputBudget;
   final int maxTerminalHandles;
   final int maxTerminalHandlesPerSession;
+  Object Function() _permissionCancellationTokenFactory = Object.new;
   late final Set<AcpBoundedObservationListener> _boundedObservationListeners;
+
+  /// Replaces the opaque permission cancellation-token factory for tests.
+  @visibleForTesting
+  void replacePermissionCancellationTokenFactoryForTesting(
+    Object Function() factory,
+  ) {
+    _permissionCancellationTokenFactory = factory;
+  }
 
   final Map<String, StreamController<AcpUpdate>> _sessionStreams = {};
   final Map<String, _ReplayBuffer> _replayBuffers = {};
@@ -4591,6 +4601,7 @@ class SessionManager implements AcpBoundedObservationSource {
       promptLifecycle: ownerAdmissionsSealed ? null : promptLifecycle,
       ownerAdmissionsSealedAtArrival: ownerAdmissionsSealed,
       peerEpoch: _peerEpoch,
+      cancellationToken: _permissionCancellationTokenFactory(),
     );
     _inboundAdmissions.add(admission);
     if (params != null) _admissionsByParams[params] = admission;
@@ -4836,7 +4847,9 @@ class SessionManager implements AcpBoundedObservationSource {
     _InboundPermissionAdmission admission,
     PermissionCancellationReason reason,
   ) {
-    if (admission.providerCancellationSent) return;
+    if (!admission.providerStarted || admission.providerCancellationSent) {
+      return;
+    }
     final provider = config.permissionProvider;
     if (provider is! CancellablePermissionProvider) return;
     admission.providerCancellationSent = true;

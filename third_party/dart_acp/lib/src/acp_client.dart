@@ -123,6 +123,25 @@ class AcpClient implements AcpBoundedObservationSource {
   @visibleForTesting
   SessionManager get sessionManagerForTesting => _sessionManager;
 
+  /// The exact timeout configuration owned by the peer.
+  @visibleForTesting
+  AcpTimeouts get peerTimeoutsForTesting => _peer.timeouts;
+
+  /// The exact configuration instance owned by the session manager.
+  @visibleForTesting
+  AcpConfig get sessionManagerConfigForTesting => _sessionManager.config;
+
+  /// Replaces the opaque permission cancellation-token factory for tests.
+  @visibleForTesting
+  void replacePermissionCancellationTokenFactoryForTesting(
+    Object Function() factory,
+  ) {
+    // ignore: invalid_use_of_visible_for_testing_member
+    _sessionManager.replacePermissionCancellationTokenFactoryForTesting(
+      factory,
+    );
+  }
+
   /// Whether the underlying ACP peer remains available.
   bool get isAvailable => _peer.isAvailable;
 

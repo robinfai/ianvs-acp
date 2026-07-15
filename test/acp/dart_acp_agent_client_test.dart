@@ -15,6 +15,7 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/dart_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 
@@ -38,6 +39,107 @@ enum _RawExternalUnavailableCause { explicitClose, dispose }
 enum _RawPreOwnerExit { cancel, reconnect, dispose }
 
 enum _RawPostOwnerExit { reconnect, dispose }
+
+const bridgePermissionMethods = <String>[
+  'session/request_permission',
+  'fs/read_text_file',
+  'fs/write_text_file',
+  'terminal/create',
+];
+
+const bridgeInvalidationReasons = <AcpPermissionInvalidationReason>[
+  AcpPermissionInvalidationReason.timedOut,
+  AcpPermissionInvalidationReason.promptEnded,
+  AcpPermissionInvalidationReason.promptCancelled,
+  AcpPermissionInvalidationReason.sessionClosed,
+  AcpPermissionInvalidationReason.connectionClosed,
+  AcpPermissionInvalidationReason.disposed,
+];
+
+enum UnavailableFirstReason {
+  requestFatal,
+  transportClose,
+  explicitClose,
+  dispose,
+}
+
+enum _DeferredPermissionExit { reconnect, dispose }
+
+AcpPermissionInvalidationReason expectedReasonFor(
+  UnavailableFirstReason reason,
+) => switch (reason) {
+  UnavailableFirstReason.dispose => AcpPermissionInvalidationReason.disposed,
+  UnavailableFirstReason.requestFatal ||
+  UnavailableFirstReason.transportClose ||
+  UnavailableFirstReason.explicitClose =>
+    AcpPermissionInvalidationReason.connectionClosed,
+};
+
+final class _PermissionWireProbe {
+  const _PermissionWireProbe({
+    required this.request,
+    required this.response,
+    required this.responseCapture,
+    required this.agentParams,
+    required this.control,
+  });
+
+  final AcpPermissionRequest request;
+  final Future<_CapturedWireResponse> response;
+  final File responseCapture;
+  final Map<String, Object?> agentParams;
+  final Map<String, Object?> control;
+}
+
+final class _CapturedWireResponse {
+  const _CapturedWireResponse(this.raw);
+
+  final Map<String, Object?> raw;
+
+  Map<String, Object?>? get _error {
+    final value = raw['error'];
+    return value is Map ? Map<String, Object?>.from(value) : null;
+  }
+
+  Map<String, Object?>? get _result {
+    final value = raw['result'];
+    return value is Map ? Map<String, Object?>.from(value) : null;
+  }
+
+  bool get hasErrorData => _error?.containsKey('data') ?? false;
+  bool get hasError => _error != null;
+  int? get errorCode => _error?['code'] as int?;
+  String? get errorText => _error?['message'] as String?;
+  String? get terminalId => _result?['terminalId'] as String?;
+
+  String? get selectedOutcome {
+    final outcome = _result?['outcome'];
+    if (outcome is String) return outcome;
+    if (outcome is Map<String, Object?>) {
+      return outcome['outcome'] as String?;
+    }
+    return null;
+  }
+
+  String? get selectedOptionId {
+    final outcome = _result?['outcome'];
+    if (outcome is Map<String, Object?>) {
+      return outcome['optionId'] as String?;
+    }
+    return null;
+  }
+}
+
+enum _PermissionFileWaitSignal { retry, disposed, unavailable }
+
+final class _CanaryCancellationToken {
+  const _CanaryCancellationToken(this.canary);
+
+  final String canary;
+
+  @override
+  String toString() => 'ACP cancellation token <$canary>';
+}
 
 const _rawAgentSource = r'''
 import 'dart:async';
@@ -187,6 +289,690 @@ Future<void> main(List<String> args) async {
   await polling;
 }
 ''';
+
+const _permissionAgentSource = r'''
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main(List<String> args) async {
+  final controlFile = File(args[0]);
+  final ackDirectory = Directory(args[1]);
+  final responseDirectory = Directory(args[2]);
+  final transportClosedFile = File(args[3]);
+  final markerDirectory = Directory(args[4]);
+  final defaultWorkspacePath = args[5];
+  var handledControlSequence = 0;
+  var nextPermissionId = 1000;
+  var nextSessionId = 1;
+  Object? activePromptId;
+  var controlBusy = false;
+  final responseTargets = <Object?, File>{};
+  final responseLogs = <Object?, File>{};
+
+  void send(Map<String, Object?> message) {
+    stdout.writeln(jsonEncode(message));
+  }
+
+  Map<String, Object?> permissionParams(
+    String method,
+    Map<String, Object?> control,
+  ) {
+    final sessionId = control['sessionId'] as String? ?? 'session-1';
+    final canary = control['canary'] as String? ?? '';
+    final workspacePath =
+        control['workspacePath'] as String? ?? defaultWorkspacePath;
+    final transient = control['transientMetadata'];
+    return switch (method) {
+      'session/request_permission' => <String, Object?>{
+        'sessionId': sessionId,
+        'options': <Map<String, Object?>>[
+          <String, Object?>{'optionId': 'allow', 'name': 'Allow'},
+          <String, Object?>{'optionId': 'deny', 'name': 'Deny'},
+        ],
+        'toolCall': <String, Object?>{
+          'title': 'Permission request',
+          'kind': 'read',
+          if (transient is Map) 'transientPolicyContext': transient,
+        },
+      },
+      'fs/read_text_file' => <String, Object?>{
+        'sessionId': sessionId,
+        'path': '$workspacePath/input-$canary.txt',
+      },
+      'fs/write_text_file' => <String, Object?>{
+        'sessionId': sessionId,
+        'path': '$workspacePath/output-$canary.txt',
+        'content': 'fixed',
+      },
+      'terminal/create' => <String, Object?>{
+        'sessionId': sessionId,
+        'command': '/usr/bin/true',
+        'args': <String>[],
+      },
+      _ => <String, Object?>{'sessionId': sessionId},
+    };
+  }
+
+  Future<void> handleControl() async {
+    if (controlBusy || !await controlFile.exists()) return;
+    controlBusy = true;
+    try {
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(await controlFile.readAsString());
+      } on FormatException {
+        return;
+      } on FileSystemException {
+        return;
+      }
+      if (decoded is! Map) return;
+      final control = Map<String, Object?>.from(decoded);
+      final sequence = control['sequence'];
+      if (sequence is! int || sequence <= handledControlSequence) return;
+      final action = control['action'];
+      if (action == 'permission') {
+        final method = control['method'] as String;
+        final id = nextPermissionId++;
+        final responseSequence = control['responseSequence'] as int;
+        final params = permissionParams(method, control);
+        await File('${responseDirectory.path}/request-$responseSequence.json')
+            .writeAsString(jsonEncode(params), flush: true);
+        responseTargets[id] = File(
+          '${responseDirectory.path}/'
+          '${method.replaceAll('/', '_')}-$responseSequence.json',
+        );
+        responseLogs[id] = File(
+          '${responseDirectory.path}/wire-$responseSequence.jsonl',
+        );
+        send(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'method': method,
+          'params': params,
+        });
+      } else if (action == 'finish-prompt' && activePromptId != null) {
+        send(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': activePromptId,
+          'result': <String, Object?>{'stopReason': 'end_turn'},
+        });
+        activePromptId = null;
+      } else if (action == 'transport-close') {
+        await transportClosedFile.writeAsString('closed');
+      }
+      handledControlSequence = sequence;
+      await controlFile.delete();
+      await File('${ackDirectory.path}/$sequence.ack')
+          .writeAsString('$sequence', flush: true);
+      if (action == 'transport-close') exit(0);
+    } finally {
+      controlBusy = false;
+    }
+  }
+
+  final controlTimer = Timer.periodic(
+    const Duration(milliseconds: 5),
+    (_) => unawaited(handleControl()),
+  );
+
+  try {
+    await for (final line in stdin
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())) {
+      final decoded = jsonDecode(line);
+      if (decoded is! Map) continue;
+      final message = Map<String, Object?>.from(decoded);
+      final method = message['method'];
+      if (method == 'initialize') {
+        send(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, Object?>{
+            'protocolVersion': 1,
+            'agentCapabilities': <String, Object?>{
+              'auth': <String, Object?>{'logout': true},
+              'sessionCapabilities': <String, Object?>{'close': true},
+            },
+            'authMethods': <Map<String, Object?>>[],
+          },
+        });
+      } else if (method == 'session/new') {
+        final sessionId = 'session-${nextSessionId++}';
+        send(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': <String, Object?>{'sessionId': sessionId},
+        });
+      } else if (method == 'session/prompt') {
+        activePromptId = message['id'];
+        await File('${markerDirectory.path}/owner-prompt-seen')
+            .writeAsString('seen');
+      } else if (method == 'logout' ||
+          method == 'authenticate/logout' ||
+          method == '_permission_fixture_echo' ||
+          method == 'session/close') {
+        send(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': message['id'],
+          'result': method == '_permission_fixture_echo'
+              ? <String, Object?>{'value': 'ok'}
+              : <String, Object?>{},
+        });
+      } else if (method == '_permission_fixture_timeout') {
+        await File('${markerDirectory.path}/request-fatal-seen')
+            .writeAsString('seen');
+      } else if (!message.containsKey('method') &&
+          message.containsKey('id')) {
+        final target = responseTargets[message['id']];
+        final log = responseLogs[message['id']];
+        if (target != null && log != null) {
+          await log.writeAsString(
+            '${jsonEncode(message)}\n',
+            mode: FileMode.append,
+            flush: true,
+          );
+          if (!await target.exists()) {
+            await target.writeAsString(jsonEncode(message), flush: true);
+          }
+        }
+      }
+    }
+  } finally {
+    controlTimer.cancel();
+  }
+}
+''';
+
+final class _PermissionStdioFixture {
+  _PermissionStdioFixture._({
+    required this.tempDir,
+    required this.workspaceDirectory,
+    required this.client,
+    required this.acpClient,
+    required this.session,
+    required this.controlFile,
+    required this.controlAckDirectory,
+    required this.responseDirectory,
+    required this.markerDirectory,
+    required this.transportClosedFile,
+    required this.transientMetadata,
+    required this._unavailable,
+  });
+
+  final Directory tempDir;
+  final Directory workspaceDirectory;
+  final DartAcpAgentClient client;
+  final acp.AcpClient acpClient;
+  final AgentSession session;
+  final File controlFile;
+  final Directory controlAckDirectory;
+  final Directory responseDirectory;
+  final Directory markerDirectory;
+  final File transportClosedFile;
+  final Map<String, Object?> transientMetadata;
+  Future<acp.AcpPeerUnavailableState> _unavailable;
+  late final StreamSubscription<acp.AcpPeerUnavailableState>
+  _peerUnavailableSubscription;
+  late final StreamSubscription<AcpPermissionInvalidation>
+  _permissionInvalidationSubscription;
+  int _controlSequence = 0;
+  int _responseSequence = 0;
+  final List<Object> cancellationTokensCreatedForTesting = <Object>[];
+  _CanaryCancellationToken? _injectedCancellationToken;
+  Future<void>? _clientDisposeFuture;
+  Future<void>? _disposeFuture;
+  final Completer<void> _stopFileWaits = Completer<void>.sync();
+  Future<void>? _ownerPromptStarted;
+  StreamSubscription<AgentEvent>? _ownerPromptSubscription;
+  final Map<String, File> responseLogsByLifecycle = <String, File>{};
+  int _peerCloseCount = 0;
+
+  static Future<_PermissionStdioFixture> startPermissionScenario({
+    acp.AcpTimeouts timeouts = const acp.AcpTimeouts(
+      request: Duration(milliseconds: 75),
+      permission: Duration(milliseconds: 750),
+      promptCancelGrace: Duration(milliseconds: 750),
+    ),
+    Map<String, Object?> transientMetadata = const <String, Object?>{},
+  }) async {
+    final tempDir = await Directory.systemTemp.createTemp('permission-stdio-');
+    File path(String name) => File('${tempDir.path}/$name');
+    final ackDirectory = Directory('${tempDir.path}/acks');
+    final responseDirectory = Directory('${tempDir.path}/responses');
+    final markerDirectory = Directory('${tempDir.path}/markers');
+    final workspaceDirectory = Directory('${tempDir.path}/workspace');
+    await Future.wait<Directory>(<Future<Directory>>[
+      ackDirectory.create(),
+      responseDirectory.create(),
+      markerDirectory.create(),
+      workspaceDirectory.create(),
+    ]);
+    final script = path('permission_agent.dart');
+    final control = path('control.json');
+    final transportClosed = path('transport-closed');
+    await script.writeAsString(_permissionAgentSource);
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[
+        script.path,
+        control.path,
+        ackDirectory.path,
+        responseDirectory.path,
+        transportClosed.path,
+        markerDirectory.path,
+        workspaceDirectory.path,
+      ],
+      timeouts: timeouts,
+      enableFilesystemReadTextFile: true,
+      enableFilesystemWriteTextFile: true,
+      enableTerminalProvider: true,
+    );
+    await client.connect().timeout(const Duration(seconds: 2));
+    final session = await client.createSession(cwd: workspaceDirectory.path);
+    final unavailable = client.peerUnavailableForTesting.first;
+    final fixture = _PermissionStdioFixture._(
+      tempDir: tempDir,
+      workspaceDirectory: workspaceDirectory,
+      client: client,
+      acpClient: client.acpClientForTesting,
+      session: session,
+      controlFile: control,
+      controlAckDirectory: ackDirectory,
+      responseDirectory: responseDirectory,
+      markerDirectory: markerDirectory,
+      transportClosedFile: transportClosed,
+      transientMetadata: Map<String, Object?>.unmodifiable(transientMetadata),
+      unavailable: unavailable,
+    );
+    fixture._peerUnavailableSubscription = client.peerUnavailableForTesting
+        .listen((state) {
+          fixture._peerCloseCount += 1;
+        });
+    fixture._permissionInvalidationSubscription = client.permissionInvalidations
+        .listen((event) {
+          if (event.reason == AcpPermissionInvalidationReason.timedOut) {
+            unawaited(fixture.permissionTimedOutFile.writeAsString('seen'));
+            unawaited(
+              fixture
+                  .permissionTimedOutFileFor(event.lifecycleId)
+                  .writeAsString('seen'),
+            );
+          }
+        });
+    return fixture;
+  }
+
+  File controlAck(int sequence) =>
+      File('${controlAckDirectory.path}/$sequence.ack');
+  File responseFile(String method, int sequence) => File(
+    '${responseDirectory.path}/'
+    '${method.replaceAll('/', '_')}-$sequence.json',
+  );
+  File responseLogFile(int sequence) =>
+      File('${responseDirectory.path}/wire-$sequence.jsonl');
+  File agentParamsFile(int sequence) =>
+      File('${responseDirectory.path}/request-$sequence.json');
+  File get requestFatalSeenFile =>
+      File('${markerDirectory.path}/request-fatal-seen');
+  File get permissionTimedOutFile =>
+      File('${markerDirectory.path}/permission-timed-out');
+  File permissionTimedOutFileFor(String lifecycleId) =>
+      File('${markerDirectory.path}/permission-timed-out-$lifecycleId');
+  File bridgeSettledFile(String lifecycleId) =>
+      File('${markerDirectory.path}/bridge-settled-$lifecycleId');
+  File get ownerPromptSeenFile =>
+      File('${markerDirectory.path}/owner-prompt-seen');
+
+  void injectCancellationTokenCanary(String canary) {
+    if (_injectedCancellationToken != null ||
+        cancellationTokensCreatedForTesting.isNotEmpty) {
+      throw StateError('A cancellation-token canary is already installed.');
+    }
+    final token = _CanaryCancellationToken(canary);
+    _injectedCancellationToken = token;
+    acpClient.replacePermissionCancellationTokenFactoryForTesting(() {
+      cancellationTokensCreatedForTesting.add(token);
+      return token;
+    });
+  }
+
+  _CanaryCancellationToken get injectedCancellationTokenForTesting =>
+      _injectedCancellationToken ??
+      (throw StateError('No cancellation-token canary is installed.'));
+
+  Future<void> _waitForScenarioFile(File file) async {
+    while (!await file.exists()) {
+      final signal = await Future.any<_PermissionFileWaitSignal>([
+        Future<_PermissionFileWaitSignal>.delayed(
+          const Duration(milliseconds: 5),
+          () => _PermissionFileWaitSignal.retry,
+        ),
+        _stopFileWaits.future.then((_) => _PermissionFileWaitSignal.disposed),
+        _unavailable.then((_) => _PermissionFileWaitSignal.unavailable),
+      ]);
+      switch (signal) {
+        case _PermissionFileWaitSignal.retry:
+          break;
+        case _PermissionFileWaitSignal.disposed:
+          if (await file.exists()) return;
+          throw StateError(
+            'Permission fixture disposed while waiting for ${file.path}.',
+          );
+        case _PermissionFileWaitSignal.unavailable:
+          if (await file.exists()) return;
+          throw StateError(
+            'ACP peer became unavailable while waiting for ${file.path}.',
+          );
+      }
+    }
+  }
+
+  Future<int> _sendAgentControl(
+    String action, [
+    Map<String, Object?> fields = const <String, Object?>{},
+  ]) async {
+    final sequence = ++_controlSequence;
+    final staged = File('${controlFile.path}.$sequence.tmp');
+    await staged.writeAsString(
+      jsonEncode(<String, Object?>{
+        'sequence': sequence,
+        'action': action,
+        ...fields,
+      }),
+      flush: true,
+    );
+    await staged.rename(controlFile.path);
+    final ack = controlAck(sequence);
+    await _waitForScenarioFile(ack);
+    final acknowledged = await ack.readAsString();
+    if (acknowledged != '$sequence') {
+      throw StateError('Unexpected control acknowledgement $acknowledged.');
+    }
+    return sequence;
+  }
+
+  Future<int> sendNoopControlForTesting() => _sendAgentControl('noop');
+
+  Future<_CapturedWireResponse> nextWireResponse(File file) async {
+    await _waitForScenarioFile(file);
+    return _CapturedWireResponse(
+      Map<String, Object?>.from(jsonDecode(await file.readAsString()) as Map),
+    );
+  }
+
+  Future<void> get requestFatalSeen =>
+      _waitForScenarioFile(requestFatalSeenFile);
+  Future<void> get permissionTimedOut =>
+      _waitForScenarioFile(permissionTimedOutFile);
+  Future<void> permissionTimedOutFor(AcpPermissionRequest request) =>
+      _waitForScenarioFile(permissionTimedOutFileFor(request.lifecycleId));
+  Future<void> bridgeSettledFor(AcpPermissionRequest request) =>
+      _waitForScenarioFile(bridgeSettledFile(request.lifecycleId));
+  Future<void> get peerUnavailable => _unavailable.then<void>((_) {});
+
+  void refreshUnavailableWatcherAfterReconnect() {
+    _unavailable = client.peerUnavailableForTesting.first;
+  }
+
+  Future<_PermissionWireProbe> sendPermission({
+    required String method,
+    String canary = '',
+    bool ownerScoped = false,
+    String? sessionId,
+    String? workspacePath,
+  }) async {
+    if (ownerScoped) await ensureOwnerPromptStarted();
+    final effectiveWorkspace = workspacePath ?? workspaceDirectory.path;
+    if (method == 'fs/read_text_file') {
+      await File(
+        '$effectiveWorkspace/input-$canary.txt',
+      ).writeAsString('fixed input', flush: true);
+    }
+    final requestSeen = client.permissionRequests.first;
+    final responseSequence = ++_responseSequence;
+    final responseCapture = responseFile(method, responseSequence);
+    final responseLog = responseLogFile(responseSequence);
+    final response = nextWireResponse(responseCapture);
+    unawaited(
+      response.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    final controlFields = <String, Object?>{
+      'method': method,
+      'canary': canary,
+      'transientMetadata': transientMetadata,
+      'ownerScoped': ownerScoped,
+      'responseSequence': responseSequence,
+      'workspacePath': effectiveWorkspace,
+      'sessionId': ?sessionId,
+    };
+    final controlSequence = await _sendAgentControl(
+      'permission',
+      controlFields,
+    );
+    final control = Map<String, Object?>.unmodifiable(<String, Object?>{
+      'sequence': controlSequence,
+      'action': 'permission',
+      ...controlFields,
+    });
+    final agentParams = Map<String, Object?>.unmodifiable(
+      Map<String, Object?>.from(
+        jsonDecode(await agentParamsFile(responseSequence).readAsString())
+            as Map,
+      ),
+    );
+    final request = await requestSeen.timeout(const Duration(seconds: 2));
+    responseLogsByLifecycle[request.lifecycleId] = responseLog;
+    unawaited(
+      response.then<void>((captured) async {
+        await bridgeSettledFile(request.lifecycleId).writeAsString('seen');
+      }, onError: (Object _, StackTrace _) {}),
+    );
+    return _PermissionWireProbe(
+      request: request,
+      response: response,
+      responseCapture: responseCapture,
+      agentParams: agentParams,
+      control: control,
+    );
+  }
+
+  Future<void> cancelFromManager(
+    AcpPermissionRequest request,
+    acp.PermissionCancellationReason reason,
+  ) async {
+    switch (reason) {
+      case acp.PermissionCancellationReason.promptEnded:
+        await _sendAgentControl('finish-prompt');
+        break;
+      case acp.PermissionCancellationReason.promptCancelled:
+        await client.cancel();
+        break;
+      case acp.PermissionCancellationReason.sessionClosed:
+        await client.closeSession(sessionId: request.sessionId);
+        break;
+      case acp.PermissionCancellationReason.connectionClosed:
+        await client.closePeerExplicitlyForTesting();
+        break;
+      case acp.PermissionCancellationReason.disposed:
+        await quiesceForResponseCaptureCheck();
+        break;
+      case acp.PermissionCancellationReason.timedOut:
+        await permissionTimedOut.timeout(const Duration(seconds: 2));
+        break;
+    }
+  }
+
+  Future<void> deliverLateCancellation(
+    AcpPermissionRequest request,
+    acp.PermissionCancellationReason reason,
+  ) => cancelFromManager(request, reason);
+
+  Future<int> responseCommitCountFor(AcpPermissionRequest request) async {
+    final log = responseLogsByLifecycle[request.lifecycleId];
+    if (log == null || !await log.exists()) return 0;
+    return const LineSplitter()
+        .convert(await log.readAsString())
+        .where((line) => line.trim().isNotEmpty)
+        .length;
+  }
+
+  int get peerCloseCount => _peerCloseCount;
+
+  Future<Map<String, Object?>> sendExtensionEcho() =>
+      client.sendExtensionRequest(
+        method: '_permission_fixture_echo',
+        params: const <String, Object?>{'value': 'ok'},
+      );
+
+  Future<void> triggerAppInvalidation(
+    AcpPermissionRequest request,
+    AcpPermissionInvalidationReason reason,
+  ) async {
+    switch (reason) {
+      case AcpPermissionInvalidationReason.timedOut:
+        await permissionTimedOut.timeout(const Duration(seconds: 2));
+        break;
+      case AcpPermissionInvalidationReason.promptEnded:
+        await cancelFromManager(
+          request,
+          acp.PermissionCancellationReason.promptEnded,
+        );
+        break;
+      case AcpPermissionInvalidationReason.promptCancelled:
+        await cancelFromManager(
+          request,
+          acp.PermissionCancellationReason.promptCancelled,
+        );
+        break;
+      case AcpPermissionInvalidationReason.sessionClosed:
+        await cancelFromManager(
+          request,
+          acp.PermissionCancellationReason.sessionClosed,
+        );
+        break;
+      case AcpPermissionInvalidationReason.connectionClosed:
+        await cancelFromManager(
+          request,
+          acp.PermissionCancellationReason.connectionClosed,
+        );
+        break;
+      case AcpPermissionInvalidationReason.disposed:
+        await cancelFromManager(
+          request,
+          acp.PermissionCancellationReason.disposed,
+        );
+        break;
+    }
+  }
+
+  Future<void> winUnavailable(UnavailableFirstReason reason) async {
+    final invalidated = client.permissionInvalidations.first;
+    switch (reason) {
+      case UnavailableFirstReason.requestFatal:
+        unawaited(
+          client
+              .sendExtensionRequest(
+                method: '_permission_fixture_timeout',
+                params: const <String, Object?>{},
+              )
+              .catchError((Object _) => <String, Object?>{}),
+        );
+        await requestFatalSeen.timeout(const Duration(seconds: 2));
+        break;
+      case UnavailableFirstReason.transportClose:
+        await _sendAgentControl('transport-close');
+        await peerUnavailable.timeout(const Duration(seconds: 2));
+        break;
+      case UnavailableFirstReason.explicitClose:
+        await client.closePeerExplicitlyForTesting().timeout(
+          const Duration(seconds: 2),
+        );
+        break;
+      case UnavailableFirstReason.dispose:
+        await quiesceForResponseCaptureCheck().timeout(
+          const Duration(seconds: 2),
+        );
+        break;
+    }
+    await invalidated.timeout(const Duration(seconds: 2));
+  }
+
+  Future<void> deliverLateUnavailable(UnavailableFirstReason reason) async {
+    try {
+      switch (reason) {
+        case UnavailableFirstReason.requestFatal:
+          await client.sendExtensionRequest(
+            method: '_permission_fixture_timeout',
+            params: const <String, Object?>{},
+          );
+          break;
+        case UnavailableFirstReason.transportClose:
+          await requestTransportCloseIfRunning();
+          break;
+        case UnavailableFirstReason.explicitClose:
+          await client.closePeerExplicitlyForTesting();
+          break;
+        case UnavailableFirstReason.dispose:
+          await quiesceForResponseCaptureCheck();
+          break;
+      }
+    } on Object {
+      // A late unavailable action may observe the first closed state.
+    }
+  }
+
+  Future<void> requestTransportCloseIfRunning() async {
+    if (await transportClosedFile.exists()) return;
+    try {
+      await _sendAgentControl(
+        'transport-close',
+      ).timeout(const Duration(milliseconds: 500));
+      await _waitForScenarioFile(
+        transportClosedFile,
+      ).timeout(const Duration(milliseconds: 500));
+    } on TimeoutException {
+      // A previously disposed transport has no control loop.
+    }
+  }
+
+  Future<void> ensureOwnerPromptStarted() {
+    return _ownerPromptStarted ??= () async {
+      _ownerPromptSubscription = client
+          .sendPrompt(sessionId: session.id, prompt: 'permission owner scope')
+          .listen((_) {}, onError: (Object _, StackTrace _) {});
+      await _waitForScenarioFile(
+        ownerPromptSeenFile,
+      ).timeout(const Duration(seconds: 2));
+    }();
+  }
+
+  Future<void> quiesceForResponseCaptureCheck() =>
+      _clientDisposeFuture ??= client.dispose();
+
+  Future<void> dispose() => _disposeFuture ??= _dispose();
+
+  Future<void> _dispose() async {
+    if (!_stopFileWaits.isCompleted) _stopFileWaits.complete();
+    try {
+      await _ownerPromptSubscription?.cancel();
+    } finally {
+      try {
+        await _permissionInvalidationSubscription.cancel();
+      } finally {
+        try {
+          await _peerUnavailableSubscription.cancel();
+        } finally {
+          try {
+            await quiesceForResponseCaptureCheck();
+          } finally {
+            if (await tempDir.exists()) await tempDir.delete(recursive: true);
+          }
+        }
+      }
+    }
+  }
+}
 
 final class _RawStdioFixture {
   _RawStdioFixture._({
@@ -526,6 +1312,606 @@ final class _RawPreOwnerFixture {
 }
 
 void main() {
+  test(
+    'permission fixture commits consecutive controls and exact acknowledgements',
+    () async {
+      final fixture = await _PermissionStdioFixture.startPermissionScenario();
+      try {
+        final sequences = <int>[];
+        for (var index = 0; index < 12; index += 1) {
+          sequences.add(
+            await fixture.sendNoopControlForTesting().timeout(
+              const Duration(seconds: 2),
+            ),
+          );
+        }
+        expect(sequences, List<int>.generate(12, (index) => index + 1));
+        for (final sequence in sequences) {
+          expect(
+            await fixture.controlAck(sequence).readAsString(),
+            '$sequence',
+          );
+        }
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test(
+    'permission bridge shares lifecycle identity and first timeout winner',
+    () async {
+      final fixture = await _PermissionStdioFixture.startPermissionScenario(
+        timeouts: const acp.AcpTimeouts(
+          permission: Duration(milliseconds: 75),
+          promptCancelGrace: Duration(milliseconds: 75),
+        ),
+      );
+      final invalidations = <AcpPermissionInvalidation>[];
+      final subscription = fixture.client.permissionInvalidations.listen(
+        invalidations.add,
+      );
+      try {
+        final probe = await fixture.sendPermission(
+          method: 'session/request_permission',
+        );
+        final response = await probe.response.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(probe.request.lifecycleId, isNotEmpty);
+        expect(invalidations, hasLength(1));
+        expect(invalidations.single.lifecycleId, probe.request.lifecycleId);
+        expect(
+          invalidations.single.reason,
+          AcpPermissionInvalidationReason.timedOut,
+        );
+        expect(response.selectedOutcome, 'cancelled');
+        await fixture.quiesceForResponseCaptureCheck().timeout(
+          const Duration(seconds: 2),
+        );
+        expect(await fixture.responseCommitCountFor(probe.request), 1);
+      } finally {
+        await subscription.cancel();
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test('permission bridge-first settlement stays first wins', () async {
+    final fixture = await _PermissionStdioFixture.startPermissionScenario();
+    final invalidations = <AcpPermissionInvalidation>[];
+    final sub = fixture.client.permissionInvalidations.listen(
+      invalidations.add,
+    );
+    try {
+      final probe = await fixture.sendPermission(
+        method: 'session/request_permission',
+      );
+      await fixture.client.respondToPermissionRequest(
+        id: probe.request.id,
+        decision: AcpPermissionDecision.allow,
+      );
+      await fixture
+          .bridgeSettledFor(probe.request)
+          .timeout(const Duration(seconds: 2));
+      await fixture.cancelFromManager(
+        probe.request,
+        acp.PermissionCancellationReason.sessionClosed,
+      );
+      final response = await probe.response.timeout(const Duration(seconds: 2));
+      expect(response.selectedOutcome, 'selected');
+      expect(response.selectedOptionId, 'allow');
+      expect(invalidations, isEmpty);
+      await fixture.quiesceForResponseCaptureCheck().timeout(
+        const Duration(seconds: 2),
+      );
+      expect(await fixture.responseCommitCountFor(probe.request), 1);
+    } finally {
+      await sub.cancel();
+      await fixture.dispose();
+    }
+  });
+
+  test(
+    'custom ACP permission timeout reaches real interactive bridge',
+    () async {
+      const timeouts = acp.AcpTimeouts(
+        initialize: Duration(milliseconds: 180),
+        request: Duration(milliseconds: 240),
+        prompt: Duration(milliseconds: 520),
+        permission: Duration(milliseconds: 900),
+        promptCancelGrace: Duration(milliseconds: 1500),
+      );
+      final fixture = await _PermissionStdioFixture.startPermissionScenario(
+        timeouts: timeouts,
+      );
+      final invalidations = <AcpPermissionInvalidation>[];
+      final subscription = fixture.client.permissionInvalidations.listen(
+        invalidations.add,
+      );
+      try {
+        expect(identical(fixture.client.timeouts, timeouts), isTrue);
+        final probe = await fixture.sendPermission(
+          method: 'session/request_permission',
+        );
+        await expectLater(
+          probe.response.timeout(const Duration(milliseconds: 750)),
+          throwsA(isA<TimeoutException>()),
+        );
+        final response = await probe.response.timeout(
+          const Duration(milliseconds: 300),
+        );
+        expect(response.selectedOutcome, 'cancelled');
+        expect(invalidations, hasLength(1));
+        expect(
+          invalidations.single.reason,
+          AcpPermissionInvalidationReason.timedOut,
+        );
+        await fixture.quiesceForResponseCaptureCheck().timeout(
+          const Duration(seconds: 2),
+        );
+        expect(await fixture.responseCommitCountFor(probe.request), 1);
+      } finally {
+        await subscription.cancel();
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test(
+    'unavailable first winner invalidates bridge and UI once across layers',
+    () async {
+      for (final first in UnavailableFirstReason.values) {
+        for (final late in UnavailableFirstReason.values.where(
+          (value) => value != first,
+        )) {
+          final fixture =
+              await _PermissionStdioFixture.startPermissionScenario();
+          final invalidations = <AcpPermissionInvalidation>[];
+          final subscription = fixture.client.permissionInvalidations.listen(
+            invalidations.add,
+          );
+          final controller = ChatController(
+            client: fixture.client,
+            cwd: fixture.workspaceDirectory.path,
+          );
+          try {
+            final probe = await fixture.sendPermission(
+              method: 'session/request_permission',
+            );
+            expect(controller.pendingPermissionRequest?.id, probe.request.id);
+            await fixture.winUnavailable(first);
+            await fixture.deliverLateUnavailable(late);
+            await pumpEventQueue(times: 2);
+            await fixture.quiesceForResponseCaptureCheck().timeout(
+              const Duration(seconds: 2),
+            );
+            expect(controller.pendingPermissionRequest, isNull);
+            expect(invalidations, hasLength(1));
+            expect(invalidations.single.reason, expectedReasonFor(first));
+            expect(
+              controller.permissionHistory.single.status,
+              AcpPermissionAuditStatus.cancelled,
+            );
+            expect(
+              controller.permissionHistory.single.decisionSource,
+              AcpPermissionDecisionSource.system,
+            );
+            expect(
+              await probe.responseCapture.exists(),
+              isFalse,
+              reason: 'the stopped stdio agent cannot write a late response',
+            );
+          } finally {
+            await subscription.cancel();
+            controller.dispose();
+            await controller.disposalComplete;
+            await fixture.dispose();
+          }
+        }
+      }
+    },
+  );
+
+  test(
+    'logout invalidates pending permission once without closing peer',
+    () async {
+      final fixture = await _PermissionStdioFixture.startPermissionScenario();
+      final invalidations = <AcpPermissionInvalidation>[];
+      final sub = fixture.client.permissionInvalidations.listen(
+        invalidations.add,
+      );
+      try {
+        final probe = await fixture.sendPermission(
+          method: 'session/request_permission',
+        );
+        await fixture.client.logout().timeout(const Duration(seconds: 2));
+        await pumpEventQueue(times: 2);
+        expect(invalidations, hasLength(1));
+        expect(invalidations.single.lifecycleId, probe.request.lifecycleId);
+        expect(
+          invalidations.single.reason,
+          AcpPermissionInvalidationReason.connectionClosed,
+        );
+        expect(fixture.peerCloseCount, 0);
+        final response = await probe.response.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(response.hasError, isFalse);
+        expect(response.selectedOutcome, 'cancelled');
+        expect(await fixture.sendExtensionEcho(), <String, Object?>{
+          'value': 'ok',
+        });
+        await fixture.quiesceForResponseCaptureCheck().timeout(
+          const Duration(seconds: 2),
+        );
+        expect(await fixture.responseCommitCountFor(probe.request), 1);
+      } finally {
+        await sub.cancel();
+        await fixture.dispose();
+      }
+    },
+  );
+
+  test(
+    'deferred reconnect and dispose complete owner permission futures',
+    () async {
+      for (final exit in _DeferredPermissionExit.values) {
+        final fixture = await _PermissionStdioFixture.startPermissionScenario(
+          timeouts: const acp.AcpTimeouts(
+            permission: Duration(seconds: 5),
+            promptCancelGrace: Duration(milliseconds: 500),
+          ),
+        );
+        final invalidations = <AcpPermissionInvalidation>[];
+        final sub = fixture.client.permissionInvalidations.listen(
+          invalidations.add,
+        );
+        try {
+          final stale = await fixture.sendPermission(
+            method: 'session/request_permission',
+            ownerScoped: true,
+          );
+          switch (exit) {
+            case _DeferredPermissionExit.reconnect:
+              await fixture.client.connect().timeout(
+                const Duration(seconds: 2),
+              );
+              fixture.refreshUnavailableWatcherAfterReconnect();
+              expect(invalidations, hasLength(1));
+              expect(
+                invalidations.single.lifecycleId,
+                stale.request.lifecycleId,
+              );
+              expect(
+                invalidations.single.reason,
+                AcpPermissionInvalidationReason.connectionClosed,
+              );
+
+              final replacement = await fixture.client.createSession(
+                cwd: fixture.workspaceDirectory.path,
+              );
+              final fresh = await fixture.sendPermission(
+                method: 'session/request_permission',
+                sessionId: replacement.id,
+              );
+              expect(
+                fresh.request.lifecycleId,
+                isNot(stale.request.lifecycleId),
+              );
+              await fixture.client.respondToPermissionRequest(
+                id: fresh.request.id,
+                decision: AcpPermissionDecision.allow,
+              );
+              final response = await fresh.response.timeout(
+                const Duration(seconds: 2),
+              );
+              expect(response.hasError, isFalse);
+              expect(response.selectedOutcome, 'selected');
+              expect(response.selectedOptionId, 'allow');
+              await fixture.quiesceForResponseCaptureCheck().timeout(
+                const Duration(seconds: 2),
+              );
+              expect(await fixture.responseCommitCountFor(fresh.request), 1);
+              break;
+            case _DeferredPermissionExit.dispose:
+              await fixture.quiesceForResponseCaptureCheck().timeout(
+                const Duration(seconds: 2),
+              );
+              expect(invalidations, hasLength(1));
+              expect(
+                invalidations.single.lifecycleId,
+                stale.request.lifecycleId,
+              );
+              expect(
+                invalidations.single.reason,
+                AcpPermissionInvalidationReason.disposed,
+              );
+              expect(await stale.responseCapture.exists(), isFalse);
+              expect(await fixture.responseCommitCountFor(stale.request), 0);
+              break;
+          }
+        } finally {
+          await sub.cancel();
+          await fixture.dispose();
+        }
+      }
+    },
+  );
+
+  test('concurrent permission tokens settle independently', () async {
+    final fixture = await _PermissionStdioFixture.startPermissionScenario(
+      timeouts: const acp.AcpTimeouts(
+        permission: Duration(milliseconds: 500),
+        promptCancelGrace: Duration(milliseconds: 500),
+      ),
+    );
+    final invalidations = <AcpPermissionInvalidation>[];
+    final sub = fixture.client.permissionInvalidations.listen(
+      invalidations.add,
+    );
+    try {
+      final a = await fixture.sendPermission(method: 'fs/read_text_file');
+      final b = await fixture.sendPermission(method: 'terminal/create');
+      expect(a.request.lifecycleId, isNot(b.request.lifecycleId));
+      expect(a.request.id, isNot(b.request.id));
+
+      await fixture.client.respondToPermissionRequest(
+        id: b.request.id,
+        decision: AcpPermissionDecision.allow,
+      );
+      await fixture
+          .bridgeSettledFor(b.request)
+          .timeout(const Duration(seconds: 2));
+      final responseB = await b.response.timeout(const Duration(seconds: 2));
+      expect(responseB.hasError, isFalse);
+      expect(responseB.terminalId, isNotNull);
+      expect(responseB.terminalId, isNotEmpty);
+      expect(
+        invalidations,
+        isEmpty,
+        reason: 'B must settle before A reaches its short permission deadline',
+      );
+      await fixture
+          .permissionTimedOutFor(a.request)
+          .timeout(const Duration(seconds: 2));
+      final responseA = await a.response.timeout(const Duration(seconds: 2));
+      expect(responseA.errorCode, -32002);
+      expect(responseA.errorText, 'Permission request timed out.');
+      await fixture.deliverLateCancellation(
+        a.request,
+        acp.PermissionCancellationReason.timedOut,
+      );
+      await fixture.deliverLateCancellation(
+        b.request,
+        acp.PermissionCancellationReason.connectionClosed,
+      );
+
+      expect(invalidations.map((event) => event.lifecycleId), <String>[
+        a.request.lifecycleId,
+      ]);
+      await fixture.quiesceForResponseCaptureCheck().timeout(
+        const Duration(seconds: 2),
+      );
+      expect(await fixture.responseCommitCountFor(a.request), 1);
+      expect(await fixture.responseCommitCountFor(b.request), 1);
+    } finally {
+      await sub.cancel();
+      await fixture.dispose();
+    }
+
+    final second = await _PermissionStdioFixture.startPermissionScenario();
+    final secondInvalidations = <AcpPermissionInvalidation>[];
+    final secondSub = second.client.permissionInvalidations.listen(
+      secondInvalidations.add,
+    );
+    try {
+      final workspaceA = Directory('${second.tempDir.path}/workspace-a');
+      final workspaceB = Directory('${second.tempDir.path}/workspace-b');
+      await Future.wait<Directory>(<Future<Directory>>[
+        workspaceA.create(),
+        workspaceB.create(),
+      ]);
+      final sessionA = await second.client.createSession(cwd: workspaceA.path);
+      final sessionB = await second.client.createSession(cwd: workspaceB.path);
+      expect(sessionA.id, isNot(sessionB.id));
+      final a = await second.sendPermission(
+        method: 'fs/read_text_file',
+        sessionId: sessionA.id,
+        workspacePath: workspaceA.path,
+      );
+      final b = await second.sendPermission(
+        method: 'terminal/create',
+        sessionId: sessionB.id,
+      );
+      await second.client.respondToPermissionRequest(
+        id: b.request.id,
+        decision: AcpPermissionDecision.allow,
+      );
+      await second
+          .bridgeSettledFor(b.request)
+          .timeout(const Duration(seconds: 2));
+      await second.client.closeSession(sessionId: sessionA.id);
+      final responseA = await a.response.timeout(const Duration(seconds: 2));
+      final responseB = await b.response.timeout(const Duration(seconds: 2));
+      expect(responseB.hasError, isFalse);
+      expect(responseB.terminalId, isNotNull);
+      expect(responseB.terminalId, isNotEmpty);
+      expect(responseA.hasError, isTrue);
+      expect(responseA.errorCode, -32003);
+      expect(responseA.errorText, 'Permission request cancelled.');
+      expect(responseA.hasErrorData, isFalse);
+      expect(
+        secondInvalidations
+            .where((event) => event.lifecycleId == a.request.lifecycleId)
+            .single
+            .reason,
+        AcpPermissionInvalidationReason.sessionClosed,
+      );
+      expect(
+        secondInvalidations.any(
+          (event) => event.lifecycleId == b.request.lifecycleId,
+        ),
+        isFalse,
+      );
+      await second.deliverLateCancellation(
+        a.request,
+        acp.PermissionCancellationReason.connectionClosed,
+      );
+      await second.quiesceForResponseCaptureCheck().timeout(
+        const Duration(seconds: 2),
+      );
+      expect(await second.responseCommitCountFor(a.request), 1);
+      expect(await second.responseCommitCountFor(b.request), 1);
+    } finally {
+      await secondSub.cancel();
+      await second.dispose();
+    }
+  });
+
+  test(
+    'permission invalidation canaries never reach wire or audit events',
+    () async {
+      for (final method in bridgePermissionMethods) {
+        for (final reason in bridgeInvalidationReasons) {
+          final canary = 'secret-${method.replaceAll('/', '_')}-${reason.name}';
+          final fixture = await _PermissionStdioFixture.startPermissionScenario(
+            transientMetadata: <String, Object?>{
+              'path': '/private/$canary',
+              'payload': canary,
+            },
+          );
+          final invalidations = <AcpPermissionInvalidation>[];
+          final sub = fixture.client.permissionInvalidations.listen(
+            invalidations.add,
+          );
+          final controller = ChatController(
+            client: fixture.client,
+            cwd: fixture.workspaceDirectory.path,
+          );
+          try {
+            fixture.injectCancellationTokenCanary(canary);
+            final probe = await fixture.sendPermission(
+              method: method,
+              canary: canary,
+              ownerScoped:
+                  reason == AcpPermissionInvalidationReason.promptEnded ||
+                  reason == AcpPermissionInvalidationReason.promptCancelled,
+            );
+            expect(fixture.cancellationTokensCreatedForTesting, hasLength(1));
+            expect(
+              identical(
+                fixture.cancellationTokensCreatedForTesting.single,
+                fixture.injectedCancellationTokenForTesting,
+              ),
+              isTrue,
+            );
+            final tokenText = fixture.injectedCancellationTokenForTesting
+                .toString();
+            for (final captured in <Map<String, Object?>>[
+              probe.control,
+              probe.agentParams,
+            ]) {
+              final encoded = jsonEncode(captured);
+              expect(encoded, isNot(contains(tokenText)));
+              expect(encoded, isNot(contains('"cancellationToken"')));
+              expect(encoded, isNot(contains('"tokenCanary"')));
+            }
+            final pending = controller.pendingPermissionRequest;
+            if (pending == null) {
+              fail('controller did not bind the real permission lifecycle');
+            }
+            expect(pending.lifecycleId, probe.request.lifecycleId);
+            expect(
+              pending.bindingKey,
+              probe.request.withGeneration(pending.generation).bindingKey,
+            );
+            await fixture.triggerAppInvalidation(probe.request, reason);
+            final closesPeer =
+                reason == AcpPermissionInvalidationReason.connectionClosed ||
+                reason == AcpPermissionInvalidationReason.disposed;
+            if (closesPeer) {
+              await fixture.peerUnavailable.timeout(const Duration(seconds: 2));
+              await fixture.quiesceForResponseCaptureCheck().timeout(
+                const Duration(seconds: 2),
+              );
+              expect(
+                await probe.responseCapture.exists(),
+                isFalse,
+                reason: 'the stopped stdio agent cannot write a late response',
+              );
+            } else {
+              final response = await probe.response.timeout(
+                const Duration(seconds: 2),
+              );
+              if (method == 'session/request_permission') {
+                expect(response.hasError, isFalse);
+                expect(response.selectedOutcome, 'cancelled');
+              } else {
+                expect(response.hasError, isTrue);
+                switch (reason) {
+                  case AcpPermissionInvalidationReason.timedOut:
+                    expect(response.errorCode, -32002);
+                    expect(response.errorText, 'Permission request timed out.');
+                    break;
+                  case AcpPermissionInvalidationReason.promptEnded:
+                  case AcpPermissionInvalidationReason.promptCancelled:
+                  case AcpPermissionInvalidationReason.sessionClosed:
+                    expect(response.errorCode, -32003);
+                    expect(response.errorText, 'Permission request cancelled.');
+                    break;
+                  case AcpPermissionInvalidationReason.connectionClosed:
+                  case AcpPermissionInvalidationReason.disposed:
+                    fail(
+                      'peer-closing reasons must not produce a wire response',
+                    );
+                }
+              }
+              expect(response.hasErrorData, isFalse);
+              expect(jsonEncode(response.raw), isNot(contains(canary)));
+            }
+            expect(invalidations, hasLength(1));
+            final invalidation = invalidations.single;
+            expect(invalidation.requestId, probe.request.id);
+            expect(invalidation.lifecycleId, probe.request.lifecycleId);
+            expect(invalidation.sessionId, probe.request.sessionId);
+            expect(invalidation.reason, reason);
+            expect(
+              jsonEncode(
+                invalidations
+                    .map(
+                      (event) => <String, Object?>{
+                        'requestId': event.requestId,
+                        'lifecycleId': event.lifecycleId,
+                        'sessionId': event.sessionId,
+                        'reason': event.reason.name,
+                      },
+                    )
+                    .toList(),
+              ),
+              isNot(contains(canary)),
+            );
+            expect(controller.permissionHistory, hasLength(1));
+            final audit = controller.permissionHistory.single;
+            expect(audit.request.lifecycleId, probe.request.lifecycleId);
+            expect(audit.request.bindingKey, pending.bindingKey);
+            expect(audit.status, AcpPermissionAuditStatus.cancelled);
+            expect(audit.decisionSource, AcpPermissionDecisionSource.system);
+            final auditMap = audit.toJson();
+            expect(auditMap, isNotEmpty);
+            expect(jsonEncode(auditMap), isNot(contains(canary)));
+            expect(fixture.cancellationTokensCreatedForTesting, hasLength(1));
+          } finally {
+            await sub.cancel();
+            controller.dispose();
+            await controller.disposalComplete;
+            await fixture.dispose();
+          }
+        }
+      }
+    },
+  );
+
   group('DefaultPermissionProvider', () {
     acp.PermissionOptions options({
       required String toolName,
