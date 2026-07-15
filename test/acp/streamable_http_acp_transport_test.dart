@@ -211,6 +211,31 @@ void main() {
     }
   });
 
+  test('restart waits for concurrent HTTP stop cleanup', () async {
+    final transport = StreamableHttpAcpTransport(
+      endpoint: Uri.parse('http://127.0.0.1:1/acp'),
+    );
+    StreamSubscription<String>? restartedSubscription;
+
+    await transport.start();
+    final initialSubscription = transport.channel.stream.listen((_) {});
+    try {
+      final stopping = transport.stop();
+      final restarting = transport.start();
+      await Future.wait<void>(<Future<void>>[
+        stopping,
+        restarting,
+      ]).timeout(const Duration(seconds: 2));
+
+      expect(() => transport.channel, returnsNormally);
+      restartedSubscription = transport.channel.stream.listen((_) {});
+    } finally {
+      await initialSubscription.cancel();
+      await restartedSubscription?.cancel();
+      await transport.stop();
+    }
+  });
+
   test('DELETE body timeout does not delay stop', () async {
     final deleteStarted = Completer<void>();
     final openResponses = <HttpResponse>[];

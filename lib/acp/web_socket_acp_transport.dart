@@ -71,6 +71,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   _NoRedirectHttpClient? _handshakeClient;
   Future<void>? _outboundDrainFuture;
   Future<void>? _activeWrite;
+  Future<void>? _stopFuture;
   int _startSerial = 0;
   int _inboundQueueBytes = 0;
   int _outboundQueueBytes = 0;
@@ -90,6 +91,11 @@ class WebSocketAcpTransport implements acp.AcpTransport {
 
   @override
   Future<void> start() async {
+    for (;;) {
+      final stopping = _stopFuture;
+      if (stopping == null) break;
+      await stopping;
+    }
     if (_channel != null) return;
     if (_startCancellation != null) {
       throw StateError('Transport connection is already in progress.');
@@ -442,7 +448,22 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   }
 
   @override
-  Future<void> stop() async {
+  Future<void> stop() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+    final future = _stop();
+    _stopFuture = future;
+    unawaited(
+      future
+          .whenComplete(() {
+            if (identical(_stopFuture, future)) _stopFuture = null;
+          })
+          .catchError((Object _) {}),
+    );
+    return future;
+  }
+
+  Future<void> _stop() async {
     _startSerial += 1;
     _stopping = true;
     final startCancellation = _startCancellation;

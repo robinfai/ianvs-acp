@@ -63,6 +63,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   HttpClient? _client;
   StreamChannelController<String>? _controller;
   StreamSubscription<String>? _outboundSubscription;
+  Future<void>? _stopFuture;
   String? _connectionId;
   bool _stopping = false;
 
@@ -80,6 +81,11 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
 
   @override
   Future<void> start() async {
+    for (;;) {
+      final stopping = _stopFuture;
+      if (stopping == null) break;
+      await stopping;
+    }
     if (_controller != null) return;
     _stopping = false;
     _client ??= HttpClient();
@@ -629,7 +635,22 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   }
 
   @override
-  Future<void> stop() async {
+  Future<void> stop() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+    final future = _stop();
+    _stopFuture = future;
+    unawaited(
+      future
+          .whenComplete(() {
+            if (identical(_stopFuture, future)) _stopFuture = null;
+          })
+          .catchError((Object _) {}),
+    );
+    return future;
+  }
+
+  Future<void> _stop() async {
     _stopping = true;
     final sseCancellations = _cancelSseSubscriptions();
     await _outboundSubscription?.cancel();

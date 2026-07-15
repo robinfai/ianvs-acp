@@ -177,6 +177,41 @@ void main() {
     }
   });
 
+  test('restart waits for concurrent websocket stop cleanup', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final sockets = <WebSocket>[];
+    final serverSubscription = server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      sockets.add(socket);
+      socket.listen((_) {});
+    });
+    final transport = WebSocketAcpTransport(
+      endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+    );
+
+    try {
+      await transport.start();
+      await _waitFor(() => sockets.length == 1);
+
+      final stopping = transport.stop();
+      final restarting = transport.start();
+      await Future.wait<void>(<Future<void>>[
+        stopping,
+        restarting,
+      ]).timeout(const Duration(seconds: 2));
+
+      expect(() => transport.channel, returnsNormally);
+      await _waitFor(() => sockets.length == 2);
+    } finally {
+      await transport.stop();
+      for (final socket in sockets) {
+        await socket.close();
+      }
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('a websocket that connects after timeout is closed', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requestStarted = Completer<void>();
