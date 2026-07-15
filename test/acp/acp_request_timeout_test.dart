@@ -14,6 +14,67 @@ import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:logging/logging.dart';
 import 'package:stream_channel/stream_channel.dart';
 
+final class _LifecycleTrackingPeer extends JsonRpcPeer {
+  _LifecycleTrackingPeer(super.channel) {
+    _trackedSessionUpdates = Stream<Object?>.multi((events) {
+      sessionUpdateListenCount += 1;
+      final source = _sessionUpdateSource.stream.listen(
+        events.add,
+        onError: events.addError,
+        onDone: events.close,
+      );
+      events.onCancel = () async {
+        sessionUpdateCancelCount += 1;
+        await source.cancel();
+        final barrier = sessionUpdateCancelBarrier;
+        if (barrier != null) await barrier.future;
+        final error = sessionUpdateCancelError;
+        if (error != null) throw error;
+      };
+    }, isBroadcast: true);
+  }
+
+  final StreamController<Object?> _sessionUpdateSource =
+      StreamController<Object?>.broadcast();
+  late final Stream<Object?> _trackedSessionUpdates;
+  final Set<AcpPeerUnavailableListener> activeUnavailableListeners =
+      HashSet<AcpPeerUnavailableListener>.identity();
+  Completer<void>? sessionUpdateCancelBarrier;
+  Object? sessionUpdateCancelError;
+  int sessionUpdateListenCount = 0;
+  int sessionUpdateCancelCount = 0;
+
+  @override
+  Stream<Object?> get sessionUpdates => _trackedSessionUpdates;
+
+  @override
+  void addUnavailableListener(AcpPeerUnavailableListener listener) {
+    activeUnavailableListeners.add(listener);
+    super.addUnavailableListener(listener);
+  }
+
+  @override
+  void removeUnavailableListener(AcpPeerUnavailableListener listener) {
+    activeUnavailableListeners.remove(listener);
+    super.removeUnavailableListener(listener);
+  }
+
+  Future<void> closeTrackedSessionUpdates() => _sessionUpdateSource.close();
+}
+
+Map<String, Object?> _sessionManagerPeerHooks(JsonRpcPeer peer) =>
+    <String, Object?>{
+      'onInboundAdmission': peer.onInboundAdmission,
+      'onReadTextFile': peer.onReadTextFile,
+      'onWriteTextFile': peer.onWriteTextFile,
+      'onRequestPermission': peer.onRequestPermission,
+      'onTerminalCreate': peer.onTerminalCreate,
+      'onTerminalOutput': peer.onTerminalOutput,
+      'onTerminalWaitForExit': peer.onTerminalWaitForExit,
+      'onTerminalKill': peer.onTerminalKill,
+      'onTerminalRelease': peer.onTerminalRelease,
+    };
+
 final class _ControlledPermissionProvider
     implements acp.CancellablePermissionProvider {
   final List<acp.PermissionOptions> requests = <acp.PermissionOptions>[];
@@ -8482,6 +8543,168 @@ void main() {
       await transport.dispose();
     }
   });
+
+  test(
+    'SessionManager dispose detaches peer entrypoints before terminal release',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = _LifecycleTrackingPeer(channel.foreign);
+      final terminals = _CountingTerminalProvider();
+      final manager = SessionManager(
+        config: acp.AcpConfig(
+          permissionProvider: acp.DefaultPermissionProvider(
+            onRequest: (_) async => const acp.PermissionDecision.allow(),
+          ),
+          terminalProvider: terminals,
+        ),
+        peer: peer,
+      );
+      final resumeResponse = Completer<void>();
+      final outbound = channel.local.stream.listen((line) {
+        final message = jsonDecode(line) as Map<String, dynamic>;
+        if (message['method'] != 'session/resume') return;
+        channel.local.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': <String, dynamic>{},
+          }),
+        );
+        if (!resumeResponse.isCompleted) resumeResponse.complete();
+      });
+      final releaseBarrier = Completer<void>();
+      Future<void>? dispose;
+
+      try {
+        await manager.resumeSession(
+          sessionId: 'dispose-hooks',
+          workspaceRoot: '/tmp',
+        );
+        await resumeResponse.future.timeout(const Duration(seconds: 1));
+        final params = <String, dynamic>{
+          'sessionId': 'dispose-hooks',
+          'command': '/usr/bin/true',
+          'args': <String>[],
+        };
+        final admission = peer.onInboundAdmission!(
+          'terminal/create',
+          params,
+          Object(),
+        );
+        admission
+          ..bindReservationReleased(Future<void>.value())
+          ..bindResponseCommitted(Future<void>.value());
+        await admission.runLocalOperation(
+          () => peer.onTerminalCreate!(params, admission),
+        );
+        await admission.settled.timeout(const Duration(seconds: 1));
+        expect(manager.managedTerminalCountForTesting, 1);
+
+        terminals.releaseBarrier = releaseBarrier;
+        dispose = manager.dispose();
+        await terminals.releaseStarted.future.timeout(
+          const Duration(seconds: 1),
+        );
+
+        expect(releaseBarrier.isCompleted, isFalse);
+        expect(_sessionManagerPeerHooks(peer).values, everyElement(isNull));
+        expect(peer.activeUnavailableListeners, isEmpty);
+        expect(peer.onInboundAdmission, isNull);
+        expect(manager.inboundAdmissionCountForTesting, 0);
+      } finally {
+        if (!releaseBarrier.isCompleted) releaseBarrier.complete();
+        if (dispose != null) await dispose;
+        await peer.close();
+        await peer.closeTrackedSessionUpdates();
+        await channel.local.sink.close();
+        await outbound.cancel();
+      }
+    },
+  );
+
+  test(
+    'SessionManager dispose detaches owned peer hooks and update subscription',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = _LifecycleTrackingPeer(channel.foreign);
+      final outbound = channel.local.stream.listen((_) {});
+      final cancelBarrier = Completer<void>();
+      peer
+        ..sessionUpdateCancelBarrier = cancelBarrier
+        ..sessionUpdateCancelError = StateError(
+          'fixed asynchronous session update cancel failure',
+        );
+      final manager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      final installedHooks = _sessionManagerPeerHooks(peer);
+
+      try {
+        expect(installedHooks, hasLength(9));
+        expect(installedHooks.values, everyElement(isNotNull));
+        expect(peer.sessionUpdateListenCount, 1);
+        expect(peer.activeUnavailableListeners, hasLength(1));
+
+        await manager.dispose().timeout(const Duration(seconds: 1));
+
+        expect(peer.sessionUpdateCancelCount, 1);
+        expect(cancelBarrier.isCompleted, isFalse);
+        expect(_sessionManagerPeerHooks(peer).values, everyElement(isNull));
+        expect(peer.activeUnavailableListeners, isEmpty);
+      } finally {
+        if (!cancelBarrier.isCompleted) cancelBarrier.complete();
+        await pumpEventQueue();
+        await peer.close();
+        await peer.closeTrackedSessionUpdates();
+        await channel.local.sink.close();
+        await outbound.cancel();
+      }
+    },
+  );
+
+  test(
+    'late old SessionManager dispose preserves replacement peer hooks',
+    () async {
+      final channel = StreamChannelController<String>();
+      final peer = _LifecycleTrackingPeer(channel.foreign);
+      final outbound = channel.local.stream.listen((_) {});
+      final oldManager = SessionManager(config: acp.AcpConfig(), peer: peer);
+      SessionManager? replacement;
+      Future<void>? oldDispose;
+
+      try {
+        oldDispose = oldManager.dispose();
+        replacement = SessionManager(config: acp.AcpConfig(), peer: peer);
+        final replacementHooks = _sessionManagerPeerHooks(peer);
+        expect(replacementHooks.values, everyElement(isNotNull));
+        expect(peer.sessionUpdateListenCount, 2);
+
+        await oldDispose.timeout(const Duration(seconds: 1));
+
+        final currentHooks = _sessionManagerPeerHooks(peer);
+        for (final entry in replacementHooks.entries) {
+          expect(
+            identical(currentHooks[entry.key], entry.value),
+            isTrue,
+            reason: entry.key,
+          );
+        }
+        expect(peer.activeUnavailableListeners, hasLength(1));
+        expect(peer.sessionUpdateCancelCount, 1);
+
+        await replacement.dispose().timeout(const Duration(seconds: 1));
+        replacement = null;
+        expect(_sessionManagerPeerHooks(peer).values, everyElement(isNull));
+        expect(peer.activeUnavailableListeners, isEmpty);
+        expect(peer.sessionUpdateCancelCount, 2);
+      } finally {
+        if (oldDispose != null) await oldDispose;
+        if (replacement != null) await replacement.dispose();
+        await peer.close();
+        await peer.closeTrackedSessionUpdates();
+        await channel.local.sink.close();
+        await outbound.cancel();
+      }
+    },
+  );
 
   test(
     'invalid session item budgets fail with field errors before peer registration',

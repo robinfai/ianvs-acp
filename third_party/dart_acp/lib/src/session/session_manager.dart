@@ -1167,19 +1167,30 @@ class SessionManager implements AcpBoundedObservationSource {
       );
     }
     _boundedObservationListeners = <AcpBoundedObservationListener>{};
-    peer.onInboundAdmission = _admitInboundPermission;
-    peer.addUnavailableListener(_handlePeerUnavailable);
+    _inboundAdmissionHandler = _admitInboundPermission;
+    _readTextFileHandler = _onReadTextFile;
+    _writeTextFileHandler = _onWriteTextFile;
+    _requestPermissionHandler = _onRequestPermission;
+    _terminalCreateHandler = _onTerminalCreate;
+    _terminalOutputHandler = _onTerminalOutput;
+    _terminalWaitForExitHandler = _onTerminalWaitForExit;
+    _terminalKillHandler = _onTerminalKill;
+    _terminalReleaseHandler = _onTerminalRelease;
+    _peerUnavailableListener = _handlePeerUnavailable;
+    _sessionUpdatesSubscription = peer.sessionUpdates.listen(
+      _onPeerSessionUpdate,
+    );
+    peer.onInboundAdmission = _inboundAdmissionHandler;
+    peer.addUnavailableListener(_peerUnavailableListener);
     // Wire client-side handlers
-    peer.onReadTextFile = _onReadTextFile;
-    peer.onWriteTextFile = _onWriteTextFile;
-    peer.onRequestPermission = _onRequestPermission;
-    peer.onTerminalCreate = _onTerminalCreate;
-    peer.onTerminalOutput = _onTerminalOutput;
-    peer.onTerminalWaitForExit = _onTerminalWaitForExit;
-    peer.onTerminalKill = _onTerminalKill;
-    peer.onTerminalRelease = _onTerminalRelease;
-
-    peer.sessionUpdates.listen(_onPeerSessionUpdate);
+    peer.onReadTextFile = _readTextFileHandler;
+    peer.onWriteTextFile = _writeTextFileHandler;
+    peer.onRequestPermission = _requestPermissionHandler;
+    peer.onTerminalCreate = _terminalCreateHandler;
+    peer.onTerminalOutput = _terminalOutputHandler;
+    peer.onTerminalWaitForExit = _terminalWaitForExitHandler;
+    peer.onTerminalKill = _terminalKillHandler;
+    peer.onTerminalRelease = _terminalReleaseHandler;
   }
 
   /// Client configuration.
@@ -1195,6 +1206,17 @@ class SessionManager implements AcpBoundedObservationSource {
   final AcpInputBudget inputBudget;
   final int maxTerminalHandles;
   final int maxTerminalHandlesPerSession;
+  late final InboundAdmissionHook _inboundAdmissionHandler;
+  late final AdmittedInboundHandler _readTextFileHandler;
+  late final AdmittedInboundHandler _writeTextFileHandler;
+  late final AdmittedInboundHandler _requestPermissionHandler;
+  late final AdmittedInboundHandler _terminalCreateHandler;
+  late final Future<dynamic> Function(Json) _terminalOutputHandler;
+  late final Future<dynamic> Function(Json) _terminalWaitForExitHandler;
+  late final Future<dynamic> Function(Json) _terminalKillHandler;
+  late final Future<dynamic> Function(Json) _terminalReleaseHandler;
+  late final AcpPeerUnavailableListener _peerUnavailableListener;
+  late final StreamSubscription<Object?> _sessionUpdatesSubscription;
   Object Function() _permissionCancellationTokenFactory = Object.new;
   late final Set<AcpBoundedObservationListener> _boundedObservationListeners;
 
@@ -2306,9 +2328,57 @@ class SessionManager implements AcpBoundedObservationSource {
     }
   }
 
+  void _cancelSessionUpdatesWithoutWaiting() {
+    try {
+      final cancelling = _sessionUpdatesSubscription.cancel();
+      unawaited(
+        cancelling.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    } on Object {
+      // Subscription cleanup must not replace the primary dispose outcome.
+    }
+  }
+
+  void _detachOwnedPeerHandlers() {
+    if (identical(peer.onInboundAdmission, _inboundAdmissionHandler)) {
+      peer.onInboundAdmission = null;
+    }
+    if (identical(peer.onReadTextFile, _readTextFileHandler)) {
+      peer.onReadTextFile = null;
+    }
+    if (identical(peer.onWriteTextFile, _writeTextFileHandler)) {
+      peer.onWriteTextFile = null;
+    }
+    if (identical(peer.onRequestPermission, _requestPermissionHandler)) {
+      peer.onRequestPermission = null;
+    }
+    if (identical(peer.onTerminalCreate, _terminalCreateHandler)) {
+      peer.onTerminalCreate = null;
+    }
+    if (identical(peer.onTerminalOutput, _terminalOutputHandler)) {
+      peer.onTerminalOutput = null;
+    }
+    if (identical(peer.onTerminalWaitForExit, _terminalWaitForExitHandler)) {
+      peer.onTerminalWaitForExit = null;
+    }
+    if (identical(peer.onTerminalKill, _terminalKillHandler)) {
+      peer.onTerminalKill = null;
+    }
+    if (identical(peer.onTerminalRelease, _terminalReleaseHandler)) {
+      peer.onTerminalRelease = null;
+    }
+  }
+
+  void _detachOwnedPeerBindings() {
+    _detachOwnedPeerHandlers();
+    peer.removeUnavailableListener(_peerUnavailableListener);
+  }
+
   /// Dispose all internal resources and close streams.
   Future<void> dispose() async {
     _disposed = true;
+    _detachOwnedPeerBindings();
+    _cancelSessionUpdatesWithoutWaiting();
     _handlePeerUnavailable(
       const AcpPeerUnavailableState(AcpPeerUnavailableReason.disposed),
     );
@@ -2388,7 +2458,7 @@ class SessionManager implements AcpBoundedObservationSource {
         (sessionId, current) =>
             identical(generationsAtDispose[sessionId], current),
       );
-      peer.removeUnavailableListener(_handlePeerUnavailable);
+      _detachOwnedPeerBindings();
     }
   }
 
