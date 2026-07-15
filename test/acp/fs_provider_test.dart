@@ -827,6 +827,46 @@ void main() {
       expect(messages, contains(contains('fs/write_text_file <- bytes=4')));
     });
 
+    test('FINE read logs omit agent paths and injected log lines', () async {
+      final temp = await Directory.systemTemp.createTemp('acp-read-log-');
+      addTearDown(() => temp.delete(recursive: true));
+      final previousLevel = Logger.root.level;
+      Logger.root.level = Level.FINE;
+      addTearDown(() => Logger.root.level = previousLevel);
+      final logger = Logger(
+        'acp-read-log-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final messages = <String>[];
+      final subscription = logger.onRecord.listen(
+        (record) => messages.add(record.message),
+      );
+      addTearDown(subscription.cancel);
+      final harness = await _SessionFsHarness.start(
+        workspaceRoot: temp.path,
+        provider: _SpyFsProvider(),
+        logger: logger,
+      );
+      addTearDown(harness.close);
+      const secretPath =
+          '/private/read-path-secret.txt?token=READ_TOKEN_CANARY\n'
+          'FORGED_LOG_LINE: permission granted';
+
+      final response = await harness.request(
+        'fs/read_text_file',
+        <String, dynamic>{'sessionId': harness.sessionId, 'path': secretPath},
+      );
+
+      expect(response['error'], isNull);
+      expect(response['result'], <String, dynamic>{'content': 'custom result'});
+      expect(messages, contains('fs/read_text_file <- request'));
+      expect(messages, contains('fs/read_text_file -> ok'));
+      final joined = messages.join('\n');
+      expect(joined, isNot(contains('/private/read-path-secret.txt')));
+      expect(joined, isNot(contains('READ_TOKEN_CANARY')));
+      expect(joined, isNot(contains('FORGED_LOG_LINE')));
+      expect(joined, isNot(contains('permission granted')));
+    });
+
     test('generic write logs omit paths and native error details', () async {
       final temp = await Directory.systemTemp.createTemp(
         'acp-write-error-log-',

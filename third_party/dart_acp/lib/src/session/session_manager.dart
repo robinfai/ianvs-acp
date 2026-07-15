@@ -5091,16 +5091,14 @@ class SessionManager implements AcpBoundedObservationSource {
           final path = req['path'] as String;
           final line = (req['line'] as num?)?.toInt();
           final limit = (req['limit'] as num?)?.toInt();
-          _log.fine('fs/read_text_file <- path=$path line=$line limit=$limit');
+          _log.fine('fs/read_text_file <- request');
           try {
             final content = await provider.readTextFile(
               path,
               line: line,
               limit: limit,
             );
-            _log.fine(
-              'fs/read_text_file -> ok path=$path bytes=${content.length}',
-            );
+            _log.fine('fs/read_text_file -> ok');
             return {'content': content};
           } on FsReadRejectedException catch (error) {
             _log.warning('fs/read_text_file -> rejected by bounded policy');
@@ -5789,8 +5787,10 @@ class SessionManager implements AcpBoundedObservationSource {
   /// Read buffered output for a managed terminal.
   Future<String> readTerminalOutput(String terminalId) async {
     final record = _terminals[terminalId];
-    if (record == null) return '';
-    return record.handle.currentOutput();
+    final provider = config.terminalProvider;
+    if (record == null || provider == null) return '';
+    final source = await provider.currentOutput(record.handle);
+    return _boundedTerminalOutput(record, source).output;
   }
 
   /// Kill a managed terminal process.

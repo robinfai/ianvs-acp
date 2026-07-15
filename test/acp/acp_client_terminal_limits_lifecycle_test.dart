@@ -123,6 +123,7 @@ void main() {
         );
         final terminalId =
             (first['result'] as Map<String, dynamic>)['terminalId'];
+        final publicOutput = await client.terminalOutput(terminalId as String);
         final output = await terminalRequest(
           id: 'terminal-output',
           method: 'terminal/output',
@@ -144,6 +145,8 @@ void main() {
         );
 
         expect(first, contains('result'));
+        expect(publicOutput, 'aé');
+        expect(publicOutput, isNot(contains('secret-must-be-truncated')));
         expect(output['result'], <String, dynamic>{
           'output': 'aé',
           'truncated': true,
