@@ -415,6 +415,9 @@ class DartAcpAgentClient implements AcpAgentClient {
       _rawPromptOperationsInFlight.length;
 
   @visibleForTesting
+  String? get activeSessionIdForTesting => _activeSessionId;
+
+  @visibleForTesting
   Future<void> rawConnectionResultErrorSeenForTesting(
     acp.AcpSessionInputBudgetOwner owner,
   ) {
@@ -1020,17 +1023,19 @@ class DartAcpAgentClient implements AcpAgentClient {
       throw StateError('ACP agent does not support session/close.');
     }
     _invalidateConfigMutationQueue(sessionId);
-    final operation = _rawPromptOperationsBySession[sessionId];
-    if (operation != null) {
-      await _invalidateRawPromptOperation(client, operation, sendCancel: false);
-    }
     try {
+      final operation = _rawPromptOperationsBySession[sessionId];
+      if (operation != null) {
+        await _invalidateRawPromptOperation(
+          client,
+          operation,
+          sendCancel: false,
+        );
+      }
       await client.closeSession(sessionId: sessionId);
-    } on acp.SessionCloseCleanupException {
+    } finally {
       _clearSessionState(sessionId);
-      rethrow;
     }
-    _clearSessionState(sessionId);
   }
 
   void _clearSessionState(String sessionId) {

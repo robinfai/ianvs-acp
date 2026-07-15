@@ -15426,6 +15426,221 @@ Future<void> main() async {
     },
   );
 
+  test(
+    'closeSession clears wrapper state and permissions on remote failure',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final permissionResponseFile = File(
+        '${tempDir.path}/permission_response.json',
+      );
+      final agentScript = File(
+        '${tempDir.path}/fake_failed_close_agent.dart',
+      );
+      final permissionResponsePath = jsonEncode(permissionResponseFile.path);
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'close': true,
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'failed-close',
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'safe',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'safe', 'name': 'Safe'},
+              ],
+            },
+          ],
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'permission-failed-close',
+        'method': 'session/request_permission',
+        'params': <String, dynamic>{
+          'sessionId': 'failed-close',
+          'toolCall': <String, dynamic>{'title': 'Read file', 'kind': 'read'},
+          'options': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'optionId': 'allow',
+              'kind': 'allow_once',
+              'name': 'Allow',
+            },
+          ],
+        },
+      }));
+    } else if (message['method'] == 'session/close') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'error': <String, dynamic>{'code': -32000, 'message': 'close failed'},
+      }));
+    } else if (message['id'] == 'permission-failed-close') {
+      File($permissionResponsePath).writeAsStringSync(
+        jsonEncode(message),
+        flush: true,
+      );
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+      );
+      final requestCompleter = Completer<AcpPermissionRequest>();
+      final subscription = client.permissionRequests.listen((request) {
+        if (!requestCompleter.isCompleted) requestCompleter.complete(request);
+      });
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final session = await client.createSession(cwd: '/workspace');
+        await requestCompleter.future.timeout(const Duration(seconds: 5));
+        expect(
+          (await client.sessionSettings(session.id)).configOptions,
+          hasLength(1),
+        );
+
+        await expectLater(
+          client.closeSession(sessionId: session.id),
+          throwsA(
+            isA<rpc.RpcException>()
+                .having((error) => error.code, 'code', -32000)
+                .having((error) => error.message, 'message', 'close failed'),
+          ),
+        );
+
+        expect(client.activeSessionIdForTesting, isNull);
+        final settings = await client.sessionSettings(session.id);
+        expect(settings.configOptions, isEmpty);
+        expect(settings.omissions, isEmpty);
+        await _waitForFile(permissionResponseFile);
+        final permissionResponse =
+            jsonDecode(await permissionResponseFile.readAsString())
+                as Map<String, dynamic>;
+        expect(
+          permissionResponse['result'],
+          containsPair('outcome', containsPair('outcome', 'cancelled')),
+        );
+      } finally {
+        await subscription.cancel();
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('closeSession clears wrapper state on request timeout', () async {
+    final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+    final agentScript = File('${tempDir.path}/fake_timed_out_close_agent.dart');
+    await agentScript.writeAsString(r'''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{
+            'sessionCapabilities': <String, dynamic>{
+              'close': true,
+              'configOptions': <String, dynamic>{},
+            },
+          },
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/new') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'sessionId': 'timed-out-close',
+          'configOptions': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'model',
+              'name': 'Model',
+              'type': 'select',
+              'currentValue': 'safe',
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'safe', 'name': 'Safe'},
+              ],
+            },
+          ],
+        },
+      }));
+    }
+  }
+}
+''');
+
+    final client = DartAcpAgentClient(
+      agentCommand: _dartExecutable(),
+      agentArgs: <String>[agentScript.path],
+      timeouts: const acp.AcpTimeouts(
+        request: Duration(milliseconds: 75),
+      ),
+    );
+
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
+      final session = await client.createSession(cwd: '/workspace');
+      expect(
+        (await client.sessionSettings(session.id)).configOptions,
+        hasLength(1),
+      );
+
+      await expectLater(
+        client.closeSession(sessionId: session.id),
+        throwsA(isA<acp.AcpRequestTimeoutException>()),
+      );
+
+      expect(client.activeSessionIdForTesting, isNull);
+      final settings = await client.sessionSettings(session.id);
+      expect(settings.configOptions, isEmpty);
+      expect(settings.omissions, isEmpty);
+    } finally {
+      await client.dispose();
+      await tempDir.delete(recursive: true);
+    }
+  });
+
   test('logout cancels pending permission requests', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
     final logoutRequestFile = File('${tempDir.path}/logout_request.json');
