@@ -8,6 +8,7 @@ typedef LocalRuntimeProbe =
 enum RuntimeAvailability {
   unknown,
   available,
+  busy,
   unavailable,
   authRequired,
   misconfigured,
@@ -60,6 +61,19 @@ class LocalRuntimeStatus {
     return LocalRuntimeStatus(
       agentName: agentName.trim(),
       availability: RuntimeAvailability.unavailable,
+      checkedAt: checkedAt,
+      unavailableReason: _trimmedOrNull(reason),
+    );
+  }
+
+  factory LocalRuntimeStatus.busy({
+    required String agentName,
+    required DateTime checkedAt,
+    String? reason,
+  }) {
+    return LocalRuntimeStatus(
+      agentName: agentName.trim(),
+      availability: RuntimeAvailability.busy,
       checkedAt: checkedAt,
       unavailableReason: _trimmedOrNull(reason),
     );

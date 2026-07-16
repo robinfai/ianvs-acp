@@ -1,14 +1,19 @@
-import 'dart:convert';
-
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
+import '../bounded_metadata_preview.dart';
 import '../theme/app_design_tokens.dart';
 
 class CapabilitiesDialog extends StatelessWidget {
-  const CapabilitiesDialog({super.key, required this.capabilities});
+  const CapabilitiesDialog({
+    super.key,
+    required this.capabilities,
+    this.inputBudget = const AcpInputBudget(),
+  });
 
   final AcpAgentCapabilities? capabilities;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -174,9 +179,8 @@ class CapabilitiesDialog extends StatelessWidget {
                         ),
                       ],
                     ),
-                    if (caps.extensionMeta.isNotEmpty ||
-                        caps.rawAgentCapabilities.isNotEmpty)
-                      _RawSection(capabilities: caps),
+                    if (caps.rawAgentCapabilities.isNotEmpty)
+                      _RawSection(capabilities: caps, inputBudget: inputBudget),
                   ],
                 ),
               ),
@@ -554,10 +558,77 @@ class _Pill extends StatelessWidget {
   }
 }
 
-class _RawSection extends StatelessWidget {
-  const _RawSection({required this.capabilities});
+class _RawSection extends StatefulWidget {
+  const _RawSection({required this.capabilities, required this.inputBudget});
 
   final AcpAgentCapabilities capabilities;
+  final AcpInputBudget inputBudget;
+
+  @override
+  State<_RawSection> createState() => _RawSectionState();
+}
+
+class _RawSectionState extends State<_RawSection> {
+  final Map<_RawBlockKind, _RawPreviewCacheEntry> _previewCache = {};
+  var _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _RawSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _previewCache.clear();
+      return;
+    }
+    _invalidateChangedInput(
+      _RawBlockKind.agentCapabilities,
+      oldWidget.capabilities.rawAgentCapabilities,
+      widget.capabilities.rawAgentCapabilities,
+    );
+    _invalidateChangedInput(
+      _RawBlockKind.agentInfo,
+      oldWidget.capabilities.agentInfo,
+      widget.capabilities.agentInfo,
+    );
+    _invalidateChangedInput(
+      _RawBlockKind.clientInfo,
+      oldWidget.capabilities.clientInfo,
+      widget.capabilities.clientInfo,
+    );
+    _invalidateChangedInput(
+      _RawBlockKind.authMethods,
+      oldWidget.capabilities.authMethods,
+      widget.capabilities.authMethods,
+    );
+  }
+
+  void _invalidateChangedInput(
+    _RawBlockKind kind,
+    Object? previous,
+    Object? current,
+  ) {
+    if (!identical(previous, current)) {
+      _previewCache.remove(kind);
+    }
+  }
+
+  BoundedMetadataPreview _previewFor(_RawBlockKind kind, Object? value) {
+    final cached = _previewCache[kind];
+    if (cached != null &&
+        identical(cached.value, value) &&
+        identical(cached.inputBudget, widget.inputBudget)) {
+      return cached.preview;
+    }
+    final preview = writeBoundedMetadataPreview(
+      value,
+      budget: widget.inputBudget,
+    );
+    _previewCache[kind] = _RawPreviewCacheEntry(
+      value: value,
+      inputBudget: widget.inputBudget,
+      preview: preview,
+    );
+    return preview;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -566,6 +637,11 @@ class _RawSection extends StatelessWidget {
       child: ExpansionTile(
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+        onExpansionChanged: (expanded) {
+          setState(() {
+            _expanded = expanded;
+          });
+        },
         title: const Text(
           'Raw capability data',
           style: TextStyle(
@@ -574,27 +650,64 @@ class _RawSection extends StatelessWidget {
           ),
         ),
         leading: const Icon(Icons.data_object_rounded),
-        children: [
-          _RawBlock(
-            label: 'agentCapabilities',
-            value: capabilities.rawAgentCapabilities,
-          ),
-          if (capabilities.agentInfo.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _RawBlock(label: 'agentInfo', value: capabilities.agentInfo),
-          ],
-          if (capabilities.clientInfo.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _RawBlock(label: 'clientInfo', value: capabilities.clientInfo),
-          ],
-          if (capabilities.authMethods.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _RawBlock(label: 'authMethods', value: capabilities.authMethods),
-          ],
-        ],
+        children: _expanded
+            ? [
+                _RawBlock(
+                  label: 'agentCapabilities',
+                  preview: _previewFor(
+                    _RawBlockKind.agentCapabilities,
+                    widget.capabilities.rawAgentCapabilities,
+                  ),
+                ),
+                if (widget.capabilities.agentInfo.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  _RawBlock(
+                    label: 'agentInfo',
+                    preview: _previewFor(
+                      _RawBlockKind.agentInfo,
+                      widget.capabilities.agentInfo,
+                    ),
+                  ),
+                ],
+                if (widget.capabilities.clientInfo.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  _RawBlock(
+                    label: 'clientInfo',
+                    preview: _previewFor(
+                      _RawBlockKind.clientInfo,
+                      widget.capabilities.clientInfo,
+                    ),
+                  ),
+                ],
+                if (widget.capabilities.authMethods.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  _RawBlock(
+                    label: 'authMethods',
+                    preview: _previewFor(
+                      _RawBlockKind.authMethods,
+                      widget.capabilities.authMethods,
+                    ),
+                  ),
+                ],
+              ]
+            : const <Widget>[],
       ),
     );
   }
+}
+
+enum _RawBlockKind { agentCapabilities, agentInfo, clientInfo, authMethods }
+
+final class _RawPreviewCacheEntry {
+  const _RawPreviewCacheEntry({
+    required this.value,
+    required this.inputBudget,
+    required this.preview,
+  });
+
+  final Object? value;
+  final AcpInputBudget inputBudget;
+  final BoundedMetadataPreview preview;
 }
 
 String _implementationLabel(Map<String, Object?> info) {
@@ -610,14 +723,13 @@ String _implementationLabel(Map<String, Object?> info) {
 }
 
 class _RawBlock extends StatelessWidget {
-  const _RawBlock({required this.label, required this.value});
+  const _RawBlock({required this.label, required this.preview});
 
   final String label;
-  final Object? value;
+  final BoundedMetadataPreview preview;
 
   @override
   Widget build(BuildContext context) {
-    const encoder = JsonEncoder.withIndent('  ');
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(9),
@@ -639,7 +751,7 @@ class _RawBlock extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           SelectableText(
-            encoder.convert(value),
+            preview.text,
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontFamily: 'monospace',
@@ -647,6 +759,19 @@ class _RawBlock extends StatelessWidget {
               height: 1.35,
             ),
           ),
+          if (preview.omission case final omission?) ...[
+            const SizedBox(height: 6),
+            Text(
+              omission.truncated
+                  ? 'Preview truncated · ${omission.resource}'
+                  : 'Details omitted · ${omission.resource}',
+              style: const TextStyle(
+                color: AppColors.warning,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ],
       ),
     );

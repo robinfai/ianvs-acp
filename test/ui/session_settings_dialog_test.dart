@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -9,6 +11,503 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
 
 void main() {
+  testWidgets('SessionSettingsDialog accepts the injected input budget', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 7,
+      maxMetadataPreviewBytes: 9,
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    final dialog = SessionSettingsDialog(
+      controller: controller,
+      inputBudget: budget,
+    );
+
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: dialog)));
+
+    expect(identical(dialog.inputBudget, budget), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SessionSettingsDialog lazily builds 1024 config options', (
+    tester,
+  ) async {
+    final settings = AcpSessionSettings(
+      configOptions: List<AcpConfigOption>.generate(
+        1024,
+        (index) => AcpConfigOption(
+          id: 'option-$index',
+          name: 'Option $index',
+          type: 'boolean',
+          currentValue: 'false',
+          options: const [],
+        ),
+      ),
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(sessionSettings: settings),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('session-settings-scroll')),
+      findsOneWidget,
+    );
+    expect(find.byType(CustomScrollView), findsOneWidget);
+    expect(find.byType(SliverList), findsOneWidget);
+    expect(find.text('Option 0'), findsOneWidget);
+    expect(find.text('Option 1023'), findsNothing);
+    expect(
+      find.textContaining(RegExp(r'^Option \d+$')).evaluate().length,
+      lessThan(32),
+    );
+
+    await _jumpSettingsToEnd(tester);
+    expect(find.text('Option 1023'), findsOneWidget);
+  });
+
+  testWidgets(
+    'SessionSettingsDialog does not rescan unchanged config options',
+    (tester) async {
+      final options = _CountingList<AcpConfigOption>(
+        List<AcpConfigOption>.generate(
+          1024,
+          (index) => AcpConfigOption(
+            id: 'option-$index',
+            name: 'Option $index',
+            type: 'boolean',
+            currentValue: 'false',
+            options: const [],
+          ),
+        ),
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(
+          sessionSettings: AcpSessionSettings(configOptions: options),
+        ),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+
+      Widget app() => MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      );
+
+      await tester.pumpWidget(app());
+      expect(options.itemReads, greaterThanOrEqualTo(1024));
+
+      options.resetReads();
+      await tester.pumpWidget(app());
+
+      expect(options.itemReads, lessThan(128));
+    },
+  );
+
+  testWidgets(
+    'SessionSettingsDialog projection depends only on config option identity',
+    (tester) async {
+      final options = _CountingList<AcpConfigOption>(
+        List<AcpConfigOption>.generate(
+          1024,
+          (index) => AcpConfigOption(
+            id: 'option-$index',
+            name: 'Option $index',
+            type: 'boolean',
+            currentValue: 'false',
+            options: const [],
+          ),
+        ),
+      );
+      final initialSettings = AcpSessionSettings(configOptions: options);
+      final controller = ChatController(
+        client: FakeAgentClient(sessionSettings: initialSettings),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      await controller.newSession();
+
+      Widget app(AcpInputBudget budget) => MaterialApp(
+        home: Scaffold(
+          body: SessionSettingsDialog(
+            controller: controller,
+            inputBudget: budget,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(
+        app(const AcpInputBudget(maxMetadataPreviewChars: 16)),
+      );
+      expect(options.itemReads, greaterThanOrEqualTo(1024));
+
+      final omission = AcpInputOmission(
+        reason: AcpInputOmissionReason.inputLimit,
+        resource: 'session settings',
+        truncated: false,
+        limit: 1024,
+        observedAtLeast: 1025,
+      );
+      controller.sessionSettings = initialSettings.copyWith(
+        truncated: true,
+        omissions: [omission],
+      );
+      expect(
+        identical(controller.sessionSettings.configOptions, options),
+        isTrue,
+      );
+      options.resetReads();
+
+      await tester.pumpWidget(
+        app(const AcpInputBudget(maxMetadataPreviewChars: 24)),
+      );
+
+      expect(options.itemReads, lessThan(128));
+      await _jumpSettingsToEnd(tester);
+      expect(find.text('Settings incomplete'), findsOneWidget);
+    },
+  );
+
+  testWidgets('SessionSettingsDialog searches large choices lazily', (
+    tester,
+  ) async {
+    final choices = List<AcpConfigOptionChoice>.generate(
+      1024,
+      (index) => AcpConfigOptionChoice(
+        value: 'model-$index',
+        name: 'Model $index',
+        description: index == 1023
+            ? 'MODEL_DESCRIPTION_CANARY_THAT_MUST_BE_BOUNDED'
+            : null,
+      ),
+    );
+    final fake = FakeAgentClient(
+      sessionSettings: AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-0',
+            options: choices,
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionSettingsDialog(
+            controller: controller,
+            inputBudget: const AcpInputBudget(
+              maxMetadataPreviewChars: 12,
+              maxMetadataPreviewBytes: 12,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('1019 more'), findsOneWidget);
+    expect(find.text('Model 0'), findsOneWidget);
+    expect(find.text('Model 1023'), findsNothing);
+
+    final settingsScroll = find.byKey(
+      const ValueKey('session-settings-scroll'),
+    );
+    final moreButton = find.descendant(
+      of: settingsScroll,
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    await tester.ensureVisible(moreButton);
+    await tester.pumpAndSettle();
+    await tester.tap(moreButton);
+    await tester.pumpAndSettle();
+    final listFinder = find.byKey(const ValueKey('settings-choice-list'));
+    expect(listFinder, findsOneWidget);
+    final list = tester.widget<ListView>(listFinder);
+    expect(list.primary, isFalse);
+    expect(list.shrinkWrap, isFalse);
+    expect(find.text('Model 1023'), findsNothing);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('settings-choice-search')),
+      'Model 1023',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Model 1023'), findsNWidgets(2));
+    expect(find.textContaining('MODEL_DESCRIPTION_CANARY'), findsNothing);
+    expect(find.textContaining('metadata preview'), findsOneWidget);
+
+    final choiceTile = find.descendant(
+      of: listFinder,
+      matching: find.widgetWithText(ListTile, 'Model 1023'),
+    );
+    await tester.tap(choiceTile);
+    await tester.pumpAndSettle();
+    expect(fake.lastConfigId, 'model');
+    expect(fake.lastConfigValue, 'model-1023');
+  });
+
+  testWidgets('large choice dialog closes when settings become disabled', (
+    tester,
+  ) async {
+    final choices = List<AcpConfigOptionChoice>.generate(
+      1024,
+      (index) =>
+          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+    );
+    final fake = _DelayedForkAgentClient(
+      sessionSettings: AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-0',
+            options: choices,
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+    final moreButton = find.descendant(
+      of: find.byKey(const ValueKey('session-settings-scroll')),
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    await tester.ensureVisible(moreButton);
+    await tester.pumpAndSettle();
+    await tester.tap(moreButton);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('settings-choice-search')),
+      findsOneWidget,
+    );
+
+    final forkFuture = controller.forkCurrentSession();
+    await fake.forkStarted.future;
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-choice-search')), findsNothing);
+    expect(fake.lastConfigId, isNull);
+    final disabledMoreButton = find.descendant(
+      of: find.byKey(const ValueKey('session-settings-scroll')),
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    expect(tester.widget<TextButton>(disabledMoreButton).onPressed, isNull);
+
+    fake.allowFork.complete();
+    await forkFuture;
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('large choice dialog closes when its parent unmounts', (
+    tester,
+  ) async {
+    final choices = List<AcpConfigOptionChoice>.generate(
+      1024,
+      (index) =>
+          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+    );
+    final fake = FakeAgentClient(
+      sessionSettings: AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-0',
+            options: choices,
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+    final moreButton = find.descendant(
+      of: find.byKey(const ValueKey('session-settings-scroll')),
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    await tester.ensureVisible(moreButton);
+    await tester.pumpAndSettle();
+    await tester.tap(moreButton);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('settings-choice-search')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: SizedBox.shrink())),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-choice-search')), findsNothing);
+    expect(fake.lastConfigId, isNull);
+  });
+
+  testWidgets('large choice late builder closes after immediate disable', (
+    tester,
+  ) async {
+    final choices = List<AcpConfigOptionChoice>.generate(
+      1024,
+      (index) =>
+          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+    );
+    final fake = _DelayedForkAgentClient(
+      sessionSettings: AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-0',
+            options: choices,
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+    final moreButton = find.descendant(
+      of: find.byKey(const ValueKey('session-settings-scroll')),
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    await tester.ensureVisible(moreButton);
+    await tester.pumpAndSettle();
+
+    await tester.tap(moreButton);
+    final forkFuture = controller.forkCurrentSession();
+    await fake.forkStarted.future;
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-choice-search')), findsNothing);
+    expect(fake.lastConfigId, isNull);
+
+    fake.allowFork.complete();
+    await forkFuture;
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('large choice late builder closes after immediate unmount', (
+    tester,
+  ) async {
+    final choices = List<AcpConfigOptionChoice>.generate(
+      1024,
+      (index) =>
+          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+    );
+    final fake = FakeAgentClient(
+      sessionSettings: AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-0',
+            options: choices,
+          ),
+        ],
+      ),
+    );
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+    final moreButton = find.descendant(
+      of: find.byKey(const ValueKey('session-settings-scroll')),
+      matching: find.widgetWithText(TextButton, '1019 more'),
+    );
+    await tester.ensureVisible(moreButton);
+    await tester.pumpAndSettle();
+
+    await tester.tap(moreButton);
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: SizedBox.shrink())),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-choice-search')), findsNothing);
+    expect(fake.lastConfigId, isNull);
+  });
+
+  testWidgets('SessionSettingsDialog keeps incomplete settings visible', (
+    tester,
+  ) async {
+    final omission = AcpInputOmission(
+      reason: AcpInputOmissionReason.inputLimit,
+      resource: 'session settings',
+      truncated: false,
+      limit: 1024,
+      observedAtLeast: 1025,
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(
+        sessionSettings: AcpSessionSettings(
+          omissions: [omission],
+          truncated: true,
+        ),
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    await _jumpSettingsToEnd(tester);
+    expect(find.text('Settings incomplete'), findsOneWidget);
+    expect(find.textContaining('session settings'), findsOneWidget);
+  });
+
   testWidgets('SessionSettingsDialog prefers config options over modes', (
     tester,
   ) async {
@@ -81,8 +580,6 @@ void main() {
     expect(find.text('Session Configuration'), findsOneWidget);
     expect(find.text('Active model'), findsOneWidget);
     expect(find.text('GPT-5'), findsOneWidget);
-    expect(find.text('Approval mode'), findsOneWidget);
-
     await tester.tap(find.byType(DropdownButtonFormField<String>).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Claude Sonnet 4').last);
@@ -91,6 +588,8 @@ void main() {
     expect(fake.lastConfigId, 'model');
     expect(fake.lastConfigValue, 'claude-sonnet-4');
     expect(controller.sessionSettings.currentModelLabel, 'Claude Sonnet 4');
+    await _jumpSettingsToEnd(tester);
+    expect(find.text('Approval mode'), findsOneWidget);
   });
 
   testWidgets('SessionSettingsDialog promotes reasoning effort config option', (
@@ -112,8 +611,6 @@ void main() {
     expect(find.text('Reasoning effort'), findsOneWidget);
     expect(find.text('High'), findsOneWidget);
     expect(find.text('ACP config option: reasoning_effort'), findsOneWidget);
-    expect(find.text('Approval mode'), findsOneWidget);
-
     await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();
 
@@ -126,6 +623,8 @@ void main() {
       ),
       ['approval'],
     );
+    await _jumpSettingsToEnd(tester);
+    expect(find.text('Approval mode'), findsOneWidget);
   });
 
   testWidgets(
@@ -208,30 +707,31 @@ void main() {
     expect(controller.currentSession, isNull);
   });
 
-  testWidgets('SessionSettingsDialog stays open when close fails', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient(closeError: Exception('close failed'));
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
+  testWidgets(
+    'SessionSettingsDialog close failure clears local session and closes dialog',
+    (tester) async {
+      final fake = FakeAgentClient(closeError: Exception('close failed'));
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
 
-    await controller.newSession();
+      await controller.newSession();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
-      ),
-    );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+        ),
+      );
 
-    await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('Session Settings'), findsOneWidget);
-    expect(controller.currentSession?.id, 'fake-session-1');
-    expect(controller.lastError, contains('close failed'));
-  });
+      expect(find.text('Session Settings'), findsNothing);
+      expect(controller.currentSession, isNull);
+      expect(controller.lastError, contains('close failed'));
+    },
+  );
 
   testWidgets('SessionSettingsDialog confirms and deletes active session', (
     tester,
@@ -430,5 +930,40 @@ class _DelayedForkAgentClient extends FakeAgentClient {
       cwd: cwd,
       additionalDirectories: additionalDirectories,
     );
+  }
+}
+
+Future<void> _jumpSettingsToEnd(WidgetTester tester) async {
+  await tester.fling(
+    find.byKey(const ValueKey('session-settings-scroll')),
+    const Offset(0, -100000),
+    100000,
+  );
+  await tester.pumpAndSettle();
+}
+
+final class _CountingList<E> extends ListBase<E> {
+  _CountingList(this._values);
+
+  final List<E> _values;
+  int itemReads = 0;
+
+  void resetReads() => itemReads = 0;
+
+  @override
+  int get length => _values.length;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  E operator [](int index) {
+    itemReads += 1;
+    return _values[index];
+  }
+
+  @override
+  void operator []=(int index, E value) {
+    throw UnsupportedError('read only');
   }
 }

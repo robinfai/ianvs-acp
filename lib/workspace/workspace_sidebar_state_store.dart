@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import '../acp/agent_session.dart';
+import '../platform/secure_atomic_file.dart';
 
 class WorkspaceSidebarWorkspaceState {
   const WorkspaceSidebarWorkspaceState({
@@ -26,6 +28,8 @@ class WorkspaceSidebarStateStore {
   const WorkspaceSidebarStateStore({required this.path});
 
   static const String fileName = 'workspace_ui_state.json';
+  static final Map<String, _WorkspaceStateCoordinator> _coordinators =
+      <String, _WorkspaceStateCoordinator>{};
 
   final String? path;
 
@@ -79,9 +83,9 @@ class WorkspaceSidebarStateStore {
             .toList()
           ..sort();
 
-    final payload = await _readState();
-    payload['expanded_workspaces'] = sortedPaths;
-    await _writeState(payload);
+    await _mutate((payload) {
+      payload['expanded_workspaces'] = sortedPaths;
+    });
   }
 
   Future<List<WorkspaceSidebarWorkspaceState>> loadWorkspaceStates() async {
@@ -117,11 +121,11 @@ class WorkspaceSidebarStateStore {
 
     final sortedStates = statesByPath.values.toList()
       ..sort((a, b) => a.path.compareTo(b.path));
-    final payload = await _readState();
-    payload['workspace_index'] = sortedStates
-        .map(_workspaceStateToJson)
-        .toList();
-    await _writeState(payload);
+    await _mutate((payload) {
+      payload['workspace_index'] = sortedStates
+          .map(_workspaceStateToJson)
+          .toList();
+    });
   }
 
   Future<List<AgentSession>> loadSessionIndex() async {
@@ -150,14 +154,39 @@ class WorkspaceSidebarStateStore {
 
     final sortedSessions = sessionsByKey.values.toList()
       ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
-    final payload = await _readState();
-    payload['session_index'] = sortedSessions.map(_sessionIndexToJson).toList();
-    await _writeState(payload);
+    await _mutate((payload) {
+      payload['session_index'] = sortedSessions
+          .map(_sessionIndexToJson)
+          .toList();
+    });
   }
 
   Future<Map<String, Object?>> _readState() async {
     final file = _fileOrNull();
-    if (file == null || !await file.exists()) return <String, Object?>{};
+    if (file == null) return <String, Object?>{};
+    return _withCoordinator(file, (_) => _readStateFile(file));
+  }
+
+  Future<void> _mutate(
+    void Function(Map<String, Object?> state) mutation,
+  ) async {
+    final file = _fileOrNull();
+    if (file == null) return;
+    await _withCoordinator(file, (_) async {
+      final state = await _readStateFile(file);
+      mutation(state);
+
+      const encoder = JsonEncoder.withIndent('  ');
+      await SecureAtomicFile.writeString(
+        file,
+        '${encoder.convert(state)}\n',
+        protectExistingParent: false,
+      );
+    });
+  }
+
+  Future<Map<String, Object?>> _readStateFile(File file) async {
+    if (!await file.exists()) return <String, Object?>{};
 
     try {
       final decoded = jsonDecode(await file.readAsString());
@@ -171,14 +200,21 @@ class WorkspaceSidebarStateStore {
     }
   }
 
-  Future<void> _writeState(Map<String, Object?> payload) async {
-    final file = _fileOrNull();
-    if (file == null) return;
-
-    const encoder = JsonEncoder.withIndent('  ');
-
-    await file.parent.create(recursive: true);
-    await file.writeAsString('${encoder.convert(payload)}\n');
+  Future<T> _withCoordinator<T>(
+    File file,
+    Future<T> Function(_WorkspaceStateCoordinator coordinator) operation,
+  ) {
+    final key = Uri.file(file.absolute.path).normalizePath().toFilePath();
+    final coordinator = _coordinators.putIfAbsent(
+      key,
+      _WorkspaceStateCoordinator.new,
+    );
+    coordinator.retain();
+    return coordinator.schedule(() => operation(coordinator)).whenComplete(() {
+      if (coordinator.release() && identical(_coordinators[key], coordinator)) {
+        _coordinators.remove(key);
+      }
+    });
   }
 
   File? _fileOrNull() {
@@ -307,5 +343,101 @@ class WorkspaceSidebarStateStore {
       return '$directory$basename';
     }
     return '$directory${Platform.pathSeparator}$basename';
+  }
+}
+
+class WorkspaceSessionIndexPersistenceQueue {
+  WorkspaceSessionIndexPersistenceQueue({required this.store});
+
+  final WorkspaceSidebarStateStore store;
+
+  _PendingSessionIndex? _pending;
+  Future<void>? _drainFuture;
+  String? _persistedSignature;
+
+  Future<void> get idle => _drainFuture ?? Future<void>.value();
+
+  void enqueue({
+    required Iterable<AgentSession> sessions,
+    required String signature,
+  }) {
+    if (_drainFuture == null && signature == _persistedSignature) return;
+    _pending = _PendingSessionIndex(
+      sessions: List<AgentSession>.unmodifiable(sessions),
+      signature: signature,
+    );
+    _startDrain();
+  }
+
+  void _startDrain() {
+    if (_drainFuture != null) return;
+    final completion = Completer<void>();
+    _drainFuture = completion.future;
+    scheduleMicrotask(() {
+      unawaited(_runDrain(completion));
+    });
+  }
+
+  Future<void> _runDrain(Completer<void> completion) async {
+    try {
+      await _drain();
+    } catch (_) {
+      // Keep sidebar persistence best effort even for an unexpected store
+      // implementation failure.
+    }
+    _drainFuture = null;
+    if (_pending != null) {
+      _startDrain();
+      await _drainFuture;
+    }
+    completion.complete();
+  }
+
+  Future<void> _drain() async {
+    while (true) {
+      final pending = _pending;
+      if (pending == null) break;
+      _pending = null;
+      if (pending.signature == _persistedSignature) continue;
+      try {
+        await store.saveSessionIndex(pending.sessions);
+      } catch (_) {
+        // The app treats sidebar persistence as best effort. Keep the last
+        // successful signature so a later enqueue retries failed state.
+        continue;
+      }
+      _persistedSignature = pending.signature;
+    }
+  }
+}
+
+class _PendingSessionIndex {
+  const _PendingSessionIndex({required this.sessions, required this.signature});
+
+  final List<AgentSession> sessions;
+  final String signature;
+}
+
+class _WorkspaceStateCoordinator {
+  Future<void> _tail = Future<void>.value();
+  int _references = 0;
+
+  void retain() => _references += 1;
+
+  bool release() {
+    _references -= 1;
+    return _references == 0;
+  }
+
+  Future<T> schedule<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _tail = _tail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
   }
 }

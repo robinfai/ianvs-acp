@@ -206,6 +206,8 @@ List<TaskNotification> buildTaskNotifications(TaskInboxSnapshot snapshot) {
         );
         break;
       case TaskStatus.needsHumanReview:
+      case TaskStatus.approvedForExport:
+      case TaskStatus.exporting:
         notifications.add(
           _taskNotification(
             task,

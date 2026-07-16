@@ -50,8 +50,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     widget.clientProviders.permissions.trustRules,
   );
   late bool _reviewAgentEnabled =
-      widget.clientProviders.permissions.reviewAgent.enabled ||
-      widget.clientProviders.permissions.reviewAgent.isConfigured;
+      widget.clientProviders.permissions.reviewAgent.enabled;
   late final TextEditingController _reviewServerNameController =
       TextEditingController(
         text:
@@ -79,6 +78,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   .inMilliseconds
                   .toString(),
       );
+  late McpServerConfig? _reviewInlineMcpServer =
+      widget.clientProviders.permissions.reviewAgent.mcpServer;
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -232,11 +233,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       _error = null;
     });
     try {
-      await save(
+      final saved = await save(
         AcpClientConfig(
           activeAgentServer: _agentServerNamed(_defaultAgentName),
-          agentServers: _agentServers,
-          mcpServers: _mcpServers,
+          agentServers: List.unmodifiable(_agentServers),
+          mcpServers: List.unmodifiable(_mcpServers),
           additionalDirectories: List.unmodifiable(_additionalDirectories),
           clientProviders: _clientProvidersConfig(),
           configPath: widget.configPath,
@@ -244,7 +245,18 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         ),
       );
       if (!context.mounted) return;
-      setState(() => _saving = false);
+      setState(() {
+        _saving = false;
+        _agentServers
+          ..clear()
+          ..addAll(saved.agentServers);
+        _mcpServers
+          ..clear()
+          ..addAll(saved.mcpServers);
+        _defaultAgentName = saved.defaultAgentServerName;
+        _reviewInlineMcpServer =
+            saved.clientProviders.permissions.reviewAgent.mcpServer;
+      });
     } catch (error) {
       if (!context.mounted) return;
       setState(() {
@@ -460,9 +472,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   AcpPermissionReviewAgentConfig _reviewAgentConfig() {
+    final serverName = _trimmedOrNull(_reviewServerNameController.text);
     return AcpPermissionReviewAgentConfig(
       enabled: _reviewAgentEnabled,
-      mcpServerName: _trimmedOrNull(_reviewServerNameController.text),
+      mcpServer: serverName == null ? _reviewInlineMcpServer : null,
+      mcpServerName: serverName,
       toolName:
           _trimmedOrNull(_reviewToolNameController.text) ?? 'review_permission',
       model: _trimmedOrNull(_reviewModelController.text),
@@ -918,12 +932,20 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
     );
     _envControllers.addAll(
       server.env.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitEnvKeys.contains(entry.key),
+        ),
       ),
     );
     _headerControllers.addAll(
       server.headers.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitHeaderKeys.contains(entry.key),
+        ),
       ),
     );
   }
@@ -1004,7 +1026,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   itemPrefix: 'agent-header',
                   controllers: _headerControllers,
                   onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
+                    _headerControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _headerControllers.removeAt(index).dispose();
@@ -1044,7 +1068,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   itemPrefix: 'agent-env',
                   controllers: _envControllers,
                   onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
+                    _envControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _envControllers.removeAt(index).dispose();
@@ -1071,7 +1097,10 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
 
   void _submit() {
     try {
-      final json = <String, dynamic>{'type': _type};
+      final json = <String, dynamic>{
+        ...?widget.initialServer?.additionalProperties,
+        'type': _type,
+      };
       if (_isRemote) {
         json['url'] = _urlController.text;
         final headers = _nameValueMap(_headerControllers);
@@ -1090,7 +1119,52 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
         name: _nameController.text.trim(),
         json: json,
       );
-      Navigator.of(context).pop(server);
+      final initial = widget.initialServer;
+      if (initial == null) {
+        Navigator.of(context).pop(server);
+        return;
+      }
+      final sameIdentity = initial.name == server.name;
+      final initialReview = initial.permissionReviewAgent;
+      final inlineReviewServer = initialReview.mcpServer;
+      final review = sameIdentity || inlineReviewServer == null
+          ? initialReview
+          : AcpPermissionReviewAgentConfig(
+              enabled: initialReview.enabled,
+              mcpServer: inlineReviewServer.withSecrets(
+                env: inlineReviewServer.env,
+                headers: inlineReviewServer.headers,
+                envRefs: const <String, String>{},
+                headerRefs: const <String, String>{},
+              ),
+              mcpServerName: initialReview.mcpServerName,
+              toolName: initialReview.toolName,
+              model: initialReview.model,
+              timeout: initialReview.timeout,
+            );
+      Navigator.of(context).pop(
+        server.withSecrets(
+          env: server.env,
+          headers: server.headers,
+          envRefs: sameIdentity
+              ? {
+                  for (final key in server.env.keys)
+                    if (initial.envRefs[key] != null)
+                      key: initial.envRefs[key]!,
+                }
+              : const <String, String>{},
+          headerRefs: sameIdentity
+              ? {
+                  for (final key in server.headers.keys)
+                    if (initial.headerRefs[key] != null)
+                      key: initial.headerRefs[key]!,
+                }
+              : const <String, String>{},
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
+          permissionReviewAgent: review,
+        ),
+      );
     } catch (error) {
       setState(() => _error = '$error');
     }
@@ -1142,7 +1216,13 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
     }
     final env = raw['env'];
     if (env is List) {
-      _envControllers.addAll(_nameValueControllersFromList(env));
+      _envControllers.addAll(
+        _nameValueControllersFromList(
+          env,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitEnvKeys ?? const <String>{},
+        ),
+      );
     }
     final headers = raw['headers'];
     if (headers is Map) {
@@ -1155,11 +1235,22 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
               (entry) => _NameValueControllers(
                 name: entry.key as String,
                 value: entry.value as String,
+                initiallyDirty:
+                    widget.initialServer?.explicitHeaderKeys.contains(
+                      entry.key,
+                    ) ??
+                    false,
               ),
             ),
       );
     } else if (headers is List) {
-      _headerControllers.addAll(_nameValueControllersFromList(headers));
+      _headerControllers.addAll(
+        _nameValueControllersFromList(
+          headers,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitHeaderKeys ?? const <String>{},
+        ),
+      );
     }
   }
 
@@ -1242,7 +1333,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-header',
                   controllers: _headerControllers,
                   onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
+                    _headerControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _headerControllers.removeAt(index).dispose();
@@ -1275,7 +1368,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-env',
                   controllers: _envControllers,
                   onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
+                    _envControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _envControllers.removeAt(index).dispose();
@@ -1303,6 +1398,11 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
   void _submit() {
     try {
       final raw = <String, dynamic>{
+        for (final entry
+            in widget.initialServer?.raw.entries ??
+                const <MapEntry<String, dynamic>>[])
+          if (!_mcpEditorManagedKeys.contains(entry.key))
+            entry.key: entry.value,
         'name': _nameController.text,
         'type': _type,
       };
@@ -1320,22 +1420,82 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
         if (env.isNotEmpty) raw['env'] = env;
       }
       final server = McpServerConfig.fromJson(index: 0, json: raw);
-      Navigator.of(context).pop(server);
+      final initial = widget.initialServer;
+      if (initial == null) {
+        Navigator.of(context).pop(server);
+        return;
+      }
+      final sameIdentity = initial.name == server.name;
+      final env = <String, String>{
+        for (final item in _nameValueEntries(_envControllers))
+          item['name']!: item['value']!,
+      };
+      final headers = <String, String>{
+        for (final item in _nameValueEntries(_headerControllers))
+          item['name']!: item['value']!,
+      };
+      Navigator.of(context).pop(
+        server.withSecrets(
+          env: env,
+          headers: headers,
+          envRefs: {
+            for (final key in env.keys)
+              if (sameIdentity && initial.envRefs[key] != null)
+                key: initial.envRefs[key]!,
+          },
+          headerRefs: {
+            for (final key in headers.keys)
+              if (sameIdentity && initial.headerRefs[key] != null)
+                key: initial.headerRefs[key]!,
+          },
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
+        ),
+      );
     } catch (error) {
       setState(() => _error = '$error');
     }
   }
 }
 
+const Set<String> _mcpEditorManagedKeys = <String>{
+  'name',
+  'type',
+  'command',
+  'url',
+  'id',
+  'args',
+  'env',
+  'headers',
+  'env_refs',
+  'envRefs',
+  'header_refs',
+  'headerRefs',
+};
+
 class _NameValueControllers {
-  _NameValueControllers({String name = '', String value = ''})
-    : nameController = TextEditingController(text: name),
-      valueController = TextEditingController(text: value);
+  _NameValueControllers({
+    String name = '',
+    String value = '',
+    bool initiallyDirty = false,
+  }) : nameController = TextEditingController(text: name),
+       valueController = TextEditingController(text: value),
+       _dirty = initiallyDirty {
+    _dirtyListener = () => _dirty = true;
+    nameController.addListener(_dirtyListener);
+    valueController.addListener(_dirtyListener);
+  }
 
   final TextEditingController nameController;
   final TextEditingController valueController;
+  late final VoidCallback _dirtyListener;
+  bool _dirty;
+
+  bool get isDirty => _dirty;
 
   void dispose() {
+    nameController.removeListener(_dirtyListener);
+    valueController.removeListener(_dirtyListener);
     nameController.dispose();
     valueController.dispose();
   }
@@ -1598,13 +1758,26 @@ List<Map<String, String>> _nameValueEntries(
   ];
 }
 
-List<_NameValueControllers> _nameValueControllersFromList(List raw) {
+Set<String> _dirtyNameValueKeys(List<_NameValueControllers> controllers) {
+  return Set.unmodifiable(<String>{
+    for (final controllers in controllers)
+      if (controllers.isDirty &&
+          controllers.nameController.text.trim().isNotEmpty)
+        controllers.nameController.text.trim(),
+  });
+}
+
+List<_NameValueControllers> _nameValueControllersFromList(
+  List raw, {
+  Set<String> initiallyDirtyKeys = const <String>{},
+}) {
   return [
     for (final entry in raw)
       if (entry is Map && entry['name'] is String && entry['value'] is String)
         _NameValueControllers(
           name: entry['name'] as String,
           value: entry['value'] as String,
+          initiallyDirty: initiallyDirtyKeys.contains(entry['name']),
         ),
   ];
 }

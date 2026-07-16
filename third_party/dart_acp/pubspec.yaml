@@ -1,6 +1,7 @@
 name: dart_acp
 description: A Dart implementation of the Agent Client Protocol (ACP).
 version: 0.1.1+acp.1.2.1
+publish_to: none
 repository: https://github.com/csells/dart_acp
 homepage: https://github.com/csells/dart_acp
 

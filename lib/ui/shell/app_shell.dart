@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 
 import '../../acp/acp_session_catalog.dart';
 import '../../acp/acp_permission_request.dart';
@@ -17,6 +18,7 @@ import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
+import '../components/bounded_image_preview.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
@@ -26,15 +28,19 @@ import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_settings_dialog.dart';
+import '../components/session_workspace_review_dialog.dart';
 import '../components/status_bar.dart';
 import '../components/task_inbox_sidebar.dart';
 import '../components/workspace_header.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
+import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef AppShellProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
+typedef AppShellAgentAuthenticated =
+    FutureOr<void> Function(String agentName, String methodId);
 
 enum AppShellSidebarMode { workspaces, inbox }
 
@@ -65,9 +71,13 @@ class AppShell extends StatelessWidget {
     this.onArchiveWorkspaceSessions,
     this.onRunTask,
     this.onOpenTaskSession,
+    this.onAgentAuthenticated,
     this.onSaveConfig,
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
+    this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
   });
 
   final ChatController controller;
@@ -110,9 +120,13 @@ class AppShell extends StatelessWidget {
   onRunTask;
   final FutureOr<void> Function(BuildContext context, TaskRecord task)?
   onOpenTaskSession;
+  final AppShellAgentAuthenticated? onAgentAuthenticated;
   final AcpConfigSaveCallback? onSaveConfig;
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
 
   @override
   Widget build(BuildContext context) {
@@ -138,7 +152,9 @@ class AppShell extends StatelessWidget {
                   onNewSession!(context);
                   return;
                 }
-                unawaited(controller.newSession(cwd: workspace.path));
+                unawaited(() async {
+                  await controller.newSession(cwd: workspace.path);
+                }());
               }
             : null;
         final canReconnect =
@@ -164,10 +180,12 @@ class AppShell extends StatelessWidget {
           path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
         );
         Widget promptDock() => PromptInput(
+          inputBudget: inputBudget,
           agentName: agentName,
           enabled: !controller.isSessionOperationRunning,
           isSending: controller.isStreaming,
           availableCommands: controller.availableCommands,
+          availableCommandsRevision: controller.availableCommandsRevision,
           promptCapabilities: controller.capabilities?.prompt,
           pendingPermissionRequest: controller.pendingPermissionRequest,
           onAllowPermission: () => unawaited(
@@ -179,6 +197,8 @@ class AppShell extends StatelessWidget {
           onCancelPermission: () => unawaited(
             controller.resolvePermissionRequest(AcpPermissionDecision.cancel),
           ),
+          onSelectPermissionOption: (optionId) =>
+              unawaited(controller.resolvePermissionOption(optionId)),
           toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
           hasPermissionReviewer: controller.hasPermissionReviewer,
           onToolCallExecutionPolicyChanged:
@@ -258,7 +278,11 @@ class AppShell extends StatelessWidget {
                           final hideSidebar = constraints.maxWidth < 760;
                           final hideInspector = constraints.maxWidth < 1120;
                           final timeline = ChatTimeline(
+                            inputBudget: inputBudget,
+                            imageDecodeLedger: imageDecodeLedger,
+                            boundedImageDecoder: boundedImageDecoder,
                             messages: controller.messages,
+                            messageListRevision: controller.messagesRevision,
                             agentName: agentName,
                             hasActiveSession: controller.currentSession != null,
                             activeSessionLabel:
@@ -425,7 +449,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return CapabilitiesDialog(capabilities: controller.capabilities);
+        return CapabilitiesDialog(
+          capabilities: controller.capabilities,
+          inputBudget: inputBudget,
+        );
       },
     );
   }
@@ -434,7 +461,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return ExtensionRequestDialog(controller: controller);
+        return ExtensionRequestDialog(
+          controller: controller,
+          inputBudget: inputBudget,
+        );
       },
     );
   }
@@ -515,7 +545,10 @@ class AppShell extends StatelessWidget {
           );
     if (methodId == null || methodId.isEmpty) return;
     if (!context.mounted) return;
-    await controller.authenticate(methodId);
+    final authenticated = await controller.authenticate(methodId);
+    final callback = onAgentAuthenticated;
+    if (!authenticated || callback == null) return;
+    await Future<void>.sync(() => callback(controller.agentName, methodId));
   }
 
   List<ChatController> _controllers() {
@@ -689,7 +722,10 @@ class AppShell extends StatelessWidget {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return SessionSettingsDialog(controller: controller);
+        return SessionSettingsDialog(
+          controller: controller,
+          inputBudget: inputBudget,
+        );
       },
     );
   }
@@ -699,6 +735,7 @@ class AppShell extends StatelessWidget {
     final selection = await showDialog<ResumeSessionSelection>(
       context: context,
       builder: (context) => ResumeSessionDialog(
+        inputBudget: inputBudget,
         loadSessions: () => _loadResumableSessions(sessionControllerList),
         initialCwd: controller.currentSession?.cwd ?? controller.cwd,
       ),
@@ -708,7 +745,7 @@ class AppShell extends StatelessWidget {
     if (!context.mounted) return;
     final selectedSession = AgentSession(
       id: selection.conversation.id,
-      cwd: selection.project.cwd,
+      cwd: selection.conversation.cwd,
       createdAt:
           selection.conversation.updatedAt ??
           DateTime.fromMillisecondsSinceEpoch(0),
@@ -717,18 +754,48 @@ class AppShell extends StatelessWidget {
       updatedAt: selection.conversation.updatedAt,
       agentName: _resumeSelectionAgentName(selection),
     );
+    final selectedAgentName = selectedSession.agentName?.trim();
+    final trustedTargetController = _controllerForAgentName(
+      sessionControllerList,
+      selectedSession.agentName,
+    );
     final externalSelectSession = onSelectSession;
+    final conflictController =
+        trustedTargetController ??
+        (externalSelectSession == null ||
+                selectedAgentName == null ||
+                selectedAgentName.isEmpty
+            ? controller
+            : null);
+    if (conflictController?.hasBoundSessionWorkspaceConflict(selectedSession) ==
+        true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(sessionWorkspaceConflictMessage(selectedSession.id)),
+        ),
+      );
+      return;
+    }
     if (externalSelectSession != null) {
       externalSelectSession(selectedSession);
       return;
     }
 
-    final targetController = _controllerForAgentName(
-      sessionControllerList,
-      selectedSession.agentName,
+    final targetController = trustedTargetController ?? controller;
+    final activeSession = targetController.currentSession;
+    if (activeSession != null &&
+        activeSession.id.trim() == selectedSession.id.trim()) {
+      return;
+    }
+
+    final approved = await showSessionWorkspaceReviewDialog(
+      context,
+      selectedSession,
     );
+    if (!approved || !context.mounted) return;
+
     unawaited(
-      (targetController ?? controller).resumeSession(
+      targetController.resumeSession(
         selectedSession.id,
         cwd: selectedSession.cwd,
         additionalDirectories: selectedSession.additionalDirectories,
@@ -778,6 +845,11 @@ class _ShellSidebarState extends State<_ShellSidebar> {
     super.didUpdateWidget(oldWidget);
     if (widget.taskInboxController == null) {
       _mode = AppShellSidebarMode.workspaces;
+      return;
+    }
+    if (oldWidget.taskInboxController == null &&
+        widget.initialMode == AppShellSidebarMode.inbox) {
+      _mode = AppShellSidebarMode.inbox;
       return;
     }
     if (widget.initialMode != oldWidget.initialMode) {

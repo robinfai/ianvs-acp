@@ -166,55 +166,135 @@ void main() {
     },
   );
 
+  test('WorkspaceController keeps same-id sessions separate across agents', () {
+    final codex = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final fast = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'codex-fast',
+    );
+    final thinking = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'codex-thinking',
+    );
+    final worker = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'codex-worker',
+    );
+    addTearDown(codex.dispose);
+    addTearDown(fast.dispose);
+    addTearDown(thinking.dispose);
+    addTearDown(worker.dispose);
+
+    for (final (index, controller) in [codex, fast, thinking, worker].indexed) {
+      controller.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Shared catalog session',
+          additionalDirectories: ['/workspace/agent-$index'],
+        ),
+      );
+    }
+
+    final controller = WorkspaceController(
+      controllers: [codex, fast, thinking, worker],
+      currentWorkspacePath: '/workspace/app',
+      defaultAgentName: 'Codex',
+    );
+
+    final sessionsByAgent = {
+      for (final session in controller.currentWorkspace.sessions)
+        session.agentName: session,
+    };
+    expect(controller.currentWorkspace.sessions, hasLength(4));
+    expect(controller.currentWorkspace.sessionCount, 4);
+    expect(sessionsByAgent.keys, {
+      'Codex',
+      'codex-fast',
+      'codex-thinking',
+      'codex-worker',
+    });
+    expect(sessionsByAgent['Codex']?.additionalDirectories, [
+      '/workspace/agent-0',
+    ]);
+    expect(sessionsByAgent['codex-fast']?.additionalDirectories, [
+      '/workspace/agent-1',
+    ]);
+    expect(sessionsByAgent['codex-thinking']?.additionalDirectories, [
+      '/workspace/agent-2',
+    ]);
+    expect(sessionsByAgent['codex-worker']?.additionalDirectories, [
+      '/workspace/agent-3',
+    ]);
+  });
+
   test(
-    'WorkspaceController deduplicates the same session listed by multiple agents',
+    'WorkspaceController trusts controller agents over stale session metadata',
     () {
       final codex = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace/app',
         agentName: 'Codex',
       );
-      final fast = ChatController(
+      final pi = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace/app',
-        agentName: 'codex-fast',
-      );
-      final thinking = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace/app',
-        agentName: 'codex-thinking',
-      );
-      final worker = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace/app',
-        agentName: 'codex-worker',
+        agentName: 'pi ACP',
       );
       addTearDown(codex.dispose);
-      addTearDown(fast.dispose);
-      addTearDown(thinking.dispose);
-      addTearDown(worker.dispose);
+      addTearDown(pi.dispose);
 
-      for (final controller in [codex, fast, thinking, worker]) {
-        controller.sessions.add(
-          AgentSession(
-            id: 'shared-session',
-            cwd: '/workspace/app',
-            createdAt: DateTime(2026, 5, 3, 10),
-            title: 'Shared catalog session',
-          ),
-        );
-      }
-
-      final controller = WorkspaceController(
-        controllers: [codex, fast, thinking, worker],
-        currentWorkspacePath: '/workspace/app',
-        defaultAgentName: 'Codex',
+      codex.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          agentName: 'Codex',
+          additionalDirectories: const ['/workspace/codex-extra'],
+        ),
+      );
+      pi.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 9),
+          agentName: 'Codex',
+          additionalDirectories: const ['/workspace/pi-extra'],
+        ),
       );
 
-      expect(controller.currentWorkspace.sessions, hasLength(1));
-      expect(controller.currentWorkspace.sessionCount, 1);
-      expect(controller.currentWorkspace.sessions.single.id, 'shared-session');
-      expect(controller.currentWorkspace.sessions.single.agentName, 'Codex');
+      final controller = WorkspaceController(
+        controllers: [codex, pi],
+        currentWorkspacePath: '/workspace/app',
+      );
+      final sessions = controller.currentWorkspace.sessions;
+      final sessionsByAgent = {
+        for (final session in sessions) session.agentName: session,
+      };
+      final controllersByAgent = {
+        for (final controller in [codex, pi]) controller.agentName: controller,
+      };
+
+      expect(sessions, hasLength(2));
+      expect(sessionsByAgent.keys, {'Codex', 'pi ACP'});
+      expect(sessionsByAgent['Codex']?.additionalDirectories, [
+        '/workspace/codex-extra',
+      ]);
+      expect(sessionsByAgent['pi ACP']?.additionalDirectories, [
+        '/workspace/pi-extra',
+      ]);
+      expect(
+        controllersByAgent[sessionsByAgent['pi ACP']?.agentName],
+        same(pi),
+      );
     },
   );
 
@@ -249,7 +329,45 @@ void main() {
   );
 
   test(
-    'WorkspaceController keeps an explicit agent on duplicated sessions',
+    'WorkspaceController falls back when the controller agent name is blank',
+    () {
+      final unnamed = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: '  ',
+      );
+      addTearDown(unnamed.dispose);
+      unnamed.sessions.addAll([
+        AgentSession(
+          id: 'explicit-agent',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          agentName: 'Catalog Agent',
+        ),
+        AgentSession(
+          id: 'default-agent',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 9),
+        ),
+      ]);
+
+      final controller = WorkspaceController(
+        controllers: [unnamed],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Default Agent',
+      );
+      final sessionsById = {
+        for (final session in controller.currentWorkspace.sessions)
+          session.id: session,
+      };
+
+      expect(sessionsById['explicit-agent']?.agentName, 'Catalog Agent');
+      expect(sessionsById['default-agent']?.agentName, 'Default Agent');
+    },
+  );
+
+  test(
+    'WorkspaceController keeps same-id session metadata scoped to each agent',
     () {
       final codex = ChatController(
         client: FakeAgentClient(),
@@ -288,16 +406,19 @@ void main() {
         defaultAgentName: 'Codex',
       );
 
-      expect(controller.currentWorkspace.sessions, hasLength(1));
-      expect(
-        controller.currentWorkspace.sessions.single.agentName,
-        'codex-fast',
-      );
+      final sessionsByAgent = {
+        for (final session in controller.currentWorkspace.sessions)
+          session.agentName: session,
+      };
+      expect(controller.currentWorkspace.sessions, hasLength(2));
+      expect(sessionsByAgent.keys, {'Codex', 'codex-fast'});
+      expect(sessionsByAgent['Codex']?.title, 'Shared catalog session');
+      expect(sessionsByAgent['codex-fast']?.title, 'Shared catalog session');
     },
   );
 
   test(
-    'WorkspaceController keeps the active agent when a duplicate is current',
+    'WorkspaceController keeps current same-id sessions separate by agent',
     () {
       final codex = ChatController(
         client: FakeAgentClient(),
@@ -336,11 +457,48 @@ void main() {
         defaultAgentName: 'Codex',
       );
 
-      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(controller.currentWorkspace.sessions, hasLength(2));
       expect(
-        controller.currentWorkspace.sessions.single.agentName,
-        'codex-worker',
+        controller.currentWorkspace.sessions.map(
+          (session) => session.agentName,
+        ),
+        containsAll(<String?>['Codex', 'codex-worker']),
       );
+    },
+  );
+
+  test(
+    'WorkspaceController deduplicates repeated ids from the same controller',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      addTearDown(codex.dispose);
+
+      codex.sessions.addAll([
+        AgentSession(
+          id: 'repeated-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Catalog copy',
+        ),
+        AgentSession(
+          id: 'repeated-session',
+          cwd: '/workspace/app/',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: 'Local copy',
+        ),
+      ]);
+
+      final controller = WorkspaceController(
+        controllers: [codex],
+        currentWorkspacePath: '/workspace/app',
+      );
+
+      expect(controller.currentWorkspace.sessions, hasLength(1));
+      expect(controller.currentWorkspace.sessions.single.agentName, 'Codex');
     },
   );
 

@@ -1,19 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/status_bar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
+
+import '../support/memory_task_repository.dart';
 
 void _noop() {}
 
@@ -459,7 +460,9 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(store: _EmptyTaskStore());
+    final taskInboxController = TaskInboxController(
+      repository: _EmptyTaskStore(),
+    );
     addTearDown(taskInboxController.dispose);
     await taskInboxController.load();
 
@@ -504,7 +507,9 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(store: _EmptyTaskStore());
+    final taskInboxController = TaskInboxController(
+      repository: _EmptyTaskStore(),
+    );
     addTearDown(taskInboxController.dispose);
     await taskInboxController.load();
 
@@ -593,16 +598,187 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Load'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Review Session Workspace'), findsNothing);
     expect(selectedSession?.agentName, 'pi ACP');
     expect(selectedSession?.id, 'session-a');
     expect(selectedSession?.cwd, '/workspace/project-a');
+    expect(codexClient.lastResumeCwd, isNull);
+    expect(piClient.lastResumeCwd, isNull);
   });
+
+  testWidgets('AppShell direct resume requires workspace confirmation', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Review Session Workspace'), findsOneWidget);
+    expect(client.lastResumeCwd, isNull);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(client.lastResumeCwd, isNull);
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await tester.pumpAndSettle();
+
+    expect(client.lastResumeCwd, '/workspace/project-a');
+  });
+
+  testWidgets('AppShell rejects changed roots for the active session id', (
+    tester,
+  ) async {
+    final client = _CountingResumeClient();
+    final controller = ChatController(client: client, cwd: '/workspace/app');
+    addTearDown(controller.dispose);
+    await tester.runAsync(
+      () => controller.resumeSession('session-a', cwd: '/workspace/current'),
+    );
+    expect(client.resumeCalls, 1);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await _pumpUntil(
+      tester,
+      () => find.textContaining('different workspace').evaluate().isNotEmpty,
+    );
+
+    expect(find.text('Review Session Workspace'), findsNothing);
+    expect(find.textContaining('different workspace'), findsOneWidget);
+    expect(client.resumeCalls, 1);
+    expect(client.lastResumeCwd, '/workspace/current');
+    expect(controller.currentSession?.cwd, '/workspace/current');
+  });
+
+  testWidgets(
+    'AppShell rejects changed roots for an inactive snapshot session id',
+    (tester) async {
+      final client = _CountingResumeClient();
+      final controller = ChatController(
+        client: client,
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+      await tester.runAsync(
+        () => controller.resumeSession(
+          'session-a',
+          cwd: '/workspace/current',
+          additionalDirectories: const <String>['/workspace/current-extra'],
+        ),
+      );
+      await tester.runAsync(
+        () => controller.resumeSession('session-b', cwd: '/workspace/active-b'),
+      );
+      expect(client.resumeCalls, 2);
+      expect(controller.debugInactiveSnapshotIds, contains('session-a'));
+
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(controller: controller, agentName: 'Codex'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Resume'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await _pumpUntil(
+        tester,
+        () => find.textContaining('different workspace').evaluate().isNotEmpty,
+      );
+
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.textContaining('different workspace'), findsOneWidget);
+      expect(client.resumeCalls, 2);
+      expect(controller.currentSession?.id, 'session-b');
+      expect(controller.currentSession?.cwd, '/workspace/active-b');
+      expect(controller.debugInactiveSnapshotIds, contains('session-a'));
+      expect(client.lastResumeCwd, '/workspace/active-b');
+
+      await tester.runAsync(
+        () => controller.resumeSession(
+          'session-a',
+          cwd: '/workspace/current',
+          additionalDirectories: const <String>['/workspace/current-extra'],
+        ),
+      );
+      expect(controller.currentSession?.id, 'session-a');
+      expect(client.resumeCalls, 2);
+      expect(client.lastResumeCwd, '/workspace/active-b');
+    },
+  );
 }
 
-class _EmptyTaskStore implements TaskStore {
-  @override
-  Future<TaskInboxSnapshot> load() async => TaskInboxSnapshot.empty();
+Future<void> _pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  int attempts = 20,
+}) async {
+  for (var attempt = 0; attempt < attempts; attempt += 1) {
+    if (condition()) return;
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  fail('Condition was not met before timeout.');
+}
+
+class _EmptyTaskStore extends MemoryTaskRepository {}
+
+class _CountingResumeClient extends FakeAgentClient {
+  int resumeCalls = 0;
 
   @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {}
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    resumeCalls += 1;
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
 }

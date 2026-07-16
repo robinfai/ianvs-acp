@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import 'app.dart';
 import 'config/acp_client_config.dart';
+import 'config/acp_config_store.dart';
+import 'config/macos_keychain_secret_store.dart';
 import 'startup/startup_options.dart';
 
 Future<void> main(List<String> args) async {
@@ -14,10 +16,15 @@ Future<void> main(List<String> args) async {
     ...args,
   ]);
   try {
-    final config = await AcpClientConfig.load(path: configPath);
+    const secretStore = MacosKeychainSecretStore();
+    final config = await AcpConfigStore.loadConfig(
+      configPath: configPath,
+      secretStore: secretStore,
+    );
     runApp(
       AcpClientApp(
         config: config,
+        secretStore: secretStore,
         initialResumeSessionId: startupOptions.resumeSessionId,
         initialResumeCwd: startupOptions.resumeCwd,
         initialResumeAgentName: startupOptions.resumeAgentName,
@@ -28,6 +35,7 @@ Future<void> main(List<String> args) async {
     runApp(
       AcpClientApp(
         config: AcpClientConfig(configPath: configPath),
+        configurationWritable: false,
         startupError: 'Could not load ACP config: $error',
         initialResumeSessionId: startupOptions.resumeSessionId,
         initialResumeCwd: startupOptions.resumeCwd,

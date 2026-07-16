@@ -175,7 +175,9 @@ class _RankedTimelineEntry {
 
 String _runEndLabel(TaskStatus status) {
   return switch (status) {
-    TaskStatus.needsHumanReview => 'completed',
+    TaskStatus.needsHumanReview ||
+    TaskStatus.approvedForExport ||
+    TaskStatus.exporting => 'completed',
     TaskStatus.done => 'completed',
     TaskStatus.failed => 'failed',
     TaskStatus.cancelled => 'cancelled',
@@ -188,5 +190,6 @@ String _runEndLabel(TaskStatus status) {
 String _approvalKindLabel(ApprovalKind kind) {
   return switch (kind) {
     ApprovalKind.toolPermission => 'Tool permission',
+    ApprovalKind.export => 'Historical export',
   };
 }

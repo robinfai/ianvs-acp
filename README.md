@@ -34,10 +34,18 @@ agent. The app persists those GUI choices to:
 ~/.config/ianvs-acp/settings.json
 ```
 
+On macOS, Agent and MCP `env`/`headers` values entered in Agent Configuration
+are stored in the login Keychain. The JSON file stores only opaque
+`env_refs`/`header_refs`; do not edit or copy those references between config
+files. Existing plaintext values are migrated to Keychain before the JSON is
+atomically replaced. If a referenced Keychain item is missing, startup reports
+the exact field and keeps configuration editing disabled until the credential
+is restored or re-entered.
+
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
 `npx` command running `@agentclientprotocol/codex-acp`, and pi ACP through `npx -y
-pi-acp` when both `npx` and the `pi` command are available. Model provider
+pi-acp@0.0.31` when both `npx` and the `pi` command are available. Model provider
 credentials for pi remain user-managed through pi itself or the agent server
 `env` fields in Agent Configuration.
 
@@ -57,7 +65,7 @@ Saved shape example for automation and debugging:
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["-y", "pi-acp"]
+      "args": ["-y", "pi-acp@0.0.31"]
     }
   },
   "additional_directories": [
@@ -71,8 +79,7 @@ Saved shape example for automation and debugging:
         "-y",
         "@modelcontextprotocol/server-filesystem",
         "/Users/example/project"
-      ],
-      "env": []
+      ]
     }
   ],
   "client_providers": {
@@ -81,8 +88,7 @@ Saved shape example for automation and debugging:
         "mcp_server": {
           "name": "permission-reviewer",
           "command": "/opt/homebrew/bin/npx",
-          "args": ["-y", "@example/permission-reviewer-mcp"],
-          "env": []
+          "args": ["-y", "@example/permission-reviewer-mcp"]
         },
         "tool_name": "review_permission",
         "model": "gpt-5-mini"
@@ -93,7 +99,8 @@ Saved shape example for automation and debugging:
 ```
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; headers may be either an object or a `name`/`value` list. ACP
+`headers`; enter secret header values through Agent Configuration so they are
+stored in Keychain rather than plaintext JSON. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
 
@@ -164,9 +171,32 @@ Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
 
 ```sh
 flutter analyze
-flutter test
-flutter build macos --release
+./tool/flutter_test_isolated.sh
 ```
+
+Build and verify a local ad-hoc macOS release:
+
+```sh
+flutter build macos --release
+./tool/verify_macos_bundle.sh 'build/macos/Build/Products/Release/ACP Client.app'
+```
+
+Local ad-hoc builds are for development and verification only. They are not
+external release artifacts.
+
+Formal distribution requires `IANVS_DEVELOPER_ID` to identify a Developer ID
+Application certificate and `IANVS_NOTARY_PROFILE` to name a configured
+`notarytool` Keychain profile. After both are supplied by a protected release
+environment, run:
+
+```sh
+./tool/package_macos_release.sh
+```
+
+The release script fails when either credential is missing. It signs nested
+code from the inside out, verifies the Developer ID signature and secure
+timestamp, submits the archive for notarization, staples and validates the
+ticket, runs Gatekeeper assessment, and produces `build/ACP-Client.zip`.
 
 The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
 use `FakeAgentClient` instead of launching a real agent.

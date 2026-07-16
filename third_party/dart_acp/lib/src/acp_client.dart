@@ -1,12 +1,18 @@
 import 'dart:async';
 
+import 'package:meta/meta.dart';
+
 import 'capabilities.dart';
 import 'config.dart';
 import 'content/content_builder.dart';
 import 'extensions.dart';
+import 'input_budget.dart';
+import 'models/bounded_observation.dart';
 import 'models/session_types.dart';
 import 'models/terminal_events.dart';
 import 'models/updates.dart';
+import 'providers/terminal_provider.dart';
+import 'rpc/inbound_gate.dart';
 import 'rpc/peer.dart';
 import 'session/session_manager.dart';
 import 'transport/stdio_transport.dart';
@@ -14,7 +20,7 @@ import 'transport/transport.dart';
 
 /// High-level ACP client that manages transport, session lifecycle,
 /// and streams updates from the agent.
-class AcpClient {
+class AcpClient implements AcpBoundedObservationSource {
   /// Private constructor - use [AcpClient.start] to create instances.
   AcpClient._({required this.config, required AcpTransport transport})
     : _transport = transport;
@@ -25,7 +31,44 @@ class AcpClient {
   static Future<AcpClient> start({
     required AcpConfig config,
     AcpTransport? transport,
+    int maxReplayItems = 2048,
+    int maxReplayBytes = 16 * 1024 * 1024,
+    int maxToolCallItems = 512,
+    int maxToolCallBytes = 8 * 1024 * 1024,
+    int maxPendingItems = 128,
+    int maxPendingBytes = 32 * 1024 * 1024,
+    int maxConcurrentHandlers = 16,
+    int maxOrdinaryConcurrentHandlers = 14,
+    int maxTerminalHandles = defaultMaxTerminalHandles,
+    int maxTerminalHandlesPerSession = defaultMaxTerminalHandlesPerSession,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    @visibleForTesting
+    void Function(JsonRpcPeer peer)? beforeSessionManagerForTesting,
+    @visibleForTesting
+    void Function(JsonRpcPeer peer, SessionManager manager)?
+    afterSessionManagerForTesting,
   }) async {
+    config.timeouts.validate();
+    inputBudget.validate();
+    validateTerminalHandleLimits(
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+    );
+    InboundGate.validateLimits(
+      maxPendingItems: maxPendingItems,
+      maxPendingBytes: maxPendingBytes,
+      maxConcurrentHandlers: maxConcurrentHandlers,
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+    );
+    if (maxReplayItems <= 0 ||
+        maxReplayBytes < minimumSessionReplayBytes ||
+        maxToolCallItems <= 0 ||
+        maxToolCallBytes <= 0) {
+      throw ArgumentError(
+        'Session state budgets are invalid; maxReplayBytes must be at least '
+        '$minimumSessionReplayBytes.',
+      );
+    }
     final actualTransport =
         transport ??
         StdioTransport(
@@ -40,8 +83,27 @@ class AcpClient {
     await actualTransport.start();
 
     final client = AcpClient._(config: config, transport: actualTransport);
-    client._peer = JsonRpcPeer(actualTransport.channel);
-    client._sessionManager = SessionManager(config: config, peer: client._peer);
+    client._peer = JsonRpcPeer(
+      actualTransport.channel,
+      timeouts: config.timeouts,
+      maxPendingItems: maxPendingItems,
+      maxPendingBytes: maxPendingBytes,
+      maxConcurrentHandlers: maxConcurrentHandlers,
+      maxOrdinaryConcurrentHandlers: maxOrdinaryConcurrentHandlers,
+    );
+    beforeSessionManagerForTesting?.call(client._peer);
+    client._sessionManager = SessionManager(
+      config: config,
+      peer: client._peer,
+      maxReplayItems: maxReplayItems,
+      maxReplayBytes: maxReplayBytes,
+      maxToolCallItems: maxToolCallItems,
+      maxToolCallBytes: maxToolCallBytes,
+      maxTerminalHandles: maxTerminalHandles,
+      maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,
+      inputBudget: inputBudget,
+    );
+    afterSessionManagerForTesting?.call(client._peer, client._sessionManager);
 
     return client;
   }
@@ -51,18 +113,87 @@ class AcpClient {
   final AcpTransport _transport;
   late final JsonRpcPeer _peer;
   late final SessionManager _sessionManager;
+  Future<void>? _disposeFuture;
+
+  /// Read-only peer projection for integration tests.
+  @visibleForTesting
+  JsonRpcPeer get peerForTesting => _peer;
+
+  /// Read-only session-manager projection for integration tests.
+  @visibleForTesting
+  SessionManager get sessionManagerForTesting => _sessionManager;
+
+  /// The exact timeout configuration owned by the peer.
+  @visibleForTesting
+  AcpTimeouts get peerTimeoutsForTesting => _peer.timeouts;
+
+  /// The exact configuration instance owned by the session manager.
+  @visibleForTesting
+  AcpConfig get sessionManagerConfigForTesting => _sessionManager.config;
+
+  /// Replaces the opaque permission cancellation-token factory for tests.
+  @visibleForTesting
+  void replacePermissionCancellationTokenFactoryForTesting(
+    Object Function() factory,
+  ) {
+    // ignore: invalid_use_of_visible_for_testing_member
+    _sessionManager.replacePermissionCancellationTokenFactoryForTesting(
+      factory,
+    );
+  }
+
+  /// Whether the underlying ACP peer remains available.
+  bool get isAvailable => _peer.isAvailable;
+
+  /// Adds a listener for the peer's first unavailable state.
+  void addPeerUnavailableListener(AcpPeerUnavailableListener listener) =>
+      _peer.addUnavailableListener(listener);
+
+  /// Removes a peer unavailable listener.
+  void removePeerUnavailableListener(AcpPeerUnavailableListener listener) =>
+      _peer.removeUnavailableListener(listener);
+
+  @override
+  void addBoundedObservationListener(AcpBoundedObservationListener listener) =>
+      _sessionManager.addBoundedObservationListener(listener);
+
+  @override
+  void removeBoundedObservationListener(
+    AcpBoundedObservationListener listener,
+  ) => _sessionManager.removeBoundedObservationListener(listener);
 
   /// Dispose the transport and release resources.
-  Future<void> dispose() async {
-    // Close JSON-RPC peer first to stop inbound traffic cleanly,
-    // then dispose session resources and finally stop the transport.
+  Future<void> dispose() {
+    final existing = _disposeFuture;
+    if (existing != null) return existing;
+    final owner = Completer<void>.sync();
+    final disposing = owner.future;
+    _disposeFuture = disposing;
+    unawaited(_dispose(owner));
+    return disposing;
+  }
+
+  Future<void> _dispose(Completer<void> owner) async {
     try {
-      await _peer.close();
-    } on Exception catch (_) {
-      // Ignore close errors during shutdown
+      // Close JSON-RPC peer first to stop inbound traffic cleanly,
+      // then dispose session resources and finally stop the transport.
+      try {
+        try {
+          try {
+            await _peer.dispose();
+          } on Object {
+            // Ignore close errors during shutdown.
+          }
+        } finally {
+          await _sessionManager.dispose();
+        }
+      } finally {
+        await _transport.stop();
+      }
+      if (!owner.isCompleted) owner.complete();
+    } on Object catch (error, stackTrace) {
+      if (!owner.isCompleted) owner.completeError(error, stackTrace);
     }
-    await _sessionManager.dispose();
-    await _transport.stop();
   }
 
   /// Send `initialize` to negotiate protocol and capabilities.
@@ -129,7 +260,101 @@ class AcpClient {
 
   /// Cancel the current turn for the given session.
   Future<void> cancel({required String sessionId}) async =>
-      _sessionManager.cancel(sessionId: sessionId);
+      _peer.cancel(<String, dynamic>{'sessionId': sessionId});
+
+  /// Subscribe only to updates published after this subscription.
+  Stream<AcpUpdate> liveSessionUpdates(String sessionId) =>
+      _sessionManager.liveSessionUpdates(sessionId);
+
+  /// Mark a raw `session/prompt` request as active.
+  AcpSessionInputBudgetOwner beginPromptTurn(String sessionId) =>
+      _sessionManager.beginPromptTurn(sessionId);
+
+  /// Sends one prompt request bound to the exact active [owner].
+  Future<Map<String, dynamic>> sendPromptRequest({
+    required AcpSessionInputBudgetOwner owner,
+    required List<Map<String, dynamic>> content,
+  }) => _sessionManager.sendPromptRequest(owner: owner, content: content);
+
+  /// Clear turn-local state after a raw `session/prompt` request completes.
+  void endPromptTurn(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.endPromptTurn(owner);
+
+  /// Cancel the current turn only while [owner] still owns it.
+  Future<void> cancelPromptTurn(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.cancelPromptTurn(owner);
+
+  /// Whether [owner] currently has one pending terminal-delivery right.
+  bool hasPromptDeliveryRight(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.hasPromptDeliveryRight(owner);
+
+  /// Whether [owner] currently has one active terminal-delivery claim.
+  bool hasActivePromptDeliveryClaim(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.hasActivePromptDeliveryClaim(owner);
+
+  Future<bool> waitForPromptDeliveryBarrier(AcpSessionInputBudgetOwner owner) =>
+      _sessionManager.waitForPromptDeliveryBarrier(owner);
+
+  AcpPromptDeliveryClaim? tryClaimPromptDeliveryRight(
+    AcpSessionInputBudgetOwner owner,
+  ) => _sessionManager.tryClaimPromptDeliveryRight(owner);
+
+  void releasePromptDeliveryRight(AcpPromptDeliveryClaim claim) =>
+      _sessionManager.releasePromptDeliveryRight(claim);
+
+  @visibleForTesting
+  Future<void> promptWinnerRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptWinnerRecordedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptRightRecordedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptRightRecordedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptBarrierReleasedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptBarrierReleasedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptClaimSeenForTesting(AcpSessionInputBudgetOwner owner) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptClaimSeenForTesting(owner);
+
+  @visibleForTesting
+  Future<void> promptGraceStartedForTesting(AcpSessionInputBudgetOwner owner) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.promptGraceStartedForTesting(owner);
+
+  @visibleForTesting
+  Future<void> admissionResponseGraceStartedForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.admissionResponseGraceStartedForTesting(owner);
+
+  @visibleForTesting
+  void expireOwnerAdmissionResponseGraceForTesting(
+    AcpSessionInputBudgetOwner owner,
+  ) =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.expireOwnerAdmissionResponseGraceForTesting(owner);
+
+  @visibleForTesting
+  Future<void> closePeerExplicitlyForTesting() => _peer.close();
+
+  @visibleForTesting
+  // ignore: invalid_use_of_visible_for_testing_member
+  AcpPromptAdmissionProbeForTesting armNextPromptAdmissionForTesting() =>
+      // ignore: invalid_use_of_visible_for_testing_member
+      _sessionManager.armNextPromptAdmissionForTesting();
 
   /// Terminal events stream for UI.
   Stream<TerminalEvent> get terminalEvents => _sessionManager.terminalEvents;
@@ -280,8 +505,8 @@ class AcpClient {
   Future<void> deleteSession({required String sessionId}) async =>
       _sessionManager.deleteSession(sessionId: sessionId);
 
-  /// Close an active session without deleting persisted history.
-  Future<void> closeSession({required String sessionId}) async =>
+  /// Close a session and release all local resources owned by it.
+  Future<void> closeSession({required String sessionId}) =>
       _sessionManager.closeSession(sessionId: sessionId);
 
   /// Resume a session without loading history (simpler than [loadSession]).
@@ -330,7 +555,12 @@ class AcpClient {
   Future<Map<String, dynamic>> sendRaw(
     String method,
     Map<String, dynamic> params,
-  ) async => _peer.sendRaw(method, params);
+  ) async {
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
+    return _peer.sendRaw(method, params);
+  }
 
   /// Send an arbitrary request whose result may be any JSON value.
   Future<dynamic> sendRawValue(String method, Map<String, dynamic> params) =>
@@ -340,7 +570,12 @@ class AcpClient {
   Future<void> sendNotificationRaw(
     String method,
     Map<String, dynamic> params,
-  ) async => _peer.sendNotificationRaw(method, params);
+  ) async {
+    if (method == 'session/prompt') {
+      throw StateError('session/prompt must use owner-bound API.');
+    }
+    await _peer.sendNotificationRaw(method, params);
+  }
 
   // ===== Extension Methods =====
 

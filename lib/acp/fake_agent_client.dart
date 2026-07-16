@@ -106,6 +106,7 @@ class FakeAgentClient implements AcpAgentClient {
   Object? lastConfigValue;
   String? lastPermissionRequestId;
   AcpPermissionDecision? lastPermissionDecision;
+  String? lastPermissionOptionId;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
   String? lastDeletedSessionId;
@@ -116,8 +117,12 @@ class FakeAgentClient implements AcpAgentClient {
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
   final StreamController<AcpPermissionRequest> _permissionRequests =
-      StreamController<AcpPermissionRequest>.broadcast();
+      StreamController<AcpPermissionRequest>.broadcast(sync: true);
   bool _permissionRequestsClosed = false;
+
+  final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
+      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  bool _permissionInvalidationsClosed = false;
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -167,6 +172,10 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Stream<AcpPermissionRequest> get permissionRequests =>
       _permissionRequests.stream;
+
+  @override
+  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+      _permissionInvalidations.stream;
 
   static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
     modes: AcpSessionModeInfo(
@@ -463,7 +472,13 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   void emitPermissionRequest(AcpPermissionRequest request) {
+    if (_permissionRequestsClosed) return;
     _permissionRequests.add(request);
+  }
+
+  void emitPermissionInvalidation(AcpPermissionInvalidation event) {
+    if (_permissionInvalidationsClosed) return;
+    _permissionInvalidations.add(event);
   }
 
   Future<void> closePermissionRequests() async {
@@ -472,13 +487,21 @@ class FakeAgentClient implements AcpAgentClient {
     await _permissionRequests.close();
   }
 
+  Future<void> closePermissionInvalidations() async {
+    if (_permissionInvalidationsClosed) return;
+    _permissionInvalidationsClosed = true;
+    await _permissionInvalidations.close();
+  }
+
   @override
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
     lastPermissionRequestId = id;
     lastPermissionDecision = decision;
+    lastPermissionOptionId = selectedOptionId;
     if (permissionResponseError != null) {
       throw permissionResponseError!;
     }
@@ -487,6 +510,9 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     connected = false;
-    await closePermissionRequests();
+    await Future.wait<void>(<Future<void>>[
+      closePermissionRequests(),
+      closePermissionInvalidations(),
+    ]);
   }
 }

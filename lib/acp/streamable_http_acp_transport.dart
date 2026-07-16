@@ -5,25 +5,67 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:stream_channel/stream_channel.dart';
 
+import 'acp_endpoint_validator.dart';
+
+final class _InboundStreamStartErrorReported implements Exception {
+  const _InboundStreamStartErrorReported();
+}
+
 class StreamableHttpAcpTransport implements acp.AcpTransport {
   StreamableHttpAcpTransport({
     required this.endpoint,
     this.headers = const <String, String>{},
     this.onProtocolOut,
     this.onProtocolIn,
-  });
+    Duration requestTimeout = const Duration(seconds: 30),
+    Duration firstByteTimeout = const Duration(seconds: 15),
+    Duration sseIdleTimeout = const Duration(minutes: 5),
+    this.byteBudget = const acp.TransportByteBudget(),
+    int maxCookieCount = 128,
+    int maxCookieBytes = 64 * 1024,
+    int maxProtocolObserverErrors = 128,
+    DateTime Function()? clock,
+  }) : requestTimeout = _positiveDuration(requestTimeout, 'requestTimeout'),
+       firstByteTimeout = _positiveDuration(
+         firstByteTimeout,
+         'firstByteTimeout',
+       ),
+       sseIdleTimeout = _positiveDuration(sseIdleTimeout, 'sseIdleTimeout'),
+       maxCookieCount = _positiveLimit(maxCookieCount, 'maxCookieCount'),
+       maxCookieBytes = _positiveLimit(maxCookieBytes, 'maxCookieBytes'),
+       maxProtocolObserverErrors = _positiveLimit(
+         maxProtocolObserverErrors,
+         'maxProtocolObserverErrors',
+       ),
+       _clock = clock ?? DateTime.now {
+    byteBudget.validate();
+    validateAcpEndpoint(
+      endpoint,
+      allowedSchemes: const <String>{'http', 'https'},
+    );
+  }
 
   final Uri endpoint;
   final Map<String, String> headers;
   final void Function(String line)? onProtocolOut;
   final void Function(String line)? onProtocolIn;
+  final Duration requestTimeout;
+  final Duration firstByteTimeout;
+  final Duration sseIdleTimeout;
+  final acp.TransportByteBudget byteBudget;
+  final int maxCookieCount;
+  final int maxCookieBytes;
+  final int maxProtocolObserverErrors;
+  final DateTime Function() _clock;
 
   final Map<String, String> _pendingMethodsById = <String, String>{};
   final Map<String, String> _serverRequestSessionsById = <String, String>{};
   final Map<String, Future<void>> _streamStartsByKey = <String, Future<void>>{};
-  final Map<String, Cookie> _cookiesByName = <String, Cookie>{};
+  final Map<String, _StoredCookie> _cookiesByName = <String, _StoredCookie>{};
   final List<StreamSubscription<String>> _streamSubscriptions =
       <StreamSubscription<String>>[];
+  final Set<acp.TransportBodyReadOperation<Object?>> _pendingBodyReads =
+      <acp.TransportBodyReadOperation<Object?>>{};
 
   static const Duration _teardownTimeout = Duration(seconds: 2);
   static const String _protocolVersionHeader = 'Acp-Protocol-Version';
@@ -31,8 +73,12 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   HttpClient? _client;
   StreamChannelController<String>? _controller;
   StreamSubscription<String>? _outboundSubscription;
+  Future<void>? _stopFuture;
   String? _connectionId;
   bool _stopping = false;
+  int _nextGeneration = 0;
+  int? _activeGeneration;
+  int _protocolObserverFailuresRecorded = 0;
 
   @override
   StreamChannel<String> get channel {
@@ -43,22 +89,57 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return controller.foreign;
   }
 
+  /// Number of one-shot response bodies currently being read.
+  int get activeBodyReadCount => _pendingBodyReads.length;
+
   @override
   Future<void> start() async {
+    for (;;) {
+      final stopping = _stopFuture;
+      if (stopping == null) break;
+      await stopping;
+    }
     if (_controller != null) return;
     _stopping = false;
     _client ??= HttpClient();
+    final client = _client!;
     final controller = StreamChannelController<String>();
+    final generation = ++_nextGeneration;
     _controller = controller;
-    _outboundSubscription = controller.local.stream.listen((line) {
-      unawaited(_sendLine(line));
-    }, onError: controller.local.sink.addError);
+    _activeGeneration = generation;
+    _protocolObserverFailuresRecorded = 0;
+    _outboundSubscription = controller.local.stream.listen(
+      (line) {
+        unawaited(_sendLine(generation, client, controller, line));
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (_ownsGeneration(generation, client, controller)) {
+          controller.local.sink.addError(error, stackTrace);
+        }
+      },
+    );
   }
 
-  Future<void> _sendLine(String line) async {
-    final client = _client;
-    if (_stopping || client == null) return;
-    _notifyProtocolOut(line);
+  bool _ownsGeneration(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+  ) {
+    return !_stopping &&
+        _activeGeneration == generation &&
+        identical(_client, client) &&
+        identical(_controller, controller);
+  }
+
+  Future<void> _sendLine(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) async {
+    if (!_ownsGeneration(generation, client, controller)) return;
+    _notifyProtocolOut(generation, client, controller, line);
+    if (!_ownsGeneration(generation, client, controller)) return;
     String? pendingMethodIdKey;
     try {
       final message = jsonDecode(line);
@@ -77,32 +158,66 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       final sessionId = _sessionIdForOutbound(message, idKey);
       final isInitialize = method == 'initialize';
       if (!isInitialize) {
-        await _ensureInboundStream(null);
+        await _ensureInboundStream(generation, client, controller, null);
+        if (!_ownsGeneration(generation, client, controller)) return;
       }
       if (sessionId != null) {
-        await _ensureInboundStream(sessionId);
+        await _ensureInboundStream(generation, client, controller, sessionId);
+        if (!_ownsGeneration(generation, client, controller)) return;
       }
 
-      final request = await client.postUrl(endpoint);
+      final cookieHeader = _prepareCookieHeader();
+      final request = await client.postUrl(endpoint).timeout(requestTimeout);
+      if (!_ownsGeneration(generation, client, controller)) {
+        request.abort();
+        return;
+      }
+      request.followRedirects = false;
       _applyRequestHeaders(
         request,
+        cookieHeader: cookieHeader,
         contentType: ContentType.json,
         sessionId: sessionId,
       );
       request.write(line);
-      final response = await request.close();
-      _storeCookies(response.cookies);
+      final response = await request.close().timeout(firstByteTimeout);
+      if (!_ownsGeneration(generation, client, controller)) {
+        await _cancelResponse(response);
+        return;
+      }
+      await _storeResponseCookies(response);
+      if (!_ownsGeneration(generation, client, controller)) {
+        await _cancelResponse(response);
+        return;
+      }
 
-      final body = await response.transform(utf8.decoder).join();
+      final body = await _readResponseBody(
+        response,
+        resource: 'ACP HTTP POST response body',
+        timeout: requestTimeout,
+      );
+      if (!_ownsGeneration(generation, client, controller)) return;
       if (isInitialize) {
-        _handleInitializeResponse(response, body);
+        _handleInitializeResponse(
+          generation,
+          client,
+          controller,
+          response,
+          body,
+        );
         return;
       }
       if (response.statusCode == HttpStatus.accepted && body.trim().isEmpty) {
         return;
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        _addInboundLine(body);
+        _addInboundLine(
+          generation,
+          client,
+          controller,
+          body,
+          resource: 'ACP HTTP POST JSON',
+        );
         return;
       }
       throw HttpException(
@@ -110,12 +225,12 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         uri: endpoint,
       );
     } catch (error, stackTrace) {
+      if (!_ownsGeneration(generation, client, controller)) return;
       if (pendingMethodIdKey != null) {
         _pendingMethodsById.remove(pendingMethodIdKey);
       }
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
-      }
+      if (error is _InboundStreamStartErrorReported) return;
+      controller.local.sink.addError(error, stackTrace);
     }
   }
 
@@ -133,17 +248,24 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     return _serverRequestSessionsById.remove(idKey);
   }
 
-  void _handleInitializeResponse(HttpClientResponse response, String body) {
+  void _handleInitializeResponse(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    HttpClientResponse response,
+    String body,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException(
         'ACP HTTP initialize failed with ${response.statusCode}: ${response.reasonPhrase}',
         uri: endpoint,
       );
     }
-    final decoded = jsonDecode(body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('ACP HTTP initialize returned invalid JSON.');
-    }
+    final decoded = _decodeRemoteJsonObject(
+      body,
+      resource: 'ACP HTTP initialize JSON',
+    );
     final connectionId =
         response.headers.value('Acp-Connection-Id') ??
         _stringFromPath(decoded, const ['result', 'connectionId']) ??
@@ -154,133 +276,341 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       );
     }
     _connectionId = connectionId.trim();
-    _startInboundStream(null);
-    _addInboundLine(body);
+    _startInboundStream(generation, client, controller, null);
+    _addInboundLine(
+      generation,
+      client,
+      controller,
+      body,
+      resource: 'ACP HTTP initialize JSON',
+      decoded: decoded,
+    );
   }
 
-  void _startInboundStream(String? sessionId) {
+  void _startInboundStream(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String? sessionId,
+  ) {
     unawaited(
-      _ensureInboundStream(sessionId).catchError((
-        Object error,
-        StackTrace stackTrace,
-      ) {
+      _ensureInboundStream(
+        generation,
+        client,
+        controller,
+        sessionId,
+      ).catchError((Object error, StackTrace stackTrace) {
         // _ensureInboundStream has already forwarded this failure to the
         // transport channel.
       }),
     );
   }
 
-  Future<void> _ensureInboundStream(String? sessionId) {
+  Future<void> _ensureInboundStream(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String? sessionId,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) {
+      return Future<void>.value();
+    }
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) {
       throw StateError('ACP HTTP transport is not initialized.');
     }
-    final client = _client;
-    if (_stopping || client == null) {
-      throw StateError('ACP HTTP transport is not started.');
-    }
     final key = sessionId ?? '';
-    return _streamStartsByKey.putIfAbsent(key, () async {
+    final existing = _streamStartsByKey[key];
+    if (existing != null) return existing;
+    late final Future<void> operation;
+    operation = () async {
       try {
-        final request = await client.getUrl(endpoint);
-        _applyRequestHeaders(request, accept: 'text/event-stream');
+        final cookieHeader = _prepareCookieHeader();
+        final request = await client.getUrl(endpoint).timeout(requestTimeout);
+        if (!_ownsGeneration(generation, client, controller)) {
+          request.abort();
+          return;
+        }
+        request.followRedirects = false;
+        _applyRequestHeaders(
+          request,
+          cookieHeader: cookieHeader,
+          accept: 'text/event-stream',
+        );
         request.headers.set('Acp-Connection-Id', connectionId);
         if (sessionId != null) {
           request.headers.set('Acp-Session-Id', sessionId);
         }
-        final response = await request.close();
-        _storeCookies(response.cookies);
+        final response = await request.close().timeout(firstByteTimeout);
+        if (!_ownsGeneration(generation, client, controller)) {
+          await _cancelResponse(response);
+          return;
+        }
+        await _storeResponseCookies(response);
+        if (!_ownsGeneration(generation, client, controller)) {
+          await _cancelResponse(response);
+          return;
+        }
         if (response.statusCode < 200 || response.statusCode >= 300) {
+          await _drainResponse(
+            response,
+            resource: 'ACP HTTP SSE error response body',
+            timeout: requestTimeout,
+          );
+          if (!_ownsGeneration(generation, client, controller)) return;
           throw HttpException(
             'ACP HTTP SSE stream failed with ${response.statusCode}: ${response.reasonPhrase}',
             uri: endpoint,
           );
         }
+        var streamFailed = false;
         late final StreamSubscription<String> subscription;
-        subscription = _sseEvents(response).listen(
-          _handleSseEvent,
-          onError: (Object error, StackTrace stackTrace) {
-            if (!_stopping) {
-              _controller?.local.sink.addError(error, stackTrace);
-            }
-          },
-          onDone: () {
-            _streamStartsByKey.remove(key);
-            _streamSubscriptions.remove(subscription);
-          },
-        );
+        subscription =
+            _sseEvents(
+              _withSseIdleTimeout(response),
+              resource: 'ACP HTTP SSE',
+            ).listen(
+              (event) => _handleSseEvent(generation, client, controller, event),
+              onError: (Object error, StackTrace stackTrace) {
+                if (!_ownsGeneration(generation, client, controller)) return;
+                streamFailed = true;
+                controller.local.sink.addError(error, stackTrace);
+              },
+              onDone: () {
+                if (identical(_streamStartsByKey[key], operation)) {
+                  _streamStartsByKey.remove(key);
+                }
+                _streamSubscriptions.remove(subscription);
+                if (_ownsGeneration(generation, client, controller) &&
+                    !streamFailed) {
+                  controller.local.sink.addError(
+                    StateError(
+                      sessionId == null
+                          ? 'ACP connection SSE stream closed'
+                          : 'ACP session SSE stream closed: $sessionId',
+                    ),
+                    StackTrace.current,
+                  );
+                }
+              },
+            );
+        if (!_ownsGeneration(generation, client, controller)) {
+          await subscription.cancel();
+          return;
+        }
         _streamSubscriptions.add(subscription);
       } catch (error, stackTrace) {
-        _streamStartsByKey.remove(key);
-        if (_stopping) return;
-        _controller?.local.sink.addError(error, stackTrace);
-        rethrow;
-      }
-    });
-  }
-
-  Stream<String> _sseEvents(Stream<List<int>> response) async* {
-    final dataLines = <String>[];
-    await for (final line
-        in response.transform(utf8.decoder).transform(const LineSplitter())) {
-      if (line.isEmpty) {
-        if (dataLines.isNotEmpty) {
-          yield dataLines.join('\n');
-          dataLines.clear();
+        if (identical(_streamStartsByKey[key], operation)) {
+          _streamStartsByKey.remove(key);
         }
-        continue;
+        if (!_ownsGeneration(generation, client, controller)) return;
+        controller.local.sink.addError(error, stackTrace);
+        Error.throwWithStackTrace(
+          const _InboundStreamStartErrorReported(),
+          stackTrace,
+        );
       }
-      if (line.startsWith(':')) continue;
-      if (line.startsWith('data:')) {
-        dataLines.add(line.substring(5).trimLeft());
-      }
-    }
-    if (dataLines.isNotEmpty) {
-      yield dataLines.join('\n');
+    }();
+    _streamStartsByKey[key] = operation;
+    return operation;
+  }
+
+  Stream<List<int>> _withSseIdleTimeout(Stream<List<int>> response) {
+    return response.timeout(
+      sseIdleTimeout,
+      onTimeout: (sink) {
+        sink.addError(
+          TimeoutException(
+            'ACP SSE stream was idle for $sseIdleTimeout',
+            sseIdleTimeout,
+          ),
+          StackTrace.current,
+        );
+        sink.close();
+      },
+    );
+  }
+
+  Stream<String> _sseEvents(
+    Stream<List<int>> response, {
+    required String resource,
+  }) async* {
+    await for (final event in acp.decodeBoundedSse(
+      response,
+      budget: byteBudget,
+      resource: resource,
+    )) {
+      yield event.data;
     }
   }
 
-  void _handleSseEvent(String event) {
+  Future<String> _readResponseBody(
+    HttpClientResponse response, {
+    required String resource,
+    required Duration timeout,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    return _runBodyRead(
+      acp.startBoundedUtf8BodyRead(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
+    );
+  }
+
+  Future<void> _drainResponse(
+    HttpClientResponse response, {
+    required String resource,
+    required Duration timeout,
+  }) async {
+    await _enforceResponseContentLength(response, resource: resource);
+    await _runBodyRead(
+      acp.startBoundedByteDrain(
+        response,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+        timeout: timeout,
+      ),
+    );
+  }
+
+  Future<T> _runBodyRead<T>(acp.TransportBodyReadOperation<T> operation) async {
+    _pendingBodyReads.add(operation);
+    try {
+      return await operation.future;
+    } finally {
+      _pendingBodyReads.remove(operation);
+    }
+  }
+
+  Future<void> _cancelPendingBodyReads() async {
+    final pending = List<acp.TransportBodyReadOperation<Object?>>.of(
+      _pendingBodyReads,
+    );
+    await Future.wait<void>([
+      for (final operation in pending)
+        operation.cancel().catchError((Object _) {}),
+    ]);
+  }
+
+  Future<void> _enforceResponseContentLength(
+    HttpClientResponse response, {
+    required String resource,
+  }) async {
+    try {
+      acp.enforceTransportContentLength(
+        contentLength: response.contentLength,
+        limit: byteBudget.maxBodyBytes,
+        resource: resource,
+      );
+    } on acp.TransportByteLimitExceeded {
+      final subscription = response.listen((_) {});
+      await subscription.cancel();
+      rethrow;
+    }
+  }
+
+  void _handleSseEvent(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String event,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (event.trim().isEmpty) return;
     try {
-      _addInboundLine(event);
+      _addInboundLine(
+        generation,
+        client,
+        controller,
+        event,
+        resource: 'ACP HTTP SSE JSON',
+      );
     } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
+      if (_ownsGeneration(generation, client, controller)) {
+        controller.local.sink.addError(error, stackTrace);
       }
     }
   }
 
-  void _addInboundLine(String line) {
+  void _addInboundLine(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line, {
+    required String resource,
+    Map<String, dynamic>? decoded,
+  }) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     if (line.trim().isEmpty) return;
-    _captureInboundMetadata(line);
-    _notifyProtocolIn(line);
-    _controller?.local.sink.add(line);
+    final message =
+        decoded ?? _decodeRemoteJsonObject(line, resource: resource);
+    if (!_ownsGeneration(generation, client, controller)) return;
+    _captureInboundMetadata(generation, client, controller, message);
+    _notifyProtocolIn(generation, client, controller, line);
+    if (_ownsGeneration(generation, client, controller)) {
+      controller.local.sink.add(line);
+    }
   }
 
-  void _notifyProtocolOut(String line) {
+  Map<String, dynamic> _decodeRemoteJsonObject(
+    String source, {
+    required String resource,
+  }) {
+    final decoded = acp.decodeTransportJson(source, resource: resource);
+    if (decoded is! Map) {
+      throw acp.TransportProtocolDecodeError(resource: resource);
+    }
+    return decoded.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  void _notifyProtocolOut(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) {
     try {
       onProtocolOut?.call(line);
-    } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
-      }
+    } on Object {
+      _recordProtocolObserverFailure(generation, client, controller);
     }
   }
 
-  void _notifyProtocolIn(String line) {
+  void _recordProtocolObserverFailure(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+  ) {
+    if (!_ownsGeneration(generation, client, controller) ||
+        _protocolObserverFailuresRecorded >= maxProtocolObserverErrors) {
+      return;
+    }
+    _protocolObserverFailuresRecorded += 1;
+  }
+
+  void _notifyProtocolIn(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    String line,
+  ) {
     try {
       onProtocolIn?.call(line);
-    } catch (error, stackTrace) {
-      if (!_stopping) {
-        _controller?.local.sink.addError(error, stackTrace);
-      }
+    } on Object {
+      _recordProtocolObserverFailure(generation, client, controller);
     }
   }
 
-  void _captureInboundMetadata(String line) {
-    final decoded = jsonDecode(line);
-    if (decoded is! Map<String, dynamic>) return;
+  void _captureInboundMetadata(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    Map<String, dynamic> decoded,
+  ) {
+    if (!_ownsGeneration(generation, client, controller)) return;
     final idKey = _idKey(decoded['id']);
     final isResponse =
         decoded.containsKey('result') || decoded.containsKey('error');
@@ -293,7 +623,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
               method == 'session/fork')) {
         final sessionId = _sessionIdFromResult(decoded);
         if (sessionId != null) {
-          _startInboundStream(sessionId);
+          _startInboundStream(generation, client, controller, sessionId);
         }
       }
     }
@@ -309,11 +639,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
 
   void _applyRequestHeaders(
     HttpClientRequest request, {
+    required String? cookieHeader,
     ContentType? contentType,
     String? accept,
     String? sessionId,
   }) {
     for (final entry in headers.entries) {
+      if (_isCookieHeader(entry.key)) continue;
       request.headers.set(entry.key, entry.value);
     }
     if (contentType != null) {
@@ -330,12 +662,102 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     if (sessionId != null && sessionId.isNotEmpty) {
       request.headers.set('Acp-Session-Id', sessionId);
     }
-    request.cookies.addAll(_cookiesByName.values);
+    if (cookieHeader != null) {
+      request.headers.set(HttpHeaders.cookieHeader, cookieHeader);
+    }
   }
 
   void _storeCookies(List<Cookie> cookies) {
+    if (cookies.isEmpty) return;
+    final staged = Map<String, _StoredCookie>.of(_cookiesByName);
+    final now = _clock();
+    _pruneExpiredCookies(staged, now);
     for (final cookie in cookies) {
-      _cookiesByName[cookie.name] = cookie;
+      final maxAge = cookie.maxAge;
+      final DateTime? expiresAt;
+      if (maxAge != null) {
+        if (maxAge <= 0) {
+          staged.remove(cookie.name);
+          continue;
+        }
+        expiresAt = _maxAgeExpiration(now, maxAge);
+      } else {
+        expiresAt = cookie.expires;
+      }
+      if (expiresAt != null && !expiresAt.isAfter(now)) {
+        staged.remove(cookie.name);
+      } else {
+        staged[cookie.name] = _StoredCookie(cookie, expiresAt: expiresAt);
+      }
+    }
+    _prepareCookieHeader(cookies: staged);
+    _cookiesByName
+      ..clear()
+      ..addAll(staged);
+  }
+
+  String? _prepareCookieHeader({Map<String, _StoredCookie>? cookies}) {
+    final configuredValues = <String>[
+      for (final entry in headers.entries)
+        if (_isCookieHeader(entry.key) && entry.value.isNotEmpty) entry.value,
+    ];
+    final jar = cookies ?? _cookiesByName;
+    _pruneExpiredCookies(jar, _clock());
+    final configuredCount = configuredValues.fold<int>(
+      0,
+      (count, value) =>
+          count +
+          value.split(';').where((part) => part.trim().isNotEmpty).length,
+    );
+    final observedCount = configuredCount + jar.length;
+    if (observedCount > maxCookieCount) {
+      throw acp.TransportByteLimitExceeded(
+        resource: 'ACP HTTP cookies',
+        limit: maxCookieCount,
+        observedAtLeast: observedCount,
+      );
+    }
+    final segments = <String>[
+      ...configuredValues,
+      ...jar.values.map((stored) => _requestCookiePair(stored.cookie)),
+    ];
+    if (segments.isEmpty) return null;
+    final header = segments.join('; ');
+    final headerBytes = utf8.encode(header).length;
+    if (headerBytes > maxCookieBytes) {
+      throw acp.TransportByteLimitExceeded(
+        resource: 'ACP HTTP cookie header bytes',
+        limit: maxCookieBytes,
+        observedAtLeast: headerBytes,
+      );
+    }
+    return header;
+  }
+
+  Future<void> _storeResponseCookies(HttpClientResponse response) async {
+    final List<Cookie> cookies;
+    try {
+      cookies = response.cookies;
+    } on Object {
+      await _cancelResponse(response);
+      throw acp.TransportProtocolDecodeError(
+        resource: 'ACP HTTP response cookies',
+      );
+    }
+    try {
+      _storeCookies(cookies);
+    } on Object {
+      await _cancelResponse(response);
+      rethrow;
+    }
+  }
+
+  Future<void> _cancelResponse(HttpClientResponse response) async {
+    try {
+      final subscription = response.listen((_) {});
+      await subscription.cancel();
+    } on Object {
+      // Preserve the payload-free protocol or budget failure.
     }
   }
 
@@ -373,26 +795,34 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   }
 
   @override
-  Future<void> stop() async {
+  Future<void> stop() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+    final future = _stop();
+    _stopFuture = future;
+    unawaited(
+      future
+          .whenComplete(() {
+            if (identical(_stopFuture, future)) _stopFuture = null;
+          })
+          .catchError((Object _) {}),
+    );
+    return future;
+  }
+
+  Future<void> _stop() async {
+    _activeGeneration = null;
     _stopping = true;
+    final sseCancellations = _cancelSseSubscriptions();
     await _outboundSubscription?.cancel();
     _outboundSubscription = null;
+    await _cancelPendingBodyReads();
     await _terminateConnection();
+    await _cancelPendingBodyReads();
     _client?.close(force: true);
     _client = null;
-    final streamSubscriptions = List<StreamSubscription<String>>.of(
-      _streamSubscriptions,
-    );
-    for (final subscription in streamSubscriptions) {
-      try {
-        await subscription.cancel();
-      } catch (error, stackTrace) {
-        if (!_stopping) {
-          Error.throwWithStackTrace(error, stackTrace);
-        }
-      }
-    }
-    _streamSubscriptions.clear();
+    await Future.wait<void>(sseCancellations);
+    await Future.wait<void>(_cancelSseSubscriptions());
     await _controller?.local.sink.close();
     _controller = null;
     _connectionId = null;
@@ -402,22 +832,88 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     _cookiesByName.clear();
   }
 
+  List<Future<void>> _cancelSseSubscriptions() {
+    final subscriptions = List<StreamSubscription<String>>.of(
+      _streamSubscriptions,
+    );
+    _streamSubscriptions.clear();
+    return <Future<void>>[
+      for (final subscription in subscriptions)
+        subscription.cancel().catchError((Object _) {}),
+    ];
+  }
+
   Future<void> _terminateConnection() async {
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) return;
     final client = _client;
     if (client == null) return;
     try {
+      final cookieHeader = _prepareCookieHeader();
       final request = await client
           .deleteUrl(endpoint)
           .timeout(_teardownTimeout);
-      _applyRequestHeaders(request);
+      request.followRedirects = false;
+      _applyRequestHeaders(request, cookieHeader: cookieHeader);
       request.headers.set('Acp-Connection-Id', connectionId);
       final response = await request.close().timeout(_teardownTimeout);
-      _storeCookies(response.cookies);
-      await response.drain<void>().timeout(_teardownTimeout);
+      await _storeResponseCookies(response);
+      await _drainResponse(
+        response,
+        resource: 'ACP HTTP DELETE response body',
+        timeout: _teardownTimeout,
+      );
+    } on acp.TransportByteLimitExceeded catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
+    } on acp.TransportProtocolDecodeError catch (error, stackTrace) {
+      _controller?.local.sink.addError(error, stackTrace);
     } on Object {
       // Remote teardown is best effort; local disposal must always finish.
     }
   }
+}
+
+String _requestCookiePair(Cookie cookie) => '${cookie.name}=${cookie.value}';
+
+class _StoredCookie {
+  const _StoredCookie(this.cookie, {required this.expiresAt});
+
+  final Cookie cookie;
+  final DateTime? expiresAt;
+}
+
+void _pruneExpiredCookies(Map<String, _StoredCookie> cookies, DateTime now) {
+  cookies.removeWhere((_, stored) {
+    final expiresAt = stored.expiresAt;
+    return expiresAt != null && !expiresAt.isAfter(now);
+  });
+}
+
+DateTime _maxAgeExpiration(DateTime receivedAt, int seconds) {
+  final receivedUtc = receivedAt.toUtc();
+  final safeMaximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999);
+  if (!receivedUtc.isBefore(safeMaximum)) return safeMaximum;
+  final remainingMicroseconds =
+      safeMaximum.microsecondsSinceEpoch - receivedUtc.microsecondsSinceEpoch;
+  final remainingWholeSeconds =
+      remainingMicroseconds ~/ Duration.microsecondsPerSecond;
+  if (seconds > remainingWholeSeconds) return safeMaximum;
+  return receivedUtc.add(Duration(seconds: seconds));
+}
+
+bool _isCookieHeader(String name) =>
+    name.toLowerCase() == HttpHeaders.cookieHeader;
+
+int _positiveLimit(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
 }

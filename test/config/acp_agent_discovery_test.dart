@@ -4,8 +4,19 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
+  test('uses current Codex adapter and reviewed pi adapter', () {
+    final agents = AcpAgentDiscovery.discover(
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (_) => true,
+    );
+
+    expect(agents.first.args.single, '@agentclientprotocol/codex-acp');
+    expect(agents.last.args.last, 'pi-acp@0.0.31');
+  });
+
   test('discovers Codex ACP through npx on PATH', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
@@ -33,7 +44,7 @@ void main() {
     expect(discovered, hasLength(2));
     final pi = discovered.singleWhere((server) => server.name == 'pi ACP');
     expect(pi.command, '/usr/local/bin/npx');
-    expect(pi.args, ['-y', 'pi-acp']);
+    expect(pi.args, ['-y', 'pi-acp@0.0.31']);
     expect(pi.env, isEmpty);
   });
 
@@ -77,7 +88,7 @@ void main() {
             'pi': {
               'type': 'custom',
               'command': '/opt/homebrew/bin/npx',
-              'args': ['-y', 'pi-acp'],
+              'args': ['-y', 'pi-acp@0.0.31'],
             },
           },
         }),
@@ -160,4 +171,93 @@ void main() {
     expect(server.env, {'KEEP_ME': 'yes'});
     expect(migrated.agentName, 'OpenAI Codex');
   });
+  test(
+    'rejects discovered agent secrets when SecretStore is omitted',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+
+      await expectLater(
+        AcpAgentDiscovery.writeSelectedAgentServers(
+          AcpClientConfig(configPath: configPath),
+          const [
+            AgentServerConfig(
+              name: 'Private',
+              type: 'custom',
+              command: '/usr/local/bin/private-agent',
+              env: {'TOKEN': 'private-secret'},
+            ),
+          ],
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(await File(configPath).exists(), isFalse);
+    },
+  );
+
+  test(
+    'migrates discovered agent secrets when SecretStore is provided',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+      final store = _MemorySecretStore();
+
+      final resolved = await AcpAgentDiscovery.writeSelectedAgentServers(
+        AcpClientConfig(configPath: configPath),
+        const [
+          AgentServerConfig(
+            name: 'Private',
+            type: 'custom',
+            command: '/usr/local/bin/private-agent',
+            env: {'TOKEN': 'private-secret'},
+          ),
+        ],
+        secretStore: store,
+      );
+
+      final contents = await File(configPath).readAsString();
+      final raw = jsonDecode(contents) as Map<String, dynamic>;
+      final reference =
+          raw['agent_servers']['Private']['env_refs']['TOKEN'] as String;
+      expect(contents, isNot(contains('private-secret')));
+      expect(await store.get(reference), 'private-secret');
+      expect(resolved.agentServers.single.env['TOKEN'], 'private-secret');
+    },
+  );
+}
+
+final class _MemorySecretStore implements SecretStore {
+  final Map<String, String> _values = <String, String>{};
+
+  @override
+  Future<void> delete(String reference) async {
+    _values.remove(reference);
+  }
+
+  @override
+  Future<String?> get(String reference) async => _values[reference];
+
+  @override
+  Future<String> put({
+    required String namespace,
+    required String key,
+    required String value,
+  }) async {
+    final reference = referenceFor(namespace: namespace, key: key);
+    _values[reference] = value;
+    return reference;
+  }
+
+  @override
+  String referenceFor({required String namespace, required String key}) =>
+      keychainReferenceFor(namespace: namespace, key: key);
+
+  @override
+  bool referenceMatches(
+    String reference, {
+    required String namespace,
+    required String key,
+  }) => reference == referenceFor(namespace: namespace, key: key);
 }

@@ -1,3 +1,5 @@
+import 'deep_link_request.dart';
+
 class StartupOptions {
   const StartupOptions({
     this.resumeSessionId,
@@ -22,46 +24,51 @@ class StartupOptions {
   }
 
   static StartupOptions fromArgs(List<String> args) {
-    final deepLinkOptions = _firstDeepLinkOptions(args);
     return StartupOptions(
-      resumeSessionId:
-          _argValue(args, '--resume-session-id') ??
-          deepLinkOptions?.resumeSessionId,
-      resumeCwd: _argValue(args, '--resume-cwd') ?? deepLinkOptions?.resumeCwd,
-      resumeAgentName:
-          _argValue(args, '--resume-agent') ?? deepLinkOptions?.resumeAgentName,
-      taskId: deepLinkOptions?.taskId,
+      resumeSessionId: _argValue(args, '--resume-session-id'),
+      resumeCwd: _argValue(args, '--resume-cwd'),
+      resumeAgentName: _argValue(args, '--resume-agent'),
     );
   }
 
-  static StartupOptions? fromDeepLink(String rawLink) {
-    final uri = Uri.tryParse(rawLink.trim());
+  static DeepLinkRequest? fromDeepLink(String rawLink) {
+    final normalizedLink = rawLink.trim();
+    if (normalizedLink.isEmpty ||
+        normalizedLink.length > DeepLinkRequest.maxRawLinkLength) {
+      return null;
+    }
+    final uri = Uri.tryParse(normalizedLink);
     if (uri == null || uri.scheme != 'ianvs-acp') return null;
 
     final query = uri.queryParameters;
     if (uri.host == 'task' || uri.host == 'task-review') {
       final taskId = _trimmedOrNull(query['id'] ?? query['task_id']);
       if (taskId == null) return null;
-      return StartupOptions(taskId: taskId);
+      return DeepLinkRequest(
+        rawLink: normalizedLink,
+        source: DeepLinkSource.external,
+        kind: DeepLinkRequestKind.task,
+        taskId: taskId,
+      );
     }
 
     if (uri.host != 'session') return null;
     final sessionId = _trimmedOrNull(query['id'] ?? query['session_id']);
-    if (sessionId == null) return null;
+    final workspace = validateDeepLinkWorkspace(query['cwd']);
+    final errors = <String>[
+      if (sessionId == null) 'Session is required.',
+      ...workspace.errors,
+    ];
 
-    return StartupOptions(
-      resumeSessionId: sessionId,
-      resumeCwd: _trimmedOrNull(query['cwd']),
-      resumeAgentName: _trimmedOrNull(query['agent']),
+    return DeepLinkRequest(
+      rawLink: normalizedLink,
+      source: DeepLinkSource.external,
+      kind: DeepLinkRequestKind.session,
+      sessionId: sessionId,
+      cwd: workspace.path,
+      agentName: _trimmedOrNull(query['agent']),
+      validationErrors: List<String>.unmodifiable(errors),
     );
-  }
-
-  static StartupOptions? _firstDeepLinkOptions(List<String> args) {
-    for (final arg in args) {
-      final options = fromDeepLink(arg);
-      if (options != null) return options;
-    }
-    return null;
   }
 
   static String? _argValue(List<String> args, String key) {

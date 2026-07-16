@@ -2,14 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/app.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
 import 'package:ianvs_acp/ui/components/task_inbox_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   Future<void> pumpSidebar(
@@ -40,7 +42,7 @@ void main() {
   testWidgets('TaskInboxSidebar creates and displays a task', (tester) async {
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -78,7 +80,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 9),
           tasks: [
@@ -105,11 +107,168 @@ void main() {
     expect(controller.tasks.single.workspacePath, '/workspace/app');
   });
 
+  testWidgets(
+    'TaskInboxSidebar confirms raw data purge and keeps durable task data',
+    (tester) async {
+      final createdAt = DateTime.utc(2030, 1, 2);
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(
+          updatedAt: createdAt,
+          tasks: <TaskRecord>[
+            TaskRecord(
+              id: 'task-1',
+              title: 'Keep task title',
+              description: '',
+              workspacePath: '/workspace/app',
+              agentName: 'Codex',
+              status: TaskStatus.needsHumanReview,
+              priority: TaskPriority.normal,
+              createdAt: createdAt,
+              updatedAt: createdAt,
+              currentRunId: 'run-1',
+              summary: 'Keep summary',
+            ),
+          ],
+          runs: <TaskRunRecord>[
+            TaskRunRecord(
+              id: 'run-1',
+              taskId: 'task-1',
+              attempt: 1,
+              status: TaskStatus.needsHumanReview,
+              startedAt: createdAt,
+              promptSnapshot: 'raw prompt',
+            ),
+          ],
+          events: <TaskEventRecord>[
+            TaskEventRecord(
+              id: 'event-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: TaskEventKind.tool,
+              text: 'Keep event text',
+              createdAt: createdAt,
+              metadata: const <String, Object?>{'raw': 'secret'},
+            ),
+          ],
+          artifacts: <ArtifactRecord>[
+            ArtifactRecord(
+              id: 'artifact-1',
+              taskId: 'task-1',
+              runId: 'run-1',
+              kind: ArtifactKind.gitDiff,
+              title: 'src/main.dart',
+              createdAt: createdAt,
+              path: 'src/main.dart',
+              contentPreview: 'raw diff secret',
+              metadata: const <String, Object?>{'raw_payload': true},
+            ),
+          ],
+        ),
+      );
+      final controller = TaskInboxController(repository: store);
+      addTearDown(controller.dispose);
+      await controller.load();
+      await pumpSidebar(tester, controller, selectedTaskId: 'task-1');
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await _pumpFrames(tester);
+      expect(store.rawPayloadPurgeCount, 0);
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      await tester.tap(
+        find.byKey(const Key('task-clear-raw-data-confirm-button')),
+      );
+      await _pumpFrames(tester);
+
+      expect(store.rawPayloadPurgeCount, 1);
+      expect(controller.tasks.single.title, 'Keep task title');
+      expect(controller.tasks.single.summary, 'Keep summary');
+      expect(controller.events.single.text, 'Keep event text');
+      expect(controller.events.single.metadata, isEmpty);
+      expect(controller.artifacts.single.title, 'src/main.dart');
+      expect(controller.artifacts.single.path, 'src/main.dart');
+      expect(controller.artifacts.single.contentPreview, isNull);
+      expect(find.text('src/main.dart'), findsOneWidget);
+      expect(find.textContaining('raw diff secret'), findsNothing);
+      expect(find.textContaining('Cleared 3 raw data records'), findsOneWidget);
+    },
+  );
+
+  testWidgets('TaskInboxSidebar reports raw data purge failure', (
+    tester,
+  ) async {
+    final store = _MemoryTaskStore();
+    final controller = TaskInboxController(repository: store);
+    addTearDown(controller.dispose);
+    await controller.load();
+    store.beforeOperation = (operation) async {
+      if (operation == 'purgeRawPayloads') throw StateError('disk locked');
+    };
+    await pumpSidebar(tester, controller);
+
+    await tester.tap(find.byTooltip('Task data actions'));
+    await _pumpFrames(tester);
+    await tester.tap(find.text('Clear raw tool data'));
+    await _pumpFrames(tester);
+    await tester.tap(
+      find.byKey(const Key('task-clear-raw-data-confirm-button')),
+    );
+    await _pumpFrames(tester);
+
+    expect(
+      find.textContaining('Could not clear raw tool data'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('disk locked'), findsOneWidget);
+  });
+
+  testWidgets(
+    'TaskInboxSidebar abandons confirmation after controller replacement',
+    (tester) async {
+      final oldStore = _MemoryTaskStore();
+      final newStore = _MemoryTaskStore();
+      final oldController = TaskInboxController(repository: oldStore);
+      final newController = TaskInboxController(repository: newStore);
+      addTearDown(oldController.dispose);
+      addTearDown(newController.dispose);
+      await oldController.load();
+      await newController.load();
+      await pumpSidebar(tester, oldController);
+
+      await tester.tap(find.byTooltip('Task data actions'));
+      await _pumpFrames(tester);
+      await tester.tap(find.text('Clear raw tool data'));
+      await _pumpFrames(tester);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+
+      await pumpSidebar(tester, newController);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await pumpSidebar(tester, oldController);
+      expect(find.text('Clear raw tool data?'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('task-clear-raw-data-confirm-button')),
+      );
+      await _pumpFrames(tester);
+
+      expect(oldStore.rawPayloadPurgeCount, 0);
+      expect(newStore.rawPayloadPurgeCount, 0);
+      expect(find.textContaining('Cleared '), findsNothing);
+    },
+  );
+
   testWidgets('TaskInboxSidebar shows artifact previews for selected task', (
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(
           updatedAt: DateTime(2026, 7, 7, 9),
           tasks: [
@@ -168,7 +327,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -188,7 +347,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -207,7 +366,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -226,7 +385,7 @@ void main() {
     tester,
   ) async {
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(_reviewSnapshot()),
+      repository: _MemoryTaskStore(_reviewSnapshot()),
     );
     addTearDown(controller.dispose);
     await controller.load();
@@ -267,7 +426,7 @@ void main() {
       sessionId: 'session-1',
     );
     final controller = TaskInboxController(
-      store: _MemoryTaskStore(
+      repository: _MemoryTaskStore(
         TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
       ),
     );
@@ -308,6 +467,102 @@ void main() {
     expect(openedTask?.sessionId, 'session-1');
   });
 
+  testWidgets('TaskInboxSidebar lets an auth-blocked task be retried', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-auth',
+      title: 'Authenticate and retry',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.blockedOnUserInput,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+      metadata: const <String, Object?>{'failure_reason': 'authRequired'},
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    TaskRecord? retriedTask;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 720,
+            child: TaskInboxSidebar(
+              controller: controller,
+              defaultWorkspacePath: '/workspace/app',
+              defaultAgentName: 'Codex',
+              onRunTask: (task) => retriedTask = task,
+            ),
+          ),
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    await tester.tap(find.byTooltip('Run task'));
+    await _pumpFrames(tester);
+
+    expect(retriedTask?.id, 'task-auth');
+  });
+
+  testWidgets('TaskInboxSidebar does not run other user-input blocks', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-permission',
+      title: 'Resolve permission first',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.blockedOnUserInput,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+      metadata: const <String, Object?>{'failure_reason': 'permissionDenied'},
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: DateTime(2026, 7, 7, 9), tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    var runCalls = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 720,
+            child: TaskInboxSidebar(
+              controller: controller,
+              defaultWorkspacePath: '/workspace/app',
+              defaultAgentName: 'Codex',
+              onRunTask: (_) => runCalls += 1,
+            ),
+          ),
+        ),
+      ),
+    );
+    await _pumpFrames(tester);
+
+    await tester.tap(find.byTooltip('Run task'));
+    await _pumpFrames(tester);
+
+    expect(runCalls, 0);
+  });
+
   testWidgets('AppShell switches between Workspaces and Inbox sidebars', (
     tester,
   ) async {
@@ -322,7 +577,7 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(chat.dispose);
-    final taskController = TaskInboxController(store: _MemoryTaskStore());
+    final taskController = TaskInboxController(repository: _MemoryTaskStore());
     addTearDown(taskController.dispose);
     await taskController.load();
 
@@ -368,7 +623,7 @@ void main() {
     );
     addTearDown(chat.dispose);
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: (_) => 'task-1',
     );
@@ -401,16 +656,23 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final fake = FakeAgentClient();
+    final foregroundFake = FakeAgentClient();
     final chat = ChatController(
-      client: fake,
+      client: foregroundFake,
       cwd: '/workspace/default',
       agentName: 'Codex',
     );
     addTearDown(chat.dispose);
+    final backgroundFake = FakeAgentClient();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
     final ids = _DeterministicIds();
     final taskController = TaskInboxController(
-      store: _MemoryTaskStore(),
+      repository: _MemoryTaskStore(),
       clock: () => DateTime(2026, 7, 7, 8),
       idGenerator: ids.next,
     );
@@ -424,7 +686,13 @@ void main() {
     );
 
     await tester.pumpWidget(
-      AcpClientApp(controller: chat, taskInboxController: taskController),
+      AcpClientApp(
+        controller: chat,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskController,
+        createTaskAgentClient: (_) => backgroundFake,
+      ),
     );
     await _pumpFrames(tester);
     await tester.tap(find.text('Inbox').first);
@@ -441,8 +709,9 @@ void main() {
     );
 
     expect(taskController.tasks.single.sessionId, 'fake-session-1');
-    expect(chat.currentSession?.cwd, '/workspace/app');
-    expect(fake.lastPrompt, contains('Task ID: task-1'));
+    expect(chat.currentSession, isNull);
+    expect(foregroundFake.lastPrompt, isNull);
+    expect(backgroundFake.lastPrompt, contains('Task ID: task-1'));
     expect(find.text('Needs Review'), findsOneWidget);
     expect(find.text('Review'), findsOneWidget);
     expect(find.byTooltip('Open linked session'), findsOneWidget);
@@ -482,21 +751,8 @@ class _DeterministicIds {
   }
 }
 
-class _MemoryTaskStore implements TaskStore {
-  _MemoryTaskStore([TaskInboxSnapshot? snapshot])
-    : _snapshot = snapshot ?? TaskInboxSnapshot.empty();
-
-  TaskInboxSnapshot _snapshot;
-  final List<TaskInboxSnapshot> savedSnapshots = <TaskInboxSnapshot>[];
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-    savedSnapshots.add(snapshot);
-  }
+class _MemoryTaskStore extends MemoryTaskRepository {
+  _MemoryTaskStore([super.snapshot]);
 }
 
 TaskInboxSnapshot _reviewSnapshot() {

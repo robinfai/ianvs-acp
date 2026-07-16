@@ -42,6 +42,8 @@ class TaskStatusBadge extends StatelessWidget {
       TaskStatus.blockedOnUserInput => 'Blocked',
       TaskStatus.collectingArtifacts => 'Collecting',
       TaskStatus.needsHumanReview => 'Review',
+      TaskStatus.approvedForExport => 'Legacy approval',
+      TaskStatus.exporting => 'Legacy export',
       TaskStatus.done => 'Done',
       TaskStatus.failed => 'Failed',
       TaskStatus.cancelled => 'Cancelled',
@@ -60,7 +62,9 @@ class TaskStatusBadge extends StatelessWidget {
         border: Color(0xffbae6fd),
         foreground: Color(0xff0369a1),
       ),
-      TaskStatus.needsHumanReview => const _BadgeColors(
+      TaskStatus.needsHumanReview ||
+      TaskStatus.approvedForExport ||
+      TaskStatus.exporting => const _BadgeColors(
         background: Color(0xfffff7ed),
         border: Color(0xffffd7aa),
         foreground: AppColors.warning,

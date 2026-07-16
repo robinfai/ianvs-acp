@@ -1,15 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 
 import '../../state/chat_controller.dart';
+import '../bounded_metadata_preview.dart';
 import '../theme/app_design_tokens.dart';
 
 class ExtensionRequestDialog extends StatefulWidget {
-  const ExtensionRequestDialog({super.key, required this.controller});
+  const ExtensionRequestDialog({
+    super.key,
+    required this.controller,
+    this.inputBudget = const AcpInputBudget(),
+  });
 
   final ChatController controller;
+  final AcpInputBudget inputBudget;
 
   @override
   State<ExtensionRequestDialog> createState() => _ExtensionRequestDialogState();
@@ -21,6 +28,7 @@ class _ExtensionRequestDialogState extends State<ExtensionRequestDialog> {
   bool _sending = false;
   String? _error;
   Object? _result;
+  BoundedMetadataPreview? _resultPreview;
 
   @override
   void initState() {
@@ -36,6 +44,18 @@ class _ExtensionRequestDialogState extends State<ExtensionRequestDialog> {
     _methodController.dispose();
     _paramsController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant ExtensionRequestDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_result != null &&
+        !identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _resultPreview = writeBoundedMetadataPreview(
+        _result,
+        budget: widget.inputBudget,
+      );
+    }
   }
 
   @override
@@ -81,13 +101,14 @@ class _ExtensionRequestDialogState extends State<ExtensionRequestDialog> {
                   color: AppColors.danger,
                 ),
               ],
-              if (_result != null) ...[
+              if (_resultPreview != null) ...[
                 const SizedBox(height: 12),
                 _MessageBox(
                   icon: Icons.check_circle_outline_rounded,
                   title: 'Result',
-                  value: _prettyJson(_result),
+                  value: _resultPreview!.text,
                   color: AppColors.success,
+                  omission: _resultPreview!.omission,
                 ),
               ],
             ],
@@ -115,25 +136,38 @@ class _ExtensionRequestDialogState extends State<ExtensionRequestDialog> {
   }
 
   Future<void> _send() async {
+    var controllerInvoked = false;
     setState(() {
       _sending = true;
       _error = null;
       _result = null;
+      _resultPreview = null;
     });
 
     try {
+      final params = _parseParams(_paramsController.text);
+      controllerInvoked = true;
       final result = await widget.controller.sendExtensionRequest(
         method: _methodController.text,
-        params: _parseParams(_paramsController.text),
+        params: params,
       );
       if (!mounted) return;
       setState(() {
         _result = result;
+        _resultPreview = writeBoundedMetadataPreview(
+          result,
+          budget: widget.inputBudget,
+        );
       });
-    } catch (error) {
+    } catch (_) {
       if (!mounted) return;
+      final controllerError = controllerInvoked
+          ? widget.controller.lastError
+          : null;
       setState(() {
-        _error = error.toString();
+        _error = controllerError == null || controllerError.isEmpty
+            ? 'Extension request failed.'
+            : controllerError;
       });
     } finally {
       if (mounted) {
@@ -151,12 +185,14 @@ class _MessageBox extends StatelessWidget {
     required this.title,
     required this.value,
     required this.color,
+    this.omission,
   });
 
   final IconData icon;
   final String title;
   final String value;
   final Color color;
+  final AcpInputOmission? omission;
 
   @override
   Widget build(BuildContext context) {
@@ -195,6 +231,19 @@ class _MessageBox extends StatelessWidget {
               height: 1.35,
             ),
           ),
+          if (omission case final omission?) ...[
+            const SizedBox(height: 6),
+            Text(
+              omission.truncated
+                  ? 'Preview truncated · ${omission.resource}'
+                  : 'Details omitted · ${omission.resource}',
+              style: const TextStyle(
+                color: AppColors.warning,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -209,11 +258,6 @@ Map<String, Object?> _parseParams(String raw) {
     throw const FormatException('Params JSON must be an object.');
   }
   return decoded.map((key, value) => MapEntry(key.toString(), value));
-}
-
-String _prettyJson(Object? value) {
-  const encoder = JsonEncoder.withIndent('  ');
-  return encoder.convert(value);
 }
 
 String _defaultExtensionMethod(ChatController controller) {

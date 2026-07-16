@@ -1,11 +1,16 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
+import 'acp/acp_endpoint_validator.dart';
 import 'acp/agent_session.dart';
 import 'acp/dart_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
@@ -13,19 +18,30 @@ import 'acp/unavailable_acp_agent_client.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'config/macos_keychain_secret_store.dart';
+import 'config/secret_store.dart';
 import 'platform/file_manager.dart';
+import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
-import 'state/connection_state.dart';
+import 'tasks/task_agent_pool.dart';
 import 'tasks/runtime_registry.dart';
+import 'tasks/retry_policy.dart';
 import 'tasks/task_inbox_controller.dart';
+import 'tasks/task_inbox_migrator.dart';
+import 'tasks/task_inbox_sqlite_store.dart';
 import 'tasks/task_inbox_state_store.dart';
+import 'tasks/task_persistence_cleanup.dart';
 import 'tasks/task_record.dart';
 import 'tasks/task_runner.dart';
 import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
+import 'ui/components/bounded_image_preview.dart';
+import 'ui/components/deep_link_confirmation_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
+import 'ui/components/session_workspace_review_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
+import 'ui/image_decode_budget.dart';
 import 'ui/shell/app_shell.dart';
 import 'ui/theme/app_design_tokens.dart';
 import 'workspace/workspace.dart';
@@ -46,6 +62,13 @@ typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
 
+class _PendingDeepLinkRequest {
+  const _PendingDeepLinkRequest({required this.key, required this.request});
+
+  final String key;
+  final DeepLinkRequest request;
+}
+
 class AcpClientApp extends StatefulWidget {
   const AcpClientApp({
     super.key,
@@ -55,6 +78,8 @@ class AcpClientApp extends StatefulWidget {
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
+    this.secretStore = const MacosKeychainSecretStore(),
+    this.configurationWritable = true,
     this.initialResumeSessionId,
     this.initialResumeCwd,
     this.initialResumeAgentName,
@@ -62,7 +87,15 @@ class AcpClientApp extends StatefulWidget {
     this.openSessionWindow,
     this.autoLoadWorkspaceSessions = true,
     this.taskInboxController,
+    this.taskInboxMaintenanceInterval = const Duration(hours: 1),
     this.createAgentClient,
+    this.createTaskAgentClient,
+    this.agentClientFactoryKey,
+    this.taskAgentClientFactoryKey,
+    this.workspaceStateStore,
+    this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder,
   });
 
   final ChatController? controller;
@@ -71,6 +104,8 @@ class AcpClientApp extends StatefulWidget {
   final AgentServerDiscoverer? discoverAgentServers;
   final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
   final AcpConfigWriter? writeConfig;
+  final SecretStore secretStore;
+  final bool configurationWritable;
   final String? initialResumeSessionId;
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
@@ -78,23 +113,45 @@ class AcpClientApp extends StatefulWidget {
   final SessionWindowOpener? openSessionWindow;
   final bool autoLoadWorkspaceSessions;
   final TaskInboxController? taskInboxController;
+
+  /// Foreground check cadence. The repository persists a 24-hour throttle,
+  /// so checking more often cannot purge more than once per day.
+  final Duration taskInboxMaintenanceInterval;
   final AcpAgentClientFactory? createAgentClient;
+  final AcpAgentClientFactory? createTaskAgentClient;
+
+  /// Change this key when [createAgentClient] changes behavior. Keep it stable
+  /// across ordinary widget rebuilds.
+  final Object? agentClientFactoryKey;
+
+  /// Change this key when [createTaskAgentClient] changes behavior. Keep it
+  /// stable across ordinary widget rebuilds.
+  final Object? taskAgentClientFactoryKey;
+  final WorkspaceSidebarStateStore? workspaceStateStore;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder? boundedImageDecoder;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
 }
 
-class _AcpClientAppState extends State<AcpClientApp> {
+class _AcpClientAppState extends State<AcpClientApp>
+    with WidgetsBindingObserver {
   static const String _initialResumeSessionId = String.fromEnvironment(
     'ACP_RESUME_SESSION_ID',
   );
   static const MethodChannel _deepLinkChannel = MethodChannel(
     'ianvs_acp/deep_links',
   );
+  static const int _maxDeepLinkConfirmations = 8;
 
   late AcpClientConfig _config;
   late String _widgetConfigSignature;
   late ChatController _controller;
+  late AcpInputBudget _inputBudget;
+  late AcpImageDecodeBudgetLedger _imageDecodeLedger;
+  late BoundedImageDecoder _boundedImageDecoder;
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
@@ -102,25 +159,50 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
   final Set<String> _handledDeepLinks = <String>{};
+  final Queue<_PendingDeepLinkRequest> _pendingDeepLinkRequests =
+      Queue<_PendingDeepLinkRequest>();
+  bool _deepLinkConfirmationActive = false;
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
+  final Set<ArchivedSessionSnapshot> _pendingUndoSnapshots =
+      HashSet<ArchivedSessionSnapshot>.identity();
   TaskInboxController? _taskInboxController;
   TaskScheduler? _taskScheduler;
-  TaskInboxController? _schedulerTaskController;
   String? _selectedTaskId;
   bool _ownsTaskInboxController = false;
   String? _taskInboxStorePath;
+  TaskInboxSqliteStore? _ownedTaskRepository;
+  String? _taskInboxInitializationError;
+  bool _taskInboxInitializationPending = false;
+  int _taskInboxInitializationSerial = 0;
+  TaskInboxController? _pendingTaskInboxController;
+  Future<void>? _taskInboxTransition;
+  Timer? _taskInboxRefreshTimer;
+  Future<void>? _taskInboxRefresh;
+  Timer? _taskInboxMaintenanceTimer;
+  Future<void>? _taskInboxMaintenance;
+  TaskPersistenceQuarantineRegistry get _taskPersistenceQuarantine =>
+      TaskPersistenceQuarantineRegistry.shared;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
   int _sessionIndexHydrationSerial = 0;
   int _sessionCatalogLoadSerial = 0;
-  String? _lastSessionIndexSignature;
+  WorkspaceSessionIndexPersistenceQueue? _sessionIndexPersistence;
 
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
+    _inputBudget = widget.inputBudget;
+    _imageDecodeLedger =
+        widget.imageDecodeLedger ??
+        AcpImageDecodeBudgetLedger(budget: _inputBudget);
+    _boundedImageDecoder =
+        widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
+    _validateTaskInboxMaintenanceInterval();
+    WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
     _widgetConfigSignature = _configSignature(_config);
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
@@ -154,14 +236,74 @@ class _AcpClientAppState extends State<AcpClientApp> {
   @override
   void didUpdateWidget(covariant AcpClientApp oldWidget) {
     super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
+    _inputBudget = widget.inputBudget;
+    if (!identical(widget.imageDecodeLedger, oldWidget.imageDecodeLedger) ||
+        (!identical(widget.inputBudget, oldWidget.inputBudget) &&
+            widget.imageDecodeLedger == null)) {
+      _imageDecodeLedger =
+          widget.imageDecodeLedger ??
+          AcpImageDecodeBudgetLedger(budget: _inputBudget);
+    }
+    _boundedImageDecoder =
+        widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
+    _validateTaskInboxMaintenanceInterval();
+    if (oldWidget.taskInboxMaintenanceInterval !=
+        widget.taskInboxMaintenanceInterval) {
+      _taskInboxMaintenanceTimer?.cancel();
+      _taskInboxMaintenanceTimer = null;
+      final controller = _taskInboxController;
+      if (controller != null) _startTaskInboxMaintenance(controller);
+    }
 
     final nextWidgetConfig = _configWithInitialAgent(widget.config);
     final nextConfigSignature = _configSignature(nextWidgetConfig);
     final configChanged = nextConfigSignature != _widgetConfigSignature;
     final controllerChanged = oldWidget.controller != widget.controller;
+    final foregroundAgentFactoryChanged =
+        oldWidget.agentClientFactoryKey != widget.agentClientFactoryKey ||
+        (oldWidget.createAgentClient == null) !=
+            (widget.createAgentClient == null);
+    final explicitTaskAgentFactoryChanged =
+        oldWidget.taskAgentClientFactoryKey !=
+            widget.taskAgentClientFactoryKey ||
+        (oldWidget.createTaskAgentClient == null) !=
+            (widget.createTaskAgentClient == null);
+    final taskAgentFactoryChanged =
+        explicitTaskAgentFactoryChanged ||
+        (oldWidget.createTaskAgentClient == null &&
+            widget.createTaskAgentClient == null &&
+            foregroundAgentFactoryChanged);
+    final taskInboxControllerChanged =
+        oldWidget.taskInboxController != widget.taskInboxController;
 
     if (controllerChanged) {
-      if (oldWidget.controller == null) _disposeCachedControllers();
+      Future<void>? previousTaskCleanup;
+      final foregroundChangesInboxAvailability =
+          oldWidget.taskInboxController == null &&
+          widget.taskInboxController == null &&
+          (oldWidget.controller == null) != (widget.controller == null);
+      final taskInputsChanged =
+          configChanged ||
+          taskAgentFactoryChanged ||
+          taskInboxControllerChanged ||
+          foregroundChangesInboxAvailability;
+      if (taskInputsChanged) {
+        previousTaskCleanup = _stopTaskInboxTransition();
+      }
+      if (oldWidget.controller == null) {
+        final cachedControllers = _takeCachedControllers();
+        if (previousTaskCleanup == null) {
+          _disposeControllerList(cachedControllers);
+        } else {
+          unawaited(
+            _disposeControllersAfterTaskCleanup(
+              previousTaskCleanup,
+              cachedControllers,
+            ),
+          );
+        }
+      }
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       if (widget.controller == null) {
@@ -171,7 +313,22 @@ class _AcpClientAppState extends State<AcpClientApp> {
       } else {
         _controller = widget.controller!;
       }
-      _configureTaskInboxController();
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
+      return;
+    }
+
+    if (!configChanged &&
+        (foregroundAgentFactoryChanged || taskAgentFactoryChanged)) {
+      final previousTaskCleanup = taskAgentFactoryChanged
+          ? _stopTaskInboxTransition()
+          : null;
+      if (foregroundAgentFactoryChanged && widget.controller == null) {
+        _replaceOwnedControllerFactory(
+          previousTaskCleanup: previousTaskCleanup,
+        );
+      }
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
+      if (mounted) setState(() {});
       return;
     }
 
@@ -181,19 +338,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
-    _config = nextWidgetConfig;
-    _widgetConfigSignature = nextConfigSignature;
     if (widget.controller != null) {
+      final previousTaskCleanup = _stopTaskInboxTransition();
+      _config = nextWidgetConfig;
+      _widgetConfigSignature = nextConfigSignature;
       _controller = widget.controller!;
-      _configureTaskInboxController();
+      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       return;
     }
 
-    _reconcileControllerCache(_config);
-    _controller = _cachedControllerFor(_config);
-    _ensureControllersForSelectableAgents(_config);
-    unawaited(_hydrateSessionIndex());
-    _configureTaskInboxController();
+    _widgetConfigSignature = nextConfigSignature;
+    _replaceOwnedControllerConfiguration(nextWidgetConfig, rebuild: false);
   }
 
   StartupOptions get _initialStartupOptions {
@@ -208,6 +363,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
   }
 
+  void _validateTaskInboxMaintenanceInterval() {
+    final interval = widget.taskInboxMaintenanceInterval;
+    if (interval <= Duration.zero) {
+      throw ArgumentError.value(
+        interval,
+        'taskInboxMaintenanceInterval',
+        'Must be positive.',
+      );
+    }
+  }
+
   AcpClientConfig _configWithInitialAgent(AcpClientConfig config) {
     final agentName = widget.initialResumeAgentName?.trim();
     if (agentName == null || agentName.isEmpty) return config;
@@ -220,92 +386,497 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
-    _disposeTaskScheduler();
+    WidgetsBinding.instance.removeObserver(this);
+    for (final snapshot in _pendingUndoSnapshots.toList(growable: false)) {
+      snapshot.discard();
+    }
+    _pendingUndoSnapshots.clear();
+    final taskCleanup = _stopTaskInboxTransition();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
-      _disposeCachedControllers();
+      final cachedControllers = _takeCachedControllers();
+      if (taskCleanup == null) {
+        _disposeControllerList(cachedControllers);
+      } else {
+        unawaited(
+          _disposeControllersAfterTaskCleanup(taskCleanup, cachedControllers),
+        );
+      }
+    } else {
+      _ignoreTaskCleanup(taskCleanup);
     }
-    _disposeOwnedTaskInboxController();
     super.dispose();
   }
 
-  void _configureTaskInboxController() {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _taskInboxController;
+    if (state == AppLifecycleState.resumed) {
+      if (controller != null) {
+        _startTaskInboxRefresh(controller);
+        _startTaskInboxMaintenance(controller, runImmediately: true);
+      }
+      return;
+    }
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
+  }
+
+  void _configureTaskInboxController({Future<void>? previousCleanup}) {
     final injected = widget.taskInboxController;
     if (injected != null) {
-      _disposeOwnedTaskInboxController();
-      _taskInboxController = injected;
-      _ownsTaskInboxController = false;
+      if ((_taskInboxController == injected &&
+              !_ownsTaskInboxController &&
+              _taskScheduler != null) ||
+          (_taskInboxInitializationPending &&
+              _pendingTaskInboxController == injected)) {
+        return;
+      }
+      final cleanup = _joinTaskCleanup(
+        previousCleanup,
+        _stopTaskInboxTransition(),
+      );
       _taskInboxStorePath = null;
-      _configureTaskScheduler();
+      _taskInboxInitializationError = null;
+      _taskInboxInitializationPending = true;
+      _pendingTaskInboxController = injected;
+      final serial = ++_taskInboxInitializationSerial;
+      final initialization = _initializeInjectedTaskInbox(
+        serial: serial,
+        controller: injected,
+        previousCleanup: cleanup,
+      );
+      _taskInboxTransition = initialization;
+      unawaited(initialization);
       return;
     }
 
     if (widget.controller != null) {
-      _disposeOwnedTaskInboxController();
-      _taskInboxController = null;
-      _ownsTaskInboxController = false;
+      final cleanup = _joinTaskCleanup(
+        previousCleanup,
+        _stopTaskInboxTransition(),
+      );
+      _taskInboxTransition = cleanup;
+      _ignoreTaskCleanup(cleanup);
       _taskInboxStorePath = null;
-      _configureTaskScheduler();
+      _taskInboxInitializationError = null;
       return;
     }
 
-    final storePath = TaskInboxStateStore.defaultPath(
+    final sourcePath = TaskInboxStateStore.defaultPath(
       configPath: _config.configPath,
     );
-    if (_ownsTaskInboxController &&
-        _taskInboxController != null &&
-        _taskInboxStorePath == storePath) {
-      _configureTaskScheduler();
-      return;
-    }
-
-    _disposeOwnedTaskInboxController();
-    final controller = TaskInboxController(
-      store: TaskInboxStateStore(path: storePath),
+    final repositoryPath = TaskInboxSqliteStore.defaultPath(
+      configPath: _config.configPath,
     );
-    _taskInboxController = controller;
-    _ownsTaskInboxController = true;
-    _taskInboxStorePath = storePath;
-    unawaited(controller.load());
-    _configureTaskScheduler();
+    if (_taskInboxStorePath == repositoryPath &&
+        ((_ownsTaskInboxController && _taskInboxController != null) ||
+            _taskInboxInitializationPending)) {
+      return;
+    }
+
+    final cleanup = _joinTaskCleanup(
+      previousCleanup,
+      _stopTaskInboxTransition(),
+    );
+    _taskInboxStorePath = repositoryPath;
+    _taskInboxInitializationError = null;
+    _taskInboxInitializationPending = true;
+    final serial = ++_taskInboxInitializationSerial;
+    final initialization = _initializeTaskInbox(
+      serial: serial,
+      sourcePath: sourcePath,
+      repositoryPath: repositoryPath,
+      previousCleanup: cleanup,
+    );
+    _taskInboxTransition = initialization;
+    unawaited(initialization);
   }
 
-  void _disposeOwnedTaskInboxController() {
-    if (_ownsTaskInboxController) {
-      _taskInboxController?.dispose();
+  Future<void> _initializeTaskInbox({
+    required int serial,
+    required String? sourcePath,
+    required String? repositoryPath,
+    Future<void>? previousCleanup,
+  }) async {
+    TaskInboxSqliteStore? repository;
+    TaskInboxController? controller;
+    TaskScheduler? scheduler;
+    try {
+      await prepareTaskPersistenceTarget(
+        registry: _taskPersistenceQuarantine,
+        previousCleanup: previousCleanup,
+        targetPath: repositoryPath,
+      );
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      repository = TaskInboxSqliteStore(path: repositoryPath);
+      final migrationRepository = repository;
+      final pendingMigration =
+          TaskPersistencePendingOperation<TaskMigrationResult>(
+            path: repositoryPath,
+            operationName: 'migrateIfNeeded',
+            watchdog: TaskInboxController.defaultPersistenceWatchdog,
+            operation: () => TaskInboxMigrator(
+              source: TaskInboxStateStore(path: sourcePath),
+              repository: migrationRepository,
+            ).migrateIfNeeded(),
+            closeRepository: migrationRepository.close,
+          );
+      _taskPersistenceQuarantine.retain(pendingMigration);
+      late final TaskMigrationResult migration;
+      try {
+        migration = await pendingMigration.result;
+      } on Object {
+        pendingMigration.abandon();
+        repository = null;
+        try {
+          await _taskPersistenceQuarantine.ensurePathAvailable(
+            pendingMigration.path,
+          );
+        } on Object {
+          // The process-wide owner retains the repository until the source
+          // migration Future quiesces, so cleanup must not close it here.
+        }
+        rethrow;
+      }
+      if (migration.status == TaskMigrationStatus.awaitingBackupFinalization) {
+        pendingMigration.abandon();
+        repository = null;
+        await _taskPersistenceQuarantine.ensurePathAvailable(
+          pendingMigration.path,
+        );
+        throw StateError('The legacy task backup could not be verified.');
+      }
+      pendingMigration.transfer();
+      _taskPersistenceQuarantine.release(pendingMigration);
+      await migrationRepository.purgeRawPayloads(now: DateTime.now());
+      controller = TaskInboxController(repository: migrationRepository);
+      scheduler = _createTaskScheduler(controller);
+      await scheduler.start(dispatchQueuedTasks: false);
+      if (!mounted || serial != _taskInboxInitializationSerial) {
+        final cleanup = _startTaskPersistenceCleanup(
+          scheduler: scheduler,
+          controller: controller,
+          repository: repository,
+        );
+        scheduler = null;
+        controller = null;
+        repository = null;
+        await cleanup;
+        return;
+      }
+
+      _taskInboxInitializationPending = false;
+      _taskInboxInitializationError = null;
+      _ownedTaskRepository = repository;
+      _taskInboxController = controller;
+      _ownsTaskInboxController = true;
+      _taskScheduler = scheduler;
+      _startTaskInboxRefresh(controller);
+      _startTaskInboxMaintenance(controller);
+      scheduler.startDispatching();
+      setState(() {});
+    } on Object catch (error) {
+      var reportedError = error;
+      final cleanup = _startTaskPersistenceCleanup(
+        scheduler: scheduler,
+        controller: controller,
+        repository: repository,
+      );
+      scheduler = null;
+      controller = null;
+      repository = null;
+      try {
+        await cleanup;
+      } on Object catch (cleanupError) {
+        reportedError = cleanupError;
+      }
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxController = null;
+      _ownsTaskInboxController = false;
+      _taskInboxInitializationError = _taskInboxErrorMessage(reportedError);
+      setState(() {});
     }
+  }
+
+  Future<void> _initializeInjectedTaskInbox({
+    required int serial,
+    required TaskInboxController controller,
+    Future<void>? previousCleanup,
+  }) async {
+    TaskScheduler? scheduler;
+    try {
+      await prepareTaskPersistenceTarget(
+        registry: _taskPersistenceQuarantine,
+        previousCleanup: previousCleanup,
+        injectedController: true,
+      );
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      scheduler = _createTaskScheduler(controller);
+      await scheduler.start(dispatchQueuedTasks: false);
+      if (!mounted || serial != _taskInboxInitializationSerial) {
+        await scheduler.shutdown();
+        return;
+      }
+
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxInitializationError = null;
+      _taskInboxController = controller;
+      _ownsTaskInboxController = false;
+      _taskScheduler = scheduler;
+      _startTaskInboxRefresh(controller);
+      _startTaskInboxMaintenance(controller);
+      scheduler.startDispatching();
+      setState(() {});
+    } on Object catch (error) {
+      await scheduler?.shutdown();
+      if (!mounted || serial != _taskInboxInitializationSerial) return;
+      _taskInboxInitializationPending = false;
+      _pendingTaskInboxController = null;
+      _taskInboxController = null;
+      _ownsTaskInboxController = false;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
+    }
+  }
+
+  Future<void>? _disposeOwnedTaskInboxController() {
+    _taskInboxInitializationSerial += 1;
+    _taskInboxInitializationPending = false;
+    _pendingTaskInboxController = null;
+    final scheduler = _taskScheduler;
+    scheduler?.stop();
+    _taskScheduler = null;
+    final controller = _ownsTaskInboxController ? _taskInboxController : null;
+    _taskInboxController = null;
+    final repository = _ownedTaskRepository;
+    _ownedTaskRepository = null;
     _ownsTaskInboxController = false;
+    final refreshCleanup = _stopTaskInboxRefresh();
+    if (scheduler == null && controller == null && repository == null) {
+      return refreshCleanup;
+    }
+    final persistenceCleanup = _startTaskPersistenceCleanup(
+      scheduler: scheduler,
+      controller: controller,
+      repository: repository,
+    );
+    if (refreshCleanup == null) {
+      return persistenceCleanup;
+    }
+    return () async {
+      await refreshCleanup;
+      await persistenceCleanup;
+    }();
   }
 
-  void _configureTaskScheduler() {
-    final taskController = _taskInboxController;
-    if (taskController == null) {
-      _disposeTaskScheduler();
+  void _startTaskInboxRefresh(TaskInboxController controller) {
+    _taskInboxRefreshTimer?.cancel();
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
+      _taskInboxRefreshTimer = null;
       return;
     }
-    if (_taskScheduler != null && _schedulerTaskController == taskController) {
-      return;
-    }
+    _taskInboxRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _taskInboxController != controller) return;
+      if (_taskInboxRefresh != null || _taskInboxMaintenance != null) return;
+      late final Future<void> refresh;
+      refresh = _refreshTaskInbox(controller).whenComplete(() {
+        if (identical(_taskInboxRefresh, refresh)) {
+          _taskInboxRefresh = null;
+        }
+      });
+      _taskInboxRefresh = refresh;
+    });
+  }
 
-    _disposeTaskScheduler();
+  void _startTaskInboxMaintenance(
+    TaskInboxController controller, {
+    bool runImmediately = false,
+  }) {
+    _taskInboxMaintenanceTimer?.cancel();
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
+      _taskInboxMaintenanceTimer = null;
+      return;
+    }
+    if (runImmediately) _scheduleTaskInboxMaintenance(controller);
+    _taskInboxMaintenanceTimer = Timer.periodic(
+      widget.taskInboxMaintenanceInterval,
+      (_) => _scheduleTaskInboxMaintenance(controller),
+    );
+  }
+
+  void _scheduleTaskInboxMaintenance(TaskInboxController controller) {
+    if (!mounted || _taskInboxController != controller) return;
+    if (_taskInboxMaintenance != null) return;
+    late final Future<void> maintenance;
+    maintenance = _maintainTaskInbox(controller).whenComplete(() {
+      if (identical(_taskInboxMaintenance, maintenance)) {
+        _taskInboxMaintenance = null;
+      }
+    });
+    _taskInboxMaintenance = maintenance;
+  }
+
+  Future<void> _maintainTaskInbox(TaskInboxController controller) async {
+    try {
+      final refresh = _taskInboxRefresh;
+      if (refresh != null) await refresh;
+      if (!mounted || _taskInboxController != controller) return;
+      await controller.purgeRawPayloads(force: false);
+    } on TaskPersistenceStalledException catch (error) {
+      _taskInboxMaintenanceTimer?.cancel();
+      _taskInboxMaintenanceTimer = null;
+      final scheduler = _taskScheduler;
+      if (scheduler != null) {
+        scheduler.handlePersistenceFault(error);
+        return;
+      }
+      if (!mounted || _taskInboxController != controller) return;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
+    } on Object {
+      // A transient maintenance failure is retried on the next foreground
+      // interval or when the app resumes.
+    }
+  }
+
+  Future<void> _refreshTaskInbox(TaskInboxController controller) async {
+    try {
+      await controller.refreshIfChanged();
+    } on TaskPersistenceStalledException catch (error) {
+      _taskInboxRefreshTimer?.cancel();
+      _taskInboxRefreshTimer = null;
+      final scheduler = _taskScheduler;
+      if (scheduler != null) {
+        scheduler.handlePersistenceFault(error);
+        return;
+      }
+      if (!mounted || _taskInboxController != controller) return;
+      _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      setState(() {});
+    } on Object {
+      // A transient read failure is retried by the next foreground poll.
+    }
+  }
+
+  Future<void>? _stopTaskInboxRefresh() {
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
+    return _joinTaskCleanup(_taskInboxRefresh, _taskInboxMaintenance);
+  }
+
+  Future<void>? _stopTaskInboxTransition() {
+    return _joinTaskCleanup(
+      _taskInboxTransition,
+      _disposeOwnedTaskInboxController(),
+    );
+  }
+
+  TaskScheduler _createTaskScheduler(TaskInboxController taskController) {
+    final agentPool = _createTaskAgentPool(_config);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: _controllerForTaskAgent,
+      agentPool: agentPool,
     );
-    final scheduler = TaskScheduler(
+    late final TaskScheduler scheduler;
+    scheduler = TaskScheduler(
       taskController: taskController,
       worker: TaskRunnerWorker(runner: runner),
-      runtimeRegistry: LocalRuntimeRegistry(probe: _probeTaskRuntime),
+      runtimeRegistry: LocalRuntimeRegistry(probe: agentPool.probeAgent),
+      onPersistenceFault: (error) {
+        _handleTaskSchedulerPersistenceFault(scheduler, error);
+      },
     );
-    _taskScheduler = scheduler;
-    _schedulerTaskController = taskController;
-    unawaited(scheduler.start());
+    return scheduler;
   }
 
-  void _disposeTaskScheduler() {
-    _taskScheduler?.dispose();
-    _taskScheduler = null;
-    _schedulerTaskController = null;
+  void _handleTaskSchedulerPersistenceFault(
+    TaskScheduler scheduler,
+    TaskPersistenceStalledException error,
+  ) {
+    if (!mounted || !identical(_taskScheduler, scheduler)) return;
+    _taskInboxRefreshTimer?.cancel();
+    _taskInboxRefreshTimer = null;
+    _taskInboxMaintenanceTimer?.cancel();
+    _taskInboxMaintenanceTimer = null;
+    _taskInboxInitializationError = _taskInboxErrorMessage(error);
+    setState(() {});
+  }
+
+  Future<void> _startTaskPersistenceCleanup({
+    TaskScheduler? scheduler,
+    TaskInboxController? controller,
+    TaskInboxSqliteStore? repository,
+  }) {
+    if (controller != null && repository != null) {
+      final owner = TaskPersistenceOwnerCleanup(
+        path: repository.path,
+        controller: controller,
+        shutdownScheduler: () => scheduler?.shutdown() ?? Future<void>.value(),
+        disposeController: controller.dispose,
+        closeRepository: repository.close,
+      );
+      _taskPersistenceQuarantine.retain(owner);
+      return _taskPersistenceQuarantine.ensurePathAvailable(owner.path);
+    }
+    return () async {
+      await scheduler?.shutdown();
+      controller?.dispose();
+      await repository?.close();
+    }();
+  }
+
+  Future<void>? _joinTaskCleanup(Future<void>? first, Future<void>? second) {
+    if (first == null) return second;
+    if (second == null) return first;
+    return Future.wait(<Future<void>>[first, second]);
+  }
+
+  void _ignoreTaskCleanup(Future<void>? cleanup) {
+    if (cleanup == null) return;
+    unawaited(() async {
+      try {
+        await cleanup;
+      } on Object {
+        // There is no live task UI to report teardown failures to.
+      }
+    }());
+  }
+
+  Future<void> _disposeControllersAfterTaskCleanup(
+    Future<void> cleanup,
+    List<ChatController> controllers,
+  ) async {
+    try {
+      await cleanup;
+    } on Object {
+      // Cached controllers still need disposal after task teardown errors.
+    } finally {
+      _disposeControllerList(controllers);
+    }
+  }
+
+  String _taskInboxErrorMessage(Object error) {
+    if (error is FormatException) {
+      return 'Could not initialize Task Inbox: legacy task data is invalid; '
+          'the original file was not changed.';
+    }
+    if (error is TaskPersistenceStalledException) {
+      return 'Task persistence stalled during ${error.operation}. '
+          'Background task dispatch was stopped. The repository remains '
+          'quarantined until the pending operation finishes; retry the '
+          'configuration change afterward.';
+    }
+    return 'Could not initialize Task Inbox: $error';
   }
 
   void _setupDeepLinkHandling() {
@@ -335,17 +906,92 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   Future<void> _handleDeepLink(String rawLink) async {
     final normalizedLink = rawLink.trim();
-    if (normalizedLink.isEmpty || !_handledDeepLinks.add(normalizedLink)) {
+    if (normalizedLink.isEmpty) return;
+    final request = StartupOptions.fromDeepLink(normalizedLink);
+    if (request == null) return;
+    if (!request.requiresConfirmation) {
+      if (request.taskId != null) {
+        _openTaskFromStartupOptions(StartupOptions(taskId: request.taskId));
+      }
       return;
     }
-    final options = StartupOptions.fromDeepLink(normalizedLink);
-    if (options == null) return;
-    if (options.hasResumeSession) {
-      await _resumeFromStartupOptions(options);
+
+    final key = _deepLinkRequestKey(request);
+    if (!_handledDeepLinks.add(key)) return;
+
+    final confirmationCount =
+        _pendingDeepLinkRequests.length + (_deepLinkConfirmationActive ? 1 : 0);
+    if (confirmationCount >= _maxDeepLinkConfirmations) {
+      _handledDeepLinks.remove(key);
       return;
     }
-    if (options.hasTaskLink) {
-      _openTaskFromStartupOptions(options);
+    _pendingDeepLinkRequests.add(
+      _PendingDeepLinkRequest(key: key, request: request),
+    );
+    unawaited(_drainDeepLinkConfirmationQueue());
+  }
+
+  String _deepLinkRequestKey(DeepLinkRequest request) {
+    return jsonEncode(switch (request.kind) {
+      DeepLinkRequestKind.session => <String?>[
+        'session',
+        request.sessionId,
+        request.cwd,
+        request.agentName,
+      ],
+      DeepLinkRequestKind.task => <String?>['task', request.taskId],
+    });
+  }
+
+  Future<void> _drainDeepLinkConfirmationQueue() async {
+    if (_deepLinkConfirmationActive || !mounted) return;
+    if (_navigatorKey.currentContext == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_drainDeepLinkConfirmationQueue());
+      });
+      return;
+    }
+
+    _deepLinkConfirmationActive = true;
+    try {
+      while (mounted && _pendingDeepLinkRequests.isNotEmpty) {
+        final dialogContext = _navigatorKey.currentContext;
+        if (dialogContext == null) return;
+        if (!dialogContext.mounted) return;
+        final pending = _pendingDeepLinkRequests.removeFirst();
+        final confirmed = await showDialog<bool>(
+          context: dialogContext,
+          barrierDismissible: false,
+          builder: (_) => DeepLinkConfirmationDialog(request: pending.request),
+        );
+        if (!mounted) return;
+        if (confirmed != true) {
+          _handledDeepLinks.remove(pending.key);
+          continue;
+        }
+        final request = pending.request;
+        final workspace = validateDeepLinkWorkspace(request.cwd);
+        if (workspace.errors.isNotEmpty) {
+          _handledDeepLinks.remove(pending.key);
+          _showSnackBar(
+            'Could not open external session: ${workspace.errors.join(' ')}',
+          );
+          continue;
+        }
+        try {
+          await _resumeFromStartupOptions(
+            StartupOptions(
+              resumeSessionId: request.sessionId,
+              resumeCwd: workspace.path,
+              resumeAgentName: request.agentName,
+            ),
+          );
+        } on Object catch (error) {
+          if (mounted) _showSnackBar('Could not open external session: $error');
+        }
+      }
+    } finally {
+      _deepLinkConfirmationActive = false;
     }
   }
 
@@ -372,6 +1018,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final taskId = _trimmedOrNull(options.taskId);
     if (taskId == null || !mounted) return;
     if (_taskInboxController == null) {
+      if (_taskInboxInitializationPending) {
+        _selectedTaskId = taskId;
+        return;
+      }
       _showSnackBar('Task Inbox is unavailable.');
       return;
     }
@@ -442,6 +1092,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
         ),
       ),
       home: AppShell(
+        inputBudget: _inputBudget,
+        imageDecodeLedger: _imageDecodeLedger,
+        boundedImageDecoder: _boundedImageDecoder,
         controller: _controller,
         taskInboxController: _taskInboxController,
         initialSidebarMode: _selectedTaskId == null
@@ -455,7 +1108,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
         defaultAgentName: _config.defaultAgentServerName,
-        startupError: widget.startupError,
+        startupError: _combinedStartupError,
         canSwitchAgent: widget.controller == null,
         autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
         sessionControllers: _sessionControllers,
@@ -472,18 +1125,34 @@ class _AcpClientAppState extends State<AcpClientApp> {
             _archiveWorkspaceSessions(workspace),
         onRunTask: (context, task) => _runTask(context, task),
         onOpenTaskSession: (context, task) => _openTaskSession(context, task),
+        onAgentAuthenticated: _authenticateTaskAgent,
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
-        onSaveConfig: widget.controller == null
+        onSaveConfig: widget.controller == null && widget.configurationWritable
             ? (config) => _saveConfig(config)
             : null,
       ),
     );
   }
 
+  String? get _combinedStartupError {
+    final errors = <String>[
+      if (widget.startupError case final error? when error.trim().isNotEmpty)
+        error.trim(),
+      if (_taskInboxInitializationError case final error?
+          when error.trim().isNotEmpty)
+        error.trim(),
+    ];
+    return errors.isEmpty ? null : errors.join('\n');
+  }
+
   Future<void> _maybeDiscoverAgents() async {
-    if (_agentDiscoveryStarted || widget.controller != null) return;
+    if (_agentDiscoveryStarted ||
+        widget.controller != null ||
+        !widget.configurationWritable) {
+      return;
+    }
     if (_config.configPath == null || _config.configPath!.trim().isEmpty) {
       return;
     }
@@ -504,13 +1173,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (selected == null || selected.isEmpty || !mounted) return;
 
     try {
-      final write =
-          widget.writeDiscoveredAgentServers ??
-          AcpAgentDiscovery.writeSelectedAgentServers;
-      final nextConfig = await write(_config, selected);
+      final injectedWrite = widget.writeDiscoveredAgentServers;
+      final nextConfig = injectedWrite == null
+          ? await AcpAgentDiscovery.writeSelectedAgentServers(
+              _config,
+              selected,
+              secretStore: widget.secretStore,
+            )
+          : await injectedWrite(_config, selected);
       if (!mounted) return;
-      _reconcileControllerCache(nextConfig);
-      _activateAgent(nextConfig);
+      _replaceOwnedControllerConfiguration(nextConfig);
       unawaited(_loadAllAgentSessionCatalogs());
       _showSnackBar('Added ${selected.length} discovered ACP agent(s).');
     } catch (error) {
@@ -519,9 +1191,24 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _controllerFor(AcpClientConfig config) {
+    final createAgentClient = widget.createAgentClient ?? _defaultAgentClient;
+    return _controllerForWithFactory(config, createAgentClient);
+  }
+
+  ChatController _controllerForWithFactory(
+    AcpClientConfig config,
+    AcpAgentClientFactory createAgentClient,
+  ) {
+    return _controllerForClient(config, createAgentClient(config));
+  }
+
+  ChatController _controllerForClient(
+    AcpClientConfig config,
+    AcpAgentClient client,
+  ) {
     final permissions = _permissionConfig(config);
     return ChatController(
-      client: _agentClient(config),
+      client: client,
       cwd: _cwd,
       additionalDirectories: config.additionalDirectories,
       agentName: config.agentName,
@@ -561,14 +1248,28 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return controller;
   }
 
-  ChatController? _controllerForTaskAgent(String agentName) {
-    final trimmedAgentName = agentName.trim();
-    if (trimmedAgentName.isEmpty) return _controller;
-    if (widget.controller != null) {
-      return _controller.agentName == trimmedAgentName ? _controller : null;
-    }
-    final config = _configForAgent(_config, trimmedAgentName);
-    return config == null ? null : _cachedControllerFor(config);
+  LocalTaskAgentPool _createTaskAgentPool(AcpClientConfig config) {
+    final createAgentClient =
+        widget.createTaskAgentClient ??
+        widget.createAgentClient ??
+        _defaultAgentClient;
+    return LocalTaskAgentPool(
+      controllerFactory: (agentName) {
+        if (!mounted) return null;
+        final agentConfig = _configForAgent(config, agentName.trim());
+        if (agentConfig == null) return null;
+        final client = createAgentClient(agentConfig);
+        final reusesForegroundClient = _sessionControllers.any(
+          (foreground) => identical(foreground.client, client),
+        );
+        if (reusesForegroundClient) {
+          throw StateError(
+            'The task agent factory must create a separate ACP client.',
+          );
+        }
+        return _controllerForClient(agentConfig, client);
+      },
+    );
   }
 
   Future<void> _runTask(BuildContext _, TaskRecord task) async {
@@ -576,69 +1277,62 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (taskController == null) return;
     final scheduler = _taskScheduler;
     if (scheduler != null) {
-      await scheduler.enqueueTask(task.id);
+      try {
+        await scheduler.enqueueTask(task.id);
+      } on TaskPersistenceStalledException catch (error) {
+        scheduler.handlePersistenceFault(error);
+        if (mounted) {
+          _taskInboxInitializationError = _taskInboxErrorMessage(error);
+        }
+      }
       if (mounted) setState(() {});
       return;
     }
+    final agentPool = _createTaskAgentPool(_config);
     final runner = TaskRunner(
       taskController: taskController,
-      controllerForAgent: _controllerForTaskAgent,
+      agentPool: agentPool,
     );
-    await runner.runTask(task.id);
+    try {
+      await runner.runTask(task.id);
+    } on TaskPersistenceStalledException catch (error) {
+      if (mounted) {
+        _taskInboxInitializationError = _taskInboxErrorMessage(error);
+      }
+    } finally {
+      await runner.dispose();
+    }
     if (mounted) setState(() {});
   }
 
-  LocalRuntimeStatus _probeTaskRuntime(String agentName) {
-    final checkedAt = DateTime.now();
-    final controller = _controllerForTaskAgent(agentName);
-    final trimmedAgentName = agentName.trim();
-    if (controller == null) {
-      return LocalRuntimeStatus.unavailable(
-        agentName: trimmedAgentName,
-        checkedAt: checkedAt,
-        reason: 'No ACP controller is configured for $trimmedAgentName.',
+  Future<void> _authenticateTaskAgent(String agentName, String methodId) async {
+    final hasBlockedTask = _taskInboxController?.tasks.any(
+      (task) =>
+          task.agentName == agentName &&
+          task.status == TaskStatus.blockedOnUserInput &&
+          task.metadata['failure_reason'] ==
+              TaskFailureReason.authRequired.name,
+    );
+    if (hasBlockedTask != true) return;
+    final scheduler = _taskScheduler;
+    if (scheduler == null) return;
+    try {
+      final authenticated = await scheduler.authenticateAgent(
+        agentName,
+        methodId,
       );
-    }
-
-    final lastError = controller.lastError?.trim();
-    if (controller.status == ConnectionStatus.error) {
-      if (_looksLikeAuthRequired(lastError) || controller.canAuthenticate) {
-        return LocalRuntimeStatus.authRequired(
-          agentName: controller.agentName,
-          checkedAt: checkedAt,
-          reason: lastError ?? 'Authentication is required.',
+      if (!authenticated && mounted) {
+        _showSnackBar(
+          'The background task agent still requires authentication.',
         );
       }
-      return LocalRuntimeStatus.unavailable(
-        agentName: controller.agentName,
-        checkedAt: checkedAt,
-        reason: lastError ?? 'Agent connection is in an error state.',
-      );
+    } on Object catch (error) {
+      if (mounted) {
+        _showSnackBar(
+          'Could not authenticate the background task agent: $error',
+        );
+      }
     }
-
-    if (controller.isStreaming || controller.isSessionOperationRunning) {
-      return LocalRuntimeStatus.unavailable(
-        agentName: controller.agentName,
-        checkedAt: checkedAt,
-        reason: 'Agent is busy with another session operation.',
-      );
-    }
-
-    return LocalRuntimeStatus.available(
-      agentName: controller.agentName,
-      checkedAt: checkedAt,
-      supportsSessionResume: controller.canResumeSessions,
-      supportsPermissions: controller.hasPermissionReviewer,
-      maxConcurrentTasks: 1,
-    );
-  }
-
-  bool _looksLikeAuthRequired(String? message) {
-    final lower = message?.toLowerCase();
-    if (lower == null || lower.isEmpty) return false;
-    return lower.contains('auth') ||
-        lower.contains('login') ||
-        lower.contains('credential');
   }
 
   Future<void> _openTaskSession(BuildContext _, TaskRecord task) async {
@@ -666,18 +1360,41 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (mounted) setState(() {});
   }
 
-  void _reconcileControllerCache(AcpClientConfig config) {
-    for (final entry in _controllersByAgent.entries.toList()) {
-      final nextAgentConfig = _configForAgent(config, entry.key);
-      final nextSignature = nextAgentConfig == null
-          ? null
-          : _controllerSignature(nextAgentConfig);
-      if (nextSignature == _controllerSignaturesByAgent[entry.key]) continue;
+  void _replaceOwnedControllerConfiguration(
+    AcpClientConfig nextConfig, {
+    bool rebuild = true,
+  }) {
+    final taskCleanup = _stopTaskInboxTransition();
+    final staleControllers = _takeCachedControllers();
+    _config = nextConfig;
+    _controller = _cachedControllerFor(nextConfig);
+    _ensureControllersForSelectableAgents(nextConfig);
+    unawaited(_hydrateSessionIndex());
+    if (taskCleanup == null) {
+      _disposeControllerList(staleControllers);
+    } else {
+      unawaited(
+        _disposeControllersAfterTaskCleanup(taskCleanup, staleControllers),
+      );
+    }
+    _configureTaskInboxController(previousCleanup: taskCleanup);
+    if (rebuild && mounted) setState(() {});
+  }
 
-      _detachSessionIndexPersistence(entry.value);
-      entry.value.dispose();
-      _controllersByAgent.remove(entry.key);
-      _controllerSignaturesByAgent.remove(entry.key);
+  void _replaceOwnedControllerFactory({Future<void>? previousTaskCleanup}) {
+    final staleControllers = _takeCachedControllers();
+    _controller = _cachedControllerFor(_config);
+    _ensureControllersForSelectableAgents(_config);
+    unawaited(_hydrateSessionIndex());
+    if (previousTaskCleanup == null) {
+      _disposeControllerList(staleControllers);
+    } else {
+      unawaited(
+        _disposeControllersAfterTaskCleanup(
+          previousTaskCleanup,
+          staleControllers,
+        ),
+      );
     }
   }
 
@@ -698,27 +1415,38 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return configPath != null && configPath.isNotEmpty;
   }
 
-  void _disposeCachedControllers() {
-    for (final controller in _controllersByAgent.values) {
+  List<ChatController> _takeCachedControllers() {
+    final controllers = _controllersByAgent.values.toList(growable: false);
+    for (final controller in controllers) {
       _detachSessionIndexPersistence(controller);
-      controller.dispose();
     }
     _controllersByAgent.clear();
     _controllerSignaturesByAgent.clear();
+    return controllers;
+  }
+
+  void _disposeControllerList(Iterable<ChatController> controllers) {
+    for (final controller in controllers) {
+      controller.dispose();
+    }
   }
 
   Future<void> _hydrateSessionIndex() async {
     if (widget.controller != null) return;
     final serial = ++_sessionIndexHydrationSerial;
     _sessionIndexHydrated = false;
-    _lastSessionIndexSignature = null;
+    _sessionIndexPersistence = null;
 
-    final sessions = await _workspaceStateStore.loadSessionIndex();
+    final workspaceStateStore = _workspaceStateStore;
+    final sessions = await workspaceStateStore.loadSessionIndex();
     if (!mounted ||
         widget.controller != null ||
         serial != _sessionIndexHydrationSerial) {
       return;
     }
+    _sessionIndexPersistence = WorkspaceSessionIndexPersistenceQueue(
+      store: workspaceStateStore,
+    );
 
     _ensureControllersForSelectableAgents(_config);
     for (final session in sessions) {
@@ -788,11 +1516,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   WorkspaceSidebarStateStore get _workspaceStateStore {
-    return WorkspaceSidebarStateStore(
-      path: WorkspaceSidebarStateStore.defaultPath(
-        configPath: _config.configPath,
-      ),
-    );
+    return widget.workspaceStateStore ??
+        WorkspaceSidebarStateStore(
+          path: WorkspaceSidebarStateStore.defaultPath(
+            configPath: _config.configPath,
+          ),
+        );
   }
 
   void _attachSessionIndexPersistence(ChatController controller) {
@@ -821,9 +1550,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
       final sessions = _persistableSessionIndex();
       final signature = _sessionIndexSignature(sessions);
-      if (signature == _lastSessionIndexSignature) return;
-      _lastSessionIndexSignature = signature;
-      unawaited(_workspaceStateStore.saveSessionIndex(sessions));
+      _sessionIndexPersistence?.enqueue(
+        sessions: sessions,
+        signature: signature,
+      );
     });
   }
 
@@ -883,15 +1613,33 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<AcpClientConfig> _saveConfig(AcpClientConfig config) async {
+    if (!widget.configurationWritable) {
+      throw StateError(
+        'ACP configuration is read-only because startup loading failed.',
+      );
+    }
     final write = widget.writeConfig;
-    final nextConfig = write == null
-        ? await AcpConfigStore.writeConfig(config: config)
-        : await write(config);
+    late final AcpClientConfig nextConfig;
+    var cleanupWarning = false;
+    try {
+      nextConfig = write == null
+          ? await AcpConfigStore.writeConfig(
+              config: config,
+              secretStore: widget.secretStore,
+            )
+          : await write(config);
+    } on AcpConfigPostCommitCleanupException catch (error) {
+      nextConfig = error.committedConfig;
+      cleanupWarning = true;
+    }
     if (!mounted) return nextConfig;
-    _reconcileControllerCache(nextConfig);
-    _activateAgent(nextConfig);
+    _replaceOwnedControllerConfiguration(nextConfig);
     unawaited(_loadAllAgentSessionCatalogs());
-    _showSnackBar('Saved agent configuration.');
+    _showSnackBar(
+      cleanupWarning
+          ? 'Saved agent configuration, but some retired Keychain entries could not be removed.'
+          : 'Saved agent configuration.',
+    );
     return nextConfig;
   }
 
@@ -953,6 +1701,34 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
+    final existingTargetController = _existingControllerForAgentName(
+      session.agentName,
+    );
+    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
+        true) {
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
+    }
+    final existingTargetSession = existingTargetController?.currentSession;
+    if (existingTargetSession != null &&
+        existingTargetSession.id.trim() == session.id.trim()) {
+      if (identical(existingTargetController, _controller)) return;
+    }
+
+    if (!mounted) return;
+    final dialogContext = _navigatorKey.currentState?.overlay?.context;
+    if (dialogContext == null || !dialogContext.mounted) return;
+    final approved = await showSessionWorkspaceReviewDialog(
+      dialogContext,
+      session,
+    );
+    if (!approved || !mounted) return;
+    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
+        true) {
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
+    }
+
     var controller = _controller;
     if (widget.controller == null) {
       final sessionAgentName = session.agentName?.trim();
@@ -970,7 +1746,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
       }
     }
 
-    if (controller.currentSession?.id == session.id) return;
     await controller.resumeSession(
       session.id,
       cwd: session.cwd,
@@ -979,6 +1754,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
       updatedAt: session.updatedAt,
     );
     if (mounted) setState(() {});
+  }
+
+  ChatController? _existingControllerForAgentName(String? agentName) {
+    final trimmed = agentName?.trim();
+    if (trimmed == null ||
+        trimmed.isEmpty ||
+        trimmed == _controller.agentName.trim()) {
+      return _controller;
+    }
+    return _controllersByAgent[trimmed];
   }
 
   bool _canForkSession(AgentSession session) {
@@ -1003,10 +1788,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
       case WorkspaceSessionMenuAction.archive:
         final snapshot = controller.archiveSessionLocally(session.id);
         if (snapshot == null) return;
-        _showUndoableSnackBar('Archived "${session.displayTitle}".', () {
-          controller.restoreArchivedSessionLocally(snapshot);
-          if (mounted) setState(() {});
-        });
+        _showUndoableSnackBar(
+          'Archived "${session.displayTitle}".',
+          <({ChatController controller, ArchivedSessionSnapshot snapshot})>[
+            (controller: controller, snapshot: snapshot),
+          ],
+        );
         if (mounted) setState(() {});
       case WorkspaceSessionMenuAction.toggleUnread:
         controller.setSessionUnread(session.id, !session.unread);
@@ -1033,8 +1820,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   void _archiveWorkspaceSessions(WorkspaceRecord workspace) {
     final workspacePath = normalizeWorkspacePath(workspace.path);
-    final snapshotsByController =
-        <ChatController, List<ArchivedSessionSnapshot>>{};
+    final archivedSnapshots =
+        <({ChatController controller, ArchivedSessionSnapshot snapshot})>[];
     var archivedCount = 0;
     for (final controller in _sessionControllers) {
       for (final session in controller.sessions.toList(growable: false)) {
@@ -1042,21 +1829,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
         if (session.archived) continue;
         final snapshot = controller.archiveSessionLocally(session.id);
         if (snapshot == null) continue;
-        snapshotsByController
-            .putIfAbsent(controller, () => <ArchivedSessionSnapshot>[])
-            .add(snapshot);
+        archivedSnapshots.add((controller: controller, snapshot: snapshot));
         archivedCount += 1;
       }
     }
     if (archivedCount > 0) {
-      _showUndoableSnackBar('Archived $archivedCount conversation(s).', () {
-        for (final entry in snapshotsByController.entries) {
-          for (final snapshot in entry.value) {
-            entry.key.restoreArchivedSessionLocally(snapshot);
-          }
-        }
-        if (mounted) setState(() {});
-      });
+      _showUndoableSnackBar(
+        'Archived $archivedCount conversation(s).',
+        archivedSnapshots,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -1431,23 +2212,57 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _showUndoableSnackBar(String message, VoidCallback onUndo) {
-    if (!mounted) return;
-    _messengerKey.currentState?.showSnackBar(
+  void _showUndoableSnackBar(
+    String message,
+    List<({ChatController controller, ArchivedSessionSnapshot snapshot})>
+    archivedSnapshots,
+  ) {
+    void discardSnapshots() {
+      for (final archived in archivedSnapshots) {
+        archived.snapshot.discard();
+        _pendingUndoSnapshots.remove(archived.snapshot);
+      }
+    }
+
+    if (!mounted) {
+      discardSnapshots();
+      return;
+    }
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) {
+      discardSnapshots();
+      return;
+    }
+    for (final archived in archivedSnapshots) {
+      _pendingUndoSnapshots.add(archived.snapshot);
+    }
+    final featureController = messenger.showSnackBar(
       SnackBar(
         content: Text(message),
-        action: SnackBarAction(label: 'Undo', onPressed: onUndo),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            for (final archived in archivedSnapshots) {
+              archived.controller.restoreArchivedSessionLocally(
+                archived.snapshot,
+              );
+            }
+            if (mounted) setState(() {});
+          },
+        ),
       ),
+    );
+    unawaited(
+      featureController.closed
+          .whenComplete(discardSnapshots)
+          .then<void>((_) {}),
     );
   }
 
-  AcpAgentClient _agentClient(AcpClientConfig config) {
-    final createAgentClient = widget.createAgentClient;
-    if (createAgentClient != null) return createAgentClient(config);
-
+  AcpAgentClient _defaultAgentClient(AcpClientConfig config) {
     final server = config.activeAgentServer;
     final mcpServers = config.mcpServers
-        .map((server) => server.toJson())
+        .map((server) => server.toRuntimeJson())
         .toList();
     if (server == null) {
       return const UnavailableAcpAgentClient(
@@ -1459,8 +2274,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentArgs: server.isStdio ? server.args : const <String>[],
       agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
-      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
+      agentWebSocketUrl: server.isWebSocket
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'ws', 'wss'},
+            )
+          : null,
+      agentHttpUrl: server.isStreamableHttp
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'http', 'https'},
+            )
+          : null,
       agentHeaders: server.headers,
       mcpServers: mcpServers,
       enableFilesystemReadTextFile:
@@ -1544,8 +2369,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
       agentArgs: server.isStdio ? server.args : const <String>[],
       agentCwd: server.isStdio ? server.cwd : null,
       envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket ? Uri.parse(server.url) : null,
-      agentHttpUrl: server.isStreamableHttp ? Uri.parse(server.url) : null,
+      agentWebSocketUrl: server.isWebSocket
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'ws', 'wss'},
+            )
+          : null,
+      agentHttpUrl: server.isStreamableHttp
+          ? parseAndValidateAcpEndpoint(
+              server.url,
+              allowedSchemes: const <String>{'http', 'https'},
+            )
+          : null,
       agentHeaders: server.headers,
     );
   }
@@ -1574,12 +2409,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
           .map(_agentServerSignature)
           .toList(growable: false),
       'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
+          .map(_mcpServerSignature)
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
+      'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
 
@@ -1588,16 +2424,37 @@ class _AcpClientAppState extends State<AcpClientApp> {
       'agentName': config.agentName,
       'activeAgentServer': _agentServerSignature(config.activeAgentServer),
       'mcpServers': config.mcpServers
-          .map((server) => server.toJson())
+          .map(_mcpServerSignature)
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
 
   Map<String, Object?>? _agentServerSignature(AgentServerConfig? server) {
     if (server == null) return null;
-    return <String, Object?>{'name': server.name, ...server.toJson()};
+    return <String, Object?>{
+      'name': server.name,
+      ...server.toJson(),
+      'runtimeSecretSignature': <String>[
+        _runtimeSecretSignature(server.env),
+        _runtimeSecretSignature(server.headers),
+      ],
+      'permissionReviewAgent': _reviewAgentSignature(
+        server.permissionReviewAgent,
+      ),
+    };
+  }
+
+  Map<String, Object?> _mcpServerSignature(McpServerConfig server) {
+    return <String, Object?>{
+      ...server.toJson(),
+      'runtimeSecretSignature': <String>[
+        _runtimeSecretSignature(server.env),
+        _runtimeSecretSignature(server.headers),
+      ],
+    };
   }
 
   Map<String, Object?> _clientProvidersSignature(
@@ -1631,11 +2488,28 @@ class _AcpClientAppState extends State<AcpClientApp> {
   ) {
     return <String, Object?>{
       'enabled': config.enabled,
-      'mcpServer': config.mcpServer?.toJson(),
+      'mcpServer': config.mcpServer == null
+          ? null
+          : _mcpServerSignature(config.mcpServer!),
       'mcpServerName': config.mcpServerName,
       'toolName': config.toolName,
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,
     };
   }
+}
+
+final List<int> _runtimeSecretSignatureKey = List<int>.unmodifiable(
+  List<int>.generate(32, (_) => math.Random.secure().nextInt(256)),
+);
+
+String _runtimeSecretSignature(Map<String, String> values) {
+  final keys = values.keys.toList()..sort();
+  final canonical = <List<String>>[
+    for (final key in keys) <String>[key, values[key]!],
+  ];
+  return Hmac(
+    sha256,
+    _runtimeSecretSignatureKey,
+  ).convert(utf8.encode(jsonEncode(canonical))).toString();
 }

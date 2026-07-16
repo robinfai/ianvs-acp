@@ -526,4 +526,205 @@ void main() {
       const Duration(milliseconds: 5000),
     );
   });
+
+  testWidgets('saving unrelated fields keeps configured reviewer disabled', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+              ),
+            ],
+            clientProviders: const AcpClientProviderConfig(
+              permissions: AcpPermissionProviderConfig(
+                reviewAgent: AcpPermissionReviewAgentConfig(
+                  enabled: false,
+                  mcpServerName: 'permission-reviewer',
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    final review = savedConfig?.clientProviders.permissions.reviewAgent;
+    expect(review?.enabled, isFalse);
+    expect(review?.mcpServerName, 'permission-reviewer');
+  });
+
+  testWidgets('editing secret rows stays explicit after text is restored', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    const ref =
+        'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Local',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Local',
+                type: 'custom',
+                command: 'old-agent',
+                env: {'TOKEN': 'resolved-agent-secret'},
+                envRefs: {'TOKEN': ref},
+              ),
+            ],
+            mcpServers: const [
+              McpServerConfig(
+                raw: {
+                  'name': 'tools',
+                  'command': 'old-tool',
+                  'env': [
+                    {'name': 'TOKEN', 'value': 'resolved-mcp-secret'},
+                  ],
+                },
+                envRefs: {'TOKEN': ref},
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Edit Local'));
+    await tester.tap(find.byTooltip('Edit Local'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agent-command-field')),
+      'new-agent',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-env-name-0-field')),
+      'OTHER',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-env-name-0-field')),
+      'TOKEN',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-env-value-0-field')),
+      'changed',
+    );
+    await tester.enterText(
+      find.byKey(const Key('agent-env-value-0-field')),
+      'resolved-agent-secret',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byTooltip('Edit tools'));
+    await tester.tap(find.byTooltip('Edit tools'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('mcp-command-field')),
+      'new-tool',
+    );
+    await tester.enterText(
+      find.byKey(const Key('mcp-env-value-0-field')),
+      'changed',
+    );
+    await tester.enterText(
+      find.byKey(const Key('mcp-env-value-0-field')),
+      'resolved-mcp-secret',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save MCP Server'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.agentServers.single.explicitEnvKeys, {'TOKEN'});
+    expect(savedConfig?.mcpServers.single.explicitEnvKeys, {'TOKEN'});
+    expect(
+      savedConfig?.agentServers.single.toJson(),
+      isNot(contains('explicitEnvKeys')),
+    );
+    expect(
+      savedConfig?.mcpServers.single.toJson(),
+      isNot(contains('explicitEnvKeys')),
+    );
+  });
+
+  testWidgets('renaming agent preserves inline reviewer values for rekeying', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    const ref =
+        'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Old',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Old',
+                type: 'custom',
+                command: '/usr/local/bin/agent',
+                permissionReviewAgent: AcpPermissionReviewAgentConfig(
+                  enabled: true,
+                  mcpServer: McpServerConfig(
+                    raw: {
+                      'name': 'inline-review',
+                      'command': '/usr/local/bin/review',
+                      'env': [
+                        {'name': 'TOKEN', 'value': 'resolved-secret'},
+                      ],
+                    },
+                    envRefs: {'TOKEN': ref},
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Edit Old'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Edit Old'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('agent-name-field')), 'New');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    final review = savedConfig?.agentServers.single.permissionReviewAgent;
+    expect(savedConfig?.agentServers.single.name, 'New');
+    expect(review?.enabled, isTrue);
+    expect(review?.mcpServer?.env, {'TOKEN': 'resolved-secret'});
+    expect(review?.mcpServer?.envRefs, isEmpty);
+  });
 }

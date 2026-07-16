@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_session_catalog.dart';
 import '../theme/app_design_tokens.dart';
+import '../bounded_metadata_preview.dart';
 
 const String resumeSessionAgentNameMetaKey = 'agentName';
 
@@ -23,10 +24,12 @@ class ResumeSessionDialog extends StatefulWidget {
     super.key,
     required this.loadSessions,
     this.initialCwd,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final Future<List<AcpProjectSessions>> Function() loadSessions;
   final String? initialCwd;
+  final AcpInputBudget inputBudget;
 
   @override
   State<ResumeSessionDialog> createState() => _ResumeSessionDialogState();
@@ -47,9 +50,16 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_load());
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant ResumeSessionDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
   }
 
   @override
@@ -106,10 +116,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
         selectedConversation == null) {
       return false;
     }
-    if (!_filteredProjects().contains(selectedProject)) return false;
-    return _filteredConversations(
-      selectedProject.sessions,
-    ).contains(selectedConversation);
+    if (!_projectMatchesSearch(selectedProject)) return false;
+    return _conversationMatchesSearch(selectedConversation);
   }
 
   Widget _content() {
@@ -138,15 +146,19 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
 
     final filteredProjects = _filteredProjects();
     final selectedProject = _selectedProject;
-    final selectedProjectValue = filteredProjects.contains(selectedProject)
+    final selectedProjectValue =
+        selectedProject != null && _projectMatchesSearch(selectedProject)
         ? selectedProject
         : null;
     final conversations =
         selectedProjectValue?.sessions ?? const <AcpSessionEntry>[];
     final filteredConversations = _filteredConversations(conversations);
+    final selectedConversation = _selectedConversation;
     final selectedConversationValue =
-        filteredConversations.contains(_selectedConversation)
-        ? _selectedConversation
+        selectedProjectValue != null &&
+            selectedConversation != null &&
+            _conversationMatchesSearch(selectedConversation)
+        ? selectedConversation
         : null;
 
     return LayoutBuilder(
@@ -172,40 +184,21 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 6),
-                DropdownButtonFormField<AcpProjectSessions>(
-                  key: const ValueKey('resume-project-dropdown'),
-                  initialValue: selectedProjectValue,
-                  isExpanded: true,
-                  decoration: _inputDecoration(
-                    icon: Icons.folder_outlined,
-                    hintText: filteredProjects.isEmpty
-                        ? 'No matching projects'
-                        : 'Select a project',
-                  ),
-                  menuMaxHeight: 280,
-                  items: filteredProjects
-                      .map(
-                        (project) => DropdownMenuItem<AcpProjectSessions>(
-                          value: project,
-                          child: Text(
-                            project.dropdownLabel,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: filteredProjects.isEmpty
-                      ? null
-                      : (project) {
-                          if (project == null) return;
-                          setState(() {
-                            _selectedProject = project;
-                            _selectedConversation = project.sessions.isEmpty
-                                ? null
-                                : project.sessions.first;
-                            _conversationSearchController.clear();
-                          });
-                        },
+                _LazySelectionList<AcpProjectSessions>(
+                  listKey: const ValueKey('resume-project-list'),
+                  items: filteredProjects,
+                  selected: selectedProjectValue,
+                  emptyMessage: 'No matching projects',
+                  label: (project) => project.dropdownLabel,
+                  onSelected: (project) {
+                    setState(() {
+                      _selectedProject = project;
+                      _selectedConversation = project.sessions.isEmpty
+                          ? null
+                          : project.sessions.first;
+                      _conversationSearchController.clear();
+                    });
+                  },
                 ),
                 const SizedBox(height: 12),
                 _FieldLabel(
@@ -222,41 +215,25 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 6),
-                DropdownButtonFormField<AcpSessionEntry>(
-                  key: const ValueKey('resume-conversation-dropdown'),
-                  initialValue: selectedConversationValue,
-                  isExpanded: true,
-                  decoration: _inputDecoration(
-                    icon: Icons.forum_outlined,
-                    hintText: conversations.isEmpty
-                        ? 'No conversations'
-                        : filteredConversations.isEmpty
-                        ? 'No matching conversations'
-                        : 'Select a conversation',
-                  ),
-                  menuMaxHeight: 320,
-                  items: filteredConversations
-                      .map(
-                        (conversation) => DropdownMenuItem<AcpSessionEntry>(
-                          value: conversation,
-                          child: Text(
-                            _conversationLabel(conversation),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: filteredConversations.isEmpty
-                      ? null
-                      : (conversation) {
-                          if (conversation == null) return;
-                          setState(() {
-                            _selectedConversation = conversation;
-                          });
-                        },
+                _LazySelectionList<AcpSessionEntry>(
+                  listKey: const ValueKey('resume-conversation-list'),
+                  items: filteredConversations,
+                  selected: selectedConversationValue,
+                  emptyMessage: conversations.isEmpty
+                      ? 'No conversations'
+                      : 'No matching conversations',
+                  label: _conversationLabel,
+                  onSelected: (conversation) {
+                    setState(() {
+                      _selectedConversation = conversation;
+                    });
+                  },
                 ),
                 const SizedBox(height: 12),
-                _ConversationPreview(conversation: selectedConversationValue),
+                _ConversationPreview(
+                  conversation: selectedConversationValue,
+                  inputBudget: widget.inputBudget,
+                ),
               ],
             ),
           ),
@@ -309,11 +286,15 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   List<AcpProjectSessions> _filteredProjects() {
     final query = _projectSearchController.text.trim().toLowerCase();
     if (query.isEmpty) return _projects;
-    return _projects.where((project) {
-      return project.name.toLowerCase().contains(query) ||
-          project.cwd.toLowerCase().contains(query) ||
-          project.dropdownLabel.toLowerCase().contains(query);
-    }).toList();
+    return _projects.where(_projectMatchesSearch).toList();
+  }
+
+  bool _projectMatchesSearch(AcpProjectSessions project) {
+    final query = _projectSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return true;
+    return project.name.toLowerCase().contains(query) ||
+        project.cwd.toLowerCase().contains(query) ||
+        project.dropdownLabel.toLowerCase().contains(query);
   }
 
   List<AcpSessionEntry> _filteredConversations(
@@ -321,18 +302,22 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   ) {
     final query = _conversationSearchController.text.trim().toLowerCase();
     if (query.isEmpty) return conversations;
-    return conversations.where((conversation) {
-      final updatedAt = conversation.updatedAt == null
-          ? ''
-          : _formatDateTime(conversation.updatedAt!);
-      return conversation.title.toLowerCase().contains(query) ||
-          _conversationAgentName(conversation).toLowerCase().contains(query) ||
-          conversation.id.toLowerCase().contains(query) ||
-          conversation.shortId.toLowerCase().contains(query) ||
-          conversation.cwd.toLowerCase().contains(query) ||
-          conversation.dropdownLabel.toLowerCase().contains(query) ||
-          updatedAt.toLowerCase().contains(query);
-    }).toList();
+    return conversations.where(_conversationMatchesSearch).toList();
+  }
+
+  bool _conversationMatchesSearch(AcpSessionEntry conversation) {
+    final query = _conversationSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return true;
+    final updatedAt = conversation.updatedAt == null
+        ? ''
+        : _formatDateTime(conversation.updatedAt!);
+    return conversation.title.toLowerCase().contains(query) ||
+        _conversationAgentName(conversation).toLowerCase().contains(query) ||
+        conversation.id.toLowerCase().contains(query) ||
+        conversation.shortId.toLowerCase().contains(query) ||
+        conversation.cwd.toLowerCase().contains(query) ||
+        conversation.dropdownLabel.toLowerCase().contains(query) ||
+        updatedAt.toLowerCase().contains(query);
   }
 }
 
@@ -345,6 +330,75 @@ String _conversationLabel(AcpSessionEntry conversation) {
 String _conversationAgentName(AcpSessionEntry conversation) {
   final agentName = conversation.meta[resumeSessionAgentNameMetaKey];
   return agentName is String ? agentName.trim() : '';
+}
+
+class _LazySelectionList<T> extends StatelessWidget {
+  const _LazySelectionList({
+    required this.listKey,
+    required this.items,
+    required this.selected,
+    required this.emptyMessage,
+    required this.label,
+    required this.onSelected,
+  });
+
+  final Key listKey;
+  final List<T> items;
+  final T? selected;
+  final String emptyMessage;
+  final String Function(T item) label;
+  final ValueChanged<T> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return Container(
+        width: double.infinity,
+        height: 48,
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Text(
+          emptyMessage,
+          style: const TextStyle(color: AppColors.textTertiary, fontSize: 12),
+        ),
+      );
+    }
+    final estimatedHeight = items.length * 48.0;
+    return Container(
+      height: estimatedHeight < 144 ? estimatedHeight : 144,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: AppColors.surface,
+        child: ListView.builder(
+          key: listKey,
+          primary: false,
+          itemExtent: 48,
+          itemCount: items.length,
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return ListTile(
+              dense: true,
+              selected: identical(item, selected),
+              title: Text(label(item), overflow: TextOverflow.ellipsis),
+              trailing: identical(item, selected)
+                  ? const Icon(Icons.check_rounded, size: 18)
+                  : null,
+              onTap: () => onSelected(item),
+            );
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class _SearchField extends StatelessWidget {
@@ -456,9 +510,13 @@ class _FieldLabel extends StatelessWidget {
 }
 
 class _ConversationPreview extends StatelessWidget {
-  const _ConversationPreview({required this.conversation});
+  const _ConversationPreview({
+    required this.conversation,
+    required this.inputBudget,
+  });
 
   final AcpSessionEntry? conversation;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -502,7 +560,13 @@ class _ConversationPreview extends StatelessWidget {
             ),
             const SizedBox(height: 5),
           ],
-          _PreviewRow(icon: Icons.folder_outlined, label: conversation.cwd),
+          _PreviewPathRow(label: 'Main workspace', path: conversation.cwd),
+          for (final directory in _visibleAdditionalDirectories(
+            conversation,
+          )) ...[
+            const SizedBox(height: 5),
+            _PreviewPathRow(label: 'Additional directory', path: directory),
+          ],
           if (conversation.updatedAt != null) ...[
             const SizedBox(height: 5),
             _PreviewRow(
@@ -510,9 +574,16 @@ class _ConversationPreview extends StatelessWidget {
               label: _formatDateTime(conversation.updatedAt!),
             ),
           ],
-          if (conversation.hasMeta) ...[
+          if (conversation.hasMeta || conversation.metaOmission != null) ...[
             const SizedBox(height: 8),
-            _MetadataPreview(meta: conversation.meta),
+            if (conversation.hasMeta)
+              _MetadataPreview(
+                meta: conversation.meta,
+                inputBudget: inputBudget,
+                sessionIdentity: conversation,
+              ),
+            if (conversation.metaOmission != null)
+              _MetadataOmissionLabel(omission: conversation.metaOmission!),
           ],
         ],
       ),
@@ -520,19 +591,52 @@ class _ConversationPreview extends StatelessWidget {
   }
 }
 
-class _MetadataPreview extends StatelessWidget {
-  const _MetadataPreview({required this.meta});
+class _MetadataPreview extends StatefulWidget {
+  const _MetadataPreview({
+    required this.meta,
+    required this.inputBudget,
+    required this.sessionIdentity,
+  });
 
   final Map<String, Object?> meta;
+  final AcpInputBudget inputBudget;
+  final Object sessionIdentity;
+
+  @override
+  State<_MetadataPreview> createState() => _MetadataPreviewState();
+}
+
+class _MetadataPreviewState extends State<_MetadataPreview> {
+  BoundedMetadataPreview? _preview;
+  var _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _MetadataPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(widget.sessionIdentity, oldWidget.sessionIdentity) &&
+        identical(widget.meta, oldWidget.meta) &&
+        identical(widget.inputBudget, oldWidget.inputBudget)) {
+      return;
+    }
+    _preview = _expanded ? _writePreview() : null;
+  }
+
+  BoundedMetadataPreview _writePreview() =>
+      writeBoundedMetadataPreview(widget.meta, budget: widget.inputBudget);
 
   @override
   Widget build(BuildContext context) {
-    const encoder = JsonEncoder.withIndent('  ');
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: Material(
         color: Colors.transparent,
         child: ExpansionTile(
+          onExpansionChanged: (expanded) {
+            setState(() {
+              _expanded = expanded;
+              _preview = expanded ? _writePreview() : null;
+            });
+          },
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           title: const Text(
@@ -548,26 +652,51 @@ class _MetadataPreview extends StatelessWidget {
             color: AppColors.primaryDark,
             size: 18,
           ),
-          children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: SelectableText(
-                encoder.convert(meta),
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          ],
+          children: _preview == null
+              ? const <Widget>[]
+              : [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: SelectableText(
+                      _preview!.text,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                  if (_preview!.omission != null)
+                    _MetadataOmissionLabel(omission: _preview!.omission!),
+                ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetadataOmissionLabel extends StatelessWidget {
+  const _MetadataOmissionLabel({required this.omission});
+
+  final AcpInputOmission omission;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        'Details omitted · ${omission.resource}',
+        style: const TextStyle(
+          color: AppColors.warning,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
@@ -595,6 +724,67 @@ class _PreviewRow extends StatelessWidget {
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+List<String> _visibleAdditionalDirectories(AcpSessionEntry conversation) {
+  final mainWorkspace = conversation.cwd.trim();
+  final seen = <String>{if (mainWorkspace.isNotEmpty) mainWorkspace};
+  final directories = <String>[];
+  for (final rawDirectory in conversation.additionalDirectories) {
+    final directory = rawDirectory.trim();
+    if (directory.isEmpty || !seen.add(directory)) continue;
+    directories.add(directory);
+  }
+  return directories;
+}
+
+class _PreviewPathRow extends StatelessWidget {
+  const _PreviewPathRow({required this.label, required this.path});
+
+  final String label;
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 2),
+          child: Icon(
+            Icons.folder_outlined,
+            size: 15,
+            color: AppColors.textTertiary,
+          ),
+        ),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              SelectableText(
+                path,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  height: 1.3,
+                ),
+              ),
+            ],
           ),
         ),
       ],

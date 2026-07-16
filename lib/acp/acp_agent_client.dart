@@ -11,6 +11,8 @@ abstract class AcpAgentClient {
 
   Stream<AcpPermissionRequest> get permissionRequests;
 
+  Stream<AcpPermissionInvalidation> get permissionInvalidations;
+
   Future<void> connect();
 
   Future<AgentSession> createSession({
@@ -69,6 +71,7 @@ abstract class AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   });
 
   Future<void> dispose();

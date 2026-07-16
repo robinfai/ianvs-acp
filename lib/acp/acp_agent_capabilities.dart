@@ -1,3 +1,6 @@
+import 'package:dart_acp/dart_acp.dart'
+    show AcpInputBudget, copyBoundedInitializeInput;
+
 class AcpAgentCapabilities {
   const AcpAgentCapabilities({
     required this.protocolVersion,
@@ -18,16 +21,23 @@ class AcpAgentCapabilities {
 
   factory AcpAgentCapabilities.fromInitialize({
     required int protocolVersion,
-    required Map<String, dynamic>? agentCapabilities,
-    required List<Map<String, dynamic>>? authMethods,
+    required Object? agentCapabilities,
+    required Object? authMethods,
     required Map<String, dynamic> clientCapabilities,
     required bool hasFsProvider,
     required bool hasTerminalProvider,
     required bool allowReadOutsideWorkspace,
-    Map<String, dynamic>? agentInfo,
+    Object? agentInfo,
     Map<String, dynamic>? clientInfo,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
-    final rawAgent = _objectMap(agentCapabilities);
+    final copied = copyBoundedInitializeInput(
+      agentCapabilities: agentCapabilities,
+      authMethods: authMethods,
+      agentInfo: agentInfo,
+      budget: inputBudget,
+    );
+    final rawAgent = copied.agentCapabilities;
     return AcpAgentCapabilities(
       protocolVersion: protocolVersion,
       loadSession: _capabilityAdvertised(rawAgent['loadSession']),
@@ -47,10 +57,8 @@ class AcpAgentCapabilities {
         allowReadOutsideWorkspace: allowReadOutsideWorkspace,
       ),
       rawAgentCapabilities: rawAgent,
-      authMethods:
-          authMethods?.map((method) => _objectMap(method)).toList() ??
-          const <Map<String, Object?>>[],
-      agentInfo: _objectMap(agentInfo),
+      authMethods: copied.authMethods,
+      agentInfo: copied.agentInfo,
       clientInfo: _objectMap(clientInfo),
     );
   }
@@ -245,13 +253,7 @@ class AcpClientCapabilities {
 
 Map<String, Object?> _objectMap(Object? raw) {
   if (raw is! Map) return const <String, Object?>{};
-  return raw.map((key, value) => MapEntry(key.toString(), _jsonValue(value)));
-}
-
-Object? _jsonValue(Object? value) {
-  if (value is Map) return _objectMap(value);
-  if (value is List) return value.map(_jsonValue).toList();
-  return value;
+  return raw.map((key, value) => MapEntry(key.toString(), value));
 }
 
 bool _capabilityAdvertised(Object? value) {

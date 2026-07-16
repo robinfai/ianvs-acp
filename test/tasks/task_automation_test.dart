@@ -4,7 +4,8 @@ import 'package:ianvs_acp/tasks/task_identifier.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
-import 'package:ianvs_acp/tasks/task_store.dart';
+
+import '../support/memory_task_repository.dart';
 
 void main() {
   test('TaskTemplate creates a task draft with skills and metadata', () {
@@ -33,7 +34,7 @@ void main() {
   test('LocalAutopilot creates queued task from manual trigger only', () async {
     final store = _MemoryTaskStore();
     final controller = TaskInboxController(
-      store: store,
+      repository: store,
       clock: () => DateTime(2026, 7, 9, 8),
       idGenerator: _Ids().next,
     );
@@ -160,14 +161,4 @@ class _Ids {
   String next(String prefix) => '$prefix-${++_next}';
 }
 
-class _MemoryTaskStore implements TaskStore {
-  TaskInboxSnapshot _snapshot = TaskInboxSnapshot.empty();
-
-  @override
-  Future<TaskInboxSnapshot> load() async => _snapshot;
-
-  @override
-  Future<void> save(TaskInboxSnapshot snapshot) async {
-    _snapshot = snapshot;
-  }
-}
+class _MemoryTaskStore extends MemoryTaskRepository {}

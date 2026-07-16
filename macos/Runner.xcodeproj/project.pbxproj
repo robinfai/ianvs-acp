@@ -223,6 +223,7 @@
 				331C80D1294CF70F00263BE5 /* Sources */,
 				331C80D2294CF70F00263BE5 /* Frameworks */,
 				331C80D3294CF70F00263BE5 /* Resources */,
+				7B6A7E8A2D1F4C7A00A1B2C4 /* Normalize RunnerTests merman dylib path */,
 			);
 			buildRules = (
 			);
@@ -373,6 +374,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "echo \"$PRODUCT_NAME.app\" > \"$PROJECT_DIR\"/Flutter/ephemeral/.app_filename && \"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh embed\n";
+			showEnvVarsInLog = 0;
 		};
 		33CC111E2044C6BF0003C045 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -393,6 +395,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+			showEnvVarsInLog = 0;
 		};
 		4FEAD2CA8EFA4B65FBFE7706 /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -428,7 +431,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n\nMERMAN_NAME=\"libmerman_ffi.dylib\"\nMERMAN_ID=\"@rpath/${MERMAN_NAME}\"\nAPP_CONTENTS=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}\"\nMERMAN_LIB=\"${APP_CONTENTS}/Frameworks/${MERMAN_NAME}\"\nMERMAN_FRAMEWORK=\"${APP_CONTENTS}/Frameworks/merman.framework\"\nCANDIDATES=\"${TEMP_FILES_DIR}/merman_macho_candidates.txt\"\n\nif [ -f \"${MERMAN_LIB}\" ]; then\n  install_name_tool -id \"${MERMAN_ID}\" \"${MERMAN_LIB}\" || true\nfi\n\nif [ ! -d \"${APP_CONTENTS}\" ]; then\n  exit 0\nfi\n\nfind \"${APP_CONTENTS}\" -type f \\( -path \"*/MacOS/*\" -o -path \"*/Frameworks/*\" \\) > \"${CANDIDATES}\"\nwhile IFS= read -r binary; do\n  if ! file \"${binary}\" | grep -q \"Mach-O\"; then\n    continue\n  fi\n\n  otool -L \"${binary}\" | awk '/libmerman_ffi[.]dylib/ {print $1}' | while IFS= read -r dependency; do\n    if [ -n \"${dependency}\" ] && [ \"${dependency}\" != \"${MERMAN_ID}\" ]; then\n      install_name_tool -change \"${dependency}\" \"${MERMAN_ID}\" \"${binary}\" || true\n    fi\n  done\ndone < \"${CANDIDATES}\"\n\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" != \"NO\" ]; then\n  SIGN_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}\"\n  if [ -z \"${SIGN_IDENTITY}\" ]; then\n    SIGN_IDENTITY=\"-\"\n  fi\n\n  if [ -f \"${MERMAN_LIB}\" ]; then\n    /usr/bin/codesign --force --sign \"${SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements,flags --timestamp=none \"${MERMAN_LIB}\" || true\n  fi\n  if [ -d \"${MERMAN_FRAMEWORK}\" ]; then\n    /usr/bin/codesign --force --sign \"${SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements,flags --timestamp=none \"${MERMAN_FRAMEWORK}\" || true\n  fi\nfi\n";
+			shellScript = "\"${SRCROOT}/scripts/normalize_merman.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		7B6A7E8A2D1F4C7A00A1B2C4 /* Normalize RunnerTests merman dylib path */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Normalize RunnerTests merman dylib path";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/normalize_merman.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		9441C7C26E20DB92F4BEDB31 /* [CP] Check Pods Manifest.lock */ = {
@@ -510,10 +533,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.ianvsAcp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ianvs.acp.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ianvs_acp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ianvs_acp";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ACP Client.app/Contents/MacOS/ACP Client";
 			};
 			name = Debug;
 		};
@@ -525,10 +548,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.ianvsAcp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ianvs.acp.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ianvs_acp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ianvs_acp";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ACP Client.app/Contents/MacOS/ACP Client";
 			};
 			name = Release;
 		};
@@ -540,10 +563,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.ianvsAcp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ianvs.acp.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ianvs_acp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ianvs_acp";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ACP Client.app/Contents/MacOS/ACP Client";
 			};
 			name = Profile;
 		};
@@ -757,6 +780,7 @@
 				CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

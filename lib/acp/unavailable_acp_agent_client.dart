@@ -24,6 +24,10 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
       const Stream<AcpPermissionRequest>.empty();
 
   @override
+  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+      const Stream<AcpPermissionInvalidation>.empty();
+
+  @override
   Future<void> authenticate({required String methodId}) => _failure<void>();
 
   @override
@@ -65,6 +69,7 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) => _failure<void>();
 
   @override

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
 
 class AcpClientConfig {
@@ -12,6 +13,7 @@ class AcpClientConfig {
     this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
     this.defaultAgentServerName,
+    this.runtimeSecretGeneration = 0,
   });
 
   static const String appConfigDirectoryName = 'ianvs-acp';
@@ -24,6 +26,10 @@ class AcpClientConfig {
   final AcpClientProviderConfig clientProviders;
   final String? configPath;
   final String? defaultAgentServerName;
+
+  /// Opaque in-memory revision used to invalidate clients after resolving or
+  /// changing secrets. It is never serialized to settings JSON.
+  final int runtimeSecretGeneration;
 
   String get agentName => activeAgentServer?.name ?? 'Codex';
 
@@ -57,6 +63,7 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
+      runtimeSecretGeneration: runtimeSecretGeneration,
     );
   }
 
@@ -101,15 +108,27 @@ class AcpClientConfig {
     String? configPath,
   }) {
     final mcpServers = _mcpServerList(
-      json['mcp_servers'] ?? json['mcpServers'],
+      _aliasedValue(json, const <String>[
+        'mcp_servers',
+        'mcpServers',
+      ], fieldName: 'mcp_servers'),
     );
     final additionalDirectories = _additionalDirectories(
-      json['additional_directories'] ?? json['additionalDirectories'],
+      _aliasedValue(json, const <String>[
+        'additional_directories',
+        'additionalDirectories',
+      ], fieldName: 'additional_directories'),
     );
     final clientProviders = AcpClientProviderConfig.fromJson(
-      json['client_providers'] ?? json['clientProviders'],
+      _aliasedValue(json, const <String>[
+        'client_providers',
+        'clientProviders',
+      ], fieldName: 'client_providers'),
     );
-    final serversRaw = json['agent_servers'] ?? json['agentServers'];
+    final serversRaw = _aliasedValue(json, const <String>[
+      'agent_servers',
+      'agentServers',
+    ], fieldName: 'agent_servers');
     if (serversRaw == null) {
       return AcpClientConfig(
         configPath: configPath,
@@ -144,7 +163,10 @@ class AcpClientConfig {
     }
 
     final preferredName = _stringValue(
-      json['default_agent_server'] ?? json['defaultAgentServer'],
+      _aliasedValue(json, const <String>[
+        'default_agent_server',
+        'defaultAgentServer',
+      ], fieldName: 'default_agent_server'),
     );
     final active = preferredName == null
         ? servers.values.first
@@ -230,7 +252,10 @@ class AcpClientProviderConfig {
     final map = _jsonMap(raw, fieldName: 'client_providers');
     return AcpClientProviderConfig(
       filesystem: AcpFilesystemProviderConfig.fromJson(
-        map['filesystem'] ?? map['fs'],
+        _aliasedValue(map, const <String>[
+          'filesystem',
+          'fs',
+        ], fieldName: 'client_providers.filesystem'),
       ),
       terminal: AcpTerminalProviderConfig.fromJson(map['terminal']),
       permissions: AcpPermissionProviderConfig.fromJson(map['permissions']),
@@ -270,9 +295,17 @@ class AcpPermissionProviderConfig {
       );
     }
     final map = _jsonMap(raw, fieldName: 'client_providers.permissions');
-    final rulesRaw = map['trust_rules'] ?? map['trustRules'] ?? map['rules'];
+    final rulesRaw = _aliasedValue(map, const <String>[
+      'trust_rules',
+      'trustRules',
+      'rules',
+    ], fieldName: 'client_providers.permissions.trust_rules');
     final reviewAgent = AcpPermissionReviewAgentConfig.fromJson(
-      map['review_agent'] ?? map['reviewAgent'] ?? map['approval_agent'],
+      _aliasedValue(map, const <String>[
+        'review_agent',
+        'reviewAgent',
+        'approval_agent',
+      ], fieldName: 'client_providers.permissions.review_agent'),
     );
     if (rulesRaw == null) {
       return AcpPermissionProviderConfig(reviewAgent: reviewAgent);
@@ -356,12 +389,19 @@ class AcpPermissionReviewAgentConfig {
             fieldName: 'client_providers.permissions.review_agent.enabled',
           )
         : true;
-    final mcpServerRaw = map['mcp_server'] ?? map['mcpServer'];
+    final mcpServerRaw = _aliasedValue(map, const <String>[
+      'mcp_server',
+      'mcpServer',
+    ], fieldName: 'client_providers.permissions.review_agent.mcp_server');
     final mcpServer = mcpServerRaw == null
         ? null
         : _permissionReviewMcpServer(mcpServerRaw);
     final mcpServerName = _stringValue(
-      map['mcp_server_name'] ?? map['mcpServerName'] ?? map['server_name'],
+      _aliasedValue(
+        map,
+        const <String>['mcp_server_name', 'mcpServerName', 'server_name'],
+        fieldName: 'client_providers.permissions.review_agent.mcp_server_name',
+      ),
     );
     if (mcpServer != null && mcpServerName != null) {
       throw const FormatException(
@@ -369,10 +409,18 @@ class AcpPermissionReviewAgentConfig {
       );
     }
     final toolName =
-        _stringValue(map['tool_name'] ?? map['toolName']) ??
+        _stringValue(
+          _aliasedValue(map, const <String>[
+            'tool_name',
+            'toolName',
+          ], fieldName: 'client_providers.permissions.review_agent.tool_name'),
+        ) ??
         'review_permission';
     final timeoutMs = _positiveIntValue(
-      map['timeout_ms'] ?? map['timeoutMs'],
+      _aliasedValue(map, const <String>[
+        'timeout_ms',
+        'timeoutMs',
+      ], fieldName: 'client_providers.permissions.review_agent.timeout_ms'),
       fieldName: 'client_providers.permissions.review_agent.timeout_ms',
     );
     return AcpPermissionReviewAgentConfig(
@@ -397,6 +445,13 @@ class AcpPermissionReviewAgentConfig {
       if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
       if (timeout != const Duration(seconds: 10))
         'timeout_ms': timeout.inMilliseconds,
+    };
+  }
+
+  Map<String, Object?> toRuntimeJson() {
+    return <String, Object?>{
+      ...toJson(),
+      if (mcpServer != null) 'mcp_server': mcpServer!.toRuntimeJson(),
     };
   }
 }
@@ -545,6 +600,12 @@ class AgentServerConfig {
     this.args = const <String>[],
     this.env = const <String, String>{},
     this.headers = const <String, String>{},
+    this.envRefs = const <String, String>{},
+    this.headerRefs = const <String, String>{},
+    this.explicitEnvKeys = const <String>{},
+    this.explicitHeaderKeys = const <String>{},
+    this.secretRefsResolved = true,
+    this.additionalProperties = const <String, dynamic>{},
     this.permissionReviewAgent = const AcpPermissionReviewAgentConfig(),
   });
 
@@ -556,6 +617,12 @@ class AgentServerConfig {
   final List<String> args;
   final Map<String, String> env;
   final Map<String, String> headers;
+  final Map<String, String> envRefs;
+  final Map<String, String> headerRefs;
+  final Set<String> explicitEnvKeys;
+  final Set<String> explicitHeaderKeys;
+  final bool secretRefsResolved;
+  final Map<String, dynamic> additionalProperties;
   final AcpPermissionReviewAgentConfig permissionReviewAgent;
 
   bool get isWebSocket => type == 'websocket' || type == 'ws';
@@ -576,6 +643,22 @@ class AgentServerConfig {
     required Map<String, dynamic> json,
   }) {
     final type = (_stringValue(json['type']) ?? 'custom').trim().toLowerCase();
+    final envRefs = _secretReferenceMapFromAliases(
+      json['env_refs'],
+      json['envRefs'],
+      fieldName: 'env_refs',
+      serverName: name,
+    );
+    final headerRefs = _secretReferenceMapFromAliases(
+      json['header_refs'],
+      json['headerRefs'],
+      fieldName: 'header_refs',
+      serverName: name,
+    );
+    final additionalProperties = Map<String, dynamic>.from(json);
+    for (final key in _agentServerManagedKeys) {
+      additionalProperties.remove(key);
+    }
     if (type == 'websocket' || type == 'ws') {
       final url = _stringValue(json['url']);
       if (url == null || url.isEmpty) {
@@ -600,6 +683,11 @@ class AgentServerConfig {
         type: type,
         url: url,
         headers: headers,
+        envRefs: envRefs,
+        headerRefs: headerRefs,
+        explicitHeaderKeys: Set.unmodifiable(headers.keys),
+        secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
+        additionalProperties: additionalProperties,
         permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
@@ -632,6 +720,11 @@ class AgentServerConfig {
         type: type,
         url: url,
         headers: headers,
+        envRefs: envRefs,
+        headerRefs: headerRefs,
+        explicitHeaderKeys: Set.unmodifiable(headers.keys),
+        secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
+        additionalProperties: additionalProperties,
         permissionReviewAgent: _agentPermissionReviewAgent(json),
       );
     }
@@ -669,29 +762,118 @@ class AgentServerConfig {
       cwd: cwd,
       args: args,
       env: env,
+      envRefs: envRefs,
+      headerRefs: headerRefs,
+      explicitEnvKeys: Set.unmodifiable(env.keys),
+      secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
+      additionalProperties: additionalProperties,
       permissionReviewAgent: _agentPermissionReviewAgent(json),
     );
   }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
+      ...additionalProperties,
       'type': type,
       if (command.isNotEmpty) 'command': command,
       if (cwd != null) 'cwd': cwd,
       if (url.isNotEmpty) 'url': url,
       if (args.isNotEmpty) 'args': args,
-      if (env.isNotEmpty) 'env': env,
-      if (headers.isNotEmpty) 'headers': headers,
+      if (envRefs.isNotEmpty) 'env_refs': envRefs,
+      if (headerRefs.isNotEmpty) 'header_refs': headerRefs,
       if (permissionReviewAgent.isConfigured)
         'review_agent': permissionReviewAgent.toJson(),
     };
   }
+
+  Map<String, Object?> toRuntimeJson() {
+    final json = <String, Object?>{
+      ...toJson(),
+      if (env.isNotEmpty) 'env': env,
+      if (headers.isNotEmpty) 'headers': headers,
+      if (permissionReviewAgent.isConfigured)
+        'review_agent': permissionReviewAgent.toRuntimeJson(),
+    };
+    json.remove('env_refs');
+    json.remove('envRefs');
+    json.remove('header_refs');
+    json.remove('headerRefs');
+    return json;
+  }
+
+  AgentServerConfig withSecrets({
+    required Map<String, String> env,
+    required Map<String, String> headers,
+    required Map<String, String> envRefs,
+    required Map<String, String> headerRefs,
+    Set<String>? explicitEnvKeys,
+    Set<String>? explicitHeaderKeys,
+    AcpPermissionReviewAgentConfig? permissionReviewAgent,
+  }) {
+    return AgentServerConfig(
+      name: name,
+      type: type,
+      command: command,
+      cwd: cwd,
+      url: url,
+      args: args,
+      env: Map.unmodifiable(env),
+      headers: Map.unmodifiable(headers),
+      envRefs: Map.unmodifiable(envRefs),
+      headerRefs: Map.unmodifiable(headerRefs),
+      explicitEnvKeys: Set.unmodifiable(
+        explicitEnvKeys ?? this.explicitEnvKeys,
+      ),
+      explicitHeaderKeys: Set.unmodifiable(
+        explicitHeaderKeys ?? this.explicitHeaderKeys,
+      ),
+      secretRefsResolved: true,
+      additionalProperties: additionalProperties,
+      permissionReviewAgent:
+          permissionReviewAgent ?? this.permissionReviewAgent,
+    );
+  }
 }
 
+const Set<String> _agentServerManagedKeys = <String>{
+  'type',
+  'command',
+  'cwd',
+  'working_directory',
+  'workingDirectory',
+  'url',
+  'args',
+  'env',
+  'headers',
+  'env_refs',
+  'envRefs',
+  'header_refs',
+  'headerRefs',
+  'review_agent',
+  'reviewAgent',
+  'permissions',
+};
+
 class McpServerConfig {
-  const McpServerConfig({required this.raw});
+  const McpServerConfig({
+    required this.raw,
+    this.envRefs = const <String, String>{},
+    this.headerRefs = const <String, String>{},
+    this.explicitEnvKeys = const <String>{},
+    this.explicitHeaderKeys = const <String>{},
+    this.secretRefsResolved = true,
+  });
 
   final Map<String, dynamic> raw;
+  final Map<String, String> envRefs;
+  final Map<String, String> headerRefs;
+  final Set<String> explicitEnvKeys;
+  final Set<String> explicitHeaderKeys;
+  final bool secretRefsResolved;
+
+  Map<String, String> get env => _runtimeSecretMap(raw['env']);
+
+  Map<String, String> get headers => _runtimeSecretMap(raw['headers']);
 
   String get name => _stringValue(raw['name']) ?? 'MCP server';
 
@@ -726,10 +908,38 @@ class McpServerConfig {
     return List.unmodifiable(keys);
   }
 
-  Map<String, dynamic> toJson() => _jsonMap(raw, fieldName: 'mcp_servers');
+  Map<String, dynamic> toJson() {
+    final json = _jsonMap(raw, fieldName: 'mcp_servers');
+    json.remove('env');
+    json.remove('headers');
+    json.remove('envRefs');
+    json.remove('headerRefs');
+    if (envRefs.isNotEmpty) {
+      json['env_refs'] = Map<String, String>.from(envRefs);
+    }
+    if (headerRefs.isNotEmpty) {
+      json['header_refs'] = Map<String, String>.from(headerRefs);
+    }
+    return json;
+  }
+
+  Map<String, dynamic> toRuntimeJson() {
+    final json = _jsonMap(raw, fieldName: 'mcp_servers');
+    json.remove('env_refs');
+    json.remove('envRefs');
+    json.remove('header_refs');
+    json.remove('headerRefs');
+    return json;
+  }
 
   factory McpServerConfig.fromJson({required int index, required Map json}) {
     final raw = _jsonMap(json, fieldName: 'mcp_servers[$index]');
+    final explicitEnvKeys = Set<String>.unmodifiable(
+      _runtimeSecretMap(raw['env']).keys,
+    );
+    final explicitHeaderKeys = Set<String>.unmodifiable(
+      _runtimeSecretMap(raw['headers']).keys,
+    );
     final name = _stringValue(raw['name']);
     if (name == null) {
       throw FormatException('MCP server at index $index requires name.');
@@ -759,7 +969,26 @@ class McpServerConfig {
       }
       raw.remove('id');
       raw['serverId'] = id;
-      return McpServerConfig(raw: raw);
+      return McpServerConfig(
+        raw: raw,
+        envRefs: _removeSecretReferenceAliases(
+          raw,
+          snakeKey: 'env_refs',
+          camelKey: 'envRefs',
+          fieldName: 'env_refs',
+          serverName: name,
+        ),
+        headerRefs: _removeSecretReferenceAliases(
+          raw,
+          snakeKey: 'header_refs',
+          camelKey: 'headerRefs',
+          fieldName: 'header_refs',
+          serverName: name,
+        ),
+        explicitEnvKeys: explicitEnvKeys,
+        explicitHeaderKeys: explicitHeaderKeys,
+        secretRefsResolved: false,
+      );
     }
     if (command == null && url == null) {
       throw FormatException('MCP server "$name" requires command or url.');
@@ -803,22 +1032,110 @@ class McpServerConfig {
       _ensureNameValueList(raw, key: 'env', serverName: name);
     }
 
-    return McpServerConfig(raw: raw);
+    final envRefs = _removeSecretReferenceAliases(
+      raw,
+      snakeKey: 'env_refs',
+      camelKey: 'envRefs',
+      fieldName: 'env_refs',
+      serverName: name,
+    );
+    final headerRefs = _removeSecretReferenceAliases(
+      raw,
+      snakeKey: 'header_refs',
+      camelKey: 'headerRefs',
+      fieldName: 'header_refs',
+      serverName: name,
+    );
+    return McpServerConfig(
+      raw: raw,
+      envRefs: envRefs,
+      headerRefs: headerRefs,
+      explicitEnvKeys: explicitEnvKeys,
+      explicitHeaderKeys: explicitHeaderKeys,
+      secretRefsResolved: envRefs.isEmpty && headerRefs.isEmpty,
+    );
   }
+
+  McpServerConfig withSecrets({
+    required Map<String, String> env,
+    required Map<String, String> headers,
+    required Map<String, String> envRefs,
+    required Map<String, String> headerRefs,
+    Set<String>? explicitEnvKeys,
+    Set<String>? explicitHeaderKeys,
+  }) {
+    final nextRaw = _jsonMap(raw, fieldName: 'mcp_servers');
+    if (env.isEmpty) {
+      nextRaw.remove('env');
+    } else {
+      nextRaw['env'] = <Map<String, String>>[
+        for (final entry in env.entries)
+          <String, String>{'name': entry.key, 'value': entry.value},
+      ];
+    }
+    if (headers.isEmpty) {
+      nextRaw.remove('headers');
+    } else {
+      nextRaw['headers'] = <Map<String, String>>[
+        for (final entry in headers.entries)
+          <String, String>{'name': entry.key, 'value': entry.value},
+      ];
+    }
+    return McpServerConfig(
+      raw: nextRaw,
+      envRefs: Map.unmodifiable(envRefs),
+      headerRefs: Map.unmodifiable(headerRefs),
+      explicitEnvKeys: Set.unmodifiable(
+        explicitEnvKeys ?? this.explicitEnvKeys,
+      ),
+      explicitHeaderKeys: Set.unmodifiable(
+        explicitHeaderKeys ?? this.explicitHeaderKeys,
+      ),
+      secretRefsResolved: true,
+    );
+  }
+}
+
+Map<String, String> _runtimeSecretMap(Object? raw) {
+  final values = <String, String>{};
+  if (raw is Map) {
+    for (final entry in raw.entries) {
+      if (entry.key is String && entry.value is String) {
+        values[entry.key as String] = entry.value as String;
+      }
+    }
+  } else if (raw is List) {
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final name = item['name'];
+      final value = item['value'];
+      if (name is String && value is String) values[name] = value;
+    }
+  }
+  return Map.unmodifiable(values);
 }
 
 AcpPermissionReviewAgentConfig _agentPermissionReviewAgent(
   Map<String, dynamic> json,
 ) {
   final permissions = json['permissions'];
-  Object? raw = json['review_agent'] ?? json['reviewAgent'];
-  if (raw == null && permissions is Map) {
-    raw =
-        permissions['review_agent'] ??
-        permissions['reviewAgent'] ??
-        permissions['approval_agent'];
+  final direct = _aliasedValue(json, const <String>[
+    'review_agent',
+    'reviewAgent',
+  ], fieldName: 'agent_server.review_agent');
+  final nested = permissions is Map
+      ? _aliasedValue(permissions, const <String>[
+          'review_agent',
+          'reviewAgent',
+          'approval_agent',
+        ], fieldName: 'agent_server.permissions.review_agent')
+      : null;
+  if (direct != null && nested != null) {
+    throw const FormatException(
+      'Agent server must not define both direct and permissions review agents.',
+    );
   }
-  return AcpPermissionReviewAgentConfig.fromJson(raw);
+  return AcpPermissionReviewAgentConfig.fromJson(direct ?? nested);
 }
 
 const Set<String> _supportedMcpTransportTypes = <String>{
@@ -833,6 +1150,87 @@ String? _stringValue(Object? value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+Object? _aliasedValue(Map map, List<String> keys, {required String fieldName}) {
+  final present = <String>[
+    for (final key in keys)
+      if (map.containsKey(key)) key,
+  ];
+  if (present.length > 1) {
+    throw FormatException(
+      '$fieldName must not define multiple aliases: ${present.join(', ')}.',
+    );
+  }
+  return present.isEmpty ? null : map[present.single];
+}
+
+Map<String, String> _secretReferenceMap(
+  Object? value, {
+  required String fieldName,
+  required String serverName,
+}) {
+  if (value == null) return const <String, String>{};
+  if (value is! Map) {
+    throw FormatException(
+      'Server "$serverName" $fieldName must be a JSON object.',
+    );
+  }
+  final result = <String, String>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String || (entry.key as String).trim().isEmpty) {
+      throw FormatException(
+        'Server "$serverName" $fieldName keys must be non-empty strings.',
+      );
+    }
+    if (entry.value is! String ||
+        !_keychainSecretReferencePattern.hasMatch(entry.value as String)) {
+      throw FormatException(
+        'Server "$serverName" $fieldName "${entry.key}" must be a Keychain reference.',
+      );
+    }
+    result[(entry.key as String).trim()] = entry.value as String;
+  }
+  return Map.unmodifiable(result);
+}
+
+Map<String, String> _secretReferenceMapFromAliases(
+  Object? snakeValue,
+  Object? camelValue, {
+  required String fieldName,
+  required String serverName,
+}) {
+  if (snakeValue != null && camelValue != null) {
+    throw FormatException(
+      'Server "$serverName" must not define both $fieldName and its camelCase alias.',
+    );
+  }
+  return _secretReferenceMap(
+    snakeValue ?? camelValue,
+    fieldName: fieldName,
+    serverName: serverName,
+  );
+}
+
+Map<String, String> _removeSecretReferenceAliases(
+  Map<String, dynamic> raw, {
+  required String snakeKey,
+  required String camelKey,
+  required String fieldName,
+  required String serverName,
+}) {
+  final snakeValue = raw.remove(snakeKey);
+  final camelValue = raw.remove(camelKey);
+  return _secretReferenceMapFromAliases(
+    snakeValue,
+    camelValue,
+    fieldName: fieldName,
+    serverName: serverName,
+  );
+}
+
+final RegExp _keychainSecretReferencePattern = RegExp(
+  r'^keychain://ianvs-acp/[0-9a-f]{64}$',
+);
 
 String? _absolutePathValue(
   Object? value, {
@@ -978,6 +1376,7 @@ void _ensureRemoteAgentUrl(
   if (uri.host.trim().isEmpty) {
     throw FormatException('Agent server "$serverName" url requires host.');
   }
+  validateAcpEndpoint(uri);
 }
 
 void _validateHttpHeaderEntry({
@@ -993,8 +1392,10 @@ void _validateHttpHeaderEntry({
   if (!_httpHeaderNamePattern.hasMatch(name)) {
     throw FormatException('$location requires a valid HTTP header name.');
   }
-  if (value.trim().isEmpty || value.contains('\n') || value.contains('\r')) {
-    throw FormatException('$location requires a non-empty HTTP header value.');
+  if (value.contains('\n') || value.contains('\r')) {
+    throw FormatException(
+      '$location requires an HTTP header value without line breaks.',
+    );
   }
 }
 
@@ -1107,6 +1508,7 @@ void _ensureNameValueList(
   if (value is! List) {
     throw FormatException('MCP server "$serverName" $key must be a list.');
   }
+  final seenNames = <String>{};
   for (var index = 0; index < value.length; index++) {
     final item = value[index];
     if (item is! Map) {
@@ -1119,6 +1521,11 @@ void _ensureNameValueList(
     if (name is! String || name.trim().isEmpty || itemValue is! String) {
       throw FormatException(
         'MCP server "$serverName" $key entry $index requires name and value.',
+      );
+    }
+    if (!seenNames.add(name)) {
+      throw FormatException(
+        'MCP server "$serverName" $key contains duplicate name "$name".',
       );
     }
   }
@@ -1135,6 +1542,7 @@ void _ensureRemoteHeaderList(
     return;
   }
   final headers = <Map<String, String>>[];
+  final seenNames = <String>{};
   if (value is Map) {
     for (final entry in value.entries) {
       final name = entry.key;
@@ -1150,6 +1558,11 @@ void _ensureRemoteHeaderList(
         fieldName: key,
         serverName: serverName,
       );
+      if (!seenNames.add(name.toLowerCase())) {
+        throw FormatException(
+          'MCP server "$serverName" $key contains duplicate header "$name".',
+        );
+      }
       headers.add(<String, String>{'name': name, 'value': itemValue});
     }
     raw[key] = headers;
@@ -1181,6 +1594,11 @@ void _ensureRemoteHeaderList(
       serverName: serverName,
       index: index,
     );
+    if (!seenNames.add(name.toLowerCase())) {
+      throw FormatException(
+        'MCP server "$serverName" $key contains duplicate header "$name".',
+      );
+    }
     headers.add(<String, String>{'name': name, 'value': itemValue});
   }
   raw[key] = headers;
@@ -1202,4 +1620,5 @@ void _ensureHttpUrl(
       'MCP server "$serverName" $transportType transport url requires host.',
     );
   }
+  validateAcpEndpoint(uri);
 }

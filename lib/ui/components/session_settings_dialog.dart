@@ -1,18 +1,28 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:dart_acp/dart_acp.dart';
 
 import '../../acp/acp_session_settings.dart';
 import '../../state/chat_controller.dart';
+import '../bounded_metadata_preview.dart';
 import '../theme/app_design_tokens.dart';
 
+const int _inlineChoicePreviewItems = 5;
+
 class SessionSettingsDialog extends StatelessWidget {
-  const SessionSettingsDialog({super.key, required this.controller});
+  const SessionSettingsDialog({
+    super.key,
+    required this.controller,
+    this.inputBudget = const AcpInputBudget(),
+  });
 
   final ChatController controller;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
+    inputBudget.validate();
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
@@ -85,55 +95,28 @@ class SessionSettingsDialog extends StatelessWidget {
       );
     }
 
-    final settings = controller.sessionSettings;
-    final settingsEnabled =
-        !controller.isStreaming &&
-        !controller.isSessionOperationRunning &&
-        !controller.sessionSettingsLoading;
-    return SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SessionHeader(
-            sessionId: session.shortId,
-            cwd: session.cwd,
-            loading: controller.sessionSettingsLoading,
-          ),
-          if (settings.modelOption != null ||
-              settings.reasoningEffortOption != null) ...[
-            const SizedBox(height: 8),
-            _SessionConfigurationSection(
-              settings: settings,
-              enabled: settingsEnabled,
-              onModelChanged: (modelValue) {
-                unawaited(controller.setSessionModel(modelValue));
-              },
-              onReasoningEffortChanged: (effortValue) {
-                unawaited(controller.setSessionReasoningEffort(effortValue));
-              },
-            ),
-          ],
-          if (settings.shouldUseLegacyModes) ...[
-            const SizedBox(height: 8),
-            _ModeSection(
-              settings: settings,
-              enabled: settingsEnabled,
-              onChanged: (modeId) {
-                unawaited(controller.setSessionMode(modeId));
-              },
-            ),
-          ],
-          const SizedBox(height: 8),
-          _ConfigSection(
-            options: settings.nonModelConfigOptions,
-            enabled: settingsEnabled,
-            onChanged: (configId, value) {
-              unawaited(controller.setConfigOption(configId, value));
-            },
-          ),
-        ],
-      ),
+    return _SessionSettingsScroll(
+      sessionId: session.shortId,
+      cwd: session.cwd,
+      loading: controller.sessionSettingsLoading,
+      settings: controller.sessionSettings,
+      enabled:
+          !controller.isStreaming &&
+          !controller.isSessionOperationRunning &&
+          !controller.sessionSettingsLoading,
+      inputBudget: inputBudget,
+      onModelChanged: (value) {
+        unawaited(controller.setSessionModel(value));
+      },
+      onReasoningEffortChanged: (value) {
+        unawaited(controller.setSessionReasoningEffort(value));
+      },
+      onModeChanged: (value) {
+        unawaited(controller.setSessionMode(value));
+      },
+      onConfigChanged: (id, value) {
+        unawaited(controller.setConfigOption(id, value));
+      },
     );
   }
 
@@ -207,6 +190,232 @@ class SessionSettingsDialog extends StatelessWidget {
     await controller.deleteCurrentSession();
     if (controller.currentSession?.id == deletingSessionId) return;
     if (context.mounted) Navigator.of(context).pop();
+  }
+}
+
+class _SessionSettingsScroll extends StatefulWidget {
+  const _SessionSettingsScroll({
+    required this.sessionId,
+    required this.cwd,
+    required this.loading,
+    required this.settings,
+    required this.enabled,
+    required this.inputBudget,
+    required this.onModelChanged,
+    required this.onReasoningEffortChanged,
+    required this.onModeChanged,
+    required this.onConfigChanged,
+  });
+
+  final String sessionId;
+  final String cwd;
+  final bool loading;
+  final AcpSessionSettings settings;
+  final bool enabled;
+  final AcpInputBudget inputBudget;
+  final ValueChanged<String> onModelChanged;
+  final ValueChanged<String> onReasoningEffortChanged;
+  final ValueChanged<String> onModeChanged;
+  final void Function(String id, Object value) onConfigChanged;
+
+  @override
+  State<_SessionSettingsScroll> createState() => _SessionSettingsScrollState();
+}
+
+class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
+  late _SettingsProjection _projection = _SettingsProjection.from(
+    widget.settings.configOptions,
+  );
+
+  @override
+  void didUpdateWidget(covariant _SessionSettingsScroll oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(
+      widget.settings.configOptions,
+      oldWidget.settings.configOptions,
+    )) {
+      _projection = _SettingsProjection.from(widget.settings.configOptions);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = widget.settings;
+    final modelOption = _projection.modelOption;
+    final reasoningOption = _projection.reasoningEffortOption;
+    final hasConfiguration = modelOption != null || reasoningOption != null;
+    final hasModes = settings.shouldUseLegacyModes;
+    final optionIndexes = _projection.nonModelOptionIndexes;
+    final configBodyCount = optionIndexes.isEmpty ? 1 : optionIndexes.length;
+    final hasIncompleteNotice =
+        settings.truncated || settings.omissions.isNotEmpty;
+    final itemCount =
+        1 +
+        (hasConfiguration ? 1 : 0) +
+        (hasModes ? 1 : 0) +
+        1 +
+        configBodyCount +
+        (hasIncompleteNotice ? 1 : 0);
+
+    return CustomScrollView(
+      key: const ValueKey('session-settings-scroll'),
+      slivers: [
+        SliverList(
+          delegate: SliverChildBuilderDelegate((context, index) {
+            var cursor = index;
+            if (cursor == 0) {
+              return _SessionHeader(
+                sessionId: widget.sessionId,
+                cwd: widget.cwd,
+                loading: widget.loading,
+              );
+            }
+            cursor -= 1;
+            if (hasConfiguration) {
+              if (cursor == 0) {
+                return _SettingsSliverItem(
+                  child: _SessionConfigurationSection(
+                    modelOption: modelOption,
+                    reasoningEffortOption: reasoningOption,
+                    configOptionsActive: settings.hasConfigOptions,
+                    enabled: widget.enabled,
+                    inputBudget: widget.inputBudget,
+                    onModelChanged: widget.onModelChanged,
+                    onReasoningEffortChanged: widget.onReasoningEffortChanged,
+                  ),
+                );
+              }
+              cursor -= 1;
+            }
+            if (hasModes) {
+              if (cursor == 0) {
+                return _SettingsSliverItem(
+                  child: _ModeSection(
+                    settings: settings,
+                    enabled: widget.enabled,
+                    inputBudget: widget.inputBudget,
+                    onChanged: widget.onModeChanged,
+                  ),
+                );
+              }
+              cursor -= 1;
+            }
+            if (cursor == 0) {
+              return const _SettingsSliverItem(child: _ConfigSectionHeading());
+            }
+            cursor -= 1;
+            if (cursor < configBodyCount) {
+              if (optionIndexes.isEmpty) {
+                return const _SettingsSliverItem(
+                  compact: true,
+                  child: _EmptyState.inline(
+                    icon: Icons.rule_folder_outlined,
+                    message: 'No config options exposed by this session.',
+                  ),
+                );
+              }
+              final option = settings.configOptions[optionIndexes[cursor]];
+              return _SettingsSliverItem(
+                compact: true,
+                child: _ConfigOptionTile(
+                  option: option,
+                  enabled: widget.enabled,
+                  inputBudget: widget.inputBudget,
+                  onChanged: (value) =>
+                      widget.onConfigChanged(option.id, value),
+                ),
+              );
+            }
+            return _SettingsSliverItem(
+              compact: true,
+              child: _SettingsIncompleteNotice(
+                truncated: settings.truncated,
+                omissions: settings.omissions,
+              ),
+            );
+          }, childCount: itemCount),
+        ),
+      ],
+    );
+  }
+}
+
+final class _SettingsProjection {
+  const _SettingsProjection({
+    required this.modelOption,
+    required this.reasoningEffortOption,
+    required this.nonModelOptionIndexes,
+  });
+
+  factory _SettingsProjection.from(List<AcpConfigOption> options) {
+    AcpConfigOption? modelOption;
+    AcpConfigOption? reasoningEffortOption;
+    final nonModelOptionIndexes = <int>[];
+    for (var index = 0; index < options.length; index++) {
+      final option = options[index];
+      final isModel = option.isModelOption;
+      final isReasoningEffort = option.isReasoningEffortOption;
+      modelOption ??= isModel ? option : null;
+      reasoningEffortOption ??= isReasoningEffort ? option : null;
+      if (!isModel && !isReasoningEffort) {
+        nonModelOptionIndexes.add(index);
+      }
+    }
+    return _SettingsProjection(
+      modelOption: modelOption,
+      reasoningEffortOption: reasoningEffortOption,
+      nonModelOptionIndexes: List<int>.unmodifiable(nonModelOptionIndexes),
+    );
+  }
+
+  final AcpConfigOption? modelOption;
+  final AcpConfigOption? reasoningEffortOption;
+  final List<int> nonModelOptionIndexes;
+}
+
+class _SettingsSliverItem extends StatelessWidget {
+  const _SettingsSliverItem({required this.child, this.compact = false});
+
+  final Widget child;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(top: compact ? 6 : 8),
+      child: child,
+    );
+  }
+}
+
+class _ConfigSectionHeading extends StatelessWidget {
+  const _ConfigSectionHeading();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.tune_rounded, size: 17, color: AppColors.primaryDark),
+          SizedBox(width: 7),
+          Text(
+            'Config Options',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -290,22 +499,27 @@ class _SessionHeader extends StatelessWidget {
 
 class _SessionConfigurationSection extends StatelessWidget {
   const _SessionConfigurationSection({
-    required this.settings,
+    required this.modelOption,
+    required this.reasoningEffortOption,
+    required this.configOptionsActive,
     required this.enabled,
+    required this.inputBudget,
     required this.onModelChanged,
     required this.onReasoningEffortChanged,
   });
 
-  final AcpSessionSettings settings;
+  final AcpConfigOption? modelOption;
+  final AcpConfigOption? reasoningEffortOption;
+  final bool configOptionsActive;
   final bool enabled;
+  final AcpInputBudget inputBudget;
   final ValueChanged<String> onModelChanged;
   final ValueChanged<String> onReasoningEffortChanged;
 
   @override
   Widget build(BuildContext context) {
-    final modelOption = settings.modelOption;
-    final reasoningEffortOption = settings.reasoningEffortOption;
-
+    final modelOption = this.modelOption;
+    final reasoningEffortOption = this.reasoningEffortOption;
     return _Panel(
       icon: Icons.tune_rounded,
       title: 'Session Configuration',
@@ -316,6 +530,7 @@ class _SessionConfigurationSection extends StatelessWidget {
             _ModelDropdown(
               option: modelOption,
               enabled: enabled,
+              inputBudget: inputBudget,
               onChanged: onModelChanged,
             ),
           ],
@@ -325,6 +540,7 @@ class _SessionConfigurationSection extends StatelessWidget {
             _ReasoningEffortControl(
               option: reasoningEffortOption,
               enabled: enabled,
+              inputBudget: inputBudget,
               onChanged: onReasoningEffortChanged,
             ),
           ],
@@ -332,7 +548,7 @@ class _SessionConfigurationSection extends StatelessWidget {
           _CapabilitySummary(
             hasModel: modelOption != null,
             hasReasoningEffort: reasoningEffortOption != null,
-            configOptionsActive: settings.hasConfigOptions,
+            configOptionsActive: configOptionsActive,
             reasoningEffortConfigId: reasoningEffortOption?.id,
           ),
         ],
@@ -345,15 +561,31 @@ class _ModelDropdown extends StatelessWidget {
   const _ModelDropdown({
     required this.option,
     required this.enabled,
+    required this.inputBudget,
     required this.onChanged,
   });
 
   final AcpConfigOption option;
   final bool enabled;
+  final AcpInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
+    if (option.options.length > _inlineChoicePreviewItems) {
+      return _LargeChoiceControl(
+        label: 'Active model',
+        sourceIdentity: option.options,
+        currentValue: option.currentValue,
+        enabled: enabled,
+        inputBudget: inputBudget,
+        itemCount: option.options.length,
+        valueAt: (index) => option.options[index].value,
+        labelAt: (index) => option.options[index].label,
+        descriptionAt: (index) => option.options[index].description,
+        onChanged: onChanged,
+      );
+    }
     final selectedValue =
         option.options.any((choice) => choice.value == option.currentValue)
         ? option.currentValue
@@ -387,15 +619,31 @@ class _ReasoningEffortControl extends StatelessWidget {
   const _ReasoningEffortControl({
     required this.option,
     required this.enabled,
+    required this.inputBudget,
     required this.onChanged,
   });
 
   final AcpConfigOption option;
   final bool enabled;
+  final AcpInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
+    if (option.options.length > _inlineChoicePreviewItems) {
+      return _LargeChoiceControl(
+        label: 'Reasoning effort',
+        sourceIdentity: option.options,
+        currentValue: option.currentValue,
+        enabled: enabled,
+        inputBudget: inputBudget,
+        itemCount: option.options.length,
+        valueAt: (index) => option.options[index].value,
+        labelAt: (index) => option.options[index].label,
+        descriptionAt: (index) => option.options[index].description,
+        onChanged: onChanged,
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -488,19 +736,21 @@ class _ModeSection extends StatelessWidget {
   const _ModeSection({
     required this.settings,
     required this.enabled,
+    required this.inputBudget,
     required this.onChanged,
   });
 
   final AcpSessionSettings settings;
   final bool enabled;
+  final AcpInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final modes = settings.modes.availableModes;
     final currentModeId = settings.modes.currentModeId;
-    final selectedValue = modes.any((mode) => mode.id == currentModeId)
-        ? currentModeId
+    final selectedValue = modes.length <= _inlineChoicePreviewItems
+        ? (modes.any((mode) => mode.id == currentModeId) ? currentModeId : null)
         : null;
 
     return _Panel(
@@ -512,6 +762,19 @@ class _ModeSection extends StatelessWidget {
               message: currentModeId == null || currentModeId.isEmpty
                   ? 'No modes exposed by this session.'
                   : 'Current mode is "$currentModeId", but no mode list was exposed.',
+            )
+          : modes.length > _inlineChoicePreviewItems
+          ? _LargeChoiceControl(
+              label: 'Current mode',
+              sourceIdentity: modes,
+              currentValue: currentModeId ?? '',
+              enabled: enabled,
+              inputBudget: inputBudget,
+              itemCount: modes.length,
+              valueAt: (index) => modes[index].id,
+              labelAt: (index) => modes[index].label,
+              descriptionAt: (index) => null,
+              onChanged: onChanged,
             )
           : DropdownButtonFormField<String>(
               isExpanded: true,
@@ -538,59 +801,25 @@ class _ModeSection extends StatelessWidget {
   }
 }
 
-class _ConfigSection extends StatelessWidget {
-  const _ConfigSection({
-    required this.options,
-    required this.enabled,
-    required this.onChanged,
-  });
-
-  final List<AcpConfigOption> options;
-  final bool enabled;
-  final void Function(String configId, Object value) onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      icon: Icons.tune_rounded,
-      title: 'Config Options',
-      child: options.isEmpty
-          ? const _EmptyState.inline(
-              icon: Icons.rule_folder_outlined,
-              message: 'No config options exposed by this session.',
-            )
-          : Column(
-              children: [
-                for (final option in options) ...[
-                  _ConfigOptionTile(
-                    option: option,
-                    enabled: enabled,
-                    onChanged: (value) => onChanged(option.id, value),
-                  ),
-                  if (option != options.last) const SizedBox(height: 8),
-                ],
-              ],
-            ),
-    );
-  }
-}
-
 class _ConfigOptionTile extends StatelessWidget {
   const _ConfigOptionTile({
     required this.option,
     required this.enabled,
+    required this.inputBudget,
     required this.onChanged,
   });
 
   final AcpConfigOption option;
   final bool enabled;
+  final AcpInputBudget inputBudget;
   final ValueChanged<Object> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final selectedValue =
-        option.options.any((choice) => choice.value == option.currentValue)
-        ? option.currentValue
+    final selectedValue = option.options.length <= _inlineChoicePreviewItems
+        ? (option.options.any((choice) => choice.value == option.currentValue)
+              ? option.currentValue
+              : null)
         : null;
 
     return Container(
@@ -659,6 +888,19 @@ class _ConfigOptionTile extends StatelessWidget {
                   )
                 : option.options.isEmpty
                 ? _ReadOnlyValue(value: option.currentValue)
+                : option.options.length > _inlineChoicePreviewItems
+                ? _LargeChoiceControl(
+                    label: 'Value',
+                    sourceIdentity: option.options,
+                    currentValue: option.currentValue,
+                    enabled: enabled,
+                    inputBudget: inputBudget,
+                    itemCount: option.options.length,
+                    valueAt: (index) => option.options[index].value,
+                    labelAt: (index) => option.options[index].label,
+                    descriptionAt: (index) => option.options[index].description,
+                    onChanged: onChanged,
+                  )
                 : DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: selectedValue,
@@ -689,6 +931,394 @@ class _ConfigOptionTile extends StatelessWidget {
                         : null,
                   ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LargeChoiceControl extends StatefulWidget {
+  const _LargeChoiceControl({
+    required this.label,
+    required this.sourceIdentity,
+    required this.currentValue,
+    required this.enabled,
+    required this.inputBudget,
+    required this.itemCount,
+    required this.valueAt,
+    required this.labelAt,
+    required this.descriptionAt,
+    required this.onChanged,
+  });
+
+  final String label;
+  final Object sourceIdentity;
+  final String currentValue;
+  final bool enabled;
+  final AcpInputBudget inputBudget;
+  final int itemCount;
+  final String Function(int index) valueAt;
+  final String Function(int index) labelAt;
+  final String? Function(int index) descriptionAt;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_LargeChoiceControl> createState() => _LargeChoiceControlState();
+}
+
+class _LargeChoiceControlState extends State<_LargeChoiceControl> {
+  BuildContext? _dialogContext;
+  var _dialogGeneration = 0;
+  var _dialogOpen = false;
+  var _dialogCloseScheduled = false;
+
+  @override
+  void didUpdateWidget(covariant _LargeChoiceControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_dialogOpen &&
+        (widget.enabled != oldWidget.enabled ||
+            widget.currentValue != oldWidget.currentValue ||
+            widget.itemCount != oldWidget.itemCount ||
+            !identical(widget.sourceIdentity, oldWidget.sourceIdentity) ||
+            !identical(widget.inputBudget, oldWidget.inputBudget))) {
+      _closeOpenDialog();
+    }
+  }
+
+  @override
+  void dispose() {
+    _closeOpenDialog();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final previewCount = widget.itemCount < _inlineChoicePreviewItems
+        ? widget.itemCount
+        : _inlineChoicePreviewItems;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.label,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 7),
+        _ReadOnlyValue(value: widget.currentValue),
+        const SizedBox(height: 7),
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
+          children: [
+            for (var index = 0; index < previewCount; index++)
+              ChoiceChip(
+                label: Text(
+                  widget.labelAt(index),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                selected: widget.valueAt(index) == widget.currentValue,
+                onSelected: widget.enabled
+                    ? (_) {
+                        widget.onChanged(widget.valueAt(index));
+                      }
+                    : null,
+              ),
+            if (widget.itemCount > previewCount)
+              TextButton(
+                onPressed: widget.enabled
+                    ? () => _openAllChoices(context)
+                    : null,
+                child: Text('${widget.itemCount - previewCount} more'),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openAllChoices(BuildContext context) async {
+    if (_dialogOpen || _dialogCloseScheduled) return;
+    final generation = ++_dialogGeneration;
+    _dialogOpen = true;
+    String? value;
+    try {
+      value = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) {
+          final isCurrentDialog =
+              mounted &&
+              generation == _dialogGeneration &&
+              _dialogOpen &&
+              !_dialogCloseScheduled;
+          if (isCurrentDialog) {
+            _dialogContext = dialogContext;
+          } else {
+            _scheduleLateDialogClose(dialogContext);
+          }
+          return _SearchableChoiceDialog(
+            title: widget.label,
+            currentValue: widget.currentValue,
+            enabled: widget.enabled,
+            inputBudget: widget.inputBudget,
+            itemCount: widget.itemCount,
+            valueAt: widget.valueAt,
+            labelAt: widget.labelAt,
+            descriptionAt: widget.descriptionAt,
+          );
+        },
+      );
+    } finally {
+      if (mounted && generation == _dialogGeneration) {
+        _dialogOpen = false;
+        _dialogContext = null;
+        _dialogCloseScheduled = false;
+      }
+    }
+    if (!mounted ||
+        !context.mounted ||
+        generation != _dialogGeneration ||
+        !widget.enabled ||
+        value == null) {
+      return;
+    }
+    widget.onChanged(value);
+  }
+
+  void _scheduleLateDialogClose(BuildContext dialogContext) {
+    final navigator = Navigator.of(dialogContext);
+    final route = ModalRoute.of(dialogContext);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (navigator.mounted && route != null && route.isActive) {
+        navigator.removeRoute(route);
+      }
+    });
+  }
+
+  void _closeOpenDialog() {
+    if (!_dialogOpen || _dialogCloseScheduled) return;
+    _dialogOpen = false;
+    _dialogCloseScheduled = true;
+    _dialogGeneration += 1;
+    final closingGeneration = _dialogGeneration;
+    final dialogContext = _dialogContext;
+    _dialogContext = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (dialogContext != null && dialogContext.mounted) {
+        Navigator.of(dialogContext).pop();
+      }
+      if (mounted && closingGeneration == _dialogGeneration) {
+        _dialogCloseScheduled = false;
+      }
+    });
+  }
+}
+
+class _SearchableChoiceDialog extends StatefulWidget {
+  const _SearchableChoiceDialog({
+    required this.title,
+    required this.currentValue,
+    required this.enabled,
+    required this.inputBudget,
+    required this.itemCount,
+    required this.valueAt,
+    required this.labelAt,
+    required this.descriptionAt,
+  });
+
+  final String title;
+  final String currentValue;
+  final bool enabled;
+  final AcpInputBudget inputBudget;
+  final int itemCount;
+  final String Function(int index) valueAt;
+  final String Function(int index) labelAt;
+  final String? Function(int index) descriptionAt;
+
+  @override
+  State<_SearchableChoiceDialog> createState() =>
+      _SearchableChoiceDialogState();
+}
+
+class _SearchableChoiceDialogState extends State<_SearchableChoiceDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  List<int>? _matches;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final matches = _matches;
+    final visibleCount = matches?.length ?? widget.itemCount;
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 520,
+        height: 420,
+        child: Column(
+          children: [
+            TextField(
+              key: const ValueKey('settings-choice-search'),
+              controller: _searchController,
+              autofocus: true,
+              onChanged: _filter,
+              decoration: _inputDecoration('Search choices'),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: visibleCount == 0
+                  ? const _EmptyState.inline(
+                      icon: Icons.search_off_rounded,
+                      message: 'No matching choices.',
+                    )
+                  : ListView.builder(
+                      key: const ValueKey('settings-choice-list'),
+                      primary: false,
+                      itemCount: visibleCount,
+                      itemBuilder: (context, visibleIndex) {
+                        final index = matches?[visibleIndex] ?? visibleIndex;
+                        return _ChoiceListTile(
+                          label: widget.labelAt(index),
+                          value: widget.valueAt(index),
+                          description: widget.descriptionAt(index),
+                          selected:
+                              widget.valueAt(index) == widget.currentValue,
+                          enabled: widget.enabled,
+                          inputBudget: widget.inputBudget,
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  void _filter(String rawQuery) {
+    final query = rawQuery.trim().toLowerCase();
+    if (query.isEmpty) {
+      setState(() => _matches = null);
+      return;
+    }
+    final matches = <int>[];
+    for (var index = 0; index < widget.itemCount; index++) {
+      if (widget.labelAt(index).toLowerCase().contains(query) ||
+          widget.valueAt(index).toLowerCase().contains(query)) {
+        matches.add(index);
+      }
+    }
+    setState(() => _matches = matches);
+  }
+}
+
+class _ChoiceListTile extends StatelessWidget {
+  const _ChoiceListTile({
+    required this.label,
+    required this.value,
+    required this.description,
+    required this.selected,
+    required this.enabled,
+    required this.inputBudget,
+  });
+
+  final String label;
+  final String value;
+  final String? description;
+  final bool selected;
+  final bool enabled;
+  final AcpInputBudget inputBudget;
+
+  @override
+  Widget build(BuildContext context) {
+    final rawDescription = description;
+    final preview = rawDescription == null || rawDescription.isEmpty
+        ? null
+        : writeBoundedMetadataPreview(rawDescription, budget: inputBudget);
+    return ListTile(
+      title: Text(label),
+      subtitle: preview == null
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  preview.text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (preview.omission != null)
+                  Text(
+                    'Details omitted · ${preview.omission!.resource}',
+                    style: const TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 11,
+                    ),
+                  ),
+              ],
+            ),
+      trailing: selected ? const Icon(Icons.check_rounded) : null,
+      enabled: enabled,
+      onTap: enabled ? () => Navigator.of(context).pop(value) : null,
+    );
+  }
+}
+
+class _SettingsIncompleteNotice extends StatelessWidget {
+  const _SettingsIncompleteNotice({
+    required this.truncated,
+    required this.omissions,
+  });
+
+  final bool truncated;
+  final List<AcpInputOmission> omissions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.warning),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Settings incomplete',
+            style: TextStyle(
+              color: AppColors.warning,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (truncated)
+            const Text(
+              'Some choices or options were omitted.',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+          for (final omission in omissions)
+            Text(
+              'Details omitted · ${omission.resource}',
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+              ),
+            ),
         ],
       ),
     );

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../tasks/task_inbox_controller.dart';
 import '../../tasks/task_record.dart';
+import '../../tasks/retry_policy.dart';
 import '../../workspace/workspace.dart';
 import '../theme/app_design_tokens.dart';
 import 'task_editor_dialog.dart';
@@ -36,6 +37,10 @@ class TaskInboxSidebar extends StatefulWidget {
 class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
   String? _selectedTaskId;
   final Set<String> _runningTaskIds = <String>{};
+  bool _clearingRawData = false;
+  TaskInboxController? _rawDataClearController;
+  int _controllerEpoch = 0;
+  int? _rawDataClearEpoch;
 
   @override
   void initState() {
@@ -46,6 +51,14 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
   @override
   void didUpdateWidget(covariant TaskInboxSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      _controllerEpoch += 1;
+      if (identical(_rawDataClearController, oldWidget.controller)) {
+        _rawDataClearController = null;
+        _rawDataClearEpoch = null;
+        _clearingRawData = false;
+      }
+    }
     final selectedTaskId = _trimmedOrNull(widget.selectedTaskId);
     if (selectedTaskId != null && selectedTaskId != _selectedTaskId) {
       _selectedTaskId = selectedTaskId;
@@ -72,6 +85,28 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
                   ),
                 ),
                 const Spacer(),
+                PopupMenuButton<_TaskInboxMenuAction>(
+                  tooltip: 'Task data actions',
+                  enabled: !_clearingRawData,
+                  icon: _clearingRawData
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.more_horiz_rounded),
+                  onSelected: (action) {
+                    if (action == _TaskInboxMenuAction.clearRawToolData) {
+                      unawaited(_confirmAndClearRawData());
+                    }
+                  },
+                  itemBuilder: (context) =>
+                      const <PopupMenuEntry<_TaskInboxMenuAction>>[
+                        PopupMenuItem<_TaskInboxMenuAction>(
+                          value: _TaskInboxMenuAction.clearRawToolData,
+                          child: Text('Clear raw tool data'),
+                        ),
+                      ],
+                ),
                 _SidebarIconButton(
                   icon: Icons.add_task_rounded,
                   tooltip: 'New task',
@@ -125,6 +160,80 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
         ],
       ),
     );
+  }
+
+  Future<void> _confirmAndClearRawData() async {
+    final targetController = widget.controller;
+    final targetEpoch = _controllerEpoch;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear raw tool data?'),
+        content: const Text(
+          'This removes retained tool metadata, task prompts, and raw '
+          'artifact previews. Event text, task summaries, and file names '
+          'will be kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('task-clear-raw-data-confirm-button'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true ||
+        !mounted ||
+        !identical(widget.controller, targetController) ||
+        _controllerEpoch != targetEpoch) {
+      return;
+    }
+    setState(() {
+      _clearingRawData = true;
+      _rawDataClearController = targetController;
+      _rawDataClearEpoch = targetEpoch;
+    });
+    try {
+      final result = await targetController.purgeRawPayloads(force: true);
+      if (!mounted ||
+          !identical(widget.controller, targetController) ||
+          !identical(_rawDataClearController, targetController) ||
+          _rawDataClearEpoch != targetEpoch ||
+          _controllerEpoch != targetEpoch) {
+        return;
+      }
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text('Cleared ${result.totalPurged} raw data records.'),
+        ),
+      );
+    } on Object catch (error) {
+      if (!mounted ||
+          !identical(widget.controller, targetController) ||
+          !identical(_rawDataClearController, targetController) ||
+          _rawDataClearEpoch != targetEpoch ||
+          _controllerEpoch != targetEpoch) {
+        return;
+      }
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('Could not clear raw tool data: $error')),
+      );
+    } finally {
+      if (mounted &&
+          identical(_rawDataClearController, targetController) &&
+          _rawDataClearEpoch == targetEpoch) {
+        setState(() {
+          _clearingRawData = false;
+          _rawDataClearController = null;
+          _rawDataClearEpoch = null;
+        });
+      }
+    }
   }
 
   Future<void> _showNewTaskDialog(BuildContext context) async {
@@ -213,6 +322,8 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
     }
   }
 }
+
+enum _TaskInboxMenuAction { clearRawToolData }
 
 String? _trimmedOrNull(String? value) {
   final trimmed = value?.trim();
@@ -511,6 +622,8 @@ class _TaskTile extends StatelessWidget {
       TaskStatus.queued ||
       TaskStatus.failed ||
       TaskStatus.needsChanges => true,
+      TaskStatus.blockedOnUserInput =>
+        task.metadata['failure_reason'] == TaskFailureReason.authRequired.name,
       _ => false,
     };
   }
@@ -521,7 +634,10 @@ class _TaskTile extends StatelessWidget {
         task.sessionId!.trim().isNotEmpty;
   }
 
-  bool get _canReview => task.status == TaskStatus.needsHumanReview;
+  bool get _canReview =>
+      task.status == TaskStatus.needsHumanReview ||
+      task.status == TaskStatus.approvedForExport ||
+      task.status == TaskStatus.exporting;
 }
 
 class _ReviewActionPanel extends StatelessWidget {
@@ -814,7 +930,11 @@ List<_TaskGroup> _groups(List<TaskRecord> tasks) {
   return [
     _TaskGroup(
       title: 'Needs Review',
-      tasks: _tasksWithStatuses(sorted, const {TaskStatus.needsHumanReview}),
+      tasks: _tasksWithStatuses(sorted, const {
+        TaskStatus.needsHumanReview,
+        TaskStatus.approvedForExport,
+        TaskStatus.exporting,
+      }),
     ),
     _TaskGroup(
       title: 'Running',

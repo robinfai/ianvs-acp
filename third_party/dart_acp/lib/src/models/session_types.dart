@@ -6,6 +6,8 @@
 // - session/fork - Fork an existing session
 // - session/set_config_option - Configure session options
 
+import '../input_budget.dart';
+
 /// Information about a session returned by session/list.
 class SessionInfo {
   /// Creates a session info.
@@ -16,32 +18,97 @@ class SessionInfo {
     this.title,
     this.updatedAt,
     this.meta,
+    this.metaOmission,
   });
 
   /// Creates from JSON response.
-  factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
-    sessionId:
-        _optionalString(json['sessionId']) ??
-        _optionalString(json['session_id']) ??
-        _optionalString(json['id']) ??
-        '',
-    cwd:
-        _optionalString(json['cwd']) ??
-        _optionalString(json['workspaceRoot']) ??
-        _optionalString(json['workspace_root']) ??
-        _optionalString(json['workspace']) ??
-        _optionalString(json['path']) ??
-        '',
-    additionalDirectories: _additionalDirectoriesFromRaw(
-      json['additionalDirectories'] ?? json['additional_directories'],
-    ),
-    title:
-        _optionalString(json['title']) ??
-        _optionalString(json['name']) ??
-        _optionalString(json['label']),
-    updatedAt: _dateTimeFromRaw(json['updatedAt'] ?? json['updated_at']),
-    meta: _optionalMap(json['_meta'] ?? json['metadata'] ?? json['meta']),
-  );
+  factory SessionInfo.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard = _sessionGuard(
+      inputBudget,
+      structuredGuard,
+      resource: 'session_info',
+    );
+    guard.checkCollection(json, field: 'session info');
+    guard.consumeEntry(field: 'session info');
+    final sessionId =
+        _copyOptionalSessionString(
+          json,
+          const <String>['sessionId', 'session_id', 'id'],
+          guard,
+          field: 'session id',
+        ) ??
+        '';
+    final cwd =
+        _copyOptionalSessionString(
+          json,
+          const <String>[
+            'cwd',
+            'workspaceRoot',
+            'workspace_root',
+            'workspace',
+            'path',
+          ],
+          guard,
+          field: 'cwd',
+        ) ??
+        '';
+    final rawDirectories = _firstSessionValue(json, const <String>[
+      'additionalDirectories',
+      'additional_directories',
+    ]);
+    final directories = identical(rawDirectories, _absentSessionField)
+        ? const <String>[]
+        : _boundedAdditionalDirectories(rawDirectories, inputBudget, guard);
+    final title = _copyOptionalSessionString(
+      json,
+      const <String>['title', 'name', 'label'],
+      guard,
+      field: 'title',
+    );
+    final rawUpdatedAt = _firstSessionValue(json, const <String>[
+      'updatedAt',
+      'updated_at',
+    ]);
+    DateTime? updatedAt;
+    if (!identical(rawUpdatedAt, _absentSessionField)) {
+      updatedAt = DateTime.tryParse(
+        guard.copyString(rawUpdatedAt, field: 'updated at'),
+      );
+    }
+    final rawMeta = _firstSessionValue(json, const <String>[
+      '_meta',
+      'metadata',
+      'meta',
+    ]);
+    Map<String, dynamic>? meta;
+    AcpInputOmission? metaOmission;
+    if (!identical(rawMeta, _absentSessionField)) {
+      try {
+        meta = Map<String, dynamic>.unmodifiable(
+          guard.copyMetadata(rawMeta, field: 'session metadata'),
+        );
+      } on AcpInputLimitExceeded catch (error) {
+        meta = const <String, dynamic>{};
+        metaOmission = _sessionLimitOmission('session_meta', error);
+      } catch (_) {
+        meta = const <String, dynamic>{};
+        metaOmission = _sessionInvalidOmission('session_meta');
+      }
+    }
+    return SessionInfo(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: directories,
+      title: title,
+      updatedAt: updatedAt,
+      meta: meta,
+      metaOmission: metaOmission,
+    );
+  }
 
   /// Unique session identifier.
   final String sessionId;
@@ -60,6 +127,9 @@ class SessionInfo {
 
   /// Agent-specific metadata (optional).
   final Map<String, dynamic>? meta;
+
+  /// Host-owned reason why display metadata was dropped.
+  final AcpInputOmission? metaOmission;
 
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
@@ -82,19 +152,34 @@ class SessionListResult {
   const SessionListResult({required this.sessions, this.nextCursor});
 
   /// Creates from JSON response.
-  factory SessionListResult.fromJson(Map<String, dynamic> json) {
-    final sessionsList = _listFromRaw(
-      json['sessions'] ?? json['items'] ?? json['entries'],
+  factory SessionListResult.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard = _sessionGuard(
+      inputBudget,
+      structuredGuard,
+      resource: 'session_list_result',
     );
+    guard.checkCollection(json, field: 'session list result');
+    guard.consumeEntry(field: 'session list result');
+    final rawSessions = _firstSessionValue(json, const <String>[
+      'sessions',
+      'items',
+      'entries',
+    ]);
+    final sessionsList = identical(rawSessions, _absentSessionField)
+        ? const <SessionInfo>[]
+        : _boundedSessionInfos(rawSessions, inputBudget, guard);
     return SessionListResult(
-      sessions: sessionsList
-          .map(_sessionInfoFromRaw)
-          .whereType<SessionInfo>()
-          .toList(),
-      nextCursor:
-          _optionalString(json['nextCursor']) ??
-          _optionalString(json['next_cursor']) ??
-          _optionalString(json['cursor']),
+      sessions: sessionsList,
+      nextCursor: _copyOptionalSessionString(
+        json,
+        const <String>['nextCursor', 'next_cursor', 'cursor'],
+        guard,
+        field: 'next cursor',
+      ),
     );
   }
 
@@ -128,36 +213,91 @@ class ConfigOption {
   });
 
   /// Creates from JSON response.
-  factory ConfigOption.fromJson(Map<String, dynamic> json) {
+  factory ConfigOption.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard = _sessionGuard(
+      inputBudget,
+      structuredGuard,
+      resource: 'config_option',
+    );
+    return _boundedConfigOption(json, inputBudget, guard);
+  }
+
+  factory ConfigOption._fromBounded(
+    Map source,
+    AcpInputBudget inputBudget,
+    AcpStructuredUpdateGuard guard,
+  ) {
     final id =
-        _optionalString(json['id']) ??
-        _optionalString(json['configId']) ??
-        _optionalString(json['config_id']) ??
-        _optionalString(json['key']) ??
+        _copyOptionalSessionString(
+          source,
+          const <String>['id', 'configId', 'config_id', 'key'],
+          guard,
+          field: 'config id',
+        ) ??
         '';
-    final options = _configChoicesFromRaw(
-      json['options'] ?? json['choices'] ?? json['values'],
+    final rawOptions = _firstSessionValue(source, const <String>[
+      'options',
+      'choices',
+      'values',
+    ]);
+    final options = identical(rawOptions, _absentSessionField)
+        ? const <ConfigOptionChoice>[]
+        : _boundedConfigChoices(rawOptions, inputBudget, guard);
+    final category = _copyOptionalSessionString(
+      source,
+      const <String>['category'],
+      guard,
+      field: 'config category',
+    );
+    final group = _copyOptionalSessionString(
+      source,
+      const <String>['group'],
+      guard,
+      field: 'config group',
     );
     return ConfigOption(
       id: id,
       name:
-          _optionalString(json['name']) ??
-          _optionalString(json['label']) ??
-          _optionalString(json['title']) ??
+          _copyOptionalSessionString(
+            source,
+            const <String>['name', 'label', 'title'],
+            guard,
+            field: 'config name',
+          ) ??
           id,
-      type: _configTypeFromRaw(json['type']),
-      currentValue: _configValueFromJson(
-        json['currentValue'] ??
-            json['current_value'] ??
-            json['value'] ??
-            json['selectedValue'] ??
-            json['selected'],
+      type: _boundedConfigType(
+        _firstSessionValue(source, const <String>['type']),
+        guard,
+      ),
+      currentValue: _boundedConfigValue(
+        _firstSessionValue(source, const <String>[
+          'currentValue',
+          'current_value',
+          'value',
+          'selectedValue',
+          'selected',
+        ]),
+        guard,
+        field: 'config current value',
       ),
       options: options,
-      description: _optionalString(json['description']),
-      category: _optionalString(json['category']),
-      group: _optionalString(json['group']),
-      meta: _optionalMap(json['_meta']),
+      description: _copyOptionalSessionString(
+        source,
+        const <String>['description'],
+        guard,
+        field: 'config description',
+      ),
+      category: category,
+      group: group,
+      meta: _copyOptionalSessionMetadata(
+        source,
+        guard,
+        field: 'config metadata',
+      ),
     );
   }
 
@@ -205,18 +345,6 @@ class ConfigOption {
   String toString() => 'ConfigOption($id: $currentValue)';
 }
 
-Object _configValueFromJson(Object? value) {
-  if (value is String) return value;
-  if (value is bool) return value;
-  if (value is num) return value.toString();
-  return '';
-}
-
-String _configChoiceValueFromJson(Object? value) {
-  final normalized = _configValueFromJson(value);
-  return normalized is String ? normalized : normalized.toString();
-}
-
 /// A choice within a config option.
 class ConfigOptionChoice {
   /// Creates a config option choice.
@@ -231,20 +359,17 @@ class ConfigOptionChoice {
   });
 
   /// Creates from JSON.
-  factory ConfigOptionChoice.fromJson(Map<String, dynamic> json) {
-    final value = _configChoiceValueFromJson(
-      json['value'] ?? json['id'] ?? json['key'] ?? json['name'],
+  factory ConfigOptionChoice.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard = _sessionGuard(
+      inputBudget,
+      structuredGuard,
+      resource: 'config_option_choice',
     );
-    return ConfigOptionChoice(
-      value: value,
-      name:
-          _optionalString(json['name']) ??
-          _optionalString(json['label']) ??
-          _optionalString(json['displayName']) ??
-          value,
-      description: _optionalString(json['description']),
-      meta: _optionalMap(json['_meta']),
-    );
+    return _boundedConfigChoice(json, guard);
   }
 
   /// The value to send when selecting this option.
@@ -283,21 +408,86 @@ class ConfigOptionChoice {
 /// Result of session/new, session/load, session/resume, or session/fork.
 class SessionResult {
   /// Creates a session result.
-  const SessionResult({required this.sessionId, this.configOptions, this.meta});
+  const SessionResult({
+    required this.sessionId,
+    this.configOptions,
+    this.meta,
+    this.modes,
+    this.omissions = const <AcpInputOmission>[],
+  });
 
   /// Creates from JSON response.
-  factory SessionResult.fromJson(Map<String, dynamic> json) {
-    final configRaw = json['configOptions'] ?? json['config_options'];
+  factory SessionResult.fromJson(
+    Map<String, dynamic> json, {
+    AcpInputBudget inputBudget = const AcpInputBudget(),
+    AcpStructuredUpdateGuard? structuredGuard,
+  }) {
+    final guard = _sessionGuard(
+      inputBudget,
+      structuredGuard,
+      resource: 'session_result',
+    );
+    guard.checkCollection(json, field: 'session result');
+    guard.consumeEntry(field: 'session result');
+    final sessionId =
+        _copyOptionalSessionString(
+          json,
+          const <String>['sessionId', 'session_id', 'id'],
+          guard,
+          field: 'session id',
+        ) ??
+        '';
+    final omissions = <AcpInputOmission>[];
+    final configRaw = _firstSessionValue(json, const <String>[
+      'configOptions',
+      'config_options',
+    ]);
+    List<ConfigOption>? configOptions;
+    if (!identical(configRaw, _absentSessionField)) {
+      try {
+        configOptions = _boundedConfigOptions(configRaw, inputBudget, guard);
+      } on AcpInputLimitExceeded catch (error) {
+        configOptions = const <ConfigOption>[];
+        omissions.add(_sessionLimitOmission('config_options', error));
+      } catch (_) {
+        configOptions = const <ConfigOption>[];
+        omissions.add(_sessionInvalidOmission('config_options'));
+      }
+    }
+    final rawMeta = _firstSessionValue(json, const <String>[
+      '_meta',
+      'metadata',
+      'meta',
+    ]);
+    Map<String, dynamic>? meta;
+    if (!identical(rawMeta, _absentSessionField)) {
+      try {
+        meta = Map<String, dynamic>.unmodifiable(
+          guard.copyMetadata(rawMeta, field: 'session result metadata'),
+        );
+      } on AcpInputLimitExceeded catch (error) {
+        meta = const <String, dynamic>{};
+        omissions.add(_sessionLimitOmission('session_result_meta', error));
+      } catch (_) {
+        meta = const <String, dynamic>{};
+        omissions.add(_sessionInvalidOmission('session_result_meta'));
+      }
+    }
+    ({String? currentModeId, List<({String id, String name})> availableModes})?
+    modes;
+    try {
+      modes = _boundedSessionModes(json, inputBudget, guard);
+    } on AcpInputLimitExceeded catch (error) {
+      omissions.add(_sessionLimitOmission('session_modes', error));
+    } catch (_) {
+      omissions.add(_sessionInvalidOmission('session_modes'));
+    }
     return SessionResult(
-      sessionId:
-          _optionalString(json['sessionId']) ??
-          _optionalString(json['session_id']) ??
-          _optionalString(json['id']) ??
-          '',
-      configOptions: configRaw == null
-          ? null
-          : _configOptionsFromRaw(configRaw),
-      meta: _optionalMap(json['_meta'] ?? json['metadata'] ?? json['meta']),
+      sessionId: sessionId,
+      configOptions: configOptions,
+      meta: meta,
+      modes: modes,
+      omissions: List<AcpInputOmission>.unmodifiable(omissions),
     );
   }
 
@@ -309,6 +499,16 @@ class SessionResult {
 
   /// Agent-specific metadata (optional).
   final Map<String, dynamic>? meta;
+
+  /// Immediate, immutable session mode projection.
+  final ({
+    String? currentModeId,
+    List<({String id, String name})> availableModes,
+  })?
+  modes;
+
+  /// Host-owned omissions for rejected immediate fields.
+  final List<AcpInputOmission> omissions;
 
   @override
   String toString() => 'SessionResult($sessionId)';
@@ -397,79 +597,118 @@ class SessionCapabilities {
 
 bool _capabilityAdvertised(Object? value) => value == true || value is Map;
 
-String? _optionalString(Object? value) => value is String ? value : null;
+const Object _absentSessionField = Object();
 
-Map<String, dynamic>? _optionalMap(Object? value) {
-  if (value is! Map) return null;
-  return value.map((key, value) => MapEntry(key.toString(), value));
+AcpStructuredUpdateGuard _sessionGuard(
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard? structuredGuard, {
+  required String resource,
+}) =>
+    structuredGuard ??
+    AcpStructuredUpdateGuard(budget: inputBudget, resource: resource);
+
+Object? _firstSessionValue(Map source, List<String> fields) {
+  for (final field in fields) {
+    try {
+      if (!source.containsKey(field)) continue;
+      final value = source[field];
+      if (value != null) return value;
+    } catch (_) {
+      throw const FormatException('Invalid ACP session structure.');
+    }
+  }
+  return _absentSessionField;
 }
 
-List<dynamic> _listFromRaw(Object? raw) => raw is List ? raw : const [];
+String? _copyOptionalSessionString(
+  Map source,
+  List<String> fields,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _firstSessionValue(source, fields);
+  if (identical(value, _absentSessionField)) return null;
+  return guard.copyString(value, field: field);
+}
 
-List<String> _additionalDirectoriesFromRaw(Object? raw) {
-  if (raw is! List) return const <String>[];
+Map<String, dynamic>? _copyOptionalSessionMetadata(
+  Map source,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _firstSessionValue(source, const <String>['_meta']);
+  if (identical(value, _absentSessionField)) return null;
+  if (value is! Map) {
+    throw const FormatException('Invalid ACP session metadata.');
+  }
+  return Map<String, dynamic>.unmodifiable(
+    guard.copyMetadata(value, field: field),
+  );
+}
+
+List<String> _boundedAdditionalDirectories(
+  Object? raw,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP additional directories.');
+  }
+  final reportedLength = guard.checkCollection(
+    raw,
+    field: 'additional directories',
+  );
+  guard.consumeContainerNode(field: 'additional directories');
   final directories = <String>[];
   final seen = <String>{};
-  for (final item in raw) {
-    if (item is! String) continue;
-    final trimmed = item.trim();
-    if (trimmed.isEmpty || !seen.add(trimmed)) continue;
-    directories.add(trimmed);
-  }
-  return List.unmodifiable(directories);
-}
-
-String _configTypeFromRaw(Object? raw) {
-  final type = _optionalString(raw)?.trim().toLowerCase();
-  return type == null || type.isEmpty ? 'select' : type;
-}
-
-List<ConfigOption> _configOptionsFromRaw(Object? raw) {
-  if (raw is! List) return const <ConfigOption>[];
-  return raw
-      .map(_configOptionFromRaw)
-      .whereType<ConfigOption>()
-      .toList(growable: false);
-}
-
-ConfigOption? _configOptionFromRaw(Object? raw) {
-  final map = _optionalMap(raw);
-  if (map == null) return null;
-  final option = ConfigOption.fromJson(map);
-  return option.id.isEmpty ? null : option;
-}
-
-List<ConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
-  if (raw is! List) return const <ConfigOptionChoice>[];
-  final choices = <ConfigOptionChoice>[];
-  for (final item in raw) {
-    final map = _optionalMap(item);
-    final nested = map?['options'];
-    final groupId = _optionalString(map?['group']);
-    if (nested is List && groupId != null) {
-      final groupName = _optionalString(map?['name']) ?? groupId;
-      final groupMeta = _optionalMap(map?['_meta']);
-      for (final nestedItem in nested) {
-        final choice = _configChoiceFromRaw(nestedItem);
-        if (choice == null) continue;
-        choices.add(
-          ConfigOptionChoice(
-            value: choice.value,
-            name: choice.name,
-            description: choice.description,
-            groupId: groupId,
-            groupName: groupName,
-            groupMeta: groupMeta,
-            meta: choice.meta,
-          ),
-        );
+  _forEachReportedListItem(
+    raw,
+    reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
+    resource: 'additional directories',
+    visit: (item) {
+      if (item is! String) {
+        throw const FormatException('Invalid ACP additional directory.');
       }
-      continue;
-    }
-    final choice = _configChoiceFromRaw(item);
-    if (choice != null) choices.add(choice);
+      final trimmed = guard
+          .copyString(item, field: 'additional directory')
+          .trim();
+      if (trimmed.isNotEmpty && seen.add(trimmed)) directories.add(trimmed);
+    },
+  );
+  return List<String>.unmodifiable(directories);
+}
+
+List<SessionInfo> _boundedSessionInfos(
+  Object? raw,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP session list.');
   }
-  return List.unmodifiable(choices);
+  final reportedLength = guard.checkCollection(raw, field: 'sessions');
+  guard.consumeContainerNode(field: 'sessions');
+  final sessions = <SessionInfo>[];
+  _forEachReportedListItem(
+    raw,
+    reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
+    resource: 'sessions',
+    visit: (item) {
+      if (item is! Map) return;
+      if (item is! Map<String, dynamic>) {
+        throw const FormatException('Invalid ACP session map.');
+      }
+      final session = SessionInfo.fromJson(
+        item,
+        inputBudget: inputBudget,
+        structuredGuard: guard,
+      );
+      if (session.sessionId.isNotEmpty) sessions.add(session);
+    },
+  );
+  return List<SessionInfo>.unmodifiable(sessions);
 }
 
 List<Map<String, dynamic>> _configChoicesToJson(
@@ -500,26 +739,369 @@ List<Map<String, dynamic>> _configChoicesToJson(
   return result;
 }
 
-ConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
-  if (raw is String || raw is bool || raw is num) {
-    final value = _configChoiceValueFromJson(raw);
-    return value.isEmpty ? null : ConfigOptionChoice(value: value, name: value);
+ConfigOption _boundedConfigOption(
+  Map source,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  guard.checkCollection(source, field: 'config option');
+  guard.consumeEntry(field: 'config option');
+  final option = ConfigOption._fromBounded(source, inputBudget, guard);
+  if (option.id.isEmpty) {
+    throw const FormatException('Invalid ACP config option.');
   }
-  final map = _optionalMap(raw);
-  if (map == null) return null;
-  final choice = ConfigOptionChoice.fromJson(map);
-  return choice.value.isEmpty ? null : choice;
+  return option;
 }
 
-SessionInfo? _sessionInfoFromRaw(Object? raw) {
-  final map = _optionalMap(raw);
-  if (map == null) return null;
-  final session = SessionInfo.fromJson(map);
-  return session.sessionId.isEmpty ? null : session;
+List<ConfigOption> _boundedConfigOptions(
+  Object? raw,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP config options.');
+  }
+  final reportedLength = guard.checkCollection(raw, field: 'config options');
+  guard.consumeContainerNode(field: 'config options');
+  final options = <ConfigOption>[];
+  _forEachReportedListItem(
+    raw,
+    reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
+    resource: 'config options',
+    visit: (item) {
+      if (item is! Map) {
+        throw const FormatException('Invalid ACP config option.');
+      }
+      final option = _boundedConfigOption(item, inputBudget, guard);
+      options.add(option);
+    },
+  );
+  return List<ConfigOption>.unmodifiable(options);
 }
 
-DateTime? _dateTimeFromRaw(Object? raw) {
-  final value = _optionalString(raw);
-  if (value == null) return null;
-  return DateTime.tryParse(value);
+List<ConfigOptionChoice> _boundedConfigChoices(
+  Object? raw,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (raw is! List) {
+    throw const FormatException('Invalid ACP config choices.');
+  }
+  final reportedLength = guard.checkCollection(raw, field: 'config choices');
+  guard.consumeContainerNode(field: 'config choices');
+  final choices = <ConfigOptionChoice>[];
+  _forEachReportedListItem(
+    raw,
+    reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
+    resource: 'config choices',
+    visit: (item) {
+      if (item is Map) {
+        final nested = _firstSessionValue(item, const <String>['options']);
+        final rawGroup = _firstSessionValue(item, const <String>['group']);
+        if (!identical(nested, _absentSessionField) &&
+            !identical(rawGroup, _absentSessionField)) {
+          guard.checkCollection(item, field: 'config choice group');
+          guard.consumeEntry(field: 'config choice group');
+          final groupId = guard.copyString(
+            rawGroup,
+            field: 'config choice group id',
+          );
+          if (groupId.isEmpty || nested is! List) {
+            throw const FormatException('Invalid ACP config choice group.');
+          }
+          final groupName =
+              _copyOptionalSessionString(
+                item,
+                const <String>['name'],
+                guard,
+                field: 'config choice group name',
+              ) ??
+              groupId;
+          final groupMeta = _copyOptionalSessionMetadata(
+            item,
+            guard,
+            field: 'config choice group metadata',
+          );
+          final nestedLength = guard.checkCollection(
+            nested,
+            field: 'config choice group options',
+          );
+          guard.consumeContainerNode(field: 'config choice group options');
+          _forEachReportedListItem(
+            nested,
+            reportedLength: nestedLength,
+            maxItems: inputBudget.maxCollectionItems,
+            resource: 'config choice group options',
+            visit: (nestedItem) {
+              final choice = _boundedConfigChoice(nestedItem, guard);
+              choices.add(
+                ConfigOptionChoice(
+                  value: choice.value,
+                  name: choice.name,
+                  description: choice.description,
+                  groupId: groupId,
+                  groupName: groupName,
+                  groupMeta: groupMeta,
+                  meta: choice.meta,
+                ),
+              );
+            },
+          );
+          return;
+        }
+      }
+      choices.add(_boundedConfigChoice(item, guard));
+    },
+  );
+  return List<ConfigOptionChoice>.unmodifiable(choices);
 }
+
+ConfigOptionChoice _boundedConfigChoice(
+  Object? item,
+  AcpStructuredUpdateGuard guard,
+) {
+  if (item is String || item is bool || item is int || item is double) {
+    guard.consumeEntry(field: 'config choice');
+    final value = _boundedConfigChoiceValue(
+      item,
+      guard,
+      field: 'config choice value',
+    );
+    if (value.isEmpty) {
+      throw const FormatException('Invalid ACP config choice.');
+    }
+    return ConfigOptionChoice(value: value, name: value);
+  }
+  if (item is! Map) {
+    throw const FormatException('Invalid ACP config choice.');
+  }
+  guard.checkCollection(item, field: 'config choice');
+  guard.consumeEntry(field: 'config choice');
+  final rawValue = _firstSessionValue(item, const <String>[
+    'value',
+    'id',
+    'key',
+    'name',
+  ]);
+  final value = _boundedConfigChoiceValue(
+    rawValue,
+    guard,
+    field: 'config choice value',
+  );
+  if (value.isEmpty) {
+    throw const FormatException('Invalid ACP config choice.');
+  }
+  final name =
+      _copyOptionalSessionString(
+        item,
+        const <String>['name', 'label', 'displayName'],
+        guard,
+        field: 'config choice name',
+      ) ??
+      value;
+  final description = _copyOptionalSessionString(
+    item,
+    const <String>['description'],
+    guard,
+    field: 'config choice description',
+  );
+  return ConfigOptionChoice(
+    value: value,
+    name: name,
+    description: description,
+    meta: _copyOptionalSessionMetadata(
+      item,
+      guard,
+      field: 'config choice metadata',
+    ),
+  );
+}
+
+String _boundedConfigType(Object? raw, AcpStructuredUpdateGuard guard) {
+  if (identical(raw, _absentSessionField)) return 'select';
+  final type = guard.copyString(raw, field: 'config type').trim().toLowerCase();
+  return type.isEmpty ? 'select' : type;
+}
+
+Object _boundedConfigValue(
+  Object? raw,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  if (identical(raw, _absentSessionField)) return '';
+  if (raw is String) return guard.copyString(raw, field: field);
+  if (raw is bool) return guard.copyScalar(raw, field: field)!;
+  if (raw is int || raw is double) {
+    return guard.copyScalar(raw, field: field).toString();
+  }
+  throw const FormatException('Invalid ACP config value.');
+}
+
+String _boundedConfigChoiceValue(
+  Object? raw,
+  AcpStructuredUpdateGuard guard, {
+  required String field,
+}) {
+  final value = _boundedConfigValue(raw, guard, field: field);
+  return value is String ? value : value.toString();
+}
+
+({String? currentModeId, List<({String id, String name})> availableModes})?
+_boundedSessionModes(
+  Map<String, dynamic> json,
+  AcpInputBudget inputBudget,
+  AcpStructuredUpdateGuard guard,
+) {
+  Map source = json;
+  var rawCurrent = _firstSessionValue(source, const <String>[
+    'currentModeId',
+    'current_mode_id',
+    'modeId',
+    'mode_id',
+  ]);
+  var rawModes = _firstSessionValue(source, const <String>[
+    'availableModes',
+    'available_modes',
+  ]);
+  if (identical(rawCurrent, _absentSessionField) &&
+      identical(rawModes, _absentSessionField)) {
+    final nested = _firstSessionValue(json, const <String>['modes']);
+    if (identical(nested, _absentSessionField)) return null;
+    if (nested is! Map) {
+      throw const FormatException('Invalid ACP session modes.');
+    }
+    guard.checkCollection(nested, field: 'session modes');
+    guard.consumeEntry(field: 'session modes');
+    source = nested;
+    rawCurrent = _firstSessionValue(source, const <String>[
+      'currentModeId',
+      'current_mode_id',
+      'modeId',
+      'mode_id',
+    ]);
+    rawModes = _firstSessionValue(source, const <String>[
+      'availableModes',
+      'available_modes',
+    ]);
+  }
+  final currentModeId = identical(rawCurrent, _absentSessionField)
+      ? null
+      : guard.copyString(rawCurrent, field: 'current mode id');
+  if (identical(rawModes, _absentSessionField)) {
+    return (
+      currentModeId: currentModeId,
+      availableModes: const <({String id, String name})>[],
+    );
+  }
+  if (rawModes is! List) {
+    throw const FormatException('Invalid ACP session modes.');
+  }
+  final reportedLength = guard.checkCollection(
+    rawModes,
+    field: 'available modes',
+  );
+  guard.consumeContainerNode(field: 'available modes');
+  final modes = <({String id, String name})>[];
+  _forEachReportedListItem(
+    rawModes,
+    reportedLength: reportedLength,
+    maxItems: inputBudget.maxCollectionItems,
+    resource: 'available modes',
+    visit: (item) {
+      if (item is! Map) {
+        throw const FormatException('Invalid ACP session mode.');
+      }
+      guard.checkCollection(item, field: 'available mode');
+      guard.consumeEntry(field: 'available mode');
+      final id =
+          _copyOptionalSessionString(
+            item,
+            const <String>['id', 'modeId', 'mode_id', 'value'],
+            guard,
+            field: 'mode id',
+          ) ??
+          '';
+      if (id.isEmpty) {
+        throw const FormatException('Invalid ACP session mode.');
+      }
+      final name =
+          _copyOptionalSessionString(
+            item,
+            const <String>['name', 'label', 'displayName', 'display_name'],
+            guard,
+            field: 'mode name',
+          ) ??
+          id;
+      modes.add((id: id, name: name));
+    },
+  );
+  return (
+    currentModeId: currentModeId,
+    availableModes: List<({String id, String name})>.unmodifiable(modes),
+  );
+}
+
+void _forEachReportedListItem(
+  List raw, {
+  required int reportedLength,
+  required int maxItems,
+  required String resource,
+  required void Function(Object? item) visit,
+}) {
+  final Iterator<Object?> iterator;
+  try {
+    iterator = raw.iterator;
+  } catch (_) {
+    throw FormatException('Invalid ACP $resource collection.');
+  }
+  var observedItems = 0;
+  while (true) {
+    final bool hasNext;
+    try {
+      hasNext = iterator.moveNext();
+    } catch (_) {
+      throw FormatException('Invalid ACP $resource collection.');
+    }
+    if (!hasNext) break;
+    observedItems += 1;
+    if (observedItems > maxItems) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: maxItems,
+        observedAtLeast: observedItems,
+      );
+    }
+    if (observedItems > reportedLength) {
+      throw FormatException('Invalid ACP $resource collection.');
+    }
+    final Object? item;
+    try {
+      item = iterator.current;
+    } catch (_) {
+      throw FormatException('Invalid ACP $resource collection.');
+    }
+    visit(item);
+  }
+  if (observedItems != reportedLength) {
+    throw FormatException('Invalid ACP $resource collection.');
+  }
+}
+
+AcpInputOmission _sessionLimitOmission(
+  String resource,
+  AcpInputLimitExceeded error,
+) => AcpInputOmission(
+  reason: AcpInputOmissionReason.inputLimit,
+  resource: resource,
+  truncated: false,
+  limit: error.limit,
+  observedAtLeast: error.observedAtLeast,
+);
+
+AcpInputOmission _sessionInvalidOmission(String resource) => AcpInputOmission(
+  reason: AcpInputOmissionReason.invalidStructure,
+  resource: resource,
+  truncated: false,
+);

@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
 
+import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
@@ -18,11 +21,13 @@ void main() {
     String agentName = 'Codex',
     List<Map<String, Object?>> availableCommands =
         const <Map<String, Object?>>[],
+    int availableCommandsRevision = 0,
     AcpPromptCapabilities? promptCapabilities,
     AcpPermissionRequest? pendingPermissionRequest,
     VoidCallback? onAllowPermission,
     VoidCallback? onDenyPermission,
     VoidCallback? onCancelPermission,
+    ValueChanged<String>? onSelectPermissionOption,
     AcpToolCallExecutionPolicy toolCallExecutionPolicy =
         AcpToolCallExecutionPolicy.autoReview,
     bool hasPermissionReviewer = false,
@@ -33,17 +38,20 @@ void main() {
     ValueChanged<String>? onReasoningEffortSelected,
     PromptAttachmentPicker? pickAttachments,
     double? width,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
     final promptInput = PromptInput(
       agentName: agentName,
       enabled: enabled,
       isSending: isSending,
       availableCommands: availableCommands,
+      availableCommandsRevision: availableCommandsRevision,
       promptCapabilities: promptCapabilities,
       pendingPermissionRequest: pendingPermissionRequest,
       onAllowPermission: onAllowPermission,
       onDenyPermission: onDenyPermission,
       onCancelPermission: onCancelPermission,
+      onSelectPermissionOption: onSelectPermissionOption,
       toolCallExecutionPolicy: toolCallExecutionPolicy,
       hasPermissionReviewer: hasPermissionReviewer,
       onToolCallExecutionPolicyChanged: onToolCallExecutionPolicyChanged,
@@ -54,6 +62,7 @@ void main() {
       onSend: onSend,
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
+      inputBudget: inputBudget,
     );
     return MaterialApp(
       home: Scaffold(
@@ -159,6 +168,434 @@ void main() {
     final textField = tester.widget<TextField>(find.byType(TextField));
     expect(textField.controller?.text, '/review ');
     expect(find.text('Review the current change.'), findsNothing);
+  });
+
+  testWidgets('PromptInput bounds command parameters with injected budget', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 20,
+      maxMetadataPreviewBytes: 12,
+    );
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        inputBudget: budget,
+        availableCommands: const [
+          {
+            'name': 'review',
+            'description': 'Review.',
+            'parameters': {'secret': 'PARAMETER_CANARY'},
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+
+    final preview = tester.widget<SelectableText>(
+      find.byKey(const Key('command-parameters-preview')),
+    );
+    expect(utf8.encode(preview.data ?? '').length, lessThanOrEqualTo(12));
+    expect(preview.data, isNot(contains('PARAMETER_CANARY')));
+    expect(find.textContaining('metadata preview bytes'), findsOneWidget);
+  });
+
+  testWidgets(
+    'PromptInput reuses command projections for the same list and revision',
+    (tester) async {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'working-tree',
+      });
+      final command = _CountingCommandMap(<String, Object?>{
+        'name': 'Review',
+        'description': 'Review the current change.',
+        'parameters': parameters,
+      });
+      final commands = <Map<String, Object?>>[command];
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 7,
+        ),
+      );
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 0);
+      expect(parameters.readsFor('scope'), 0);
+
+      await tester.enterText(find.byType(TextField), '/r');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '/re');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '/rev');
+      await tester.pump();
+
+      expect(find.text('/Review'), findsOneWidget);
+      expect(find.text('Review the current change.'), findsOneWidget);
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 1);
+      expect(parameters.readsFor('scope'), 1);
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 7,
+        ),
+      );
+      await tester.pump();
+
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 1);
+      expect(parameters.readsFor('scope'), 1);
+    },
+  );
+
+  testWidgets(
+    'PromptInput rebuilds command projections once when revision changes',
+    (tester) async {
+      final command = _CountingCommandMap(<String, Object?>{
+        'name': 'Review',
+        'description': 'First description.',
+        'parameters': <String, Object?>{'scope': 'first'},
+      });
+      final commands = <Map<String, Object?>>[command];
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 3,
+        ),
+      );
+      expect(command.readsFor('name'), 1);
+      expect(command.readsFor('description'), 1);
+      expect(command.readsFor('parameters'), 0);
+
+      command['description'] = 'Second description.';
+      command['parameters'] = <String, Object?>{'scope': 'second'};
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: commands,
+          availableCommandsRevision: 4,
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '/rev');
+      await tester.pump();
+
+      expect(find.text('Second description.'), findsOneWidget);
+      expect(command.readsFor('name'), 2);
+      expect(command.readsFor('description'), 2);
+      expect(command.readsFor('parameters'), 1);
+    },
+  );
+
+  testWidgets('PromptInput retains at most five lazy parameter previews', (
+    tester,
+  ) async {
+    final alphaParameters = <_CountingCommandMap>[];
+    final betaParameters = <_CountingCommandMap>[];
+    final commands = <Map<String, Object?>>[];
+    for (var index = 0; index < 5; index += 1) {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'alpha-$index',
+      });
+      alphaParameters.add(parameters);
+      commands.add(<String, Object?>{
+        'name': 'alpha$index',
+        'description': 'Alpha $index',
+        'parameters': parameters,
+      });
+    }
+    for (var index = 0; index < 5; index += 1) {
+      final parameters = _CountingCommandMap(<String, Object?>{
+        'scope': 'beta-$index',
+      });
+      betaParameters.add(parameters);
+      commands.add(<String, Object?>{
+        'name': 'beta$index',
+        'description': 'Beta $index',
+        'parameters': parameters,
+      });
+    }
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    for (final parameters in [...alphaParameters, ...betaParameters]) {
+      expect(parameters.readsFor('scope'), 0);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha');
+    await tester.pump();
+    for (final parameters in alphaParameters) {
+      expect(parameters.readsFor('scope'), 1);
+    }
+    for (final parameters in betaParameters) {
+      expect(parameters.readsFor('scope'), 0);
+    }
+
+    await tester.enterText(find.byType(TextField), '/beta');
+    await tester.pump();
+    for (final parameters in betaParameters) {
+      expect(parameters.readsFor('scope'), 1);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha');
+    await tester.pump();
+    for (final parameters in alphaParameters) {
+      expect(parameters.readsFor('scope'), 2);
+    }
+
+    await tester.enterText(find.byType(TextField), '/alpha0');
+    await tester.pump();
+    expect(alphaParameters.first.readsFor('scope'), 2);
+  });
+
+  testWidgets('PromptInput hides a hostile parameter preview payload', (
+    tester,
+  ) async {
+    final command = _CountingCommandMap(
+      <String, Object?>{
+        'name': 'review',
+        'description': 'Review safely.',
+        'parameters': <String, Object?>{'secret': 'CANARY'},
+      },
+      throwingKeys: const <String>{'parameters'},
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        availableCommands: <Map<String, Object?>>[command],
+      ),
+    );
+    expect(command.readsFor('parameters'), 0);
+
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Review safely.'), findsOneWidget);
+    expect(find.byKey(const Key('command-parameters-preview')), findsNothing);
+    expect(find.textContaining('CANARY'), findsNothing);
+    expect(command.readsFor('parameters'), 1);
+
+    await tester.enterText(find.byType(TextField), '/revi');
+    await tester.pump();
+    expect(command.readsFor('parameters'), 1);
+  });
+
+  testWidgets('PromptInput snapshots a command list length exactly once', (
+    tester,
+  ) async {
+    final commands = _CountingCommandList(<Map<String, Object?>>[
+      <String, Object?>{'name': 'review', 'description': 'Review.'},
+    ]);
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    await tester.enterText(find.byType(TextField), '/rev');
+    await tester.pump();
+
+    expect(commands.lengthReads, 1);
+    expect(find.text('/review'), findsOneWidget);
+  });
+
+  testWidgets(
+    'PromptInput clears old cache when a rebuilt command source is hostile',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: <Map<String, Object?>>[
+            <String, Object?>{
+              'name': 'safe',
+              'description': 'Old safe command.',
+            },
+          ],
+          availableCommandsRevision: 1,
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '/safe');
+      await tester.pump();
+      expect(find.text('Old safe command.'), findsOneWidget);
+
+      final hostileSources = <List<Map<String, Object?>>>[
+        _CountingCommandList(
+          const <Map<String, Object?>>[],
+          throwOnLength: true,
+        ),
+        _CountingCommandList(<Map<String, Object?>>[
+          <String, Object?>{'name': 'unreachable'},
+        ], throwOnIndex: true),
+        <Map<String, Object?>>[
+          _CountingCommandMap(
+            <String, Object?>{'name': 'hidden'},
+            throwingKeys: const <String>{'name'},
+          ),
+        ],
+        <Map<String, Object?>>[
+          _CountingCommandMap(
+            <String, Object?>{
+              'name': 'hidden',
+              'description': 'never retained',
+            },
+            throwingKeys: const <String>{'description'},
+          ),
+        ],
+      ];
+
+      for (var index = 0; index < hostileSources.length; index += 1) {
+        await tester.pumpWidget(
+          input(
+            isSending: false,
+            onSend: (_, _) {},
+            availableCommands: hostileSources[index],
+            availableCommandsRevision: index + 2,
+          ),
+        );
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('Old safe command.'), findsNothing);
+      }
+    },
+  );
+
+  testWidgets('PromptInput scans at most 1024 commands and displays five', (
+    tester,
+  ) async {
+    final counted = List<_CountingCommandMap>.generate(
+      1025,
+      (index) => _CountingCommandMap(<String, Object?>{
+        'name': 'command-${index.toString().padLeft(4, '0')}',
+        'description': 'Description $index',
+      }),
+    );
+    final commands = counted.cast<Map<String, Object?>>();
+
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (_, _) {}, availableCommands: commands),
+    );
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+
+    expect(find.text('/command-0000'), findsOneWidget);
+    expect(find.text('/command-0005'), findsNothing);
+    final panel = tester.widget<ListView>(find.byType(ListView));
+    expect(
+      (panel.childrenDelegate as SliverChildBuilderDelegate).childCount,
+      9,
+    );
+    expect(counted[1023].readsFor('name'), 1);
+    expect(counted[1024].readsFor('name'), 0);
+    expect(counted[1024].readsFor('description'), 0);
+    expect(counted[1024].readsFor('parameters'), 0);
+    expect(counted[1023].readsFor('parameters'), 0);
+  });
+
+  testWidgets('PromptInput hides an unfinished query beyond 1024 code units', (
+    tester,
+  ) async {
+    final commandName = ''.padLeft(1024, 'a');
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        availableCommands: <Map<String, Object?>>[
+          <String, Object?>{
+            'name': commandName,
+            'description': 'Boundary command.',
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/${''.padLeft(1023, 'a')}');
+    await tester.pump();
+    expect(find.text('Boundary command.'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/${''.padLeft(1024, 'a')}');
+    await tester.pump();
+    expect(find.text('Boundary command.'), findsNothing);
+  });
+
+  testWidgets(
+    'PromptInput bounds Unicode whitespace and multi-megabyte paste',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          availableCommands: const <Map<String, Object?>>[
+            <String, Object?>{
+              'name': 'review',
+              'description': 'Unicode-safe command.',
+            },
+          ],
+        ),
+      );
+
+      await tester.enterText(find.byType(TextField), '\u3000/rev');
+      await tester.pump();
+      expect(find.text('Unicode-safe command.'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '/rev\u00a0argument');
+      await tester.pump();
+      expect(find.text('Unicode-safe command.'), findsNothing);
+
+      final pasted = '/${''.padLeft(4 * 1024 * 1024, 'r')}';
+      final stopwatch = Stopwatch()..start();
+      tester.widget<TextField>(find.byType(TextField)).onChanged!(pasted);
+      stopwatch.stop();
+      await tester.pump();
+
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(tester.takeException(), isNull);
+      expect(find.text('Unicode-safe command.'), findsNothing);
+    },
+  );
+
+  testWidgets('PromptInput query cap honors the injected structured limit', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(maxStructuredStringBytes: 8);
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        inputBudget: budget,
+        availableCommands: const <Map<String, Object?>>[
+          <String, Object?>{
+            'name': 'reviewxx',
+            'description': 'Small-budget command.',
+          },
+        ],
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), '/reviewx');
+    await tester.pump();
+    expect(find.text('Small-budget command.'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/reviewxx');
+    await tester.pump();
+    expect(find.text('Small-budget command.'), findsNothing);
   });
 
   testWidgets('PromptInput hides slash commands while sending', (tester) async {
@@ -449,6 +886,490 @@ void main() {
     expect(allowed, isTrue);
   });
 
+  testWidgets('PromptInput shows complete permission operation context', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-context',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'command': 'git',
+            'args': <String>['push', 'origin', 'main'],
+            'cwd': '/workspace',
+            'path': '/workspace/report.txt',
+            'target': 'origin',
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('Command'), findsOneWidget);
+    expect(find.text('["git","push","origin","main"]'), findsOneWidget);
+    expect(find.text('Working directory'), findsOneWidget);
+    expect(find.text('/workspace'), findsOneWidget);
+    expect(find.text('Path'), findsOneWidget);
+    expect(find.text('/workspace/report.txt'), findsOneWidget);
+    expect(find.text('Target'), findsOneWidget);
+    expect(find.text('origin'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<SelectableText>(
+            find.descendant(
+              of: find.byKey(const Key('prompt-permission-context')),
+              matching: find.byType(SelectableText),
+            ),
+          )
+          .map((widget) => widget.data),
+      <String?>[
+        '["git","push","origin","main"]',
+        '/workspace',
+        '/workspace/report.txt',
+        'origin',
+      ],
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-command')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-cwd')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-path')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-target')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('PromptInput renders only projected nested operation context', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-nested-context',
+          title: 'Run tests',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'toolCall': <String, Object?>{
+              'input': <String, Object?>{
+                'command': 'flutter',
+                'args': <String>['test', 'test/widget_test.dart'],
+                'cwd': '/workspace/app',
+                'path': 'test/widget_test.dart',
+                'target': 'local',
+                'unknownField': 'UNPROJECTED_CANARY',
+              },
+            },
+          },
+        ),
+      ),
+    );
+
+    expect(
+      find.text('["flutter","test","test/widget_test.dart"]'),
+      findsOneWidget,
+    );
+    expect(find.text('/workspace/app'), findsOneWidget);
+    expect(find.text('test/widget_test.dart'), findsOneWidget);
+    expect(find.text('local'), findsOneWidget);
+    expect(find.textContaining('toolCall'), findsNothing);
+    expect(find.textContaining('unknownField'), findsNothing);
+    expect(find.textContaining('UNPROJECTED_CANARY'), findsNothing);
+  });
+
+  testWidgets('PromptInput bounds and scrolls long permission context', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(18, 'very-long-segment').join('/');
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-long-context',
+          title: 'Run long operation',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: <String, Object?>{
+            'command': 'tool',
+            'args': <String>[longSegment],
+            'cwd': '/cwd/$longSegment',
+            'path': '/path/$longSegment',
+            'target': 'final-target',
+          },
+        ),
+      ),
+    );
+
+    final contextFinder = find.byKey(const Key('prompt-permission-context'));
+    final scrollFinder = find.byKey(
+      const Key('prompt-permission-context-scroll'),
+    );
+    expect(tester.getSize(contextFinder).height, lessThanOrEqualTo(180));
+    expect(
+      find.descendant(of: contextFinder, matching: find.byType(Scrollbar)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: contextFinder,
+        matching: find.byType(SingleChildScrollView),
+      ),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+    expect(
+      tester.getBottomRight(find.text('final-target')).dy,
+      greaterThan(tester.getBottomRight(contextFinder).dy),
+    );
+
+    await tester.drag(scrollFinder, const Offset(0, -1000));
+    await tester.pump();
+
+    expect(
+      tester.getBottomRight(find.text('final-target')).dy,
+      lessThanOrEqualTo(tester.getBottomRight(contextFinder).dy),
+    );
+  });
+
+  testWidgets('PromptInput resets context scroll for a new request instance', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(
+      18,
+      'scroll-state-segment',
+    ).join('/');
+    AcpPermissionRequest request({
+      required String id,
+      required int generation,
+      required String command,
+    }) {
+      return AcpPermissionRequest(
+        id: id,
+        title: 'Run operation',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 11, 12),
+        generation: generation,
+        metadata: <String, Object?>{
+          'command': command,
+          'cwd': '/cwd/$longSegment',
+          'path': '/path/$longSegment',
+          'target': 'final-target',
+        },
+      );
+    }
+
+    final firstRequest = request(
+      id: 'permission-scroll-a',
+      generation: 1,
+      command: 'old-command-at-top',
+    );
+    final secondRequest = request(
+      id: 'permission-scroll-b',
+      generation: 2,
+      command: 'new-command-at-top',
+    );
+    final scrollFinder = find.byKey(
+      const Key('prompt-permission-context-scroll'),
+    );
+
+    ScrollPosition position() {
+      final scrollView = tester.widget<SingleChildScrollView>(scrollFinder);
+      return scrollView.controller!.position;
+    }
+
+    Widget prompt(AcpPermissionRequest pendingRequest) => input(
+      isSending: false,
+      onSend: (_, _) {},
+      pendingPermissionRequest: pendingRequest,
+    );
+
+    await tester.pumpWidget(prompt(firstRequest));
+    position().jumpTo(position().maxScrollExtent);
+    await tester.pump();
+    final scrolledPixels = position().pixels;
+    expect(scrolledPixels, greaterThan(0));
+
+    await tester.pumpWidget(prompt(firstRequest));
+    await tester.pumpAndSettle();
+    expect(position().pixels, closeTo(scrolledPixels, 0.01));
+
+    await tester.pumpWidget(prompt(secondRequest));
+    await tester.pumpAndSettle();
+
+    expect(position().pixels, 0);
+    final contextFinder = find.byKey(const Key('prompt-permission-context'));
+    final commandFinder = find.text('["new-command-at-top"]');
+    expect(
+      tester.getTopLeft(commandFinder).dy,
+      greaterThanOrEqualTo(tester.getTopLeft(contextFinder).dy),
+    );
+    expect(
+      tester.getBottomRight(commandFinder).dy,
+      lessThanOrEqualTo(tester.getBottomRight(contextFinder).dy),
+    );
+  });
+
+  testWidgets('PromptInput avoids overflow with long context at 320 pixels', (
+    tester,
+  ) async {
+    final longSegment = List<String>.filled(12, 'narrow-segment').join('/');
+    await tester.pumpWidget(
+      input(
+        width: 320,
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-narrow-context',
+          title: 'Run long operation',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: <String, Object?>{
+            'command': 'tool',
+            'args': <String>[longSegment],
+            'cwd': '/cwd/$longSegment',
+            'path': '/path/$longSegment',
+            'target': 'final-target',
+          },
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getSize(find.byKey(const Key('prompt-permission-context'))).height,
+      lessThanOrEqualTo(180),
+    );
+    expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+  });
+
+  testWidgets('PromptInput fails closed for incomplete ordinary context', (
+    tester,
+  ) async {
+    var allowed = false;
+    var denied = false;
+    var cancelled = false;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-incomplete',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'command': 'git status',
+            'toolCall': <String, Object?>{'command': 'flutter test'},
+            'cwd': '/workspace',
+          },
+        ),
+        onAllowPermission: () => allowed = true,
+        onDenyPermission: () => denied = true,
+        onCancelPermission: () => cancelled = true,
+      ),
+    );
+
+    expect(
+      find.text('Some operation details could not be displayed safely.'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-permission-context-warning')),
+      findsOneWidget,
+    );
+    expect(find.text('Command'), findsNothing);
+    expect(find.text('Working directory'), findsNothing);
+    final allow = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Allow Once'),
+    );
+    expect(allow.onPressed, isNull);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
+    await tester.tap(find.byTooltip('Cancel permission request'));
+    await tester.pump();
+
+    expect(allowed, isFalse);
+    expect(denied, isTrue);
+    expect(cancelled, isTrue);
+  });
+
+  testWidgets(
+    'PromptInput permits only explicit deny choices when incomplete',
+    (tester) async {
+      String? selectedOptionId;
+      var cancelled = false;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          pendingPermissionRequest: AcpPermissionRequest(
+            id: 'permission-structured-incomplete',
+            title: 'Run command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const [
+              'Allow once',
+              'Deny once',
+              'Reject',
+              'Allow',
+              'Mystery',
+            ],
+            choices: const <AcpPermissionChoice>[
+              AcpPermissionChoice(
+                optionId: 'allow-once',
+                name: 'Allow once',
+                kind: 'allow_once',
+              ),
+              AcpPermissionChoice(
+                optionId: 'deny-once',
+                name: 'Deny once',
+                kind: 'deny_once',
+              ),
+              AcpPermissionChoice(optionId: 'legacy-reject', name: 'Reject'),
+              AcpPermissionChoice(optionId: 'legacy-allow', name: 'Allow'),
+              AcpPermissionChoice(
+                optionId: 'unknown-kind',
+                name: 'Mystery',
+                kind: 'ask_later',
+              ),
+            ],
+            requestedAt: DateTime(2026, 7, 11, 12),
+            metadata: const <String, Object?>{
+              'path': '/one',
+              'input': <String, Object?>{'path': '/two'},
+            },
+          ),
+          onSelectPermissionOption: (value) => selectedOptionId = value,
+          onCancelPermission: () => cancelled = true,
+        ),
+      );
+
+      ButtonStyleButton choice(String id) => tester.widget<ButtonStyleButton>(
+        find.byKey(Key('prompt-permission-option-$id')),
+      );
+
+      expect(choice('allow-once').onPressed, isNull);
+      expect(choice('deny-once').onPressed, isNotNull);
+      expect(choice('legacy-reject').onPressed, isNull);
+      expect(choice('legacy-allow').onPressed, isNull);
+      expect(choice('unknown-kind').onPressed, isNull);
+
+      await tester.tap(
+        find.byKey(const Key('prompt-permission-option-deny-once')),
+      );
+      await tester.tap(find.byTooltip('Cancel permission request'));
+      await tester.pump();
+
+      expect(selectedOptionId, 'deny-once');
+      expect(cancelled, isTrue);
+    },
+  );
+
+  testWidgets('PromptInput keeps legacy empty context allow action enabled', (
+    tester,
+  ) async {
+    var allowed = false;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-legacy',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+        ),
+        onAllowPermission: () => allowed = true,
+      ),
+    );
+
+    expect(find.byKey(const Key('prompt-permission-context')), findsNothing);
+    expect(
+      find.byKey(const Key('prompt-permission-context-warning')),
+      findsNothing,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
+    await tester.pump();
+    expect(allowed, isTrue);
+  });
+
+  testWidgets('PromptInput displays escaped permission values only', (
+    tester,
+  ) async {
+    const rawPath = ' \n\u202eDANGEROUS ';
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-escaped',
+          title: 'Read path',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'read_text_file',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 11, 12),
+          metadata: const <String, Object?>{
+            'path': rawPath,
+            'unprojected': 'UNPROJECTED_CANARY',
+          },
+        ),
+      ),
+    );
+
+    expect(
+      find.text(r'\u{0020}\u{000A}\u{202E}DANGEROUS\u{0020}'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('\n'), findsNothing);
+    expect(find.textContaining('\u202e'), findsNothing);
+    expect(find.textContaining('UNPROJECTED_CANARY'), findsNothing);
+  });
+
   testWidgets('PromptInput keeps permission actions usable in narrow widths', (
     tester,
   ) async {
@@ -479,6 +1400,54 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
     await tester.pump();
     expect(denied, isTrue);
+  });
+
+  testWidgets('PromptInput returns the exact structured permission option', (
+    tester,
+  ) async {
+    String? selectedOptionId;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-1',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          options: const ['Allow once', 'Always allow', 'Reject'],
+          choices: const [
+            AcpPermissionChoice(
+              optionId: 'allow-once',
+              name: 'Allow once',
+              kind: 'allow_once',
+            ),
+            AcpPermissionChoice(
+              optionId: 'allow-always',
+              name: 'Always allow',
+              kind: 'allow_always',
+            ),
+            AcpPermissionChoice(
+              optionId: 'reject-once',
+              name: 'Reject',
+              kind: 'reject_once',
+            ),
+          ],
+          requestedAt: DateTime(2026, 5, 31, 12),
+        ),
+        onSelectPermissionOption: (optionId) => selectedOptionId = optionId,
+      ),
+    );
+
+    expect(find.text('Allow once'), findsOneWidget);
+    expect(find.text('Always allow'), findsOneWidget);
+    expect(find.text('Reject'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Always allow'));
+    await tester.pump();
+
+    expect(selectedOptionId, 'allow-always');
   });
 
   testWidgets('PromptInput changes tool call execution policy', (tester) async {
@@ -651,4 +1620,69 @@ void main() {
     expect(find.text('GPT-5 Super Extended Reasoning'), findsOneWidget);
     expect(sendIcon(), findsOneWidget);
   });
+}
+
+final class _CountingCommandMap extends MapBase<String, Object?> {
+  _CountingCommandMap(this._values, {this.throwingKeys = const <String>{}});
+
+  final Map<String, Object?> _values;
+  final Set<String> throwingKeys;
+  final Map<String, int> _reads = <String, int>{};
+
+  int readsFor(String key) => _reads[key] ?? 0;
+
+  @override
+  Object? operator [](Object? key) {
+    if (key is String) _reads[key] = readsFor(key) + 1;
+    if (throwingKeys.contains(key)) throw StateError('hostile command getter');
+    return _values[key];
+  }
+
+  @override
+  void operator []=(String key, Object? value) {
+    _values[key] = value;
+  }
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  Object? remove(Object? key) => _values.remove(key);
+}
+
+final class _CountingCommandList extends ListBase<Map<String, Object?>> {
+  _CountingCommandList(
+    this._values, {
+    this.throwOnLength = false,
+    this.throwOnIndex = false,
+  });
+
+  final List<Map<String, Object?>> _values;
+  final bool throwOnLength;
+  final bool throwOnIndex;
+  int lengthReads = 0;
+
+  @override
+  int get length {
+    lengthReads += 1;
+    if (throwOnLength) throw StateError('hostile command list length');
+    return _values.length;
+  }
+
+  @override
+  set length(int value) => throw UnsupportedError('immutable test list');
+
+  @override
+  Map<String, Object?> operator [](int index) {
+    if (throwOnIndex) throw StateError('hostile command list index');
+    return _values[index];
+  }
+
+  @override
+  void operator []=(int index, Map<String, Object?> value) {
+    throw UnsupportedError('immutable test list');
+  }
 }

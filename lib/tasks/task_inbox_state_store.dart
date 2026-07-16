@@ -2,14 +2,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'task_inbox_snapshot.dart';
-import 'task_store.dart';
 
-class TaskInboxStateStore implements TaskStore {
+class TaskInboxStateStore {
   const TaskInboxStateStore({required this.path});
 
   static const String fileName = 'task_inbox_state.json';
 
   final String? path;
+
+  File? get file => _fileOrNull();
 
   static String? defaultPath({
     String? configPath,
@@ -34,7 +35,6 @@ class TaskInboxStateStore implements TaskStore {
     );
   }
 
-  @override
   Future<TaskInboxSnapshot> load() async {
     final file = _fileOrNull();
     if (file == null || !await file.exists()) {
@@ -49,7 +49,16 @@ class TaskInboxStateStore implements TaskStore {
     }
   }
 
-  @override
+  Future<TaskInboxSnapshot> loadStrict() async {
+    final file = _fileOrNull();
+    if (file == null || !await file.exists()) {
+      return TaskInboxSnapshot.empty();
+    }
+    return TaskInboxSnapshot.fromJsonStrict(
+      jsonDecode(await file.readAsString()),
+    );
+  }
+
   Future<void> save(TaskInboxSnapshot snapshot) async {
     final file = _fileOrNull();
     if (file == null) return;
