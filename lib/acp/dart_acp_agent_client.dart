@@ -31,8 +31,12 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.enableFilesystemWriteTextFile = false,
     this.allowFilesystemReadOutsideWorkspace = false,
     this.enableTerminalProvider = false,
+    this.elicitationProvider,
+    this.mcpConnectProvider,
+    this.mcpMessageProvider,
+    this.mcpDisconnectProvider,
   }) : agentCommand = agentCommand ?? _defaultAgentCommand(),
-       agentArgs = agentArgs ?? const ['@zed-industries/codex-acp'],
+       agentArgs = agentArgs ?? const ['@agentclientprotocol/codex-acp'],
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
        agentHeaders = agentHeaders ?? const <String, String>{},
@@ -58,6 +62,15 @@ class DartAcpAgentClient implements AcpAgentClient {
   final bool enableFilesystemWriteTextFile;
   final bool allowFilesystemReadOutsideWorkspace;
   final bool enableTerminalProvider;
+  final acp.AcpRequestHandler? elicitationProvider;
+  final acp.AcpRequestHandler? mcpConnectProvider;
+  final acp.AcpRequestHandler? mcpMessageProvider;
+  final acp.AcpRequestHandler? mcpDisconnectProvider;
+
+  bool get _hasAcpMcpProvider =>
+      mcpConnectProvider != null &&
+      mcpMessageProvider != null &&
+      mcpDisconnectProvider != null;
 
   acp.AcpClient? _client;
   acp.AcpTransport? _transport;
@@ -144,6 +157,10 @@ class DartAcpAgentClient implements AcpAgentClient {
       terminalProvider: enableTerminalProvider
           ? acp.DefaultTerminalProvider()
           : null,
+      elicitationProvider: elicitationProvider,
+      mcpConnectProvider: mcpConnectProvider,
+      mcpMessageProvider: mcpMessageProvider,
+      mcpDisconnectProvider: mcpDisconnectProvider,
     );
     final transport = _transportForConfig(config);
     final client = await acp.AcpClient.start(
@@ -189,6 +206,7 @@ class DartAcpAgentClient implements AcpAgentClient {
       final compatibleMcpServers = _mcpServersForCapabilities(
         configuredMcpServers,
         capabilities,
+        hasAcpMcpProvider: _hasAcpMcpProvider,
       );
       sessionMcpServers
         ..clear()
@@ -521,6 +539,25 @@ class DartAcpAgentClient implements AcpAgentClient {
   }
 
   @override
+  Future<void> deleteSession({required String sessionId}) async {
+    final client = _requireClient();
+    if (_capabilities?.session.delete != true) {
+      throw StateError('ACP agent does not support session/delete.');
+    }
+    await client.deleteSession(sessionId: sessionId);
+    if (_activeSessionId == sessionId) _activeSessionId = null;
+    _modesBySession.remove(sessionId);
+    _cwdBySession.remove(sessionId);
+    _additionalDirectoriesBySession.remove(sessionId);
+    _modeOverridesBySession.remove(sessionId);
+    _configOptionsBySession.remove(sessionId);
+    _modelConfigOptionsFromModelsBySession.remove(sessionId);
+    _rawToolCallEventsBySession.remove(sessionId);
+    _rawToolCallStatesBySession.remove(sessionId);
+    _permissionBridge.cancelSession(sessionId);
+  }
+
+  @override
   Future<void> authenticate({required String methodId}) async {
     final client = _requireClient();
     final trimmedMethodId = methodId.trim();
@@ -682,6 +719,8 @@ class DartAcpAgentClient implements AcpAgentClient {
           metadata: <String, Object?>{
             'stopReason': update.stopReason.name,
             'kind': 'turn',
+            if (update.usage != null) 'usage': update.usage!.toJson(),
+            if (update.meta != null) 'meta': update.meta,
           },
           timestamp: DateTime.now(),
         );
@@ -717,6 +756,62 @@ class DartAcpAgentClient implements AcpAgentClient {
           metadata: <String, Object?>{
             'kind': 'commands',
             'commands': commands.map((command) => command.toJson()).toList(),
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.ConfigOptionUpdate():
+        final updateSessionId = sessionId ?? _activeSessionId;
+        final options = update.configOptions
+            .map(_configOptionFromAcp)
+            .whereType<AcpConfigOption>()
+            .toList(growable: false);
+        if (updateSessionId != null) {
+          _configOptionsBySession[updateSessionId] = options;
+          _modelConfigOptionsFromModelsBySession.remove(updateSessionId);
+          if (options.isNotEmpty) {
+            _modesBySession.remove(updateSessionId);
+            _modeOverridesBySession.remove(updateSessionId);
+          }
+        }
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Session config options updated.',
+          metadata: <String, Object?>{
+            'kind': 'config_option_update',
+            'configOptions': options,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.SessionInfoUpdate():
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: update.title?.trim().isNotEmpty == true
+              ? update.title!.trim()
+              : 'Session info updated.',
+          metadata: <String, Object?>{
+            'kind': 'session_info_update',
+            'sessionId': ?sessionId,
+            if (update.title != null) 'title': update.title,
+            if (update.updatedAt != null)
+              'updatedAt': update.updatedAt!.toIso8601String(),
+            if (update.meta != null) 'meta': update.meta,
+          },
+          timestamp: DateTime.now(),
+        );
+      case acp.StructuredPlanUpdate():
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Plan updated.',
+          metadata: <String, Object?>{'kind': 'plan_update', 'raw': update.raw},
+          timestamp: DateTime.now(),
+        );
+      case acp.PlanRemovedUpdate():
+        return AgentEvent(
+          type: AgentEventType.status,
+          text: 'Plan removed.',
+          metadata: <String, Object?>{
+            'kind': 'plan_removed',
+            'planId': update.planId,
           },
           timestamp: DateTime.now(),
         );
@@ -1427,10 +1522,13 @@ class DartAcpAgentClient implements AcpAgentClient {
               value: choice.value,
               name: choice.name,
               description: choice.description,
+              groupId: choice.groupId,
+              groupName: choice.groupName,
             ),
           )
           .toList(),
       description: option.description,
+      category: option.category,
       group: option.group,
     );
   }
@@ -1506,10 +1604,34 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   List<AcpConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
     if (raw is! List) return const <AcpConfigOptionChoice>[];
-    return raw
-        .map(_configChoiceFromRaw)
-        .whereType<AcpConfigOptionChoice>()
-        .toList();
+    final choices = <AcpConfigOptionChoice>[];
+    for (final item in raw) {
+      if (item is Map) {
+        final mapped = _metadataMap(item);
+        final nested = mapped['options'];
+        final groupId = _nonEmptyString(mapped['group']);
+        if (nested is List && groupId != null) {
+          final groupName = _nonEmptyString(mapped['name']) ?? groupId;
+          for (final nestedItem in nested) {
+            final choice = _configChoiceFromRaw(nestedItem);
+            if (choice == null) continue;
+            choices.add(
+              AcpConfigOptionChoice(
+                value: choice.value,
+                name: choice.name,
+                description: choice.description,
+                groupId: groupId,
+                groupName: groupName,
+              ),
+            );
+          }
+          continue;
+        }
+      }
+      final choice = _configChoiceFromRaw(item);
+      if (choice != null) choices.add(choice);
+    }
+    return List.unmodifiable(choices);
   }
 
   AcpConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
@@ -2002,10 +2124,17 @@ class DartAcpAgentClient implements AcpAgentClient {
 
   static List<Map<String, dynamic>> _mcpServersForCapabilities(
     List<Map<String, dynamic>> servers,
-    AcpAgentCapabilities capabilities,
-  ) {
+    AcpAgentCapabilities capabilities, {
+    required bool hasAcpMcpProvider,
+  }) {
     return servers
-        .where((server) => _mcpServerSupportedByAgent(server, capabilities))
+        .where(
+          (server) => _mcpServerSupportedByAgent(
+            server,
+            capabilities,
+            hasAcpMcpProvider: hasAcpMcpProvider,
+          ),
+        )
         .map(Map<String, dynamic>.from)
         .toList();
   }
@@ -2018,18 +2147,24 @@ class DartAcpAgentClient implements AcpAgentClient {
     if (type is String && type.trim().isNotEmpty) {
       copy['type'] = type.trim().toLowerCase();
     }
+    if (copy['type'] == 'acp' &&
+        copy['serverId'] == null &&
+        copy['id'] is String) {
+      copy['serverId'] = copy.remove('id');
+    }
     return copy;
   }
 
   static bool _mcpServerSupportedByAgent(
     Map<String, dynamic> server,
-    AcpAgentCapabilities capabilities,
-  ) {
+    AcpAgentCapabilities capabilities, {
+    required bool hasAcpMcpProvider,
+  }) {
     return switch (_mcpServerTransportType(server)) {
       'stdio' => true,
       'http' => capabilities.mcp.http,
       'sse' => capabilities.mcp.sse,
-      'acp' => capabilities.mcp.acp,
+      'acp' => capabilities.mcp.acp && hasAcpMcpProvider,
       _ => false,
     };
   }

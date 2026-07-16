@@ -233,6 +233,31 @@ void main() {
     expect(controller.lastError, contains('close failed'));
   });
 
+  testWidgets('SessionSettingsDialog confirms and deletes active session', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(supportsDelete: true);
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Delete Session'));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete Session?'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastDeletedSessionId, 'fake-session-1');
+    expect(controller.currentSession, isNull);
+  });
+
   testWidgets('SessionSettingsDialog disables settings during operations', (
     tester,
   ) async {

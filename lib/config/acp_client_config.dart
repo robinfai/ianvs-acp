@@ -703,7 +703,10 @@ class McpServerConfig {
 
   String get url => _stringValue(raw['url']) ?? '';
 
-  String get id => _stringValue(raw['id']) ?? '';
+  String get id =>
+      _stringValue(raw['serverId']) ?? _stringValue(raw['id']) ?? '';
+
+  String get serverId => id;
 
   List<String> get headerKeys {
     final headers = raw['headers'];
@@ -736,7 +739,7 @@ class McpServerConfig {
     if (type != null) raw['type'] = type;
     final command = _stringValue(raw['command']);
     final url = _stringValue(raw['url']);
-    final id = _stringValue(raw['id']);
+    final id = _stringValue(raw['serverId'] ?? raw['id']);
     if (type != null && !_supportedMcpTransportTypes.contains(type)) {
       throw FormatException(
         'MCP server "$name" type must be one of: '
@@ -745,14 +748,17 @@ class McpServerConfig {
     }
     if (type == 'acp') {
       if (id == null) {
-        throw FormatException('MCP server "$name" acp transport requires id.');
+        throw FormatException(
+          'MCP server "$name" acp transport requires serverId.',
+        );
       }
       if (command != null || url != null) {
         throw FormatException(
           'MCP server "$name" acp transport must not define command or url.',
         );
       }
-      raw['id'] = id;
+      raw.remove('id');
+      raw['serverId'] = id;
       return McpServerConfig(raw: raw);
     }
     if (command == null && url == null) {

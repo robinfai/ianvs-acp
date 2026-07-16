@@ -1,6 +1,7 @@
 import 'command_types.dart';
 import 'content_types.dart';
 import 'diff_types.dart';
+import 'session_types.dart';
 import 'tool_types.dart';
 import 'types.dart';
 
@@ -36,6 +37,8 @@ class MessageDelta extends AcpUpdate {
     required this.role,
     required this.content,
     this.isThought = false,
+    this.messageId,
+    this.meta,
   });
 
   /// Create from raw content blocks.
@@ -43,9 +46,17 @@ class MessageDelta extends AcpUpdate {
     required String role,
     required List<Map<String, dynamic>> rawContent,
     bool isThought = false,
+    String? messageId,
+    Map<String, dynamic>? meta,
   }) {
     final blocks = rawContent.map(ContentBlock.fromJson).toList();
-    return MessageDelta(role: role, content: blocks, isThought: isThought);
+    return MessageDelta(
+      role: role,
+      content: blocks,
+      isThought: isThought,
+      messageId: messageId,
+      meta: meta,
+    );
   }
 
   /// Role of the author ('assistant' or 'user').
@@ -56,6 +67,12 @@ class MessageDelta extends AcpUpdate {
 
   /// Whether this is a thought chunk (vs a message chunk).
   final bool isThought;
+
+  /// Identifier shared by all chunks in the same message.
+  final String? messageId;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
 
   @override
   String get text {
@@ -124,6 +141,93 @@ class AvailableCommandsUpdate extends AcpUpdate {
   }
 }
 
+/// Complete replacement of the session configuration option state.
+class ConfigOptionUpdate extends AcpUpdate {
+  /// Creates a configuration option update.
+  const ConfigOptionUpdate(this.configOptions, {this.meta});
+
+  /// Parses an ACP `config_option_update` payload.
+  factory ConfigOptionUpdate.fromJson(Map<String, dynamic> json) {
+    final raw = json['configOptions'];
+    final options = raw is List
+        ? raw
+              .whereType<Map>()
+              .map(
+                (item) => ConfigOption.fromJson(
+                  item.map((key, value) => MapEntry(key.toString(), value)),
+                ),
+              )
+              .where((option) => option.id.isNotEmpty)
+              .toList(growable: false)
+        : const <ConfigOption>[];
+    return ConfigOptionUpdate(options, meta: _mapFromRaw(json['_meta']));
+  }
+
+  /// Full configuration option list.
+  final List<ConfigOption> configOptions;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
+  @override
+  String get text => '[Config options: ${configOptions.length}]';
+}
+
+/// Partial update to session list metadata.
+class SessionInfoUpdate extends AcpUpdate {
+  /// Creates a session metadata update.
+  const SessionInfoUpdate({this.title, this.updatedAt, this.meta});
+
+  /// Parses an ACP `session_info_update` payload.
+  factory SessionInfoUpdate.fromJson(Map<String, dynamic> json) =>
+      SessionInfoUpdate(
+        title: json['title'] is String ? json['title'] as String : null,
+        updatedAt: json['updatedAt'] is String
+            ? DateTime.tryParse(json['updatedAt'] as String)
+            : null,
+        meta: _mapFromRaw(json['_meta']),
+      );
+
+  /// New title, or null when absent/cleared.
+  final String? title;
+
+  /// New activity timestamp.
+  final DateTime? updatedAt;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
+  @override
+  String get text => title ?? '[Session info updated]';
+}
+
+/// Unstable plan content update retained without discarding new variants.
+class StructuredPlanUpdate extends AcpUpdate {
+  /// Creates an update from its raw payload.
+  const StructuredPlanUpdate(this.raw);
+
+  /// Raw `plan_update` payload.
+  final Map<String, dynamic> raw;
+
+  @override
+  String get text => '[Plan updated]';
+}
+
+/// Unstable notification that a plan was removed.
+class PlanRemovedUpdate extends AcpUpdate {
+  /// Creates a removal update.
+  const PlanRemovedUpdate(this.planId, {this.meta});
+
+  /// Removed plan identifier.
+  final String planId;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
+  @override
+  String get text => '[Plan removed: $planId]';
+}
+
 /// Cumulative session cost reported with a usage update.
 class UsageCost {
   /// Construct a usage cost.
@@ -185,13 +289,63 @@ class UsageUpdate extends AcpUpdate {
 /// Terminal update indicating a prompt turn is complete.
 class TurnEnded extends AcpUpdate {
   /// Construct with the terminal [stopReason].
-  const TurnEnded(this.stopReason);
+  const TurnEnded(this.stopReason, {this.usage, this.meta});
 
   /// Reason for stopping the turn.
   final StopReason stopReason;
 
+  /// Optional cumulative token usage returned with the prompt response.
+  final PromptUsage? usage;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   @override
   String get text => '[Session ended: $stopReason]';
+}
+
+/// Token usage returned at the end of a prompt turn.
+class PromptUsage {
+  /// Creates prompt usage counters.
+  const PromptUsage({
+    required this.totalTokens,
+    required this.inputTokens,
+    required this.outputTokens,
+    this.thoughtTokens,
+    this.cachedReadTokens,
+    this.cachedWriteTokens,
+    this.meta,
+  });
+
+  /// Parses the unstable ACP end-turn usage shape.
+  factory PromptUsage.fromJson(Map<String, dynamic> json) => PromptUsage(
+    totalTokens: _intFromRaw(json['totalTokens']) ?? 0,
+    inputTokens: _intFromRaw(json['inputTokens']) ?? 0,
+    outputTokens: _intFromRaw(json['outputTokens']) ?? 0,
+    thoughtTokens: _intFromRaw(json['thoughtTokens']),
+    cachedReadTokens: _intFromRaw(json['cachedReadTokens']),
+    cachedWriteTokens: _intFromRaw(json['cachedWriteTokens']),
+    meta: _mapFromRaw(json['_meta']),
+  );
+
+  final int totalTokens;
+  final int inputTokens;
+  final int outputTokens;
+  final int? thoughtTokens;
+  final int? cachedReadTokens;
+  final int? cachedWriteTokens;
+  final Map<String, dynamic>? meta;
+
+  /// Converts to the ACP wire representation.
+  Map<String, dynamic> toJson() => {
+    'totalTokens': totalTokens,
+    'inputTokens': inputTokens,
+    'outputTokens': outputTokens,
+    if (thoughtTokens != null) 'thoughtTokens': thoughtTokens,
+    if (cachedReadTokens != null) 'cachedReadTokens': cachedReadTokens,
+    if (cachedWriteTokens != null) 'cachedWriteTokens': cachedWriteTokens,
+    if (meta != null) '_meta': meta,
+  };
 }
 
 /// Update type used for unclassified session/update payloads.
@@ -238,4 +392,9 @@ UsageCost? _usageCostFromRaw(Object? raw) {
   final currency = mapped['currency']?.toString().trim() ?? '';
   if (amount == null || currency.isEmpty) return null;
   return UsageCost(amount: amount, currency: currency);
+}
+
+Map<String, dynamic>? _mapFromRaw(Object? raw) {
+  if (raw is! Map) return null;
+  return raw.map((key, value) => MapEntry(key.toString(), value));
 }

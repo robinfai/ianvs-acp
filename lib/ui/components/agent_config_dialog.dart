@@ -1225,7 +1225,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                 _DialogTextField(
                   key: const Key('mcp-id-field'),
                   controller: _idController,
-                  label: 'ID',
+                  label: 'Server ID',
                   icon: Icons.fingerprint_rounded,
                 ),
               ] else if (_isRemote) ...[
@@ -1307,7 +1307,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
         'type': _type,
       };
       if (_type == 'acp') {
-        raw['id'] = _idController.text;
+        raw['serverId'] = _idController.text;
       } else if (_isRemote) {
         raw['url'] = _urlController.text;
         final headers = _nameValueEntries(_headerControllers);

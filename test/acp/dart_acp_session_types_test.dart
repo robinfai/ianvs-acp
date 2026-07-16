@@ -149,7 +149,6 @@ void main() {
       'type': 'resource',
       'resource': {
         'uri': 'file:///workspace/README.md',
-        'title': 'README.md',
         'mimeType': 'text/markdown',
         'text': '# Project notes',
       },
@@ -157,6 +156,7 @@ void main() {
     expect(delta.content[4].toJson(), {
       'type': 'resource_link',
       'uri': 'file:///workspace/lib/main.dart',
+      'name': 'main.dart',
       'title': 'main.dart',
     });
   });
@@ -685,7 +685,8 @@ Future<void> main() async {
     expect(model.name, 'Model');
     expect(model.type, 'select');
     expect(model.currentValue, 'kimi-k2');
-    expect(model.group, 'model');
+    expect(model.category, 'model');
+    expect(model.group, isNull);
     expect(model.options.map((choice) => choice.value), [
       'kimi-k2',
       'glm-4.6',
@@ -696,9 +697,103 @@ Future<void> main() async {
     final autoApply = result.configOptions!.last;
     expect(autoApply.id, 'auto_apply');
     expect(autoApply.type, 'boolean');
-    expect(autoApply.currentValue, 'true');
+    expect(autoApply.currentValue, isTrue);
     expect(autoApply.options.map((choice) => choice.value), ['true', 'false']);
     expect(autoApply.options.map((choice) => choice.name), ['On', 'Off']);
+  });
+
+  test('client capabilities advertise ACP boolean config options', () {
+    expect(const AcpCapabilities().toJson(), {
+      'fs': {'readTextFile': true, 'writeTextFile': false},
+      'session': {
+        'configOptions': {'boolean': <String, dynamic>{}},
+      },
+      'plan': <String, dynamic>{},
+    });
+  });
+
+  test('initialize result exposes MCP-over-ACP support', () {
+    final result = InitializeResult(
+      protocolVersion: 1,
+      agentCapabilities: <String, dynamic>{
+        'mcpCapabilities': <String, dynamic>{
+          'http': true,
+          'sse': false,
+          'acp': true,
+        },
+      },
+      authMethods: const <Map<String, dynamic>>[],
+    );
+
+    expect(result.mcpCapabilities, (http: true, sse: false, acp: true));
+  });
+
+  test('session config options preserve grouped select choices', () {
+    final result = SessionResult.fromJson({
+      'sessionId': 'grouped',
+      'configOptions': [
+        {
+          'id': 'model',
+          'name': 'Model',
+          'type': 'select',
+          'category': 'model',
+          'currentValue': 'gpt-5.6',
+          'options': [
+            {
+              'group': 'openai',
+              'name': 'OpenAI',
+              '_meta': {'source': 'registry'},
+              'options': [
+                {'value': 'gpt-5.6', 'name': 'GPT-5.6'},
+                {'value': 'gpt-5.5', 'name': 'GPT-5.5'},
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    final model = result.configOptions!.single;
+    expect(model.category, 'model');
+    expect(model.options.map((choice) => choice.value), ['gpt-5.6', 'gpt-5.5']);
+    expect(model.options.every((choice) => choice.groupId == 'openai'), isTrue);
+    expect(
+      model.options.every((choice) => choice.groupName == 'OpenAI'),
+      isTrue,
+    );
+    expect(
+      model.options.every(
+        (choice) => choice.groupMeta?['source'] == 'registry',
+      ),
+      isTrue,
+    );
+    expect(model.toJson()['options'], [
+      {
+        'group': 'openai',
+        'name': 'OpenAI',
+        '_meta': {'source': 'registry'},
+        'options': [
+          {'value': 'gpt-5.6', 'name': 'GPT-5.6'},
+          {'value': 'gpt-5.5', 'name': 'GPT-5.5'},
+        ],
+      },
+    ]);
+  });
+
+  test('terminal provider retains the newest UTF-8 output bytes', () async {
+    if (Platform.isWindows) return;
+    final provider = DefaultTerminalProvider();
+    final handle = await provider.create(
+      sessionId: 'output-limit',
+      command: 'printf "aé中z"',
+      outputByteLimit: 4,
+    );
+    await provider.waitForExit(handle);
+    await pumpEventQueue();
+
+    expect(await provider.currentOutput(handle), '中z');
+    expect(handle.truncated, isTrue);
+    await provider.release(handle);
   });
 }
 

@@ -83,6 +83,9 @@ enum ToolKind {
   /// Retrieving external data.
   fetch,
 
+  /// Switching the agent's operating mode.
+  switchMode,
+
   /// Other tool types (default).
   other;
 
@@ -105,25 +108,28 @@ enum ToolKind {
         return ToolKind.think;
       case 'fetch':
         return ToolKind.fetch;
+      case 'switch_mode':
+        return ToolKind.switchMode;
       default:
         return ToolKind.other;
     }
   }
 
   /// Convert to wire format.
-  String toWire() => name;
+  String toWire() => this == ToolKind.switchMode ? 'switch_mode' : name;
 }
 
 /// Location information for tool calls.
 class ToolCallLocation {
   /// Creates a tool call location.
-  const ToolCallLocation({required this.path, this.line});
+  const ToolCallLocation({required this.path, this.line, this.meta});
 
   /// Create from JSON.
   factory ToolCallLocation.fromJson(Map<String, dynamic> json) =>
       ToolCallLocation(
         path: _optionalString(json['path']) ?? '',
         line: (json['line'] as num?)?.toInt(),
+        meta: _optionalMap(json['_meta']),
       );
 
   /// The absolute file path being accessed or modified.
@@ -132,10 +138,14 @@ class ToolCallLocation {
   /// Optional line number within the file.
   final int? line;
 
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
     'path': path,
     if (line != null) 'line': line,
+    if (meta != null) '_meta': meta,
   };
 }
 
@@ -151,6 +161,7 @@ class ToolCall {
     this.locations,
     this.rawInput,
     this.rawOutput,
+    this.meta,
   });
 
   /// Create from JSON.
@@ -165,6 +176,7 @@ class ToolCall {
     locations: _toolLocationsFromRaw(json['locations']),
     rawInput: json['rawInput'] ?? json['raw_input'],
     rawOutput: json['rawOutput'] ?? json['raw_output'],
+    meta: _optionalMap(json['_meta']),
   );
 
   /// Unique identifier for this tool call within the session.
@@ -191,6 +203,9 @@ class ToolCall {
   /// Raw output returned by the tool.
   final dynamic rawOutput;
 
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
     'toolCallId': toolCallId,
@@ -202,6 +217,7 @@ class ToolCall {
       'locations': locations!.map((l) => l.toJson()).toList(),
     if (rawInput != null) 'rawInput': rawInput,
     if (rawOutput != null) 'rawOutput': rawOutput,
+    if (meta != null) '_meta': meta,
   };
 
   /// Merge fields from an update into this tool call.
@@ -223,10 +239,16 @@ class ToolCall {
         : locations,
     rawInput: update['rawInput'] ?? update['raw_input'] ?? rawInput,
     rawOutput: update['rawOutput'] ?? update['raw_output'] ?? rawOutput,
+    meta: _optionalMap(update['_meta']) ?? meta,
   );
 }
 
 String? _optionalString(Object? value) => value is String ? value : null;
+
+Map<String, dynamic>? _optionalMap(Object? value) {
+  if (value is! Map) return null;
+  return value.map((key, item) => MapEntry(key.toString(), item));
+}
 
 String? _toolTitleFromJson(Map<String, dynamic> json) {
   for (final key in const ['title', 'name', 'toolName', 'tool_name']) {

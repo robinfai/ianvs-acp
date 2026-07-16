@@ -232,7 +232,7 @@ void main() {
     expect(config.mcpServers.single.toJson(), {
       'name': 'nested-agent-tools',
       'type': 'acp',
-      'id': 'nested-agent',
+      'serverId': 'nested-agent',
     });
   });
 

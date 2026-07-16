@@ -122,7 +122,9 @@ class ConfigOption {
     required this.currentValue,
     required this.options,
     this.description,
+    this.category,
     this.group,
+    this.meta,
   });
 
   /// Creates from JSON response.
@@ -153,8 +155,9 @@ class ConfigOption {
       ),
       options: options,
       description: _optionalString(json['description']),
-      group:
-          _optionalString(json['group']) ?? _optionalString(json['category']),
+      category: _optionalString(json['category']),
+      group: _optionalString(json['group']),
+      meta: _optionalMap(json['_meta']),
     );
   }
 
@@ -168,7 +171,7 @@ class ConfigOption {
   final String type;
 
   /// Currently selected value.
-  final String currentValue;
+  final Object currentValue;
 
   /// Available choices.
   final List<ConfigOptionChoice> options;
@@ -176,8 +179,14 @@ class ConfigOption {
   /// Optional description.
   final String? description;
 
+  /// Semantic ACP category such as `model` or `thought_level`.
+  final String? category;
+
   /// Optional group for organization.
   final String? group;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
 
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
@@ -185,20 +194,27 @@ class ConfigOption {
     'name': name,
     'type': type,
     'currentValue': currentValue,
-    'options': options.map((o) => o.toJson()).toList(),
+    if (type != 'boolean') 'options': _configChoicesToJson(options),
     if (description != null) 'description': description,
+    if (category != null) 'category': category,
     if (group != null) 'group': group,
+    if (meta != null) '_meta': meta,
   };
 
   @override
   String toString() => 'ConfigOption($id: $currentValue)';
 }
 
-String _configValueFromJson(Object? value) {
+Object _configValueFromJson(Object? value) {
   if (value is String) return value;
-  if (value is bool) return value.toString();
+  if (value is bool) return value;
   if (value is num) return value.toString();
   return '';
+}
+
+String _configChoiceValueFromJson(Object? value) {
+  final normalized = _configValueFromJson(value);
+  return normalized is String ? normalized : normalized.toString();
 }
 
 /// A choice within a config option.
@@ -208,11 +224,15 @@ class ConfigOptionChoice {
     required this.value,
     required this.name,
     this.description,
+    this.groupId,
+    this.groupName,
+    this.groupMeta,
+    this.meta,
   });
 
   /// Creates from JSON.
   factory ConfigOptionChoice.fromJson(Map<String, dynamic> json) {
-    final value = _configValueFromJson(
+    final value = _configChoiceValueFromJson(
       json['value'] ?? json['id'] ?? json['key'] ?? json['name'],
     );
     return ConfigOptionChoice(
@@ -223,6 +243,7 @@ class ConfigOptionChoice {
           _optionalString(json['displayName']) ??
           value,
       description: _optionalString(json['description']),
+      meta: _optionalMap(json['_meta']),
     );
   }
 
@@ -235,11 +256,24 @@ class ConfigOptionChoice {
   /// Optional description.
   final String? description;
 
+  /// Group identifier when this choice was nested in a grouped select option.
+  final String? groupId;
+
+  /// Human-readable group name.
+  final String? groupName;
+
+  /// ACP extension metadata from the containing select group.
+  final Map<String, dynamic>? groupMeta;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   /// Convert to JSON.
   Map<String, dynamic> toJson() => {
     'value': value,
     'name': name,
     if (description != null) 'description': description,
+    if (meta != null) '_meta': meta,
   };
 
   @override
@@ -285,8 +319,10 @@ class SessionCapabilities {
   /// Creates session capabilities.
   const SessionCapabilities({
     this.list = false,
+    this.delete = false,
     this.resume = false,
     this.fork = false,
+    this.close = false,
     this.configOptions = false,
     this.additionalDirectories = false,
   });
@@ -300,8 +336,10 @@ class SessionCapabilities {
     if (sessionCaps is Map<String, dynamic>) {
       return SessionCapabilities(
         list: _capabilityAdvertised(sessionCaps['list']),
+        delete: _capabilityAdvertised(sessionCaps['delete']),
         resume: _capabilityAdvertised(sessionCaps['resume']),
         fork: _capabilityAdvertised(sessionCaps['fork']),
+        close: _capabilityAdvertised(sessionCaps['close']),
         configOptions: _capabilityAdvertised(sessionCaps['configOptions']),
         additionalDirectories:
             _capabilityAdvertised(sessionCaps['additionalDirectories']) ||
@@ -314,8 +352,10 @@ class SessionCapabilities {
     if (session is Map<String, dynamic>) {
       return SessionCapabilities(
         list: _capabilityAdvertised(session['list']),
+        delete: _capabilityAdvertised(session['delete']),
         resume: _capabilityAdvertised(session['resume']),
         fork: _capabilityAdvertised(session['fork']),
+        close: _capabilityAdvertised(session['close']),
         configOptions: _capabilityAdvertised(session['configOptions']),
         additionalDirectories:
             _capabilityAdvertised(session['additionalDirectories']) ||
@@ -329,11 +369,17 @@ class SessionCapabilities {
   /// Agent supports session/list.
   final bool list;
 
+  /// Agent supports session/delete.
+  final bool delete;
+
   /// Agent supports session/resume.
   final bool resume;
 
   /// Agent supports session/fork.
   final bool fork;
+
+  /// Agent supports session/close.
+  final bool close;
 
   /// Agent supports configOptions in session responses.
   final bool configOptions;
@@ -343,7 +389,8 @@ class SessionCapabilities {
 
   @override
   String toString() =>
-      'SessionCapabilities(list: $list, resume: $resume, fork: $fork, '
+      'SessionCapabilities(list: $list, delete: $delete, resume: $resume, '
+      'fork: $fork, close: $close, '
       'configOptions: $configOptions, '
       'additionalDirectories: $additionalDirectories)';
 }
@@ -394,15 +441,68 @@ ConfigOption? _configOptionFromRaw(Object? raw) {
 
 List<ConfigOptionChoice> _configChoicesFromRaw(Object? raw) {
   if (raw is! List) return const <ConfigOptionChoice>[];
-  return raw
-      .map(_configChoiceFromRaw)
-      .whereType<ConfigOptionChoice>()
-      .toList(growable: false);
+  final choices = <ConfigOptionChoice>[];
+  for (final item in raw) {
+    final map = _optionalMap(item);
+    final nested = map?['options'];
+    final groupId = _optionalString(map?['group']);
+    if (nested is List && groupId != null) {
+      final groupName = _optionalString(map?['name']) ?? groupId;
+      final groupMeta = _optionalMap(map?['_meta']);
+      for (final nestedItem in nested) {
+        final choice = _configChoiceFromRaw(nestedItem);
+        if (choice == null) continue;
+        choices.add(
+          ConfigOptionChoice(
+            value: choice.value,
+            name: choice.name,
+            description: choice.description,
+            groupId: groupId,
+            groupName: groupName,
+            groupMeta: groupMeta,
+            meta: choice.meta,
+          ),
+        );
+      }
+      continue;
+    }
+    final choice = _configChoiceFromRaw(item);
+    if (choice != null) choices.add(choice);
+  }
+  return List.unmodifiable(choices);
+}
+
+List<Map<String, dynamic>> _configChoicesToJson(
+  List<ConfigOptionChoice> choices,
+) {
+  final result = <Map<String, dynamic>>[];
+  final grouped = <String, List<ConfigOptionChoice>>{};
+  final groupNames = <String, String>{};
+  final groupMetas = <String, Map<String, dynamic>>{};
+  for (final choice in choices) {
+    final groupId = choice.groupId;
+    if (groupId == null) {
+      result.add(choice.toJson());
+      continue;
+    }
+    grouped.putIfAbsent(groupId, () => <ConfigOptionChoice>[]).add(choice);
+    groupNames[groupId] = choice.groupName ?? groupId;
+    if (choice.groupMeta != null) groupMetas[groupId] = choice.groupMeta!;
+  }
+  for (final entry in grouped.entries) {
+    result.add({
+      'group': entry.key,
+      'name': groupNames[entry.key],
+      'options': entry.value.map((choice) => choice.toJson()).toList(),
+      if (groupMetas[entry.key] != null) '_meta': groupMetas[entry.key],
+    });
+  }
+  return result;
 }
 
 ConfigOptionChoice? _configChoiceFromRaw(Object? raw) {
   if (raw is String || raw is bool || raw is num) {
-    final value = _configValueFromJson(raw);
+    final value = _configChoiceValueFromJson(raw);
     return value.isEmpty ? null : ConfigOptionChoice(value: value, name: value);
   }
   final map = _optionalMap(raw);

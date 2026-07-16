@@ -250,7 +250,7 @@ Manual decision:
 Status: stable official feature, product integration not started.
 
 Non-blocking because: local Codex ACP discovery can add a missing
-`@zed-industries/codex-acp` entry to the saved user config, agent discovery can
+`@agentclientprotocol/codex-acp` entry to the saved user config, agent discovery can
 still be configured explicitly through Agent Configuration, the active config is
 editable and inspectable in the app, and this protocol-compatibility pass
 intentionally avoids ACP Registry browsing, importing, or installing flows until

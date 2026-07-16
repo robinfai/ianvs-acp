@@ -80,8 +80,17 @@ class AcpClient {
     additionalDirectories: additionalDirectories,
   );
 
+  /// Create a session and return the complete ACP `session/new` response.
+  Future<SessionResult> newSessionResult(
+    String workspaceRoot, {
+    List<String> additionalDirectories = const <String>[],
+  }) async => _sessionManager.newSessionResult(
+    workspaceRoot: workspaceRoot,
+    additionalDirectories: additionalDirectories,
+  );
+
   /// Load an existing session (if the agent supports it).
-  Future<void> loadSession({
+  Future<SessionResult> loadSession({
     required String sessionId,
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
@@ -112,6 +121,11 @@ class AcpClient {
   /// Subscribe to the persistent session updates stream (includes replay).
   Stream<AcpUpdate> sessionUpdates(String sessionId) =>
       _sessionManager.sessionUpdates(sessionId);
+
+  /// Non-session notifications such as `elicitation/complete` and
+  /// MCP-over-ACP notifications.
+  Stream<({String method, Map<String, dynamic> params})>
+  get protocolNotifications => _peer.notifications;
 
   /// Cancel the current turn for the given session.
   Future<void> cancel({required String sessionId}) async =>
@@ -163,6 +177,113 @@ class AcpClient {
   Future<SessionListResult> listSessions({String? cwd, String? cursor}) async =>
       _sessionManager.listSessions(cwd: cwd, cursor: cursor);
 
+  /// Authenticate using an ID advertised in `InitializeResponse.authMethods`.
+  Future<void> authenticate({required String methodId}) async =>
+      _sessionManager.authenticate(methodId: methodId);
+
+  /// Log out when the agent advertises `agentCapabilities.auth.logout`.
+  Future<void> logout() async => _sessionManager.logout();
+
+  /// List configurable LLM providers (unstable ACP surface).
+  Future<Map<String, dynamic>> listProviders({Map<String, dynamic>? meta}) =>
+      _peer.sendRaw('providers/list', {'_meta': ?meta});
+
+  /// Replace a configurable LLM provider definition (unstable ACP surface).
+  Future<Map<String, dynamic>> setProvider({
+    required String providerId,
+    required String apiType,
+    required String baseUrl,
+    Map<String, String>? headers,
+    Map<String, dynamic>? meta,
+  }) => _peer.sendRaw('providers/set', {
+    'providerId': providerId,
+    'apiType': apiType,
+    'baseUrl': baseUrl,
+    'headers': ?headers,
+    '_meta': ?meta,
+  });
+
+  /// Disable a configurable LLM provider (unstable ACP surface).
+  Future<Map<String, dynamic>> disableProvider({
+    required String providerId,
+    Map<String, dynamic>? meta,
+  }) => _peer.sendRaw('providers/disable', {
+    'providerId': providerId,
+    '_meta': ?meta,
+  });
+
+  /// Start a Next Edit Suggestions session (unstable ACP surface).
+  Future<Map<String, dynamic>> startNes(Map<String, dynamic> params) =>
+      _peer.sendRaw('nes/start', params);
+
+  /// Request a Next Edit Suggestion (unstable ACP surface).
+  Future<Map<String, dynamic>> suggestNes(Map<String, dynamic> params) =>
+      _peer.sendRaw('nes/suggest', params);
+
+  /// Close a Next Edit Suggestions session (unstable ACP surface).
+  Future<Map<String, dynamic>> closeNes({required String sessionId}) =>
+      _peer.sendRaw('nes/close', {'sessionId': sessionId});
+
+  /// Notify the agent that a document was opened.
+  Future<void> didOpenDocument(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('document/didOpen', params);
+
+  /// Notify the agent that a document changed.
+  Future<void> didChangeDocument(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('document/didChange', params);
+
+  /// Notify the agent that a document was closed.
+  Future<void> didCloseDocument(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('document/didClose', params);
+
+  /// Notify the agent that a document was saved.
+  Future<void> didSaveDocument(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('document/didSave', params);
+
+  /// Notify the agent that a document was focused.
+  Future<void> didFocusDocument(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('document/didFocus', params);
+
+  /// Notify the agent that an NES suggestion was accepted.
+  Future<void> acceptNes({
+    required String sessionId,
+    required String suggestionId,
+  }) => _peer.sendNotificationRaw('nes/accept', {
+    'sessionId': sessionId,
+    'id': suggestionId,
+  });
+
+  /// Notify the agent that an NES suggestion was rejected.
+  Future<void> rejectNes({
+    required String sessionId,
+    required String suggestionId,
+    String? reason,
+  }) => _peer.sendNotificationRaw('nes/reject', {
+    'sessionId': sessionId,
+    'id': suggestionId,
+    'reason': ?reason,
+  });
+
+  /// Ask the peer to cancel an in-flight JSON-RPC request by ID.
+  Future<void> cancelRequest(Object? requestId) =>
+      _peer.sendNotificationRaw(r'$/cancel_request', {'requestId': requestId});
+
+  /// Send an MCP-over-ACP notification (unstable ACP surface).
+  Future<void> sendMcpMessageNotification(Map<String, dynamic> params) =>
+      _peer.sendNotificationRaw('mcp/message', params);
+
+  /// Send an MCP-over-ACP request whose inner result may be any JSON value.
+  Future<dynamic> sendMcpMessageRequest(Map<String, dynamic> params) =>
+      _peer.sendRawValue('mcp/message', params);
+
+  /// Delete a persisted session from session history.
+  Future<void> deleteSession({required String sessionId}) async =>
+      _sessionManager.deleteSession(sessionId: sessionId);
+
+  /// Close an active session without deleting persisted history.
+  Future<void> closeSession({required String sessionId}) async =>
+      _sessionManager.closeSession(sessionId: sessionId);
+
   /// Resume a session without loading history (simpler than [loadSession]).
   ///
   /// Requires agent support for session/resume capability.
@@ -198,7 +319,7 @@ class AcpClient {
   Future<List<ConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
-    required String value,
+    required Object value,
   }) async => _sessionManager.setConfigOption(
     sessionId: sessionId,
     configId: configId,
@@ -210,6 +331,10 @@ class AcpClient {
     String method,
     Map<String, dynamic> params,
   ) async => _peer.sendRaw(method, params);
+
+  /// Send an arbitrary request whose result may be any JSON value.
+  Future<dynamic> sendRawValue(String method, Map<String, dynamic> params) =>
+      _peer.sendRawValue(method, params);
 
   /// Send a JSON-RPC notification (no response expected).
   Future<void> sendNotificationRaw(

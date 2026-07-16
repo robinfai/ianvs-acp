@@ -17,15 +17,22 @@ class JsonRpcPeer {
   /// Underlying JSON-RPC peer.
   final rpc.Peer _peer;
   final StreamController<Json> _sessionUpdates = StreamController.broadcast();
+  final StreamController<({String method, Json params})> _notifications =
+      StreamController.broadcast();
 
   /// Close the peer and clean up resources.
   Future<void> close() async {
     await _peer.close();
     await _sessionUpdates.close();
+    await _notifications.close();
   }
 
   /// Stream of raw `session/update` notifications.
   Stream<Json> get sessionUpdates => _sessionUpdates.stream;
+
+  /// Stream of protocol notifications other than `session/update`.
+  Stream<({String method, Json params})> get notifications =>
+      _notifications.stream;
 
   void _registerClientHandlers() {
     _peer.registerMethod('session/update', (rpc.Parameters params) async {
@@ -98,6 +105,39 @@ class JsonRpcPeer {
       final json = Map<String, dynamic>.from(params.value as Map);
       return onTerminalRelease!(json);
     });
+    _peer.registerMethod('elicitation/create', (rpc.Parameters params) async {
+      if (onElicitationCreate == null) {
+        throw rpc.RpcException.methodNotFound('elicitation/create');
+      }
+      return onElicitationCreate!(
+        Map<String, dynamic>.from(params.value as Map),
+      );
+    });
+    _peer.registerMethod('elicitation/complete', (rpc.Parameters params) async {
+      _notifications.add((
+        method: 'elicitation/complete',
+        params: Map<String, dynamic>.from(params.value as Map),
+      ));
+      return null;
+    });
+    _peer.registerMethod('mcp/connect', (rpc.Parameters params) async {
+      if (onMcpConnect == null) {
+        throw rpc.RpcException.methodNotFound('mcp/connect');
+      }
+      return onMcpConnect!(Map<String, dynamic>.from(params.value as Map));
+    });
+    _peer.registerMethod('mcp/message', (rpc.Parameters params) async {
+      final json = Map<String, dynamic>.from(params.value as Map);
+      if (onMcpMessage != null) return onMcpMessage!(json);
+      _notifications.add((method: 'mcp/message', params: json));
+      return null;
+    });
+    _peer.registerMethod('mcp/disconnect', (rpc.Parameters params) async {
+      if (onMcpDisconnect == null) {
+        throw rpc.RpcException.methodNotFound('mcp/disconnect');
+      }
+      return onMcpDisconnect!(Map<String, dynamic>.from(params.value as Map));
+    });
   }
 
   /// Client handlers (Agent -> Client callbacks)
@@ -125,6 +165,18 @@ class JsonRpcPeer {
   /// Handler invoked when agent requests `terminal/release`.
   Future<dynamic> Function(Json)? onTerminalRelease;
 
+  /// Handler invoked for unstable structured user input requests.
+  Future<dynamic> Function(Json)? onElicitationCreate;
+
+  /// Handler invoked when an agent opens an MCP-over-ACP connection.
+  Future<dynamic> Function(Json)? onMcpConnect;
+
+  /// Handler invoked for MCP-over-ACP request or notification payloads.
+  Future<dynamic> Function(Json)? onMcpMessage;
+
+  /// Handler invoked when an MCP-over-ACP connection is closed.
+  Future<dynamic> Function(Json)? onMcpDisconnect;
+
   /// Send `initialize` and return the JSON payload.
   Future<Json> initialize(Json params) async =>
       Map<String, dynamic>.from(await _peer.sendRequest('initialize', params));
@@ -134,8 +186,9 @@ class JsonRpcPeer {
       Map<String, dynamic>.from(await _peer.sendRequest('session/new', params));
 
   /// Send `session/load` for replay.
-  Future<void> loadSession(Json params) async =>
-      _peer.sendRequest('session/load', params);
+  Future<Json> loadSession(Json params) async => Map<String, dynamic>.from(
+    await _peer.sendRequest('session/load', params),
+  );
 
   /// Send `session/prompt` and return the terminal result payload.
   Future<Json> prompt(Json params) async => Map<String, dynamic>.from(
@@ -153,6 +206,10 @@ class JsonRpcPeer {
   /// Send an arbitrary JSON-RPC request by method name with params.
   Future<Json> sendRaw(String method, Json params) async =>
       Map<String, dynamic>.from(await _peer.sendRequest(method, params));
+
+  /// Send a request whose result is not necessarily a JSON object.
+  Future<dynamic> sendRawValue(String method, Json params) =>
+      _peer.sendRequest(method, params);
 
   /// Send an arbitrary JSON-RPC notification by method name with params.
   Future<void> sendNotificationRaw(String method, Json params) async =>

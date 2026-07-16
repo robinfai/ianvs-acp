@@ -43,26 +43,88 @@ sealed class ContentBlock {
   }
 }
 
+/// Optional ACP display and routing hints for content.
+class ContentAnnotations {
+  /// Creates content annotations.
+  const ContentAnnotations({
+    this.audience = const <String>[],
+    this.lastModified,
+    this.priority,
+    this.meta,
+  });
+
+  /// Parses annotations while preserving unknown extension metadata.
+  factory ContentAnnotations.fromJson(Map<String, dynamic> json) =>
+      ContentAnnotations(
+        audience: json['audience'] is List
+            ? (json['audience'] as List).whereType<String>().toList()
+            : const <String>[],
+        lastModified: _optionalString(json['lastModified']),
+        priority: _optionalNum(json['priority']),
+        meta: _optionalMap(json['_meta']),
+      );
+
+  /// Intended recipients (`user` and/or `assistant`).
+  final List<String> audience;
+
+  /// ISO-8601 last-modified timestamp.
+  final String? lastModified;
+
+  /// Relative display priority.
+  final num? priority;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
+  /// Converts to the ACP wire representation.
+  Map<String, dynamic> toJson() => {
+    if (audience.isNotEmpty) 'audience': audience,
+    if (lastModified != null) 'lastModified': lastModified,
+    if (priority != null) 'priority': priority,
+    if (meta != null) '_meta': meta,
+  };
+}
+
 /// Text content block.
 class TextContent extends ContentBlock {
   /// Creates a text content block.
-  const TextContent({required this.text});
+  const TextContent({required this.text, this.annotations, this.meta});
 
   /// Creates from JSON.
-  factory TextContent.fromJson(Map<String, dynamic> json) =>
-      TextContent(text: _optionalString(json['text'] ?? json['content']) ?? '');
+  factory TextContent.fromJson(Map<String, dynamic> json) => TextContent(
+    text: _optionalString(json['text'] ?? json['content']) ?? '',
+    annotations: _annotationsFromRaw(json['annotations']),
+    meta: _optionalMap(json['_meta']),
+  );
 
   /// The text content.
   final String text;
 
+  /// Optional display and routing hints.
+  final ContentAnnotations? annotations;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   @override
-  Map<String, dynamic> toJson() => {'type': 'text', 'text': text};
+  Map<String, dynamic> toJson() => {
+    'type': 'text',
+    'text': text,
+    if (annotations != null) 'annotations': annotations!.toJson(),
+    if (meta != null) '_meta': meta,
+  };
 }
 
 /// Image content block.
 class ImageContent extends ContentBlock {
   /// Creates an image content block.
-  const ImageContent({required this.mimeType, required this.data});
+  const ImageContent({
+    required this.mimeType,
+    required this.data,
+    this.uri,
+    this.annotations,
+    this.meta,
+  });
 
   /// Creates from JSON.
   factory ImageContent.fromJson(Map<String, dynamic> json) => ImageContent(
@@ -70,6 +132,9 @@ class ImageContent extends ContentBlock {
     data:
         _optionalString(json['data'] ?? json['base64Data'] ?? json['base64']) ??
         '',
+    uri: _optionalString(json['uri']),
+    annotations: _annotationsFromRaw(json['annotations']),
+    meta: _optionalMap(json['_meta']),
   );
 
   /// MIME type of the image.
@@ -78,24 +143,44 @@ class ImageContent extends ContentBlock {
   /// Base64-encoded image data.
   final String data;
 
+  /// Optional URI associated with the image.
+  final String? uri;
+
+  /// Optional display and routing hints.
+  final ContentAnnotations? annotations;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   @override
   Map<String, dynamic> toJson() => {
     'type': 'image',
     'mimeType': mimeType,
     'data': data,
+    if (uri != null) 'uri': uri,
+    if (annotations != null) 'annotations': annotations!.toJson(),
+    if (meta != null) '_meta': meta,
   };
 }
 
 /// Audio content block.
 class AudioContent extends ContentBlock {
   /// Creates an audio content block.
-  const AudioContent({required this.mimeType, this.data, this.uri});
+  const AudioContent({
+    required this.mimeType,
+    this.data,
+    this.uri,
+    this.annotations,
+    this.meta,
+  });
 
   /// Creates from JSON.
   factory AudioContent.fromJson(Map<String, dynamic> json) => AudioContent(
     mimeType: _optionalString(json['mimeType'] ?? json['mime_type']) ?? '',
     data: _optionalString(json['data'] ?? json['base64Data'] ?? json['base64']),
     uri: _optionalString(json['uri']),
+    annotations: _annotationsFromRaw(json['annotations']),
+    meta: _optionalMap(json['_meta']),
   );
 
   /// MIME type of the audio.
@@ -107,12 +192,21 @@ class AudioContent extends ContentBlock {
   /// Optional URI for linked audio.
   final String? uri;
 
+  /// Optional display and routing hints.
+  final ContentAnnotations? annotations;
+
+  /// ACP extension metadata.
+  final Map<String, dynamic>? meta;
+
   @override
   Map<String, dynamic> toJson() => {
     'type': 'audio',
     'mimeType': mimeType,
-    if (data != null) 'data': data,
-    if (uri != null) 'uri': uri,
+    // ACP 1.2.1 requires embedded audio data and has no audio URI field.
+    // Keep [uri] only as a legacy read-side compatibility property.
+    'data': data ?? '',
+    if (annotations != null) 'annotations': annotations!.toJson(),
+    if (meta != null) '_meta': meta,
   };
 }
 
@@ -122,11 +216,16 @@ class ResourceContent extends ContentBlock {
   const ResourceContent({
     required this.uri,
     this.title,
+    this.name,
+    this.description,
     this.mimeType,
     this.text,
     this.blob,
     this.size,
     this.embedded = false,
+    this.annotations,
+    this.meta,
+    this.resourceMeta,
   });
 
   /// Creates from JSON.
@@ -145,6 +244,14 @@ class ResourceContent extends ContentBlock {
       title:
           _optionalString(json['title'] ?? json['name'] ?? json['label']) ??
           _optionalString(source['title'] ?? source['name'] ?? source['label']),
+      name:
+          _optionalString(json['name']) ??
+          _optionalString(source['name']) ??
+          _optionalString(json['title']) ??
+          _optionalString(source['title']),
+      description: _optionalString(
+        json['description'] ?? source['description'],
+      ),
       mimeType:
           _optionalString(json['mimeType'] ?? json['mime_type']) ??
           _optionalString(source['mimeType'] ?? source['mime_type']),
@@ -152,6 +259,9 @@ class ResourceContent extends ContentBlock {
       blob: _optionalString(source['blob']),
       size: _optionalNum(source['size']),
       embedded: embedded,
+      annotations: _annotationsFromRaw(json['annotations']),
+      meta: _optionalMap(json['_meta']),
+      resourceMeta: _optionalMap(source['_meta']),
     );
   }
 
@@ -160,6 +270,12 @@ class ResourceContent extends ContentBlock {
 
   /// Optional title.
   final String? title;
+
+  /// Human-readable resource name required for resource links.
+  final String? name;
+
+  /// Optional resource description.
+  final String? description;
 
   /// Optional MIME type.
   final String? mimeType;
@@ -176,6 +292,15 @@ class ResourceContent extends ContentBlock {
   /// Whether to preserve embedded resource wire shape.
   final bool embedded;
 
+  /// Optional display and routing hints.
+  final ContentAnnotations? annotations;
+
+  /// ACP extension metadata on the content block.
+  final Map<String, dynamic>? meta;
+
+  /// ACP extension metadata on the embedded resource payload.
+  final Map<String, dynamic>? resourceMeta;
+
   @override
   Map<String, dynamic> toJson() {
     if (embedded) {
@@ -183,23 +308,26 @@ class ResourceContent extends ContentBlock {
         'type': 'resource',
         'resource': {
           'uri': uri,
-          if (title != null) 'title': title,
           if (mimeType != null) 'mimeType': mimeType,
-          if (size != null) 'size': size,
           if (text != null) 'text': text,
           if (blob != null) 'blob': blob,
+          if (resourceMeta != null) '_meta': resourceMeta,
         },
+        if (annotations != null) 'annotations': annotations!.toJson(),
+        if (meta != null) '_meta': meta,
       };
     }
     return {
       // Prefer resource_link over embedded resource payloads.
       'type': 'resource_link',
       'uri': uri,
+      'name': name ?? title ?? uri,
       if (title != null) 'title': title,
+      if (description != null) 'description': description,
       if (mimeType != null) 'mimeType': mimeType,
       if (size != null) 'size': size,
-      if (text != null) 'text': text,
-      if (blob != null) 'blob': blob,
+      if (annotations != null) 'annotations': annotations!.toJson(),
+      if (meta != null) '_meta': meta,
     };
   }
 }
@@ -223,6 +351,11 @@ num? _optionalNum(Object? value) => value is num ? value : null;
 Map<String, dynamic>? _optionalMap(Object? value) {
   if (value is! Map) return null;
   return _dynamicMap(value);
+}
+
+ContentAnnotations? _annotationsFromRaw(Object? raw) {
+  final map = _optionalMap(raw);
+  return map == null ? null : ContentAnnotations.fromJson(map);
 }
 
 Map<String, dynamic> _dynamicMap(Map<dynamic, dynamic> value) {

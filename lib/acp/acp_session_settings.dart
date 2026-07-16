@@ -208,11 +208,15 @@ class AcpConfigOptionChoice {
     required this.value,
     required this.name,
     this.description,
+    this.groupId,
+    this.groupName,
   });
 
   final String value;
   final String name;
   final String? description;
+  final String? groupId;
+  final String? groupName;
 
   String get label => name.isEmpty ? value : name;
 }

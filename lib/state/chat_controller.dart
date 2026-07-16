@@ -184,6 +184,8 @@ class ChatController extends ChangeNotifier {
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
+  bool get supportsSessionDelete => capabilities?.session.delete == true;
+
   bool get supportsSessionFork => capabilities?.session.fork == true;
 
   bool get supportsSessionList => capabilities?.session.list == true;
@@ -224,6 +226,13 @@ class ChatController extends ChangeNotifier {
   bool get canCloseCurrentSession {
     return currentSession != null &&
         supportsSessionClose &&
+        !isStreaming &&
+        !isSessionOperationRunning;
+  }
+
+  bool get canDeleteCurrentSession {
+    return currentSession != null &&
+        supportsSessionDelete &&
         !isStreaming &&
         !isSessionOperationRunning;
   }
@@ -1003,6 +1012,37 @@ class ChatController extends ChangeNotifier {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
         await client.closeSession(sessionId: session.id);
+        _retiredSessionIds.add(session.id);
+        _localUnstartedSessionIds.remove(session.id);
+        _sessionViewSnapshots.remove(session.id);
+        currentSession = null;
+        sessions.removeWhere((item) => item.id == session.id);
+        messages.clear();
+        availableCommands = const <Map<String, Object?>>[];
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
+        sessionSettingsLoading = false;
+        await _cancelPendingPermissionRequest(reportErrors: false);
+        status = ConnectionStatus.connected;
+        _notifyListeners();
+      } catch (error) {
+        _setActionError(error);
+      }
+    });
+  }
+
+  Future<void> deleteCurrentSession() async {
+    final session = currentSession;
+    if (session == null || !supportsSessionDelete) return;
+    if (isStreaming || isSessionOperationRunning) return;
+
+    await _runSessionOperation(() async {
+      try {
+        await _promptSubscription?.cancel();
+        _promptSubscription = null;
+        await client.deleteSession(sessionId: session.id);
         _retiredSessionIds.add(session.id);
         _localUnstartedSessionIds.remove(session.id);
         _sessionViewSnapshots.remove(session.id);
