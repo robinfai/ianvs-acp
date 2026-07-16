@@ -158,12 +158,13 @@ class WebSocketAcpTransport implements acp.AcpTransport {
       throw StateError('Transport was stopped while connecting.');
     }
 
-    final inboundController = StreamController<String>(
+    late final StreamController<String> inboundController;
+    inboundController = StreamController<String>(
       sync: true,
-      onListen: _handleInboundListen,
-      onPause: _handleInboundPause,
-      onResume: _handleInboundResume,
-      onCancel: _handleInboundCancel,
+      onListen: () => _handleInboundListen(serial, inboundController),
+      onPause: () => _handleInboundPause(serial, inboundController),
+      onResume: () => _handleInboundResume(serial, inboundController),
+      onCancel: () => _handleInboundCancel(serial, inboundController),
     );
     final outboundController = StreamController<String>(sync: true);
     _socket = socket;
@@ -176,25 +177,54 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _drainCancellation = Completer<void>();
 
     _socketSubscription = socket.listen(
-      _handleSocketMessage,
+      (message) => _handleSocketMessage(serial, socket, message),
       onError: (Object error, StackTrace stackTrace) {
-        if (!_stopping) inboundController.addError(error, stackTrace);
+        if (_ownsSocket(serial, socket) &&
+            _ownsInboundController(serial, inboundController)) {
+          inboundController.addError(error, stackTrace);
+        }
       },
-      onDone: _handleSocketDone,
+      onDone: () => _handleSocketDone(
+        serial,
+        socket,
+        inboundController,
+        outboundController,
+      ),
     );
     _outboundSubscription = outboundController.stream.listen(
-      _enqueueOutbound,
+      (line) => _enqueueOutbound(serial, socket, inboundController, line),
       onError: (Object error, StackTrace stackTrace) {
-        if (!_stopping) inboundController.addError(error, stackTrace);
+        if (_ownsSocket(serial, socket) &&
+            _ownsInboundController(serial, inboundController)) {
+          inboundController.addError(error, stackTrace);
+        }
       },
       onDone: () {
-        unawaited(_closeAfterOutboundDrain(socket));
+        unawaited(
+          _closeAfterOutboundDrain(serial, socket, _outboundDrainFuture),
+        );
       },
     );
   }
 
-  void _handleSocketMessage(Object? message) {
-    if (_stopping || _failed) return;
+  bool _ownsSocket(int generation, WebSocket socket) {
+    return !_stopping &&
+        generation == _startSerial &&
+        identical(_socket, socket);
+  }
+
+  bool _ownsInboundController(
+    int generation,
+    StreamController<String> controller,
+  ) {
+    return !_stopping &&
+        generation == _startSerial &&
+        identical(_inboundController, controller) &&
+        !controller.isClosed;
+  }
+
+  void _handleSocketMessage(int generation, WebSocket socket, Object? message) {
+    if (!_ownsSocket(generation, socket) || _failed) return;
     if (message is String) {
       final bytes = utf8.encode(message).length;
       if (bytes > maxFrameBytes) {
@@ -243,20 +273,39 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _drainInbound();
   }
 
-  void _handleInboundListen() {
+  void _handleInboundListen(
+    int generation,
+    StreamController<String> controller,
+  ) {
+    if (!_ownsInboundController(generation, controller)) return;
     _inboundListening = true;
     _inboundPaused = false;
     _drainInbound();
   }
 
-  void _handleInboundPause() => _inboundPaused = true;
+  void _handleInboundPause(
+    int generation,
+    StreamController<String> controller,
+  ) {
+    if (_ownsInboundController(generation, controller)) {
+      _inboundPaused = true;
+    }
+  }
 
-  void _handleInboundResume() {
+  void _handleInboundResume(
+    int generation,
+    StreamController<String> controller,
+  ) {
+    if (!_ownsInboundController(generation, controller)) return;
     _inboundPaused = false;
     _drainInbound();
   }
 
-  void _handleInboundCancel() {
+  void _handleInboundCancel(
+    int generation,
+    StreamController<String> controller,
+  ) {
+    if (!_ownsInboundController(generation, controller)) return;
     _inboundListening = false;
     _inboundPaused = true;
   }
@@ -281,8 +330,17 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     }
   }
 
-  void _enqueueOutbound(String line) {
-    if (_stopping || _failed) return;
+  void _enqueueOutbound(
+    int generation,
+    WebSocket socket,
+    StreamController<String> inboundController,
+    String line,
+  ) {
+    if (!_ownsSocket(generation, socket) ||
+        !identical(_inboundController, inboundController) ||
+        _failed) {
+      return;
+    }
     final bytes = utf8.encode(line).length;
     if (bytes > maxFrameBytes) {
       _failCapacity(
@@ -312,32 +370,50 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     }
     _outboundQueue.add(_QueuedFrame(line, bytes));
     _outboundQueueBytes = observedBytes;
-    _startOutboundDrain();
+    _startOutboundDrain(generation, socket, inboundController);
   }
 
-  void _startOutboundDrain() {
+  void _startOutboundDrain(
+    int generation,
+    WebSocket socket,
+    StreamController<String> inboundController,
+  ) {
     if (_outboundDraining || _outboundQueue.isEmpty) return;
     _outboundDraining = true;
-    final future = _drainOutbound();
+    final future = _drainOutbound(generation, socket, inboundController);
     _outboundDrainFuture = future;
     unawaited(
       future.whenComplete(() {
+        if (!_ownsSocket(generation, socket) ||
+            !identical(_inboundController, inboundController)) {
+          return;
+        }
         if (identical(_outboundDrainFuture, future)) {
           _outboundDrainFuture = null;
         }
         _outboundDraining = false;
         if (!_stopping && !_failed && _outboundQueue.isNotEmpty) {
-          _startOutboundDrain();
+          _startOutboundDrain(generation, socket, inboundController);
         }
       }),
     );
   }
 
-  Future<void> _drainOutbound() async {
-    final socket = _socket;
+  Future<void> _drainOutbound(
+    int generation,
+    WebSocket socket,
+    StreamController<String> inboundController,
+  ) async {
     final cancellation = _drainCancellation;
-    if (socket == null || cancellation == null) return;
-    while (_outboundQueue.isNotEmpty && !_stopping && !_failed) {
+    if (!_ownsSocket(generation, socket) ||
+        !identical(_inboundController, inboundController) ||
+        cancellation == null) {
+      return;
+    }
+    while (_outboundQueue.isNotEmpty &&
+        _ownsSocket(generation, socket) &&
+        identical(_inboundController, inboundController) &&
+        !_failed) {
       final frame = _outboundQueue.first;
       _notifyProtocolOut(frame.text);
       if (_stopping ||
@@ -354,8 +430,11 @@ class WebSocketAcpTransport implements acp.AcpTransport {
       try {
         await Future.any<void>(<Future<void>>[write, cancellation.future]);
       } on Object catch (error, stackTrace) {
-        if (!_stopping && !_failed) {
-          _inboundController?.addError(error, stackTrace);
+        if (_ownsSocket(generation, socket) &&
+            _ownsInboundController(generation, inboundController) &&
+            identical(_drainCancellation, cancellation) &&
+            !_failed) {
+          inboundController.addError(error, stackTrace);
           _failed = true;
           _clearQueues();
         }
@@ -379,13 +458,19 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     }
   }
 
-  Future<void> _closeAfterOutboundDrain(WebSocket socket) async {
+  Future<void> _closeAfterOutboundDrain(
+    int generation,
+    WebSocket socket,
+    Future<void>? outboundDrain,
+  ) async {
     try {
-      await _outboundDrainFuture;
+      await outboundDrain;
     } on Object {
       // The channel error path reports write failures.
     }
-    if (!_stopping) await socket.close(WebSocketStatus.normalClosure);
+    if (_ownsSocket(generation, socket)) {
+      await socket.close(WebSocketStatus.normalClosure);
+    }
   }
 
   void _failCapacity({
@@ -421,15 +506,25 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     );
   }
 
-  void _handleSocketDone() {
+  void _handleSocketDone(
+    int generation,
+    WebSocket socket,
+    StreamController<String> inboundController,
+    StreamController<String> outboundController,
+  ) {
+    if (!_ownsSocket(generation, socket) ||
+        !identical(_inboundController, inboundController) ||
+        !identical(_outboundController, outboundController)) {
+      return;
+    }
     _failed = true;
     _clearQueues();
     final cancellation = _drainCancellation;
     if (cancellation != null && !cancellation.isCompleted) {
       cancellation.complete();
     }
-    unawaited(_outboundController?.close());
-    unawaited(_inboundController?.close());
+    unawaited(outboundController.close());
+    unawaited(inboundController.close());
   }
 
   void _notifyProtocolIn(String line) {

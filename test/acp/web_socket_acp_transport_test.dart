@@ -229,6 +229,54 @@ void main() {
   });
 
   test(
+    'old paused inbound cancel cannot disable a restarted generation',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        sockets.add(socket);
+        socket.listen((_) {});
+      });
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      );
+      StreamSubscription<String>? oldSubscription;
+      StreamSubscription<String>? restartedSubscription;
+
+      try {
+        await transport.start();
+        await _waitFor(() => sockets.length == 1);
+        oldSubscription = transport.channel.stream.listen((_) {});
+        oldSubscription.pause();
+
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await transport.start();
+        await _waitFor(() => sockets.length == 2);
+
+        final restartedLines = <String>[];
+        restartedSubscription = transport.channel.stream.listen(
+          restartedLines.add,
+        );
+        await oldSubscription.cancel();
+        sockets[1].add('new-generation-frame');
+
+        await _waitFor(() => restartedLines.isNotEmpty);
+        expect(restartedLines, <String>['new-generation-frame']);
+      } finally {
+        await restartedSubscription?.cancel();
+        await oldSubscription?.cancel();
+        await transport.stop();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
     'stop waits for the default frame write before closing and restarting',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
