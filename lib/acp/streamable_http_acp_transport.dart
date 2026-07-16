@@ -19,6 +19,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     this.byteBudget = const acp.TransportByteBudget(),
     int maxCookieCount = 128,
     int maxCookieBytes = 64 * 1024,
+    int maxProtocolObserverErrors = 128,
     DateTime Function()? clock,
   }) : requestTimeout = _positiveDuration(requestTimeout, 'requestTimeout'),
        firstByteTimeout = _positiveDuration(
@@ -26,8 +27,12 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
          'firstByteTimeout',
        ),
        sseIdleTimeout = _positiveDuration(sseIdleTimeout, 'sseIdleTimeout'),
-       maxCookieCount = _positiveCookieLimit(maxCookieCount, 'maxCookieCount'),
-       maxCookieBytes = _positiveCookieLimit(maxCookieBytes, 'maxCookieBytes'),
+       maxCookieCount = _positiveLimit(maxCookieCount, 'maxCookieCount'),
+       maxCookieBytes = _positiveLimit(maxCookieBytes, 'maxCookieBytes'),
+       maxProtocolObserverErrors = _positiveLimit(
+         maxProtocolObserverErrors,
+         'maxProtocolObserverErrors',
+       ),
        _clock = clock ?? DateTime.now {
     byteBudget.validate();
     validateAcpEndpoint(
@@ -46,6 +51,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   final acp.TransportByteBudget byteBudget;
   final int maxCookieCount;
   final int maxCookieBytes;
+  final int maxProtocolObserverErrors;
   final DateTime Function() _clock;
 
   final Map<String, String> _pendingMethodsById = <String, String>{};
@@ -68,6 +74,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   bool _stopping = false;
   int _nextGeneration = 0;
   int? _activeGeneration;
+  int _protocolObserverErrorsForwarded = 0;
 
   @override
   StreamChannel<String> get channel {
@@ -96,6 +103,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final generation = ++_nextGeneration;
     _controller = controller;
     _activeGeneration = generation;
+    _protocolObserverErrorsForwarded = 0;
     _outboundSubscription = controller.local.stream.listen(
       (line) {
         unawaited(_sendLine(generation, client, controller, line));
@@ -559,10 +567,29 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     try {
       onProtocolOut?.call(line);
     } catch (error, stackTrace) {
-      if (_ownsGeneration(generation, client, controller)) {
-        controller.local.sink.addError(error, stackTrace);
-      }
+      _reportProtocolObserverError(
+        generation,
+        client,
+        controller,
+        error,
+        stackTrace,
+      );
     }
+  }
+
+  void _reportProtocolObserverError(
+    int generation,
+    HttpClient client,
+    StreamChannelController<String> controller,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (!_ownsGeneration(generation, client, controller) ||
+        _protocolObserverErrorsForwarded >= maxProtocolObserverErrors) {
+      return;
+    }
+    _protocolObserverErrorsForwarded += 1;
+    controller.local.sink.addError(error, stackTrace);
   }
 
   void _notifyProtocolIn(
@@ -574,9 +601,13 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     try {
       onProtocolIn?.call(line);
     } catch (error, stackTrace) {
-      if (_ownsGeneration(generation, client, controller)) {
-        controller.local.sink.addError(error, stackTrace);
-      }
+      _reportProtocolObserverError(
+        generation,
+        client,
+        controller,
+        error,
+        stackTrace,
+      );
     }
   }
 
@@ -880,7 +911,7 @@ DateTime _maxAgeExpiration(DateTime receivedAt, int seconds) {
 bool _isCookieHeader(String name) =>
     name.toLowerCase() == HttpHeaders.cookieHeader;
 
-int _positiveCookieLimit(int value, String name) {
+int _positiveLimit(int value, String name) {
   if (value <= 0) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
   }

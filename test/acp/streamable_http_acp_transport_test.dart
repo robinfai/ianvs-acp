@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/streamable_http_acp_transport.dart';
+import 'package:stream_channel/stream_channel.dart';
 
 void main() {
   test('HTTP POST response body is bounded before UTF-8 decoding', () async {
@@ -1685,6 +1686,167 @@ void main() {
     }
   });
 
+  test(
+    'protocol observer errors are bounded per HTTP transport generation',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final openResponses = <HttpResponse>[];
+      final receivedRequestIds = <Object?>[];
+      final inboundObserverLines = <String>[];
+      var outboundObserverCalls = 0;
+      var disposed = false;
+
+      Future<void> openSse(HttpRequest request) async {
+        request.response.bufferOutput = false;
+        request.response.headers
+          ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+          ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        openResponses.add(request.response);
+      }
+
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          request.response.statusCode = HttpStatus.accepted;
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          await openSse(request);
+          return;
+        }
+
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        receivedRequestIds.add(message['id']);
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'observer-budget-connection')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{
+                'connectionId': 'observer-budget-connection',
+                'protocolVersion': 1,
+                'agentCapabilities': <String, dynamic>{},
+                'authMethods': <Map<String, dynamic>>[],
+              },
+            }),
+          );
+        await request.response.close();
+      });
+
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        maxProtocolObserverErrors: 2,
+        onProtocolOut: (_) {
+          outboundObserverCalls += 1;
+          throw StateError('out observer failure $outboundObserverCalls');
+        },
+        onProtocolIn: inboundObserverLines.add,
+      );
+      StreamSubscription<String>? subscription;
+
+      Future<void> sendInitialize(StreamChannel<String> channel, int id) async {
+        channel.sink.add(
+          jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'method': 'initialize',
+            'params': <String, dynamic>{},
+          }),
+        );
+      }
+
+      try {
+        await transport.start();
+        final firstChannel = transport.channel;
+        for (var id = 1; id <= 3; id += 1) {
+          await sendInitialize(firstChannel, id);
+        }
+        await _waitFor(
+          () =>
+              receivedRequestIds.length == 3 &&
+              inboundObserverLines.length == 3,
+        );
+
+        final firstInbound = <Map<String, dynamic>>[];
+        final firstErrors = <Object>[];
+        final firstSubscription = firstChannel.stream.listen(
+          (line) => firstInbound.add(jsonDecode(line) as Map<String, dynamic>),
+          onError: firstErrors.add,
+        );
+        subscription = firstSubscription;
+        await _waitFor(
+          () => firstInbound.length == 3 && firstErrors.length == 2,
+        );
+        await pumpEventQueue(times: 4);
+
+        expect(receivedRequestIds, containsAll(<int>[1, 2, 3]));
+        expect(
+          firstInbound.map((message) => message['id']),
+          containsAll(<int>[1, 2, 3]),
+        );
+        expect(
+          firstErrors.whereType<StateError>().map((error) => error.message),
+          containsAll(<String>[
+            'out observer failure 1',
+            'out observer failure 2',
+          ]),
+        );
+        expect(firstErrors, hasLength(2));
+
+        await firstSubscription.cancel();
+        subscription = null;
+        await transport.stop().timeout(const Duration(seconds: 5));
+        await transport.start();
+
+        final secondInbound = <Map<String, dynamic>>[];
+        final secondErrors = <Object>[];
+        final secondChannel = transport.channel;
+        final secondSubscription = secondChannel.stream.listen(
+          (line) => secondInbound.add(jsonDecode(line) as Map<String, dynamic>),
+          onError: secondErrors.add,
+        );
+        subscription = secondSubscription;
+        await sendInitialize(secondChannel, 4);
+        await _waitFor(
+          () => secondInbound.length == 1 && secondErrors.length == 1,
+        );
+
+        expect(receivedRequestIds, contains(4));
+        expect(secondInbound.single['id'], 4);
+        expect(
+          secondErrors.single,
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'out observer failure 4',
+          ),
+        );
+
+        await secondSubscription.cancel();
+        subscription = null;
+        await transport.stop().timeout(const Duration(seconds: 5));
+        disposed = true;
+      } finally {
+        await subscription?.cancel();
+        if (!disposed) await transport.stop();
+        for (final response in openResponses) {
+          try {
+            await response.close();
+          } on Object {
+            // The transport stop may already own the response sink.
+          }
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
   test('transport can restart after stop', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final openResponses = <HttpResponse>[];
@@ -2717,6 +2879,37 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('HTTP protocol observer error budget must be positive at runtime', () {
+    final endpoint = Uri.parse('http://127.0.0.1:1/acp');
+    expect(
+      StreamableHttpAcpTransport(endpoint: endpoint).maxProtocolObserverErrors,
+      128,
+    );
+
+    for (final invalidValue in <int>[0, -1]) {
+      expect(
+        () => StreamableHttpAcpTransport(
+          endpoint: endpoint,
+          maxProtocolObserverErrors: invalidValue,
+        ),
+        throwsA(
+          isA<ArgumentError>()
+              .having(
+                (error) => error.name,
+                'name',
+                'maxProtocolObserverErrors',
+              )
+              .having(
+                (error) => error.invalidValue,
+                'invalidValue',
+                invalidValue,
+              ),
+        ),
+        reason: '$invalidValue',
+      );
+    }
   });
 
   test('HTTP transport timeouts must be positive at runtime', () {
