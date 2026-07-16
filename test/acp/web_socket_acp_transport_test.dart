@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/web_socket_acp_transport.dart';
 
@@ -412,20 +414,16 @@ void main() {
       final socket = await serverSocket.future;
 
       socket.add('{"jsonrpc":"2.0","method":"inbound"}');
-      final errorsBeforeOutbound = transportErrors.length;
       channel.sink.add('{"jsonrpc":"2.0","method":"outbound"}');
-      expect(transportErrors, hasLength(errorsBeforeOutbound + 1));
 
       await _waitFor(
-        () =>
-            inboundMessages.isNotEmpty &&
-            outboundMessages.isNotEmpty &&
-            transportErrors.length >= 2,
+        () => inboundMessages.isNotEmpty && outboundMessages.isNotEmpty,
       );
+      await pumpEventQueue(times: 4);
 
       expect(inboundMessages.single, contains('inbound'));
       expect(outboundMessages.single, contains('outbound'));
-      expect(transportErrors.whereType<StateError>(), hasLength(2));
+      expect(transportErrors, isEmpty);
 
       await inboundSubscription.cancel();
       await transport.stop().timeout(const Duration(seconds: 5));
@@ -440,7 +438,72 @@ void main() {
   });
 
   test(
-    'protocol observer errors are bounded per websocket generation',
+    'protocol observer failures keep websocket JsonRpcPeer requests usable',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSocket = Completer<WebSocket>();
+      var requestCount = 0;
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        if (!serverSocket.isCompleted) serverSocket.complete(socket);
+        socket.listen((message) {
+          if (message is! String) return;
+          final request = jsonDecode(message) as Map<String, dynamic>;
+          requestCount += 1;
+          socket.add(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{
+                'method': request['method'],
+                'request': requestCount,
+              },
+            }),
+          );
+        });
+      });
+      var inboundObserverCalls = 0;
+      var outboundObserverCalls = 0;
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+        onProtocolIn: (_) {
+          inboundObserverCalls += 1;
+          throw StateError('in observer failed');
+        },
+        onProtocolOut: (_) {
+          outboundObserverCalls += 1;
+          throw StateError('out observer failed');
+        },
+      );
+      JsonRpcPeer? peer;
+
+      try {
+        await transport.start();
+        await serverSocket.future;
+        peer = JsonRpcPeer(transport.channel);
+
+        expect(
+          await peer.sendRaw('test/first', <String, dynamic>{'value': 1}),
+          <String, dynamic>{'method': 'test/first', 'request': 1},
+        );
+        expect(
+          await peer.sendRaw('test/second', <String, dynamic>{'value': 2}),
+          <String, dynamic>{'method': 'test/second', 'request': 2},
+        );
+        expect(peer.isAvailable, isTrue);
+        expect(inboundObserverCalls, 2);
+        expect(outboundObserverCalls, 2);
+      } finally {
+        await peer?.close();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'protocol observer diagnostics stay isolated across websocket restart',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final messagesBySocket = <List<String>>[];
@@ -480,15 +543,9 @@ void main() {
           (_) {},
           onError: firstErrors.add,
         );
-        await _waitFor(() => firstErrors.length >= 2);
-        await Future<void>.delayed(Duration.zero);
+        await pumpEventQueue(times: 4);
         expect(messagesBySocket.first, <String>['first', 'second', 'third']);
-        expect(firstErrors, hasLength(2));
-        expect(firstErrors, everyElement(isA<StateError>()));
-        expect(
-          firstErrors.whereType<acp.TransportByteLimitExceeded>(),
-          isEmpty,
-        );
+        expect(firstErrors, isEmpty);
 
         await firstSubscription.cancel();
         firstSubscription = null;
@@ -504,11 +561,9 @@ void main() {
           (_) {},
           onError: restartedErrors.add,
         );
-        await _waitFor(() => restartedErrors.isNotEmpty);
-        await Future<void>.delayed(Duration.zero);
+        await pumpEventQueue(times: 4);
         expect(messagesBySocket[1], <String>['restart']);
-        expect(restartedErrors, hasLength(1));
-        expect(restartedErrors.single, isA<StateError>());
+        expect(restartedErrors, isEmpty);
         expect(observerCalls, 4);
       } finally {
         await firstSubscription?.cancel();

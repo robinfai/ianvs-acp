@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart';
+import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
 import 'package:flutter_test/flutter_test.dart';
 // logging is a direct dependency of the in-repository dart_acp package.
 // ignore: depend_on_referenced_packages
@@ -676,14 +677,21 @@ void main() {
   );
 
   test(
-    'StdinTransport bounds protocol observer errors per generation',
+    'StdinTransport bounds protocol observer diagnostics per generation',
     () async {
       final input = _RestartableControlledInputStream();
       final outputConsumer = _RecordingStreamConsumer();
       final output = IOSink(outputConsumer);
+      final logger = Logger(
+        'stdin.observer-budget.${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final warningMessages = <String>[];
+      final logSubscription = logger.onRecord.listen(
+        (record) => warningMessages.add(record.message),
+      );
       var observerCalls = 0;
       final transport = StdinTransport(
-        logger: AcpConfig().logger,
+        logger: logger,
         maxProtocolObserverErrors: 2,
         inputStream: input,
         outputSink: output,
@@ -700,21 +708,20 @@ void main() {
           ..add('first')
           ..add('second')
           ..add('third');
-        await _waitFor(() => outputConsumer.text.contains('third\n'));
-
         final firstGenerationErrors = <Object>[];
         subscription = transport.channel.stream.listen(
           (_) {},
           onError: firstGenerationErrors.add,
         );
-        await _waitFor(() => firstGenerationErrors.length >= 2);
+        await _waitFor(
+          () =>
+              outputConsumer.text.contains('third\n') &&
+              warningMessages.length >= 2,
+        );
         await Future<void>.delayed(Duration.zero);
 
-        expect(firstGenerationErrors, hasLength(2));
-        expect(
-          firstGenerationErrors.whereType<TransportByteLimitExceeded>(),
-          isEmpty,
-        );
+        expect(firstGenerationErrors, isEmpty);
+        expect(warningMessages, hasLength(2));
         expect(outputConsumer.text, 'first\nsecond\nthird\n');
         await subscription.cancel();
         subscription = null;
@@ -730,16 +737,17 @@ void main() {
         await _waitFor(
           () =>
               outputConsumer.text.contains('fourth\n') &&
-              secondGenerationErrors.isNotEmpty,
+              warningMessages.length >= 3,
         );
 
-        expect(secondGenerationErrors, hasLength(1));
-        expect(secondGenerationErrors.single, isA<StateError>());
+        expect(secondGenerationErrors, isEmpty);
+        expect(warningMessages, hasLength(3));
         expect(outputConsumer.text, 'first\nsecond\nthird\nfourth\n');
         expect(observerCalls, 4);
       } finally {
         await subscription?.cancel();
         await transport.stop().timeout(const Duration(seconds: 1));
+        await logSubscription.cancel();
         await input.close();
         await output.close();
       }
@@ -1550,9 +1558,9 @@ void main() {
             await _waitFor(
               () =>
                   inboundLines.isNotEmpty &&
-                  outputConsumer.text.contains('valid outbound\n') &&
-                  transportErrors.length >= 2,
+                  outputConsumer.text.contains('valid outbound\n'),
             );
+            await pumpEventQueue(times: 4);
           } finally {
             await subscription?.cancel();
             await transport.stop();
@@ -1573,11 +1581,56 @@ void main() {
       expect(outputConsumer.text, contains('valid outbound\n'));
       expect(protocolInLines, <String>['valid inbound']);
       expect(protocolOutLines, <String>['valid outbound']);
-      expect(
-        transportErrors.whereType<StateError>().map((error) => error.message),
-        containsAll(<String>['in observer failed', 'out observer failed']),
-      );
+      expect(transportErrors, isEmpty);
       expect(() => transport.channel, throwsStateError);
+    },
+  );
+
+  test(
+    'StdinTransport observer failures keep JsonRpcPeer requests usable',
+    () async {
+      final input = StreamController<List<int>>();
+      final outputConsumer = _JsonRpcResponseStreamConsumer(input);
+      final output = IOSink(outputConsumer);
+      var inboundObserverCalls = 0;
+      var outboundObserverCalls = 0;
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        inputStream: input.stream,
+        outputSink: output,
+        onProtocolIn: (_) {
+          inboundObserverCalls += 1;
+          throw StateError('in observer failed');
+        },
+        onProtocolOut: (_) {
+          outboundObserverCalls += 1;
+          throw StateError('out observer failed');
+        },
+      );
+      JsonRpcPeer? peer;
+
+      try {
+        await transport.start();
+        peer = JsonRpcPeer(transport.channel);
+
+        expect(
+          await peer.sendRaw('test/first', <String, dynamic>{'value': 1}),
+          <String, dynamic>{'method': 'test/first', 'request': 1},
+        );
+        expect(
+          await peer.sendRaw('test/second', <String, dynamic>{'value': 2}),
+          <String, dynamic>{'method': 'test/second', 'request': 2},
+        );
+
+        expect(peer.isAvailable, isTrue);
+        expect(inboundObserverCalls, 2);
+        expect(outboundObserverCalls, 2);
+      } finally {
+        await peer?.close();
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await input.close();
+        await output.close();
+      }
     },
   );
 }
@@ -1599,6 +1652,41 @@ class _RecordingStreamConsumer implements StreamConsumer<List<int>> {
   Future<void> addStream(Stream<List<int>> stream) async {
     await for (final chunk in stream) {
       _bytes.addAll(chunk);
+    }
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+class _JsonRpcResponseStreamConsumer implements StreamConsumer<List<int>> {
+  _JsonRpcResponseStreamConsumer(this.input);
+
+  final StreamController<List<int>> input;
+  final List<int> _pending = <int>[];
+  var _requestCount = 0;
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    await for (final chunk in stream) {
+      _pending.addAll(chunk);
+      while (true) {
+        final newlineIndex = _pending.indexOf(10);
+        if (newlineIndex < 0) break;
+        final line = utf8.decode(_pending.take(newlineIndex).toList());
+        _pending.removeRange(0, newlineIndex + 1);
+        final request = jsonDecode(line) as Map<String, dynamic>;
+        _requestCount += 1;
+        input.add(
+          utf8.encode(
+            '${jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': request['id'],
+              'result': <String, dynamic>{'method': request['method'], 'request': _requestCount},
+            })}\n',
+          ),
+        );
+      }
     }
   }
 

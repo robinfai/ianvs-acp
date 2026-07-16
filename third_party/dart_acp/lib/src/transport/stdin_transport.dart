@@ -86,7 +86,7 @@ class StdinTransport implements AcpTransport {
   /// Maximum accepted raw input bytes waiting for delivery.
   final int maxInboundQueueBytes;
 
-  /// Maximum protocol observer errors forwarded per transport generation.
+  /// Maximum protocol observer failures logged per transport generation.
   final int maxProtocolObserverErrors;
 
   /// Maximum total time [stop] or failed-start cleanup waits for asynchronous
@@ -113,7 +113,7 @@ class StdinTransport implements AcpTransport {
   var _outputDraining = false;
   var _inputQueueBytes = 0;
   var _outputQueueBytes = 0;
-  var _protocolObserverErrorsForwarded = 0;
+  var _protocolObserverErrorsLogged = 0;
   _InputFailure? _terminalFailure;
   var _terminalPublished = false;
   Future<void>? _outputDrainFuture;
@@ -172,7 +172,7 @@ class StdinTransport implements AcpTransport {
     _activeInputFrame = null;
     _inputQueueBytes = 0;
     _outputQueueBytes = 0;
-    _protocolObserverErrorsForwarded = 0;
+    _protocolObserverErrorsLogged = 0;
     _terminalFailure = null;
     _terminalPublished = false;
     _outputDrainFuture = null;
@@ -409,13 +409,11 @@ class StdinTransport implements AcpTransport {
         frame.observerDelivered = true;
         try {
           onProtocolIn?.call(frame.line);
-        } on Object catch (error, stackTrace) {
+        } on Object {
           _reportProtocolObserverFailure(
             generation: generation,
             inboundController: controller,
             direction: 'Inbound',
-            error: error,
-            stackTrace: stackTrace,
           );
         }
       }
@@ -523,13 +521,11 @@ class StdinTransport implements AcpTransport {
       logger.finer('Output protocol line sent');
       try {
         onProtocolOut?.call(frame.line);
-      } on Object catch (error, stackTrace) {
+      } on Object {
         _reportProtocolObserverFailure(
           generation: generation,
           inboundController: inboundController,
           direction: 'Outbound',
-          error: error,
-          stackTrace: stackTrace,
         );
       }
       if (_activeGeneration != generation || _outputFailed) return;
@@ -560,8 +556,6 @@ class StdinTransport implements AcpTransport {
     required int generation,
     required StreamController<String> inboundController,
     required String direction,
-    required Object error,
-    required StackTrace stackTrace,
   }) {
     if (_activeGeneration != generation ||
         !identical(_inboundController, inboundController) ||
@@ -569,16 +563,11 @@ class StdinTransport implements AcpTransport {
         _terminalFailure != null ||
         _inputFailed ||
         _outputFailed ||
-        _protocolObserverErrorsForwarded >= maxProtocolObserverErrors) {
+        _protocolObserverErrorsLogged >= maxProtocolObserverErrors) {
       return;
     }
-    _protocolObserverErrorsForwarded += 1;
+    _protocolObserverErrorsLogged += 1;
     logger.warning('$direction protocol observer failed');
-    try {
-      inboundController.addError(error, stackTrace);
-    } on Object {
-      // Observer diagnostics must not interrupt protocol traffic during close.
-    }
   }
 
   void _failInput(

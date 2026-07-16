@@ -87,7 +87,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   int _startSerial = 0;
   int _inboundQueueBytes = 0;
   int _outboundQueueBytes = 0;
-  int _protocolObserverErrorCount = 0;
+  int _protocolObserverFailuresRecorded = 0;
   bool _inboundListening = false;
   bool _inboundPaused = false;
   bool _outboundDraining = false;
@@ -534,8 +534,8 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     final controller = _inboundController;
     try {
       onProtocolIn?.call(line);
-    } catch (error, stackTrace) {
-      _reportProtocolObserverError(controller, error, stackTrace);
+    } on Object {
+      _recordProtocolObserverFailure(controller);
     }
   }
 
@@ -543,25 +543,20 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     final controller = _inboundController;
     try {
       onProtocolOut?.call(line);
-    } catch (error, stackTrace) {
-      _reportProtocolObserverError(controller, error, stackTrace);
+    } on Object {
+      _recordProtocolObserverFailure(controller);
     }
   }
 
-  void _reportProtocolObserverError(
-    StreamController<String>? controller,
-    Object error,
-    StackTrace stackTrace,
-  ) {
+  void _recordProtocolObserverFailure(StreamController<String>? controller) {
     if (_stopping ||
         _failed ||
         controller == null ||
         !identical(_inboundController, controller) ||
-        _protocolObserverErrorCount >= maxProtocolObserverErrors) {
+        _protocolObserverFailuresRecorded >= maxProtocolObserverErrors) {
       return;
     }
-    _protocolObserverErrorCount += 1;
-    controller.addError(error, stackTrace);
+    _protocolObserverFailuresRecorded += 1;
   }
 
   @override
@@ -694,7 +689,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
 
   void _resetQueues() {
     _clearQueues();
-    _protocolObserverErrorCount = 0;
+    _protocolObserverFailuresRecorded = 0;
     _inboundListening = false;
     _inboundPaused = false;
     _outboundDraining = false;

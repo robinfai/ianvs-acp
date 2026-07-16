@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:dart_acp/src/rpc/peer.dart' show JsonRpcPeer;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/streamable_http_acp_transport.dart';
 import 'package:stream_channel/stream_channel.dart';
@@ -1662,14 +1663,11 @@ void main() {
       await _waitFor(
         () => inboundMessages.any((message) => message['id'] == 1),
       );
-      await _waitFor(() => transportErrors.length >= 2);
+      await pumpEventQueue(times: 4);
 
       expect(outboundLines, hasLength(1));
       expect(inboundLines, hasLength(1));
-      expect(
-        transportErrors.whereType<StateError>().map((error) => error.message),
-        containsAll(<String>['out callback failed', 'in callback failed']),
-      );
+      expect(transportErrors, isEmpty);
 
       await transport.stop().timeout(const Duration(seconds: 5));
       disposed = true;
@@ -1687,7 +1685,108 @@ void main() {
   });
 
   test(
-    'protocol observer errors are bounded per HTTP transport generation',
+    'protocol observer failures keep HTTP JsonRpcPeer requests usable',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final openResponses = <HttpResponse>[];
+      var requestCount = 0;
+
+      Future<void> openSse(HttpRequest request) async {
+        request.response.bufferOutput = false;
+        request.response.headers
+          ..contentType = ContentType('text', 'event-stream', charset: 'utf-8')
+          ..set(HttpHeaders.cacheControlHeader, 'no-cache');
+        request.response.write(': connected\n\n');
+        await request.response.flush();
+        openResponses.add(request.response);
+      }
+
+      final serverSubscription = server.listen((request) async {
+        if (request.method == 'DELETE') {
+          request.response.statusCode = HttpStatus.accepted;
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET') {
+          await openSse(request);
+          return;
+        }
+
+        final body = await utf8.decoder.bind(request).join();
+        final message = jsonDecode(body) as Map<String, dynamic>;
+        requestCount += 1;
+        final method = message['method'];
+        request.response
+          ..headers.contentType = ContentType.json
+          ..headers.set('Acp-Connection-Id', 'observer-peer-connection')
+          ..write(
+            jsonEncode(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': method == 'initialize'
+                  ? <String, dynamic>{
+                      'connectionId': 'observer-peer-connection',
+                      'protocolVersion': 1,
+                      'agentCapabilities': <String, dynamic>{},
+                      'authMethods': <Map<String, dynamic>>[],
+                    }
+                  : <String, dynamic>{
+                      'method': method,
+                      'request': requestCount,
+                    },
+            }),
+          );
+        await request.response.close();
+      });
+      var inboundObserverCalls = 0;
+      var outboundObserverCalls = 0;
+      final transport = StreamableHttpAcpTransport(
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/acp'),
+        onProtocolIn: (_) {
+          inboundObserverCalls += 1;
+          throw StateError('in observer failed');
+        },
+        onProtocolOut: (_) {
+          outboundObserverCalls += 1;
+          throw StateError('out observer failed');
+        },
+      );
+      JsonRpcPeer? peer;
+
+      try {
+        await transport.start();
+        peer = JsonRpcPeer(transport.channel);
+
+        final initialized = await peer.sendRaw(
+          'initialize',
+          <String, dynamic>{},
+        );
+        expect(initialized['connectionId'], 'observer-peer-connection');
+        expect(
+          await peer.sendRaw('test/ping', <String, dynamic>{'value': 1}),
+          <String, dynamic>{'method': 'test/ping', 'request': 2},
+        );
+        expect(peer.isAvailable, isTrue);
+        expect(inboundObserverCalls, 2);
+        expect(outboundObserverCalls, 2);
+      } finally {
+        await peer?.close();
+        await transport.stop();
+        for (final response in openResponses) {
+          try {
+            await response.close();
+          } on Object {
+            // Transport stop may already own the SSE response sink.
+          }
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'protocol observer diagnostics stay isolated across HTTP restart',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final openResponses = <HttpResponse>[];
@@ -1779,9 +1878,7 @@ void main() {
           onError: firstErrors.add,
         );
         subscription = firstSubscription;
-        await _waitFor(
-          () => firstInbound.length == 3 && firstErrors.length == 2,
-        );
+        await _waitFor(() => firstInbound.length == 3);
         await pumpEventQueue(times: 4);
 
         expect(receivedRequestIds, containsAll(<int>[1, 2, 3]));
@@ -1789,14 +1886,7 @@ void main() {
           firstInbound.map((message) => message['id']),
           containsAll(<int>[1, 2, 3]),
         );
-        expect(
-          firstErrors.whereType<StateError>().map((error) => error.message),
-          containsAll(<String>[
-            'out observer failure 1',
-            'out observer failure 2',
-          ]),
-        );
-        expect(firstErrors, hasLength(2));
+        expect(firstErrors, isEmpty);
 
         await firstSubscription.cancel();
         subscription = null;
@@ -1812,20 +1902,13 @@ void main() {
         );
         subscription = secondSubscription;
         await sendInitialize(secondChannel, 4);
-        await _waitFor(
-          () => secondInbound.length == 1 && secondErrors.length == 1,
-        );
+        await _waitFor(() => secondInbound.length == 1);
+        await pumpEventQueue(times: 4);
 
         expect(receivedRequestIds, contains(4));
         expect(secondInbound.single['id'], 4);
-        expect(
-          secondErrors.single,
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            'out observer failure 4',
-          ),
-        );
+        expect(secondErrors, isEmpty);
+        expect(outboundObserverCalls, 4);
 
         await secondSubscription.cancel();
         subscription = null;

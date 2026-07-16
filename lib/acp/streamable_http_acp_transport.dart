@@ -74,7 +74,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   bool _stopping = false;
   int _nextGeneration = 0;
   int? _activeGeneration;
-  int _protocolObserverErrorsForwarded = 0;
+  int _protocolObserverFailuresRecorded = 0;
 
   @override
   StreamChannel<String> get channel {
@@ -103,7 +103,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
     final generation = ++_nextGeneration;
     _controller = controller;
     _activeGeneration = generation;
-    _protocolObserverErrorsForwarded = 0;
+    _protocolObserverFailuresRecorded = 0;
     _outboundSubscription = controller.local.stream.listen(
       (line) {
         unawaited(_sendLine(generation, client, controller, line));
@@ -566,30 +566,21 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   ) {
     try {
       onProtocolOut?.call(line);
-    } catch (error, stackTrace) {
-      _reportProtocolObserverError(
-        generation,
-        client,
-        controller,
-        error,
-        stackTrace,
-      );
+    } on Object {
+      _recordProtocolObserverFailure(generation, client, controller);
     }
   }
 
-  void _reportProtocolObserverError(
+  void _recordProtocolObserverFailure(
     int generation,
     HttpClient client,
     StreamChannelController<String> controller,
-    Object error,
-    StackTrace stackTrace,
   ) {
     if (!_ownsGeneration(generation, client, controller) ||
-        _protocolObserverErrorsForwarded >= maxProtocolObserverErrors) {
+        _protocolObserverFailuresRecorded >= maxProtocolObserverErrors) {
       return;
     }
-    _protocolObserverErrorsForwarded += 1;
-    controller.local.sink.addError(error, stackTrace);
+    _protocolObserverFailuresRecorded += 1;
   }
 
   void _notifyProtocolIn(
@@ -600,14 +591,8 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
   ) {
     try {
       onProtocolIn?.call(line);
-    } catch (error, stackTrace) {
-      _reportProtocolObserverError(
-        generation,
-        client,
-        controller,
-        error,
-        stackTrace,
-      );
+    } on Object {
+      _recordProtocolObserverFailure(generation, client, controller);
     }
   }
 
