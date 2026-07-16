@@ -70,6 +70,32 @@ void main() {
     }
   });
 
+  test('StdinTransport validates stopDrainTimeout at runtime', () {
+    Object? create(Duration timeout) =>
+        Function.apply(StdinTransport.new, const <Object?>[], <Symbol, Object?>{
+          #logger: AcpConfig().logger,
+          #stopDrainTimeout: timeout,
+          #inputStream: const Stream<List<int>>.empty(),
+          #outputSink: IOSink(_DiscardStreamConsumer()),
+        });
+
+    for (final timeout in <Duration>[
+      Duration.zero,
+      const Duration(microseconds: -1),
+    ]) {
+      expect(
+        () => create(timeout),
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.name,
+            'name',
+            'stopDrainTimeout',
+          ),
+        ),
+      );
+    }
+  });
+
   test('StdinTransport logs omit inbound and outbound payloads', () async {
     const inboundSecret = 'stdin-inbound-secret';
     const outboundSecret = 'stdin-outbound-secret';
@@ -359,6 +385,190 @@ void main() {
       await output.close();
     }
   });
+
+  test(
+    'StdinTransport bounds stop and restart behind a permanently blocked flush',
+    () async {
+      final input = _RestartableControlledInputStream();
+      final outputConsumer = _BlockingStreamConsumer();
+      final output = IOSink(outputConsumer);
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxOutboundQueueItems: 1,
+        maxOutboundQueueBytes: 32,
+        stopDrainTimeout: const Duration(milliseconds: 40),
+        inputStream: input,
+        outputSink: output,
+      );
+      StreamSubscription<String>? restartedSubscription;
+
+      try {
+        await transport.start();
+        transport.channel.sink.add('old generation');
+        await outputConsumer.started.future;
+
+        await transport.stop().timeout(const Duration(milliseconds: 500));
+        expect(() => transport.channel, throwsStateError);
+
+        await transport.start().timeout(const Duration(seconds: 1));
+        expect(input.listenCount, 2);
+        final restartedLines = <String>[];
+        final restartedErrors = <Object>[];
+        restartedSubscription = transport.channel.stream.listen(
+          restartedLines.add,
+          onError: restartedErrors.add,
+        );
+        input.addLine('new inbound');
+        await _waitFor(() => restartedLines.isNotEmpty);
+
+        // The stopped generation must not retain its one-item queue budget.
+        transport.channel.sink.add('new generation');
+        outputConsumer.release();
+        await _waitFor(() => outputConsumer.text.contains('new generation\n'));
+
+        expect(restartedLines, <String>['new inbound']);
+        expect(restartedErrors, isEmpty);
+        expect(outputConsumer.text, 'old generation\nnew generation\n');
+      } finally {
+        outputConsumer.release();
+        await restartedSubscription?.cancel();
+        await transport.stop();
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
+  test(
+    'StdinTransport ignores a late old-generation flush error after restart',
+    () async {
+      final zoneErrors = <Object>[];
+      final bodyDone = Completer<void>();
+      late StdinTransport transport;
+
+      runZonedGuarded(() async {
+        final input = _RestartableControlledInputStream();
+        final outputConsumer = _BlockingStreamConsumer();
+        final output = IOSink(outputConsumer);
+        transport = StdinTransport(
+          logger: AcpConfig().logger,
+          stopDrainTimeout: const Duration(milliseconds: 40),
+          inputStream: input,
+          outputSink: output,
+        );
+        StreamSubscription<String>? restartedSubscription;
+        try {
+          await transport.start();
+          transport.channel.sink.add('old generation');
+          await outputConsumer.started.future;
+          await transport.stop().timeout(const Duration(milliseconds: 500));
+          await transport.start().timeout(const Duration(seconds: 1));
+
+          final restartedLines = <String>[];
+          final restartedErrors = <Object>[];
+          restartedSubscription = transport.channel.stream.listen(
+            restartedLines.add,
+            onError: restartedErrors.add,
+          );
+          input.addLine('before late error');
+          await _waitFor(() => restartedLines.isNotEmpty);
+
+          outputConsumer.fail(StateError('late old flush failure'));
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          input.addLine('after late error');
+          await _waitFor(() => restartedLines.length == 2);
+
+          expect(restartedLines, <String>[
+            'before late error',
+            'after late error',
+          ]);
+          expect(restartedErrors, isEmpty);
+          expect(transport.channel, isNotNull);
+        } finally {
+          outputConsumer.release();
+          await restartedSubscription?.cancel();
+          await transport.stop();
+          await input.close();
+          try {
+            await output.close();
+          } on Object {
+            // The synthetic old-generation sink failure is expected.
+          }
+          if (!bodyDone.isCompleted) bodyDone.complete();
+        }
+      }, (error, _) => zoneErrors.add(error));
+
+      await bodyDone.future.timeout(const Duration(seconds: 4));
+      expect(zoneErrors, isEmpty);
+      expect(() => transport.channel, throwsStateError);
+    },
+  );
+
+  test(
+    'StdinTransport bounds stop and restart when input cancel never completes',
+    () async {
+      final zoneErrors = <Object>[];
+      final bodyDone = Completer<void>();
+      late StdinTransport transport;
+
+      runZonedGuarded(() async {
+        final input = _SequencedInputStream(failSynchronously: false);
+        final output = IOSink(_DiscardStreamConsumer());
+        transport = StdinTransport(
+          logger: AcpConfig().logger,
+          stopDrainTimeout: const Duration(milliseconds: 40),
+          inputStream: input,
+          outputSink: output,
+        );
+        StreamSubscription<String>? restartedSubscription;
+        try {
+          await transport.start();
+          final stop = transport.stop();
+          await input.firstCancelStarted.future;
+          final restart = transport.start();
+
+          await stop.timeout(const Duration(milliseconds: 500));
+          await restart.timeout(const Duration(milliseconds: 500));
+          expect(input.listenCount, 2);
+
+          final restartedLines = <String>[];
+          final restartedErrors = <Object>[];
+          restartedSubscription = transport.channel.stream.listen(
+            restartedLines.add,
+            onError: restartedErrors.add,
+          );
+          input.addLine('before late cancel');
+          await _waitFor(() => restartedLines.isNotEmpty);
+
+          input.releaseFirstCancel.completeError(
+            StateError('late old cancel failure'),
+            StackTrace.current,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          input.addLine('after late cancel');
+          await _waitFor(() => restartedLines.length == 2);
+
+          expect(restartedLines, <String>[
+            'before late cancel',
+            'after late cancel',
+          ]);
+          expect(restartedErrors, isEmpty);
+        } finally {
+          if (!input.releaseFirstCancel.isCompleted) {
+            input.releaseFirstCancel.complete();
+          }
+          await restartedSubscription?.cancel();
+          await transport.stop().timeout(const Duration(milliseconds: 500));
+          await output.close();
+          if (!bodyDone.isCompleted) bodyDone.complete();
+        }
+      }, (error, _) => zoneErrors.add(error));
+
+      await bodyDone.future.timeout(const Duration(seconds: 2));
+      expect(zoneErrors, isEmpty);
+      expect(() => transport.channel, throwsStateError);
+    },
+  );
 
   test('StdinTransport counts an observer-active inbound item', () async {
     final input = StreamController<List<int>>(sync: true);
@@ -901,6 +1111,66 @@ void main() {
     },
   );
 
+  test('StdinTransport bounds synchronous failed-start cancellation', () async {
+    final zoneErrors = <Object>[];
+    final bodyDone = Completer<void>();
+    late StdinTransport transport;
+
+    runZonedGuarded(() async {
+      final input = _SequencedInputStream();
+      final output = IOSink(_DiscardStreamConsumer());
+      transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxLineBytes: 4,
+        stopDrainTimeout: const Duration(milliseconds: 40),
+        inputStream: input,
+        outputSink: output,
+      );
+      StreamSubscription<String>? restartedSubscription;
+      try {
+        await expectLater(
+          transport.start().timeout(const Duration(milliseconds: 500)),
+          throwsA(isA<TransportByteLimitExceeded>()),
+        );
+        expect(() => transport.channel, throwsStateError);
+
+        await transport.start().timeout(const Duration(milliseconds: 500));
+        expect(input.listenCount, 2);
+        final restartedLines = <String>[];
+        final restartedErrors = <Object>[];
+        restartedSubscription = transport.channel.stream.listen(
+          restartedLines.add,
+          onError: restartedErrors.add,
+        );
+        input.addLine('one');
+        await _waitFor(() => restartedLines.isNotEmpty);
+
+        input.releaseFirstCancel.completeError(
+          StateError('late failed-start cancel failure'),
+          StackTrace.current,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        input.addLine('two');
+        await _waitFor(() => restartedLines.length == 2);
+
+        expect(restartedLines, <String>['one', 'two']);
+        expect(restartedErrors, isEmpty);
+      } finally {
+        if (!input.releaseFirstCancel.isCompleted) {
+          input.releaseFirstCancel.complete();
+        }
+        await restartedSubscription?.cancel();
+        await transport.stop().timeout(const Duration(milliseconds: 500));
+        await output.close();
+        if (!bodyDone.isCompleted) bodyDone.complete();
+      }
+    }, (error, _) => zoneErrors.add(error));
+
+    await bodyDone.future.timeout(const Duration(seconds: 2));
+    expect(zoneErrors, isEmpty);
+    expect(() => transport.channel, throwsStateError);
+  });
+
   test(
     'StdinTransport serializes stop behind a pending failed start',
     () async {
@@ -1117,6 +1387,12 @@ class _BlockingStreamConsumer implements StreamConsumer<List<int>> {
     if (!_release.isCompleted) _release.complete();
   }
 
+  void fail(Object error) {
+    if (!_release.isCompleted) {
+      _release.completeError(error, StackTrace.current);
+    }
+  }
+
   @override
   Future<void> addStream(Stream<List<int>> stream) async {
     if (!started.isCompleted) started.complete();
@@ -1142,6 +1418,32 @@ class _RestartableInputStream extends Stream<List<int>> {
   }) {
     listenCount += 1;
     return _SynchronousSubscription<List<int>>();
+  }
+}
+
+class _RestartableControlledInputStream extends Stream<List<int>> {
+  final StreamController<List<int>> _controller =
+      StreamController<List<int>>.broadcast(sync: true);
+  var listenCount = 0;
+
+  void addLine(String line) => _controller.add(utf8.encode('$line\n'));
+
+  Future<void> close() => _controller.close();
+
+  @override
+  StreamSubscription<List<int>> listen(
+    void Function(List<int> event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    listenCount += 1;
+    return _controller.stream.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
   }
 }
 
@@ -1226,9 +1528,15 @@ class _SynchronousSubscription<T> implements StreamSubscription<T> {
 }
 
 class _SequencedInputStream extends Stream<List<int>> {
+  _SequencedInputStream({this.failSynchronously = true});
+
+  final bool failSynchronously;
   final firstCancelStarted = Completer<void>();
   final releaseFirstCancel = Completer<void>();
   var listenCount = 0;
+  void Function(List<int>)? _onData;
+
+  void addLine(String line) => _onData?.call(utf8.encode('$line\n'));
 
   @override
   StreamSubscription<List<int>> listen(
@@ -1238,12 +1546,13 @@ class _SequencedInputStream extends Stream<List<int>> {
     bool? cancelOnError,
   }) {
     listenCount += 1;
+    _onData = onData;
     if (listenCount == 1) {
       final subscription = _DeferredCancelSubscription<List<int>>(
         firstCancelStarted,
         releaseFirstCancel,
       );
-      onData?.call(utf8.encode('12345\n'));
+      if (failSynchronously) onData?.call(utf8.encode('12345\n'));
       return subscription;
     }
     return _SynchronousSubscription<List<int>>();

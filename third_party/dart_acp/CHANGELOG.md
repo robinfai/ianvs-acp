@@ -34,5 +34,7 @@ not published as the upstream `dart_acp` package.
   budgets.
 - Added owner-bound prompt cancellation, finite deadlines, first-wins terminal
   settlement, and deterministic cleanup across close, reconnect, and disposal.
+- Added a bounded stdin cleanup deadline so blocked subscription cancellation
+  or output flushing cannot prevent restart.
 - Added payload-free failures and bounded permission audit handling for
   untrusted ACP data.

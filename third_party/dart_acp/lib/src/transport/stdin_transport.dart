@@ -29,6 +29,7 @@ class StdinTransport implements AcpTransport {
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
     int maxInboundQueueItems = 128,
     int maxInboundQueueBytes = 32 * 1024 * 1024,
+    Duration stopDrainTimeout = const Duration(milliseconds: 500),
   }) : maxLineBytes = _positiveLimit(maxLineBytes, 'maxLineBytes'),
        maxOutboundQueueItems = _positiveLimit(
          maxOutboundQueueItems,
@@ -45,6 +46,10 @@ class StdinTransport implements AcpTransport {
        maxInboundQueueBytes = _positiveLimit(
          maxInboundQueueBytes,
          'maxInboundQueueBytes',
+       ),
+       stopDrainTimeout = _positiveDuration(
+         stopDrainTimeout,
+         'stopDrainTimeout',
        ),
        _inputStream = inputStream ?? stdin,
        _outputSink = outputSink ?? stdout;
@@ -75,6 +80,10 @@ class StdinTransport implements AcpTransport {
 
   /// Maximum accepted raw input bytes waiting for delivery.
   final int maxInboundQueueBytes;
+
+  /// Maximum total time [stop] or failed-start cleanup waits for asynchronous
+  /// resource cleanup, including active output flushes.
+  final Duration stopDrainTimeout;
 
   StreamController<String>? _inboundController;
   StreamController<String>? _outboundController;
@@ -191,11 +200,13 @@ class StdinTransport implements AcpTransport {
     _inputSubscriptionReady = true;
     final synchronousFailure = _terminalFailure;
     if (synchronousFailure != null) {
-      try {
-        await inputSubscription.cancel();
-      } on Object {
-        // Preserve the original protocol failure raised during listen.
-      }
+      final cleanupDeadline = Future<void>.delayed(stopDrainTimeout);
+      await _waitForCleanup(
+        cleanupDeadline: cleanupDeadline,
+        cleanupFutures: <Future<void>>[
+          _observeCleanup(inputSubscription.cancel),
+        ],
+      );
       if (identical(_stdinSubscription, inputSubscription)) {
         _stdinSubscription = null;
       }
@@ -647,6 +658,7 @@ class StdinTransport implements AcpTransport {
     final inboundController = _inboundController;
     final outboundController = _outboundController;
     final outputDrain = _outputDrainFuture;
+    final cleanupDeadline = Future<void>.delayed(stopDrainTimeout);
 
     _activeGeneration = null;
     _stdinSubscription = null;
@@ -669,35 +681,49 @@ class StdinTransport implements AcpTransport {
     _outputFailed = true;
 
     inputDecoder?.cancel();
-    try {
-      await subscription?.cancel();
-    } on Object {
-      // Local stop must complete even if a custom stream cannot cancel.
+    final cleanupFutures = <Future<void>>[];
+    if (subscription != null) {
+      cleanupFutures.add(_observeCleanup(subscription.cancel));
     }
-    try {
-      await outboundSubscription?.cancel();
-    } on Object {
-      // Local stop must complete even if outbound cancellation fails.
+    if (outboundSubscription != null) {
+      cleanupFutures.add(_observeCleanup(outboundSubscription.cancel));
     }
-    try {
-      await outputDrain;
-    } on Object {
-      // A failed active write is already represented by transport shutdown.
+    if (outputDrain != null) {
+      cleanupFutures.add(_observeCleanup(() => outputDrain));
     }
+    if (outboundController != null && !outboundController.isClosed) {
+      cleanupFutures.add(_observeCleanup(outboundController.close));
+    }
+    await _waitForCleanup(
+      cleanupDeadline: cleanupDeadline,
+      cleanupFutures: cleanupFutures,
+    );
     if (identical(_outputDrainFuture, outputDrain)) {
       _outputDrainFuture = null;
     }
     if (inboundController != null && !inboundController.isClosed) {
-      unawaited(inboundController.close().catchError((Object _) {}));
-    }
-    if (outboundController != null && !outboundController.isClosed) {
-      try {
-        await outboundController.close();
-      } on Object {
-        // Continue releasing the remaining resources.
-      }
+      unawaited(_observeCleanup(inboundController.close));
     }
     logger.fine('StdinTransport stopped');
+  }
+
+  Future<void> _observeCleanup(FutureOr<void> Function() cleanup) async {
+    try {
+      await cleanup();
+    } on Object {
+      // Cleanup is best effort. Observing the future also consumes late errors.
+    }
+  }
+
+  Future<void> _waitForCleanup({
+    required Future<void> cleanupDeadline,
+    required List<Future<void>> cleanupFutures,
+  }) async {
+    if (cleanupFutures.isEmpty) return;
+    await Future.any<void>(<Future<void>>[
+      Future.wait<void>(cleanupFutures),
+      cleanupDeadline,
+    ]);
   }
 
   Future<void> _serializeLifecycle(Future<void> Function() operation) {
@@ -735,6 +761,13 @@ class _OutputFrame {
 
 int _positiveLimit(int value, String name) {
   if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+  return value;
+}
+
+Duration _positiveDuration(Duration value, String name) {
+  if (value <= Duration.zero) {
     throw ArgumentError.value(value, name, 'must be greater than zero');
   }
   return value;
