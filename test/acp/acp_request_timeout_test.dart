@@ -2424,7 +2424,10 @@ Future<void> _expectSealedPromptAdmissionRejected(
     observed.inner,
   );
   expect(lateWindow, isNotNull);
-  expect(manager.ownerCleanupWindowFatalOwnerForTesting(lateWindow!), isNull);
+  expect(
+    manager.ownerCleanupWindowFatalOwnerForTesting(lateWindow!),
+    same(operation.owner),
+  );
   expect(manager.ownerCleanupWindowBlockerCountForTesting(lateWindow), 1);
   expect(
     manager.admissionCleanupWindowTimerActiveProbeForTesting(lateWindow)(),
@@ -2441,7 +2444,7 @@ Future<void> _expectSealedPromptAdmissionRejected(
 
   expect(reply.errorCode, -32003);
   expect(reply.errorMessage, 'Permission request cancelled.');
-  expect(ownerBucketsAtAdmission, 0);
+  expect(ownerBucketsAtAdmission, 1);
   expect(
     manager.admissionCleanupWindowStartCountForTesting,
     windowStartsBefore + 1,
@@ -6106,6 +6109,279 @@ void main() {
         harness.manager.endPromptTurn(replacement);
         _expectPromptHarnessDrained(harness);
       } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'late sealed admission blocks replacement until response commit',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 500),
+      );
+      try {
+        final operation = await harness._startPrompt();
+        harness.respondPromptSuccess();
+        await operation.result.timeout(const Duration(seconds: 2));
+
+        final blocked = await harness
+            .startSealedAdmissionWithBlockedResponseCommit();
+        harness.manager.endPromptTurn(operation.owner);
+
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP prompt is already active or settling.',
+            ),
+          ),
+        );
+
+        blocked.releaseResponseCommit.complete();
+        final reply = await blocked.admission.response.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(reply.errorCode, -32003);
+        expect(reply.errorMessage, 'Permission request cancelled.');
+        await blocked.admission.settled.timeout(const Duration(seconds: 2));
+
+        final replacement = harness.manager.beginPromptTurn(harness.sessionId);
+        expect(identical(replacement, operation.owner), isFalse);
+        harness.manager.endPromptTurn(replacement);
+        _expectPromptHarnessDrained(harness);
+      } finally {
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'late sealed admission reuses original grace and old owner identity',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 500),
+      );
+      Completer<void>? responseCommit;
+      try {
+        final unavailable = Completer<AcpPeerUnavailableState>.sync();
+        harness.peer.addUnavailableListener((state) {
+          if (!unavailable.isCompleted) unavailable.complete(state);
+        });
+        final operation = await harness._startPrompt();
+        harness.respondPromptSuccess();
+        await operation.result.timeout(const Duration(seconds: 2));
+        final originalDeadline = harness.base.manager
+            .promptLifecycleSnapshotForTesting(operation.owner)
+            .cleanupDeadline;
+        expect(originalDeadline, isNotNull);
+
+        final blocked = await harness
+            .startSealedAdmissionWithBlockedResponseCommit();
+        responseCommit = blocked.releaseResponseCommit;
+        final observed = blocked.admission.admission! as _ObservedAdmission;
+        final lateWindow = harness.base.manager
+            .admissionCleanupWindowIdentityForTesting(observed.inner);
+        expect(lateWindow, isNotNull);
+        expect(
+          harness.base.manager.ownerCleanupWindowDeadlineForTesting(
+            lateWindow!,
+          ),
+          originalDeadline,
+        );
+        harness.manager.endPromptTurn(operation.owner);
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'ACP prompt is already active or settling.',
+            ),
+          ),
+        );
+        harness.base.manager.expireOwnerAdmissionResponseGraceForTesting(
+          operation.owner,
+        );
+
+        final state = await unavailable.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(state.reason, AcpPeerUnavailableReason.fatalTimeout);
+        expect(state.cleanupIdentity, isNotNull);
+        expect(state.cleanupIdentity!.ownerToken, same(operation.owner));
+        expect(state.cleanupIdentity!.generation, operation.owner.generation);
+        expect(harness.promptWireCount, 1);
+        await blocked.admission.settled.timeout(const Duration(seconds: 2));
+        _expectPromptHarnessDrained(harness);
+      } finally {
+        if (responseCommit != null && !responseCommit.isCompleted) {
+          responseCommit.complete();
+        }
+        await harness.dispose();
+      }
+    },
+  );
+
+  test(
+    'session close late sealed admission stays on the old prompt lifecycle',
+    () async {
+      final harness = await _PromptLifecycleHarness.start(
+        grace: const Duration(milliseconds: 750),
+      );
+      Completer<void>? responseCommit;
+      Future<void>? closing;
+      try {
+        final operation = await harness.startPromptWithBlockedAdmissionCommit();
+        final unavailable = harness.base.unavailableSeen(operation.owner);
+        await operation.admissionReservationReleased.future.timeout(
+          const Duration(seconds: 2),
+        );
+        harness.respondPromptSuccess();
+        await harness.base.manager.promptWinnerRecordedForTesting(
+          operation.owner,
+        );
+        final originalAdmission =
+            operation.admission!.admission! as _ObservedAdmission;
+        final originalWindow = harness.base.manager
+            .admissionCleanupWindowIdentityForTesting(originalAdmission.inner)!;
+        final originalTimerCallback = harness.base.manager
+            .admissionCleanupWindowTimerCallbackForTesting(originalWindow);
+        await operation.commitAdmissionResponse();
+        await operation.result.timeout(const Duration(seconds: 2));
+        final originalCleanup = harness.base.manager
+            .promptCleanupReapedForTesting(operation.owner)!;
+        await originalCleanup.timeout(const Duration(seconds: 2));
+        final originalDeadline = harness.base.manager
+            .promptLifecycleSnapshotForTesting(operation.owner)
+            .cleanupDeadline;
+        expect(originalDeadline, isNotNull);
+        expect(harness.base.manager.admissionCleanupWindowCountForTesting, 0);
+
+        var closeDone = false;
+        closing = harness.manager.closeSession(sessionId: harness.sessionId);
+        unawaited(
+          closing.then<void>(
+            (_) => closeDone = true,
+            onError: (Object _, StackTrace _) => closeDone = true,
+          ),
+        );
+        final closeWindow = harness
+            .base
+            .manager
+            .admissionCleanupWindowIdentitiesForTesting
+            .single;
+        final closeTimerActive = harness.base.manager
+            .admissionCleanupWindowTimerActiveProbeForTesting(closeWindow);
+        expect(
+          harness.base.manager.sessionInputOwnerForTesting(harness.sessionId),
+          isNull,
+        );
+        expect(
+          harness.base.manager.promptLifecycleIsCurrentForTesting(
+            operation.owner,
+          ),
+          isTrue,
+        );
+
+        final blockedFuture = harness
+            .startSealedAdmissionWithBlockedResponseCommit();
+        final blocked = await blockedFuture;
+        responseCommit = blocked.releaseResponseCommit;
+        await blocked.admission.reservationReleased.future.timeout(
+          const Duration(seconds: 2),
+        );
+        final observed = blocked.admission.admission! as _ObservedAdmission;
+        expect(
+          harness.base.manager.admissionHasPromptOwnerForTesting(
+            observed.inner,
+          ),
+          isTrue,
+        );
+        expect(harness.base.manager.ownerAdmissionBucketCountForTesting, 1);
+        expect(
+          harness.base.manager.admissionCancellationReasonForTesting(
+            observed.inner,
+          ),
+          acp.PermissionCancellationReason.promptEnded,
+        );
+        expect(
+          harness.base.manager
+              .promptLifecycleSnapshotForTesting(operation.owner)
+              .cancellationWinner,
+          acp.PermissionCancellationReason.promptEnded,
+        );
+        final lateWindow = harness.base.manager
+            .admissionCleanupWindowIdentityForTesting(observed.inner);
+        expect(lateWindow, isNotNull);
+        expect(lateWindow, same(closeWindow));
+        expect(
+          harness.base.manager.ownerCleanupWindowFatalOwnerForTesting(
+            lateWindow!,
+          ),
+          same(operation.owner),
+        );
+        expect(
+          harness.base.manager.ownerCleanupWindowDeadlineForTesting(lateWindow),
+          originalDeadline,
+        );
+        expect(
+          identical(
+            harness.base.manager.promptCleanupReapedForTesting(operation.owner),
+            harness.base.manager.ownerCleanupWindowReapedForTesting(lateWindow),
+          ),
+          isTrue,
+        );
+        final expiryCallbacksBefore =
+            harness.base.manager.ownerCleanupExpiryCallbackCountForTesting;
+        originalTimerCallback();
+        await pumpEventQueue();
+        expect(
+          harness.base.manager.ownerCleanupExpiryCallbackCountForTesting,
+          expiryCallbacksBefore,
+        );
+        expect(closeTimerActive(), isTrue);
+        expect(closeDone, isFalse);
+        expect(harness.base.remoteCloseCallsForTesting, 0);
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsStateError,
+        );
+
+        await pumpEventQueue();
+        expect(closeDone, isFalse);
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsStateError,
+        );
+
+        harness.base.manager.expireOwnerAdmissionResponseGraceForTesting(
+          operation.owner,
+        );
+        final state = await unavailable.timeout(const Duration(seconds: 2));
+        expect(state.reason, AcpPeerUnavailableReason.fatalTimeout);
+        expect(state.cleanupIdentity, isNotNull);
+        expect(state.cleanupIdentity!.ownerToken, same(operation.owner));
+        expect(state.cleanupIdentity!.generation, operation.owner.generation);
+        await blocked.admission.settled.timeout(const Duration(seconds: 2));
+        await expectLater(
+          closing,
+          throwsA(isA<acp.AcpConnectionClosedException>()),
+        );
+        expect(closeDone, isTrue);
+        expect(harness.base.remoteCloseCallsForTesting, 0);
+        expect(
+          () => harness.manager.beginPromptTurn(harness.sessionId),
+          throwsStateError,
+        );
+        _expectPromptHarnessDrained(harness);
+      } finally {
+        if (responseCommit != null && !responseCommit.isCompleted) {
+          responseCommit.complete();
+        }
+        if (closing != null) await closing.catchError((Object _) {});
         await harness.dispose();
       }
     },

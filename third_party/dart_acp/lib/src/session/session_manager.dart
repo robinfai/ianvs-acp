@@ -889,7 +889,6 @@ final class _InboundPermissionAdmission implements InboundAdmission {
     required this.sessionGeneration,
     required this.promptOwner,
     required this.promptLifecycle,
-    required this.ownerAdmissionsSealedAtArrival,
     required this.peerEpoch,
     required this.cancellationToken,
   }) {
@@ -911,7 +910,6 @@ final class _InboundPermissionAdmission implements InboundAdmission {
   final _SessionGeneration? sessionGeneration;
   final AcpSessionInputBudgetOwner? promptOwner;
   final _PromptLifecycle? promptLifecycle;
-  final bool ownerAdmissionsSealedAtArrival;
   final _PeerEpoch peerEpoch;
   final Object cancellationToken;
   final Completer<InboundGateTerminal<dynamic>> _terminal =
@@ -1848,6 +1846,14 @@ class SessionManager implements AcpBoundedObservationSource {
           .promptOwner !=
       null;
 
+  /// Returns the first cancellation reason frozen by an admission.
+  @visibleForTesting
+  PermissionCancellationReason? admissionCancellationReasonForTesting(
+    Object admissionIdentity,
+  ) => _inboundAdmissions
+      .singleWhere((item) => identical(item, admissionIdentity))
+      .terminalReason;
+
   /// Returns the exact stale-owner cleanup callback captured by the last
   /// load/resume setup turn.
   @visibleForTesting
@@ -2060,9 +2066,7 @@ class SessionManager implements AcpBoundedObservationSource {
     final key = _ownerCleanupKeyForAdmission(admission);
     _getOrJoinOwnerCleanupWindow(
       key: key,
-      fatalOwner: admission.ownerAdmissionsSealedAtArrival
-          ? null
-          : admission.promptOwner,
+      fatalOwner: admission.promptOwner,
       blockerIdentity: admission,
       blockerReaped: admission.settled,
       onStarted: () {
@@ -2080,7 +2084,6 @@ class SessionManager implements AcpBoundedObservationSource {
         ? null
         : _frozenSessionCleanupWindowSelections[sessionId];
     if (frozen != null) return frozen.key;
-    if (admission.ownerAdmissionsSealedAtArrival) return admission;
     return admission.promptOwner ?? admission;
   }
 
@@ -2183,6 +2186,7 @@ class SessionManager implements AcpBoundedObservationSource {
     required AcpSessionInputBudgetOwner? fatalOwner,
     required Object blockerIdentity,
     required Future<void> blockerReaped,
+    DateTime? deadline,
     void Function()? onStarted,
   }) {
     if (_disposed) {
@@ -2199,11 +2203,12 @@ class SessionManager implements AcpBoundedObservationSource {
     }
 
     final identity = Object();
-    final deadline = DateTime.now().add(config.timeouts.promptCancelGrace);
+    final effectiveDeadline =
+        deadline ?? DateTime.now().add(config.timeouts.promptCancelGrace);
     final window = _OwnerCleanupWindow(
       identity: identity,
       fatalOwner: fatalOwner,
-      deadline: deadline,
+      deadline: effectiveDeadline,
     );
     _ownerCleanupWindows[key] = window;
     _ownerCleanupWindowStartCount += 1;
@@ -2211,12 +2216,35 @@ class SessionManager implements AcpBoundedObservationSource {
     onStarted?.call();
     void expire() => _expireOwnerCleanupWindow(key, identity);
     window.expireForTesting = expire;
-    final remaining = deadline.difference(DateTime.now());
+    final remaining = effectiveDeadline.difference(DateTime.now());
     window.timer = Timer(
       remaining.isNegative ? Duration.zero : remaining,
       expire,
     );
     return window;
+  }
+
+  void _bindPromptCleanupWindow(
+    _PromptLifecycle lifecycle,
+    _OwnerCleanupWindow window,
+  ) {
+    if (identical(lifecycle.cleanupWindow, window) &&
+        identical(lifecycle.cleanupFuture, window.reaped)) {
+      return;
+    }
+    lifecycle.cleanupWindow = window;
+    lifecycle.cleanupFuture = window.reaped;
+    lifecycle.cleanupDone = false;
+    unawaited(
+      window.reaped.whenComplete(() {
+        if (!identical(lifecycle.cleanupWindow, window) ||
+            !identical(lifecycle.cleanupFuture, window.reaped)) {
+          return;
+        }
+        lifecycle.cleanupDone = true;
+        if (lifecycle.callerEnded) _releasePromptLifecycle(lifecycle);
+      }),
+    );
   }
 
   void _bindOwnerCleanupFatalOwner(
@@ -2781,6 +2809,7 @@ class SessionManager implements AcpBoundedObservationSource {
       fatalOwner: selection.promptOwner,
       blockerIdentity: closingOwner,
       blockerReaped: observedLocalReaped,
+      deadline: currentLifecycle?.cleanupWindow?.deadline,
     );
     return () async {
       await Future.any<void>(<Future<void>>[
@@ -3267,7 +3296,8 @@ class SessionManager implements AcpBoundedObservationSource {
         _sessionSetupTails.containsKey(sessionId)) {
       throw StateError('Session is closing or setup is active.');
     }
-    if (_promptLifecycles.containsKey(sessionId)) {
+    if (_promptLifecycles.containsKey(sessionId) ||
+        _settlingPromptOwners.containsKey(sessionId)) {
       throw StateError('ACP prompt is already active or settling.');
     }
     final generation = _sessionGenerations[sessionId];
@@ -3377,28 +3407,22 @@ class SessionManager implements AcpBoundedObservationSource {
     );
     lifecycle.cancelSubmitted = cleanup.notificationSubmitted;
     lifecycle.promptReaped = cleanup.reaped;
-    lifecycle.cleanupWindow = window;
     lifecycle.cleanupIdentity = AcpPromptCleanupIdentity(
       lifecycle.owner,
       lifecycle.owner.generation,
     );
-    lifecycle.cleanupFuture = window.reaped;
+    _bindPromptCleanupWindow(lifecycle, window);
     if (legacyRawCaller && lifecycle.admissionsSettledNow) {
       _releaseOwnerCleanupBlocker(cleanupKey, window, lifecycle);
     }
-    unawaited(
-      window.reaped.whenComplete(() {
-        lifecycle.cleanupDone = true;
-        if (lifecycle.callerEnded) _releasePromptLifecycle(lifecycle);
-      }),
-    );
     return window.reaped;
   }
 
   void _releasePromptLifecycle(_PromptLifecycle lifecycle) {
     if (!_isCurrentPromptLifecycle(lifecycle) ||
         lifecycle.activeDeliveryClaim != null ||
-        _isPromptDeliveryClaimed(lifecycle)) {
+        _isPromptDeliveryClaimed(lifecycle) ||
+        (_admissionsByOwner[lifecycle.owner]?.isNotEmpty ?? false)) {
       return;
     }
     _lastReleasedPromptLifecycleSnapshot = (
@@ -4675,13 +4699,20 @@ class SessionManager implements AcpBoundedObservationSource {
     final generation = sessionId == null
         ? null
         : _sessionGenerations[sessionId];
-    final owner = sessionId == null
-        ? null
-        : (_settlingPromptOwners[sessionId] ??
-              _inputBudgetPhases[sessionId]?.owner);
     final currentLifecycle = sessionId == null
         ? null
         : _promptLifecycles[sessionId];
+    final retainedLifecycleOwner =
+        currentLifecycle != null &&
+            _isCurrentPromptLifecycle(currentLifecycle) &&
+            (currentLifecycle.admissionsSealed || currentLifecycle.settling)
+        ? currentLifecycle.owner
+        : null;
+    final owner = sessionId == null
+        ? null
+        : (_settlingPromptOwners[sessionId] ??
+              _inputBudgetPhases[sessionId]?.owner ??
+              retainedLifecycleOwner);
     final promptLifecycle =
         currentLifecycle != null &&
             owner != null &&
@@ -4689,9 +4720,9 @@ class SessionManager implements AcpBoundedObservationSource {
         ? currentLifecycle
         : null;
     final ownerAdmissionsSealed = promptLifecycle?.admissionsSealed ?? false;
-    final sealedCancellationReason = ownerAdmissionsSealed
-        ? promptLifecycle!.cancellationWinner ??
-              PermissionCancellationReason.promptEnded
+    final lifecycleReason = promptLifecycle?.cancellationWinner;
+    final sealedFallbackReason = ownerAdmissionsSealed
+        ? PermissionCancellationReason.promptEnded
         : null;
     final admission = _InboundPermissionAdmission(
       manager: this,
@@ -4700,16 +4731,13 @@ class SessionManager implements AcpBoundedObservationSource {
       sessionId: sessionId,
       sessionGeneration: generation,
       promptOwner: owner,
-      promptLifecycle: ownerAdmissionsSealed ? null : promptLifecycle,
-      ownerAdmissionsSealedAtArrival: ownerAdmissionsSealed,
+      promptLifecycle: promptLifecycle,
       peerEpoch: _peerEpoch,
       cancellationToken: _permissionCancellationTokenFactory(),
     );
     _inboundAdmissions.add(admission);
     if (params != null) _admissionsByParams[params] = admission;
-    if (sealedCancellationReason != null) {
-      admission.tryCancel(sealedCancellationReason);
-    } else if (owner != null) {
+    if (owner != null) {
       (_admissionsByOwner[owner] ??=
               HashSet<_InboundPermissionAdmission>.identity())
           .add(admission);
@@ -4717,12 +4745,40 @@ class SessionManager implements AcpBoundedObservationSource {
         _attachPromptAdmissionProbeForTesting(promptLifecycle, admission);
       }
       final settlingReason = _settlingPromptReasons[owner];
-      final lifecycleReason = promptLifecycle?.settling ?? false
-          ? promptLifecycle!.cancellationWinner
+      final closeReason = sessionId != null && _isSessionClosing(sessionId)
+          ? PermissionCancellationReason.sessionClosed
           : null;
-      final cancellationReason = settlingReason ?? lifecycleReason;
+      final cancellationReason =
+          settlingReason ??
+          lifecycleReason ??
+          closeReason ??
+          sealedFallbackReason;
       if (cancellationReason != null) {
-        admission.tryCancel(cancellationReason);
+        final frozenReason = _settlingPromptReasons.putIfAbsent(
+          owner,
+          () => cancellationReason,
+        );
+        _settlingPromptOwners[owner.sessionId] = owner;
+        admission.tryCancel(frozenReason);
+      }
+      if (ownerAdmissionsSealed && promptLifecycle != null) {
+        final originalDeadline = promptLifecycle.cleanupWindow?.deadline;
+        final cleanupKey =
+            _frozenSessionCleanupWindowSelections[owner.sessionId]?.key ??
+            owner;
+        final window = _getOrJoinOwnerCleanupWindow(
+          key: cleanupKey,
+          fatalOwner: owner,
+          blockerIdentity: admission,
+          blockerReaped: admission.settled,
+          deadline: originalDeadline,
+          onStarted: () {
+            if (!promptLifecycle.graceStarted.isCompleted) {
+              promptLifecycle.graceStarted.complete();
+            }
+          },
+        );
+        _bindPromptCleanupWindow(promptLifecycle, window);
       }
     }
     if (sessionId != null && generation == null && owner == null) {
@@ -5032,15 +5088,19 @@ class SessionManager implements AcpBoundedObservationSource {
     final owned = _admissionsByOwner[owner];
     final isLastForOwner =
         owned != null && owned.contains(admission) && owned.length == 1;
-    admission.promptLifecycle?.markAdmissionRemoving(
-      isLastForOwner: isLastForOwner,
-    );
+    final promptLifecycle = admission.promptLifecycle;
+    promptLifecycle?.markAdmissionRemoving(isLastForOwner: isLastForOwner);
     owned?.remove(admission);
     if (owned != null && owned.isEmpty) {
       _admissionsByOwner.remove(owner);
       _settlingPromptReasons.remove(owner);
       if (identical(_settlingPromptOwners[owner.sessionId], owner)) {
         _settlingPromptOwners.remove(owner.sessionId);
+      }
+      if (promptLifecycle != null &&
+          promptLifecycle.callerEnded &&
+          promptLifecycle.cleanupDone) {
+        _releasePromptLifecycle(promptLifecycle);
       }
     }
   }
