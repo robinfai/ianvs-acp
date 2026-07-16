@@ -12398,6 +12398,148 @@ void main() {
     },
   );
 
+  test(
+    'close failure still clears local session state and preserves close error',
+    () async {
+      const closeCanary = 'REMOTE_CLOSE_FAILURE_CANARY';
+      const cleanupCanary = 'PERMISSION_CLEANUP_FAILURE_CANARY';
+      final fake = _LocallyClosingFailingAgentClient(
+        closeError: StateError(closeCanary),
+        permissionResponseError: StateError(cleanupCanary),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final session = controller.currentSession!;
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'stale message'),
+      );
+      controller.availableCommands = const <Map<String, Object?>>[
+        <String, Object?>{'name': 'stale-command'},
+      ];
+      controller.sessionSettings = _settingsWithMode('edit');
+      controller.sessionUsage = const AcpSessionUsage(used: 2, size: 10);
+      controller.lastLatency = const Duration(milliseconds: 7);
+      controller.restoreArchivedSessionLocally(
+        ArchivedSessionSnapshot(
+          session: session,
+          wasCurrent: false,
+          messages: const <ChatMessage>[],
+          availableCommands: const <Map<String, Object?>>[],
+          lastLatency: null,
+          lastError: null,
+          sessionSettings: const AcpSessionSettings(),
+          sessionUsage: null,
+          sessionSettingsLoading: false,
+          status: app_state.ConnectionStatus.sessionReady,
+          activeSessionSettingsLoadId: null,
+        ),
+      );
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'permission-close-failure',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: session.id,
+          toolName: 'terminal',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 7, 16, 12),
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.debugInactiveSnapshotIds, contains(session.id));
+      expect(
+        controller.pendingPermissionRequest?.id,
+        'permission-close-failure',
+      );
+
+      await controller.closeCurrentSession();
+
+      expect(fake.locallyClosedSessionIds, <String>[session.id]);
+      expect(controller.currentSession, isNull);
+      expect(controller.sessions, isEmpty);
+      expect(controller.messages, isEmpty);
+      expect(controller.availableCommands, isEmpty);
+      expect(controller.sessionSettings.modes.availableModes, isEmpty);
+      expect(controller.sessionUsage, isNull);
+      expect(controller.lastLatency, isNull);
+      expect(controller.pendingPermissionRequest, isNull);
+      expect(controller.debugInactiveSnapshotIds, isNot(contains(session.id)));
+      expect(controller.debugActiveUiStateRetainedBytes, 0);
+      expect(controller.lastError, contains(closeCanary));
+      expect(controller.lastError, isNot(contains(cleanupCanary)));
+      expect(controller.status, app_state.ConnectionStatus.connected);
+
+      await controller.resumeSession(session.id, cwd: session.cwd);
+      expect(fake.remotelyResumedSessionIds, <String>[session.id]);
+    },
+  );
+
+  test('dispose invalidates a pending close before local cleanup', () async {
+    final fake = _DisposalRaceCloseAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+
+    await controller.newSession();
+    final session = controller.currentSession!;
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'keep after dispose'),
+    );
+    controller.availableCommands = const <Map<String, Object?>>[
+      <String, Object?>{'name': 'keep-command'},
+    ];
+    controller.sessionSettings = _settingsWithMode('edit');
+    controller.sessionUsage = const AcpSessionUsage(used: 3, size: 10);
+    controller.lastLatency = const Duration(milliseconds: 9);
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-dispose-close',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: session.id,
+        toolName: 'terminal',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 7, 16, 13),
+      ),
+    );
+    await pumpEventQueue();
+
+    final close = controller.closeCurrentSession();
+    await fake.closeStarted.future;
+    controller.dispose();
+    await controller.disposalComplete;
+
+    final sessionsBeforeRelease = List<AgentSession>.of(controller.sessions);
+    final messagesBeforeRelease = List<ChatMessage>.of(controller.messages);
+    final commandsBeforeRelease = controller.availableCommands;
+    final settingsBeforeRelease = controller.sessionSettings;
+    final usageBeforeRelease = controller.sessionUsage;
+    final latencyBeforeRelease = controller.lastLatency;
+    final permissionBeforeRelease = controller.pendingPermissionRequest;
+    final historyBeforeRelease = List<AcpPermissionAuditEntry>.of(
+      controller.permissionHistory,
+    );
+    final statusBeforeRelease = controller.status;
+    final errorBeforeRelease = controller.lastError;
+
+    fake.allowClose.complete();
+    await close;
+
+    expect(fake.permissionResponseCount, 0);
+    expect(controller.currentSession, same(session));
+    expect(controller.sessions, sessionsBeforeRelease);
+    expect(controller.messages, messagesBeforeRelease);
+    expect(controller.availableCommands, same(commandsBeforeRelease));
+    expect(controller.sessionSettings, same(settingsBeforeRelease));
+    expect(controller.sessionUsage, same(usageBeforeRelease));
+    expect(controller.lastLatency, latencyBeforeRelease);
+    expect(controller.pendingPermissionRequest, same(permissionBeforeRelease));
+    expect(controller.permissionHistory, historyBeforeRelease);
+    expect(controller.status, statusBeforeRelease);
+    expect(controller.lastError, errorBeforeRelease);
+  });
+
   test('logout clears local session state', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -13674,6 +13816,62 @@ class _OpenErrorEventAgentClient extends FakeAgentClient {
       onCancel: () => controller.close(),
     );
     return controller.stream;
+  }
+}
+
+class _LocallyClosingFailingAgentClient extends FakeAgentClient {
+  _LocallyClosingFailingAgentClient({
+    required Object closeError,
+    super.permissionResponseError,
+  }) : super(closeError: closeError);
+
+  final List<String> locallyClosedSessionIds = <String>[];
+  final List<String> remotelyResumedSessionIds = <String>[];
+
+  @override
+  Future<void> closeSession({required String sessionId}) {
+    locallyClosedSessionIds.add(sessionId);
+    return super.closeSession(sessionId: sessionId);
+  }
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    remotelyResumedSessionIds.add(sessionId);
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
+}
+
+class _DisposalRaceCloseAgentClient extends FakeAgentClient {
+  final Completer<void> closeStarted = Completer<void>();
+  final Completer<void> allowClose = Completer<void>();
+  int permissionResponseCount = 0;
+
+  @override
+  Future<void> closeSession({required String sessionId}) async {
+    if (!closeStarted.isCompleted) closeStarted.complete();
+    await allowClose.future;
+  }
+
+  @override
+  Future<void> respondToPermissionRequest({
+    required String id,
+    required AcpPermissionDecision decision,
+    String? selectedOptionId,
+  }) async {
+    permissionResponseCount += 1;
+    await super.respondToPermissionRequest(
+      id: id,
+      decision: decision,
+      selectedOptionId: selectedOptionId,
+    );
   }
 }
 

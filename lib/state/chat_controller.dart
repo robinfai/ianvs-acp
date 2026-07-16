@@ -4030,28 +4030,46 @@ class ChatController extends ChangeNotifier {
     if (isStreaming || isSessionOperationRunning) return;
     _finishTurnBudget();
 
+    final operationGeneration = _beginSessionOperationGeneration();
     await _runSessionOperation(() async {
       try {
         await _promptSubscription?.cancel();
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _promptSubscription = null;
-        await client.closeSession(sessionId: session.id);
-        _retiredSessionIds.add(session.id);
-        _removeLocalUnstartedSessionId(session.id);
-        _removeSessionViewSnapshot(session.id);
-        currentSession = null;
-        sessions.removeWhere((item) => _sessionIdsMatch(item.id, session.id));
-        _clearMessages();
-        availableCommands = const <Map<String, Object?>>[];
-        lastLatency = null;
-        lastError = null;
-        sessionSettings = const AcpSessionSettings();
-        sessionUsage = null;
-        sessionSettingsLoading = false;
-        await _cancelPendingPermissionRequest(reportErrors: false);
-        status = ConnectionStatus.connected;
-        _notifyListeners();
       } catch (error) {
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _setActionError(error);
+        return;
+      }
+
+      Object? closeError;
+      try {
+        await client.closeSession(sessionId: session.id);
+      } catch (error) {
+        closeError = error;
+      }
+      if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+
+      _retiredSessionIds.add(session.id);
+      _removeLocalUnstartedSessionId(session.id);
+      _removeSessionViewSnapshot(session.id);
+      currentSession = null;
+      sessions.removeWhere((item) => _sessionIdsMatch(item.id, session.id));
+      _clearMessages();
+      availableCommands = const <Map<String, Object?>>[];
+      lastLatency = null;
+      lastError = null;
+      sessionSettings = const AcpSessionSettings();
+      sessionUsage = null;
+      sessionSettingsLoading = false;
+      _activeSessionSettingsLoadId = null;
+      await _cancelPendingPermissionRequest(reportErrors: false);
+      if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+      status = ConnectionStatus.connected;
+      if (closeError != null) {
+        _setActionError(closeError);
+      } else {
+        _notifyListeners();
       }
     });
   }
