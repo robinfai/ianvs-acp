@@ -25,6 +25,14 @@ void main() {
             ),
           ),
           (
+            name: 'closeDrainTimeout',
+            invalidValue: Duration.zero,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              closeDrainTimeout: value,
+            ),
+          ),
+          (
             name: 'maxFrameBytes',
             invalidValue: 0,
             create: (value) =>
@@ -576,6 +584,20 @@ void main() {
   });
 
   test(
+    'outbound item capacity closes locally with a real addStream blocked',
+    () async {
+      await _expectBoundedOutboundCapacityClose(maxItems: 1, maxBytes: 64);
+    },
+  );
+
+  test(
+    'outbound UTF-8 byte capacity closes locally with a real addStream blocked',
+    () async {
+      await _expectBoundedOutboundCapacityClose(maxItems: 8, maxBytes: 3);
+    },
+  );
+
+  test(
     'stop cancels a pending outbound drain and drops queued frames',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -624,6 +646,124 @@ void main() {
       }
     },
   );
+
+  test('stop bounds a frame writer blocked in real socket addStream', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSocket = Completer<WebSocket>();
+    final writerStarted = Completer<void>();
+    final writerStream = StreamController<Object?>.broadcast();
+    final serverSubscription = server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      serverSocket.complete(socket);
+      socket.listen((_) {});
+    });
+    final transport = WebSocketAcpTransport(
+      endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+      closeDrainTimeout: const Duration(milliseconds: 40),
+      frameWriter: (socket, _) {
+        if (!writerStarted.isCompleted) writerStarted.complete();
+        return socket.addStream(writerStream.stream);
+      },
+    );
+
+    try {
+      await transport.start();
+      await serverSocket.future;
+      transport.channel.sink.add('blocked frame');
+      await writerStarted.future;
+
+      await expectLater(
+        transport.stop().timeout(const Duration(milliseconds: 500)),
+        completes,
+      );
+      expect(() => transport.channel, throwsStateError);
+    } finally {
+      await writerStream.close();
+      await transport.stop().timeout(const Duration(seconds: 2));
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
+  for (final lateWriterError in <bool>[false, true]) {
+    test(
+      'restart isolates an old addStream late ${lateWriterError ? 'error' : 'completion'}',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final sockets = <WebSocket>[];
+        final messagesBySocket = <List<String>>[];
+        final socketDone = <Completer<void>>[];
+        final oldWriterStarted = Completer<void>();
+        final oldWriterStream = StreamController<Object?>.broadcast();
+        final currentErrors = <Object>[];
+        final serverSubscription = server.listen((request) async {
+          final socket = await WebSocketTransformer.upgrade(request);
+          final messages = <String>[];
+          final done = Completer<void>();
+          sockets.add(socket);
+          messagesBySocket.add(messages);
+          socketDone.add(done);
+          socket.listen((message) {
+            if (message is String) messages.add(message);
+          }, onDone: done.complete);
+        });
+        var writerCalls = 0;
+        final transport = WebSocketAcpTransport(
+          endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+          closeDrainTimeout: const Duration(milliseconds: 40),
+          frameWriter: (socket, frame) {
+            writerCalls += 1;
+            if (writerCalls == 1) {
+              oldWriterStarted.complete();
+              return socket.addStream(oldWriterStream.stream);
+            }
+            return socket.addStream(Stream<Object?>.value(frame));
+          },
+        );
+        StreamSubscription<String>? currentSubscription;
+
+        try {
+          await transport.start();
+          await _waitFor(() => sockets.length == 1);
+          transport.channel.sink.add('old-frame-secret');
+          await oldWriterStarted.future;
+
+          await transport.stop().timeout(const Duration(milliseconds: 500));
+          await transport.start().timeout(const Duration(seconds: 2));
+          currentSubscription = transport.channel.stream.listen(
+            (_) {},
+            onError: currentErrors.add,
+          );
+          await _waitFor(() => sockets.length == 2);
+          transport.channel.sink.add('new-frame');
+          await _waitFor(() => messagesBySocket[1].contains('new-frame'));
+
+          if (lateWriterError) {
+            oldWriterStream.addError(StateError('late writer secret'));
+          }
+          await oldWriterStream.close();
+          await socketDone.first.future.timeout(const Duration(seconds: 2));
+
+          expect(messagesBySocket.first, isNot(contains('old-frame-secret')));
+          expect(currentErrors, isEmpty);
+          expect(() => transport.channel, returnsNormally);
+          transport.channel.sink.add('new-frame-after-late-writer');
+          await _waitFor(
+            () => messagesBySocket[1].contains('new-frame-after-late-writer'),
+          );
+        } finally {
+          if (!oldWriterStream.isClosed) await oldWriterStream.close();
+          await currentSubscription?.cancel();
+          await transport.stop().timeout(const Duration(seconds: 2));
+          for (final socket in sockets) {
+            await socket.close();
+          }
+          await serverSubscription.cancel();
+          await server.close(force: true);
+        }
+      },
+    );
+  }
 
   test('peer close cancels outbound drain and closes the sink', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -773,6 +913,76 @@ Future<void> _expectOutboundQueueLimit({
     if (!releaseWrite.isCompleted) releaseWrite.complete();
     await Future<void>.delayed(Duration.zero);
     await transport.stop();
+    await serverSubscription.cancel();
+    await server.close(force: true);
+  }
+}
+
+Future<void> _expectBoundedOutboundCapacityClose({
+  required int maxItems,
+  required int maxBytes,
+}) async {
+  final firstFrame = maxBytes < 64 ? 'é' : 'first-frame-secret';
+  final secondFrame = maxBytes < 64 ? '密' : 'second-frame-secret';
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  final serverSocket = Completer<WebSocket>();
+  final writerStarted = Completer<void>();
+  final writerStream = StreamController<Object?>.broadcast();
+  final writesStarted = <String>[];
+  final serverSubscription = server.listen((request) async {
+    final socket = await WebSocketTransformer.upgrade(request);
+    serverSocket.complete(socket);
+    socket.listen((_) {});
+  });
+  final transport = WebSocketAcpTransport(
+    endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+    closeDrainTimeout: const Duration(milliseconds: 40),
+    maxOutboundQueueItems: maxItems,
+    maxOutboundQueueBytes: maxBytes,
+    frameWriter: (socket, frame) {
+      writesStarted.add(frame);
+      if (!writerStarted.isCompleted) writerStarted.complete();
+      return socket.addStream(writerStream.stream);
+    },
+  );
+  final errors = <Object>[];
+  final done = Completer<void>();
+
+  try {
+    await transport.start();
+    await serverSocket.future;
+    transport.channel.stream.listen(
+      (_) {},
+      onError: errors.add,
+      onDone: done.complete,
+    );
+    transport.channel.sink.add(firstFrame);
+    await writerStarted.future;
+    transport.channel.sink.add(secondFrame);
+
+    await _waitFor(() => errors.isNotEmpty);
+    await done.future.timeout(const Duration(milliseconds: 500));
+    expect(errors, hasLength(1));
+    expect(errors.single, isA<acp.TransportByteLimitExceeded>());
+    expect(errors.single.toString(), isNot(contains(firstFrame)));
+    expect(errors.single.toString(), isNot(contains(secondFrame)));
+    expect(writesStarted, <String>[firstFrame]);
+    await _waitFor(() {
+      try {
+        transport.channel;
+        return false;
+      } on StateError {
+        return true;
+      }
+    });
+
+    writerStream.addError(StateError('late writer secret'));
+    await writerStream.close();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(errors, hasLength(1));
+  } finally {
+    if (!writerStream.isClosed) await writerStream.close();
+    await transport.stop().timeout(const Duration(seconds: 2));
     await serverSubscription.cancel();
     await server.close(force: true);
   }

@@ -17,6 +17,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     this.onProtocolOut,
     this.onProtocolIn,
     Duration connectTimeout = const Duration(seconds: 10),
+    Duration closeDrainTimeout = const Duration(milliseconds: 500),
     int maxFrameBytes = acp.defaultTransportByteLimit,
     int maxInboundQueueItems = 128,
     int maxInboundQueueBytes = 32 * 1024 * 1024,
@@ -24,6 +25,10 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
     WebSocketFrameWriter? frameWriter,
   }) : connectTimeout = _positiveDuration(connectTimeout, 'connectTimeout'),
+       closeDrainTimeout = _positiveDuration(
+         closeDrainTimeout,
+         'closeDrainTimeout',
+       ),
        maxFrameBytes = _positiveLimit(maxFrameBytes, 'maxFrameBytes'),
        maxInboundQueueItems = _positiveLimit(
          maxInboundQueueItems,
@@ -50,6 +55,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   final void Function(String line)? onProtocolOut;
   final void Function(String line)? onProtocolIn;
   final Duration connectTimeout;
+  final Duration closeDrainTimeout;
   final int maxFrameBytes;
   final int maxInboundQueueItems;
   final int maxInboundQueueBytes;
@@ -398,38 +404,14 @@ class WebSocketAcpTransport implements acp.AcpTransport {
 
   void _scheduleCapacityClose() {
     if (_capacityCloseScheduled) return;
-    final socket = _socket;
-    if (socket == null) return;
     _capacityCloseScheduled = true;
-    unawaited(() async {
-      try {
-        await socket.close(
-          WebSocketStatus.messageTooBig,
-          'transport capacity exceeded',
-        );
-        return;
-      } on StateError {
-        // addStream temporarily binds the sink. Retry once that write settles.
-      } on Object {
-        return;
-      }
-      final write = _activeWrite;
-      if (write != null) {
-        try {
-          await write;
-        } on Object {
-          // Closing still owns final cleanup after a failed write.
-        }
-      }
-      try {
-        await socket.close(
-          WebSocketStatus.messageTooBig,
-          'transport capacity exceeded',
-        );
-      } on Object {
-        // stop() forcefully completes local cleanup if the peer is gone.
-      }
-    }());
+    unawaited(
+      _beginStop(
+        closeCode: WebSocketStatus.messageTooBig,
+        closeReason: 'transport capacity exceeded',
+        reportCleanupErrors: false,
+      ).catchError((Object _) {}),
+    );
   }
 
   void _handleSocketDone() {
@@ -460,10 +442,23 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   }
 
   @override
-  Future<void> stop() {
+  Future<void> stop() => _beginStop(
+    closeCode: WebSocketStatus.normalClosure,
+    reportCleanupErrors: true,
+  );
+
+  Future<void> _beginStop({
+    required int closeCode,
+    String? closeReason,
+    required bool reportCleanupErrors,
+  }) {
     final existing = _stopFuture;
     if (existing != null) return existing;
-    final future = _stop();
+    final future = _stop(
+      closeCode: closeCode,
+      closeReason: closeReason,
+      reportCleanupErrors: reportCleanupErrors,
+    );
     _stopFuture = future;
     unawaited(
       future
@@ -475,7 +470,11 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     return future;
   }
 
-  Future<void> _stop() async {
+  Future<void> _stop({
+    required int closeCode,
+    required String? closeReason,
+    required bool reportCleanupErrors,
+  }) async {
     _startSerial += 1;
     _stopping = true;
     final startCancellation = _startCancellation;
@@ -511,10 +510,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     await cleanUp(() async {
       final socket = _socket;
       if (socket != null) {
-        await _closeSocketAfterActiveWrite(
-          socket,
-          WebSocketStatus.normalClosure,
-        );
+        await _closeSocketAfterActiveWrite(socket, closeCode, closeReason);
       }
     });
     _socket = null;
@@ -535,7 +531,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     _failed = false;
     _capacityCloseScheduled = false;
     final cleanupError = firstError;
-    if (cleanupError != null) {
+    if (cleanupError != null && reportCleanupErrors) {
       Error.throwWithStackTrace(cleanupError, firstStackTrace!);
     }
   }
@@ -543,23 +539,34 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   Future<void> _closeSocketAfterActiveWrite(
     WebSocket socket,
     int closeCode,
+    String? closeReason,
   ) async {
-    try {
-      await socket.close(closeCode);
-      return;
-    } on StateError {
-      // addStream temporarily binds the socket sink. Let that write settle
-      // before retrying so stop cannot leave the old socket open.
-    }
-    final write = _activeWrite;
-    if (write != null) {
+    Future<void> closeAfterWrite() async {
       try {
-        await write;
-      } on Object {
-        // Closing still owns final cleanup after a failed write.
+        await socket.close(closeCode, closeReason);
+        return;
+      } on StateError {
+        // addStream temporarily binds the socket sink. Let that write settle
+        // before retrying so stop cannot leave the old socket open.
       }
+      final write = _activeWrite;
+      if (write != null) {
+        try {
+          await write;
+        } on Object {
+          // Closing still owns final cleanup after a failed write.
+        }
+      }
+      await socket.close(closeCode, closeReason);
     }
-    await socket.close(closeCode);
+
+    try {
+      await closeAfterWrite().timeout(closeDrainTimeout);
+    } on TimeoutException {
+      // The timed out close remains attached to the writer and will retry the
+      // old socket after a late value or error. Local stop owns only the
+      // bounded generation teardown.
+    }
   }
 
   void _resetQueues() {
