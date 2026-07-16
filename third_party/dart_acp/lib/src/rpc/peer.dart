@@ -1353,8 +1353,10 @@ class JsonRpcPeer {
     required List<Map<String, dynamic>> content,
     required JsonRpcPromptTerminalHandler onTerminal,
   }) {
-    if (!isAvailable ||
-        _promptOperationsBySession.containsKey(owner.sessionId) ||
+    if (!isAvailable) {
+      return Future<Json>.error(const AcpConnectionClosedException());
+    }
+    if (_promptOperationsBySession.containsKey(owner.sessionId) ||
         _promptOperationsByOwner.containsKey(owner)) {
       return Future<Json>.error(
         StateError('ACP prompt is already active or settling.'),

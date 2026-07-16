@@ -7994,6 +7994,30 @@ void main() {
     },
   );
 
+  test('closed peer rejects owner-bound prompt without a wire write', () async {
+    final harness = _RequestHarness(const acp.AcpTimeouts());
+    const owner = _TestPromptOwner('closed-prompt-session', 6);
+    try {
+      await harness.peer.closeForTesting(
+        AcpPeerUnavailableReason.explicitClose,
+      );
+
+      await expectLater(
+        harness.peer.sendPromptRequest(
+          owner: owner,
+          content: const <Map<String, dynamic>>[],
+          onTerminal: (_, _) => JsonRpcPromptSettlement(Future<void>.value()),
+        ),
+        throwsA(isA<acp.AcpConnectionClosedException>()),
+      );
+      expect(harness.sink.events, isEmpty);
+      expect(harness.peer.promptOwnerOperationCountForTesting, 0);
+      expect(harness.peer.promptSessionOperationCountForTesting, 0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   test('prompt request derives session only from its owner', () async {
     final harness = _RequestHarness(const acp.AcpTimeouts());
     const owner = _TestPromptOwner('owner-session', 7);
