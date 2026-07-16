@@ -826,6 +826,152 @@ void main() {
   );
 
   test(
+    'synchronous frame writer failure is reported once without retry',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSocket = Completer<WebSocket>();
+      final stalledRetry = Completer<void>();
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        serverSocket.complete(socket);
+        socket.listen((_) {});
+      });
+      final syncFailure = StateError('synchronous frame writer failure');
+      var writerCalls = 0;
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+        closeDrainTimeout: const Duration(milliseconds: 40),
+        frameWriter: (socket, frame) {
+          writerCalls += 1;
+          if (writerCalls == 1) throw syncFailure;
+          return stalledRetry.future;
+        },
+      );
+      final channelErrors = <Object>[];
+      final uncaughtErrors = <Object>[];
+      StreamSubscription<String>? inboundSubscription;
+      var stopped = false;
+
+      try {
+        await transport.start();
+        await serverSocket.future;
+        inboundSubscription = transport.channel.stream.listen(
+          (_) {},
+          onError: channelErrors.add,
+        );
+
+        runZonedGuarded(
+          () => transport.channel.sink.add('single frame'),
+          (error, _) => uncaughtErrors.add(error),
+        );
+        await _waitFor(
+          () =>
+              channelErrors.isNotEmpty ||
+              uncaughtErrors.isNotEmpty ||
+              writerCalls > 1,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(writerCalls, 1);
+        expect(channelErrors, <Object>[syncFailure]);
+        expect(uncaughtErrors, isEmpty);
+        await expectLater(
+          transport.stop().timeout(const Duration(milliseconds: 500)),
+          completes,
+        );
+        stopped = true;
+      } finally {
+        if (!stalledRetry.isCompleted) stalledRetry.complete();
+        await inboundSubscription?.cancel();
+        if (!stopped) {
+          await transport.stop().timeout(const Duration(seconds: 2));
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
+    'asynchronous writer failure wins synchronous outbound error reentry',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final serverSocket = Completer<WebSocket>();
+      final peerCloseCodes = <int?>[];
+      final writerCompletion = Completer<void>();
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        serverSocket.complete(socket);
+        socket.listen(
+          (_) {},
+          onDone: () => peerCloseCodes.add(socket.closeCode),
+        );
+      });
+      final writerFailure = StateError('writer failure must remain first');
+      var writerCalls = 0;
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+        maxFrameBytes: 4,
+        closeDrainTimeout: const Duration(milliseconds: 40),
+        frameWriter: (socket, frame) {
+          writerCalls += 1;
+          return writerCompletion.future;
+        },
+      );
+      final channelErrors = <Object>[];
+      final uncaughtErrors = <Object>[];
+      StreamSubscription<String>? inboundSubscription;
+      var reentered = false;
+      var stopped = false;
+
+      try {
+        await transport.start();
+        await serverSocket.future;
+
+        runZonedGuarded<void>(() {
+          inboundSubscription = transport.channel.stream.listen(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {
+              channelErrors.add(error);
+              if (reentered) return;
+              reentered = true;
+              transport.channel.sink.add('oversized reentry');
+            },
+          );
+          transport.channel.sink.add('ok');
+        }, (error, _) => uncaughtErrors.add(error));
+
+        await _waitFor(() => writerCalls == 1);
+        writerCompletion.completeError(writerFailure, StackTrace.current);
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        expect(writerCalls, 1);
+        expect(channelErrors, <Object>[writerFailure]);
+        expect(
+          channelErrors.whereType<acp.TransportByteLimitExceeded>(),
+          isEmpty,
+        );
+        expect(peerCloseCodes, isEmpty);
+        expect(uncaughtErrors, isEmpty);
+
+        await expectLater(
+          transport.stop().timeout(const Duration(milliseconds: 500)),
+          completes,
+        );
+        stopped = true;
+        await _waitFor(() => peerCloseCodes.isNotEmpty);
+        expect(peerCloseCodes, <int?>[WebSocketStatus.normalClosure]);
+      } finally {
+        await inboundSubscription?.cancel();
+        if (!stopped) {
+          await transport.stop().timeout(const Duration(seconds: 2));
+        }
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
     'stop cancels a pending outbound drain and drops queued frames',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

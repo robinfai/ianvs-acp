@@ -383,19 +383,21 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     final future = _drainOutbound(generation, socket, inboundController);
     _outboundDrainFuture = future;
     unawaited(
-      future.whenComplete(() {
-        if (!_ownsSocket(generation, socket) ||
-            !identical(_inboundController, inboundController)) {
-          return;
-        }
-        if (identical(_outboundDrainFuture, future)) {
-          _outboundDrainFuture = null;
-        }
-        _outboundDraining = false;
-        if (!_stopping && !_failed && _outboundQueue.isNotEmpty) {
-          _startOutboundDrain(generation, socket, inboundController);
-        }
-      }),
+      future
+          .whenComplete(() {
+            if (!_ownsSocket(generation, socket) ||
+                !identical(_inboundController, inboundController)) {
+              return;
+            }
+            if (identical(_outboundDrainFuture, future)) {
+              _outboundDrainFuture = null;
+            }
+            _outboundDraining = false;
+            if (!_stopping && !_failed && _outboundQueue.isNotEmpty) {
+              _startOutboundDrain(generation, socket, inboundController);
+            }
+          })
+          .catchError((Object _) {}),
     );
   }
 
@@ -425,18 +427,19 @@ class WebSocketAcpTransport implements acp.AcpTransport {
           !identical(_outboundQueue.first, frame)) {
         return;
       }
-      final write = _frameWriter(socket, frame.text);
-      _activeWrite = write;
+      late final Future<void> write;
       try {
+        write = _frameWriter(socket, frame.text);
+        _activeWrite = write;
         await Future.any<void>(<Future<void>>[write, cancellation.future]);
       } on Object catch (error, stackTrace) {
         if (_ownsSocket(generation, socket) &&
             _ownsInboundController(generation, inboundController) &&
             identical(_drainCancellation, cancellation) &&
             !_failed) {
-          inboundController.addError(error, stackTrace);
           _failed = true;
           _clearQueues();
+          inboundController.addError(error, stackTrace);
         }
         return;
       }
