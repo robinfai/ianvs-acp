@@ -110,6 +110,7 @@ class StdinTransport implements AcpTransport {
   Future<void>? _outputDrainFuture;
   Future<void> _lifecycleTail = Future<void>.value();
   var _generationCounter = 0;
+  var _stopRequestSerial = 0;
   int? _activeGeneration;
 
   @override
@@ -121,16 +122,21 @@ class StdinTransport implements AcpTransport {
   }
 
   @override
-  Future<void> start() => _serializeLifecycle(_start);
+  Future<void> start() {
+    final stopRequestSerial = _stopRequestSerial;
+    return _serializeLifecycle(() => _start(stopRequestSerial));
+  }
 
-  Future<void> _start() async {
+  Future<void> _start(int stopRequestSerial) async {
     if (_channel != null) {
       logger.warning('Transport already started');
       return;
     }
 
     final generation = ++_generationCounter;
-    _activeGeneration = generation;
+    _activeGeneration = stopRequestSerial == _stopRequestSerial
+        ? generation
+        : null;
     late final StreamController<String> inboundController;
     inboundController = StreamController<String>(
       sync: true,
@@ -516,6 +522,7 @@ class StdinTransport implements AcpTransport {
           stackTrace: stackTrace,
         );
       }
+      if (_activeGeneration != generation || _outputFailed) return;
       try {
         _outputSink.writeln(frame.line);
         await _outputSink.flush();
@@ -649,7 +656,12 @@ class StdinTransport implements AcpTransport {
   }
 
   @override
-  Future<void> stop() => _serializeLifecycle(_stop);
+  Future<void> stop() {
+    _stopRequestSerial += 1;
+    _activeGeneration = null;
+    _activeInputFrame?.accepted = false;
+    return _serializeLifecycle(_stop);
+  }
 
   Future<void> _stop() async {
     final subscription = _stdinSubscription;

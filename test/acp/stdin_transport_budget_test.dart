@@ -570,6 +570,88 @@ void main() {
     },
   );
 
+  test(
+    'StdinTransport drops an inbound frame when onProtocolIn stops transport',
+    () async {
+      final input = StreamController<List<int>>(sync: true);
+      final output = IOSink(_DiscardStreamConsumer());
+      final observed = <String>[];
+      final received = <String>[];
+      final errors = <Object>[];
+      Future<void>? observerStop;
+      late final StdinTransport transport;
+      transport = StdinTransport(
+        logger: AcpConfig().logger,
+        inputStream: input.stream,
+        outputSink: output,
+        onProtocolIn: (line) {
+          observed.add(line);
+          observerStop = transport.stop();
+        },
+      );
+      StreamSubscription<String>? subscription;
+
+      try {
+        await transport.start();
+        subscription = transport.channel.stream.listen(
+          received.add,
+          onError: errors.add,
+        );
+        input.add(utf8.encode('stopped inbound\n'));
+        await _waitFor(() => observerStop != null);
+        await observerStop!.timeout(const Duration(seconds: 1));
+
+        expect(observed, <String>['stopped inbound']);
+        expect(received, isEmpty);
+        expect(errors, isEmpty);
+        expect(() => transport.channel, throwsStateError);
+      } finally {
+        await subscription?.cancel();
+        await observerStop?.timeout(const Duration(seconds: 1));
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
+  test(
+    'StdinTransport drops an outbound frame when onProtocolOut stops transport',
+    () async {
+      final input = StreamController<List<int>>();
+      final outputConsumer = _RecordingStreamConsumer();
+      final output = IOSink(outputConsumer);
+      final observed = <String>[];
+      Future<void>? observerStop;
+      late final StdinTransport transport;
+      transport = StdinTransport(
+        logger: AcpConfig().logger,
+        inputStream: input.stream,
+        outputSink: output,
+        onProtocolOut: (line) {
+          observed.add(line);
+          observerStop = transport.stop();
+        },
+      );
+
+      try {
+        await transport.start();
+        transport.channel.sink.add('stopped outbound');
+        await _waitFor(() => observerStop != null);
+        await observerStop!.timeout(const Duration(seconds: 1));
+
+        expect(observed, <String>['stopped outbound']);
+        expect(outputConsumer.text, isEmpty);
+        expect(() => transport.channel, throwsStateError);
+      } finally {
+        await observerStop?.timeout(const Duration(seconds: 1));
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
   test('StdinTransport counts an observer-active inbound item', () async {
     final input = StreamController<List<int>>(sync: true);
     final output = IOSink(_DiscardStreamConsumer());
