@@ -7,6 +7,10 @@ import 'package:stream_channel/stream_channel.dart';
 
 import 'acp_endpoint_validator.dart';
 
+final class _InboundStreamStartErrorReported implements Exception {
+  const _InboundStreamStartErrorReported();
+}
+
 class StreamableHttpAcpTransport implements acp.AcpTransport {
   StreamableHttpAcpTransport({
     required this.endpoint,
@@ -225,6 +229,7 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
       if (pendingMethodIdKey != null) {
         _pendingMethodsById.remove(pendingMethodIdKey);
       }
+      if (error is _InboundStreamStartErrorReported) return;
       controller.local.sink.addError(error, stackTrace);
     }
   }
@@ -400,7 +405,10 @@ class StreamableHttpAcpTransport implements acp.AcpTransport {
         }
         if (!_ownsGeneration(generation, client, controller)) return;
         controller.local.sink.addError(error, stackTrace);
-        rethrow;
+        Error.throwWithStackTrace(
+          const _InboundStreamStartErrorReported(),
+          stackTrace,
+        );
       }
     }();
     _streamStartsByKey[key] = operation;
