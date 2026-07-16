@@ -96,6 +96,29 @@ void main() {
     }
   });
 
+  test('StdinTransport validates maxProtocolObserverErrors at runtime', () {
+    Object? create(int limit) =>
+        Function.apply(StdinTransport.new, const <Object?>[], <Symbol, Object?>{
+          #logger: AcpConfig().logger,
+          #maxProtocolObserverErrors: limit,
+          #inputStream: const Stream<List<int>>.empty(),
+          #outputSink: IOSink(_DiscardStreamConsumer()),
+        });
+
+    for (final limit in <int>[0, -1]) {
+      expect(
+        () => create(limit),
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.name,
+            'name',
+            'maxProtocolObserverErrors',
+          ),
+        ),
+      );
+    }
+  });
+
   test('StdinTransport logs omit inbound and outbound payloads', () async {
     const inboundSecret = 'stdin-inbound-secret';
     const outboundSecret = 'stdin-outbound-secret';
@@ -645,6 +668,131 @@ void main() {
         expect(() => transport.channel, throwsStateError);
       } finally {
         await observerStop?.timeout(const Duration(seconds: 1));
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
+  test(
+    'StdinTransport bounds protocol observer errors per generation',
+    () async {
+      final input = _RestartableControlledInputStream();
+      final outputConsumer = _RecordingStreamConsumer();
+      final output = IOSink(outputConsumer);
+      var observerCalls = 0;
+      final transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxProtocolObserverErrors: 2,
+        inputStream: input,
+        outputSink: output,
+        onProtocolOut: (_) {
+          observerCalls += 1;
+          throw StateError('observer failure $observerCalls');
+        },
+      );
+      StreamSubscription<String>? subscription;
+
+      try {
+        await transport.start();
+        transport.channel.sink
+          ..add('first')
+          ..add('second')
+          ..add('third');
+        await _waitFor(() => outputConsumer.text.contains('third\n'));
+
+        final firstGenerationErrors = <Object>[];
+        subscription = transport.channel.stream.listen(
+          (_) {},
+          onError: firstGenerationErrors.add,
+        );
+        await _waitFor(() => firstGenerationErrors.length >= 2);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(firstGenerationErrors, hasLength(2));
+        expect(
+          firstGenerationErrors.whereType<TransportByteLimitExceeded>(),
+          isEmpty,
+        );
+        expect(outputConsumer.text, 'first\nsecond\nthird\n');
+        await subscription.cancel();
+        subscription = null;
+        await transport.stop();
+
+        await transport.start();
+        final secondGenerationErrors = <Object>[];
+        subscription = transport.channel.stream.listen(
+          (_) {},
+          onError: secondGenerationErrors.add,
+        );
+        transport.channel.sink.add('fourth');
+        await _waitFor(
+          () =>
+              outputConsumer.text.contains('fourth\n') &&
+              secondGenerationErrors.isNotEmpty,
+        );
+
+        expect(secondGenerationErrors, hasLength(1));
+        expect(secondGenerationErrors.single, isA<StateError>());
+        expect(outputConsumer.text, 'first\nsecond\nthird\nfourth\n');
+        expect(observerCalls, 4);
+      } finally {
+        await subscription?.cancel();
+        await transport.stop().timeout(const Duration(seconds: 1));
+        await input.close();
+        await output.close();
+      }
+    },
+  );
+
+  test(
+    'StdinTransport suppresses observer errors after a terminal failure',
+    () async {
+      final input = StreamController<List<int>>(sync: true);
+      final output = IOSink(_DiscardStreamConsumer());
+      final received = <String>[];
+      final errors = <Object>[];
+      final done = Completer<void>();
+      late final StdinTransport transport;
+      transport = StdinTransport(
+        logger: AcpConfig().logger,
+        maxOutboundQueueItems: 1,
+        maxOutboundQueueBytes: 64,
+        inputStream: input.stream,
+        outputSink: output,
+        onProtocolIn: (_) {
+          transport.channel.sink
+            ..add('first')
+            ..add('capacity failure');
+          throw StateError('observer failed after terminal failure');
+        },
+      );
+      StreamSubscription<String>? subscription;
+
+      try {
+        await transport.start();
+        subscription = transport.channel.stream.listen(
+          received.add,
+          onError: errors.add,
+          onDone: done.complete,
+        );
+        input.add(utf8.encode('trigger\n'));
+        await done.future.timeout(const Duration(seconds: 1));
+
+        expect(received, isEmpty);
+        expect(errors, hasLength(1));
+        expect(
+          errors.single,
+          isA<TransportByteLimitExceeded>().having(
+            (error) => error.resource,
+            'resource',
+            'stdin output queue items',
+          ),
+        );
+        expect(errors.whereType<StateError>(), isEmpty);
+      } finally {
+        await subscription?.cancel();
         await transport.stop().timeout(const Duration(seconds: 1));
         await input.close();
         await output.close();

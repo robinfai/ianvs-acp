@@ -36,5 +36,7 @@ not published as the upstream `dart_acp` package.
   settlement, and deterministic cleanup across close, reconnect, and disposal.
 - Added a bounded stdin cleanup deadline so blocked subscription cancellation
   or output flushing cannot prevent restart.
+- Added a per-generation stdin protocol observer diagnostic budget; terminal
+  transport failures remain first-wins over observer errors.
 - Added payload-free failures and bounded permission audit handling for
   untrusted ACP data.

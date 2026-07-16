@@ -29,6 +29,7 @@ class StdinTransport implements AcpTransport {
     int maxOutboundQueueBytes = 32 * 1024 * 1024,
     int maxInboundQueueItems = 128,
     int maxInboundQueueBytes = 32 * 1024 * 1024,
+    int maxProtocolObserverErrors = 128,
     Duration stopDrainTimeout = const Duration(milliseconds: 500),
   }) : maxLineBytes = _positiveLimit(maxLineBytes, 'maxLineBytes'),
        maxOutboundQueueItems = _positiveLimit(
@@ -46,6 +47,10 @@ class StdinTransport implements AcpTransport {
        maxInboundQueueBytes = _positiveLimit(
          maxInboundQueueBytes,
          'maxInboundQueueBytes',
+       ),
+       maxProtocolObserverErrors = _positiveLimit(
+         maxProtocolObserverErrors,
+         'maxProtocolObserverErrors',
        ),
        stopDrainTimeout = _positiveDuration(
          stopDrainTimeout,
@@ -81,6 +86,9 @@ class StdinTransport implements AcpTransport {
   /// Maximum accepted raw input bytes waiting for delivery.
   final int maxInboundQueueBytes;
 
+  /// Maximum protocol observer errors forwarded per transport generation.
+  final int maxProtocolObserverErrors;
+
   /// Maximum total time [stop] or failed-start cleanup waits for asynchronous
   /// resource cleanup, including active output flushes.
   final Duration stopDrainTimeout;
@@ -105,6 +113,7 @@ class StdinTransport implements AcpTransport {
   var _outputDraining = false;
   var _inputQueueBytes = 0;
   var _outputQueueBytes = 0;
+  var _protocolObserverErrorsForwarded = 0;
   _InputFailure? _terminalFailure;
   var _terminalPublished = false;
   Future<void>? _outputDrainFuture;
@@ -163,6 +172,7 @@ class StdinTransport implements AcpTransport {
     _activeInputFrame = null;
     _inputQueueBytes = 0;
     _outputQueueBytes = 0;
+    _protocolObserverErrorsForwarded = 0;
     _terminalFailure = null;
     _terminalPublished = false;
     _outputDrainFuture = null;
@@ -553,12 +563,17 @@ class StdinTransport implements AcpTransport {
     required Object error,
     required StackTrace stackTrace,
   }) {
-    logger.warning('$direction protocol observer failed');
     if (_activeGeneration != generation ||
         !identical(_inboundController, inboundController) ||
-        inboundController.isClosed) {
+        inboundController.isClosed ||
+        _terminalFailure != null ||
+        _inputFailed ||
+        _outputFailed ||
+        _protocolObserverErrorsForwarded >= maxProtocolObserverErrors) {
       return;
     }
+    _protocolObserverErrorsForwarded += 1;
+    logger.warning('$direction protocol observer failed');
     try {
       inboundController.addError(error, stackTrace);
     } on Object {
