@@ -39,6 +39,14 @@ void main() {
                 WebSocketAcpTransport(endpoint: endpoint, maxFrameBytes: value),
           ),
           (
+            name: 'maxProtocolObserverErrors',
+            invalidValue: 0,
+            create: (value) => WebSocketAcpTransport(
+              endpoint: endpoint,
+              maxProtocolObserverErrors: value,
+            ),
+          ),
+          (
             name: 'maxInboundQueueItems',
             invalidValue: 0,
             create: (value) => WebSocketAcpTransport(
@@ -382,6 +390,87 @@ void main() {
       await server.close(force: true);
     }
   });
+
+  test(
+    'protocol observer errors are bounded per websocket generation',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final messagesBySocket = <List<String>>[];
+      final serverSubscription = server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        final messages = <String>[];
+        messagesBySocket.add(messages);
+        socket.listen((message) {
+          if (message is String) messages.add(message);
+        });
+      });
+      var observerCalls = 0;
+      final transport = WebSocketAcpTransport(
+        endpoint: Uri.parse('ws://127.0.0.1:${server.port}/acp'),
+        maxProtocolObserverErrors: 2,
+        onProtocolOut: (_) {
+          observerCalls += 1;
+          throw StateError('observer failure $observerCalls');
+        },
+      );
+      StreamSubscription<String>? firstSubscription;
+      StreamSubscription<String>? restartedSubscription;
+
+      try {
+        expect(transport.maxProtocolObserverErrors, 2);
+        await transport.start();
+        await _waitFor(() => messagesBySocket.length == 1);
+        final firstChannel = transport.channel;
+        firstChannel.sink
+          ..add('first')
+          ..add('second')
+          ..add('third');
+        await _waitFor(() => messagesBySocket.first.length == 3);
+
+        final firstErrors = <Object>[];
+        firstSubscription = firstChannel.stream.listen(
+          (_) {},
+          onError: firstErrors.add,
+        );
+        await _waitFor(() => firstErrors.length >= 2);
+        await Future<void>.delayed(Duration.zero);
+        expect(messagesBySocket.first, <String>['first', 'second', 'third']);
+        expect(firstErrors, hasLength(2));
+        expect(firstErrors, everyElement(isA<StateError>()));
+        expect(
+          firstErrors.whereType<acp.TransportByteLimitExceeded>(),
+          isEmpty,
+        );
+
+        await firstSubscription.cancel();
+        firstSubscription = null;
+        await transport.stop();
+        await transport.start();
+        await _waitFor(() => messagesBySocket.length == 2);
+        final restartedChannel = transport.channel;
+        restartedChannel.sink.add('restart');
+        await _waitFor(() => messagesBySocket[1].length == 1);
+
+        final restartedErrors = <Object>[];
+        restartedSubscription = restartedChannel.stream.listen(
+          (_) {},
+          onError: restartedErrors.add,
+        );
+        await _waitFor(() => restartedErrors.isNotEmpty);
+        await Future<void>.delayed(Duration.zero);
+        expect(messagesBySocket[1], <String>['restart']);
+        expect(restartedErrors, hasLength(1));
+        expect(restartedErrors.single, isA<StateError>());
+        expect(observerCalls, 4);
+      } finally {
+        await firstSubscription?.cancel();
+        await restartedSubscription?.cancel();
+        await transport.stop();
+        await serverSubscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
 
   test(
     'onProtocolIn stop then throw drops frame without leaking observer error',

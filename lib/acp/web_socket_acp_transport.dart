@@ -19,6 +19,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     Duration connectTimeout = const Duration(seconds: 10),
     Duration closeDrainTimeout = const Duration(milliseconds: 500),
     int maxFrameBytes = acp.defaultTransportByteLimit,
+    int maxProtocolObserverErrors = 128,
     int maxInboundQueueItems = 128,
     int maxInboundQueueBytes = 32 * 1024 * 1024,
     int maxOutboundQueueItems = 128,
@@ -30,6 +31,10 @@ class WebSocketAcpTransport implements acp.AcpTransport {
          'closeDrainTimeout',
        ),
        maxFrameBytes = _positiveLimit(maxFrameBytes, 'maxFrameBytes'),
+       maxProtocolObserverErrors = _positiveLimit(
+         maxProtocolObserverErrors,
+         'maxProtocolObserverErrors',
+       ),
        maxInboundQueueItems = _positiveLimit(
          maxInboundQueueItems,
          'maxInboundQueueItems',
@@ -57,6 +62,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   final Duration connectTimeout;
   final Duration closeDrainTimeout;
   final int maxFrameBytes;
+  final int maxProtocolObserverErrors;
   final int maxInboundQueueItems;
   final int maxInboundQueueBytes;
   final int maxOutboundQueueItems;
@@ -81,6 +87,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   int _startSerial = 0;
   int _inboundQueueBytes = 0;
   int _outboundQueueBytes = 0;
+  int _protocolObserverErrorCount = 0;
   bool _inboundListening = false;
   bool _inboundPaused = false;
   bool _outboundDraining = false;
@@ -430,12 +437,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     try {
       onProtocolIn?.call(line);
     } catch (error, stackTrace) {
-      if (!_stopping &&
-          !_failed &&
-          controller != null &&
-          identical(_inboundController, controller)) {
-        controller.addError(error, stackTrace);
-      }
+      _reportProtocolObserverError(controller, error, stackTrace);
     }
   }
 
@@ -444,13 +446,24 @@ class WebSocketAcpTransport implements acp.AcpTransport {
     try {
       onProtocolOut?.call(line);
     } catch (error, stackTrace) {
-      if (!_stopping &&
-          !_failed &&
-          controller != null &&
-          identical(_inboundController, controller)) {
-        controller.addError(error, stackTrace);
-      }
+      _reportProtocolObserverError(controller, error, stackTrace);
     }
+  }
+
+  void _reportProtocolObserverError(
+    StreamController<String>? controller,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_stopping ||
+        _failed ||
+        controller == null ||
+        !identical(_inboundController, controller) ||
+        _protocolObserverErrorCount >= maxProtocolObserverErrors) {
+      return;
+    }
+    _protocolObserverErrorCount += 1;
+    controller.addError(error, stackTrace);
   }
 
   @override
@@ -583,6 +596,7 @@ class WebSocketAcpTransport implements acp.AcpTransport {
 
   void _resetQueues() {
     _clearQueues();
+    _protocolObserverErrorCount = 0;
     _inboundListening = false;
     _inboundPaused = false;
     _outboundDraining = false;
