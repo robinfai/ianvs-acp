@@ -426,18 +426,30 @@ class WebSocketAcpTransport implements acp.AcpTransport {
   }
 
   void _notifyProtocolIn(String line) {
+    final controller = _inboundController;
     try {
       onProtocolIn?.call(line);
     } catch (error, stackTrace) {
-      _inboundController?.addError(error, stackTrace);
+      if (!_stopping &&
+          !_failed &&
+          controller != null &&
+          identical(_inboundController, controller)) {
+        controller.addError(error, stackTrace);
+      }
     }
   }
 
   void _notifyProtocolOut(String line) {
+    final controller = _inboundController;
     try {
       onProtocolOut?.call(line);
     } catch (error, stackTrace) {
-      _inboundController?.addError(error, stackTrace);
+      if (!_stopping &&
+          !_failed &&
+          controller != null &&
+          identical(_inboundController, controller)) {
+        controller.addError(error, stackTrace);
+      }
     }
   }
 
