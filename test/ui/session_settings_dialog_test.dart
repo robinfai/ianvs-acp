@@ -707,30 +707,31 @@ void main() {
     expect(controller.currentSession, isNull);
   });
 
-  testWidgets('SessionSettingsDialog stays open when close fails', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient(closeError: Exception('close failed'));
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
+  testWidgets(
+    'SessionSettingsDialog close failure clears local session and closes dialog',
+    (tester) async {
+      final fake = FakeAgentClient(closeError: Exception('close failed'));
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
 
-    await controller.newSession();
+      await controller.newSession();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
-      ),
-    );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: SessionSettingsDialog(controller: controller)),
+        ),
+      );
 
-    await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('Session Settings'), findsOneWidget);
-    expect(controller.currentSession?.id, 'fake-session-1');
-    expect(controller.lastError, contains('close failed'));
-  });
+      expect(find.text('Session Settings'), findsNothing);
+      expect(controller.currentSession, isNull);
+      expect(controller.lastError, contains('close failed'));
+    },
+  );
 
   testWidgets('SessionSettingsDialog disables settings during operations', (
     tester,
