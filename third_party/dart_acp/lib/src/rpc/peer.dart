@@ -1091,6 +1091,7 @@ class JsonRpcPeer {
     _unavailableState = state;
     _decodedSink.disableWrites();
     _stopRawAdmission();
+    _completePromptOperationsUnavailable(state);
     _notifyUnavailableListeners(state);
     _closeInboundGate();
     unawaited(

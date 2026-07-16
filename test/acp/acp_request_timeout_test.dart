@@ -8270,6 +8270,321 @@ void main() {
     },
   );
 
+  test(
+    'reentrant transport close supersedes cached owner prompt terminals',
+    () async {
+      for (final cachedRemoteError in <bool>[false, true]) {
+        await _expectNoZoneErrors(() async {
+          final input = _ReentrantInputStream();
+          final outputController = StreamController<String>(sync: true);
+          final outputSubscription = outputController.stream.listen((_) {});
+          final sink = _CountingStringSink(outputController.sink);
+          final peer = JsonRpcPeer(
+            StreamChannel<String>(input, sink),
+            timeouts: const acp.AcpTimeouts(),
+          );
+          const owner = _TestPromptOwner('reentrant-prompt-session', 18);
+          final admissionsSettled = Completer<void>();
+          final terminalSeen = Completer<void>();
+          final unavailableStates = <AcpPeerUnavailableState>[];
+          final callerErrors = <Object>[];
+          var callerValues = 0;
+          var updateDeliveries = 0;
+          var reusedCloseOwner = false;
+          Future<Object?>? closeSettled;
+          late final StreamSubscription<Object?> updates;
+
+          void unavailableListener(AcpPeerUnavailableState state) {
+            unavailableStates.add(state);
+            final closing = peer.close();
+            reusedCloseOwner = identical(closing, peer.dispose());
+            closeSettled ??= closing.then<Object?>(
+              (_) => null,
+              onError: (Object error, StackTrace _) => error,
+            );
+          }
+
+          peer.addUnavailableListener(unavailableListener);
+          updates = peer.sessionUpdates.listen((_) {
+            updateDeliveries += 1;
+            input.addError(_ReentrantTransportError(), StackTrace.current);
+            input.addError(_ReentrantTransportError(), StackTrace.current);
+            input.close();
+          });
+
+          try {
+            final prompt = peer.sendPromptRequest(
+              owner: owner,
+              content: const <Map<String, dynamic>>[],
+              onTerminal: (_, _) {
+                if (!terminalSeen.isCompleted) terminalSeen.complete();
+                return JsonRpcPromptSettlement(admissionsSettled.future);
+              },
+            );
+            unawaited(
+              prompt.then<void>(
+                (_) {
+                  callerValues += 1;
+                },
+                onError: (Object error, StackTrace _) {
+                  callerErrors.add(error);
+                },
+              ),
+            );
+            final request = jsonDecode(sink.events.single) as Map;
+            if (cachedRemoteError) {
+              input.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': request['id'],
+                  'error': <String, dynamic>{
+                    'code': -32000,
+                    'message': 'fixed cached remote error',
+                  },
+                }),
+              );
+            } else {
+              input.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': request['id'],
+                  'result': <String, dynamic>{'stopReason': 'end_turn'},
+                }),
+              );
+            }
+            await terminalSeen.future.timeout(const Duration(seconds: 2));
+            expect(
+              peer.promptOwnerOperationCountForTesting,
+              1,
+              reason: 'cachedRemoteError=$cachedRemoteError',
+            );
+            expect(
+              peer.promptSessionOperationCountForTesting,
+              1,
+              reason: 'cachedRemoteError=$cachedRemoteError',
+            );
+
+            input.add(
+              jsonEncode(<String, dynamic>{
+                'jsonrpc': '2.0',
+                'method': 'session/update',
+                'params': <String, dynamic>{'sequence': 1},
+              }),
+            );
+
+            expect(updateDeliveries, 1);
+            expect(unavailableStates, hasLength(1));
+            expect(
+              unavailableStates.single.reason,
+              AcpPeerUnavailableReason.transportClosed,
+            );
+            expect(reusedCloseOwner, isTrue);
+            expect(
+              peer.promptOwnerOperationCountForTesting,
+              1,
+              reason: 'after close cachedRemoteError=$cachedRemoteError',
+            );
+            expect(
+              peer.promptSessionOperationCountForTesting,
+              1,
+              reason: 'after close cachedRemoteError=$cachedRemoteError',
+            );
+            await expectLater(
+              prompt.timeout(const Duration(seconds: 2)),
+              throwsA(isA<acp.AcpConnectionClosedException>()),
+            );
+            expect(callerValues, 0);
+            expect(callerErrors, <Matcher>[
+              isA<acp.AcpConnectionClosedException>(),
+            ]);
+
+            admissionsSettled.complete();
+            await pumpEventQueue();
+            expect(callerValues, 0);
+            expect(callerErrors, hasLength(1));
+            expect(peer.promptOwnerOperationCountForTesting, 0);
+            expect(peer.promptSessionOperationCountForTesting, 0);
+            expect(unavailableStates, hasLength(1));
+            expect(
+              await closeSettled!.timeout(const Duration(seconds: 2)),
+              isA<_ReentrantTransportError>(),
+            );
+            expect(sink.closeCount, 1);
+          } finally {
+            if (!admissionsSettled.isCompleted) admissionsSettled.complete();
+            peer.removeUnavailableListener(unavailableListener);
+            await updates.cancel();
+            try {
+              await peer.close();
+            } on Object {
+              // The transport error winner is asserted above.
+            }
+            input.close();
+            await outputSubscription.cancel();
+            await outputController.close();
+          }
+        });
+      }
+    },
+  );
+
+  test(
+    'owner prompt transport close inside terminal settlement wins once',
+    () async {
+      for (final cachedRemoteError in <bool>[false, true]) {
+        await _expectNoZoneErrors(() async {
+          final input = _ReentrantInputStream();
+          final outputController = StreamController<String>(sync: true);
+          final outputSubscription = outputController.stream.listen((_) {});
+          final sink = _CountingStringSink(outputController.sink);
+          final peer = JsonRpcPeer(
+            StreamChannel<String>(input, sink),
+            timeouts: const acp.AcpTimeouts(),
+          );
+          const owner = _TestPromptOwner(
+            'terminal-settlement-close-session',
+            19,
+          );
+          final admissionsSettled = Completer<void>();
+          final terminalSeen = Completer<void>();
+          final unavailableStates = <AcpPeerUnavailableState>[];
+          final callerErrors = <Object>[];
+          AcpPeerUnavailableState? replayedState;
+          JsonRpcPromptTerminalKind? terminalKind;
+          var callerValues = 0;
+          var terminalCalls = 0;
+          var replayCalls = 0;
+          var syncOwnerCount = -1;
+          var syncSessionCount = -1;
+          var syncAdmissionsSettled = true;
+          var reusedCloseOwner = false;
+          Future<Object?>? closeSettled;
+
+          void replayListener(AcpPeerUnavailableState state) {
+            replayCalls += 1;
+            replayedState = state;
+          }
+
+          void unavailableListener(AcpPeerUnavailableState state) {
+            unavailableStates.add(state);
+            final closing = peer.close();
+            reusedCloseOwner = identical(closing, peer.dispose());
+            closeSettled ??= closing.then<Object?>(
+              (_) => null,
+              onError: (Object error, StackTrace _) => error,
+            );
+          }
+
+          peer.addUnavailableListener(unavailableListener);
+          try {
+            final prompt = peer.sendPromptRequest(
+              owner: owner,
+              content: const <Map<String, dynamic>>[],
+              onTerminal: (_, winner) {
+                terminalCalls += 1;
+                terminalKind = winner.kind;
+                input.addError(_ReentrantTransportError(), StackTrace.current);
+                input.addError(_ReentrantTransportError(), StackTrace.current);
+                input.close();
+                peer.addUnavailableListener(replayListener);
+                syncOwnerCount = peer.promptOwnerOperationCountForTesting;
+                syncSessionCount = peer.promptSessionOperationCountForTesting;
+                syncAdmissionsSettled = admissionsSettled.isCompleted;
+                terminalSeen.complete();
+                return JsonRpcPromptSettlement(admissionsSettled.future);
+              },
+            );
+            unawaited(
+              prompt.then<void>(
+                (_) {
+                  callerValues += 1;
+                },
+                onError: (Object error, StackTrace _) {
+                  callerErrors.add(error);
+                },
+              ),
+            );
+            final request = jsonDecode(sink.events.single) as Map;
+            if (cachedRemoteError) {
+              input.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': request['id'],
+                  'error': <String, dynamic>{
+                    'code': -32000,
+                    'message': 'fixed synchronous remote error',
+                  },
+                }),
+              );
+            } else {
+              input.add(
+                jsonEncode(<String, dynamic>{
+                  'jsonrpc': '2.0',
+                  'id': request['id'],
+                  'result': <String, dynamic>{'stopReason': 'end_turn'},
+                }),
+              );
+            }
+            await terminalSeen.future.timeout(const Duration(seconds: 2));
+
+            expect(terminalCalls, 1);
+            expect(
+              terminalKind,
+              cachedRemoteError
+                  ? JsonRpcPromptTerminalKind.remoteError
+                  : JsonRpcPromptTerminalKind.response,
+            );
+            expect(syncOwnerCount, 0);
+            expect(syncSessionCount, 0);
+            expect(syncAdmissionsSettled, isFalse);
+            expect(unavailableStates, hasLength(1));
+            expect(
+              unavailableStates.single.reason,
+              AcpPeerUnavailableReason.transportClosed,
+            );
+            expect(replayedState, same(unavailableStates.single));
+            expect(replayCalls, 1);
+            expect(reusedCloseOwner, isTrue);
+            await expectLater(
+              prompt.timeout(const Duration(seconds: 2)),
+              throwsA(isA<acp.AcpConnectionClosedException>()),
+            );
+            expect(callerValues, 0);
+            expect(callerErrors, <Matcher>[
+              isA<acp.AcpConnectionClosedException>(),
+            ]);
+
+            admissionsSettled.complete();
+            await pumpEventQueue();
+            expect(callerValues, 0);
+            expect(callerErrors, hasLength(1));
+            expect(peer.promptOwnerOperationCountForTesting, 0);
+            expect(peer.promptSessionOperationCountForTesting, 0);
+            expect(unavailableStates, hasLength(1));
+            expect(replayCalls, 1);
+            expect(
+              await closeSettled!.timeout(const Duration(seconds: 2)),
+              isA<_ReentrantTransportError>(),
+            );
+            expect(sink.closeCount, 1);
+          } finally {
+            if (!admissionsSettled.isCompleted) admissionsSettled.complete();
+            peer.removeUnavailableListener(unavailableListener);
+            peer.removeUnavailableListener(replayListener);
+            try {
+              await peer.close();
+            } on Object {
+              // The transport error winner is asserted above.
+            }
+            input.close();
+            await outputSubscription.cancel();
+            await outputController.close();
+          }
+        });
+      }
+    },
+  );
+
   test('closed peer rejects owner-bound prompt without a wire write', () async {
     final harness = _RequestHarness(const acp.AcpTimeouts());
     const owner = _TestPromptOwner('closed-prompt-session', 6);
