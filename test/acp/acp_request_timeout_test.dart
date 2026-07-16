@@ -1091,10 +1091,17 @@ class _PermissionAdmissionHarness {
     _wireDelegate = _onTask10Wire;
   }
 
+  Future<void> configureBlockedRemoteSessionCloseSuccessForTesting() =>
+      configureRemoteSessionCloseFailureForTesting('blockedSuccess');
+
   int get remoteCloseCallsForTesting => _remoteCloseCalls;
   Future<void> get remoteCloseSeenForTesting => _remoteCloseSeen.future;
 
   void releaseRemoteCloseErrorForTesting() {
+    if (!_releaseRemoteClose.isCompleted) _releaseRemoteClose.complete();
+  }
+
+  void releaseRemoteCloseSuccessForTesting() {
     if (!_releaseRemoteClose.isCompleted) _releaseRemoteClose.complete();
   }
 
@@ -1123,6 +1130,17 @@ class _PermissionAdmissionHarness {
         );
         break;
       case 'requestTimeout':
+        break;
+      case 'blockedSuccess':
+        unawaited(
+          _releaseRemoteClose.future.then<void>((_) {
+            transport.sendAgentMessage(<String, dynamic>{
+              'jsonrpc': '2.0',
+              'id': message['id'],
+              'result': <String, dynamic>{},
+            });
+          }),
+        );
         break;
       default:
         throw StateError('Unexpected close failure driver.');
@@ -2783,6 +2801,8 @@ enum _RemoteCloseFailure {
   remoteAndCleanupError,
 }
 
+enum _LateClosingAdmissionResolution { success, error, dispose }
+
 enum _SessionCloseReapSource { admission, prompt }
 
 final class _TypedTurnProbe {
@@ -3766,6 +3786,209 @@ void main() {
         await generatedBase.dispose();
       }
       expect(mismatches, isEmpty, reason: mismatches.join('\n'));
+    },
+  );
+
+  test(
+    'late ownerless permissions short circuit while session close awaits remote response',
+    () async {
+      for (final resolution in _LateClosingAdmissionResolution.values) {
+        await _expectNoZoneErrors(() async {
+          const canary = 'LATE-CLOSING-ADMISSION-CANARY';
+          final harness = await _PermissionAdmissionHarness.start();
+          Future<_ObservedFutureOutcome>? closeOutcome;
+          final requests = <_PermissionRequestProbe>[];
+          try {
+            switch (resolution) {
+              case _LateClosingAdmissionResolution.success:
+                await harness
+                    .configureBlockedRemoteSessionCloseSuccessForTesting();
+                break;
+              case _LateClosingAdmissionResolution.error:
+                await harness.configureRemoteSessionCloseFailureForTesting(
+                  _RemoteCloseFailure.remoteError.name,
+                );
+                break;
+              case _LateClosingAdmissionResolution.dispose:
+                await harness.configureRemoteSessionCloseFailureForTesting(
+                  _RemoteCloseFailure.requestTimeout.name,
+                );
+                break;
+            }
+            closeOutcome = _observeFuture(
+              harness.manager.closeSession(sessionId: harness.sessionId),
+            );
+            await harness.remoteCloseSeenForTesting.timeout(
+              const Duration(seconds: 2),
+            );
+            expect(
+              harness.manager.sessionGenerationForTesting(harness.sessionId),
+              isNotNull,
+              reason: resolution.name,
+            );
+            expect(
+              harness.manager.sessionInputOwnerForTesting(harness.sessionId),
+              isNull,
+              reason: resolution.name,
+            );
+
+            for (final method in <String>[
+              'session/request_permission',
+              'fs/read_text_file',
+              'fs/write_text_file',
+              'terminal/create',
+            ]) {
+              final params = harness.paramsFor(method)..['canary'] = canary;
+              final request = await harness.admit(method, params: params);
+              requests.add(request);
+              final observed = request.admission! as _ObservedAdmission;
+              expect(
+                harness.manager.admissionHasPromptOwnerForTesting(
+                  observed.inner,
+                ),
+                isFalse,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.manager.admissionCancellationReasonForTesting(
+                  observed.inner,
+                ),
+                acp.PermissionCancellationReason.sessionClosed,
+                reason: '${resolution.name}/$method',
+              );
+              final reply = await request.response.timeout(
+                const Duration(seconds: 2),
+              );
+              await request.settled.timeout(const Duration(seconds: 2));
+
+              expect(
+                request.handlerStarted.isCompleted,
+                isFalse,
+                reason: '${resolution.name}/$method',
+              );
+              if (method == 'session/request_permission') {
+                expect(reply.result, <String, Object?>{
+                  'outcome': <String, Object?>{'outcome': 'cancelled'},
+                });
+                expect(reply.error, isNull);
+              } else {
+                expect(reply.result, isNull);
+                expect(reply.error, <String, Object?>{
+                  'code': -32003,
+                  'message': 'Permission request cancelled.',
+                });
+                expect(reply.hasErrorData, isFalse);
+              }
+              final encodedReply = jsonEncode(reply.raw);
+              expect(encodedReply, isNot(contains(canary)));
+              expect(encodedReply, isNot(contains(harness.sessionId)));
+              expect(
+                request.reservationReleaseCount,
+                1,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                request.responseCommitCount,
+                1,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.manager.inboundAdmissionCountForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.peer.inboundPendingItemsForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.peer.correlationPendingItemsForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.manager.admissionCleanupWindowCountForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.manager.ownerCleanupBlockerCountForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+              expect(
+                harness.manager.ownerCleanupActiveTimerCountForTesting,
+                0,
+                reason: '${resolution.name}/$method',
+              );
+            }
+
+            expect(harness.permissions.requests, isEmpty);
+            expect(harness.permissions.cancellations, isEmpty);
+            expect(harness.fs.readCalls, 0);
+            expect(harness.fs.writeCalls, 0);
+            expect(harness.terminals.createCalls, 0);
+            expect(harness.manager.pendingTerminalLeaseCountForTesting, 0);
+            expect(harness.manager.terminalLeaseCountForTesting, 0);
+            expect(harness.manager.admissionCleanupWindowCountForTesting, 0);
+            expect(harness.manager.ownerCleanupBlockerCountForTesting, 0);
+            expect(harness.manager.ownerCleanupActiveTimerCountForTesting, 0);
+
+            switch (resolution) {
+              case _LateClosingAdmissionResolution.success:
+                harness.releaseRemoteCloseSuccessForTesting();
+                final outcome = await closeOutcome.timeout(
+                  const Duration(seconds: 2),
+                );
+                expect(outcome.error, isNull);
+                break;
+              case _LateClosingAdmissionResolution.error:
+                harness.releaseRemoteCloseErrorForTesting();
+                final outcome = await closeOutcome.timeout(
+                  const Duration(seconds: 2),
+                );
+                expect(outcome.error, isA<rpc.RpcException>());
+                final error = outcome.error! as rpc.RpcException;
+                expect(error.code, -32000);
+                expect(error.message, 'fixed session close failure');
+                break;
+              case _LateClosingAdmissionResolution.dispose:
+                final disposeOutcome = _observeFuture(
+                  harness.acpClient.dispose(),
+                );
+                final outcome = await closeOutcome.timeout(
+                  const Duration(seconds: 2),
+                );
+                final disposed = await disposeOutcome.timeout(
+                  const Duration(seconds: 2),
+                );
+                expect(outcome.error, isA<acp.AcpConnectionClosedException>());
+                expect(disposed.error, isNull);
+                break;
+            }
+
+            expect(
+              harness.manager.localSessionStateKeysForTesting(
+                harness.sessionId,
+              ),
+              isEmpty,
+              reason: resolution.name,
+            );
+            expect(harness.manager.admissionCleanupWindowCountForTesting, 0);
+            expect(harness.manager.ownerCleanupBlockerCountForTesting, 0);
+            expect(harness.manager.ownerCleanupActiveTimerCountForTesting, 0);
+            for (final request in requests) {
+              expect(request.reservationReleaseCount, 1);
+              expect(request.responseCommitCount, 1);
+            }
+          } finally {
+            harness.releaseRemoteCloseSuccessForTesting();
+            await harness.dispose();
+            await closeOutcome?.timeout(const Duration(seconds: 2));
+          }
+        });
+      }
     },
   );
 

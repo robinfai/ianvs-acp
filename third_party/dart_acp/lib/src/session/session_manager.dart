@@ -1388,6 +1388,10 @@ class SessionManager implements AcpBoundedObservationSource {
       .where((window) => window.timer?.isActive ?? false)
       .length;
 
+  /// Returns blockers retained by all active admission cleanup windows.
+  int get ownerCleanupBlockerCountForTesting => _ownerCleanupWindows.values
+      .fold<int>(0, (total, window) => total + window.blockers.length);
+
   /// Returns admitted requests retained by the manager.
   int get inboundAdmissionCountForTesting => _inboundAdmissions.length;
 
@@ -4724,6 +4728,9 @@ class SessionManager implements AcpBoundedObservationSource {
     final sealedFallbackReason = ownerAdmissionsSealed
         ? PermissionCancellationReason.promptEnded
         : null;
+    final closeReason = sessionId != null && _isSessionClosing(sessionId)
+        ? PermissionCancellationReason.sessionClosed
+        : null;
     final admission = _InboundPermissionAdmission(
       manager: this,
       method: method,
@@ -4745,9 +4752,6 @@ class SessionManager implements AcpBoundedObservationSource {
         _attachPromptAdmissionProbeForTesting(promptLifecycle, admission);
       }
       final settlingReason = _settlingPromptReasons[owner];
-      final closeReason = sessionId != null && _isSessionClosing(sessionId)
-          ? PermissionCancellationReason.sessionClosed
-          : null;
       final cancellationReason =
           settlingReason ??
           lifecycleReason ??
@@ -4781,13 +4785,17 @@ class SessionManager implements AcpBoundedObservationSource {
         _bindPromptCleanupWindow(promptLifecycle, window);
       }
     }
-    if (sessionId != null && generation == null && owner == null) {
-      admission.tryCompleteLocal(
-        InboundGateTerminalError<dynamic>(
-          _PayloadFreeRpcException(-32003, 'Permission request cancelled.'),
-        ),
-        cancellationReason: PermissionCancellationReason.sessionClosed,
-      );
+    if (sessionId != null && owner == null) {
+      if (closeReason != null) {
+        admission.tryCancel(closeReason);
+      } else if (generation == null) {
+        admission.tryCompleteLocal(
+          InboundGateTerminalError<dynamic>(
+            _PayloadFreeRpcException(-32003, 'Permission request cancelled.'),
+          ),
+          cancellationReason: PermissionCancellationReason.sessionClosed,
+        );
+      }
     }
     return admission;
   }
