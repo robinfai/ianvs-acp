@@ -7161,6 +7161,40 @@ void main() {
     expect(controller.sessions.single.unread, isTrue);
   });
 
+  test(
+    'merge session index preserves an established empty additional directory binding',
+    () {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+      final current = AgentSession(
+        id: 'active-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 1, 9),
+        additionalDirectories: const <String>[],
+        agentName: 'Codex',
+      );
+      controller.currentSession = current;
+      controller.sessions.add(current);
+
+      controller.mergeSessionIndex([
+        AgentSession(
+          id: 'active-session',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 1, 9),
+          additionalDirectories: const <String>['/workspace/stale-extra'],
+          agentName: 'Codex',
+        ),
+      ]);
+
+      expect(controller.currentSession?.additionalDirectories, isEmpty);
+      expect(controller.sessions.single.additionalDirectories, isEmpty);
+    },
+  );
+
   test('merge session index does not archive the current session', () {
     final controller = ChatController(
       client: FakeAgentClient(),

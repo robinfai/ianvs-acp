@@ -6844,6 +6844,7 @@ class ChatController extends ChangeNotifier {
     final existingAgentName = existing.agentName?.trim();
     final indexedAgentName = indexed.agentName?.trim();
     final isCurrent = _sessionIdsMatch(currentSession?.id, existing.id);
+    final boundSession = _boundSessionWithId(existing.id);
     final titleOverride = indexed.titleOverride?.trim().isNotEmpty == true
         ? indexed.titleOverride
         : existing.titleOverride;
@@ -6851,9 +6852,11 @@ class ChatController extends ChangeNotifier {
       id: existing.id,
       cwd: existing.cwd.trim().isEmpty ? indexed.cwd : existing.cwd,
       createdAt: existing.createdAt,
-      additionalDirectories: existing.additionalDirectories.isEmpty
-          ? indexed.additionalDirectories
-          : existing.additionalDirectories,
+      additionalDirectories:
+          boundSession?.additionalDirectories ??
+          (existing.additionalDirectories.isEmpty
+              ? indexed.additionalDirectories
+              : existing.additionalDirectories),
       title: existing.title ?? indexed.title,
       titleOverride: titleOverride,
       updatedAt: existing.updatedAt ?? indexed.updatedAt,
