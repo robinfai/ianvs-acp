@@ -868,7 +868,7 @@ class _ComposerControlBar extends StatelessWidget {
         (modelOption != null && modelOption!.options.isNotEmpty) ||
             (reasoningEffortOption != null &&
                 reasoningEffortOption!.options.isNotEmpty)
-        ? _SessionConfigSelector(
+        ? _SessionConfigSelectors(
             modelOption: modelOption,
             reasoningEffortOption: reasoningEffortOption,
             enabled: enabled && !isSending,
@@ -1066,8 +1066,8 @@ class _ToolCallPolicySelector extends StatelessWidget {
   }
 }
 
-class _SessionConfigSelector extends StatelessWidget {
-  const _SessionConfigSelector({
+class _SessionConfigSelectors extends StatelessWidget {
+  const _SessionConfigSelectors({
     required this.modelOption,
     required this.reasoningEffortOption,
     required this.enabled,
@@ -1083,211 +1083,86 @@ class _SessionConfigSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final effortLabel = reasoningEffortOption?.currentChoiceLabel;
     final hasModelChoices =
         modelOption != null && modelOption!.options.isNotEmpty;
     final hasEffortChoices =
         reasoningEffortOption != null &&
         reasoningEffortOption!.options.isNotEmpty;
-    final label = hasModelChoices ? modelOption!.currentChoiceLabel : 'Session';
     final modelEnabled = enabled && hasModelChoices && onModelSelected != null;
     final effortEnabled =
         enabled && hasEffortChoices && onReasoningEffortSelected != null;
-    return PopupMenuButton<_SessionConfigSelection>(
-      tooltip: 'Model and reasoning effort',
-      enabled: modelEnabled || effortEnabled,
-      onSelected: (selection) {
-        switch (selection.kind) {
-          case _SessionConfigSelectionKind.model:
-            onModelSelected?.call(selection.value);
-          case _SessionConfigSelectionKind.reasoningEffort:
-            onReasoningEffortSelected?.call(selection.value);
-        }
-      },
-      itemBuilder: (context) {
-        return <PopupMenuEntry<_SessionConfigSelection>>[
-          if (hasModelChoices) ...[
-            const PopupMenuItem<_SessionConfigSelection>(
-              enabled: false,
-              child: _PopupSectionHeader(
-                icon: Icons.memory_rounded,
-                label: 'Model',
-              ),
-            ),
-            for (final choice in modelOption!.options)
-              PopupMenuItem<_SessionConfigSelection>(
-                enabled: modelEnabled,
-                value: _SessionConfigSelection.model(choice.value),
-                child: _PopupChoiceRow(
-                  selected: choice.value == modelOption!.currentValue,
-                  icon: Icons.memory_rounded,
-                  label: choice.groupName == null
-                      ? choice.label
-                      : '${choice.groupName} · ${choice.label}',
-                  description: choice.description ?? '',
-                ),
-              ),
-          ],
-          if (hasModelChoices && hasEffortChoices)
-            const PopupMenuDivider(height: 8),
-          if (hasEffortChoices) ...[
-            const PopupMenuItem<_SessionConfigSelection>(
-              enabled: false,
-              child: _PopupSectionHeader(
-                icon: Icons.psychology_alt_rounded,
-                label: 'Reasoning',
-              ),
-            ),
-            for (final choice in reasoningEffortOption!.options)
-              PopupMenuItem<_SessionConfigSelection>(
-                enabled: effortEnabled,
-                value: _SessionConfigSelection.reasoningEffort(choice.value),
-                child: _PopupChoiceRow(
-                  selected: choice.value == reasoningEffortOption!.currentValue,
-                  icon: Icons.psychology_alt_rounded,
-                  label: choice.label,
-                  description: choice.description ?? '',
-                ),
-              ),
-          ],
-        ];
-      },
-      child: _ComposerSplitControlButton(
-        modelLabel: label,
-        effortLabel: effortLabel,
-        enabled: modelEnabled || effortEnabled,
-      ),
-    );
-  }
-}
-
-enum _SessionConfigSelectionKind { model, reasoningEffort }
-
-class _SessionConfigSelection {
-  const _SessionConfigSelection.model(this.value)
-    : kind = _SessionConfigSelectionKind.model;
-
-  const _SessionConfigSelection.reasoningEffort(this.value)
-    : kind = _SessionConfigSelectionKind.reasoningEffort;
-
-  final _SessionConfigSelectionKind kind;
-  final String value;
-}
-
-class _ComposerSplitControlButton extends StatelessWidget {
-  const _ComposerSplitControlButton({
-    required this.modelLabel,
-    required this.effortLabel,
-    required this.enabled,
-  });
-
-  final String modelLabel;
-  final String? effortLabel;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = enabled ? AppColors.primaryDark : AppColors.textTertiary;
-    final borderColor = enabled
-        ? AppColors.primary.withValues(alpha: 0.14)
-        : AppColors.border;
-    return Container(
-      height: 30,
-      constraints: const BoxConstraints(maxWidth: 268),
-      decoration: BoxDecoration(
-        color: AppColors.primarySoft,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(
-            child: _SplitControlSegment(
-              icon: Icons.memory_rounded,
-              label: modelLabel,
-              color: color,
-            ),
-          ),
-          if (effortLabel != null && effortLabel!.isNotEmpty) ...[
-            Container(width: 1, height: 18, color: borderColor),
-            Flexible(
-              child: _SplitControlSegment(
-                icon: Icons.psychology_alt_rounded,
-                label: effortLabel!,
-                color: color,
-              ),
-            ),
-          ],
-          const SizedBox(width: 2),
-          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 17),
-          const SizedBox(width: 7),
-        ],
-      ),
-    );
-  }
-}
-
-class _SplitControlSegment extends StatelessWidget {
-  const _SplitControlSegment({
-    required this.icon,
-    required this.label,
-    required this.color,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 9),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: color,
-                fontSize: 13,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PopupSectionHeader extends StatelessWidget {
-  const _PopupSectionHeader({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      alignment: WrapAlignment.end,
       children: [
-        Icon(icon, size: 15, color: AppColors.textSecondary),
-        const SizedBox(width: 8),
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 11,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 0,
+        if (hasModelChoices)
+          _SessionConfigDropdown(
+            key: const Key('prompt-model-selector'),
+            tooltip: 'Select model',
+            icon: Icons.memory_rounded,
+            option: modelOption!,
+            enabled: modelEnabled,
+            includeChoiceGroup: true,
+            onSelected: onModelSelected,
           ),
-        ),
+        if (hasEffortChoices)
+          _SessionConfigDropdown(
+            key: const Key('prompt-reasoning-effort-selector'),
+            tooltip: 'Select reasoning effort',
+            icon: Icons.psychology_alt_rounded,
+            option: reasoningEffortOption!,
+            enabled: effortEnabled,
+            onSelected: onReasoningEffortSelected,
+          ),
       ],
+    );
+  }
+}
+
+class _SessionConfigDropdown extends StatelessWidget {
+  const _SessionConfigDropdown({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.option,
+    required this.enabled,
+    required this.onSelected,
+    this.includeChoiceGroup = false,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final AcpConfigOption option;
+  final bool enabled;
+  final ValueChanged<String>? onSelected;
+  final bool includeChoiceGroup;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: tooltip,
+      enabled: enabled,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        for (final choice in option.options)
+          PopupMenuItem<String>(
+            value: choice.value,
+            child: _PopupChoiceRow(
+              selected: choice.value == option.currentValue,
+              icon: icon,
+              label: includeChoiceGroup && choice.groupName != null
+                  ? '${choice.groupName} · ${choice.label}'
+                  : choice.label,
+              description: choice.description ?? '',
+            ),
+          ),
+      ],
+      child: _ComposerControlButton(
+        icon: icon,
+        label: option.currentChoiceLabel,
+        enabled: enabled,
+      ),
     );
   }
 }

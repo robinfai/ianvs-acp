@@ -1522,7 +1522,7 @@ void main() {
     expect(selectedModel, 'mini');
   });
 
-  testWidgets('PromptInput changes exposed reasoning effort option', (
+  testWidgets('PromptInput keeps model and reasoning choices separate', (
     tester,
   ) async {
     String? selectedEffort;
@@ -1535,7 +1535,10 @@ void main() {
           name: 'Model',
           type: 'select',
           currentValue: 'gpt-5',
-          options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+          options: [
+            AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+            AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+          ],
         ),
         onModelSelected: (_) {},
         reasoningEffortOption: const AcpConfigOption(
@@ -1553,13 +1556,19 @@ void main() {
     );
 
     expect(find.text('High'), findsOneWidget);
-    await tester.tap(find.text('High'));
+    await tester.tap(find.byKey(const Key('prompt-reasoning-effort-selector')));
     await tester.pumpAndSettle();
-    expect(find.text('Reasoning'), findsOneWidget);
+    expect(find.text('GPT-5 Mini'), findsNothing);
+    expect(find.text('Low'), findsOneWidget);
     await tester.tap(find.text('Low'));
     await tester.pumpAndSettle();
 
     expect(selectedEffort, 'low');
+
+    await tester.tap(find.byKey(const Key('prompt-model-selector')));
+    await tester.pumpAndSettle();
+    expect(find.text('GPT-5 Mini'), findsOneWidget);
+    expect(find.text('Low'), findsNothing);
   });
 
   testWidgets('PromptInput hides model selector without choices', (
