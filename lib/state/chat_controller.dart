@@ -2604,6 +2604,7 @@ class ChatController extends ChangeNotifier {
   bool isStreaming = false;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
+  Completer<void>? _sessionOperationIdleCompleter;
   bool isSessionReplayLoading = false;
   bool _isDisposed = false;
   bool _changeNotifierDisposed = false;
@@ -2737,6 +2738,17 @@ class ChatController extends ChangeNotifier {
 
   bool get canSendExtensionRequest {
     return capabilities != null && !isStreaming && !isSessionOperationRunning;
+  }
+
+  Future<void> waitForSessionOperationIdle() async {
+    while (isSessionOperationRunning) {
+      final idle = _sessionOperationIdleCompleter;
+      if (idle == null) {
+        await Future<void>.delayed(Duration.zero);
+        continue;
+      }
+      await idle.future;
+    }
   }
 
   List<AcpPermissionAuditEntry> get permissionHistory {
@@ -4256,13 +4268,19 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _runSessionOperation(Future<void> Function() action) async {
     if (_isDisposed) return;
+    final idle = Completer<void>();
+    _sessionOperationIdleCompleter = idle;
     isSessionOperationRunning = true;
     _notifyListeners();
     try {
       await action();
     } finally {
+      isSessionOperationRunning = false;
+      if (identical(_sessionOperationIdleCompleter, idle)) {
+        _sessionOperationIdleCompleter = null;
+      }
+      if (!idle.isCompleted) idle.complete();
       if (!_isDisposed) {
-        isSessionOperationRunning = false;
         _notifyListeners();
       }
     }
@@ -4274,13 +4292,19 @@ class ChatController extends ChangeNotifier {
     if (_isDisposed) {
       throw StateError('Chat controller is disposed.');
     }
+    final idle = Completer<void>();
+    _sessionOperationIdleCompleter = idle;
     isSessionOperationRunning = true;
     _notifyListeners();
     try {
       return await action();
     } finally {
+      isSessionOperationRunning = false;
+      if (identical(_sessionOperationIdleCompleter, idle)) {
+        _sessionOperationIdleCompleter = null;
+      }
+      if (!idle.isCompleted) idle.complete();
       if (!_isDisposed) {
-        isSessionOperationRunning = false;
         _notifyListeners();
       }
     }

@@ -351,9 +351,7 @@ class AppShell extends StatelessWidget {
                                       onResumeSession: canResumeSessions
                                           ? () => _showResumeDialog(context)
                                           : null,
-                                      onSelectSession: sessionActionsEnabled
-                                          ? onSelectSession
-                                          : null,
+                                      onSelectSession: onSelectSession,
                                       canForkSession: canForkSession,
                                       onSessionMenuAction:
                                           onSessionMenuAction == null

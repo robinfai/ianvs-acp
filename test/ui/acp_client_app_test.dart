@@ -2589,6 +2589,101 @@ void main() {
     );
   });
 
+  testWidgets('AcpClientApp reports clipboard failures from session actions', (
+    tester,
+  ) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          throw PlatformException(code: 'clipboard-unavailable');
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+    });
+
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/current',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession();
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy Session ID'));
+    await tester.pump();
+
+    expect(find.textContaining('Could not copy Session ID'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('AcpClientApp queues session selection behind session listing', (
+    tester,
+  ) async {
+    final client = _ControllableListAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/current',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession();
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'remote-history',
+        cwd: '/workspace/current',
+        createdAt: DateTime(2025),
+        title: 'Remote history',
+      ),
+    ]);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        autoLoadWorkspaceSessions: false,
+        taskInboxController: taskHarness.controller,
+      ),
+      const Size(1400, 900),
+    );
+
+    final listing = controller.listSessions();
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const Key('workspace-session-history:remote-history')),
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+
+    expect(find.text('Review Session Workspace'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await tester.pump();
+    expect(controller.currentSession?.id, 'fake-session-1');
+
+    client.releaseList();
+    await tester.pump();
+    await listing;
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.id, 'remote-history');
+    expect(client.lastResumeCwd, '/workspace/current');
+  });
+
   testWidgets('AcpClientApp opens sessions in a new window from the menu', (
     tester,
   ) async {
@@ -4308,6 +4403,20 @@ class _WorkspaceCatalogAgentClient extends FakeAgentClient {
         ],
       ),
     ];
+  }
+}
+
+class _ControllableListAgentClient extends FakeAgentClient {
+  final Completer<void> _listReleased = Completer<void>();
+
+  void releaseList() {
+    if (!_listReleased.isCompleted) _listReleased.complete();
+  }
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    await _listReleased.future;
+    return super.listSessions();
   }
 }
 
