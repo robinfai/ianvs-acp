@@ -189,6 +189,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   bool _sessionIndexPersistScheduled = false;
   int _sessionIndexHydrationSerial = 0;
   int _sessionCatalogLoadSerial = 0;
+  bool _sessionSelectionInProgress = false;
   WorkspaceSessionIndexPersistenceQueue? _sessionIndexPersistence;
 
   @override
@@ -1697,13 +1698,32 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   Future<void> _selectSession(AgentSession session) async {
-    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+    if (_sessionSelectionInProgress) {
+      _showSnackBar('A session switch is already in progress.');
+      return;
+    }
+
+    _sessionSelectionInProgress = true;
+    try {
+      await _selectSessionOnce(session);
+    } finally {
+      _sessionSelectionInProgress = false;
+    }
+  }
+
+  Future<void> _selectSessionOnce(AgentSession session) async {
+    if (_controller.isStreaming) {
+      _showSnackBar('Wait for the current response before switching sessions.');
       return;
     }
 
     final existingTargetController = _existingControllerForAgentName(
       session.agentName,
     );
+    if (existingTargetController?.isStreaming == true) {
+      _showSnackBar('Wait for the current response before switching sessions.');
+      return;
+    }
     if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
         true) {
       _showSnackBar(sessionWorkspaceConflictMessage(session.id));
@@ -1744,6 +1764,20 @@ class _AcpClientAppState extends State<AcpClientApp>
           return;
         }
       }
+    }
+
+    if (controller.isSessionOperationRunning) {
+      _showSnackBar('Waiting for the current session operation to finish.');
+      await controller.waitForSessionOperationIdle();
+      if (!mounted) return;
+    }
+    if (_controller.isStreaming || controller.isStreaming) {
+      _showSnackBar('Wait for the current response before switching sessions.');
+      return;
+    }
+    if (controller.hasBoundSessionWorkspaceConflict(session)) {
+      _showSnackBar(sessionWorkspaceConflictMessage(session.id));
+      return;
     }
 
     await controller.resumeSession(
@@ -2134,8 +2168,12 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   Future<void> _copyToClipboard(String text, {required String label}) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    _showSnackBar('$label copied.');
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      _showSnackBar('$label copied.');
+    } catch (error) {
+      _showSnackBar('Could not copy $label: $error');
+    }
   }
 
   String _deepLinkForSession(AgentSession session) {

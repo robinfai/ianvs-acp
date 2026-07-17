@@ -1450,6 +1450,66 @@ void main() {
     expect(find.byTooltip('Session actions'), findsOneWidget);
   });
 
+  testWidgets('WorkspaceSidebar keeps inactive session menu actions mounted', (
+    tester,
+  ) async {
+    final currentSession = AgentSession(
+      id: 'current-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Current work',
+      agentName: 'Codex',
+    );
+    final otherSession = AgentSession(
+      id: 'other-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 11),
+      title: 'Other work',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [currentSession, otherSession],
+    );
+    WorkspaceSessionMenuAction? selectedAction;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: currentSession,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onSessionMenuAction: (_, action) => selectedAction = action,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.text('Other work')));
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Session actions').last);
+    await tester.pumpAndSettle();
+    await mouse.moveTo(tester.getCenter(find.text('Copy Session ID')));
+    await tester.pump();
+    await tester.tap(find.text('Copy Session ID'));
+    await tester.pumpAndSettle();
+
+    expect(selectedAction, WorkspaceSessionMenuAction.copySessionId);
+  });
+
   testWidgets('WorkspaceSidebar exposes session context menu from row', (
     tester,
   ) async {

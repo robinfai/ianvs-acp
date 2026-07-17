@@ -1526,7 +1526,11 @@ class _SessionActionSlot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(width: 36, height: 22, child: visible ? child : null);
+    return SizedBox(
+      width: 36,
+      height: 22,
+      child: Offstage(offstage: !visible, child: child),
+    );
   }
 }
 
