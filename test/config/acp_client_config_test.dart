@@ -74,6 +74,39 @@ void main() {
     expect(config.configForSessionIndexAgent('Kimi'), isNull);
   });
 
+  test('resolves legacy pi ACP sessions to the single Pi adapter', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        'Pi': {'type': 'custom', 'command': '/Users/example/.local/bin/pi-acp'},
+      },
+    });
+
+    final resolved = config.configForSessionIndexAgent('pi ACP');
+
+    expect(resolved?.agentName, 'Pi');
+    expect(resolved?.activeAgentServer?.command, endsWith('/pi-acp'));
+  });
+
+  test('does not guess a legacy Pi alias when multiple adapters remain', () {
+    final config = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Pi local': {
+          'type': 'custom',
+          'command': '/Users/example/.local/bin/pi-acp',
+        },
+        'Pi npx': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['-y', 'pi-acp'],
+        },
+      },
+    });
+
+    expect(config.configForSessionIndexAgent('pi ACP'), isNull);
+  });
+
   test('loads camelCase agent server config aliases', () {
     final config = AcpClientConfig.fromJson({
       'defaultAgentServer': 'Remote Agent',

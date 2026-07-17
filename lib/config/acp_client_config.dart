@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
 
@@ -73,6 +74,21 @@ class AcpClientConfig {
     if (activeAgentServer != null && agentName == trimmed) return this;
     if (agentServerNamed(trimmed) != null) {
       return withActiveAgentServer(trimmed);
+    }
+    if (AcpAdapterPackages.isPiAgentAlias(trimmed)) {
+      final matches = selectableAgentServers
+          .where(
+            (server) => AcpAdapterPackages.isPiAdapterInvocation(
+              command: server.command,
+              args: server.args,
+            ),
+          )
+          .toList(growable: false);
+      if (matches.length == 1) {
+        final match = matches.single;
+        if (activeAgentServer?.name == match.name) return this;
+        return withActiveAgentServer(match.name);
+      }
     }
     if (activeAgentServer == null &&
         selectableAgentServers.isEmpty &&

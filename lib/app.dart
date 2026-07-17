@@ -1497,7 +1497,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     String agentName,
   ) {
     final existingAgentName = session.agentName?.trim();
-    if (existingAgentName != null && existingAgentName.isNotEmpty) {
+    if (existingAgentName == agentName) {
       return session;
     }
     return AgentSession(

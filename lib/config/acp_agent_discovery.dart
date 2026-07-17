@@ -16,7 +16,7 @@ class AcpAgentDiscovery {
   static const String codexAgentName = 'Codex';
   static const String codexAcpPackage = AcpAdapterPackages.codex;
   static const String legacyCodexAcpPackage = AcpAdapterPackages.legacyCodex;
-  static const String piAgentName = 'pi ACP';
+  static const String piAgentName = AcpAdapterPackages.piAgentName;
   static const String piAcpVersion = AcpAdapterPackages.piVersion;
   static const String piAcpPackage = AcpAdapterPackages.pi;
 
@@ -181,6 +181,9 @@ class AcpAgentDiscovery {
           _isCurrentCodexInvocation(candidate)) {
         continue;
       }
+      if (_isPiAcpInvocation(server) && _isPiAcpInvocation(candidate)) {
+        return true;
+      }
       if (server.name == candidate.name) return true;
       if (_sameStdioInvocation(server, candidate)) return true;
     }
@@ -219,6 +222,13 @@ class AcpAgentDiscovery {
       server.isStdio &&
       server.args.length == 1 &&
       _isLegacyCodexPackage(server.args.single);
+
+  static bool _isPiAcpInvocation(AgentServerConfig server) =>
+      server.isStdio &&
+      AcpAdapterPackages.isPiAdapterInvocation(
+        command: server.command,
+        args: server.args,
+      );
 
   static bool _isLegacyCodexPackage(Object? value) =>
       AcpAdapterPackages.isLegacyCodexPackage(value);

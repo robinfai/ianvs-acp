@@ -3993,6 +3993,56 @@ void main() {
   });
 
   testWidgets(
+    'AcpClientApp migrates legacy pi ACP session index entries to Pi',
+    (tester) async {
+      final store = _LegacyPiWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'pi-session',
+          cwd: '/workspace/pi',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Pi session',
+          agentName: 'pi ACP',
+        ),
+        AgentSession(
+          id: 'pi-session',
+          cwd: '/workspace/pi',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Pi session',
+          agentName: 'Pi',
+        ),
+      ]);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'Pi': {
+            'type': 'custom',
+            'command': '/Users/example/.local/bin/pi-acp',
+          },
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          taskInboxController: taskHarness.controller,
+          workspaceStateStore: store,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+
+      final savedPiSessions = store.lastSaved
+          .where((session) => session.id == 'pi-session')
+          .toList(growable: false);
+      expect(savedPiSessions, hasLength(1));
+      expect(savedPiSessions.single.agentName, 'Pi');
+    },
+  );
+
+  testWidgets(
     'AcpClientApp retries an unchanged session index after a save failure',
     (tester) async {
       final store = _FailOnceWorkspaceStateStore();
@@ -4268,6 +4318,21 @@ class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
       throw const FileSystemException('injected session index failure');
     }
     successfulSaves += 1;
+  }
+}
+
+class _LegacyPiWorkspaceStateStore extends WorkspaceSidebarStateStore {
+  _LegacyPiWorkspaceStateStore(this.initialSessions) : super(path: 'memory');
+
+  final List<AgentSession> initialSessions;
+  List<AgentSession> lastSaved = const <AgentSession>[];
+
+  @override
+  Future<List<AgentSession>> loadSessionIndex() async => initialSessions;
+
+  @override
+  Future<void> saveSessionIndex(Iterable<AgentSession> sessions) async {
+    lastSaved = List<AgentSession>.unmodifiable(sessions);
   }
 }
 

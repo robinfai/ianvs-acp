@@ -30,7 +30,7 @@ void main() {
     expect(discovered.single.args, ['@agentclientprotocol/codex-acp']);
   });
 
-  test('discovers pi ACP through npx when pi is installed', () {
+  test('discovers Pi through npx when pi is installed', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
       environment: const <String, String>{
@@ -42,20 +42,20 @@ void main() {
     );
 
     expect(discovered, hasLength(2));
-    final pi = discovered.singleWhere((server) => server.name == 'pi ACP');
+    final pi = discovered.singleWhere((server) => server.name == 'Pi');
     expect(pi.command, '/usr/local/bin/npx');
     expect(pi.args, ['-y', 'pi-acp@0.0.31']);
     expect(pi.env, isEmpty);
   });
 
-  test('does not discover pi ACP when pi is not installed', () {
+  test('does not discover Pi when pi is not installed', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
       environment: const <String, String>{'PATH': '/usr/local/bin:/bin'},
       fileExists: (path) => path == '/usr/local/bin/npx',
     );
 
-    expect(discovered.map((server) => server.name), isNot(contains('pi ACP')));
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
   });
 
   test(
@@ -79,30 +79,61 @@ void main() {
     },
   );
 
-  test(
-    'does not suggest pi ACP when same ACP adapter is already configured',
-    () {
-      final discovered = AcpAgentDiscovery.discoverMissing(
-        AcpClientConfig.fromJson({
-          'agent_servers': {
-            'pi': {
-              'type': 'custom',
-              'command': '/opt/homebrew/bin/npx',
-              'args': ['-y', 'pi-acp@0.0.31'],
-            },
+  test('does not suggest Pi when the versioned npx adapter is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'pi': {
+            'type': 'custom',
+            'command': '/opt/homebrew/bin/npx',
+            'args': ['-y', 'pi-acp@0.0.31'],
           },
-        }),
-        environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
-        fileExists: (path) =>
-            path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
-      );
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
 
-      expect(
-        discovered.map((server) => server.name),
-        isNot(contains('pi ACP')),
-      );
-    },
-  );
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
+
+  test('does not suggest Pi when a direct pi-acp wrapper is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Pi': {
+            'type': 'custom',
+            'command': '/Users/example/.local/bin/pi-acp',
+          },
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
+
+  test('does not suggest Pi when an unversioned npx adapter is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Pi': {
+            'type': 'custom',
+            'command': '/opt/homebrew/bin/npx',
+            'args': ['--yes', 'pi-acp'],
+          },
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
 
   test('writes selected discovered agents to settings file', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');

@@ -44,9 +44,11 @@ is restored or re-entered.
 
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
-`npx` command running `@agentclientprotocol/codex-acp`, and pi ACP through `npx -y
-pi-acp@0.0.31` when both `npx` and the `pi` command are available. Model provider
-credentials for pi remain user-managed through pi itself or the agent server
+`npx` command running `@agentclientprotocol/codex-acp`, and Pi through the
+`pi-acp` adapter when both `npx` and the `pi` command are available. A direct
+`pi-acp` command or wrapper and `npx -y pi-acp[@version]` are treated as the same
+Pi agent, so discovery does not add a duplicate profile. Model provider
+credentials for Pi remain user-managed through Pi itself or the agent server
 `env` fields in Agent Configuration.
 
 Saved shape example for automation and debugging:
@@ -61,7 +63,7 @@ Saved shape example for automation and debugging:
       "cwd": "/Users/example/project",
       "args": ["@agentclientprotocol/codex-acp"]
     },
-    "pi ACP": {
+    "Pi": {
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
