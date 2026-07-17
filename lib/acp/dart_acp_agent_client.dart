@@ -67,7 +67,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.sessionListMaxEntries = 10000,
     this.sessionListMaxCursorBytes = 8 * 1024,
     this.maxSessionReplayItems = 2048,
-    this.maxSessionReplayBytes = 16 * 1024 * 1024,
+    this.maxSessionReplayBytes = 32 * 1024 * 1024,
     this.maxSessionToolCallItems = 512,
     this.maxSessionToolCallBytes = 8 * 1024 * 1024,
     this.maxTerminalHandles = acp.defaultMaxTerminalHandles,
@@ -790,12 +790,24 @@ class DartAcpAgentClient implements AcpAgentClient {
       return events;
     }
 
-    final subscription = client.sessionUpdates(sessionId).listen((update) {
-      final event = _eventFromAcpUpdate(update, sessionId: sessionId);
-      if (event != null) {
-        events.add(event);
-      }
-    }, onError: (_) {});
+    final emittedLimitResources = <String>{};
+    final subscription = client
+        .sessionUpdates(sessionId)
+        .listen(
+          (update) {
+            final event = _eventFromAcpUpdate(update, sessionId: sessionId);
+            if (event != null) {
+              events.add(event);
+            }
+          },
+          onError: (Object error, StackTrace _) {
+            final event = _eventFromSessionUpdateError(
+              error,
+              emittedLimitResources: emittedLimitResources,
+            );
+            if (event != null) events.add(event);
+          },
+        );
     try {
       await client.loadSession(
         sessionId: sessionId,
@@ -1604,6 +1616,41 @@ class DartAcpAgentClient implements AcpAgentClient {
     return null;
   }
 
+  AgentEvent? _eventFromSessionUpdateError(
+    Object error, {
+    Set<String>? emittedLimitResources,
+  }) {
+    if (error is acp.AcpInputLimitExceeded) {
+      if (emittedLimitResources != null &&
+          !emittedLimitResources.add(error.resource)) {
+        return null;
+      }
+      final omission = acp.AcpInputOmission(
+        reason: acp.AcpInputOmissionReason.inputLimit,
+        resource: error.resource,
+        truncated: false,
+        limit: error.limit,
+        observedAtLeast: error.observedAtLeast,
+      );
+      return AgentEvent(
+        type: AgentEventType.status,
+        text: 'Oversized session data omitted.',
+        metadata: <String, Object?>{
+          'kind': 'omission',
+          'resource': error.resource,
+        },
+        omissions: _singleOmission(omission),
+        timestamp: DateTime.now(),
+      );
+    }
+    return AgentEvent(
+      type: AgentEventType.error,
+      text: 'ACP session update failed.',
+      metadata: const <String, Object?>{'kind': 'session_update'},
+      timestamp: DateTime.now(),
+    );
+  }
+
   AgentEvent? _usageEventFromUnknownUpdate(acp.UnknownUpdate update) {
     final raw = update.raw;
     final rawBody = raw['update'];
@@ -2233,17 +2280,36 @@ class DartAcpAgentClient implements AcpAgentClient {
     }
 
     operation.enterTerminalOnlyAction = enterTerminalOnly;
-    updates = client.liveSessionUpdates(operation.sessionId).listen((update) {
-      if (!acceptingUpdates || !operation.acceptsUpdates || output.isClosed) {
-        return;
-      }
-      final event = _eventFromAcpUpdate(
-        update,
-        includeUserMessages: false,
-        sessionId: operation.sessionId,
-      );
-      if (event != null) output.add(event);
-    });
+    final emittedLimitResources = <String>{};
+    updates = client
+        .liveSessionUpdates(operation.sessionId)
+        .listen(
+          (update) {
+            if (!acceptingUpdates ||
+                !operation.acceptsUpdates ||
+                output.isClosed) {
+              return;
+            }
+            final event = _eventFromAcpUpdate(
+              update,
+              includeUserMessages: false,
+              sessionId: operation.sessionId,
+            );
+            if (event != null) output.add(event);
+          },
+          onError: (Object error, StackTrace _) {
+            if (!acceptingUpdates ||
+                !operation.acceptsUpdates ||
+                output.isClosed) {
+              return;
+            }
+            final event = _eventFromSessionUpdateError(
+              error,
+              emittedLimitResources: emittedLimitResources,
+            );
+            if (event != null) output.add(event);
+          },
+        );
     terminals = client.terminalEvents.listen((update) {
       if (!acceptingUpdates || !operation.acceptsUpdates || output.isClosed) {
         return;
@@ -3124,12 +3190,24 @@ class DartAcpAgentClient implements AcpAgentClient {
     String sessionId,
   ) async {
     final events = <AgentEvent>[];
-    final subscription = client.sessionUpdates(sessionId).listen((update) {
-      final event = _eventFromAcpUpdate(update, sessionId: sessionId);
-      if (event != null) {
-        events.add(event);
-      }
-    }, onError: (_) {});
+    final emittedLimitResources = <String>{};
+    final subscription = client
+        .sessionUpdates(sessionId)
+        .listen(
+          (update) {
+            final event = _eventFromAcpUpdate(update, sessionId: sessionId);
+            if (event != null) {
+              events.add(event);
+            }
+          },
+          onError: (Object error, StackTrace _) {
+            final event = _eventFromSessionUpdateError(
+              error,
+              emittedLimitResources: emittedLimitResources,
+            );
+            if (event != null) events.add(event);
+          },
+        );
     try {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     } finally {

@@ -447,14 +447,14 @@ class AcpInputBudget {
     this.maxMetadataBytes = 512 * 1024,
     this.maxCollectionItems = 1024,
     this.maxStructuredUpdateNodes = 8192,
-    this.maxStructuredUpdateBytes = 1024 * 1024,
-    this.maxStructuredStringBytes = 64 * 1024,
-    this.maxMessageTextBytes = 1024 * 1024,
+    this.maxStructuredUpdateBytes = 16 * 1024 * 1024,
+    this.maxStructuredStringBytes = 4 * 1024 * 1024,
+    this.maxMessageTextBytes = 2 * 1024 * 1024,
     this.maxMessageTextLines = 10000,
     this.maxMarkdownSyntaxTokens = 4096,
     this.maxMarkdownFallbackBytes = 64 * 1024,
     this.maxThoughtTextBytes = 512 * 1024,
-    this.maxEmbeddedMediaBytes = 8 * 1024 * 1024,
+    this.maxEmbeddedMediaBytes = 16 * 1024 * 1024,
     this.maxImageDimension = 8192,
     this.maxImagePixels = 16777216,
     this.maxImagePreviewPixels = 2097152,
@@ -462,10 +462,10 @@ class AcpInputBudget {
     this.maxImagePreviewPixelsGlobal = 4194304,
     this.maxImageDecodeBytesGlobal = 32 * 1024 * 1024,
     this.maxTurnItems = 512,
-    this.maxTurnRetainedBytes = 16 * 1024 * 1024,
+    this.maxTurnRetainedBytes = 32 * 1024 * 1024,
     this.maxTimelineItems = 2000,
-    this.maxTimelineBytes = 16 * 1024 * 1024,
-    this.maxUiStateBytes = 64 * 1024 * 1024,
+    this.maxTimelineBytes = 32 * 1024 * 1024,
+    this.maxUiStateBytes = 128 * 1024 * 1024,
     this.maxMetadataPreviewBytes = 16 * 1024,
     this.maxMetadataPreviewChars = 4096,
   });
@@ -762,17 +762,29 @@ final class AcpStructuredUpdateGuard {
   /// The value consumes its actual scalar/container nodes and UTF-8 bytes in
   /// the shared structured root. It also observes metadata depth, node, entry,
   /// and byte limits. Failures are transactional and retain no partial value.
-  Object? copyJsonValue(Object? value, {required String field}) {
+  Object? copyJsonValue(
+    Object? value, {
+    required String field,
+    bool omitEmbeddedMediaDataUris = false,
+  }) {
     _rejectReentrantMetadataAccess();
     _metadataCopyInProgress = true;
     try {
-      return _copyJsonValue(value, field: field);
+      return _copyJsonValue(
+        value,
+        field: field,
+        omitEmbeddedMediaDataUris: omitEmbeddedMediaDataUris,
+      );
     } finally {
       _metadataCopyInProgress = false;
     }
   }
 
-  Object? _copyJsonValue(Object? source, {required String field}) {
+  Object? _copyJsonValue(
+    Object? source, {
+    required String field,
+    bool omitEmbeddedMediaDataUris = false,
+  }) {
     final maxDepth = math.min(_budget.maxJsonDepth, _budget.maxMetadataDepth);
     final entryLimit = math.min(
       _budget.maxCollectionItems,
@@ -1099,8 +1111,12 @@ final class AcpStructuredUpdateGuard {
       }
 
       if (current is String) {
-        recordString(current);
-        valueFrame.assign(current);
+        final copied =
+            omitEmbeddedMediaDataUris && _isEmbeddedMediaDataUri(current)
+            ? _embeddedMediaDataOmissionMarker
+            : current;
+        recordString(copied);
+        valueFrame.assign(copied);
         continue;
       }
       if (current is int) {
@@ -1201,6 +1217,19 @@ final class AcpStructuredUpdateGuard {
       observedAtLeast: observedAtLeast,
     );
   }
+}
+
+const String _embeddedMediaDataOmissionMarker = '<media omitted>';
+
+bool _isEmbeddedMediaDataUri(String value) {
+  if (!value.startsWith('data:') || value.length <= 5) return false;
+  final headerEnd = math.min(value.length, 256);
+  final header = value.substring(5, headerEnd).toLowerCase();
+  final comma = header.indexOf(',');
+  if (comma < 0) return false;
+  final mediaType = header.substring(0, comma);
+  return (mediaType.startsWith('image/') || mediaType.startsWith('audio/')) &&
+      mediaType.contains(';base64');
 }
 
 /// Deterministically estimates retained JSON-compatible ACP state.

@@ -8523,7 +8523,7 @@ Future<void> main() async {
   });
 
   test(
-    'load replay update and immediate result share one structured root',
+    'load replay update and immediate result use independent structured roots',
     () async {
       Future<void> runCase({
         required int maxNodes,
@@ -8587,13 +8587,12 @@ Future<void> main() async {
         }
       }
 
-      await runCase(maxNodes: 4, succeeds: true);
-      await runCase(maxNodes: 3, succeeds: false);
+      await runCase(maxNodes: 3, succeeds: true);
     },
   );
 
   test(
-    'load update and immediate result share item and retained budgets',
+    'load update and immediate result use independent item and retained budgets',
     () async {
       Future<
         ({
@@ -8658,33 +8657,16 @@ Future<void> main() async {
         return (manager: manager, peer: peer, server: server, channel: channel);
       }
 
-      for (final retainedCase in const <({String value, bool succeeds})>[
-        (value: '', succeeds: true),
-        (value: 'a', succeeds: false),
-      ]) {
+      for (final metaValue in const <String>['', 'a']) {
         final state = await createCase(
           budget: const acp.AcpInputBudget(maxTurnRetainedBytes: 364),
-          metaValue: retainedCase.value,
+          metaValue: metaValue,
         );
         try {
-          final load = state.manager.loadSession(
+          await state.manager.loadSession(
             sessionId: 'combined-budget',
             workspaceRoot: '/workspace',
           );
-          if (retainedCase.succeeds) {
-            await load;
-          } else {
-            await expectLater(
-              load,
-              throwsA(
-                isA<acp.AcpInputLimitExceeded>().having(
-                  (error) => error.resource,
-                  'resource',
-                  'turn retained bytes',
-                ),
-              ),
-            );
-          }
         } finally {
           await state.manager.dispose();
           await state.peer.close();
@@ -8703,22 +8685,13 @@ Future<void> main() async {
           sessionId: 'combined-budget',
           workspaceRoot: '/workspace',
         );
-        await expectLater(
-          itemState.manager.loadSession(
-            sessionId: 'combined-budget',
-            workspaceRoot: '/workspace',
-          ),
-          throwsA(
-            isA<acp.AcpInputLimitExceeded>().having(
-              (error) => error.resource,
-              'resource',
-              'turn items',
-            ),
-          ),
+        await itemState.manager.loadSession(
+          sessionId: 'combined-budget',
+          workspaceRoot: '/workspace',
         );
         expect(
           itemState.manager.sessionModes('combined-budget')?.currentModeId,
-          'old',
+          'new',
         );
       } finally {
         await itemState.manager.dispose();
@@ -17186,6 +17159,97 @@ Future<void> main() async {
       await tempDir.delete(recursive: true);
     }
   });
+
+  test(
+    'session load turns oversized updates into one omission and continues',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');
+      final agentScript = File(
+        '${tempDir.path}/fake_oversized_load_agent.dart',
+      );
+      await agentScript.writeAsString('''
+import 'dart:convert';
+import 'dart:io';
+
+Future<void> main() async {
+  await for (final line in stdin
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())) {
+    final message = jsonDecode(line) as Map<String, dynamic>;
+    if (message['method'] == 'initialize') {
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{
+          'protocolVersion': 1,
+          'agentCapabilities': <String, dynamic>{'loadSession': true},
+          'authMethods': <Map<String, dynamic>>[],
+        },
+      }));
+    } else if (message['method'] == 'session/load') {
+      final params = message['params'] as Map<String, dynamic>;
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': params['sessionId'],
+          'update': <String, dynamic>{
+            'sessionUpdate': 'plan',
+            'title': 'ab',
+            'entries': <Object?>[],
+          },
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'session/update',
+        'params': <String, dynamic>{
+          'sessionId': params['sessionId'],
+          'update': <String, dynamic>{
+            'sessionUpdate': 'plan',
+            'entries': <Object?>[],
+          },
+        },
+      }));
+      stdout.writeln(jsonEncode(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': message['id'],
+        'result': <String, dynamic>{},
+      }));
+    }
+  }
+}
+''');
+
+      final client = DartAcpAgentClient(
+        agentCommand: _dartExecutable(),
+        agentArgs: <String>[agentScript.path],
+        inputBudget: const acp.AcpInputBudget(maxStructuredUpdateBytes: 5),
+      );
+
+      try {
+        await client.connect().timeout(const Duration(seconds: 5));
+        final events = await client.resumeSession(
+          sessionId: 'oversized-history',
+          cwd: '/workspace',
+        );
+
+        expect(events, hasLength(2));
+        expect(events.first.type, AgentEventType.status);
+        expect(events.first.text, 'Oversized session data omitted.');
+        expect(events.first.metadata['kind'], 'omission');
+        expect(
+          events.first.omissions.single.resource,
+          'session structured bytes',
+        );
+        expect(events.last.type, AgentEventType.status);
+        expect(events.last.metadata['kind'], 'plan');
+      } finally {
+        await client.dispose();
+        await tempDir.delete(recursive: true);
+      }
+    },
+  );
 
   test('returns immediate command updates after session resume', () async {
     final tempDir = await Directory.systemTemp.createTemp('ianvs-acp-test-');

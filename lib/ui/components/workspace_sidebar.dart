@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../../acp/agent_session.dart';
@@ -25,6 +26,7 @@ class WorkspaceSidebar extends StatefulWidget {
     this.onCreateWorkspaceWorktree,
     this.onArchiveWorkspaceSessions,
     this.onLoadWorkspaceSessions,
+    this.pickWorkspaceDirectory,
     this.stateStore,
   });
 
@@ -49,6 +51,7 @@ class WorkspaceSidebar extends StatefulWidget {
   onArchiveWorkspaceSessions;
   final Future<void> Function(WorkspaceRecord workspace)?
   onLoadWorkspaceSessions;
+  final Future<String?> Function()? pickWorkspaceDirectory;
   final WorkspaceSidebarStateStore? stateStore;
 
   @override
@@ -68,6 +71,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   final Set<String> _loadingSessionWorkspacePaths = <String>{};
   final Set<String> _autoLoadWorkspacePaths = <String>{};
   final Set<String> _loadedSessionWorkspacePaths = <String>{};
+  final Set<String> _manuallyAddedWorkspacePaths = <String>{};
   final Map<String, String> _workspaceDisplayNames = <String, String>{};
   final Map<String, String> _sessionLoadErrors = <String, String>{};
   final TextEditingController _searchController = TextEditingController();
@@ -139,6 +143,15 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                 ),
                 const Spacer(),
                 _CountPill(count: workspaces.length),
+                const SizedBox(width: 4),
+                IconButton(
+                  key: const Key('add-workspace-button'),
+                  tooltip: 'Add workspace',
+                  onPressed: () => unawaited(_addWorkspace()),
+                  icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  splashRadius: 18,
+                ),
               ],
             ),
           ),
@@ -353,11 +366,26 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
 
   List<WorkspaceRecord> _visibleWorkspaces() {
     final query = _searchController.text.trim().toLowerCase();
-    final originalIndex = <String, int>{
-      for (var index = 0; index < widget.workspaces.length; index++)
-        widget.workspaces[index].path: index,
+    final workspacesByPath = <String, WorkspaceRecord>{
+      for (final workspace in widget.workspaces) workspace.path: workspace,
     };
-    final workspaces = widget.workspaces
+    for (final path in _manuallyAddedWorkspacePaths) {
+      workspacesByPath.putIfAbsent(
+        path,
+        () => WorkspaceRecord(
+          path: path,
+          name: workspaceNameFromPath(path),
+          sessions: const <AgentSession>[],
+          defaultAgentName: widget.currentWorkspace.defaultAgentName,
+        ),
+      );
+    }
+    final allWorkspaces = workspacesByPath.values.toList(growable: false);
+    final originalIndex = <String, int>{
+      for (var index = 0; index < allWorkspaces.length; index++)
+        allWorkspaces[index].path: index,
+    };
+    final workspaces = allWorkspaces
         .where(
           (workspace) =>
               workspace.path == widget.currentWorkspace.path ||
@@ -374,6 +402,31 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
       return (originalIndex[a.path] ?? 0).compareTo(originalIndex[b.path] ?? 0);
     });
     return workspaces;
+  }
+
+  Future<void> _addWorkspace() async {
+    final pickDirectory =
+        widget.pickWorkspaceDirectory ??
+        () =>
+            FilePicker.platform.getDirectoryPath(dialogTitle: 'Add Workspace');
+    final selectedPath = await pickDirectory();
+    if (!mounted) return;
+    final path = normalizeWorkspacePath(selectedPath ?? '');
+    if (path.isEmpty) return;
+
+    setState(() {
+      _manuallyAddedWorkspacePaths.add(path);
+      _hiddenWorkspacePaths.remove(path);
+      _expandedWorkspacePaths.add(path);
+      _autoLoadWorkspacePaths.add(path);
+    });
+    _persistExpandedWorkspacePaths();
+    _persistWorkspaceStates();
+
+    final workspace = _visibleWorkspaces().where((item) => item.path == path);
+    if (workspace.isNotEmpty) {
+      unawaited(_loadWorkspaceSessions(workspace.first));
+    }
   }
 
   bool _matchesSearch(WorkspaceRecord workspace, String query) {
@@ -558,10 +611,14 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     setState(() {
       _pinnedWorkspacePaths.clear();
       _hiddenWorkspacePaths.clear();
+      _manuallyAddedWorkspacePaths.clear();
       _workspaceDisplayNames.clear();
       for (final state in states) {
         if (state.pinned) _pinnedWorkspacePaths.add(state.path);
         if (state.hidden) _hiddenWorkspacePaths.add(state.path);
+        if (state.manuallyAdded) {
+          _manuallyAddedWorkspacePaths.add(state.path);
+        }
         final displayName = state.displayName?.trim();
         if (displayName != null && displayName.isNotEmpty) {
           _workspaceDisplayNames[state.path] = displayName;
@@ -577,6 +634,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     final paths = <String>{
       ..._pinnedWorkspacePaths,
       ..._hiddenWorkspacePaths,
+      ..._manuallyAddedWorkspacePaths,
       ..._workspaceDisplayNames.keys,
     };
     final states = paths
@@ -586,6 +644,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
             displayName: _workspaceDisplayNames[path],
             pinned: _pinnedWorkspacePaths.contains(path),
             hidden: _hiddenWorkspacePaths.contains(path),
+            manuallyAdded: _manuallyAddedWorkspacePaths.contains(path),
           );
         })
         .toList(growable: false);

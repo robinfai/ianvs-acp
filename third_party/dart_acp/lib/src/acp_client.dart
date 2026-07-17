@@ -32,7 +32,7 @@ class AcpClient implements AcpBoundedObservationSource {
     required AcpConfig config,
     AcpTransport? transport,
     int maxReplayItems = 2048,
-    int maxReplayBytes = 16 * 1024 * 1024,
+    int maxReplayBytes = 32 * 1024 * 1024,
     int maxToolCallItems = 512,
     int maxToolCallBytes = 8 * 1024 * 1024,
     int maxPendingItems = 128,

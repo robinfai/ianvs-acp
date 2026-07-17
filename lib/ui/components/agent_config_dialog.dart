@@ -12,6 +12,7 @@ class AgentConfigDialog extends StatefulWidget {
     super.key,
     required this.agentServers,
     required this.activeAgentName,
+    this.agentPresets = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
@@ -21,6 +22,7 @@ class AgentConfigDialog extends StatefulWidget {
   });
 
   final List<AgentServerConfig> agentServers;
+  final List<AgentServerConfig> agentPresets;
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
@@ -542,7 +544,14 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   Future<void> _addAgent() async {
     final server = await showDialog<AgentServerConfig>(
       context: context,
-      builder: (context) => const _AgentServerEditorDialog(),
+      builder: (context) => _AgentServerEditorDialog(
+        presets: widget.agentPresets
+            .where(
+              (preset) =>
+                  !_agentServers.any((server) => server.name == preset.name),
+            )
+            .toList(growable: false),
+      ),
     );
     if (server == null || !mounted) return;
     setState(() {
@@ -556,7 +565,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   Future<void> _editAgent(AgentServerConfig server) async {
     final edited = await showDialog<AgentServerConfig>(
       context: context,
-      builder: (context) => _AgentServerEditorDialog(initialServer: server),
+      builder: (context) => _AgentServerEditorDialog(
+        initialServer: server,
+        presets: widget.agentPresets,
+      ),
     );
     if (edited == null || !mounted) return;
     setState(() {
@@ -891,9 +903,13 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
 }
 
 class _AgentServerEditorDialog extends StatefulWidget {
-  const _AgentServerEditorDialog({this.initialServer});
+  const _AgentServerEditorDialog({
+    this.initialServer,
+    this.presets = const <AgentServerConfig>[],
+  });
 
   final AgentServerConfig? initialServer;
+  final List<AgentServerConfig> presets;
 
   @override
   State<_AgentServerEditorDialog> createState() =>
@@ -901,6 +917,8 @@ class _AgentServerEditorDialog extends StatefulWidget {
 }
 
 class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
+  static const String _customPreset = '__custom__';
+
   late String _type = widget.initialServer?.type ?? 'custom';
   late final TextEditingController _nameController = TextEditingController(
     text: widget.initialServer?.name ?? '',
@@ -917,6 +935,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   final List<TextEditingController> _argControllers = [];
   final List<_NameValueControllers> _envControllers = [];
   final List<_NameValueControllers> _headerControllers = [];
+  late String _selectedPreset = _initialPresetName();
   String? _error;
 
   bool get _isRemote =>
@@ -926,7 +945,10 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   void initState() {
     super.initState();
     final server = widget.initialServer;
-    if (server == null) return;
+    if (server == null) {
+      if (widget.presets.isNotEmpty) _applyPreset(widget.presets.first);
+      return;
+    }
     _argControllers.addAll(
       server.args.map((arg) => TextEditingController(text: arg)),
     );
@@ -970,6 +992,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final hasPresets = widget.presets.isNotEmpty;
     return AlertDialog(
       title: const Text('Agent Server'),
       content: SizedBox(
@@ -979,104 +1002,67 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _DialogTextField(
-                key: const Key('agent-name-field'),
-                controller: _nameController,
-                label: 'Name',
-                icon: Icons.badge_outlined,
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<String>(
-                key: const Key('agent-type-field'),
-                initialValue: _type,
-                decoration: _fieldDecoration(
-                  label: 'Type',
-                  icon: Icons.cable_rounded,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'custom', child: Text('custom')),
-                  DropdownMenuItem(value: 'stdio', child: Text('stdio')),
-                  DropdownMenuItem(
-                    value: 'websocket',
-                    child: Text('websocket'),
+              if (hasPresets) ...[
+                DropdownButtonFormField<String>(
+                  key: const Key('agent-preset-field'),
+                  initialValue: _selectedPreset,
+                  decoration: _fieldDecoration(
+                    label: 'Agent',
+                    icon: Icons.smart_toy_outlined,
                   ),
-                  DropdownMenuItem(value: 'http', child: Text('http')),
-                  DropdownMenuItem(value: 'sse', child: Text('sse')),
-                ],
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() {
-                    _type = value;
-                    _error = null;
-                  });
-                },
-              ),
-              const SizedBox(height: 10),
-              if (_isRemote) ...[
-                _DialogTextField(
-                  key: const Key('agent-url-field'),
-                  controller: _urlController,
-                  label: 'URL',
-                  icon: Icons.link_rounded,
+                  items: [
+                    for (final preset in widget.presets)
+                      DropdownMenuItem(
+                        value: preset.name,
+                        child: Text(preset.name),
+                      ),
+                    const DropdownMenuItem(
+                      value: _customPreset,
+                      child: Text('Custom agent'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _selectedPreset = value;
+                      final preset = _presetNamed(value);
+                      if (preset != null) _applyPreset(preset);
+                      _error = null;
+                    });
+                  },
                 ),
                 const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Headers',
-                  addLabel: 'Add Header',
-                  itemPrefix: 'agent-header',
-                  controllers: _headerControllers,
-                  onAdd: () => setState(() {
-                    _headerControllers.add(
-                      _NameValueControllers(initiallyDirty: true),
-                    );
-                  }),
-                  onRemove: (index) => setState(() {
-                    _headerControllers.removeAt(index).dispose();
-                  }),
+                _ReadyAgentPanel(
+                  name: _nameController.text,
+                  target: _agentTarget(),
                 ),
-              ] else ...[
-                _DialogTextField(
-                  key: const Key('agent-command-field'),
-                  controller: _commandController,
-                  label: 'Command',
-                  icon: Icons.terminal_rounded,
-                ),
-                const SizedBox(height: 10),
-                _DialogTextField(
-                  key: const Key('agent-cwd-field'),
-                  controller: _cwdController,
-                  label: 'CWD',
-                  icon: Icons.folder_open_outlined,
-                ),
-                const SizedBox(height: 10),
-                _StringListEditor(
-                  title: 'Args',
-                  addLabel: 'Add Arg',
-                  itemPrefix: 'agent-arg',
-                  controllers: _argControllers,
-                  onAdd: () => setState(() {
-                    _argControllers.add(TextEditingController());
-                  }),
-                  onRemove: (index) => setState(() {
-                    _argControllers.removeAt(index).dispose();
-                  }),
-                ),
-                const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Env',
-                  addLabel: 'Add Env',
-                  itemPrefix: 'agent-env',
-                  controllers: _envControllers,
-                  onAdd: () => setState(() {
-                    _envControllers.add(
-                      _NameValueControllers(initiallyDirty: true),
-                    );
-                  }),
-                  onRemove: (index) => setState(() {
-                    _envControllers.removeAt(index).dispose();
-                  }),
-                ),
+                const SizedBox(height: 8),
               ],
+              ExpansionTile(
+                key: const Key('agent-advanced-settings'),
+                initiallyExpanded: !hasPresets,
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 4),
+                title: const Text(
+                  'Advanced settings',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Change transport, command, arguments, or environment.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+                children: [_buildAdvancedSettings()],
+              ),
               if (_error != null) ...[
                 const SizedBox(height: 10),
                 _InlineError(message: _error!),
@@ -1093,6 +1079,169 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
         FilledButton(onPressed: _submit, child: const Text('Save Agent')),
       ],
     );
+  }
+
+  Widget _buildAdvancedSettings() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _DialogTextField(
+          key: const Key('agent-name-field'),
+          controller: _nameController,
+          label: 'Name',
+          icon: Icons.badge_outlined,
+        ),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          key: const Key('agent-type-field'),
+          initialValue: _type,
+          decoration: _fieldDecoration(
+            label: 'Type',
+            icon: Icons.cable_rounded,
+          ),
+          items: const [
+            DropdownMenuItem(value: 'custom', child: Text('custom')),
+            DropdownMenuItem(value: 'stdio', child: Text('stdio')),
+            DropdownMenuItem(value: 'websocket', child: Text('websocket')),
+            DropdownMenuItem(value: 'http', child: Text('http')),
+            DropdownMenuItem(value: 'sse', child: Text('sse')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() {
+              _type = value;
+              _selectedPreset = _customPreset;
+              _error = null;
+            });
+          },
+        ),
+        const SizedBox(height: 10),
+        if (_isRemote) ...[
+          _DialogTextField(
+            key: const Key('agent-url-field'),
+            controller: _urlController,
+            label: 'URL',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 10),
+          _NameValueListEditor(
+            title: 'Headers',
+            addLabel: 'Add Header',
+            itemPrefix: 'agent-header',
+            controllers: _headerControllers,
+            onAdd: () => setState(() {
+              _headerControllers.add(
+                _NameValueControllers(initiallyDirty: true),
+              );
+            }),
+            onRemove: (index) => setState(() {
+              _headerControllers.removeAt(index).dispose();
+            }),
+          ),
+        ] else ...[
+          _DialogTextField(
+            key: const Key('agent-command-field'),
+            controller: _commandController,
+            label: 'Command',
+            icon: Icons.terminal_rounded,
+          ),
+          const SizedBox(height: 10),
+          _DialogTextField(
+            key: const Key('agent-cwd-field'),
+            controller: _cwdController,
+            label: 'CWD',
+            icon: Icons.folder_open_outlined,
+          ),
+          const SizedBox(height: 10),
+          _StringListEditor(
+            title: 'Args',
+            addLabel: 'Add Arg',
+            itemPrefix: 'agent-arg',
+            controllers: _argControllers,
+            onAdd: () => setState(() {
+              _argControllers.add(TextEditingController());
+            }),
+            onRemove: (index) => setState(() {
+              _argControllers.removeAt(index).dispose();
+            }),
+          ),
+          const SizedBox(height: 10),
+          _NameValueListEditor(
+            title: 'Env',
+            addLabel: 'Add Env',
+            itemPrefix: 'agent-env',
+            controllers: _envControllers,
+            onAdd: () => setState(() {
+              _envControllers.add(_NameValueControllers(initiallyDirty: true));
+            }),
+            onRemove: (index) => setState(() {
+              _envControllers.removeAt(index).dispose();
+            }),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _initialPresetName() {
+    final initial = widget.initialServer;
+    if (initial != null) {
+      for (final preset in widget.presets) {
+        if (_sameAgentTarget(initial, preset)) return preset.name;
+      }
+      return _customPreset;
+    }
+    return widget.presets.isEmpty ? _customPreset : widget.presets.first.name;
+  }
+
+  AgentServerConfig? _presetNamed(String name) {
+    for (final preset in widget.presets) {
+      if (preset.name == name) return preset;
+    }
+    return null;
+  }
+
+  void _applyPreset(AgentServerConfig preset) {
+    _type = preset.type;
+    _nameController.text = preset.name;
+    _commandController.text = preset.command;
+    _cwdController.text = preset.cwd ?? '';
+    _urlController.text = preset.url;
+    for (final controller in _argControllers) {
+      controller.dispose();
+    }
+    _argControllers
+      ..clear()
+      ..addAll(preset.args.map((arg) => TextEditingController(text: arg)));
+    for (final controllers in _envControllers) {
+      controllers.dispose();
+    }
+    _envControllers
+      ..clear()
+      ..addAll(
+        preset.env.entries.map(
+          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        ),
+      );
+    for (final controllers in _headerControllers) {
+      controllers.dispose();
+    }
+    _headerControllers
+      ..clear()
+      ..addAll(
+        preset.headers.entries.map(
+          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        ),
+      );
+  }
+
+  String _agentTarget() {
+    if (_isRemote) return _urlController.text.trim();
+    final args = _stringValues(_argControllers);
+    return <String>[
+      _commandController.text.trim(),
+      ...args,
+    ].where((value) => value.isNotEmpty).join(' ');
   }
 
   void _submit() {
@@ -1178,6 +1327,77 @@ class _McpServerEditorDialog extends StatefulWidget {
 
   @override
   State<_McpServerEditorDialog> createState() => _McpServerEditorDialogState();
+}
+
+class _ReadyAgentPanel extends StatelessWidget {
+  const _ReadyAgentPanel({required this.name, required this.target});
+
+  final String name;
+  final String target;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.success.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.success.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.check_circle_outline_rounded,
+            color: AppColors.success,
+            size: 20,
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${name.trim()} is ready to add',
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
+                ),
+                if (target.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    target,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+bool _sameAgentTarget(AgentServerConfig left, AgentServerConfig right) {
+  if (left.type != right.type) return false;
+  if (left.command.trim() != right.command.trim()) return false;
+  if (left.url.trim() != right.url.trim()) return false;
+  if (left.args.length != right.args.length) return false;
+  for (var index = 0; index < left.args.length; index += 1) {
+    if (left.args[index] != right.args[index]) return false;
+  }
+  return true;
 }
 
 class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {

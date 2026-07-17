@@ -133,6 +133,57 @@ void main() {
     expect(sessions.first.localUnstarted, isTrue);
   });
 
+  test(
+    'WorkspaceSidebarStateStore deduplicates agents by workspace and session id',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final store = WorkspaceSidebarStateStore(
+        path: '${tempDir.path}/workspace_ui_state.json',
+      );
+
+      await store.saveSessionIndex([
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 1, 8),
+          title: 'Codex copy',
+          agentName: 'Codex',
+        ),
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 1, 8),
+          title: 'Alias copy',
+          agentName: 'codex-fast',
+        ),
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/other',
+          createdAt: DateTime(2026, 7, 1, 8),
+          title: 'Different workspace',
+          agentName: 'Codex',
+        ),
+      ]);
+
+      final sessions = await store.loadSessionIndex();
+      expect(sessions, hasLength(2));
+      expect(
+        sessions
+            .where((session) => session.cwd == '/workspace/project')
+            .single
+            .agentName,
+        'codex-fast',
+      );
+      expect(
+        sessions.where((session) => session.cwd == '/workspace/other'),
+        hasLength(1),
+      );
+    },
+  );
+
   test('WorkspaceSidebarStateStore recognizes legacy blank sessions', () async {
     final tempDir = await Directory.systemTemp.createTemp(
       'ianvs-acp-sidebar-store-',
@@ -179,6 +230,10 @@ void main() {
         path: '/workspace/hidden',
         hidden: true,
       ),
+      const WorkspaceSidebarWorkspaceState(
+        path: '/workspace/manual',
+        manuallyAdded: true,
+      ),
     ]);
 
     expect(await store.loadExpandedWorkspacePaths(), {'/workspace/project'});
@@ -186,9 +241,11 @@ void main() {
     final states = await store.loadWorkspaceStates();
     expect(states.map((state) => state.path), [
       '/workspace/hidden',
+      '/workspace/manual',
       '/workspace/project',
     ]);
     expect(states.first.hidden, isTrue);
+    expect(states[1].manuallyAdded, isTrue);
     expect(states.last.displayName, 'Renamed Project');
     expect(states.last.pinned, isTrue);
   });

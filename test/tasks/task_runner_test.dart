@@ -94,6 +94,56 @@ void main() {
     expect(savedStatuses.last, TaskStatus.needsHumanReview);
   });
 
+  test(
+    'TaskRunner resumes the linked ACP session after a failed run',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Resume interrupted work',
+        description: 'Continue without losing the previous conversation.',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+      );
+      await taskController.updateTask(
+        task.id,
+        status: TaskStatus.failed,
+        sessionId: 'existing-session',
+        error: 'Task run interrupted before completion.',
+      );
+      final queued = await taskController.retryTask(task.id);
+      final fake = FakeAgentClient(resumeEvents: const <AgentEvent>[]);
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+
+      final result = await runner.runTask(queued.id);
+
+      expect(result.status, TaskStatus.needsHumanReview);
+      expect(result.sessionId, 'existing-session');
+      expect(chat.currentSession?.id, 'existing-session');
+      expect(chat.currentSession?.cwd, '/workspace/app');
+      expect(fake.sessionCount, 0);
+      expect(fake.lastResumeCwd, '/workspace/app');
+      expect(fake.lastPrompt, contains('Continue the task from where'));
+      expect(
+        taskController.events.map((event) => event.text),
+        contains('Resumed linked ACP session existing-session.'),
+      );
+    },
+  );
+
   test('TaskRunner leaves the foreground chat session untouched', () async {
     final taskController = TaskInboxController(
       repository: _MemoryTaskStore(),

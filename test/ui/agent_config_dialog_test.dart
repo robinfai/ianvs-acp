@@ -354,6 +354,76 @@ void main() {
     });
   });
 
+  testWidgets('AgentConfigDialog adds a preset agent without advanced input', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Existing',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Existing',
+                type: 'custom',
+                command: '/usr/local/bin/existing',
+              ),
+            ],
+            agentPresets: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+                args: ['@agentclientprotocol/codex-acp'],
+              ),
+              AgentServerConfig(
+                name: 'Pi',
+                type: 'custom',
+                command: '/usr/local/bin/npx',
+                args: ['-y', 'pi-acp@0.0.31'],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('agent-preset-field')), findsOneWidget);
+    expect(find.text('Codex is ready to add'), findsOneWidget);
+    expect(find.text('Advanced settings'), findsOneWidget);
+    expect(
+      find.byKey(const Key('agent-command-field')).hitTestable(),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('agent-preset-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Pi').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pi is ready to add'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    final pi = savedConfig?.agentServerNamed('Pi');
+    expect(pi?.command, '/usr/local/bin/npx');
+    expect(pi?.args, ['-y', 'pi-acp@0.0.31']);
+  });
+
   testWidgets('AgentConfigDialog adds MCP servers', (tester) async {
     AcpClientConfig? savedConfig;
     await tester.pumpWidget(

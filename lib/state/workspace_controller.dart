@@ -15,8 +15,7 @@ class WorkspaceController {
   final String? defaultAgentName;
 
   List<WorkspaceRecord> get workspaces {
-    final sessionsByPath =
-        <String, Map<ChatController, Map<String, _WorkspaceSessionBucket>>>{};
+    final sessionsByPath = <String, Map<String, _WorkspaceSessionBucket>>{};
     for (final controller in _controllers) {
       for (final session in controller.sessions) {
         if (session.archived) continue;
@@ -26,21 +25,10 @@ class WorkspaceController {
         if (sessionId.isEmpty) continue;
         final normalizedSession = session.copyWith(cwd: path);
         sessionsByPath
-            .putIfAbsent(
-              path,
-              () =>
-                  Map<
-                    ChatController,
-                    Map<String, _WorkspaceSessionBucket>
-                  >.identity(),
-            )
-            .putIfAbsent(controller, () => <String, _WorkspaceSessionBucket>{})
+            .putIfAbsent(path, () => <String, _WorkspaceSessionBucket>{})
             .putIfAbsent(
               sessionId,
-              () => _WorkspaceSessionBucket(
-                defaultAgentName: defaultAgentName,
-                controllerAgentName: controller.agentName,
-              ),
+              () => _WorkspaceSessionBucket(defaultAgentName: defaultAgentName),
             )
             .add(
               normalizedSession,
@@ -55,16 +43,12 @@ class WorkspaceController {
 
     sessionsByPath.putIfAbsent(
       _currentWorkspacePath,
-      () =>
-          Map<ChatController, Map<String, _WorkspaceSessionBucket>>.identity(),
+      () => <String, _WorkspaceSessionBucket>{},
     );
 
     final records = sessionsByPath.entries.map((entry) {
       final sessions =
-          entry.value.values
-              .expand((sessionsById) => sessionsById.values)
-              .map((bucket) => bucket.resolvedSession())
-              .toList()
+          entry.value.values.map((bucket) => bucket.resolvedSession()).toList()
             ..sort((a, b) {
               if (a.pinned && !b.pinned) return -1;
               if (b.pinned && !a.pinned) return 1;
@@ -118,13 +102,9 @@ class WorkspaceController {
 }
 
 class _WorkspaceSessionBucket {
-  _WorkspaceSessionBucket({
-    required this.defaultAgentName,
-    required this.controllerAgentName,
-  });
+  _WorkspaceSessionBucket({required this.defaultAgentName});
 
   final String? defaultAgentName;
-  final String controllerAgentName;
   final List<_WorkspaceSessionCandidate> _candidates =
       <_WorkspaceSessionCandidate>[];
 
@@ -216,9 +196,6 @@ class _WorkspaceSessionBucket {
   }
 
   String? _resolvedAgentName() {
-    final trustedControllerAgentName = _trimmedOrNull(controllerAgentName);
-    if (trustedControllerAgentName != null) return trustedControllerAgentName;
-
     final activeAgentNames = <String>{};
     final explicitAgentNames = <String>{};
     final sourceAgentNames = <String>{};

@@ -11,16 +11,21 @@ class WorkspaceSidebarWorkspaceState {
     this.displayName,
     this.pinned = false,
     this.hidden = false,
+    this.manuallyAdded = false,
   });
 
   final String path;
   final String? displayName;
   final bool pinned;
   final bool hidden;
+  final bool manuallyAdded;
 
   bool get hasCustomState {
     final name = displayName?.trim();
-    return pinned || hidden || (name != null && name.isNotEmpty);
+    return manuallyAdded ||
+        pinned ||
+        hidden ||
+        (name != null && name.isNotEmpty);
   }
 }
 
@@ -116,6 +121,7 @@ class WorkspaceSidebarStateStore {
         displayName: workspace.displayName,
         pinned: workspace.pinned,
         hidden: workspace.hidden,
+        manuallyAdded: workspace.manuallyAdded,
       );
     }
 
@@ -148,8 +154,7 @@ class WorkspaceSidebarStateStore {
       final id = session.id.trim();
       final cwd = session.cwd.trim();
       if (id.isEmpty || cwd.isEmpty) continue;
-      final agentName = session.agentName?.trim() ?? '';
-      sessionsByKey['$agentName\u0000$id'] = session;
+      sessionsByKey['$cwd\u0000$id'] = session;
     }
 
     final sortedSessions = sessionsByKey.values.toList()
@@ -237,6 +242,9 @@ class WorkspaceSidebarStateStore {
       displayName: _stringFromJson(json['display_name'] ?? json['displayName']),
       pinned: _boolFromJson(json['pinned']),
       hidden: _boolFromJson(json['hidden']),
+      manuallyAdded: _boolFromJson(
+        json['manually_added'] ?? json['manuallyAdded'],
+      ),
     );
   }
 
@@ -250,6 +258,7 @@ class WorkspaceSidebarStateStore {
         'display_name': displayName,
       if (workspace.pinned) 'pinned': true,
       if (workspace.hidden) 'hidden': true,
+      if (workspace.manuallyAdded) 'manually_added': true,
     };
   }
 

@@ -3995,7 +3995,7 @@ void main() {
   testWidgets(
     'AcpClientApp migrates legacy pi ACP session index entries to Pi',
     (tester) async {
-      final store = _LegacyPiWorkspaceStateStore(<AgentSession>[
+      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
         AgentSession(
           id: 'pi-session',
           cwd: '/workspace/pi',
@@ -4039,6 +4039,74 @@ void main() {
           .toList(growable: false);
       expect(savedPiSessions, hasLength(1));
       expect(savedPiSessions.single.agentName, 'Pi');
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp deduplicates shared ids across configured agents',
+    (tester) async {
+      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'shared-stale-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Shared stale session',
+          agentName: 'codex-fast',
+        ),
+        AgentSession(
+          id: 'shared-stale-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Shared stale session',
+          agentName: 'codex-thinking',
+        ),
+        AgentSession(
+          id: 'shared-stale-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Shared stale session',
+          agentName: 'codex-worker',
+        ),
+      ]);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'codex-fast': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_reasoning_effort': 'low',
+          },
+          'codex-thinking': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_reasoning_effort': 'high',
+          },
+          'codex-worker': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_model': 'worker-model',
+          },
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          taskInboxController: taskHarness.controller,
+          workspaceStateStore: store,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+
+      final restored = store.lastSaved
+          .where((session) => session.id == 'shared-stale-session')
+          .toList(growable: false);
+      expect(restored, hasLength(1));
+      expect(restored.single.agentName, 'Codex');
     },
   );
 
@@ -4321,8 +4389,9 @@ class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
   }
 }
 
-class _LegacyPiWorkspaceStateStore extends WorkspaceSidebarStateStore {
-  _LegacyPiWorkspaceStateStore(this.initialSessions) : super(path: 'memory');
+class _SessionIndexWorkspaceStateStore extends WorkspaceSidebarStateStore {
+  _SessionIndexWorkspaceStateStore(this.initialSessions)
+    : super(path: 'memory');
 
   final List<AgentSession> initialSessions;
   List<AgentSession> lastSaved = const <AgentSession>[];

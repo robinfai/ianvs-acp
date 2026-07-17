@@ -1,55 +1,52 @@
-**Findings**
+# 文件预览 Design QA
+
+## Findings
+
 - 无 P0/P1/P2 阻断项。
+- [P3] 参考图在 720px 左右的预览宽度下为工具栏动作同时显示图标和文字；实际应用受现有 350px 工作区侧栏约束，预览宽度约 635px，因此保留关键“用其他应用打开”文字，其余动作使用图标和 tooltip。功能完整，属于可接受的密度调整。
+- [P3] 参考图示例同时打开两个文件标签；实现按真实状态显示一个或多个标签，不为视觉对齐伪造第二个文件。
 
-**Open Questions**
-- 源图里的 `Run summary` 是更激进的信息压缩方向；本次实现保留现有 `Tool`、`Implementation plan` 和 `Available Commands` 卡片结构，只调整 shell 布局归属，避免改动 ACP 事件渲染语义。
-- 源图右侧 `Providers` 在 Overview 下直接可见；当前实现仍通过 `Context` tab 查看 provider 详情。本次不新增信息源，只保留现有 inspector 数据边界。
+## Open Questions
 
-**Implementation Checklist**
-- 已将 prompt composer 从全窗口底部移动到中间 conversation column。
-- 已将 status strip 移入中间 conversation column，并把 live status、idle、latency 放在长路径之前。
-- 已给 workspace sidebar 增加搜索框，支持按 workspace 名称、路径、session 标题和 agent 名过滤。
-- 已进一步收紧可见入口：桌面只保留一个显性的 `New Session` 文本入口；workspace 新建收进行内动作菜单；空状态不再重复放按钮。
-- 已压缩 shell 外边距、workspace header、sidebar 行距、status bar 高度和左右信息栏宽度，让主对话区占比更高。
-- 已移除 status bar 里不可用的 `Theme` 占位入口，只保留实际可用的 session settings 和 ACP compatibility。
-- 已将 workspace header 从拼接副标题改为两个并列状态块：左侧项目，右侧当前会话；窄屏自动堆叠。
-- 已将 sidebar 里的当前 workspace 改为项目条呈现，用左侧色条、项目名、路径和数量建立层级。
-- 已将当前 session 改为独立 active 条，历史 session 压缩为单行记录，保留 hover 菜单和右键菜单。
-- 已移除 active workspace 的整块背景色和外框，只保留左侧色条、文字权重和当前 session 条表达状态。
-- 已固定 session 行的 hover 菜单槽位，hover 只改变菜单可见性，不改变行高。
-- 已保留左侧 workspace 树、右侧 inspector、顶部 agent 操作和窄屏单列行为。
+- 无。当前实现沿用已有工作区侧栏宽度、Flutter 字体和 Material 图标，不改变现有 shell 的信息架构。
 
-**Follow-up Polish**
-- [P3] 把单个/多个 tool call 和 plan 进一步汇总为可展开的 `Run summary`，减少长对话里的过程卡片重量。
-- [P3] 在 Workspace Overview 顶层补一个 provider 摘要，让连接状态不用切到 `Context` tab 才能看到。
-- [P3] 对 prompt dock 内部按钮做更接近源图的分组：附件、命令、模型、推理、发送按钮形成更清楚的控制带。
+## Implementation Checklist
 
-source visual truth path: `/Users/robinfai/.codex/generated_images/019f3fbe-897c-70d3-bb64-947568a02c8a/ig_0fc399e54a4f60aa016a4dc65181b48199938eb0a1223fa468.png`
+- [x] Markdown 本地文件链接可点击，并在应用内打开分屏预览。
+- [x] 相对路径、绝对 `file://` 路径、`#L12` 和 `:12:3` 行号可解析。
+- [x] 预览路径限制在当前工作区和授权目录内，阻止 `..` 与软链接越界。
+- [x] Markdown 支持渲染/源码切换、文档大纲和嵌套文件链接。
+- [x] 常见代码、配置、日志、JSON、YAML、CSV 等文本文件支持行号、搜索、换行和指定行定位。
+- [x] 图片支持缩放和平移；PDF、Office、iWork、音视频通过 macOS Quick Look 生成只读缩略预览。
+- [x] 不支持格式、加载失败和超大文本均有明确降级状态，可复制路径、在 Finder 中显示或用其他应用打开。
+- [x] 文件使用标签页复用，最多保留 6 个；分隔线可拖动，窄窗口自动切换为单面板预览。
 
-implementation screenshot path: `/private/tmp/ianvs-acp-conversation-dock/current/03-active-conversation.png`
+## Follow-up Polish
 
-viewport: `1440 x 900` screenshot-test viewport, plus `390 x 844` narrow state.
+- [P3] 如果后续将工作区侧栏做成可收起，可在更宽预览状态下为搜索、复制路径、Finder 等动作补齐常驻文字标签。
+- [P3] PDF 若需要逐页浏览，可在 Quick Look 首屏预览之上再接专用 PDF 渲染器；当前常见文件的快速确认场景已覆盖。
 
-state: active conversation, permission request state, empty state, and narrow conversation state.
+## Evidence
 
-full-view comparison evidence: `/private/tmp/ianvs-acp-conversation-dock/source-vs-implementation.png`
+- source visual truth path: `/Users/robinfai/.codex/generated_images/019f6ecb-7045-7f00-9feb-5bea889c0f53/exec-01a2b1d1-a9b4-4946-9221-99a42cf09169.png`
+- implementation screenshot path: `/Users/robinfai/.codex/visualizations/2026/07/17/019f6ecb-7045-7f00-9feb-5bea889c0f53/file-preview-pane.png`
+- viewport: `1440 x 1024`，Flutter desktop，device pixel ratio 1.0。
+- state: 当前工作区存在聊天内容，用户打开一个 Markdown 文件，分屏预览处于“预览”模式。
+- full-view comparison evidence: `/Users/robinfai/.codex/visualizations/2026/07/17/019f6ecb-7045-7f00-9feb-5bea889c0f53/file-preview-comparison.png`
+- focused region comparison evidence: `/Users/robinfai/.codex/visualizations/2026/07/17/019f6ecb-7045-7f00-9feb-5bea889c0f53/file-preview-focused-comparison.png`
 
-focused region comparison evidence: checked `/private/tmp/ianvs-acp-conversation-dock/current/08-permission-request.png` for permission dock behavior and `/private/tmp/ianvs-acp-conversation-dock/current/10-narrow-width.png` for narrow layout. Extra cropped regions were not needed because the relevant prompt/status/sidebar/inspector areas are readable in the full captures.
+## Required Fidelity Surfaces
 
-required fidelity surfaces:
-- Fonts and typography: implementation keeps the existing Flutter theme and 0 letter spacing; text hierarchy remains compact and readable. Small labels in the status strip are still dense but no longer put long paths before live state.
-- Spacing and layout rhythm: center column now owns header, transcript, prompt, and status as one vertical dock. Left and right rails extend cleanly to the bottom of the app frame.
-- Colors and visual tokens: implementation keeps existing `AppColors` purple, green, amber, red, border, and surface tokens instead of adding a new palette.
-- Image quality and asset fidelity: no new raster or fake decorative assets were introduced; UI continues to use Material icons and existing Flutter-rendered components.
-- Copy and content: app copy stays product-specific and avoids explanatory design text in the UI.
+- Fonts and typography: 保留应用现有 Flutter 字体与字重体系；文件标题、正文、工具栏小字和状态栏层级与参考图一致，未引入额外字体依赖。窄预览中的标题与表格未发生裁切。
+- Spacing and layout rhythm: 左侧工作区、聊天区、可拖动分隔线、预览区的比例接近参考图；预览标签、路径、工具栏、正文和状态栏形成稳定的垂直节奏。标准 1440px 窗口下文档大纲可见。
+- Colors and visual tokens: 全部使用现有 `AppColors` 的紫色、浅紫选中态、白色表面、冷灰边框和绿色只读安全状态，没有新增渐变或不一致的卡片样式。
+- Image quality and asset fidelity: 未伪造图片或图标资产；操作图标来自 Flutter Material。图片和 Quick Look 缩略图使用系统实际渲染结果，并提供缩放。
+- Copy and content: 界面文案直接说明动作和状态，包括“预览 / 源码”“用其他应用打开”“只读 · 当前工作区”和超大文件截断提示；没有把设计说明泄漏进产品界面。
 
-patches made since previous QA pass:
-- Restored status/settings/ACP compatibility actions after a first pass hid them at the new center-column width.
-- Reordered status strip content so live state appears before long paths.
-- Updated repository screenshot baselines for the redesigned shell states.
-- Removed repeated visible `New Session` controls from workspace header, timeline empty state, and sidebar empty state; moved workspace-scoped creation into the workspace actions menu.
-- Tightened desktop and narrow screenshot baselines after reducing shell/sidebar/status density.
-- Split current workspace and current session into separate header surfaces; updated sidebar active session and compact history rows.
-- Removed the active workspace filled frame and kept session hover height stable.
+## Comparison History
+
+1. 首次实现截图：整体分屏比例、标签、路径、工具栏、正文和底部状态栏已成立，但 635px 预览宽度没有显示文档大纲，和参考图存在 P2 差异。
+2. 修正：将大纲展示阈值从 650px 调整为 560px，并把大纲宽度收紧到 150px；同时为聊天和预览内链接补充现有紫色体系的可识别样式。
+3. 复核：全图和聚焦对比中，大纲、正文、表格、模式切换与状态栏均完整可见；未发现新的 P0/P1/P2 问题。
 
 final result: passed

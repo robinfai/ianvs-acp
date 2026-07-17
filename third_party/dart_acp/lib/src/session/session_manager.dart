@@ -1153,7 +1153,7 @@ class SessionManager implements AcpBoundedObservationSource {
     required this.config,
     required this.peer,
     this.maxReplayItems = 2048,
-    this.maxReplayBytes = 16 * 1024 * 1024,
+    this.maxReplayBytes = 32 * 1024 * 1024,
     this.maxToolCallItems = 512,
     this.maxToolCallBytes = 8 * 1024 * 1024,
     this.inputBudget = const AcpInputBudget(),
@@ -2685,7 +2685,7 @@ class SessionManager implements AcpBoundedObservationSource {
         );
         final result = _withExpectedSessionId(parsed, sessionId);
         _requireInputBudgetPhase(phase.owner);
-        _consumePhaseSessionResult(phase, result);
+        _consumePhaseSessionResult(result);
         await Future<void>.delayed(Duration.zero);
         return result;
       },
@@ -3005,7 +3005,7 @@ class SessionManager implements AcpBoundedObservationSource {
         );
         final result = _withExpectedSessionId(parsed, sessionId);
         _requireInputBudgetPhase(phase.owner);
-        _consumePhaseSessionResult(phase, result);
+        _consumePhaseSessionResult(result);
         await Future<void>.delayed(Duration.zero);
         return result;
       },
@@ -4154,11 +4154,7 @@ class SessionManager implements AcpBoundedObservationSource {
     try {
       final rawUpdate = json['update'];
       if (rawUpdate is! Map<String, dynamic>) return;
-      final update = _parseSessionUpdate(
-        sessionId: sessionId,
-        raw: rawUpdate,
-        phase: phase,
-      );
+      final update = _parseSessionUpdate(sessionId: sessionId, raw: rawUpdate);
       if (!_ownsInputBudgetPhase(phase.owner)) return;
       final consumed = _consumePhaseUpdate(sessionId, phase, update);
       final bounded = consumed.update;
@@ -4310,10 +4306,13 @@ class SessionManager implements AcpBoundedObservationSource {
   AcpUpdate _parseSessionUpdate({
     required String sessionId,
     required Map<String, dynamic> raw,
-    required _SessionInputBudgetPhase phase,
   }) {
+    final structuredGuard = AcpStructuredUpdateGuard(
+      budget: inputBudget,
+      resource: 'session input phase',
+    );
     final rawKind = raw['sessionUpdate'];
-    final kind = phase.structuredGuard.copyString(
+    final kind = structuredGuard.copyString(
       rawKind,
       field: 'session update kind',
     );
@@ -4325,14 +4324,14 @@ class SessionManager implements AcpBoundedObservationSource {
       return AvailableCommandsUpdate.fromRaw(
         commands,
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
     }
     if (kind == 'plan') {
       return PlanUpdate.fromJson(
         raw,
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
     }
     if (kind == 'tool_call' || kind == 'tool_call_update') {
@@ -4341,7 +4340,7 @@ class SessionManager implements AcpBoundedObservationSource {
           raw,
           lookupExisting: (toolCallId) => _toolCalls[sessionId]?[toolCallId],
           inputBudget: inputBudget,
-          structuredGuard: phase.structuredGuard,
+          structuredGuard: structuredGuard,
         ),
       );
     }
@@ -4357,16 +4356,16 @@ class SessionManager implements AcpBoundedObservationSource {
         rawContent: blocks,
         isThought: kind == 'agent_thought_chunk',
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
       final rawMessageId = _firstNonEmptyString(raw, const ['messageId']);
       final messageId = rawMessageId == null
           ? null
-          : phase.structuredGuard.copyString(rawMessageId, field: 'message id');
+          : structuredGuard.copyString(rawMessageId, field: 'message id');
       final meta = raw['_meta'] == null
           ? null
           : Map<String, dynamic>.unmodifiable(
-              phase.structuredGuard.copyMetadata(
+              structuredGuard.copyMetadata(
                 raw['_meta'],
                 field: 'message metadata',
               ),
@@ -4384,19 +4383,19 @@ class SessionManager implements AcpBoundedObservationSource {
       return DiffUpdate.fromJson(
         raw,
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
     }
     if (kind == 'current_mode_update') {
       return ModeUpdate.fromJson(
         raw,
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
     }
     if (kind == 'config_option_update') {
       try {
-        final copied = phase.structuredGuard.copyJsonValue(
+        final copied = structuredGuard.copyJsonValue(
           raw,
           field: 'config option update',
         );
@@ -4435,7 +4434,7 @@ class SessionManager implements AcpBoundedObservationSource {
     }
     if (kind == 'session_info_update') {
       try {
-        final copied = phase.structuredGuard.copyJsonValue(
+        final copied = structuredGuard.copyJsonValue(
           raw,
           field: 'session info update',
         );
@@ -4471,7 +4470,7 @@ class SessionManager implements AcpBoundedObservationSource {
       }
     }
     if (kind == 'plan_update') {
-      final copied = phase.structuredGuard.copyJsonValue(
+      final copied = structuredGuard.copyJsonValue(
         raw,
         field: 'structured plan update',
       );
@@ -4481,14 +4480,14 @@ class SessionManager implements AcpBoundedObservationSource {
     }
     if (kind == 'plan_removed') {
       final planId = _firstNonEmptyString(raw, const ['planId']);
-      final boundedPlanId = phase.structuredGuard.copyString(
+      final boundedPlanId = structuredGuard.copyString(
         planId ?? '',
         field: 'removed plan id',
       );
       final meta = raw['_meta'] == null
           ? null
           : Map<String, dynamic>.unmodifiable(
-              phase.structuredGuard.copyMetadata(
+              structuredGuard.copyMetadata(
                 raw['_meta'],
                 field: 'removed plan metadata',
               ),
@@ -4499,13 +4498,13 @@ class SessionManager implements AcpBoundedObservationSource {
       return UsageUpdate.fromJson(
         raw,
         inputBudget: inputBudget,
-        structuredGuard: phase.structuredGuard,
+        structuredGuard: structuredGuard,
       );
     }
     final parsed = UnknownUpdate.fromJson(
       raw,
       inputBudget: inputBudget,
-      structuredGuard: phase.structuredGuard,
+      structuredGuard: structuredGuard,
     );
     return UnknownUpdate(
       Map<String, dynamic>.unmodifiable(<String, dynamic>{
@@ -4571,22 +4570,12 @@ class SessionManager implements AcpBoundedObservationSource {
     return consumed;
   }
 
-  void _consumePhaseSessionResult(
-    _SessionInputBudgetPhase phase,
-    SessionResult result,
-  ) {
+  void _consumePhaseSessionResult(SessionResult result) {
     if (result.configOptions == null &&
         result.meta == null &&
         result.modes == null &&
         result.omissions.isEmpty) {
       return;
-    }
-    if (phase.items >= inputBudget.maxTurnItems) {
-      throw AcpInputLimitExceeded(
-        resource: 'turn items',
-        limit: inputBudget.maxTurnItems,
-        observedAtLeast: inputBudget.maxTurnItems + 1,
-      );
     }
     final modes = result.modes;
     final projection = <String, Object?>{
@@ -4609,16 +4598,13 @@ class SessionManager implements AcpBoundedObservationSource {
     final retainedBytes = AcpRetainedSizeEstimator(
       budget: inputBudget,
     ).estimate(projection);
-    if (retainedBytes >
-        inputBudget.maxTurnRetainedBytes - phase.retainedBytes) {
+    if (retainedBytes > inputBudget.maxTurnRetainedBytes) {
       throw AcpInputLimitExceeded(
         resource: 'turn retained bytes',
         limit: inputBudget.maxTurnRetainedBytes,
         observedAtLeast: inputBudget.maxTurnRetainedBytes + 1,
       );
     }
-    phase.items += 1;
-    phase.retainedBytes += retainedBytes;
   }
 
   MessageDelta _applyMessagePhaseBudgets(

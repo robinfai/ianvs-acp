@@ -39,6 +39,7 @@ class ChatTimeline extends StatefulWidget {
     this.isLoadingSession = false,
     this.messageListRevision = 0,
     this.onNewSession,
+    this.onTapLink,
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
@@ -51,6 +52,7 @@ class ChatTimeline extends StatefulWidget {
   final bool isLoadingSession;
   final int messageListRevision;
   final VoidCallback? onNewSession;
+  final MarkdownTapLinkCallback? onTapLink;
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
@@ -150,6 +152,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
                 ? _MessageBubble(
                     message: entry.message!,
                     inputBudget: widget.inputBudget,
+                    onTapLink: widget.onTapLink,
                   )
                 : _ToolGroupBubble(
                     messages: entry.toolMessages!,
@@ -650,10 +653,15 @@ class _IllustrationLine extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.inputBudget});
+  const _MessageBubble({
+    required this.message,
+    required this.inputBudget,
+    required this.onTapLink,
+  });
 
   final ChatMessage message;
   final AcpInputBudget inputBudget;
+  final MarkdownTapLinkCallback? onTapLink;
 
   @override
   Widget build(BuildContext context) {
@@ -737,6 +745,7 @@ class _MessageBubble extends StatelessWidget {
                     data: markdownDecision.text,
                     user: user,
                     styleSheet: _markdownStyle(context, textColor, user),
+                    onTapLink: onTapLink,
                   )
                 else
                   SelectableText(
@@ -769,6 +778,17 @@ class _MessageBubble extends StatelessWidget {
         : AppColors.surfaceRaised;
     return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
       p: baseTextStyle,
+      a: baseTextStyle.copyWith(
+        color: user ? Colors.white : AppColors.primaryDark,
+        backgroundColor: user
+            ? Colors.white.withValues(alpha: 0.12)
+            : AppColors.primaryMist,
+        decoration: TextDecoration.underline,
+        decorationColor: user
+            ? Colors.white70
+            : AppColors.primary.withValues(alpha: 0.55),
+        fontWeight: FontWeight.w700,
+      ),
       strong: baseTextStyle.copyWith(fontWeight: FontWeight.w700),
       em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
       code: baseTextStyle.copyWith(
@@ -856,11 +876,13 @@ class _SelectableMessageMarkdown extends StatelessWidget {
     required this.data,
     required this.user,
     required this.styleSheet,
+    required this.onTapLink,
   });
 
   final String data;
   final bool user;
   final MarkdownStyleSheet styleSheet;
+  final MarkdownTapLinkCallback? onTapLink;
 
   @override
   Widget build(BuildContext context) {
@@ -868,6 +890,7 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       data: data,
       selectable: true,
       styleSheet: styleSheet,
+      onTapLink: onTapLink,
       imageBuilder: _blockedMarkdownImage,
       builders: <String, MarkdownElementBuilder>{
         'pre': _MermaidCodeBlockBuilder(user: user),

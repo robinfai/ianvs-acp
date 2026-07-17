@@ -166,7 +166,7 @@ void main() {
     },
   );
 
-  test('WorkspaceController keeps same-id sessions separate across agents', () {
+  test('WorkspaceController deduplicates same-id sessions across agents', () {
     final codex = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
@@ -210,93 +210,54 @@ void main() {
       defaultAgentName: 'Codex',
     );
 
-    final sessionsByAgent = {
-      for (final session in controller.currentWorkspace.sessions)
-        session.agentName: session,
-    };
-    expect(controller.currentWorkspace.sessions, hasLength(4));
-    expect(controller.currentWorkspace.sessionCount, 4);
-    expect(sessionsByAgent.keys, {
-      'Codex',
-      'codex-fast',
-      'codex-thinking',
-      'codex-worker',
-    });
-    expect(sessionsByAgent['Codex']?.additionalDirectories, [
-      '/workspace/agent-0',
-    ]);
-    expect(sessionsByAgent['codex-fast']?.additionalDirectories, [
-      '/workspace/agent-1',
-    ]);
-    expect(sessionsByAgent['codex-thinking']?.additionalDirectories, [
-      '/workspace/agent-2',
-    ]);
-    expect(sessionsByAgent['codex-worker']?.additionalDirectories, [
-      '/workspace/agent-3',
-    ]);
+    final session = controller.currentWorkspace.sessions.single;
+    expect(controller.currentWorkspace.sessionCount, 1);
+    expect(session.agentName, 'Codex');
+    expect(session.additionalDirectories, ['/workspace/agent-0']);
   });
 
-  test(
-    'WorkspaceController trusts controller agents over stale session metadata',
-    () {
-      final codex = ChatController(
-        client: FakeAgentClient(),
+  test('WorkspaceController deduplicates stale same-id session metadata', () {
+    final codex = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final pi = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'pi ACP',
+    );
+    addTearDown(codex.dispose);
+    addTearDown(pi.dispose);
+
+    codex.sessions.add(
+      AgentSession(
+        id: 'shared-session',
         cwd: '/workspace/app',
+        createdAt: DateTime(2026, 5, 3, 10),
         agentName: 'Codex',
-      );
-      final pi = ChatController(
-        client: FakeAgentClient(),
+        additionalDirectories: const ['/workspace/codex-extra'],
+      ),
+    );
+    pi.sessions.add(
+      AgentSession(
+        id: 'shared-session',
         cwd: '/workspace/app',
-        agentName: 'pi ACP',
-      );
-      addTearDown(codex.dispose);
-      addTearDown(pi.dispose);
+        createdAt: DateTime(2026, 5, 3, 9),
+        agentName: 'Codex',
+        additionalDirectories: const ['/workspace/pi-extra'],
+      ),
+    );
 
-      codex.sessions.add(
-        AgentSession(
-          id: 'shared-session',
-          cwd: '/workspace/app',
-          createdAt: DateTime(2026, 5, 3, 10),
-          agentName: 'Codex',
-          additionalDirectories: const ['/workspace/codex-extra'],
-        ),
-      );
-      pi.sessions.add(
-        AgentSession(
-          id: 'shared-session',
-          cwd: '/workspace/app',
-          createdAt: DateTime(2026, 5, 3, 9),
-          agentName: 'Codex',
-          additionalDirectories: const ['/workspace/pi-extra'],
-        ),
-      );
+    final controller = WorkspaceController(
+      controllers: [codex, pi],
+      currentWorkspacePath: '/workspace/app',
+    );
+    final session = controller.currentWorkspace.sessions.single;
 
-      final controller = WorkspaceController(
-        controllers: [codex, pi],
-        currentWorkspacePath: '/workspace/app',
-      );
-      final sessions = controller.currentWorkspace.sessions;
-      final sessionsByAgent = {
-        for (final session in sessions) session.agentName: session,
-      };
-      final controllersByAgent = {
-        for (final controller in [codex, pi]) controller.agentName: controller,
-      };
-
-      expect(sessions, hasLength(2));
-      expect(sessionsByAgent.keys, {'Codex', 'pi ACP'});
-      expect(sessionsByAgent['Codex']?.additionalDirectories, [
-        '/workspace/codex-extra',
-      ]);
-      expect(sessionsByAgent['pi ACP']?.additionalDirectories, [
-        '/workspace/pi-extra',
-      ]);
-      expect(
-        controllersByAgent[sessionsByAgent['pi ACP']?.agentName],
-        same(pi),
-      );
-    },
-  );
+    expect(session.agentName, 'Codex');
+    expect(session.additionalDirectories, ['/workspace/codex-extra']);
+  });
 
   test(
     'WorkspaceController uses the only source agent for an unattributed session',
@@ -367,7 +328,7 @@ void main() {
   );
 
   test(
-    'WorkspaceController keeps same-id session metadata scoped to each agent',
+    'WorkspaceController uses the default agent for conflicting metadata',
     () {
       final codex = ChatController(
         client: FakeAgentClient(),
@@ -388,6 +349,7 @@ void main() {
           cwd: '/workspace/app',
           createdAt: DateTime(2026, 5, 3, 10),
           title: 'Shared catalog session',
+          agentName: 'Codex',
         ),
       );
       fast.sessions.add(
@@ -406,19 +368,14 @@ void main() {
         defaultAgentName: 'Codex',
       );
 
-      final sessionsByAgent = {
-        for (final session in controller.currentWorkspace.sessions)
-          session.agentName: session,
-      };
-      expect(controller.currentWorkspace.sessions, hasLength(2));
-      expect(sessionsByAgent.keys, {'Codex', 'codex-fast'});
-      expect(sessionsByAgent['Codex']?.title, 'Shared catalog session');
-      expect(sessionsByAgent['codex-fast']?.title, 'Shared catalog session');
+      final session = controller.currentWorkspace.sessions.single;
+      expect(session.agentName, 'Codex');
+      expect(session.title, 'Shared catalog session');
     },
   );
 
   test(
-    'WorkspaceController keeps current same-id sessions separate by agent',
+    'WorkspaceController keeps the active agent for conflicting metadata',
     () {
       final codex = ChatController(
         client: FakeAgentClient(),
@@ -457,12 +414,10 @@ void main() {
         defaultAgentName: 'Codex',
       );
 
-      expect(controller.currentWorkspace.sessions, hasLength(2));
+      expect(controller.currentWorkspace.sessions, hasLength(1));
       expect(
-        controller.currentWorkspace.sessions.map(
-          (session) => session.agentName,
-        ),
-        containsAll(<String?>['Codex', 'codex-worker']),
+        controller.currentWorkspace.sessions.single.agentName,
+        'codex-worker',
       );
     },
   );

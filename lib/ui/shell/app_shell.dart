@@ -8,6 +8,7 @@ import '../../acp/acp_session_catalog.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
+import '../../config/acp_agent_discovery.dart';
 import '../../platform/file_manager.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
@@ -23,6 +24,7 @@ import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/extension_request_dialog.dart';
+import '../components/file_preview_workspace.dart';
 import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
@@ -277,20 +279,10 @@ class AppShell extends StatelessWidget {
                         builder: (context, constraints) {
                           final hideSidebar = constraints.maxWidth < 760;
                           final hideInspector = constraints.maxWidth < 1120;
-                          final timeline = ChatTimeline(
-                            inputBudget: inputBudget,
-                            imageDecodeLedger: imageDecodeLedger,
-                            boundedImageDecoder: boundedImageDecoder,
-                            messages: controller.messages,
-                            messageListRevision: controller.messagesRevision,
-                            agentName: agentName,
-                            hasActiveSession: controller.currentSession != null,
-                            activeSessionLabel:
-                                controller.currentSession?.displayTitle,
-                            isLoadingSession: controller.isSessionReplayLoading,
-                            onNewSession: null,
-                          );
-                          final conversationColumn = Column(
+                          Widget conversationColumn(
+                            BuildContext context,
+                            FilePreviewLinkHandler onTapLink,
+                          ) => Column(
                             children: [
                               WorkspaceHeader(
                                 workspace: currentWorkspace,
@@ -298,15 +290,48 @@ class AppShell extends StatelessWidget {
                                 currentSession: controller.currentSession,
                               ),
                               const Divider(height: 1, color: AppColors.border),
-                              Expanded(child: timeline),
+                              Expanded(
+                                child: ChatTimeline(
+                                  inputBudget: inputBudget,
+                                  imageDecodeLedger: imageDecodeLedger,
+                                  boundedImageDecoder: boundedImageDecoder,
+                                  messages: controller.messages,
+                                  messageListRevision:
+                                      controller.messagesRevision,
+                                  agentName: agentName,
+                                  hasActiveSession:
+                                      controller.currentSession != null,
+                                  activeSessionLabel:
+                                      controller.currentSession?.displayTitle,
+                                  isLoadingSession:
+                                      controller.isSessionReplayLoading,
+                                  onNewSession: null,
+                                  onTapLink: onTapLink,
+                                ),
+                              ),
                               promptDock(),
                               statusDock(),
                             ],
                           );
 
-                          if (hideSidebar && hideInspector) {
-                            return conversationColumn;
-                          }
+                          final previewWorkspace = FilePreviewWorkspace(
+                            workspacePath: currentWorkspace.path,
+                            additionalDirectories: additionalDirectories,
+                            conversationBuilder: conversationColumn,
+                            showInspector: !hideInspector,
+                            processRunner: processRunner,
+                            inspector: WorkspaceInspector(
+                              workspace: currentWorkspace,
+                              agentName: agentName,
+                              currentSession: controller.currentSession,
+                              mcpServers: mcpServers,
+                              additionalDirectories: additionalDirectories,
+                              clientProviders: clientProviders,
+                              configPath: configPath,
+                            ),
+                          );
+
+                          if (hideSidebar) return previewWorkspace;
 
                           return Row(
                             children: [
@@ -410,26 +435,7 @@ class AppShell extends StatelessWidget {
                                   color: AppColors.border,
                                 ),
                               ],
-                              Expanded(child: conversationColumn),
-                              if (!hideInspector) ...[
-                                const VerticalDivider(
-                                  width: 1,
-                                  color: AppColors.border,
-                                ),
-                                SizedBox(
-                                  width: 292,
-                                  child: WorkspaceInspector(
-                                    workspace: currentWorkspace,
-                                    agentName: agentName,
-                                    currentSession: controller.currentSession,
-                                    mcpServers: mcpServers,
-                                    additionalDirectories:
-                                        additionalDirectories,
-                                    clientProviders: clientProviders,
-                                    configPath: configPath,
-                                  ),
-                                ),
-                              ],
+                              Expanded(child: previewWorkspace),
                             ],
                           );
                         },
@@ -690,6 +696,7 @@ class AppShell extends StatelessWidget {
       builder: (context) {
         return AgentConfigDialog(
           agentServers: agentServers,
+          agentPresets: AcpAgentDiscovery.discover(),
           mcpServers: mcpServers,
           additionalDirectories: additionalDirectories,
           clientProviders: clientProviders,

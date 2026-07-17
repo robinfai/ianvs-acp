@@ -1146,7 +1146,7 @@ void main() {
     expect(queued.status, TaskStatus.queued);
     expect(queued.summary, 'Try again with a smaller change.');
     expect(queued.error, isNull);
-    expect(queued.sessionId, isNull);
+    expect(queued.sessionId, 'session-1');
     expect(queued.currentRunId, isNull);
     expect(controller.runs.single.id, 'run-1');
     expect(controller.runs.single.status, TaskStatus.failed);

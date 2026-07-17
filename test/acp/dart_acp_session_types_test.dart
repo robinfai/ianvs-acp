@@ -965,6 +965,29 @@ void main() {
     expect(limitedMedia.omission?.observedAtLeast, 14);
   });
 
+  test('raw tool output omits embedded media data from structured text', () {
+    final tool = ToolCall.fromJson(
+      <String, dynamic>{
+        'toolCallId': 'image-tool',
+        'status': 'completed',
+        'rawOutput': <String, Object?>{
+          'image_url': 'data:image/png;base64,${'A' * 128}',
+          'caption': 'kept',
+        },
+      },
+      inputBudget: const AcpInputBudget(
+        maxStructuredStringBytes: 32,
+        maxStructuredUpdateBytes: 256,
+      ),
+    );
+
+    expect(tool.omission, isNull);
+    expect(tool.rawOutput, <String, Object?>{
+      'image_url': '<media omitted>',
+      'caption': 'kept',
+    });
+  });
+
   test('content blocks never reset a caller-owned structured guard', () {
     final exact = AcpStructuredUpdateGuard(
       budget: const AcpInputBudget(maxStructuredUpdateBytes: 2),

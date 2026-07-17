@@ -10,6 +10,50 @@ import 'package:ianvs_acp/workspace/workspace.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 void main() {
+  testWidgets('WorkspaceSidebar manually adds a workspace directory', (
+    tester,
+  ) async {
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const [],
+    );
+    final store = _MemoryWorkspaceSidebarStateStore(<String>{});
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              workspaces: [currentWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+              stateStore: store,
+              pickWorkspaceDirectory: () async => '/workspace/manual',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('add-workspace-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('manual'), findsOneWidget);
+    expect(store.expandedWorkspacePaths, contains('/workspace/manual'));
+    expect(
+      store.workspaceStates.any(
+        (state) => state.path == '/workspace/manual' && state.manuallyAdded,
+      ),
+      isTrue,
+    );
+  });
+
   testWidgets('WorkspaceSidebar expands workspaces before selecting sessions', (
     tester,
   ) async {

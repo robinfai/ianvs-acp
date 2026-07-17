@@ -24,6 +24,7 @@ import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
 import 'state/chat_controller.dart';
+import 'state/workspace_controller.dart';
 import 'tasks/task_agent_pool.dart';
 import 'tasks/runtime_registry.dart';
 import 'tasks/retry_policy.dart';
@@ -1559,13 +1560,18 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   List<AgentSession> _persistableSessionIndex() {
     final sessionsByKey = <String, AgentSession>{};
-    for (final controller in _controllersByAgent.values) {
-      for (final session in controller.sessions) {
+    final workspaceController = WorkspaceController(
+      controllers: _controllersByAgent.values.toList(growable: false),
+      currentWorkspacePath: _cwd,
+      defaultAgentName: _config.defaultAgentServerName ?? _config.agentName,
+    );
+    for (final workspace in workspaceController.workspaces) {
+      for (final session in workspace.sessions) {
         final id = session.id.trim();
         final cwd = session.cwd.trim();
         if (id.isEmpty || cwd.isEmpty) continue;
-        final agentName = session.agentName?.trim() ?? controller.agentName;
-        sessionsByKey['$agentName\u0000$id'] = _sessionIndexWithFallbackAgent(
+        final agentName = session.agentName?.trim() ?? _config.agentName;
+        sessionsByKey['$cwd\u0000$id'] = _sessionIndexWithFallbackAgent(
           session,
           agentName,
         );

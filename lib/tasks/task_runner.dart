@@ -204,6 +204,7 @@ class TaskRunner {
     StackTrace? eventWriteFailureStackTrace;
     var runFinished = false;
     String? activeSessionId;
+    var replayingLinkedSession = false;
     VoidCallback? removeAgentObserver;
     VoidCallback? removePermissionObserver;
     TaskRunRecord? run = _dispatchedRunFor(task);
@@ -284,6 +285,7 @@ class TaskRunner {
     }
 
     void observeAgentEvent(AgentSession? session, AgentEvent event) {
+      if (replayingLinkedSession) return;
       if (!matchesSessionId(session?.id)) return;
       final buffer = eventBuffer;
       if (buffer == null) return;
@@ -377,10 +379,13 @@ class TaskRunner {
         cancellation,
       );
       _throwIfCancelled(cancellation);
-      final prompt = taskExecutionPrompt(
-        task,
-        attachedSkills: attachedSkills.skills,
-      );
+      final storedSessionId = task.sessionId?.trim();
+      final linkedSessionId = storedSessionId == null || storedSessionId.isEmpty
+          ? null
+          : storedSessionId;
+      final prompt = linkedSessionId == null
+          ? taskExecutionPrompt(task, attachedSkills: attachedSkills.skills)
+          : taskContinuationPrompt(task, attachedSkills: attachedSkills.skills);
 
       final dispatchedRun = run;
       if (dispatchedRun == null) {
@@ -429,11 +434,26 @@ class TaskRunner {
       );
 
       final previousSessionId = controller.currentSession?.id;
-      final sessionCreated = await awaitWithEventWriteFailure(
-        _awaitCancellable(
-          controller.newSession(cwd: task.workspacePath),
-          cancellation,
-        ).timeout(
+      var sessionCreated = false;
+      final sessionSetup = linkedSessionId == null
+          ? () async {
+              sessionCreated = await controller.newSession(
+                cwd: task.workspacePath,
+              );
+            }()
+          : () async {
+              replayingLinkedSession = true;
+              try {
+                await controller.resumeSession(
+                  linkedSessionId,
+                  cwd: task.workspacePath,
+                );
+              } finally {
+                replayingLinkedSession = false;
+              }
+            }();
+      await awaitWithEventWriteFailure(
+        _awaitCancellable(sessionSetup, cancellation).timeout(
           sessionSetupDeadline,
           onTimeout: () async {
             try {
@@ -453,12 +473,14 @@ class TaskRunner {
       _throwIfCancelled(cancellation);
       _throwIfControllerFailed(controller, 'Task session setup failed');
       final session = controller.currentSession;
-      if (!sessionCreated ||
-          session == null ||
-          session.id.trim().isEmpty ||
-          session.id == previousSessionId) {
+      final validSession = linkedSessionId == null
+          ? sessionCreated && session?.id != previousSessionId
+          : session?.id.trim() == linkedSessionId;
+      if (!validSession || session == null || session.id.trim().isEmpty) {
         throw StateError(
-          'Task session setup did not create a distinct session.',
+          linkedSessionId == null
+              ? 'Task session setup did not create a distinct session.'
+              : 'Task session setup did not resume the linked session.',
         );
       }
       activeSessionId = session.id;
@@ -484,7 +506,9 @@ class TaskRunner {
               taskId: task.id,
               runId: activeRun.id,
               kind: TaskEventKind.system,
-              text: 'Linked ACP session ${session.id}.',
+              text: linkedSessionId == null
+                  ? 'Linked ACP session ${session.id}.'
+                  : 'Resumed linked ACP session ${session.id}.',
               sessionId: session.id,
             ),
           );
@@ -813,6 +837,18 @@ When done, summarize:
 2. How you verified it
 3. Candidate artifacts
 4. Any remaining follow-up
+''';
+  }
+
+  static String taskContinuationPrompt(
+    TaskRecord task, {
+    List<LocalSkill> attachedSkills = const <LocalSkill>[],
+  }) {
+    return '''
+Continue the task from where the previous run stopped in this conversation.
+Inspect the conversation and current workspace state before acting, and do not repeat work that is already complete.
+
+${taskExecutionPrompt(task, attachedSkills: attachedSkills)}
 ''';
   }
 

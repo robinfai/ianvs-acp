@@ -20,6 +20,7 @@ void main() {
     bool isLoadingSession = false,
     int messageListRevision = 0,
     VoidCallback? onNewSession,
+    MarkdownTapLinkCallback? onTapLink,
     ThemeData? theme,
     AcpInputBudget inputBudget = const AcpInputBudget(),
     AcpImageDecodeBudgetLedger? imageDecodeLedger,
@@ -36,6 +37,7 @@ void main() {
           isLoadingSession: isLoadingSession,
           messageListRevision: messageListRevision,
           onNewSession: onNewSession,
+          onTapLink: onTapLink,
           inputBudget: inputBudget,
           imageDecodeLedger: imageDecodeLedger,
           boundedImageDecoder: boundedImageDecoder,
@@ -119,6 +121,22 @@ void main() {
 
     expect(find.byType(MarkdownBody), findsOneWidget);
     expect(find.textContaining('markdown syntax tokens'), findsNothing);
+  });
+
+  testWidgets('ChatTimeline forwards Markdown link taps', (tester) async {
+    String? tappedHref;
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '[Open file](docs/readme.md#L4)',
+        ),
+      ], onTapLink: (text, href, title) => tappedHref = href),
+    );
+
+    await tester.tap(find.text('Open file'));
+
+    expect(tappedHref, 'docs/readme.md#L4');
   });
 
   testWidgets('ChatTimeline displays one typed notice per omission kind', (

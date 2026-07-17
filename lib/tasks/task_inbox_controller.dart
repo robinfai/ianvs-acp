@@ -695,7 +695,6 @@ class TaskInboxController extends ChangeNotifier {
       final queued = await _updateTaskWithinTransition(
         task.id,
         status: TaskStatus.queued,
-        sessionId: null,
         currentRunId: null,
         summary: retrySummary,
         error: null,

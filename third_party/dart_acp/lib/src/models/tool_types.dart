@@ -593,7 +593,12 @@ _boundedToolBehavior(
         : _boundedToolJsonValue(rawInput, guard, field: 'tool raw input'),
     rawOutput: identical(rawOutput, _absentToolField)
         ? null
-        : _boundedToolJsonValue(rawOutput, guard, field: 'tool raw output'),
+        : _boundedToolJsonValue(
+            rawOutput,
+            guard,
+            field: 'tool raw output',
+            omitEmbeddedMediaDataUris: true,
+          ),
   );
 }
 
@@ -645,7 +650,12 @@ _boundedMergedToolBehavior(
         : _boundedToolJsonValue(rawInput, guard, field: 'tool raw input'),
     rawOutput: identical(rawOutput, _absentToolField)
         ? existing.rawOutput
-        : _boundedToolJsonValue(rawOutput, guard, field: 'tool raw output'),
+        : _boundedToolJsonValue(
+            rawOutput,
+            guard,
+            field: 'tool raw output',
+            omitEmbeddedMediaDataUris: true,
+          ),
   );
 }
 
@@ -788,9 +798,19 @@ Object? _boundedToolJsonValue(
   Object? raw,
   AcpStructuredUpdateGuard guard, {
   required String field,
+  bool omitEmbeddedMediaDataUris = false,
 }) {
-  if (raw is Map) return guard.copyMetadata(raw, field: field);
-  if (raw is List) return guard.copyJsonValue(raw, field: field);
-  if (raw is String) return guard.copyString(raw, field: field);
+  if (raw is Map || raw is List || raw is String) {
+    if (omitEmbeddedMediaDataUris) {
+      return guard.copyJsonValue(
+        raw,
+        field: field,
+        omitEmbeddedMediaDataUris: true,
+      );
+    }
+    if (raw is Map) return guard.copyMetadata(raw, field: field);
+    if (raw is List) return guard.copyJsonValue(raw, field: field);
+    return guard.copyString(raw, field: field);
+  }
   return guard.copyScalar(raw, field: field);
 }
