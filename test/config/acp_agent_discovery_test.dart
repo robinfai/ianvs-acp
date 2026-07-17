@@ -171,6 +171,66 @@ void main() {
     expect(server.env, {'KEEP_ME': 'yes'});
     expect(migrated.agentName, 'OpenAI Codex');
   });
+
+  test('migration upgrades every legacy Codex profile', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
+    addTearDown(() => temp.delete(recursive: true));
+    final configPath = '${temp.path}/settings.json';
+    final file = File(configPath);
+    await file.writeAsString('''
+{
+  "default_agent_server": "Codex",
+  "agent_servers": {
+    "Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"]
+    },
+    "codex-fast": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp@0.16.0"]
+    },
+    "Other": {
+      "type": "custom",
+      "command": "/usr/local/bin/other-acp",
+      "args": ["serve"]
+    }
+  }
+}
+''');
+    final config = AcpClientConfig.fromJson(
+      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      configPath: configPath,
+    );
+    final migration = AcpAgentDiscovery.discoverMissing(
+      config,
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) => path == '/opt/homebrew/bin/npx',
+    );
+
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
+      config,
+      migration,
+    );
+
+    expect(
+      migrated.agentServers
+          .where(
+            (server) =>
+                server.name.startsWith('Codex') ||
+                server.name.startsWith('codex'),
+          )
+          .map((server) => server.args.single),
+      everyElement('@agentclientprotocol/codex-acp'),
+    );
+    expect(
+      migrated.agentServers
+          .singleWhere((server) => server.name == 'Other')
+          .args,
+      ['serve'],
+    );
+  });
   test(
     'rejects discovered agent secrets when SecretStore is omitted',
     () async {

@@ -81,7 +81,9 @@ class DartAcpAgentClient implements AcpAgentClient {
   }) : timeouts = _validatedAcpTimeouts(timeouts),
        inputBudget = _validatedInputBudget(inputBudget),
        agentCommand = agentCommand ?? _defaultAgentCommand(),
-       agentArgs = agentArgs ?? const [AcpAdapterPackages.codex],
+       agentArgs = AcpAdapterPackages.normalizeCodexAdapterArgs(
+         agentArgs ?? const [AcpAdapterPackages.codex],
+       ),
        agentCwd = agentCwd?.trim().isEmpty == true ? null : agentCwd?.trim(),
        envOverrides = envOverrides ?? const <String, String>{},
        agentHeaders = agentHeaders ?? const <String, String>{},

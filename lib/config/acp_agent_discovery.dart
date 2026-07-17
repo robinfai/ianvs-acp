@@ -192,6 +192,7 @@ class AcpAgentDiscovery {
     AgentServerConfig candidate,
   ) {
     if (!_isCurrentCodexInvocation(candidate)) return false;
+    var upgraded = false;
     for (final entry in existingServers.entries) {
       final raw = entry.value;
       if (raw is! Map) continue;
@@ -204,9 +205,9 @@ class AcpAgentDiscovery {
       }
       mapped['args'] = <String>[codexAcpPackage];
       existingServers[entry.key] = mapped;
-      return true;
+      upgraded = true;
     }
-    return false;
+    return upgraded;
   }
 
   static bool _isCurrentCodexInvocation(AgentServerConfig server) =>
@@ -220,8 +221,7 @@ class AcpAgentDiscovery {
       _isLegacyCodexPackage(server.args.single);
 
   static bool _isLegacyCodexPackage(Object? value) =>
-      value == legacyCodexAcpPackage ||
-      (value is String && value.startsWith('$legacyCodexAcpPackage@'));
+      AcpAdapterPackages.isLegacyCodexPackage(value);
 
   static bool _sameStdioInvocation(
     AgentServerConfig left,

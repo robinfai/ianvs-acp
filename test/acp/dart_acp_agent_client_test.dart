@@ -4221,6 +4221,20 @@ Future<void> main() async {
     expect(client.agentArgs, ['@agentclientprotocol/codex-acp']);
   });
 
+  test('rewrites legacy Codex ACP adapter arguments at runtime', () {
+    final unversioned = DartAcpAgentClient(
+      agentCommand: 'unused',
+      agentArgs: const ['@zed-industries/codex-acp'],
+    );
+    final versioned = DartAcpAgentClient(
+      agentCommand: 'unused',
+      agentArgs: const ['@zed-industries/codex-acp@0.16.0'],
+    );
+
+    expect(unversioned.agentArgs, ['@agentclientprotocol/codex-acp']);
+    expect(versioned.agentArgs, ['@agentclientprotocol/codex-acp']);
+  });
+
   test('terminal handle limits validate and expose configured values', () {
     expect(
       () => DartAcpAgentClient(maxTerminalHandles: 0),

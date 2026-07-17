@@ -271,6 +271,17 @@ class WorkspaceSidebarStateStore {
         _dateTimeFromJson(json['created_at'] ?? json['createdAt']) ??
         updatedAt ??
         DateTime.fromMillisecondsSinceEpoch(0);
+    final hasLocalUnstartedMarker =
+        json.containsKey('local_unstarted') ||
+        json.containsKey('localUnstarted');
+    final localUnstarted = hasLocalUnstartedMarker
+        ? _boolFromJson(json['local_unstarted'] ?? json['localUnstarted'])
+        : updatedAt == null &&
+              _stringFromJson(json['title']) == null &&
+              _stringFromJson(
+                    json['title_override'] ?? json['titleOverride'],
+                  ) ==
+                  null;
 
     return AgentSession(
       id: id,
@@ -288,6 +299,7 @@ class WorkspaceSidebarStateStore {
       pinned: _boolFromJson(json['pinned']),
       archived: _boolFromJson(json['archived']),
       unread: _boolFromJson(json['unread']),
+      localUnstarted: localUnstarted,
     );
   }
 
@@ -310,6 +322,7 @@ class WorkspaceSidebarStateStore {
       if (session.pinned) 'pinned': true,
       if (session.archived) 'archived': true,
       if (session.unread) 'unread': true,
+      'local_unstarted': session.localUnstarted,
     };
   }
 

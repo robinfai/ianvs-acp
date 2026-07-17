@@ -114,6 +114,7 @@ void main() {
         pinned: true,
         archived: true,
         unread: true,
+        localUnstarted: true,
       ),
     ]);
 
@@ -129,6 +130,33 @@ void main() {
     expect(sessions.first.pinned, isTrue);
     expect(sessions.first.archived, isTrue);
     expect(sessions.first.unread, isTrue);
+    expect(sessions.first.localUnstarted, isTrue);
+  });
+
+  test('WorkspaceSidebarStateStore recognizes legacy blank sessions', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-sidebar-store-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final file = File('${tempDir.path}/workspace_ui_state.json');
+    await file.writeAsString(
+      jsonEncode({
+        'session_index': [
+          {
+            'id': 'legacy-blank',
+            'cwd': '/workspace/project',
+            'created_at': '2026-07-15T20:47:46.586319',
+            'agent_name': 'Codex',
+          },
+        ],
+      }),
+    );
+
+    final sessions = await WorkspaceSidebarStateStore(
+      path: file.path,
+    ).loadSessionIndex();
+
+    expect(sessions.single.localUnstarted, isTrue);
   });
 
   test('WorkspaceSidebarStateStore saves and loads workspace states', () async {

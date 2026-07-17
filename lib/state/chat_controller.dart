@@ -1900,6 +1900,7 @@ AgentSession _copyAgentSession(
       pinned: session.pinned,
       archived: session.archived,
       unread: session.unread,
+      localUnstarted: session.localUnstarted,
     );
   }
 }
@@ -1960,6 +1961,7 @@ AgentSession _copyAgentSessionStrict(
     pinned: session.pinned,
     archived: session.archived,
     unread: session.unread,
+    localUnstarted: session.localUnstarted,
   );
   _addAgentSessionRetainedBytes(
     0,
@@ -3124,6 +3126,10 @@ class ChatController extends ChangeNotifier {
     for (final session in indexedSessions) {
       if (session.id.trim().isEmpty || session.cwd.trim().isEmpty) continue;
       if (_retiredSessionIds.contains(session.id)) continue;
+
+      if (session.localUnstarted) {
+        _localUnstartedSessionIds.add(session.id.trim());
+      }
 
       final existing = _sessionWithId(session.id);
       final nextSession = existing == null
@@ -6832,6 +6838,8 @@ class ChatController extends ChangeNotifier {
           pinned: existing?.pinned ?? false,
           archived: existing?.archived ?? false,
           unread: existing?.unread ?? false,
+          localUnstarted:
+              boundSession?.localUnstarted ?? existing?.localUnstarted ?? false,
         );
         _retiredSessionIds.remove(session.id);
         if (boundSession == null) {
@@ -6868,6 +6876,7 @@ class ChatController extends ChangeNotifier {
     final normalizedSessionId = sessionId.trim();
     if (normalizedSessionId.isNotEmpty) {
       _localUnstartedSessionIds.add(normalizedSessionId);
+      _setLocalUnstartedSessionFlag(normalizedSessionId, true);
     }
   }
 
@@ -6875,6 +6884,23 @@ class ChatController extends ChangeNotifier {
     _localUnstartedSessionIds.removeWhere(
       (localId) => _sessionIdsMatch(localId, sessionId),
     );
+    _setLocalUnstartedSessionFlag(sessionId, false);
+  }
+
+  void _setLocalUnstartedSessionFlag(String sessionId, bool value) {
+    final active = currentSession;
+    if (active != null &&
+        _sessionIdsMatch(active.id, sessionId) &&
+        active.localUnstarted != value) {
+      currentSession = active.copyWith(localUnstarted: value);
+    }
+    for (var index = 0; index < sessions.length; index += 1) {
+      final session = sessions[index];
+      if (_sessionIdsMatch(session.id, sessionId) &&
+          session.localUnstarted != value) {
+        sessions[index] = session.copyWith(localUnstarted: value);
+      }
+    }
   }
 
   AgentSession? _boundSessionWithId(String id) {
@@ -6927,6 +6953,7 @@ class ChatController extends ChangeNotifier {
       pinned: indexed.pinned,
       archived: isCurrent ? false : indexed.archived,
       unread: isCurrent ? false : indexed.unread,
+      localUnstarted: existing.localUnstarted || indexed.localUnstarted,
     );
   }
 
@@ -6968,6 +6995,7 @@ class ChatController extends ChangeNotifier {
         a.pinned == b.pinned &&
         a.archived == b.archived &&
         a.unread == b.unread &&
+        a.localUnstarted == b.localUnstarted &&
         _sameStringList(a.additionalDirectories, b.additionalDirectories);
   }
 

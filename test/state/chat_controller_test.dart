@@ -7161,6 +7161,36 @@ void main() {
     expect(controller.sessions.single.unread, isTrue);
   });
 
+  test('restored local unstarted session resumes without ACP load', () async {
+    final fake = _MutableBindingCatalogClient(
+      projects: const <AcpProjectSessions>[],
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    controller.mergeSessionIndex([
+      AgentSession(
+        id: 'persisted-blank',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 15, 20, 47),
+        agentName: 'Codex',
+        localUnstarted: true,
+      ),
+    ]);
+
+    await controller.resumeSession('persisted-blank');
+
+    expect(fake.resumeCalls, 0);
+    expect(controller.currentSession?.id, 'persisted-blank');
+    expect(controller.currentSession?.cwd, '/workspace/project');
+    expect(controller.messages, isEmpty);
+    expect(controller.lastError, isNull);
+    expect(controller.status, app_state.ConnectionStatus.sessionReady);
+  });
+
   test(
     'merge session index preserves an established empty additional directory binding',
     () {

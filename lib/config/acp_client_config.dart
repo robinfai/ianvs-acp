@@ -1066,7 +1066,11 @@ class McpServerConfig {
   }) {
     final nextRaw = _jsonMap(raw, fieldName: 'mcp_servers');
     if (env.isEmpty) {
-      nextRaw.remove('env');
+      if (type == 'stdio') {
+        nextRaw['env'] = <Map<String, String>>[];
+      } else {
+        nextRaw.remove('env');
+      }
     } else {
       nextRaw['env'] = <Map<String, String>>[
         for (final entry in env.entries)
@@ -1074,7 +1078,11 @@ class McpServerConfig {
       ];
     }
     if (headers.isEmpty) {
-      nextRaw.remove('headers');
+      if (type == 'http' || type == 'sse') {
+        nextRaw['headers'] = <Map<String, String>>[];
+      } else {
+        nextRaw.remove('headers');
+      }
     } else {
       nextRaw['headers'] = <Map<String, String>>[
         for (final entry in headers.entries)

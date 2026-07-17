@@ -14,6 +14,7 @@ class AgentSession {
     this.pinned = false,
     this.archived = false,
     this.unread = false,
+    this.localUnstarted = false,
   });
 
   final String id;
@@ -28,6 +29,7 @@ class AgentSession {
   final bool pinned;
   final bool archived;
   final bool unread;
+  final bool localUnstarted;
 
   String get shortId => id.length <= 8 ? id : id.substring(0, 8);
 
@@ -51,6 +53,7 @@ class AgentSession {
     bool? pinned,
     bool? archived,
     bool? unread,
+    bool? localUnstarted,
   }) {
     return AgentSession(
       id: id,
@@ -66,6 +69,7 @@ class AgentSession {
       pinned: pinned ?? this.pinned,
       archived: archived ?? this.archived,
       unread: unread ?? this.unread,
+      localUnstarted: localUnstarted ?? this.localUnstarted,
     );
   }
 }

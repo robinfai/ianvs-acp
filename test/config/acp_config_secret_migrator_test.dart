@@ -9,6 +9,31 @@ import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
   test(
+    'keeps required empty HTTP MCP headers after secret preparation',
+    () async {
+      final parsed = AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'task-center',
+            'type': 'http',
+            'url': 'http://127.0.0.1:38971/mcp',
+          },
+        ],
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      final prepared = await AcpConfigSecretMigrator(
+        FakeSecretStore(),
+      ).prepare(parsed);
+      addTearDown(prepared.rollback);
+
+      expect(
+        prepared.resolved.mcpServers.single.toRuntimeJson()['headers'],
+        [],
+      );
+    },
+  );
+
+  test(
     'migrates legacy secrets to refs and keeps resolved runtime values',
     () async {
       final temp = await Directory.systemTemp.createTemp(
