@@ -95,6 +95,65 @@ void main() {
   });
 
   test(
+    'TaskRunner applies and records the task model before prompting',
+    () async {
+      final taskController = TaskInboxController(
+        repository: _MemoryTaskStore(),
+        idGenerator: _DeterministicIds().next,
+      );
+      addTearDown(taskController.dispose);
+      await taskController.load();
+      final task = await taskController.createTask(
+        title: 'Use the selected model',
+        description: 'Keep the foreground model for this background run.',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+        metadata: const <String, Object?>{'model': 'gpt-5.3-codex-spark'},
+      );
+      final fake = FakeAgentClient(
+        sessionSettings: const AcpSessionSettings(
+          configOptions: <AcpConfigOption>[
+            AcpConfigOption(
+              id: 'model',
+              name: 'Model',
+              type: 'select',
+              currentValue: 'gpt-5.6-sol',
+              category: 'model',
+              options: <AcpConfigOptionChoice>[
+                AcpConfigOptionChoice(
+                  value: 'gpt-5.6-sol',
+                  name: 'GPT-5.6 Sol',
+                ),
+                AcpConfigOptionChoice(
+                  value: 'gpt-5.3-codex-spark',
+                  name: 'GPT-5.3 Codex Spark',
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+      final chat = ChatController(
+        client: fake,
+        cwd: '/workspace/default',
+        agentName: 'Codex',
+      );
+      addTearDown(chat.dispose);
+      final runner = TaskRunner(
+        taskController: taskController,
+        agentPool: LocalTaskAgentPool(controllerFactory: (_) => chat),
+      );
+
+      final result = await runner.runTask(task.id);
+
+      expect(result.status, TaskStatus.needsHumanReview);
+      expect(fake.lastConfigId, 'model');
+      expect(fake.lastConfigValue, 'gpt-5.3-codex-spark');
+      expect(taskController.runs.single.model, 'gpt-5.3-codex-spark');
+    },
+  );
+
+  test(
     'TaskRunner resumes the linked ACP session after a failed run',
     () async {
       final taskController = TaskInboxController(

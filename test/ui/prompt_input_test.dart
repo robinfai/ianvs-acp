@@ -3,7 +3,9 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:dart_acp/dart_acp.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
@@ -37,6 +39,7 @@ void main() {
     ValueChanged<String>? onModelSelected,
     ValueChanged<String>? onReasoningEffortSelected,
     PromptAttachmentPicker? pickAttachments,
+    PromptAttachmentKindPicker? pickAttachmentsForKind,
     double? width,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
@@ -62,6 +65,7 @@ void main() {
       onSend: onSend,
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
+      pickAttachmentsForKind: pickAttachmentsForKind,
       inputBudget: inputBudget,
     );
     return MaterialApp(
@@ -79,7 +83,30 @@ void main() {
   Finder sendIcon() => find.byIcon(Icons.arrow_upward_rounded);
   Finder stopIcon() => find.byIcon(Icons.stop_rounded);
   Finder primaryAction() => find.byKey(const Key('prompt-action-button'));
-  Finder attachFinder() => find.byTooltip('Attach file');
+  Finder attachFinder() => find.byKey(const Key('prompt-attachment-picker'));
+  DropTarget dropTarget(WidgetTester tester) => tester.widget<DropTarget>(
+    find.byKey(const Key('prompt-input-drop-target')),
+  );
+  DropEventDetails dragDetails() => DropEventDetails(
+    localPosition: const Offset(12, 12),
+    globalPosition: const Offset(12, 12),
+  );
+  DropDoneDetails dropDetails(List<DropItem> files) => DropDoneDetails(
+    files: files,
+    localPosition: const Offset(12, 12),
+    globalPosition: const Offset(12, 12),
+  );
+  Future<void> sendNativeDropMethod(String method, Object? arguments) async {
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          'desktop_drop',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall(method, arguments),
+          ),
+          (_) {},
+        );
+  }
+
   FilledButton actionButton(WidgetTester tester, Finder iconFinder) {
     return tester.widget<FilledButton>(
       find.ancestor(of: iconFinder, matching: find.byType(FilledButton)),
@@ -792,6 +819,305 @@ void main() {
     expect(find.text('Link'), findsOneWidget);
   });
 
+  testWidgets(
+    'PromptInput attachment choices follow handshake prompt capabilities',
+    (tester) async {
+      const image = PromptAttachment(
+        path: '/workspace/screenshot.png',
+        name: 'screenshot.png',
+        mimeType: 'image/png',
+      );
+      const audio = PromptAttachment(
+        path: '/workspace/clip.wav',
+        name: 'clip.wav',
+        mimeType: 'audio/wav',
+      );
+      final pickedKinds = <PromptAttachmentKind>[];
+
+      Future<List<PromptAttachment>> pick(PromptAttachmentKind kind) async {
+        pickedKinds.add(kind);
+        return switch (kind) {
+          PromptAttachmentKind.image => const <PromptAttachment>[image],
+          PromptAttachmentKind.audio => const <PromptAttachment>[audio],
+          PromptAttachmentKind.file => const <PromptAttachment>[],
+        };
+      }
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: true,
+          ),
+          pickAttachmentsForKind: pick,
+        ),
+      );
+
+      expect(find.byTooltip('Attach file or image'), findsOneWidget);
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+
+      expect(find.text('Add file'), findsOneWidget);
+      expect(find.text('Add image'), findsOneWidget);
+      expect(find.text('Add audio'), findsNothing);
+
+      await tester.tap(find.text('Add image'));
+      await tester.pumpAndSettle();
+
+      expect(pickedKinds, <PromptAttachmentKind>[PromptAttachmentKind.image]);
+      expect(find.text('screenshot.png'), findsOneWidget);
+      expect(find.text('Image'), findsOneWidget);
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: false,
+            audio: true,
+            embeddedContext: false,
+          ),
+          pickAttachmentsForKind: pick,
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byTooltip('Attach file or audio'), findsOneWidget);
+      expect(find.text('Link'), findsOneWidget);
+      expect(find.text('Image'), findsNothing);
+
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+
+      expect(find.text('Add file'), findsOneWidget);
+      expect(find.text('Add image'), findsNothing);
+      expect(find.text('Add audio'), findsOneWidget);
+
+      await tester.tap(find.text('Add audio'));
+      await tester.pumpAndSettle();
+
+      expect(pickedKinds, <PromptAttachmentKind>[
+        PromptAttachmentKind.image,
+        PromptAttachmentKind.audio,
+      ]);
+      expect(find.text('clip.wav'), findsOneWidget);
+      expect(find.text('Audio'), findsOneWidget);
+    },
+  );
+
+  testWidgets('PromptInput drag and drop attaches files image and audio once', (
+    tester,
+  ) async {
+    List<PromptAttachment>? sentAttachments;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, attachments) => sentAttachments = attachments,
+        promptCapabilities: const AcpPromptCapabilities(
+          image: true,
+          audio: true,
+          embeddedContext: true,
+        ),
+      ),
+    );
+
+    final target = dropTarget(tester);
+    expect(target.enable, isTrue);
+    target.onDragEntered!(dragDetails());
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('prompt-attachment-drop-indicator')),
+      findsOneWidget,
+    );
+    expect(find.text('Drop files, images or audio here'), findsOneWidget);
+
+    target.onDragDone!(
+      dropDetails(<DropItem>[
+        DropItemFile(
+          '/workspace/readme.md',
+          name: 'readme.md',
+          mimeType: 'text/markdown',
+          length: 2048,
+        ),
+        DropItemFile(
+          '/workspace/screenshot.png',
+          name: 'screenshot.png',
+          mimeType: 'image/png',
+          length: 4096,
+        ),
+        DropItemFile(
+          '/workspace/clip.wav',
+          name: 'clip.wav',
+          mimeType: 'audio/wav',
+          length: 8192,
+        ),
+        DropItemFile(
+          '/workspace/screenshot.png',
+          name: 'duplicate.png',
+          mimeType: 'image/png',
+          length: 4096,
+        ),
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('prompt-attachment-drop-indicator')),
+      findsNothing,
+    );
+    expect(find.text('readme.md'), findsOneWidget);
+    expect(find.text('screenshot.png'), findsOneWidget);
+    expect(find.text('duplicate.png'), findsNothing);
+    expect(find.text('clip.wav'), findsOneWidget);
+    expect(find.text('Embed'), findsOneWidget);
+    expect(find.text('Image'), findsOneWidget);
+    expect(find.text('Audio'), findsOneWidget);
+
+    await tester.tap(sendIcon());
+    await tester.pump();
+
+    expect(sentAttachments, hasLength(3));
+    expect(sentAttachments!.map((attachment) => attachment.path), <String>[
+      '/workspace/readme.md',
+      '/workspace/screenshot.png',
+      '/workspace/clip.wav',
+    ]);
+  });
+
+  testWidgets('PromptInput accepts a native macOS drop channel event', (
+    tester,
+  ) async {
+    await tester.pumpWidget(input(isSending: false, onSend: (_, _) {}));
+    final dropPosition = tester.getCenter(
+      find.byKey(const Key('prompt-input-surface')),
+    );
+
+    await sendNativeDropMethod('entered', <double>[
+      dropPosition.dx,
+      dropPosition.dy,
+    ]);
+    await tester.pump();
+    expect(
+      find.byKey(const Key('prompt-attachment-drop-indicator')),
+      findsOneWidget,
+    );
+
+    await sendNativeDropMethod('performOperation_macos', <Object?>[
+      <String, Object?>{
+        'path': '/workspace/native-drop.md',
+        'isDirectory': false,
+        'fromPromise': false,
+      },
+    ]);
+    await tester.pumpAndSettle();
+
+    expect(find.text('native-drop.md'), findsOneWidget);
+    expect(find.text('Link'), findsOneWidget);
+    expect(
+      find.byKey(const Key('prompt-attachment-drop-indicator')),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+    'PromptInput dropped media follows unsupported capability fallback',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: false,
+            audio: false,
+            embeddedContext: false,
+          ),
+        ),
+      );
+
+      final target = dropTarget(tester);
+      target.onDragEntered!(dragDetails());
+      await tester.pump();
+      expect(find.text('Drop files here'), findsOneWidget);
+
+      target.onDragDone!(
+        dropDetails(<DropItem>[
+          DropItemFile(
+            '/workspace/screenshot.png',
+            name: 'screenshot.png',
+            mimeType: 'image/png',
+            length: 4096,
+          ),
+        ]),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('screenshot.png'), findsOneWidget);
+      expect(find.text('Link'), findsOneWidget);
+      expect(find.text('Image'), findsNothing);
+    },
+  );
+
+  for (final state in <({bool enabled, bool isSending, String label})>[
+    (enabled: false, isSending: false, label: 'disabled'),
+    (enabled: true, isSending: true, label: 'sending'),
+  ]) {
+    testWidgets('PromptInput ignores drag and drop while ${state.label}', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        input(
+          enabled: state.enabled,
+          isSending: state.isSending,
+          onSend: (_, _) {},
+        ),
+      );
+
+      final target = dropTarget(tester);
+      expect(target.enable, isFalse);
+      target.onDragEntered!(dragDetails());
+      target.onDragDone!(
+        dropDetails(<DropItem>[
+          DropItemFile(
+            '/workspace/ignored.md',
+            name: 'ignored.md',
+            mimeType: 'text/markdown',
+            length: 32,
+          ),
+        ]),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('prompt-attachment-drop-indicator')),
+        findsNothing,
+      );
+      expect(find.text('ignored.md'), findsNothing);
+    });
+  }
+
+  testWidgets('PromptInput rejects dropped folders with guidance', (
+    tester,
+  ) async {
+    await tester.pumpWidget(input(isSending: false, onSend: (_, _) {}));
+
+    dropTarget(tester).onDragDone!(
+      dropDetails(<DropItem>[
+        DropItemDirectory('/workspace/folder', const <DropItem>[]),
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Folders cannot be attached. Drop individual files instead.'),
+      findsOneWidget,
+    );
+    expect(actionButton(tester, sendIcon()).onPressed, isNull);
+  });
+
   testWidgets('PromptInput can remove an attachment before sending', (
     tester,
   ) async {
@@ -872,7 +1198,7 @@ void main() {
       greaterThan(tester.getTopLeft(find.byType(TextField)).dy),
     );
 
-    final surface = tester.widget<Container>(
+    final surface = tester.widget<AnimatedContainer>(
       find.byKey(const Key('prompt-input-surface')),
     );
     final decoration = surface.decoration as BoxDecoration;

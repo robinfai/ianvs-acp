@@ -10,11 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
-import 'acp/acp_endpoint_validator.dart';
 import 'acp/agent_session.dart';
-import 'acp/dart_acp_agent_client.dart';
+import 'acp/rust_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
 import 'acp/unavailable_acp_agent_client.dart';
+import 'rust/ianvs_rust_task_repository.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
@@ -34,6 +34,7 @@ import 'tasks/task_inbox_sqlite_store.dart';
 import 'tasks/task_inbox_state_store.dart';
 import 'tasks/task_persistence_cleanup.dart';
 import 'tasks/task_record.dart';
+import 'tasks/task_repository.dart';
 import 'tasks/task_runner.dart';
 import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
@@ -62,6 +63,48 @@ typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
 
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
+String? _rustWorkflowDatabasePath(String? legacyPath) {
+  final target = legacyPath?.trim();
+  if (target == null || target.isEmpty) return null;
+  return File.fromUri(
+    File(target).parent.uri.resolve('task_inbox_workflow.sqlite3'),
+  ).path;
+}
+
+String? _rustAcpSessionDatabasePath(String? configPath) {
+  final taskStore = TaskInboxSqliteStore.defaultPath(configPath: configPath);
+  final target = taskStore?.trim();
+  if (target == null || target.isEmpty) return null;
+  return File.fromUri(
+    File(target).parent.uri.resolve('acp_sessions.sqlite3'),
+  ).path;
+}
+
+Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
+  final type = server.type;
+  if (type == 'acp') {
+    throw UnsupportedError(
+      'Rust ACP runtime does not expose unstable MCP-over-ACP.',
+    );
+  }
+  if (type == 'stdio') {
+    return <String, Object?>{
+      'type': 'stdio',
+      'name': server.name,
+      'command': server.command,
+      'args': (server.raw['args'] as List? ?? const <Object?>[])
+          .whereType<String>()
+          .toList(growable: false),
+      'environment': server.env,
+    };
+  }
+  return <String, Object?>{
+    'type': type,
+    'name': server.name,
+    'url': server.url,
+    'headers': server.headers,
+  };
+}
 
 class _PendingDeepLinkRequest {
   const _PendingDeepLinkRequest({required this.key, required this.request});
@@ -173,7 +216,8 @@ class _AcpClientAppState extends State<AcpClientApp>
   String? _selectedTaskId;
   bool _ownsTaskInboxController = false;
   String? _taskInboxStorePath;
-  TaskInboxSqliteStore? _ownedTaskRepository;
+  TaskRepository? _ownedTaskRepository;
+  String? _ownedTaskRepositoryPath;
   String? _taskInboxInitializationError;
   bool _taskInboxInitializationPending = false;
   int _taskInboxInitializationSerial = 0;
@@ -473,7 +517,8 @@ class _AcpClientAppState extends State<AcpClientApp>
     final repositoryPath = TaskInboxSqliteStore.defaultPath(
       configPath: _config.configPath,
     );
-    if (_taskInboxStorePath == repositoryPath &&
+    final authorityPath = _rustWorkflowDatabasePath(repositoryPath);
+    if (_taskInboxStorePath == authorityPath &&
         ((_ownsTaskInboxController && _taskInboxController != null) ||
             _taskInboxInitializationPending)) {
       return;
@@ -483,7 +528,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       previousCleanup,
       _stopTaskInboxTransition(),
     );
-    _taskInboxStorePath = repositoryPath;
+    _taskInboxStorePath = authorityPath;
     _taskInboxInitializationError = null;
     _taskInboxInitializationPending = true;
     final serial = ++_taskInboxInitializationSerial;
@@ -491,6 +536,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       serial: serial,
       sourcePath: sourcePath,
       repositoryPath: repositoryPath,
+      authorityPath: authorityPath,
       previousCleanup: cleanup,
     );
     _taskInboxTransition = initialization;
@@ -501,20 +547,24 @@ class _AcpClientAppState extends State<AcpClientApp>
     required int serial,
     required String? sourcePath,
     required String? repositoryPath,
+    required String? authorityPath,
     Future<void>? previousCleanup,
   }) async {
-    TaskInboxSqliteStore? repository;
+    TaskRepository? repository;
     TaskInboxController? controller;
     TaskScheduler? scheduler;
     try {
       await prepareTaskPersistenceTarget(
         registry: _taskPersistenceQuarantine,
         previousCleanup: previousCleanup,
-        targetPath: repositoryPath,
+        targetPath: authorityPath,
       );
+      if (authorityPath != repositoryPath) {
+        await _taskPersistenceQuarantine.ensurePathAvailable(repositoryPath);
+      }
       if (!mounted || serial != _taskInboxInitializationSerial) return;
-      repository = TaskInboxSqliteStore(path: repositoryPath);
-      final migrationRepository = repository;
+      final migrationRepository = TaskInboxSqliteStore(path: repositoryPath);
+      repository = migrationRepository;
       final pendingMigration =
           TaskPersistencePendingOperation<TaskMigrationResult>(
             path: repositoryPath,
@@ -554,7 +604,24 @@ class _AcpClientAppState extends State<AcpClientApp>
       pendingMigration.transfer();
       _taskPersistenceQuarantine.release(pendingMigration);
       await migrationRepository.purgeRawPayloads(now: DateTime.now());
-      controller = TaskInboxController(repository: migrationRepository);
+      final rustPath = authorityPath?.trim();
+      if (rustPath == null || rustPath.isEmpty) {
+        throw StateError('Rust TaskInbox requires a persistent database path.');
+      }
+      final bootstrap = (await migrationRepository.loadRepository()).snapshot;
+      final checksum =
+          migration.checksum ??
+          sha256
+              .convert(utf8.encode(canonicalJson(bootstrap.toJson())))
+              .toString();
+      await migrationRepository.close();
+      repository = IanvsRustTaskRepository(
+        databasePath: rustPath,
+        bootstrapSnapshot: bootstrap,
+        sourceChecksum: checksum,
+      );
+      await repository.initialize();
+      controller = TaskInboxController(repository: repository);
       scheduler = _createTaskScheduler(controller);
       await scheduler.start(dispatchQueuedTasks: false);
       if (!mounted || serial != _taskInboxInitializationSerial) {
@@ -562,6 +629,7 @@ class _AcpClientAppState extends State<AcpClientApp>
           scheduler: scheduler,
           controller: controller,
           repository: repository,
+          repositoryPath: authorityPath,
         );
         scheduler = null;
         controller = null;
@@ -573,6 +641,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       _taskInboxInitializationPending = false;
       _taskInboxInitializationError = null;
       _ownedTaskRepository = repository;
+      _ownedTaskRepositoryPath = authorityPath;
       _taskInboxController = controller;
       _ownsTaskInboxController = true;
       _taskScheduler = scheduler;
@@ -586,6 +655,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         scheduler: scheduler,
         controller: controller,
         repository: repository,
+        repositoryPath: authorityPath,
       );
       scheduler = null;
       controller = null;
@@ -658,6 +728,8 @@ class _AcpClientAppState extends State<AcpClientApp>
     _taskInboxController = null;
     final repository = _ownedTaskRepository;
     _ownedTaskRepository = null;
+    final repositoryPath = _ownedTaskRepositoryPath;
+    _ownedTaskRepositoryPath = null;
     _ownsTaskInboxController = false;
     final refreshCleanup = _stopTaskInboxRefresh();
     if (scheduler == null && controller == null && repository == null) {
@@ -667,6 +739,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       scheduler: scheduler,
       controller: controller,
       repository: repository,
+      repositoryPath: repositoryPath,
     );
     if (refreshCleanup == null) {
       return persistenceCleanup;
@@ -817,11 +890,12 @@ class _AcpClientAppState extends State<AcpClientApp>
   Future<void> _startTaskPersistenceCleanup({
     TaskScheduler? scheduler,
     TaskInboxController? controller,
-    TaskInboxSqliteStore? repository,
+    TaskRepository? repository,
+    String? repositoryPath,
   }) {
     if (controller != null && repository != null) {
       final owner = TaskPersistenceOwnerCleanup(
-        path: repository.path,
+        path: repositoryPath,
         controller: controller,
         shutdownScheduler: () => scheduler?.shutdown() ?? Future<void>.value(),
         disposeController: controller.dispose,
@@ -2305,41 +2379,41 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   AcpAgentClient _defaultAgentClient(AcpClientConfig config) {
     final server = config.activeAgentServer;
-    final mcpServers = config.mcpServers
-        .map((server) => server.toRuntimeJson())
-        .toList();
     if (server == null) {
       return const UnavailableAcpAgentClient(
         message: _noAgentConfiguredMessage,
       );
     }
-    return DartAcpAgentClient(
-      agentCommand: server.isStdio ? server.command : null,
-      agentArgs: server.isStdio ? server.args : const <String>[],
-      agentCwd: server.isStdio ? server.cwd : null,
-      envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket
-          ? parseAndValidateAcpEndpoint(
-              server.url,
-              allowedSchemes: const <String>{'ws', 'wss'},
-            )
-          : null,
-      agentHttpUrl: server.isStreamableHttp
-          ? parseAndValidateAcpEndpoint(
-              server.url,
-              allowedSchemes: const <String>{'http', 'https'},
-            )
-          : null,
-      agentHeaders: server.headers,
-      mcpServers: mcpServers,
+    if (!server.isStdio) {
+      return const UnavailableAcpAgentClient(
+        message:
+            'Remote ACP transports are unavailable until Rust Core owns '
+            'their connection lifecycle.',
+      );
+    }
+    if (config.mcpServers.any((server) => server.type == 'acp')) {
+      return const UnavailableAcpAgentClient(
+        message:
+            'Unstable MCP-over-ACP is unavailable until Rust Core owns '
+            'its typed transport.',
+      );
+    }
+    return RustAcpAgentClient(
+      agentName: server.name,
+      agentCommand: server.command,
+      agentArgs: server.args,
+      agentCwd: server.cwd,
+      sessionStorePath: _rustAcpSessionDatabasePath(config.configPath),
+      mcpServers: config.mcpServers
+          .map(_rustMcpServerProjection)
+          .toList(growable: false),
+      envOverrides: server.env,
+      additionalDirectories: config.additionalDirectories,
       enableFilesystemReadTextFile:
           config.clientProviders.filesystem.readTextFile,
       enableFilesystemWriteTextFile:
           config.clientProviders.filesystem.writeTextFile,
-      allowFilesystemReadOutsideWorkspace:
-          config.clientProviders.filesystem.allowReadOutsideWorkspace,
       enableTerminalProvider: config.clientProviders.terminal.enabled,
-      additionalDirectories: config.additionalDirectories,
     );
   }
 
@@ -2407,25 +2481,19 @@ class _AcpClientAppState extends State<AcpClientApp>
     );
   }
 
-  DartAcpAgentClient _reviewAgentClient(AgentServerConfig server) {
-    return DartAcpAgentClient(
-      agentCommand: server.isStdio ? server.command : null,
-      agentArgs: server.isStdio ? server.args : const <String>[],
-      agentCwd: server.isStdio ? server.cwd : null,
-      envOverrides: server.isStdio ? server.env : const <String, String>{},
-      agentWebSocketUrl: server.isWebSocket
-          ? parseAndValidateAcpEndpoint(
-              server.url,
-              allowedSchemes: const <String>{'ws', 'wss'},
-            )
-          : null,
-      agentHttpUrl: server.isStreamableHttp
-          ? parseAndValidateAcpEndpoint(
-              server.url,
-              allowedSchemes: const <String>{'http', 'https'},
-            )
-          : null,
-      agentHeaders: server.headers,
+  AcpAgentClient _reviewAgentClient(AgentServerConfig server) {
+    if (!server.isStdio) {
+      return const UnavailableAcpAgentClient(
+        message:
+            'Remote permission-review agents require a Rust ACP transport.',
+      );
+    }
+    return RustAcpAgentClient(
+      agentName: '${server.name} permission reviewer',
+      agentCommand: server.command,
+      agentArgs: server.args,
+      agentCwd: server.cwd,
+      envOverrides: server.env,
     );
   }
 

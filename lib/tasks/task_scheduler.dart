@@ -78,6 +78,11 @@ class TaskScheduler {
     try {
       await taskController.load();
       await taskController.recoverInterruptedRuns();
+      if (taskController.hasAtomicSchedulingAuthority) {
+        await taskController.configureSchedulingAuthority(
+          maxConcurrentTasks: maxConcurrentTasks,
+        );
+      }
     } on TaskPersistenceStalledException catch (error) {
       _stopForPersistenceFault(error);
       rethrow;
@@ -260,6 +265,16 @@ class TaskScheduler {
         return;
       }
       if (!_started || !_dispatchEnabled || _disposed) return;
+      if (taskController.hasAtomicSchedulingAuthority) {
+        try {
+          await _drainAtomicAuthority();
+        } on TaskPersistenceStalledException catch (error) {
+          _stopForPersistenceFault(error);
+        } on Object {
+          _scheduleRefreshRetry();
+        }
+        return;
+      }
       final deferredTaskIds = <String>{};
       while (_started &&
           _dispatchEnabled &&
@@ -385,6 +400,105 @@ class TaskScheduler {
       }
     } finally {
       _draining = false;
+    }
+  }
+
+  Future<void> _drainAtomicAuthority() async {
+    final excludedTaskIds = <String>{};
+    for (final task in taskController.tasks) {
+      if (task.status != TaskStatus.queued) continue;
+      try {
+        _dispatchRouteFor(task);
+      } on Object {
+        excludedTaskIds.add(task.id);
+        _scheduleRefreshRetry();
+      }
+    }
+    await _publishAtomicRuntimeStatuses();
+    while (_started &&
+        _dispatchEnabled &&
+        !_disposed &&
+        _activeTaskIds.length < maxConcurrentTasks) {
+      final poll = await taskController.claimNextScheduledTask(
+        excludedTaskIds: excludedTaskIds,
+      );
+      final nextWakeAt = poll.nextWakeAt;
+      if (nextWakeAt != null) _scheduleRetryWake(nextWakeAt);
+      final claim = poll.claim;
+      if (claim == null) return;
+      final task = claim.task;
+      TaskWorkerLease? workerLease;
+      final reservableWorker = worker;
+      if (reservableWorker is ReservableTaskWorker) {
+        try {
+          workerLease = await reservableWorker.tryAcquire(task);
+        } on Object {
+          await _failAtomicClaimWithoutWorker(task);
+          continue;
+        }
+        if (workerLease == null) {
+          await _failAtomicClaimWithoutWorker(task);
+          continue;
+        }
+      }
+      if (!_started || !_dispatchEnabled || _disposed) {
+        await _releaseWorkerLease(workerLease);
+        return;
+      }
+      _activeTaskIds.add(task.id);
+      final activeRun = _runTask(task, workerLease);
+      _activeRuns.add(activeRun);
+      unawaited(
+        activeRun.then<void>(
+          (_) => _activeRuns.remove(activeRun),
+          onError: (Object _, StackTrace _) {
+            _activeRuns.remove(activeRun);
+          },
+        ),
+      );
+    }
+  }
+
+  Future<void> _publishAtomicRuntimeStatuses() async {
+    final agentNames = taskController.tasks
+        .where((task) => task.status == TaskStatus.queued)
+        .map((task) => task.agentName)
+        .toSet();
+    for (final agentName in agentNames) {
+      LocalRuntimeStatus status;
+      final registry = runtimeRegistry;
+      if (registry == null) {
+        status = LocalRuntimeStatus.available(
+          agentName: agentName,
+          checkedAt: _clock(),
+          maxConcurrentTasks: maxConcurrentTasks,
+        );
+      } else {
+        try {
+          status = await registry.probeAgent(agentName);
+        } on Object {
+          status = LocalRuntimeStatus.unavailable(
+            agentName: agentName,
+            checkedAt: _clock(),
+            reason: 'Runtime probe failed.',
+          );
+          _scheduleRuntimeWake();
+        }
+      }
+      if (!_started || !_dispatchEnabled || _disposed) return;
+      await taskController.publishSchedulingRuntimeStatus(status);
+    }
+  }
+
+  Future<void> _failAtomicClaimWithoutWorker(TaskRecord task) async {
+    _activeTaskIds.add(task.id);
+    try {
+      await _handleWorkerError(
+        task,
+        StateError('Agent runtime capacity was unavailable after dispatch.'),
+      );
+    } finally {
+      _releaseTask(task);
     }
   }
 

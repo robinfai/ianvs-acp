@@ -386,6 +386,7 @@ class TaskRunner {
       final prompt = linkedSessionId == null
           ? taskExecutionPrompt(task, attachedSkills: attachedSkills.skills)
           : taskContinuationPrompt(task, attachedSkills: attachedSkills.skills);
+      final model = _modelForTask(task);
 
       final dispatchedRun = run;
       if (dispatchedRun == null) {
@@ -393,12 +394,14 @@ class TaskRunner {
           taskId: task.id,
           status: TaskStatus.running,
           promptSnapshot: prompt,
+          model: model,
         );
       } else {
         run = await taskController.updateRun(
           dispatchedRun.id,
           status: TaskStatus.running,
           promptSnapshot: prompt,
+          model: model,
         );
         await taskController.updateTask(
           task.id,
@@ -482,6 +485,13 @@ class TaskRunner {
               ? 'Task session setup did not create a distinct session.'
               : 'Task session setup did not resume the linked session.',
         );
+      }
+      if (model != null) {
+        await awaitWithEventWriteFailure(
+          _awaitCancellable(controller.setSessionModel(model), cancellation),
+        );
+        _throwIfCancelled(cancellation);
+        _throwIfControllerFailed(controller, 'Task model setup failed');
       }
       activeSessionId = session.id;
 
@@ -724,6 +734,13 @@ class TaskRunner {
       }
     }
     return null;
+  }
+
+  String? _modelForTask(TaskRecord task) {
+    final model = task.metadata['model'];
+    if (model is! String) return null;
+    final trimmed = model.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   Future<_AttachedSkillResolution> _resolveAttachedSkills(

@@ -1,7 +1,8 @@
 import 'dart:collection';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:dart_acp/dart_acp.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -16,6 +17,10 @@ import '../bounded_metadata_preview.dart';
 typedef PromptSendCallback =
     void Function(String text, List<PromptAttachment> attachments);
 typedef PromptAttachmentPicker = Future<List<PromptAttachment>> Function();
+typedef PromptAttachmentKindPicker =
+    Future<List<PromptAttachment>> Function(PromptAttachmentKind kind);
+
+enum PromptAttachmentKind { file, image, audio }
 
 const Color _permissionAccent = Color(0xffea580c);
 const Color _permissionAccentDark = Color(0xff9a3412);
@@ -49,6 +54,7 @@ class PromptInput extends StatefulWidget {
     this.onModelSelected,
     this.onReasoningEffortSelected,
     this.pickAttachments,
+    this.pickAttachmentsForKind,
     this.inputBudget = const AcpInputBudget(),
   });
 
@@ -74,6 +80,7 @@ class PromptInput extends StatefulWidget {
   final ValueChanged<String>? onModelSelected;
   final ValueChanged<String>? onReasoningEffortSelected;
   final PromptAttachmentPicker? pickAttachments;
+  final PromptAttachmentKindPicker? pickAttachmentsForKind;
   final AcpInputBudget inputBudget;
 
   @override
@@ -83,6 +90,7 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+  bool _isDraggingAttachments = false;
   String? _commandQuery;
   List<_CommandSearchEntry> _commandSearchEntries =
       const <_CommandSearchEntry>[];
@@ -116,6 +124,9 @@ class _PromptInputState extends State<PromptInput> {
             oldWidget.availableCommandsRevision ||
         !identical(widget.inputBudget, oldWidget.inputBudget)) {
       _rebuildCommandSearchEntries();
+    }
+    if ((!widget.enabled || widget.isSending) && _isDraggingAttachments) {
+      _isDraggingAttachments = false;
     }
   }
 
@@ -245,93 +256,122 @@ class _PromptInputState extends State<PromptInput> {
               _submit();
               return KeyEventResult.handled;
             },
-            child: Container(
-              key: const Key('prompt-input-surface'),
-              constraints: const BoxConstraints(minHeight: 78),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(color: AppColors.border),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.textPrimary.withValues(alpha: 0.05),
-                    blurRadius: 16,
-                    offset: const Offset(0, 5),
+            child: DropTarget(
+              key: const Key('prompt-input-drop-target'),
+              enable: widget.enabled && !widget.isSending,
+              onDragEntered: _handleAttachmentDragEntered,
+              onDragExited: _handleAttachmentDragExited,
+              onDragDone: _handleAttachmentDrop,
+              child: AnimatedContainer(
+                key: const Key('prompt-input-surface'),
+                duration: const Duration(milliseconds: 120),
+                constraints: const BoxConstraints(minHeight: 78),
+                decoration: BoxDecoration(
+                  color: _isDraggingAttachments
+                      ? AppColors.primarySoft
+                      : AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(
+                    color: _isDraggingAttachments
+                        ? AppColors.primary
+                        : AppColors.border,
+                    width: _isDraggingAttachments ? 2 : 1,
                   ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (pendingPermissionRequest != null)
+                  boxShadow: [
+                    BoxShadow(
+                      color: _isDraggingAttachments
+                          ? AppColors.primary.withValues(alpha: 0.16)
+                          : AppColors.textPrimary.withValues(alpha: 0.05),
+                      blurRadius: _isDraggingAttachments ? 22 : 16,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isDraggingAttachments)
+                      _AttachmentDropIndicator(
+                        kinds: _availableAttachmentKinds(
+                          widget.promptCapabilities,
+                        ),
+                      ),
+                    if (pendingPermissionRequest != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                        child: _PromptPermissionCard(
+                          request: pendingPermissionRequest,
+                          onAllow: widget.onAllowPermission,
+                          onDeny: widget.onDenyPermission,
+                          onCancel: widget.onCancelPermission,
+                          onSelectOption: widget.onSelectPermissionOption,
+                        ),
+                      ),
+                    if (commandSuggestions.isNotEmpty)
+                      _CommandSuggestionPanel(
+                        entries: commandSuggestions,
+                        parameterPreviews: commandParameterPreviews,
+                        onSelect: _insertCommand,
+                      ),
+                    TextField(
+                      controller: _controller,
+                      minLines: 1,
+                      maxLines: 4,
+                      keyboardType: TextInputType.multiline,
+                      enabled: widget.enabled && !widget.isSending,
+                      onChanged: _handlePromptChanged,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        height: 1.35,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Send a prompt to ${widget.agentName}...',
+                        hintStyle: const TextStyle(
+                          color: AppColors.textTertiary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        isCollapsed: true,
+                        contentPadding: const EdgeInsets.fromLTRB(
+                          13,
+                          12,
+                          13,
+                          8,
+                        ),
+                        border: InputBorder.none,
+                      ),
+                    ),
+                    if (_attachments.isNotEmpty)
+                      _AttachmentTray(
+                        attachments: _attachments,
+                        promptCapabilities: widget.promptCapabilities,
+                        onRemove: _removeAttachment,
+                      ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-                      child: _PromptPermissionCard(
-                        request: pendingPermissionRequest,
-                        onAllow: widget.onAllowPermission,
-                        onDeny: widget.onDenyPermission,
-                        onCancel: widget.onCancelPermission,
-                        onSelectOption: widget.onSelectPermissionOption,
+                      padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+                      child: _ComposerControlBar(
+                        enabled: widget.enabled,
+                        isSending: widget.isSending,
+                        canSend: _canSend,
+                        onPickAttachments: _pickAttachments,
+                        promptCapabilities: widget.promptCapabilities,
+                        pendingPermissionRequest: pendingPermissionRequest,
+                        toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
+                        hasPermissionReviewer: widget.hasPermissionReviewer,
+                        onToolCallExecutionPolicyChanged:
+                            widget.onToolCallExecutionPolicyChanged,
+                        modelOption: widget.modelOption,
+                        reasoningEffortOption: widget.reasoningEffortOption,
+                        onModelSelected: widget.onModelSelected,
+                        onReasoningEffortSelected:
+                            widget.onReasoningEffortSelected,
+                        onSend: _submit,
+                        onStop: widget.onStop,
                       ),
                     ),
-                  if (commandSuggestions.isNotEmpty)
-                    _CommandSuggestionPanel(
-                      entries: commandSuggestions,
-                      parameterPreviews: commandParameterPreviews,
-                      onSelect: _insertCommand,
-                    ),
-                  TextField(
-                    controller: _controller,
-                    minLines: 1,
-                    maxLines: 4,
-                    keyboardType: TextInputType.multiline,
-                    enabled: widget.enabled && !widget.isSending,
-                    onChanged: _handlePromptChanged,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 13,
-                      height: 1.35,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Send a prompt to ${widget.agentName}...',
-                      hintStyle: const TextStyle(
-                        color: AppColors.textTertiary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      isCollapsed: true,
-                      contentPadding: const EdgeInsets.fromLTRB(13, 12, 13, 8),
-                      border: InputBorder.none,
-                    ),
-                  ),
-                  if (_attachments.isNotEmpty)
-                    _AttachmentTray(
-                      attachments: _attachments,
-                      promptCapabilities: widget.promptCapabilities,
-                      onRemove: _removeAttachment,
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-                    child: _ComposerControlBar(
-                      enabled: widget.enabled,
-                      isSending: widget.isSending,
-                      canSend: _canSend,
-                      onPickAttachments: _pickAttachments,
-                      pendingPermissionRequest: pendingPermissionRequest,
-                      toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
-                      hasPermissionReviewer: widget.hasPermissionReviewer,
-                      onToolCallExecutionPolicyChanged:
-                          widget.onToolCallExecutionPolicyChanged,
-                      modelOption: widget.modelOption,
-                      reasoningEffortOption: widget.reasoningEffortOption,
-                      onModelSelected: widget.onModelSelected,
-                      onReasoningEffortSelected:
-                          widget.onReasoningEffortSelected,
-                      onSend: _submit,
-                      onStop: widget.onStop,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -366,29 +406,87 @@ class _PromptInputState extends State<PromptInput> {
     setState(() {});
   }
 
-  Future<void> _pickAttachments() async {
+  Future<void> _pickAttachments(PromptAttachmentKind kind) async {
     try {
-      final picker = widget.pickAttachments ?? _pickWithFilePicker;
-      final selected = await picker();
+      final selected = await switch (widget.pickAttachmentsForKind) {
+        final picker? => picker(kind),
+        null => switch (widget.pickAttachments) {
+          final picker? => picker(),
+          null => _pickWithFilePicker(kind),
+        },
+      };
       if (!mounted || !widget.enabled || widget.isSending || selected.isEmpty) {
         return;
       }
-      setState(() {
-        for (final attachment in selected) {
-          final duplicate = _attachments.any(
-            (existing) => existing.path == attachment.path,
-          );
-          if (!duplicate) {
-            _attachments.add(attachment);
-          }
-        }
-      });
+      _addAttachments(selected);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not attach file: $error')));
     }
+  }
+
+  void _handleAttachmentDragEntered(DropEventDetails details) {
+    if (!widget.enabled || widget.isSending || _isDraggingAttachments) return;
+    setState(() => _isDraggingAttachments = true);
+  }
+
+  void _handleAttachmentDragExited(DropEventDetails details) {
+    if (!_isDraggingAttachments) return;
+    setState(() => _isDraggingAttachments = false);
+  }
+
+  void _handleAttachmentDrop(DropDoneDetails details) {
+    if (_isDraggingAttachments) {
+      setState(() => _isDraggingAttachments = false);
+    }
+    if (!widget.enabled || widget.isSending) return;
+    _attachDroppedItems(details.files);
+  }
+
+  void _attachDroppedItems(List<DropItem> items) {
+    final attachments = <PromptAttachment>[];
+    var ignoredDirectories = 0;
+    for (final item in items) {
+      if (item is DropItemDirectory) {
+        ignoredDirectories += 1;
+        continue;
+      }
+      if (item.path.isEmpty) continue;
+      attachments.add(
+        PromptAttachment.fromPath(
+          path: item.path,
+          name: item.name,
+          mimeType: item.mimeType,
+        ),
+      );
+    }
+    if (!mounted || !widget.enabled || widget.isSending) return;
+    _addAttachments(attachments);
+    if (ignoredDirectories > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ignoredDirectories == 1
+                ? 'Folders cannot be attached. Drop individual files instead.'
+                : '$ignoredDirectories folders were skipped. Drop individual files instead.',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _addAttachments(Iterable<PromptAttachment> selected) {
+    if (!mounted || !widget.enabled || widget.isSending) return;
+    setState(() {
+      for (final attachment in selected) {
+        final duplicate = _attachments.any(
+          (existing) => existing.path == attachment.path,
+        );
+        if (!duplicate) _attachments.add(attachment);
+      }
+    });
   }
 
   void _removeAttachment(PromptAttachment attachment) {
@@ -808,12 +906,218 @@ class _ComposerDivider extends StatelessWidget {
   }
 }
 
+class _AttachmentDropIndicator extends StatelessWidget {
+  const _AttachmentDropIndicator({required this.kinds});
+
+  final List<PromptAttachmentKind> kinds;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('prompt-attachment-drop-indicator'),
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: AppColors.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.34)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.file_download_outlined,
+            size: 18,
+            color: AppColors.primaryDark,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              _attachmentDropLabel(kinds),
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.primaryDark,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachmentPickerControl extends StatelessWidget {
+  const _AttachmentPickerControl({
+    required this.enabled,
+    required this.promptCapabilities,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final AcpPromptCapabilities? promptCapabilities;
+  final ValueChanged<PromptAttachmentKind> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final kinds = _availableAttachmentKinds(promptCapabilities);
+    final tooltip = _attachmentPickerTooltip(kinds);
+    if (kinds.length == 1) {
+      return Semantics(
+        button: true,
+        label: tooltip,
+        child: IconButton(
+          tooltip: tooltip,
+          onPressed: enabled
+              ? () => onSelected(PromptAttachmentKind.file)
+              : null,
+          icon: const Icon(
+            Icons.add_rounded,
+            key: Key('prompt-attachment-picker'),
+          ),
+          color: AppColors.textSecondary,
+          disabledColor: AppColors.textTertiary,
+          iconSize: 20,
+          visualDensity: VisualDensity.compact,
+          splashRadius: 18,
+        ),
+      );
+    }
+
+    return PopupMenuButton<PromptAttachmentKind>(
+      tooltip: tooltip,
+      enabled: enabled,
+      onSelected: onSelected,
+      itemBuilder: (context) => <PopupMenuEntry<PromptAttachmentKind>>[
+        for (final kind in kinds)
+          PopupMenuItem<PromptAttachmentKind>(
+            value: kind,
+            child: _AttachmentPickerMenuItem(
+              kind: kind,
+              embedsFiles: promptCapabilities?.embeddedContext == true,
+            ),
+          ),
+      ],
+      icon: const Icon(Icons.add_rounded, key: Key('prompt-attachment-picker')),
+      color: AppColors.surface,
+      iconColor: AppColors.textSecondary,
+      iconSize: 20,
+    );
+  }
+}
+
+List<PromptAttachmentKind> _availableAttachmentKinds(
+  AcpPromptCapabilities? capabilities,
+) => <PromptAttachmentKind>[
+  PromptAttachmentKind.file,
+  if (capabilities?.image == true) PromptAttachmentKind.image,
+  if (capabilities?.audio == true) PromptAttachmentKind.audio,
+];
+
+String _attachmentDropLabel(List<PromptAttachmentKind> kinds) {
+  final labels = kinds
+      .map(
+        (kind) => switch (kind) {
+          PromptAttachmentKind.file => 'files',
+          PromptAttachmentKind.image => 'images',
+          PromptAttachmentKind.audio => 'audio',
+        },
+      )
+      .toList(growable: false);
+  if (labels.length == 1) return 'Drop ${labels.single} here';
+  return 'Drop ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last} here';
+}
+
+class _AttachmentPickerMenuItem extends StatelessWidget {
+  const _AttachmentPickerMenuItem({
+    required this.kind,
+    required this.embedsFiles,
+  });
+
+  final PromptAttachmentKind kind;
+  final bool embedsFiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label, description) = switch (kind) {
+      PromptAttachmentKind.file => (
+        Icons.attach_file_rounded,
+        'Add file',
+        embedsFiles
+            ? 'Embedded with ACP context'
+            : 'Shared as an ACP resource link',
+      ),
+      PromptAttachmentKind.image => (
+        Icons.image_outlined,
+        'Add image',
+        'Supported by the connected ACP agent',
+      ),
+      PromptAttachmentKind.audio => (
+        Icons.audio_file_outlined,
+        'Add audio',
+        'Supported by the connected ACP agent',
+      ),
+    };
+    return Row(
+      children: [
+        Icon(icon, color: AppColors.primaryDark, size: 19),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                description,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String _attachmentPickerTooltip(List<PromptAttachmentKind> kinds) {
+  final labels = kinds
+      .map(
+        (kind) => switch (kind) {
+          PromptAttachmentKind.file => 'file',
+          PromptAttachmentKind.image => 'image',
+          PromptAttachmentKind.audio => 'audio',
+        },
+      )
+      .toList(growable: false);
+  if (labels.length == 1) return 'Attach ${labels.single}';
+  return 'Attach ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last}';
+}
+
 class _ComposerControlBar extends StatelessWidget {
   const _ComposerControlBar({
     required this.enabled,
     required this.isSending,
     required this.canSend,
     required this.onPickAttachments,
+    required this.promptCapabilities,
     required this.pendingPermissionRequest,
     required this.toolCallExecutionPolicy,
     required this.hasPermissionReviewer,
@@ -829,7 +1133,8 @@ class _ComposerControlBar extends StatelessWidget {
   final bool enabled;
   final bool isSending;
   final bool canSend;
-  final VoidCallback onPickAttachments;
+  final ValueChanged<PromptAttachmentKind> onPickAttachments;
+  final AcpPromptCapabilities? promptCapabilities;
   final AcpPermissionRequest? pendingPermissionRequest;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
   final bool hasPermissionReviewer;
@@ -844,19 +1149,10 @@ class _ComposerControlBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final attach = Semantics(
-      button: true,
-      label: 'Attach file',
-      child: IconButton(
-        tooltip: 'Attach file',
-        onPressed: !enabled || isSending ? null : onPickAttachments,
-        icon: const Icon(Icons.add_rounded),
-        color: AppColors.textSecondary,
-        disabledColor: AppColors.textTertiary,
-        iconSize: 20,
-        visualDensity: VisualDensity.compact,
-        splashRadius: 18,
-      ),
+    final attach = _AttachmentPickerControl(
+      enabled: enabled && !isSending,
+      promptCapabilities: promptCapabilities,
+      onSelected: onPickAttachments,
     );
     final policy = _ToolCallPolicySelector(
       value: toolCallExecutionPolicy,
@@ -1582,8 +1878,15 @@ String _commandString(Map<String, Object?> command, String key) {
   return value is String ? value.trim() : '';
 }
 
-Future<List<PromptAttachment>> _pickWithFilePicker() async {
+Future<List<PromptAttachment>> _pickWithFilePicker(
+  PromptAttachmentKind kind,
+) async {
   final result = await FilePicker.platform.pickFiles(
+    type: switch (kind) {
+      PromptAttachmentKind.file => FileType.any,
+      PromptAttachmentKind.image => FileType.image,
+      PromptAttachmentKind.audio => FileType.audio,
+    },
     allowMultiple: true,
     withData: false,
   );

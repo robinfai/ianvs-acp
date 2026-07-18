@@ -11193,6 +11193,37 @@ void main() {
     );
   });
 
+  test('Rust Core human-gated requests stay manual under full access', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.fullAccess,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'core-human-gate',
+        title: 'Read file',
+        rationale: 'Requested by Rust Core',
+        sessionId: 'session-1',
+        toolName: 'filesystem:approval-1',
+        toolKind: 'read',
+        options: const ['Allow once', 'Reject'],
+        requestedAt: DateTime(2026, 7, 18),
+        metadata: const <String, Object?>{'requiresExplicitHuman': true},
+      ),
+    );
+    await pumpEventQueue();
+
+    expect(controller.pendingPermissionRequest?.id, 'core-human-gate');
+    expect(fake.lastPermissionRequestId, isNull);
+    expect(
+      controller.permissionHistory.single.reviewResult?.reviewer,
+      'rust-core-egress',
+    );
+  });
+
   test(
     'full access distinguishes non-command args from command evidence',
     () async {

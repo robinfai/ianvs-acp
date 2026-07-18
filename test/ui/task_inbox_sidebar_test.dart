@@ -18,6 +18,7 @@ void main() {
     WidgetTester tester,
     TaskInboxController controller, {
     String? selectedTaskId,
+    String? defaultModel,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -30,6 +31,7 @@ void main() {
               selectedTaskId: selectedTaskId,
               defaultWorkspacePath: '/workspace/app',
               defaultAgentName: 'Codex',
+              defaultModel: defaultModel,
               agentNames: const ['Codex', 'Kimi'],
             ),
           ),
@@ -74,6 +76,29 @@ void main() {
     expect(find.text('Normal'), findsOneWidget);
     expect(controller.tasks.single.status, TaskStatus.inbox);
     expect(store.savedSnapshots.single.tasks.single.title, 'Build inbox UI');
+  });
+
+  testWidgets('TaskInboxSidebar snapshots the selected model into a task', (
+    tester,
+  ) async {
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(),
+      idGenerator: (_) => 'task-model',
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await pumpSidebar(tester, controller, defaultModel: 'gpt-5.3-codex-spark');
+    await tester.tap(find.byTooltip('New task'));
+    await _pumpFrames(tester);
+    await tester.enterText(
+      find.byKey(const Key('task-title-field')),
+      'Run with the selected model',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await _pumpFrames(tester);
+
+    expect(controller.tasks.single.metadata['model'], 'gpt-5.3-codex-spark');
   });
 
   testWidgets('TaskInboxSidebar persists after controller reload', (

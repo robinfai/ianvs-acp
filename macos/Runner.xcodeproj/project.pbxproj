@@ -246,6 +246,7 @@
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				4FEAD2CA8EFA4B65FBFE7706 /* [CP] Embed Pods Frameworks */,
+				8C7B8F1A3A4D4E5F00617283 /* Build ianvs ACP Rust runtime */,
 				7B6A7E8A2D1F4C7A00A1B2C3 /* Normalize merman dylib install names */,
 			);
 			buildRules = (
@@ -452,6 +453,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${SRCROOT}/scripts/normalize_merman.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		8C7B8F1A3A4D4E5F00617283 /* Build ianvs ACP Rust runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build ianvs ACP Rust runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/libianvs_acp_ffi.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/build_ianvs_acp_rust.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		9441C7C26E20DB92F4BEDB31 /* [CP] Check Pods Manifest.lock */ = {

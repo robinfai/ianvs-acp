@@ -16,6 +16,7 @@ class TaskInboxSidebar extends StatefulWidget {
     required this.controller,
     required this.defaultWorkspacePath,
     required this.defaultAgentName,
+    this.defaultModel,
     this.agentNames = const <String>[],
     this.selectedTaskId,
     this.onRunTask,
@@ -25,6 +26,7 @@ class TaskInboxSidebar extends StatefulWidget {
   final TaskInboxController controller;
   final String defaultWorkspacePath;
   final String defaultAgentName;
+  final String? defaultModel;
   final List<String> agentNames;
   final String? selectedTaskId;
   final FutureOr<void> Function(TaskRecord task)? onRunTask;
@@ -249,12 +251,14 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
     );
     if (draft == null) return;
     try {
+      final model = _trimmedOrNull(widget.defaultModel);
       final task = await widget.controller.createTask(
         title: draft.title,
         description: draft.description,
         workspacePath: draft.workspacePath,
         agentName: draft.agentName,
         priority: draft.priority,
+        metadata: <String, Object?>{'model': ?model},
       );
       if (!mounted) return;
       setState(() => _selectedTaskId = task.id);

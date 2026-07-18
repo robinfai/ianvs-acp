@@ -116,8 +116,10 @@ decline, ignore, or reinterpret attachment context.
 
 Automated acceptance:
 
-- `test/ui/prompt_input_test.dart` verifies file attachments can be selected,
-  removed, and sent without text.
+- `test/ui/prompt_input_test.dart` verifies file attachments can be selected or
+  delivered through the native macOS drop channel, de-duplicated, removed, and
+  sent without text. It also covers drag feedback, file/image/audio drops,
+  unsupported-capability fallback, folder rejection, and disabled/busy states.
 - `test/state/chat_controller_test.dart` verifies attachments are forwarded as
   resource link content metadata.
 - `test/acp/dart_acp_agent_client_test.dart` verifies text attachments become
@@ -232,8 +234,9 @@ Automated acceptance:
 
 - `test/acp/prompt_attachment_test.dart` verifies prompt attachment mode
   classification for media, embedded resources, and resource-link fallbacks.
-- `test/ui/prompt_input_test.dart` covers the current file attachment UX and
-  verifies attachment chips display capability-aware send modes.
+- `test/ui/prompt_input_test.dart` covers picker and native drag-and-drop file
+  attachment UX and verifies attachment chips display capability-aware send
+  modes.
 - `test/state/chat_controller_test.dart` verifies prompt attachment forwarding.
 - `test/acp/dart_acp_agent_client_test.dart` verifies embedded text, image,
   audio, and generic binary attachment capability gating.

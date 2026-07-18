@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../workspace/workspace.dart';
+import 'runtime_registry.dart';
 import 'task_data_sanitizer.dart';
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
@@ -86,6 +87,9 @@ class TaskInboxController extends ChangeNotifier {
   TaskPersistenceStalledException? get persistenceFault => _persistenceFault;
 
   bool get isPersistenceQuiesced => _repositoryOperations.isEmpty;
+
+  bool get hasAtomicSchedulingAuthority =>
+      repository is AtomicTaskSchedulingRepository;
 
   Future<void> get whenPersistenceQuiesced {
     if (_repositoryOperations.isEmpty) return Future<void>.value();
@@ -355,6 +359,72 @@ class TaskInboxController extends ChangeNotifier {
       _markRepositoryChanged();
       notifyListeners();
       return claim;
+    });
+  }
+
+  Future<void> configureSchedulingAuthority({
+    required int maxConcurrentTasks,
+  }) async {
+    if (!_loaded) await load();
+    final target = repository;
+    if (target is! AtomicTaskSchedulingRepository) {
+      throw UnsupportedError(
+        'This task repository does not provide an atomic scheduler.',
+      );
+    }
+    final scheduling = target as AtomicTaskSchedulingRepository;
+    await _withStateTransition(
+      () => _awaitRepository(
+        'configureScheduler',
+        () => scheduling.configureScheduler(
+          maxConcurrentTasks: maxConcurrentTasks,
+        ),
+      ),
+    );
+  }
+
+  Future<void> publishSchedulingRuntimeStatus(LocalRuntimeStatus status) async {
+    if (!_loaded) await load();
+    final target = repository;
+    if (target is! AtomicTaskSchedulingRepository) {
+      throw UnsupportedError(
+        'This task repository does not provide an atomic scheduler.',
+      );
+    }
+    final scheduling = target as AtomicTaskSchedulingRepository;
+    await _withStateTransition(
+      () => _awaitRepository(
+        'publishRuntimeStatus',
+        () => scheduling.publishRuntimeStatus(status),
+      ),
+    );
+  }
+
+  Future<TaskSchedulingPoll> claimNextScheduledTask({
+    Set<String> excludedTaskIds = const <String>{},
+  }) async {
+    if (!_loaded) await load();
+    final target = repository;
+    if (target is! AtomicTaskSchedulingRepository) {
+      throw UnsupportedError(
+        'This task repository does not provide an atomic scheduler.',
+      );
+    }
+    final scheduling = target as AtomicTaskSchedulingRepository;
+    return _withStateTransition(() async {
+      final poll = await _awaitRepository(
+        'claimNextTask',
+        () => scheduling.claimNextTask(
+          runId: _newId('run'),
+          dispatchEventId: _newId('event'),
+          now: _clock(),
+          excludedTaskIds: excludedTaskIds,
+        ),
+      );
+      _snapshot = poll.repository.snapshot;
+      _revision = poll.repository.revision;
+      notifyListeners();
+      return poll;
     });
   }
 
@@ -982,6 +1052,16 @@ class TaskInboxController extends ChangeNotifier {
     _revision = -1;
   }
 
+  bool _adoptAuthoritativeProjection() {
+    final target = repository;
+    if (target is! AuthoritativeTaskRepositoryProjection) return false;
+    final projection = (target as AuthoritativeTaskRepositoryProjection)
+        .authoritativeProjection;
+    _snapshot = projection.snapshot;
+    _revision = projection.revision;
+    return true;
+  }
+
   Future<void> _reloadRepositoryWithinTransition() async {
     final loaded = await _awaitRepository(
       'loadRepository',
@@ -1226,6 +1306,10 @@ class TaskInboxController extends ChangeNotifier {
       'updateRun',
       () => repository.updateRun(updated, expected: existing, updatedAt: now),
     );
+    if (_adoptAuthoritativeProjection()) {
+      notifyListeners();
+      return _runById(persisted.id) ?? persisted;
+    }
     final runs = [..._snapshot.runs];
     final currentIndex = runs.indexWhere(
       (candidate) => candidate.id == persisted.id,
@@ -1298,6 +1382,10 @@ class TaskInboxController extends ChangeNotifier {
       'updateTask',
       () => repository.updateTask(updated, expected: existing),
     );
+    if (_adoptAuthoritativeProjection()) {
+      notifyListeners();
+      return taskById(persisted.id) ?? persisted;
+    }
     final tasks = [..._snapshot.tasks];
     final currentIndex = tasks.indexWhere(
       (candidate) => candidate.id == persisted.id,

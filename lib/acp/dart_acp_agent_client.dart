@@ -44,6 +44,10 @@ class AcpSessionListBudgetException implements Exception {
       'limit: $limit, observed: $observed)';
 }
 
+/// Legacy protocol implementation retained for isolated conformance tests.
+///
+/// The production App must not construct this client; Rust Core is the sole
+/// ACP and workflow authority.
 class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
     String? agentCommand,

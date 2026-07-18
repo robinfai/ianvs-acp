@@ -1,5 +1,6 @@
 import 'task_inbox_snapshot.dart';
 import 'task_record.dart';
+import 'runtime_registry.dart';
 import 'workspace_resource.dart';
 
 class TaskRepositorySnapshot {
@@ -29,6 +30,18 @@ class TaskClaim {
   final TaskRecord task;
   final TaskRunRecord run;
   final TaskEventRecord dispatchEvent;
+}
+
+class TaskSchedulingPoll {
+  const TaskSchedulingPoll({
+    required this.repository,
+    required this.claim,
+    required this.nextWakeAt,
+  });
+
+  final TaskRepositorySnapshot repository;
+  final TaskClaim? claim;
+  final DateTime? nextWakeAt;
 }
 
 class TaskDeleteExpectation {
@@ -246,6 +259,26 @@ abstract interface class AtomicTaskClaimMetadataRepository {
     required TaskEventRecord dispatchEvent,
     WorkspaceResource? expectedResource,
     required Map<String, Object?> claimedMetadata,
+  });
+}
+
+/// Marker for repositories whose returned snapshot is the complete projection
+/// of an external state-machine authority rather than an independently mutable
+/// Dart model.
+abstract interface class AuthoritativeTaskRepositoryProjection {
+  TaskRepositorySnapshot get authoritativeProjection;
+}
+
+abstract interface class AtomicTaskSchedulingRepository {
+  Future<void> configureScheduler({required int maxConcurrentTasks});
+
+  Future<void> publishRuntimeStatus(LocalRuntimeStatus status);
+
+  Future<TaskSchedulingPoll> claimNextTask({
+    required String runId,
+    required String dispatchEventId,
+    required DateTime now,
+    Set<String> excludedTaskIds = const <String>{},
   });
 }
 

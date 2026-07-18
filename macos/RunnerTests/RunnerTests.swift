@@ -100,7 +100,11 @@ class RunnerTests: XCTestCase {
       + [addQuery]
       + securityClient.copyQueries
       + securityClient.deleteQueries
-    for query in queries {
+    let dataProtectionQueries = queries.filter {
+      $0[kSecUseDataProtectionKeychain] as? Bool == true
+    }
+    XCTAssertFalse(dataProtectionQueries.isEmpty)
+    for query in dataProtectionQueries {
       XCTAssertEqual(query[kSecClass] as? String, kSecClassGenericPassword as String)
       XCTAssertEqual(query[kSecAttrService] as? String, service)
       XCTAssertEqual(query[kSecAttrAccount] as? String, account)
@@ -114,6 +118,34 @@ class RunnerTests: XCTestCase {
     let copyQuery = try XCTUnwrap(securityClient.copyQueries.first)
     XCTAssertEqual(copyQuery[kSecReturnData] as? Bool, true)
     XCTAssertEqual(copyQuery[kSecMatchLimit] as? String, kSecMatchLimitOne as String)
+
+    let legacyQueries = queries.filter { $0[kSecUseDataProtectionKeychain] == nil }
+    XCTAssertFalse(legacyQueries.isEmpty)
+    for query in legacyQueries {
+      XCTAssertEqual(query[kSecClass] as? String, kSecClassGenericPassword as String)
+      XCTAssertEqual(query[kSecAttrService] as? String, service)
+      XCTAssertEqual(query[kSecAttrAccount] as? String, account)
+      XCTAssertEqual(query[kSecAttrSynchronizable] as? Bool, false)
+    }
+  }
+
+  func testFallsBackToLegacyKeychainWhenDataProtectionEntitlementIsMissing() throws {
+    securityClient.updateStatuses = [errSecMissingEntitlement]
+
+    let reference = try store.put(namespace: "namespace", key: "key", value: "value")
+    let account = try account(from: reference)
+
+    XCTAssertEqual(
+      securityClient.updateQueries.first?[kSecUseDataProtectionKeychain] as? Bool,
+      true
+    )
+    XCTAssertNil(securityClient.updateQueries.last?[kSecUseDataProtectionKeychain])
+    let legacyAdd = try XCTUnwrap(securityClient.addQueries.last)
+    XCTAssertNil(legacyAdd[kSecUseDataProtectionKeychain])
+    XCTAssertNil(legacyAdd[kSecAttrAccessible])
+    XCTAssertEqual(try store.get(account: account), "value")
+    try store.delete(account: account)
+    XCTAssertNil(try store.get(account: account))
   }
 
   func testPutRetriesUpdateWhenConcurrentAddWins() throws {
@@ -127,40 +159,33 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(securityClient.addQueries.count, 1)
   }
 
-  func testSystemKeychainCrudWhenHostHasDataProtectionEntitlement() throws {
+  func testSystemKeychainCrudWithAdHocFallback() throws {
     let integrationService = "\(KeychainSecretStore.productionService).integration.\(UUID().uuidString)"
     let integrationStore = KeychainSecretStore(service: integrationService)
     defer { deleteAllSystemItems(service: integrationService) }
 
-    do {
-      let reference = try integrationStore.put(
-        namespace: "agent/Test/header",
-        key: "Authorization",
-        value: "Bearer first"
-      )
-      let account = try account(from: reference)
-      XCTAssertEqual(try integrationStore.get(account: account), "Bearer first")
+    let reference = try integrationStore.put(
+      namespace: "agent/Test/header",
+      key: "Authorization",
+      value: "Bearer first"
+    )
+    let account = try account(from: reference)
+    XCTAssertEqual(try integrationStore.get(account: account), "Bearer first")
+    if try hostTeamIdentifier() != nil {
       XCTAssertEqual(
         try systemAccessibleAttribute(service: integrationService, account: account),
         kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
       )
-
-      _ = try integrationStore.put(
-        namespace: "agent/Test/header",
-        key: "Authorization",
-        value: "Bearer second"
-      )
-      XCTAssertEqual(try integrationStore.get(account: account), "Bearer second")
-      try integrationStore.delete(account: account)
-      XCTAssertNil(try integrationStore.get(account: account))
-    } catch KeychainSecretStoreError.osStatus(let status)
-      where status == errSecMissingEntitlement
-    {
-      if try hostTeamIdentifier() != nil {
-        throw KeychainSecretStoreError.osStatus(status)
-      }
-      throw XCTSkip("Host has no Data Protection Keychain entitlement; run this test in the signed macOS job.")
     }
+
+    _ = try integrationStore.put(
+      namespace: "agent/Test/header",
+      key: "Authorization",
+      value: "Bearer second"
+    )
+    XCTAssertEqual(try integrationStore.get(account: account), "Bearer second")
+    try integrationStore.delete(account: account)
+    XCTAssertNil(try integrationStore.get(account: account))
   }
 
   func testUnknownKeychainMethodDoesNotRequireArguments() {
@@ -225,12 +250,14 @@ class RunnerTests: XCTestCase {
   }
 
   private func deleteAllSystemItems(service: String) {
-    let query: [CFString: Any] = [
+    var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
       kSecAttrSynchronizable: false,
-      kSecUseDataProtectionKeychain: true,
     ]
+    query[kSecUseDataProtectionKeychain] = true
+    _ = SecItemDelete(query as CFDictionary)
+    query.removeValue(forKey: kSecUseDataProtectionKeychain)
     _ = SecItemDelete(query as CFDictionary)
   }
 
@@ -292,8 +319,7 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
     guard
       hasValidBaseQuery(query),
       attributes[kSecValueData] is Data,
-      attributes[kSecAttrAccessible] as? String
-        == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+      hasValidAccessibility(attributes, for: query)
     else {
       return errSecParam
     }
@@ -317,8 +343,7 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
     }
     guard
       hasValidBaseQuery(query),
-      query[kSecAttrAccessible] as? String
-        == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String,
+      hasValidAccessibility(query, for: query),
       let itemKey = itemKey(query),
       let data = query[kSecValueData] as? Data
     else {
@@ -361,14 +386,29 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
     else {
       return nil
     }
-    return "\(service)\u{0}\(account)"
+    let backend = query[kSecUseDataProtectionKeychain] as? Bool == true
+      ? "data-protection"
+      : "legacy"
+    return "\(backend)\u{0}\(service)\u{0}\(account)"
   }
 
   private func hasValidBaseQuery(_ query: [CFString: Any]) -> Bool {
+    let dataProtectionValue = query[kSecUseDataProtectionKeychain]
     return query[kSecClass] as? String == kSecClassGenericPassword as String
       && query[kSecAttrService] is String
       && query[kSecAttrAccount] is String
       && query[kSecAttrSynchronizable] as? Bool == false
-      && query[kSecUseDataProtectionKeychain] as? Bool == true
+      && (dataProtectionValue == nil || dataProtectionValue as? Bool == true)
+  }
+
+  private func hasValidAccessibility(
+    _ attributes: [CFString: Any],
+    for query: [CFString: Any]
+  ) -> Bool {
+    if query[kSecUseDataProtectionKeychain] as? Bool == true {
+      return attributes[kSecAttrAccessible] as? String
+        == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+    }
+    return attributes[kSecAttrAccessible] == nil
   }
 }

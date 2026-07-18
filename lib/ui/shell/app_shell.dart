@@ -406,6 +406,8 @@ class AppShell extends StatelessWidget {
                                             defaultWorkspacePath:
                                                 currentWorkspace.path,
                                             defaultAgentName: agentName,
+                                            defaultModel:
+                                                controller.currentModelValue,
                                             agentNames: _agentNamesForTasks(),
                                             onRunTask: onRunTask == null
                                                 ? null

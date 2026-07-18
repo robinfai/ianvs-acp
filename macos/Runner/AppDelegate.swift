@@ -40,6 +40,7 @@ final class KeychainSecretStore {
 
   private let service: String
   private let securityClient: KeychainSecurityClient
+  private var dataProtectionKeychainAvailable = true
 
   init(
     service: String = productionService,
@@ -51,12 +52,70 @@ final class KeychainSecretStore {
 
   func put(namespace: String, key: String, value: String) throws -> String {
     let account = account(namespace: namespace, key: key)
+    if dataProtectionKeychainAvailable {
+      do {
+        try put(account: account, value: value, useDataProtectionKeychain: true)
+        // Remove a value created by an earlier ad-hoc build so it cannot become
+        // a stale fallback if this build later loses its signing entitlement.
+        try delete(account: account, useDataProtectionKeychain: false)
+        return reference(account: account)
+      } catch KeychainSecretStoreError.osStatus(let status)
+        where status == errSecMissingEntitlement
+      {
+        dataProtectionKeychainAvailable = false
+      }
+    }
+
+    try put(account: account, value: value, useDataProtectionKeychain: false)
+    return reference(account: account)
+  }
+
+  func get(account: String) throws -> String? {
+    if dataProtectionKeychainAvailable {
+      do {
+        if let value = try get(account: account, useDataProtectionKeychain: true) {
+          return value
+        }
+        // Ad-hoc builds have no application-identifier entitlement. Checking
+        // the legacy keychain keeps their secrets readable after a later
+        // development- or distribution-signed launch.
+        return try get(account: account, useDataProtectionKeychain: false)
+      } catch KeychainSecretStoreError.osStatus(let status)
+        where status == errSecMissingEntitlement
+      {
+        dataProtectionKeychainAvailable = false
+      }
+    }
+
+    return try get(account: account, useDataProtectionKeychain: false)
+  }
+
+  func delete(account: String) throws {
+    if dataProtectionKeychainAvailable {
+      do {
+        try delete(account: account, useDataProtectionKeychain: true)
+        try delete(account: account, useDataProtectionKeychain: false)
+        return
+      } catch KeychainSecretStoreError.osStatus(let status)
+        where status == errSecMissingEntitlement
+      {
+        dataProtectionKeychainAvailable = false
+      }
+    }
+
+    try delete(account: account, useDataProtectionKeychain: false)
+  }
+
+  private func put(account: String, value: String, useDataProtectionKeychain: Bool) throws {
     let valueData = Data(value.utf8)
-    let query = baseQuery(account: account)
-    let updates: [CFString: Any] = [
-      kSecValueData: valueData,
-      kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-    ]
+    let query = baseQuery(
+      account: account,
+      useDataProtectionKeychain: useDataProtectionKeychain
+    )
+    var updates: [CFString: Any] = [kSecValueData: valueData]
+    if useDataProtectionKeychain {
+      updates[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    }
 
     // Another process or isolate may race between update and add. Retrying the
     // update after a duplicate keeps put idempotent without weakening queries.
@@ -64,7 +123,7 @@ final class KeychainSecretStore {
     for _ in 0..<3 {
       let updateStatus = securityClient.update(query: query, attributes: updates)
       if updateStatus == errSecSuccess {
-        return "keychain://ianvs-acp/\(account)"
+        return
       }
       guard updateStatus == errSecItemNotFound else {
         throw KeychainSecretStoreError.osStatus(updateStatus)
@@ -72,10 +131,12 @@ final class KeychainSecretStore {
 
       var addQuery = query
       addQuery[kSecValueData] = valueData
-      addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      if useDataProtectionKeychain {
+        addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      }
       let addStatus = securityClient.add(query: addQuery)
       if addStatus == errSecSuccess {
-        return "keychain://ianvs-acp/\(account)"
+        return
       }
       guard addStatus == errSecDuplicateItem else {
         throw KeychainSecretStoreError.osStatus(addStatus)
@@ -85,8 +146,11 @@ final class KeychainSecretStore {
     throw KeychainSecretStoreError.osStatus(lastStatus)
   }
 
-  func get(account: String) throws -> String? {
-    var query = baseQuery(account: account)
+  private func get(account: String, useDataProtectionKeychain: Bool) throws -> String? {
+    var query = baseQuery(
+      account: account,
+      useDataProtectionKeychain: useDataProtectionKeychain
+    )
     query[kSecReturnData] = true
     query[kSecMatchLimit] = kSecMatchLimitOne
 
@@ -103,11 +167,20 @@ final class KeychainSecretStore {
     return value
   }
 
-  func delete(account: String) throws {
-    let status = securityClient.delete(query: baseQuery(account: account))
+  private func delete(account: String, useDataProtectionKeychain: Bool) throws {
+    let status = securityClient.delete(
+      query: baseQuery(
+        account: account,
+        useDataProtectionKeychain: useDataProtectionKeychain
+      )
+    )
     guard status == errSecSuccess || status == errSecItemNotFound else {
       throw KeychainSecretStoreError.osStatus(status)
     }
+  }
+
+  private func reference(account: String) -> String {
+    return "keychain://ianvs-acp/\(account)"
   }
 
   private func account(namespace: String, key: String) -> String {
@@ -123,14 +196,20 @@ final class KeychainSecretStore {
     return digest.map { String(format: "%02x", $0) }.joined()
   }
 
-  private func baseQuery(account: String) -> [CFString: Any] {
-    return [
+  private func baseQuery(
+    account: String,
+    useDataProtectionKeychain: Bool
+  ) -> [CFString: Any] {
+    var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
       kSecAttrAccount: account,
       kSecAttrSynchronizable: false,
-      kSecUseDataProtectionKeychain: true,
     ]
+    if useDataProtectionKeychain {
+      query[kSecUseDataProtectionKeychain] = true
+    }
+    return query
   }
 }
 

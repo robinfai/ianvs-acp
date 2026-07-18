@@ -4949,18 +4949,21 @@ class ChatController extends ChangeNotifier {
     AcpPermissionRequest request,
   ) {
     final match = egressPolicyMatchForPermission(request);
-    if (match == null) return false;
+    final coreRequiresHuman = request.metadata['requiresExplicitHuman'] == true;
+    if (match == null && !coreRequiresHuman) return false;
 
     _recordPermissionReview(
       request,
       AcpPermissionReviewResult(
         risk: 'egress',
-        rationale: 'Export-sensitive command requires manual approval.',
-        reviewer: 'egress-policy',
+        rationale: coreRequiresHuman
+            ? 'Rust Core requires an explicit human decision.'
+            : 'Export-sensitive command requires manual approval.',
+        reviewer: coreRequiresHuman ? 'rust-core-egress' : 'egress-policy',
         details: <String, Object?>{
           'egressSensitive': true,
-          'egressReason': match.reason,
-          'commandLine': match.commandLine,
+          'egressReason': match?.reason ?? 'core_human_gate',
+          if (match != null) 'commandLine': match.commandLine,
         },
       ),
     );
