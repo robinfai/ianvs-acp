@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 import '../config/acp_client_config.dart';
 import 'acp_agent_client.dart';
 import 'acp_endpoint_validator.dart';
+import 'acp_input_budget.dart' as acp;
 import 'acp_permission_request.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
@@ -796,7 +796,11 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
 
   Map<String, Object?> _structuredResult(mcp.CallToolResult result) {
     final guard = acp.AcpStructuredUpdateGuard(
-      budget: const acp.AcpInputBudget(),
+      budget: const acp.AcpInputBudget(
+        maxMetadataBytes: defaultPermissionReviewResultEncodedByteLimit,
+        maxStructuredUpdateBytes: defaultPermissionReviewResultEncodedByteLimit,
+        maxStructuredStringBytes: defaultPermissionReviewResultEncodedByteLimit,
+      ),
       resource: 'MCP permission review result',
     );
     final structured = result.structuredContent;

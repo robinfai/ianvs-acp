@@ -2,26 +2,21 @@
 
 A Flutter macOS desktop client for local Agent Client Protocol agents.
 
-The app can launch stdio ACP agents, create and resume sessions, stream prompt
-turns, display tool calls, render ACP plan and command updates, switch exposed
-session modes/models, close active sessions, and log out when the agent
-advertises those capabilities. It can also pass configured additional
-directories to agents that advertise ACP `additionalDirectories`, fork active
-sessions when the agent supports `session/fork`, and suggest advertised slash
-commands in the prompt input. Prompt attachments can be selected or dropped
-onto the composer; file, image, and audio content follows the agent's negotiated
-ACP prompt capabilities, with unsupported media sent as resource links. When an
-agent advertises authentication methods,
-the Agent menu can start the agent-handled ACP `authenticate` flow. The same
-menu includes Protocol Coverage, which reviews implemented ACP areas against the
-official docs and points each area to its visible configuration and interaction
-surface.
+The app launches local stdio ACP agents through its Rust runtime, creates and
+restores sessions, streams prompt turns, renders plans and tool calls, switches
+advertised model/session options, and handles authentication, permissions,
+filesystem callbacks, and terminal callbacks. Prompt attachments can be
+selected or dropped onto the composer; file, image, and audio content follows
+the negotiated prompt capabilities, with resource-link fallback where needed.
 
-The vendored Dart protocol layer tracks `@agentclientprotocol/sdk` 1.2.1. It
-supports native boolean and grouped session config options, session delete,
-end-turn usage, current terminal response shapes, and opt-in provider/NES/
-elicitation/MCP-over-ACP surfaces. See
-[`docs/acp_1_2_1_conformance.md`](docs/acp_1_2_1_conformance.md).
+Task Inbox uses the same Rust Core for durable Task/Run state, automatic
+scheduling, retry admission, runtime quotas, and workspace leases. Human-input
+and approval waits pause the run and surface the decision context in Inbox.
+
+See [Product capabilities](docs/product_capabilities.md),
+[ACP runtime coverage](docs/acp_runtime_coverage.md), and
+[Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
+release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
@@ -206,27 +201,27 @@ ticket, runs Gatekeeper assessment, and produces `build/ACP-Client.zip`.
 The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
 use `FakeAgentClient` instead of launching a real agent.
 
-## Rust Core migration
+## Runtime architecture
 
-The ACP and workflow runtime is being moved behind a pure Rust Core plus a
-separate FFI host. The local stdio/session/prompt/permission path plus stable session
-catalog, load-or-resume, close/delete, authentication/logout, and session
-configuration operations, including workspace-scoped prompt attachments, are
-the default macOS path. Stable stdio/HTTP/SSE MCP server configuration is
-projected by Rust into session new/load/resume. Configured `fs/read_text_file` and
-`fs/write_text_file` reverse requests are also Rust-owned and require an
-allow-once UI decision before bounded reads or atomic writes:
+ACP and Workflow have one production authority: a pure Rust Core behind a typed
+FFI host. Rust owns the local stdio/session/prompt/permission path, stable
+session lifecycle and configuration, workspace-scoped attachments, configured
+filesystem and terminal reverse requests, process recovery, Task/Run state,
+and scheduler admission. Flutter owns product projections and human interaction.
+
+Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
+new/load/resume. Filesystem and terminal egress operations marked
+`requiresExplicitHuman` wait for an allow-once UI decision before execution:
 
 ```sh
 flutter run -d macos
 ./tool/verify_rust_runtime.sh
 ```
 
-The same dylib also exposes a typed, revisioned, transactionally durable
-Task/Run Workflow authority. The default app path uses it as the production
-TaskInbox repository and scheduler authority. Complete Dart TaskInbox v1
-snapshots follow an explicit `staged -> ready -> active` migration with an
-immutable source archive. Once active, typed Dart operations atomically update
+The same dylib exposes a typed, revisioned, transactionally durable Task/Run
+Workflow authority. Imported TaskInbox v1 snapshots follow an explicit
+`staged -> ready -> active` migration with an immutable source archive. Once
+active, typed host operations atomically update
 Rust-owned Task/Run state, events, artifacts, approvals, resources, and the
 revisioned UI projection; generic state overwrites remain unavailable. Rust
 also owns atomic scheduler claims with priority, retry-readiness, runtime quota,
@@ -234,8 +229,8 @@ workspace-lease, and per-agent availability admission. Flutter consumes the
 Core-selected claim and retry wake-up without recomputing those decisions.
 
 Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
-until their Rust transports are implemented; the production App never opens a
-fallback Dart ACP connection. The legacy TaskInbox database is read only as a
-migration source before Rust activation. The ownership contract, implemented
-scope, and remaining transport and hard-egress work are tracked in
-[`docs/rust_core_architecture.md`](docs/rust_core_architecture.md).
+until their Rust transports are implemented; the production app never opens a
+parallel compatibility connection. The legacy TaskInbox database is read only
+as a migration source before Rust activation. The ownership contract,
+implemented scope, and remaining transport and hard-egress work are tracked in
+[Runtime architecture](docs/runtime_architecture.md).

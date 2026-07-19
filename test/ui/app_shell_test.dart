@@ -28,7 +28,6 @@ void main() {
     VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
-    VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
     VoidCallback? onReconnect,
   }) {
@@ -43,7 +42,6 @@ void main() {
           onShowProtocolCoverage: onShowProtocolCoverage,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
-          onExtensionRequest: onExtensionRequest,
           onLogout: onLogout,
           onNewSession: () {},
           onResumeSession: () {},
@@ -64,7 +62,6 @@ void main() {
     VoidCallback? onShowProtocolCoverage,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
-    VoidCallback? onExtensionRequest,
     VoidCallback? onLogout,
     VoidCallback? onReconnect = _noop,
   }) async {
@@ -82,7 +79,6 @@ void main() {
         onShowProtocolCoverage: onShowProtocolCoverage,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
-        onExtensionRequest: onExtensionRequest,
         onLogout: onLogout,
         onReconnect: onReconnect,
       ),
@@ -295,28 +291,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(openedProtocolCoverage, isTrue);
-  });
-
-  testWidgets('AgentToolbar exposes extension requests when available', (
-    tester,
-  ) async {
-    var openedExtensionDialog = false;
-    await pumpToolbar(
-      tester,
-      app_state.ConnectionStatus.connected,
-      onExtensionRequest: () {
-        openedExtensionDialog = true;
-      },
-    );
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    expect(find.text('Extension Request'), findsOneWidget);
-
-    await tester.tap(find.text('Extension Request'));
-    await tester.pumpAndSettle();
-
-    expect(openedExtensionDialog, isTrue);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {

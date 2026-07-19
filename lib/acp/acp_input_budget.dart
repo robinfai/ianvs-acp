@@ -1,7 +1,7 @@
+// ignore_for_file: prefer_initializing_formals
+
 import 'dart:collection';
 import 'dart:math' as math;
-
-import 'package:meta/meta.dart';
 
 const int _maxSafeBudgetInteger = 0x1fffffffffffff;
 
@@ -197,7 +197,6 @@ final class AcpTextBudgetChunk {
 /// Opaque one-shot host transaction for one [AcpUtf8LineBudgetCounter].
 ///
 /// This is trusted host bookkeeping, not an untrusted-input security boundary.
-@internal
 final class AcpUtf8LineBudgetCheckpoint {
   AcpUtf8LineBudgetCheckpoint._({
     required Object owner,
@@ -253,7 +252,6 @@ final class AcpUtf8LineBudgetCounter {
   int? _pendingHighSurrogate;
 
   /// Begins trusted host bookkeeping that must be committed or rolled back.
-  @internal
   AcpUtf8LineBudgetCheckpoint checkpoint() {
     final checkpoint = AcpUtf8LineBudgetCheckpoint._(
       owner: _checkpointOwner,
@@ -269,7 +267,6 @@ final class AcpUtf8LineBudgetCounter {
   }
 
   /// Commits this counter's active host transaction.
-  @internal
   void commit(AcpUtf8LineBudgetCheckpoint checkpoint) {
     _requireActiveCheckpoint(checkpoint);
     _activeCheckpoints.removeLast();
@@ -277,7 +274,6 @@ final class AcpUtf8LineBudgetCounter {
   }
 
   /// Rolls this counter's active host transaction back exactly once.
-  @internal
   void rollback(AcpUtf8LineBudgetCheckpoint checkpoint) {
     _requireActiveCheckpoint(checkpoint);
     _activeCheckpoints.removeLast();

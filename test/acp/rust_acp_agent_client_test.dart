@@ -82,7 +82,7 @@ void main() {
   );
 
   test(
-    'does not open a second Dart ACP connection for unstable methods',
+    'does not open a parallel protocol connection for unsupported methods',
     () async {
       final client = RustAcpAgentClient(
         agentName: 'fixture',

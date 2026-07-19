@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:ianvs_acp/acp/transport_byte_budget.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/no_redirect_mcp_http_transport.dart';
 import 'package:mcp_dart/mcp_dart.dart' as mcp;

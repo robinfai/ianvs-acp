@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dart_acp/dart_acp.dart';
+import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -3828,30 +3828,6 @@ void main() {
     },
   );
 
-  testWidgets('AcpClientApp opens extension request dialog', (tester) async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-    await controller.connect();
-
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Extension Request'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('Extension Request'), findsOneWidget);
-    expect(find.text('Method'), findsOneWidget);
-    expect(find.text('Params JSON'), findsOneWidget);
-  });
-
   testWidgets('AcpClientApp opens protocol coverage dialog', (tester) async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
@@ -4137,73 +4113,71 @@ void main() {
     },
   );
 
-  testWidgets(
-    'AcpClientApp deduplicates shared ids across configured agents',
-    (tester) async {
-      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
-        AgentSession(
-          id: 'shared-stale-session',
-          cwd: '/workspace/app',
-          createdAt: DateTime(2026, 7, 1),
-          title: 'Shared stale session',
-          agentName: 'codex-fast',
-        ),
-        AgentSession(
-          id: 'shared-stale-session',
-          cwd: '/workspace/app',
-          createdAt: DateTime(2026, 7, 1),
-          title: 'Shared stale session',
-          agentName: 'codex-thinking',
-        ),
-        AgentSession(
-          id: 'shared-stale-session',
-          cwd: '/workspace/app',
-          createdAt: DateTime(2026, 7, 1),
-          title: 'Shared stale session',
-          agentName: 'codex-worker',
-        ),
-      ]);
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-          'codex-fast': {
-            'type': 'custom',
-            'command': '/usr/local/bin/codex-acp',
-            'default_reasoning_effort': 'low',
-          },
-          'codex-thinking': {
-            'type': 'custom',
-            'command': '/usr/local/bin/codex-acp',
-            'default_reasoning_effort': 'high',
-          },
-          'codex-worker': {
-            'type': 'custom',
-            'command': '/usr/local/bin/codex-acp',
-            'default_model': 'worker-model',
-          },
+  testWidgets('AcpClientApp deduplicates shared ids across configured agents', (
+    tester,
+  ) async {
+    final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+      AgentSession(
+        id: 'shared-stale-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 7, 1),
+        title: 'Shared stale session',
+        agentName: 'codex-fast',
+      ),
+      AgentSession(
+        id: 'shared-stale-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 7, 1),
+        title: 'Shared stale session',
+        agentName: 'codex-thinking',
+      ),
+      AgentSession(
+        id: 'shared-stale-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 7, 1),
+        title: 'Shared stale session',
+        agentName: 'codex-worker',
+      ),
+    ]);
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        'codex-fast': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+          'default_reasoning_effort': 'low',
         },
-      }, configPath: '/tmp/ianvs-acp/settings.json');
+        'codex-thinking': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+          'default_reasoning_effort': 'high',
+        },
+        'codex-worker': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+          'default_model': 'worker-model',
+        },
+      },
+    }, configPath: '/tmp/ianvs-acp/settings.json');
 
-      await tester.pumpWidget(
-        AcpClientApp(
-          config: config,
-          taskInboxController: taskHarness.controller,
-          workspaceStateStore: store,
-          discoverAgentServers: (_) => const <AgentServerConfig>[],
-          createAgentClient: (_) =>
-              FakeAgentClient(supportsListSessions: false),
-        ),
-      );
-      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        taskInboxController: taskHarness.controller,
+        workspaceStateStore: store,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (_) => FakeAgentClient(supportsListSessions: false),
+      ),
+    );
+    await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
 
-      final restored = store.lastSaved
-          .where((session) => session.id == 'shared-stale-session')
-          .toList(growable: false);
-      expect(restored, hasLength(1));
-      expect(restored.single.agentName, 'Codex');
-    },
-  );
+    final restored = store.lastSaved
+        .where((session) => session.id == 'shared-stale-session')
+        .toList(growable: false);
+    expect(restored, hasLength(1));
+    expect(restored.single.agentName, 'Codex');
+  });
 
   testWidgets(
     'AcpClientApp retries an unchanged session index after a save failure',
@@ -4247,7 +4221,7 @@ Future<void> _pumpUntil(
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
     );
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
   }
 }
 

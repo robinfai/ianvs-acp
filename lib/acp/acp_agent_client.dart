@@ -55,11 +55,6 @@ abstract class AcpAgentClient {
 
   Future<void> logout();
 
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  });
-
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,

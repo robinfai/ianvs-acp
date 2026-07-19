@@ -13,10 +13,9 @@ import 'prompt_attachment.dart';
 
 /// ACP client projection backed by the Rust runtime.
 ///
-/// This is intentionally limited to the operations already owned by
-/// `ianvs-acp-core`. Capability projection keeps unsupported UI actions hidden
-/// while migration continues; methods never fall back to a second Dart ACP
-/// connection because that would split authoritative session state.
+/// This exposes only operations already owned by `ianvs-acp-core`. Unsupported
+/// capability projections remain hidden; methods never open a parallel
+/// protocol connection because that would split authoritative session state.
 final class RustAcpAgentClient implements AcpAgentClient {
   RustAcpAgentClient({
     required this.agentName,
@@ -566,12 +565,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
       send: (requestId) => _runtimeInstance.logout(requestId: requestId),
     );
   }
-
-  @override
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  }) => _unsupported('sendExtensionRequest');
 
   void _handleRuntimeEvent(IanvsRuntimeEvent event) {
     if (_disposed) return;
@@ -1378,8 +1371,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
   Future<T> _unsupported<T>(String operation) {
     return Future<T>.error(
       UnsupportedError(
-        '$operation is not yet owned by ianvs-acp-core and will not fall '
-        'back to a second Dart ACP connection.',
+        '$operation is not yet owned by ianvs-acp-core and will not open a '
+        'parallel protocol connection.',
       ),
     );
   }

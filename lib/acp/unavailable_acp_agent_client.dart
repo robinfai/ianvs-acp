@@ -87,12 +87,6 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   }) => Stream<AgentEvent>.error(_error);
 
   @override
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  }) => _failure<Map<String, Object?>>();
-
-  @override
   Future<List<AcpConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,

@@ -1,5 +1,4 @@
-import 'package:dart_acp/dart_acp.dart'
-    show AcpInputBudget, copyBoundedInitializeInput;
+import 'acp_input_budget.dart' show AcpInputBudget, copyBoundedInitializeInput;
 
 class AcpAgentCapabilities {
   const AcpAgentCapabilities({

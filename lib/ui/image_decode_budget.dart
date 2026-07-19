@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:dart_acp/dart_acp.dart';
+import '../acp/acp_input_budget.dart';
 
 abstract interface class AcpImageDecodeReservation {
   bool get decodeFinished;

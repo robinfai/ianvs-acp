@@ -4,9 +4,9 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:dart_acp/dart_acp.dart';
 import 'package:flutter/material.dart';
 
+import '../../acp/acp_input_budget.dart';
 import '../image_decode_budget.dart';
 
 abstract interface class BoundedImageDecoder {

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
-import 'package:dart_acp/dart_acp.dart' as acp;
+import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
@@ -6390,14 +6390,12 @@ void main() {
 
     expect(controller.capabilities, isNotNull);
     expect(controller.canLogout, isTrue);
-    expect(controller.canSendExtensionRequest, isTrue);
 
     await controller.reconnect();
 
     expect(controller.status, app_state.ConnectionStatus.error);
     expect(controller.capabilities, isNull);
     expect(controller.canLogout, isFalse);
-    expect(controller.canSendExtensionRequest, isFalse);
     expect(controller.lastError, contains('connection dropped'));
   });
 
@@ -11193,36 +11191,39 @@ void main() {
     );
   });
 
-  test('Rust Core human-gated requests stay manual under full access', () async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-    controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
-    );
+  test(
+    'Rust Core human-gated requests stay manual under full access',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+      controller.setToolCallExecutionPolicy(
+        AcpToolCallExecutionPolicy.fullAccess,
+      );
 
-    fake.emitPermissionRequest(
-      AcpPermissionRequest(
-        id: 'core-human-gate',
-        title: 'Read file',
-        rationale: 'Requested by Rust Core',
-        sessionId: 'session-1',
-        toolName: 'filesystem:approval-1',
-        toolKind: 'read',
-        options: const ['Allow once', 'Reject'],
-        requestedAt: DateTime(2026, 7, 18),
-        metadata: const <String, Object?>{'requiresExplicitHuman': true},
-      ),
-    );
-    await pumpEventQueue();
+      fake.emitPermissionRequest(
+        AcpPermissionRequest(
+          id: 'core-human-gate',
+          title: 'Read file',
+          rationale: 'Requested by Rust Core',
+          sessionId: 'session-1',
+          toolName: 'filesystem:approval-1',
+          toolKind: 'read',
+          options: const ['Allow once', 'Reject'],
+          requestedAt: DateTime(2026, 7, 18),
+          metadata: const <String, Object?>{'requiresExplicitHuman': true},
+        ),
+      );
+      await pumpEventQueue();
 
-    expect(controller.pendingPermissionRequest?.id, 'core-human-gate');
-    expect(fake.lastPermissionRequestId, isNull);
-    expect(
-      controller.permissionHistory.single.reviewResult?.reviewer,
-      'rust-core-egress',
-    );
-  });
+      expect(controller.pendingPermissionRequest?.id, 'core-human-gate');
+      expect(fake.lastPermissionRequestId, isNull);
+      expect(
+        controller.permissionHistory.single.reviewResult?.reviewer,
+        'rust-core-egress',
+      );
+    },
+  );
 
   test(
     'full access distinguishes non-command args from command evidence',
@@ -12681,144 +12682,6 @@ void main() {
     expect(fake.lastAuthenticatedMethodId, 'browser');
     expect(controller.lastError, isNull);
   });
-
-  test('send extension request forwards method and params', () async {
-    final fake = FakeAgentClient(
-      extensionResponse: const {
-        'ok': true,
-        'items': ['buffer.dart'],
-      },
-    );
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-
-    await controller.connect();
-
-    expect(controller.canSendExtensionRequest, isTrue);
-
-    final result = await controller.sendExtensionRequest(
-      method: '  _example.dev/listBuffers  ',
-      params: const {'language': 'dart'},
-    );
-
-    expect(fake.lastExtensionMethod, '_example.dev/listBuffers');
-    expect(fake.lastExtensionParams, {'language': 'dart'});
-    expect(result['items'], ['buffer.dart']);
-    expect(controller.lastError, isNull);
-  });
-
-  test('send extension request requires underscore-prefixed method', () async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(
-      client: fake,
-      cwd: '/workspace',
-      inputBudget: const acp.AcpInputBudget(
-        maxMessageTextBytes: 8,
-        maxMarkdownFallbackBytes: 8,
-      ),
-    );
-    addTearDown(controller.dispose);
-
-    await controller.connect();
-    var notifications = 0;
-    controller.addListener(() => notifications += 1);
-
-    await expectLater(
-      controller.sendExtensionRequest(
-        method: 'example.dev/listBuffers',
-        params: const {},
-      ),
-      throwsA(isA<StateError>()),
-    );
-
-    expect(fake.lastExtensionMethod, isNull);
-    expect(controller.lastError, isNotNull);
-    expect(controller.lastError, hasLength(8));
-    expect(controller.lastError, isNot(contains('underscore')));
-    expect(notifications, 1);
-
-    final repeatedError = controller.lastError;
-    notifications = 0;
-    await expectLater(
-      controller.sendExtensionRequest(
-        method: 'example.dev/listBuffers',
-        params: const {},
-      ),
-      throwsA(isA<StateError>()),
-    );
-
-    expect(controller.lastError, repeatedError);
-    expect(notifications, 2);
-  });
-
-  test(
-    'send extension request bounds disconnected validation errors',
-    () async {
-      final controller = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
-          maxMessageTextBytes: 10,
-          maxMarkdownFallbackBytes: 10,
-        ),
-      );
-      addTearDown(controller.dispose);
-      var notifications = 0;
-      controller.addListener(() => notifications += 1);
-
-      await expectLater(
-        controller.sendExtensionRequest(
-          method: '_example.dev/listBuffers',
-          params: const {},
-        ),
-        throwsA(isA<StateError>()),
-      );
-
-      expect(controller.lastError, isNotNull);
-      expect(controller.lastError, hasLength(10));
-      expect(controller.lastError, isNot(contains('Connect to an ACP agent')));
-      expect(notifications, 1);
-    },
-  );
-
-  test(
-    'send extension request preserves an existing connection error status',
-    () async {
-      final fake = FakeAgentClient(
-        connectError: StateError('connection failed'),
-      );
-      final controller = ChatController(
-        client: fake,
-        cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
-          maxMessageTextBytes: 8,
-          maxMarkdownFallbackBytes: 8,
-        ),
-      );
-      addTearDown(controller.dispose);
-      await controller.connect();
-      expect(controller.status, app_state.ConnectionStatus.error);
-
-      final notifiedStatuses = <app_state.ConnectionStatus>[];
-      controller.addListener(() => notifiedStatuses.add(controller.status));
-
-      await expectLater(
-        controller.sendExtensionRequest(
-          method: 'invalid-method',
-          params: const {},
-        ),
-        throwsA(isA<StateError>()),
-      );
-
-      expect(fake.lastExtensionMethod, isNull);
-      expect(controller.status, app_state.ConnectionStatus.error);
-      expect(notifiedStatuses, isNotEmpty);
-      expect(notifiedStatuses, everyElement(app_state.ConnectionStatus.error));
-      expect(controller.lastError, isNotNull);
-      expect(controller.lastError, hasLength(8));
-      expect(controller.lastError, isNot(contains('connection failed')));
-    },
-  );
 
   test('auth required session errors point to authenticate action', () async {
     final controller = ChatController(

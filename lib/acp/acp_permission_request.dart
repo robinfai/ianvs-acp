@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:dart_acp/dart_acp.dart' as acp;
+import 'acp_input_budget.dart' as acp;
 
 enum AcpPermissionDecision { allow, deny, cancel }
 

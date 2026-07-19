@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:dart_acp/dart_acp.dart';
 
-import '../../acp/acp_session_catalog.dart';
+import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
+import '../../acp/acp_session_catalog.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../config/acp_agent_discovery.dart';
@@ -23,7 +23,6 @@ import '../components/bounded_image_preview.dart';
 import '../components/capabilities_dialog.dart';
 import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
-import '../components/extension_request_dialog.dart';
 import '../components/file_preview_workspace.dart';
 import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
@@ -249,9 +248,6 @@ class AppShell extends StatelessWidget {
                       controller.permissionHistory.isNotEmpty
                       ? () => _showPermissionHistoryDialog(context)
                       : null,
-                  onExtensionRequest: controller.canSendExtensionRequest
-                      ? () => _showExtensionRequestDialog(context)
-                      : null,
                   onLogout: controller.canLogout
                       ? () => unawaited(_confirmLogout(context))
                       : null,
@@ -457,18 +453,6 @@ class AppShell extends StatelessWidget {
       builder: (context) {
         return CapabilitiesDialog(
           capabilities: controller.capabilities,
-          inputBudget: inputBudget,
-        );
-      },
-    );
-  }
-
-  Future<void> _showExtensionRequestDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return ExtensionRequestDialog(
-          controller: controller,
           inputBudget: inputBudget,
         );
       },

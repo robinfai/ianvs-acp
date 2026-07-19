@@ -1,6 +1,6 @@
 import 'dart:collection';
 
-import 'package:dart_acp/dart_acp.dart';
+import '../acp/acp_input_budget.dart';
 
 final class BoundedMetadataPreview {
   const BoundedMetadataPreview({required this.text, this.omission});

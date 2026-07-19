@@ -1,10 +1,11 @@
-# Rust ACP / Workflow Core migration
+# Runtime architecture
 
-Date: 2026-07-18
+Updated: 2026-07-19
 
-This document is the boundary contract for the ongoing migration. It describes
-the target architecture and, separately, what the repository enforces today.
-It must not be read as a claim that the Dart runtime has already been removed.
+This document is the authoritative ownership contract for the production
+runtime. ACP protocol handling, agent processes, session authority, workflow
+state, scheduling, persistence, filesystem operations, and terminal operations
+belong to Rust. Flutter owns product projections and interaction UI only.
 
 ## Target boundary
 
@@ -169,7 +170,7 @@ policy must leave them pending for a manual choice.
 | Retry policy | Core admission and wake decision implemented | Failure categories, retry limits, exponential delay, retry-readiness admission, and the earliest eligible `nextWakeAt` decision are in Rust; the opt-in production host consumes that deadline, and idle agent startup uses bounded exponential restart |
 | Agent subprocess shutdown | Implemented | Child is killed on transport drop, including protocol termination and host disposal |
 | Capability surface | Conservative partial | Flutter sees the peer/core intersection. Stable session list/load/resume/close/delete, authentication/logout, session configuration, and prompt image/audio/embedded-context support are projected; unstable fork and other unmigrated features stay hidden |
-| Production activation | Rust-only production authority | Local stdio ACP and Workflow use Rust unconditionally. Remote ACP transports and unstable MCP-over-ACP are unavailable rather than opening a fallback Dart connection |
+| Production activation | Rust-only production authority | Local stdio ACP and Workflow use Rust unconditionally. Remote ACP transports and unstable MCP-over-ACP remain unavailable rather than opening a parallel compatibility connection |
 | Session list/load/resume/close/delete | Implemented | Core bounds pagination/cursors/entries, selects load before resume when both are available, validates workspace scopes, registers recovered session/terminal state, and owns close/delete cleanup |
 | Authentication/logout | Implemented | Core projects advertised auth methods/logout capability, validates method ids, sends typed SDK requests, and completes request-correlated stable events |
 | Session configuration | Implemented | Initial and updated select/boolean options are bounded and normalized; invalid values and concurrent mutations fail closed, and immediate complete-state notifications are retained without exposing SDK payloads |
@@ -202,7 +203,7 @@ native ABI tests, and real FFI fixture chain:
 The environment variable `IANVS_ACP_RUST_LIBRARY` may point tests or local
 development at an explicit dylib. It is not a protocol escape hatch.
 
-## Next migration order
+## Planned evolution
 
 1. Connect remaining git push/PR/upload executors to Rust workspace and egress
    admission.
@@ -210,7 +211,21 @@ development at an explicit dylib. It is not a protocol escape hatch.
    fail-closed.
 3. Evaluate unstable fork and MCP-over-ACP separately without exposing raw ACP
    payloads through FFI.
-4. Delete now-unreachable legacy Dart protocol/scheduler implementations after
-   remaining test fixtures have moved to Rust-backed fakes. Keep Flutter
-   projections, forms, dialogs, and viewport code.
-5. Add `ianvs-acpd` only when headless/background continuity is required.
+4. Add `ianvs-acpd` only when headless/background continuity is required.
+
+## Flutter boundary modules
+
+Flutter-facing ACP code is deliberately limited to product projections and host
+adapters:
+
+- `lib/acp/rust_acp_agent_client.dart` maps typed FFI commands and events to the
+  UI-facing `AcpAgentClient` interface.
+- `lib/acp/acp_input_budget.dart` bounds retained text, metadata, collections,
+  and media projections before they reach widgets.
+- `lib/acp/transport_byte_budget.dart` bounds the independent MCP sidecar HTTP
+  transport. It is not an ACP agent transport.
+- `lib/acp/fake_agent_client.dart` is the widget/state-test seam and never owns
+  a production agent process.
+
+No generic JSON-RPC client, ACP transport, provider implementation, or vendored
+ACP package exists in the Flutter layer.

@@ -19,7 +19,6 @@ class AgentToolbar extends StatelessWidget {
     this.onShowProtocolCoverage,
     this.onAuthenticate,
     this.onShowPermissionHistory,
-    this.onExtensionRequest,
     this.onLogout,
   });
 
@@ -35,7 +34,6 @@ class AgentToolbar extends StatelessWidget {
   final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
-  final VoidCallback? onExtensionRequest;
   final VoidCallback? onLogout;
 
   @override
@@ -85,7 +83,6 @@ class AgentToolbar extends StatelessWidget {
                   onShowProtocolCoverage: onShowProtocolCoverage,
                   onAuthenticate: onAuthenticate,
                   onShowPermissionHistory: onShowPermissionHistory,
-                  onExtensionRequest: onExtensionRequest,
                   onLogout: onLogout,
                 ),
                 SizedBox(width: compact ? 5 : 8),
@@ -129,7 +126,6 @@ class _AgentMenuButton extends StatelessWidget {
     required this.onShowProtocolCoverage,
     required this.onAuthenticate,
     required this.onShowPermissionHistory,
-    required this.onExtensionRequest,
     required this.onLogout,
   });
 
@@ -142,7 +138,6 @@ class _AgentMenuButton extends StatelessWidget {
   final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
-  final VoidCallback? onExtensionRequest;
   final VoidCallback? onLogout;
 
   @override
@@ -153,7 +148,6 @@ class _AgentMenuButton extends StatelessWidget {
         onShowProtocolCoverage != null ||
         onAuthenticate != null ||
         onShowPermissionHistory != null ||
-        onExtensionRequest != null ||
         onLogout != null;
     return PopupMenuButton<_AgentMenuSelection>(
       tooltip: 'Agents',
@@ -171,8 +165,6 @@ class _AgentMenuButton extends StatelessWidget {
             onAuthenticate?.call();
           case _AgentMenuSelectionType.permissionHistory:
             onShowPermissionHistory?.call();
-          case _AgentMenuSelectionType.extensionRequest:
-            onExtensionRequest?.call();
           case _AgentMenuSelectionType.logout:
             onLogout?.call();
         }
@@ -317,45 +309,12 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
-          if (onExtensionRequest != null &&
-              (agentServers.isNotEmpty ||
-                  onShowAgentConfig != null ||
-                  onShowProtocolCoverage != null ||
-                  onShowPermissionHistory != null ||
-                  onAuthenticate != null))
-            const PopupMenuDivider(),
-          if (onExtensionRequest != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.extensionRequest(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.extension_rounded,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Extension Request',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           if (onLogout != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
                   onShowProtocolCoverage != null ||
                   onShowPermissionHistory != null ||
-                  onAuthenticate != null ||
-                  onExtensionRequest != null))
+                  onAuthenticate != null))
             const PopupMenuDivider(),
           if (onLogout != null)
             const PopupMenuItem<_AgentMenuSelection>(
@@ -395,7 +354,6 @@ enum _AgentMenuSelectionType {
   protocolCoverage,
   authenticate,
   permissionHistory,
-  extensionRequest,
   logout,
 }
 
@@ -417,10 +375,6 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.permissionHistory()
     : type = _AgentMenuSelectionType.permissionHistory,
-      agentName = null;
-
-  const _AgentMenuSelection.extensionRequest()
-    : type = _AgentMenuSelectionType.extensionRequest,
       agentName = null;
 
   const _AgentMenuSelection.logout()

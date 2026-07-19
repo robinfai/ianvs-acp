@@ -1,4 +1,4 @@
-import 'package:dart_acp/dart_acp.dart' as acp;
+import 'acp_input_budget.dart' as acp;
 
 enum AgentEventType {
   userMessage,

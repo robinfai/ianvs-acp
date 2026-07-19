@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
 
 import 'acp_endpoint_validator.dart';
+import 'transport_byte_budget.dart' as acp;
 
 /// Minimal MCP Streamable HTTP transport whose requests never follow redirects.
 ///

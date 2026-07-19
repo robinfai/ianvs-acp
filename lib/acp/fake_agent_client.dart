@@ -20,9 +20,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.deleteError,
     this.authenticateError,
     this.logoutError,
-    this.extensionError,
     this.permissionResponseError,
-    this.extensionResponse = const <String, Object?>{'ok': true},
     this.supportsFork = true,
     this.supportsListSessions = true,
     this.supportsLoadSession = true,
@@ -75,9 +73,7 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? deleteError;
   final Object? authenticateError;
   final Object? logoutError;
-  final Object? extensionError;
   final Object? permissionResponseError;
-  final Map<String, Object?> extensionResponse;
   final bool supportsFork;
   final bool supportsListSessions;
   final bool supportsLoadSession;
@@ -111,8 +107,6 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastClosedSessionId;
   String? lastDeletedSessionId;
   String? lastAuthenticatedMethodId;
-  String? lastExtensionMethod;
-  Map<String, Object?>? lastExtensionParams;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
@@ -398,29 +392,6 @@ class FakeAgentClient implements AcpAgentClient {
       throw logoutError!;
     }
     loggedOut = true;
-  }
-
-  @override
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  }) async {
-    if (!connected) {
-      throw StateError('Fake client is not connected.');
-    }
-    if (!method.startsWith('_')) {
-      throw ArgumentError.value(
-        method,
-        'method',
-        'Extension methods must start with underscore (_).',
-      );
-    }
-    if (extensionError != null) {
-      throw extensionError!;
-    }
-    lastExtensionMethod = method;
-    lastExtensionParams = params;
-    return extensionResponse;
   }
 
   @override

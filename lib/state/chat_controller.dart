@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
-import 'package:dart_acp/dart_acp.dart' as acp;
 import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
+import '../acp/acp_input_budget.dart' as acp;
 import '../acp/acp_permission_request.dart';
 import '../acp/acp_permission_reviewer.dart';
 import '../acp/acp_session_catalog.dart';
@@ -2736,10 +2736,6 @@ class ChatController extends ChangeNotifier {
     return supportsAuthLogout && !isStreaming && !isSessionOperationRunning;
   }
 
-  bool get canSendExtensionRequest {
-    return capabilities != null && !isStreaming && !isSessionOperationRunning;
-  }
-
   Future<void> waitForSessionOperationIdle() async {
     while (isSessionOperationRunning) {
       final idle = _sessionOperationIdleCompleter;
@@ -4185,38 +4181,6 @@ class ChatController extends ChangeNotifier {
       }
     });
     return authenticated;
-  }
-
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  }) async {
-    if (lastError != null) {
-      lastError = null;
-      _notifyListeners();
-    }
-    try {
-      final trimmedMethod = method.trim();
-      if (trimmedMethod.isEmpty) {
-        throw StateError('Extension method is required.');
-      }
-      if (!trimmedMethod.startsWith('_')) {
-        throw StateError('Extension method must start with underscore (_).');
-      }
-      if (!canSendExtensionRequest) {
-        throw StateError('Connect to an ACP agent before sending extensions.');
-      }
-      final result = await client.sendExtensionRequest(
-        method: trimmedMethod,
-        params: params,
-      );
-      lastError = null;
-      _notifyListeners();
-      return result;
-    } catch (error) {
-      _setActionError(error, preserveConnectionStatus: true);
-      rethrow;
-    }
   }
 
   Future<void> resolvePermissionRequest(AcpPermissionDecision decision) async {
