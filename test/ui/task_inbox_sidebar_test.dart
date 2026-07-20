@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -19,6 +21,7 @@ void main() {
     TaskInboxController controller, {
     String? selectedTaskId,
     String? defaultModel,
+    ValueChanged<TaskRecord>? onRunTask,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -33,6 +36,7 @@ void main() {
               defaultAgentName: 'Codex',
               defaultModel: defaultModel,
               agentNames: const ['Codex', 'Kimi'],
+              onRunTask: onRunTask,
             ),
           ),
         ),
@@ -99,6 +103,141 @@ void main() {
     await _pumpFrames(tester);
 
     expect(controller.tasks.single.metadata['model'], 'gpt-5.3-codex-spark');
+  });
+
+  testWidgets('TaskInboxSidebar empty state opens a labeled task editor', (
+    tester,
+  ) async {
+    final controller = TaskInboxController(repository: _MemoryTaskStore());
+    addTearDown(controller.dispose);
+    await controller.load();
+    final semantics = tester.ensureSemantics();
+
+    await pumpSidebar(tester, controller);
+
+    expect(find.text('Create task'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('task-empty-create-button')));
+    await _pumpFrames(tester);
+
+    expect(find.text('New Task'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('Task title')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('Task description')), findsOneWidget);
+    expect(
+      find.bySemanticsLabel(RegExp('Task workspace path')),
+      findsOneWidget,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('TaskInboxSidebar reveals task context and next action', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-context',
+      title: 'Clarify the Inbox',
+      description: 'Make the task request visible after creation.',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.inbox,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: task.updatedAt, tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await pumpSidebar(tester, controller, onRunTask: (_) {});
+    expect(find.text(task.description), findsNothing);
+
+    await tester.tap(find.text(task.title));
+    await _pumpFrames(tester);
+
+    expect(find.text(task.description), findsOneWidget);
+    expect(find.text('Ready to run in the background.'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Run task'), findsOneWidget);
+  });
+
+  testWidgets(
+    'TaskInboxSidebar does not enqueue an already queued task again',
+    (tester) async {
+      final task = TaskRecord(
+        id: 'task-queued',
+        title: 'Waiting task',
+        description: '',
+        workspacePath: '/workspace/app',
+        agentName: 'Codex',
+        status: TaskStatus.queued,
+        priority: TaskPriority.normal,
+        createdAt: DateTime(2026, 7, 7, 8),
+        updatedAt: DateTime(2026, 7, 7, 9),
+        summary: 'Queued for agent run.',
+      );
+      final controller = TaskInboxController(
+        repository: _MemoryTaskStore(
+          TaskInboxSnapshot(updatedAt: task.updatedAt, tasks: [task]),
+        ),
+      );
+      addTearDown(controller.dispose);
+      await controller.load();
+
+      await pumpSidebar(
+        tester,
+        controller,
+        selectedTaskId: task.id,
+        onRunTask: (_) => fail('Queued tasks must not be enqueued twice.'),
+      );
+
+      expect(find.byTooltip('Run task'), findsNothing);
+      expect(
+        find.text(
+          'Waiting for an available agent. This task will start automatically.',
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('TaskInboxSidebar surfaces failure context before retry', (
+    tester,
+  ) async {
+    final task = TaskRecord(
+      id: 'task-failed',
+      title: 'Failed task',
+      description: '',
+      workspacePath: '/workspace/app',
+      agentName: 'Codex',
+      status: TaskStatus.failed,
+      priority: TaskPriority.normal,
+      createdAt: DateTime(2026, 7, 7, 8),
+      updatedAt: DateTime(2026, 7, 7, 9),
+      error: 'The agent disconnected before completion.',
+    );
+    final controller = TaskInboxController(
+      repository: _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: task.updatedAt, tasks: [task]),
+      ),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await pumpSidebar(
+      tester,
+      controller,
+      selectedTaskId: task.id,
+      onRunTask: (_) {},
+    );
+
+    expect(find.text(task.error!), findsOneWidget);
+    expect(
+      find.text('Review the error, then retry when you are ready.'),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
   });
 
   testWidgets('TaskInboxSidebar persists after controller reload', (
@@ -406,6 +545,57 @@ void main() {
     expect(controller.approvals, isEmpty);
   });
 
+  testWidgets('TaskInboxSidebar serializes review decisions while saving', (
+    tester,
+  ) async {
+    final saveGate = Completer<void>();
+    var updateAttempts = 0;
+    final store = _MemoryTaskStore(_reviewSnapshot())
+      ..beforeOperation = (operation) async {
+        if (operation != 'updateTask') return;
+        updateAttempts += 1;
+        await saveGate.future;
+      };
+    final controller = TaskInboxController(repository: store);
+    addTearDown(controller.dispose);
+    await controller.load();
+    await pumpSidebar(tester, controller, selectedTaskId: 'task-1');
+
+    await tester.tap(find.byKey(const Key('task-mark-done-locally-button')));
+    await tester.pump();
+
+    expect(find.text('Saving decision…'), findsOneWidget);
+    expect(updateAttempts, 1);
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const Key('task-mark-done-locally-button')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const Key('task-request-changes-button')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(find.byKey(const Key('task-reject-button')))
+          .onPressed,
+      isNull,
+    );
+
+    saveGate.complete();
+    await _pumpFrames(tester);
+
+    expect(controller.tasks.single.status, TaskStatus.done);
+    expect(updateAttempts, 1);
+  });
+
   testWidgets('TaskInboxSidebar does not expose export actions', (
     tester,
   ) async {
@@ -582,9 +772,7 @@ void main() {
     );
     await _pumpFrames(tester);
 
-    await tester.tap(find.byTooltip('Run task'));
-    await _pumpFrames(tester);
-
+    expect(find.byTooltip('Run task'), findsNothing);
     expect(runCalls, 0);
   });
 

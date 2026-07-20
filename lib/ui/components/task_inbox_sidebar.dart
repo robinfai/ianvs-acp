@@ -39,6 +39,7 @@ class TaskInboxSidebar extends StatefulWidget {
 class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
   String? _selectedTaskId;
   final Set<String> _runningTaskIds = <String>{};
+  final Set<String> _reviewingTaskIds = <String>{};
   bool _clearingRawData = false;
   TaskInboxController? _rawDataClearController;
   int _controllerEpoch = 0;
@@ -95,7 +96,10 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
                           dimension: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.more_horiz_rounded),
+                      : const Icon(
+                          Icons.more_horiz_rounded,
+                          semanticLabel: 'Task data actions',
+                        ),
                   onSelected: (action) {
                     if (action == _TaskInboxMenuAction.clearRawToolData) {
                       unawaited(_confirmAndClearRawData());
@@ -127,7 +131,9 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
                 );
                 final hasTasks = groups.any((group) => group.tasks.isNotEmpty);
                 if (!hasTasks) {
-                  return const _EmptyTaskInbox();
+                  return _EmptyTaskInbox(
+                    onCreateTask: () => unawaited(_showNewTaskDialog(context)),
+                  );
                 }
                 return ListView.separated(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
@@ -138,6 +144,7 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
                       group: group,
                       selectedTaskId: _selectedTaskId,
                       runningTaskIds: _runningTaskIds,
+                      reviewingTaskIds: _reviewingTaskIds,
                       artifactsByTask: artifactsByTask,
                       onSelectTask: (task) {
                         setState(() => _selectedTaskId = task.id);
@@ -293,6 +300,7 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
 
   Future<void> _markDoneLocally(TaskRecord task) async {
     await _runReviewAction(
+      task,
       () => widget.controller.markTaskDoneLocally(task.id),
       failureLabel: 'mark task done locally',
     );
@@ -300,6 +308,7 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
 
   Future<void> _requestChanges(TaskRecord task) async {
     await _runReviewAction(
+      task,
       () => widget.controller.requestTaskChanges(task.id),
       failureLabel: 'request changes',
     );
@@ -307,15 +316,19 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
 
   Future<void> _rejectTask(TaskRecord task) async {
     await _runReviewAction(
+      task,
       () => widget.controller.rejectTask(task.id),
       failureLabel: 'reject task',
     );
   }
 
   Future<void> _runReviewAction(
+    TaskRecord task,
     Future<void> Function() action, {
     required String failureLabel,
   }) async {
+    if (_reviewingTaskIds.contains(task.id)) return;
+    setState(() => _reviewingTaskIds.add(task.id));
     try {
       await action();
     } catch (error) {
@@ -323,6 +336,8 @@ class _TaskInboxSidebarState extends State<TaskInboxSidebar> {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(content: Text('Could not $failureLabel: $error')),
       );
+    } finally {
+      if (mounted) setState(() => _reviewingTaskIds.remove(task.id));
     }
   }
 }
@@ -339,6 +354,7 @@ class _TaskStatusGroup extends StatelessWidget {
     required this.group,
     required this.selectedTaskId,
     required this.runningTaskIds,
+    required this.reviewingTaskIds,
     required this.artifactsByTask,
     required this.onSelectTask,
     required this.onMarkDoneLocally,
@@ -351,6 +367,7 @@ class _TaskStatusGroup extends StatelessWidget {
   final _TaskGroup group;
   final String? selectedTaskId;
   final Set<String> runningTaskIds;
+  final Set<String> reviewingTaskIds;
   final Map<String, List<ArtifactRecord>> artifactsByTask;
   final ValueChanged<TaskRecord> onSelectTask;
   final FutureOr<void> Function(TaskRecord task) onMarkDoneLocally;
@@ -395,6 +412,7 @@ class _TaskStatusGroup extends StatelessWidget {
             task: task,
             selected: task.id == selectedTaskId,
             running: runningTaskIds.contains(task.id),
+            reviewing: reviewingTaskIds.contains(task.id),
             artifacts: artifactsByTask[task.id] ?? const <ArtifactRecord>[],
             onTap: () => onSelectTask(task),
             onRunTask: onRunTask,
@@ -415,6 +433,7 @@ class _TaskTile extends StatelessWidget {
     required this.task,
     required this.selected,
     required this.running,
+    required this.reviewing,
     required this.artifacts,
     required this.onTap,
     this.onRunTask,
@@ -427,6 +446,7 @@ class _TaskTile extends StatelessWidget {
   final TaskRecord task;
   final bool selected;
   final bool running;
+  final bool reviewing;
   final List<ArtifactRecord> artifacts;
   final VoidCallback onTap;
   final FutureOr<void> Function(TaskRecord task)? onRunTask;
@@ -560,6 +580,10 @@ class _TaskTile extends StatelessWidget {
                   ],
                 ),
               ],
+              if (selected && task.description.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _TaskDescription(description: task.description.trim()),
+              ],
               if (task.summary != null && task.summary!.trim().isNotEmpty) ...[
                 const SizedBox(height: 7),
                 Text(
@@ -574,32 +598,81 @@ class _TaskTile extends StatelessWidget {
                   ),
                 ),
               ],
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _TileActionButton(
-                    icon: running
-                        ? Icons.hourglass_top_rounded
-                        : Icons.play_arrow_rounded,
-                    tooltip: 'Run task',
-                    onPressed: _canRun
-                        ? () {
-                            unawaited(
-                              Future<void>.sync(() => onRunTask!(task)),
-                            );
-                          }
-                        : null,
-                  ),
-                  const SizedBox(width: 6),
-                  _TileActionButton(
-                    icon: Icons.open_in_new_rounded,
-                    tooltip: 'Open linked session',
-                    onPressed: _canOpenLinkedSession
-                        ? () => onOpenLinkedSession!(task)
-                        : null,
-                  ),
-                ],
-              ),
+              if (selected && task.error?.trim().isNotEmpty == true) ...[
+                const SizedBox(height: 8),
+                _TaskErrorMessage(message: task.error!.trim()),
+              ],
+              if (selected) ...[
+                const SizedBox(height: 8),
+                _TaskNextStep(message: _nextStepMessage(task)),
+              ],
+              if (_canRun || _canOpenLinkedSession) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    if (_canRun)
+                      Expanded(
+                        child: Tooltip(
+                          message: 'Run task',
+                          child: FilledButton.tonalIcon(
+                            key: Key('task-run-button-${task.id}'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(34),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.sm,
+                                ),
+                              ),
+                            ),
+                            onPressed: () {
+                              unawaited(
+                                Future<void>.sync(() => onRunTask!(task)),
+                              );
+                            },
+                            icon: Icon(
+                              running
+                                  ? Icons.hourglass_top_rounded
+                                  : Icons.play_arrow_rounded,
+                              size: 16,
+                            ),
+                            label: Text(_runActionLabel(task)),
+                          ),
+                        ),
+                      ),
+                    if (_canRun && _canOpenLinkedSession)
+                      const SizedBox(width: 6),
+                    if (_canOpenLinkedSession)
+                      Expanded(
+                        child: Tooltip(
+                          message: 'Open linked session',
+                          child: OutlinedButton.icon(
+                            key: Key('task-open-session-button-${task.id}'),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(34),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.sm,
+                                ),
+                              ),
+                            ),
+                            onPressed: () => onOpenLinkedSession!(task),
+                            icon: const Icon(
+                              Icons.open_in_new_rounded,
+                              size: 15,
+                            ),
+                            label: const Text('Open session'),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
               if (selected && artifacts.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 _ArtifactPreviewList(artifacts: artifacts),
@@ -607,6 +680,7 @@ class _TaskTile extends StatelessWidget {
               if (selected && _canReview) ...[
                 const SizedBox(height: 8),
                 _ReviewActionPanel(
+                  busy: reviewing,
                   onMarkDoneLocally: () => onMarkDoneLocally(task),
                   onRequestChanges: () => onRequestChanges(task),
                   onRejectTask: () => onRejectTask(task),
@@ -622,10 +696,7 @@ class _TaskTile extends StatelessWidget {
   bool get _canRun {
     if (running || onRunTask == null) return false;
     return switch (task.status) {
-      TaskStatus.inbox ||
-      TaskStatus.queued ||
-      TaskStatus.failed ||
-      TaskStatus.needsChanges => true,
+      TaskStatus.inbox || TaskStatus.failed || TaskStatus.needsChanges => true,
       TaskStatus.blockedOnUserInput =>
         task.metadata['failure_reason'] == TaskFailureReason.authRequired.name,
       _ => false,
@@ -644,13 +715,172 @@ class _TaskTile extends StatelessWidget {
       task.status == TaskStatus.exporting;
 }
 
+class _TaskDescription extends StatelessWidget {
+  const _TaskDescription({required this.description});
+
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Task',
+              style: TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              description,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskErrorMessage extends StatelessWidget {
+  const _TaskErrorMessage({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xfffef2f2),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: const Color(0xfffecaca)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(
+              Icons.error_outline_rounded,
+              size: 15,
+              color: AppColors.danger,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: AppColors.danger,
+                  fontSize: 11,
+                  height: 1.35,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskNextStep extends StatelessWidget {
+  const _TaskNextStep({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(
+          Icons.arrow_forward_rounded,
+          size: 14,
+          color: AppColors.primary,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            message,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              height: 1.3,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String _runActionLabel(TaskRecord task) {
+  return switch (task.status) {
+    TaskStatus.failed ||
+    TaskStatus.needsChanges ||
+    TaskStatus.blockedOnUserInput => 'Retry',
+    _ => 'Run task',
+  };
+}
+
+String _nextStepMessage(TaskRecord task) {
+  return switch (task.status) {
+    TaskStatus.inbox => 'Ready to run in the background.',
+    TaskStatus.queued =>
+      'Waiting for an available agent. This task will start automatically.',
+    TaskStatus.dispatched ||
+    TaskStatus.running ||
+    TaskStatus.collectingArtifacts =>
+      'Work is in progress. You can keep using the rest of the app.',
+    TaskStatus.blockedOnPermission =>
+      'Open the linked session and respond to the pending permission.',
+    TaskStatus.blockedOnUserInput =>
+      task.metadata['failure_reason'] == TaskFailureReason.authRequired.name
+          ? 'Authenticate the agent, then retry this task.'
+          : 'Open the linked session and provide the requested input.',
+    TaskStatus.needsHumanReview ||
+    TaskStatus.approvedForExport ||
+    TaskStatus.exporting => 'Review the result and choose an outcome below.',
+    TaskStatus.failed => 'Review the error, then retry when you are ready.',
+    TaskStatus.needsChanges =>
+      'Update the task request if needed, then run it again.',
+    TaskStatus.done => 'Completed. No further action is required.',
+    TaskStatus.cancelled => 'This task was cancelled.',
+    TaskStatus.rejected => 'This result was rejected.',
+  };
+}
+
 class _ReviewActionPanel extends StatelessWidget {
   const _ReviewActionPanel({
+    required this.busy,
     required this.onMarkDoneLocally,
     required this.onRequestChanges,
     required this.onRejectTask,
   });
 
+  final bool busy;
   final FutureOr<void> Function() onMarkDoneLocally;
   final FutureOr<void> Function() onRequestChanges;
   final FutureOr<void> Function() onRejectTask;
@@ -666,6 +896,20 @@ class _ReviewActionPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (busy) ...[
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox.square(
+                    dimension: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('Saving decision…'),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             OutlinedButton.icon(
               key: const Key('task-mark-done-locally-button'),
               style: OutlinedButton.styleFrom(
@@ -675,7 +919,9 @@ class _ReviewActionPanel extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppRadius.sm),
                 ),
               ),
-              onPressed: () => unawaited(Future<void>.sync(onMarkDoneLocally)),
+              onPressed: busy
+                  ? null
+                  : () => unawaited(Future<void>.sync(onMarkDoneLocally)),
               icon: const Icon(Icons.check_circle_outline, size: 15),
               label: const Text('Mark Done Locally'),
             ),
@@ -689,7 +935,9 @@ class _ReviewActionPanel extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppRadius.sm),
                 ),
               ),
-              onPressed: () => unawaited(Future<void>.sync(onRequestChanges)),
+              onPressed: busy
+                  ? null
+                  : () => unawaited(Future<void>.sync(onRequestChanges)),
               icon: const Icon(Icons.edit_note_outlined, size: 15),
               label: const Text('Request Changes'),
             ),
@@ -704,7 +952,9 @@ class _ReviewActionPanel extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppRadius.sm),
                 ),
               ),
-              onPressed: () => unawaited(Future<void>.sync(onRejectTask)),
+              onPressed: busy
+                  ? null
+                  : () => unawaited(Future<void>.sync(onRejectTask)),
               icon: const Icon(Icons.block_outlined, size: 15),
               label: const Text('Reject'),
             ),
@@ -825,42 +1075,10 @@ class _ArtifactPreviewItem extends StatelessWidget {
   }
 }
 
-class _TileActionButton extends StatelessWidget {
-  const _TileActionButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: IconButton(
-        visualDensity: VisualDensity.compact,
-        style: IconButton.styleFrom(
-          fixedSize: const Size.square(28),
-          backgroundColor: AppColors.surfaceRaised,
-          foregroundColor: AppColors.textSecondary,
-          disabledForegroundColor: AppColors.textTertiary,
-          side: const BorderSide(color: AppColors.borderSoft),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
-        ),
-        onPressed: onPressed,
-        icon: Icon(icon, size: 15),
-      ),
-    );
-  }
-}
-
 class _EmptyTaskInbox extends StatelessWidget {
-  const _EmptyTaskInbox();
+  const _EmptyTaskInbox({required this.onCreateTask});
+
+  final VoidCallback onCreateTask;
 
   @override
   Widget build(BuildContext context) {
@@ -869,10 +1087,14 @@ class _EmptyTaskInbox extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: const [
-            Icon(Icons.inbox_rounded, size: 28, color: AppColors.textTertiary),
-            SizedBox(height: 8),
-            Text(
+          children: [
+            const Icon(
+              Icons.inbox_rounded,
+              size: 30,
+              color: AppColors.textTertiary,
+            ),
+            const SizedBox(height: 8),
+            const Text(
               'No tasks yet',
               textAlign: TextAlign.center,
               style: TextStyle(
@@ -880,6 +1102,32 @@ class _EmptyTaskInbox extends StatelessWidget {
                 fontWeight: FontWeight.w800,
                 letterSpacing: 0,
               ),
+            ),
+            const SizedBox(height: 5),
+            const Text(
+              'Create a task to run work in the background and review the '
+              'result here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 11,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              key: const Key('task-empty-create-button'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(132, 36),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                ),
+              ),
+              onPressed: onCreateTask,
+              icon: const Icon(Icons.add_task_rounded, size: 16),
+              label: const Text('Create task'),
             ),
           ],
         ),
@@ -901,23 +1149,21 @@ class _SidebarIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: IconButton(
-        visualDensity: VisualDensity.compact,
-        style: IconButton.styleFrom(
-          fixedSize: const Size.square(30),
-          backgroundColor: AppColors.surface,
-          foregroundColor: AppColors.textSecondary,
-          disabledForegroundColor: AppColors.textTertiary,
-          side: const BorderSide(color: AppColors.border),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-          ),
+    return IconButton(
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      style: IconButton.styleFrom(
+        fixedSize: const Size.square(32),
+        backgroundColor: AppColors.surface,
+        foregroundColor: AppColors.textSecondary,
+        disabledForegroundColor: AppColors.textTertiary,
+        side: const BorderSide(color: AppColors.border),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
-        onPressed: onPressed,
-        icon: Icon(icon, size: 16),
       ),
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16, semanticLabel: tooltip),
     );
   }
 }

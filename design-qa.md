@@ -50,3 +50,77 @@
 3. 复核：全图和聚焦对比中，大纲、正文、表格、模式切换与状态栏均完整可见；未发现新的 P0/P1/P2 问题。
 
 final result: passed
+
+---
+
+# Design QA — Inbox Optimization
+
+## Scope and sources
+
+- Product surface: native macOS Flutter Inbox sidebar.
+- Viewport: 800 × 640, device pixel ratio 1.
+- Baseline visual sources:
+  - `artifacts/product-design/inbox-audit/13-current-inbox-empty.png`
+  - `artifacts/product-design/inbox-audit/16-current-task-created.png`
+  - `artifacts/product-design/inbox-audit/17-current-task-run-failure.png`
+- Implementation captures:
+  - `artifacts/product-design/inbox-audit/18-current-inbox-empty-improved.png`
+  - `artifacts/product-design/inbox-audit/19-current-new-task-accessible.png`
+  - `artifacts/product-design/inbox-audit/20-current-task-created-improved.png`
+  - `artifacts/product-design/inbox-audit/21-current-task-queued-improved.png`
+- Combined comparison inputs:
+  - `artifacts/product-design/inbox-audit/qa-empty-comparison.png`
+  - `artifacts/product-design/inbox-audit/qa-created-comparison.png`
+  - `artifacts/product-design/inbox-audit/qa-queued-comparison.png`
+  - `artifacts/product-design/inbox-audit/qa-sidebar-focused-comparison.png`
+
+The red Agent startup banner in all captures is an intentional isolated-harness failure and is outside the Inbox QA scope.
+
+## Mandatory comparison pass
+
+| Surface | Result | Evidence |
+|---|---|---|
+| Typography | Passed | Existing font family, weights, status hierarchy, and 11–13px sidebar scale are preserved. Added copy wraps cleanly without crowding. |
+| Spacing and layout | Passed | Original 350px sidebar geometry, card radius, border, and grouping rhythm remain intact. The selected card expands vertically without clipping or overlap. |
+| Viewport resilience | Passed for product scope | At the desktop minimum test viewport, empty, selected, and queued states fit. Widget coverage also exercises the sidebar at 320 × 720. Mobile/tablet layouts are not product targets. |
+| Colors and tokens | Passed | New surfaces use existing `AppColors`, `AppRadius`, tonal button, border, primary, and status tokens. Error treatment uses the established danger color. |
+| Image quality | Passed / not applicable | The Inbox introduces no new raster assets. Existing empty/session illustrations remain sharp and unchanged. |
+| Copy and content | Passed | Empty-state purpose, task intent, state summary, and next step form a coherent sequence. Queued copy promises automatic start and no longer offers a contradictory Run action. |
+| Icons | Passed | Existing Material icon family and optical sizing are retained. Header icons expose readable semantic names; task actions pair icons with text. |
+| States and interactions | Passed | Empty CTA, form validation, selected task, queue waiting, failure retry, linked session, review busy, and disabled/nonexistent actions are covered. |
+| Accessibility | Passed for automated/system checks | Flutter semantics tests pass; macOS AX inspection exposes `Task title`, `Task description`, and `Task workspace path` containers plus named header and action buttons. |
+| AI shortcut artifacts | Passed | No new decorative blobs, fake SVGs, placeholder avatars, generic hero art, or unrelated rounded-card treatments were introduced. |
+
+## Findings and iterations
+
+### Pass 1
+
+- P1 accessibility: Flutter's test semantics could find the form labels, but the macOS accessibility bridge still exposed three unnamed text fields.
+  - Fix: replaced merged semantics with explicit labeled semantic containers that preserve editable child nodes.
+  - Verification: a rebuilt native app exposed `Task title`, `Task description`, and `Task workspace path` in the macOS AX tree.
+- P1 behavior/data flow: Queued tasks exposed Run and `TaskScheduler.enqueueTask` rewrote the queued state.
+  - Fix: removed queued from the UI run guard and made scheduler enqueue idempotent for an already queued task while still scheduling drain.
+  - Verification: widget and scheduler regression tests; queued native capture has no Run control.
+- P2 interaction: task intent, failure context, and next action were hidden; review decisions had no in-flight lock.
+  - Fix: added selected-state detail/error/next-step surfaces, labeled actions, and per-task review serialization.
+
+### Pass 2
+
+- The first automated task-entry capture contained a duplicated title caused by combining accessibility `set_value` with keyboard entry in the QA harness.
+  - Resolution: reset only the isolated temporary database, re-entered the task through the visible controls, and replaced the capture.
+  - Verification: `20-current-task-created-improved.png` shows one correct title and clean wrapping.
+
+### Final visual comparison
+
+- Full-view comparisons preserve the baseline shell, navigation, card alignment, and design tokens while adding only task-relevant content and actions.
+- The focused sidebar comparison confirms the selected card remains scannable: metadata first, then request, next step, and primary action.
+- Queued comparison confirms that the contradictory Run action is removed and waiting guidance fits inside the card.
+- No P0, P1, or P2 visual, behavioral, accessibility, or data-flow finding remains in the reviewed scope.
+
+## Verification record
+
+- `flutter test --no-pub test/tasks/task_inbox_controller_test.dart test/tasks/task_scheduler_test.dart test/ui/task_inbox_sidebar_test.dart test/ui/app_shell_test.dart test/ui/acp_client_app_test.dart`: 190 passed in the final combined run.
+- `flutter analyze --no-pub`: no issues found in the final run.
+- Native macOS visual and accessibility inspection completed at 800 × 640.
+
+final result: passed

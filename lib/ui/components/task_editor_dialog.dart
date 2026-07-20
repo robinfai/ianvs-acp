@@ -83,53 +83,73 @@ class _TaskEditorDialogState extends State<TaskEditorDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(
-                key: const Key('task-title-field'),
-                controller: _titleController,
-                autofocus: true,
-                decoration: _inputDecoration(
-                  labelText: 'Title',
-                  icon: Icons.task_alt_rounded,
-                  errorText: _titleError,
-                ),
-                textInputAction: TextInputAction.next,
-                onChanged: (_) => setState(() => _titleError = null),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                key: const Key('task-description-field'),
-                controller: _descriptionController,
-                minLines: 3,
-                maxLines: 5,
-                decoration: _inputDecoration(
-                  labelText: 'Description',
-                  icon: Icons.subject_rounded,
+              Semantics(
+                label: 'Task title',
+                container: true,
+                explicitChildNodes: true,
+                child: TextField(
+                  key: const Key('task-title-field'),
+                  controller: _titleController,
+                  autofocus: true,
+                  decoration: _inputDecoration(
+                    labelText: 'Title',
+                    icon: Icons.task_alt_rounded,
+                    errorText: _titleError,
+                  ),
+                  textInputAction: TextInputAction.next,
+                  onChanged: (_) => setState(() => _titleError = null),
                 ),
               ),
               const SizedBox(height: 12),
-              TextField(
-                key: const Key('task-workspace-field'),
-                controller: _workspaceController,
-                decoration: _inputDecoration(
-                  labelText: 'Workspace Path',
-                  icon: Icons.folder_open_rounded,
-                  errorText: _workspaceError,
+              Semantics(
+                label: 'Task description',
+                container: true,
+                explicitChildNodes: true,
+                child: TextField(
+                  key: const Key('task-description-field'),
+                  controller: _descriptionController,
+                  minLines: 3,
+                  maxLines: 5,
+                  decoration: _inputDecoration(
+                    labelText: 'Description',
+                    icon: Icons.subject_rounded,
+                  ),
                 ),
-                textInputAction: TextInputAction.next,
-                onChanged: (_) => setState(() => _workspaceError = null),
+              ),
+              const SizedBox(height: 12),
+              Semantics(
+                label: 'Task workspace path',
+                container: true,
+                explicitChildNodes: true,
+                child: TextField(
+                  key: const Key('task-workspace-field'),
+                  controller: _workspaceController,
+                  decoration: _inputDecoration(
+                    labelText: 'Workspace Path',
+                    icon: Icons.folder_open_rounded,
+                    errorText: _workspaceError,
+                  ),
+                  textInputAction: TextInputAction.next,
+                  onChanged: (_) => setState(() => _workspaceError = null),
+                ),
               ),
               const SizedBox(height: 12),
               _agentNames().isEmpty
-                  ? TextField(
-                      key: const Key('task-agent-field'),
-                      controller: _agentController,
-                      decoration: _inputDecoration(
-                        labelText: 'Agent',
-                        icon: Icons.smart_toy_outlined,
-                        errorText: _agentError,
+                  ? Semantics(
+                      label: 'Task agent',
+                      container: true,
+                      explicitChildNodes: true,
+                      child: TextField(
+                        key: const Key('task-agent-field'),
+                        controller: _agentController,
+                        decoration: _inputDecoration(
+                          labelText: 'Agent',
+                          icon: Icons.smart_toy_outlined,
+                          errorText: _agentError,
+                        ),
+                        textInputAction: TextInputAction.next,
+                        onChanged: (_) => setState(() => _agentError = null),
                       ),
-                      textInputAction: TextInputAction.next,
-                      onChanged: (_) => setState(() => _agentError = null),
                     )
                   : DropdownButtonFormField<String>(
                       key: const Key('task-agent-dropdown'),

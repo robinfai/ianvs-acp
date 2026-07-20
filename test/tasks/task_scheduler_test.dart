@@ -109,6 +109,40 @@ void main() {
     expect(worker.startedTaskIds, isEmpty);
   });
 
+  test(
+    'TaskScheduler enqueue is idempotent for an already queued task',
+    () async {
+      final createdAt = DateTime(2026, 7, 8, 9);
+      final queuedTask = _task(
+        id: 'task-1',
+        createdAt: createdAt,
+        status: TaskStatus.queued,
+      );
+      final store = _MemoryTaskStore(
+        TaskInboxSnapshot(updatedAt: createdAt, tasks: [queuedTask]),
+      );
+      var updateAttempts = 0;
+      store.beforeOperation = (operation) async {
+        if (operation == 'updateTask') updateAttempts += 1;
+      };
+      final controller = TaskInboxController(repository: store);
+      addTearDown(controller.dispose);
+      await controller.load();
+      final scheduler = TaskScheduler(
+        taskController: controller,
+        worker: _RecordingTaskWorker(controller),
+      );
+      addTearDown(scheduler.shutdown);
+
+      final result = await scheduler.enqueueTask(queuedTask.id);
+
+      expect(result.id, queuedTask.id);
+      expect(result.status, TaskStatus.queued);
+      expect(updateAttempts, 0);
+      expect(controller.tasks.single.status, TaskStatus.queued);
+    },
+  );
+
   test('TaskScheduler runs queued tasks by priority', () async {
     final controller = TaskInboxController(
       repository: _MemoryTaskStore(

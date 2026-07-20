@@ -169,6 +169,10 @@ class TaskScheduler {
     _ensureNotDisposed();
     final existing = taskController.taskById(taskId);
     if (existing == null) throw StateError('Task not found: $taskId');
+    if (existing.status == TaskStatus.queued) {
+      _scheduleDrain();
+      return existing;
+    }
     final resettingAuthentication =
         existing.status == TaskStatus.blockedOnUserInput &&
         existing.metadata['failure_reason'] ==
