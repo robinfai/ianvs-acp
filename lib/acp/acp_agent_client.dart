@@ -11,6 +11,8 @@ abstract class AcpAgentClient {
 
   Stream<AcpPermissionRequest> get permissionRequests;
 
+  Stream<AcpPermissionInvalidation> get permissionInvalidations;
+
   Future<void> connect();
 
   Future<AgentSession> createSession({
@@ -47,14 +49,11 @@ abstract class AcpAgentClient {
 
   Future<void> closeSession({required String sessionId});
 
+  Future<void> deleteSession({required String sessionId});
+
   Future<void> authenticate({required String methodId});
 
   Future<void> logout();
-
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  });
 
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
@@ -67,6 +66,7 @@ abstract class AcpAgentClient {
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   });
 
   Future<void> dispose();

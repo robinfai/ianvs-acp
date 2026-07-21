@@ -66,6 +66,47 @@ void main() {
     expect(config.defaultAgentServerName, 'Kimi Code Dev');
   });
 
+  test('resolves saved Codex sessions without configured agent servers', () {
+    const config = AcpClientConfig();
+
+    expect(config.configForSessionIndexAgent('Codex'), same(config));
+    expect(config.configForSessionIndexAgent(''), same(config));
+    expect(config.configForSessionIndexAgent('Kimi'), isNull);
+  });
+
+  test('resolves legacy pi ACP sessions to the single Pi adapter', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        'Pi': {'type': 'custom', 'command': '/Users/example/.local/bin/pi-acp'},
+      },
+    });
+
+    final resolved = config.configForSessionIndexAgent('pi ACP');
+
+    expect(resolved?.agentName, 'Pi');
+    expect(resolved?.activeAgentServer?.command, endsWith('/pi-acp'));
+  });
+
+  test('does not guess a legacy Pi alias when multiple adapters remain', () {
+    final config = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Pi local': {
+          'type': 'custom',
+          'command': '/Users/example/.local/bin/pi-acp',
+        },
+        'Pi npx': {
+          'type': 'custom',
+          'command': '/usr/local/bin/npx',
+          'args': ['-y', 'pi-acp'],
+        },
+      },
+    });
+
+    expect(config.configForSessionIndexAgent('pi ACP'), isNull);
+  });
+
   test('loads camelCase agent server config aliases', () {
     final config = AcpClientConfig.fromJson({
       'defaultAgentServer': 'Remote Agent',
@@ -139,6 +180,59 @@ void main() {
     );
   });
 
+  test('requires TLS for non-loopback remote agent endpoints', () {
+    for (final entry in <(String, String)>[
+      ('websocket', 'ws://agent.example.com/acp'),
+      ('http', 'http://10.0.0.5/acp'),
+    ]) {
+      expect(
+        () => AcpClientConfig.fromJson({
+          'agent_servers': {
+            'Remote Agent': {'type': entry.$1, 'url': entry.$2},
+          },
+        }),
+        throwsA(isA<FormatException>()),
+      );
+    }
+
+    for (final entry in <(String, String)>[
+      ('websocket', 'ws://[::1]:8765/acp'),
+      ('http', 'http://localhost:8080/acp'),
+      ('websocket', 'wss://agent.example.com/acp'),
+      ('http', 'https://agent.example.com/acp'),
+    ]) {
+      final config = AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Remote Agent': {'type': entry.$1, 'url': entry.$2},
+        },
+      });
+
+      expect(config.activeAgentServer?.url, entry.$2);
+    }
+  });
+
+  test('rejects credentials embedded in remote endpoint URLs', () {
+    for (final entry in <(String, String)>[
+      ('http', 'https://embedded:canary-secret@agent.example.com/acp'),
+      ('websocket', 'wss://embedded:canary-secret@agent.example.com/acp'),
+    ]) {
+      expect(
+        () => AcpClientConfig.fromJson({
+          'agent_servers': {
+            'Remote Agent': {'type': entry.$1, 'url': entry.$2},
+          },
+        }),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('canary-secret')),
+          ),
+        ),
+      );
+    }
+  });
+
   test('normalizes agent server transport type casing', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'HTTP Agent',
@@ -197,10 +291,12 @@ void main() {
     expect(config.mcpServers.first.command, '/usr/local/bin/mcp-filesystem');
     expect(config.mcpServers.last.type, 'http');
     expect(config.mcpServers.last.url, 'https://api.example.com/mcp');
-    expect(config.mcpServers.first.toJson()['env'], [
+    expect(config.mcpServers.first.toJson(), isNot(contains('env')));
+    expect(config.mcpServers.first.toRuntimeJson()['env'], [
       {'name': 'ROOT', 'value': '/workspace'},
     ]);
-    expect(config.mcpServers.last.toJson()['headers'], [
+    expect(config.mcpServers.last.toJson(), isNot(contains('headers')));
+    expect(config.mcpServers.last.toRuntimeJson()['headers'], [
       {'name': 'Authorization', 'value': 'Bearer test-token'},
     ]);
 
@@ -209,6 +305,34 @@ void main() {
       'filesystem',
       'api-tools',
     ]);
+  });
+
+  test('requires TLS for non-loopback remote MCP endpoints', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'api-tools',
+            'type': 'http',
+            'url': 'http://api.example.com/mcp',
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    for (final url in <String>[
+      'http://127.0.0.1:8080/mcp',
+      'https://api.example.com/mcp',
+    ]) {
+      final config = AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'name': 'api-tools', 'type': 'http', 'url': url},
+        ],
+      });
+
+      expect(config.mcpServers.single.url, url);
+    }
   });
 
   test('loads ACP transport MCP server config', () {
@@ -224,7 +348,7 @@ void main() {
     expect(config.mcpServers.single.toJson(), {
       'name': 'nested-agent-tools',
       'type': 'acp',
-      'id': 'nested-agent',
+      'serverId': 'nested-agent',
     });
   });
 
@@ -413,6 +537,44 @@ void main() {
     expect(reviewAgent.model, 'review-model');
     expect(reviewAgent.timeout, const Duration(milliseconds: 5000));
     expect(config.clientProviders.permissions.hasReviewAgent, isTrue);
+  });
+
+  test('requires TLS for inline remote MCP permission reviewers', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'review_agent': {
+              'mcp_server': {
+                'name': 'permission-reviewer',
+                'type': 'http',
+                'url': 'http://reviewer.example.com/mcp',
+              },
+            },
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'permissions': {
+          'review_agent': {
+            'mcp_server': {
+              'name': 'permission-reviewer',
+              'type': 'http',
+              'url': 'http://localhost:8080/mcp',
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      config.clientProviders.permissions.reviewAgent.mcpServer?.url,
+      'http://localhost:8080/mcp',
+    );
   });
 
   test('loads permission review agent by top-level MCP server name', () {
@@ -604,9 +766,19 @@ void main() {
       'name': 'stdio-tools',
       'command': '/usr/local/bin/mcp-tools',
       'args': <String>[],
-      'env': <Map<String, String>>[],
     });
     expect(config.mcpServers.last.toJson(), {
+      'name': 'api-tools',
+      'type': 'http',
+      'url': 'https://api.example.com/mcp',
+    });
+    expect(config.mcpServers.first.toRuntimeJson(), {
+      'name': 'stdio-tools',
+      'command': '/usr/local/bin/mcp-tools',
+      'args': <String>[],
+      'env': <Map<String, String>>[],
+    });
+    expect(config.mcpServers.last.toRuntimeJson(), {
       'name': 'api-tools',
       'type': 'http',
       'url': 'https://api.example.com/mcp',
@@ -813,6 +985,32 @@ void main() {
     );
   });
 
+  test('rejects duplicate snake and camel secret reference fields', () {
+    const first =
+        'keychain://ianvs-acp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const second =
+        'keychain://ianvs-acp/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'tools',
+            'command': '/usr/local/bin/tools',
+            'env_refs': {'TOKEN': first},
+            'envRefs': {'TOKEN': second},
+          },
+        ],
+      }),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('must not define both env_refs'),
+        ),
+      ),
+    );
+  });
+
   test('rejects invalid websocket agent server config', () {
     expect(
       () => AcpClientConfig.fromJson({
@@ -854,18 +1052,16 @@ void main() {
       throwsA(isA<FormatException>()),
     );
 
-    expect(
-      () => AcpClientConfig.fromJson({
-        'agent_servers': {
-          'Remote Agent': {
-            'type': 'websocket',
-            'url': 'ws://127.0.0.1/acp',
-            'headers': {'Authorization': ''},
-          },
+    final emptySecret = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Remote Agent': {
+          'type': 'websocket',
+          'url': 'ws://127.0.0.1/acp',
+          'headers': {'Authorization': ''},
         },
-      }),
-      throwsA(isA<FormatException>()),
-    );
+      },
+    });
+    expect(emptySecret.agentServers.single.headers['Authorization'], '');
   });
 
   test('rejects invalid stdio agent cwd config', () {
@@ -950,6 +1146,40 @@ void main() {
             ],
           },
         },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects duplicate MCP env and case-insensitive header names', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'stdio-tools',
+            'command': 'tools',
+            'env': [
+              {'name': 'TOKEN', 'value': 'first'},
+              {'name': 'TOKEN', 'value': 'second'},
+            ],
+          },
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {
+            'name': 'http-tools',
+            'type': 'http',
+            'url': 'https://tools.example/mcp',
+            'headers': [
+              {'name': 'Authorization', 'value': 'first'},
+              {'name': 'authorization', 'value': 'second'},
+            ],
+          },
+        ],
       }),
       throwsA(isA<FormatException>()),
     );

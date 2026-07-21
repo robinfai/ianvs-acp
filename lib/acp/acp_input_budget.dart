@@ -1,0 +1,1950 @@
+// ignore_for_file: prefer_initializing_formals
+
+import 'dart:collection';
+import 'dart:math' as math;
+
+const int _maxSafeBudgetInteger = 0x1fffffffffffff;
+
+/// Returns the largest Base64 length needed for [decodedByteLimit].
+///
+/// The calculation rejects values whose encoded result would exceed Dart's
+/// exact cross-platform integer range.
+int acpMaxBase64EncodedLength(int decodedByteLimit) {
+  _requirePositive(decodedByteLimit, 'decodedByteLimit');
+  final groups = decodedByteLimit ~/ 3 + (decodedByteLimit % 3 == 0 ? 0 : 1);
+  if (groups > _maxSafeBudgetInteger ~/ 4) {
+    throw ArgumentError.value(
+      decodedByteLimit,
+      'decodedByteLimit',
+      'Base64 encoded limit exceeds the cross-platform safe integer range',
+    );
+  }
+  return groups * 4;
+}
+
+final class AcpBase64ScanResult {
+  const AcpBase64ScanResult(this.encodedLength, this.decodedBytes);
+
+  final int encodedLength;
+  final int decodedBytes;
+}
+
+/// Validates standard Base64 and counts decoded bytes without decoding it.
+AcpBase64ScanResult scanAcpBase64(
+  String encoded, {
+  required int maxDecodedBytes,
+  required String resource,
+}) {
+  _requirePositiveSafeBudgetInteger(maxDecodedBytes, 'maxDecodedBytes');
+  final encodedLength = encoded.length;
+  if (encodedLength % 4 != 0) _throwInvalidBase64();
+
+  var decodedBytes = 0;
+  for (var index = 0; index < encodedLength; index += 4) {
+    final first = encoded.codeUnitAt(index);
+    final second = encoded.codeUnitAt(index + 1);
+    final third = encoded.codeUnitAt(index + 2);
+    final fourth = encoded.codeUnitAt(index + 3);
+    final secondValue = _base64SextetValue(second);
+    if (_base64SextetValue(first) < 0 || secondValue < 0) {
+      _throwInvalidBase64();
+    }
+
+    final isLastQuartet = index + 4 == encodedLength;
+    final int quartetBytes;
+    if (third == 0x3d) {
+      if (fourth != 0x3d || !isLastQuartet || (secondValue & 0x0f) != 0) {
+        _throwInvalidBase64();
+      }
+      quartetBytes = 1;
+    } else {
+      final thirdValue = _base64SextetValue(third);
+      if (thirdValue < 0) _throwInvalidBase64();
+      if (fourth == 0x3d) {
+        if (!isLastQuartet || (thirdValue & 0x03) != 0) _throwInvalidBase64();
+        quartetBytes = 2;
+      } else {
+        if (_base64SextetValue(fourth) < 0) _throwInvalidBase64();
+        quartetBytes = 3;
+      }
+    }
+
+    if (quartetBytes > maxDecodedBytes - decodedBytes) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: maxDecodedBytes,
+        observedAtLeast: _safeObservedAtLeast(
+          decodedBytes,
+          quartetBytes,
+          maxDecodedBytes,
+        ),
+      );
+    }
+    decodedBytes += quartetBytes;
+  }
+
+  return AcpBase64ScanResult(encodedLength, decodedBytes);
+}
+
+int _base64SextetValue(int codeUnit) {
+  if (codeUnit >= 0x41 && codeUnit <= 0x5a) return codeUnit - 0x41;
+  if (codeUnit >= 0x61 && codeUnit <= 0x7a) return codeUnit - 0x47;
+  if (codeUnit >= 0x30 && codeUnit <= 0x39) return codeUnit + 0x04;
+  if (codeUnit == 0x2b) return 62;
+  if (codeUnit == 0x2f) return 63;
+  return -1;
+}
+
+Never _throwInvalidBase64() {
+  throw const FormatException('Invalid ACP Base64 encoding.');
+}
+
+enum AcpInputOmissionReason {
+  inputLimit,
+  invalidEncoding,
+  invalidImage,
+  invalidStructure,
+}
+
+/// A typed description of ACP input that owning code omitted.
+final class AcpInputOmission {
+  factory AcpInputOmission({
+    required AcpInputOmissionReason reason,
+    required String resource,
+    required bool truncated,
+    int? limit,
+    int? observedAtLeast,
+  }) {
+    final hasLimit = limit != null;
+    final hasObservedAtLeast = observedAtLeast != null;
+    if (hasLimit != hasObservedAtLeast) {
+      throw ArgumentError(
+        'limit and observedAtLeast must either both be provided or both be null',
+      );
+    }
+    final hasCapacity = hasLimit;
+    if (reason == AcpInputOmissionReason.inputLimit && !hasCapacity) {
+      throw ArgumentError(
+        'inputLimit omissions require limit and observedAtLeast',
+      );
+    }
+    if (reason != AcpInputOmissionReason.inputLimit && hasCapacity) {
+      throw ArgumentError(
+        'only inputLimit omissions may include limit and observedAtLeast',
+      );
+    }
+    return AcpInputOmission._(
+      reason: reason,
+      resource: resource,
+      truncated: truncated,
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+  }
+
+  const AcpInputOmission._({
+    required this.reason,
+    required this.resource,
+    required this.truncated,
+    required this.limit,
+    required this.observedAtLeast,
+  });
+
+  final AcpInputOmissionReason reason;
+  final String resource;
+  final bool truncated;
+  final int? limit;
+  final int? observedAtLeast;
+
+  Map<String, Object?> toJson() {
+    final json = <String, Object?>{
+      'reason': _omissionReasonWireName(reason),
+      'resource': resource,
+    };
+    if (reason == AcpInputOmissionReason.inputLimit) {
+      json['limit'] = limit;
+      json['observedAtLeast'] = observedAtLeast;
+    }
+    json['truncated'] = truncated;
+    return json;
+  }
+
+  @override
+  String toString() {
+    final fields = toJson().entries.map(
+      (entry) => '${entry.key}: ${entry.value}',
+    );
+    return 'AcpInputOmission(${fields.join(', ')})';
+  }
+}
+
+final class AcpTextBudgetChunk {
+  const AcpTextBudgetChunk({
+    required this.safePrefix,
+    required this.acceptedBytes,
+    required this.totalBytes,
+    required this.totalLines,
+    this.omission,
+  });
+
+  final String safePrefix;
+  final int acceptedBytes;
+  final int totalBytes;
+  final int totalLines;
+  final AcpInputOmission? omission;
+}
+
+/// Opaque one-shot host transaction for one [AcpUtf8LineBudgetCounter].
+///
+/// This is trusted host bookkeeping, not an untrusted-input security boundary.
+final class AcpUtf8LineBudgetCheckpoint {
+  AcpUtf8LineBudgetCheckpoint._({
+    required Object owner,
+    required int totalBytes,
+    required int totalLines,
+    required bool previousWasCR,
+    required bool finished,
+    required bool omitted,
+    required int? pendingHighSurrogate,
+  }) : _owner = owner,
+       _totalBytes = totalBytes,
+       _totalLines = totalLines,
+       _previousWasCR = previousWasCR,
+       _finished = finished,
+       _omitted = omitted,
+       _pendingHighSurrogate = pendingHighSurrogate;
+
+  final Object _owner;
+  final int _totalBytes;
+  final int _totalLines;
+  final bool _previousWasCR;
+  final bool _finished;
+  final bool _omitted;
+  final int? _pendingHighSurrogate;
+  var _active = true;
+}
+
+/// Counts UTF-8 bytes and logical lines without joining input chunks.
+final class AcpUtf8LineBudgetCounter {
+  AcpUtf8LineBudgetCounter({
+    required int maxBytes,
+    required int maxLines,
+    required String resource,
+  }) : _maxBytes = maxBytes,
+       _maxLines = maxLines,
+       _resource = resource {
+    _requirePositiveSafeBudgetInteger(_maxBytes, 'maxBytes');
+    _requirePositiveSafeBudgetInteger(_maxLines, 'maxLines');
+  }
+
+  final int _maxBytes;
+  final int _maxLines;
+  final String _resource;
+  final Object _checkpointOwner = Object();
+  final List<AcpUtf8LineBudgetCheckpoint> _activeCheckpoints =
+      <AcpUtf8LineBudgetCheckpoint>[];
+
+  var _totalBytes = 0;
+  var _totalLines = 0;
+  var _previousWasCR = false;
+  var _finished = false;
+  var _omitted = false;
+  int? _pendingHighSurrogate;
+
+  /// Begins trusted host bookkeeping that must be committed or rolled back.
+  AcpUtf8LineBudgetCheckpoint checkpoint() {
+    final checkpoint = AcpUtf8LineBudgetCheckpoint._(
+      owner: _checkpointOwner,
+      totalBytes: _totalBytes,
+      totalLines: _totalLines,
+      previousWasCR: _previousWasCR,
+      finished: _finished,
+      omitted: _omitted,
+      pendingHighSurrogate: _pendingHighSurrogate,
+    );
+    _activeCheckpoints.add(checkpoint);
+    return checkpoint;
+  }
+
+  /// Commits this counter's active host transaction.
+  void commit(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    _requireActiveCheckpoint(checkpoint);
+    _activeCheckpoints.removeLast();
+    checkpoint._active = false;
+  }
+
+  /// Rolls this counter's active host transaction back exactly once.
+  void rollback(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    _requireActiveCheckpoint(checkpoint);
+    _activeCheckpoints.removeLast();
+    checkpoint._active = false;
+    _totalBytes = checkpoint._totalBytes;
+    _totalLines = checkpoint._totalLines;
+    _previousWasCR = checkpoint._previousWasCR;
+    _finished = checkpoint._finished;
+    _omitted = checkpoint._omitted;
+    _pendingHighSurrogate = checkpoint._pendingHighSurrogate;
+  }
+
+  void _requireActiveCheckpoint(AcpUtf8LineBudgetCheckpoint checkpoint) {
+    if (!identical(checkpoint._owner, _checkpointOwner) ||
+        !checkpoint._active ||
+        _activeCheckpoints.isEmpty ||
+        !identical(_activeCheckpoints.last, checkpoint)) {
+      throw StateError(
+        'ACP text budget checkpoint is not current for this counter.',
+      );
+    }
+  }
+
+  AcpTextBudgetChunk append(String chunk) {
+    if (_finished) {
+      throw StateError('Cannot append after the text budget is finished.');
+    }
+    if (_omitted) return _emptyChunk();
+    return _consume(chunk, finish: false);
+  }
+
+  AcpTextBudgetChunk finish() {
+    if (_finished) return _emptyChunk();
+    _finished = true;
+    if (_omitted) return _emptyChunk();
+    return _consume('', finish: true);
+  }
+
+  AcpTextBudgetChunk _consume(String chunk, {required bool finish}) {
+    final safePrefix = StringBuffer();
+    var acceptedBytes = 0;
+    AcpInputOmission? omission;
+    var index = 0;
+
+    bool accept(String text, int byteCount, int firstCodeUnit) {
+      final startsText = _totalBytes == 0;
+      var addedLines = startsText ? 1 : 0;
+      if (firstCodeUnit == 0x0d) {
+        addedLines += 1;
+      } else if (firstCodeUnit == 0x0a && !_previousWasCR) {
+        addedLines += 1;
+      }
+
+      if (byteCount > _maxBytes - _totalBytes) {
+        omission = _makeOmission(
+          _maxBytes,
+          _safeObservedAtLeast(_totalBytes, byteCount, _maxBytes),
+        );
+        _omitted = true;
+        return false;
+      }
+      if (addedLines > _maxLines - _totalLines) {
+        omission = _makeOmission(
+          _maxLines,
+          _safeObservedAtLeast(_totalLines, addedLines, _maxLines),
+        );
+        _omitted = true;
+        return false;
+      }
+
+      safePrefix.write(text);
+      acceptedBytes += byteCount;
+      _totalBytes += byteCount;
+      _totalLines += addedLines;
+      _previousWasCR = firstCodeUnit == 0x0d;
+      return true;
+    }
+
+    final pendingHigh = _pendingHighSurrogate;
+    if (pendingHigh != null && (chunk.isNotEmpty || finish)) {
+      _pendingHighSurrogate = null;
+      if (chunk.isNotEmpty && _isLowSurrogate(chunk.codeUnitAt(0))) {
+        final low = chunk.codeUnitAt(0);
+        if (!accept(
+          String.fromCharCodes(<int>[pendingHigh, low]),
+          4,
+          pendingHigh,
+        )) {
+          return _chunk(safePrefix, acceptedBytes, omission);
+        }
+        index = 1;
+      } else if (!accept(String.fromCharCode(pendingHigh), 3, pendingHigh)) {
+        return _chunk(safePrefix, acceptedBytes, omission);
+      }
+    }
+
+    while (index < chunk.length) {
+      final codeUnit = chunk.codeUnitAt(index);
+      if (_isHighSurrogate(codeUnit)) {
+        final nextIndex = index + 1;
+        if (nextIndex == chunk.length) {
+          _pendingHighSurrogate = codeUnit;
+          break;
+        }
+        final next = chunk.codeUnitAt(nextIndex);
+        if (_isLowSurrogate(next)) {
+          if (!accept(chunk.substring(index, index + 2), 4, codeUnit)) break;
+          index += 2;
+          continue;
+        }
+      }
+
+      final byteCount = codeUnit <= 0x7f
+          ? 1
+          : codeUnit <= 0x7ff
+          ? 2
+          : 3;
+      if (!accept(chunk.substring(index, index + 1), byteCount, codeUnit)) {
+        break;
+      }
+      index += 1;
+    }
+
+    return _chunk(safePrefix, acceptedBytes, omission);
+  }
+
+  AcpInputOmission _makeOmission(int limit, int observedAtLeast) =>
+      AcpInputOmission(
+        reason: AcpInputOmissionReason.inputLimit,
+        resource: _resource,
+        truncated: true,
+        limit: limit,
+        observedAtLeast: observedAtLeast,
+      );
+
+  AcpTextBudgetChunk _chunk(
+    StringBuffer prefix,
+    int acceptedBytes,
+    AcpInputOmission? omission,
+  ) => AcpTextBudgetChunk(
+    safePrefix: prefix.toString(),
+    acceptedBytes: acceptedBytes,
+    totalBytes: _totalBytes,
+    totalLines: _totalLines,
+    omission: omission,
+  );
+
+  AcpTextBudgetChunk _emptyChunk() => AcpTextBudgetChunk(
+    safePrefix: '',
+    acceptedBytes: 0,
+    totalBytes: _totalBytes,
+    totalLines: _totalLines,
+  );
+}
+
+/// Host-controlled limits for untrusted ACP input.
+class AcpInputBudget {
+  const AcpInputBudget({
+    this.maxJsonDepth = 32,
+    this.maxCapabilityDepth = 16,
+    this.maxCapabilityNodes = 4096,
+    this.maxCapabilityBytes = 256 * 1024,
+    this.maxAuthMethods = 32,
+    this.maxMetadataDepth = 16,
+    this.maxMetadataNodes = 8192,
+    this.maxMetadataEntries = 1024,
+    this.maxMetadataBytes = 512 * 1024,
+    this.maxCollectionItems = 1024,
+    this.maxStructuredUpdateNodes = 8192,
+    this.maxStructuredUpdateBytes = 16 * 1024 * 1024,
+    this.maxStructuredStringBytes = 4 * 1024 * 1024,
+    this.maxMessageTextBytes = 2 * 1024 * 1024,
+    this.maxMessageTextLines = 10000,
+    this.maxMarkdownSyntaxTokens = 4096,
+    this.maxMarkdownFallbackBytes = 64 * 1024,
+    this.maxThoughtTextBytes = 512 * 1024,
+    this.maxEmbeddedMediaBytes = 16 * 1024 * 1024,
+    this.maxImageDimension = 8192,
+    this.maxImagePixels = 16777216,
+    this.maxImagePreviewPixels = 2097152,
+    this.maxConcurrentImageDecodes = 2,
+    this.maxImagePreviewPixelsGlobal = 4194304,
+    this.maxImageDecodeBytesGlobal = 32 * 1024 * 1024,
+    this.maxTurnItems = 512,
+    this.maxTurnRetainedBytes = 32 * 1024 * 1024,
+    this.maxTimelineItems = 2000,
+    this.maxTimelineBytes = 32 * 1024 * 1024,
+    this.maxUiStateBytes = 128 * 1024 * 1024,
+    this.maxMetadataPreviewBytes = 16 * 1024,
+    this.maxMetadataPreviewChars = 4096,
+  });
+
+  final int maxJsonDepth;
+  final int maxCapabilityDepth;
+  final int maxCapabilityNodes;
+  final int maxCapabilityBytes;
+  final int maxAuthMethods;
+
+  // Defined here so later input slices share the same host-owned policy.
+  final int maxMetadataDepth;
+  final int maxMetadataNodes;
+  final int maxMetadataEntries;
+  final int maxMetadataBytes;
+
+  final int maxCollectionItems;
+  final int maxStructuredUpdateNodes;
+  final int maxStructuredUpdateBytes;
+  final int maxStructuredStringBytes;
+  final int maxMessageTextBytes;
+  final int maxMessageTextLines;
+  final int maxMarkdownSyntaxTokens;
+  final int maxMarkdownFallbackBytes;
+  final int maxThoughtTextBytes;
+  final int maxEmbeddedMediaBytes;
+  final int maxImageDimension;
+  final int maxImagePixels;
+  final int maxImagePreviewPixels;
+  final int maxConcurrentImageDecodes;
+  final int maxImagePreviewPixelsGlobal;
+  final int maxImageDecodeBytesGlobal;
+  final int maxTurnItems;
+  final int maxTurnRetainedBytes;
+  final int maxTimelineItems;
+  final int maxTimelineBytes;
+  final int maxUiStateBytes;
+  final int maxMetadataPreviewBytes;
+  final int maxMetadataPreviewChars;
+
+  /// Reject invalid dynamic budgets in debug and release builds.
+  void validate() {
+    _requirePositiveSafeBudgetInteger(maxJsonDepth, 'maxJsonDepth');
+    _requirePositiveSafeBudgetInteger(maxCapabilityDepth, 'maxCapabilityDepth');
+    _requirePositiveSafeBudgetInteger(maxCapabilityNodes, 'maxCapabilityNodes');
+    _requirePositiveSafeBudgetInteger(maxCapabilityBytes, 'maxCapabilityBytes');
+    _requirePositiveSafeBudgetInteger(maxAuthMethods, 'maxAuthMethods');
+    _requirePositiveSafeBudgetInteger(maxMetadataDepth, 'maxMetadataDepth');
+    _requirePositiveSafeBudgetInteger(maxMetadataNodes, 'maxMetadataNodes');
+    _requirePositiveSafeBudgetInteger(maxMetadataEntries, 'maxMetadataEntries');
+    _requirePositiveSafeBudgetInteger(maxMetadataBytes, 'maxMetadataBytes');
+    _requirePositiveSafeBudgetInteger(maxCollectionItems, 'maxCollectionItems');
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredUpdateNodes,
+      'maxStructuredUpdateNodes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredUpdateBytes,
+      'maxStructuredUpdateBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxStructuredStringBytes,
+      'maxStructuredStringBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMessageTextBytes,
+      'maxMessageTextBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMessageTextLines,
+      'maxMessageTextLines',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMarkdownSyntaxTokens,
+      'maxMarkdownSyntaxTokens',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMarkdownFallbackBytes,
+      'maxMarkdownFallbackBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxThoughtTextBytes,
+      'maxThoughtTextBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxEmbeddedMediaBytes,
+      'maxEmbeddedMediaBytes',
+    );
+    _requirePositiveSafeBudgetInteger(maxImageDimension, 'maxImageDimension');
+    _requirePositiveSafeBudgetInteger(maxImagePixels, 'maxImagePixels');
+    _requirePositiveSafeBudgetInteger(
+      maxImagePreviewPixels,
+      'maxImagePreviewPixels',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxConcurrentImageDecodes,
+      'maxConcurrentImageDecodes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxImagePreviewPixelsGlobal,
+      'maxImagePreviewPixelsGlobal',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxImageDecodeBytesGlobal,
+      'maxImageDecodeBytesGlobal',
+    );
+    _requirePositiveSafeBudgetInteger(maxTurnItems, 'maxTurnItems');
+    _requirePositiveSafeBudgetInteger(
+      maxTurnRetainedBytes,
+      'maxTurnRetainedBytes',
+    );
+    _requirePositiveSafeBudgetInteger(maxTimelineItems, 'maxTimelineItems');
+    _requirePositiveSafeBudgetInteger(maxTimelineBytes, 'maxTimelineBytes');
+    _requirePositiveSafeBudgetInteger(maxUiStateBytes, 'maxUiStateBytes');
+    _requirePositiveSafeBudgetInteger(
+      maxMetadataPreviewBytes,
+      'maxMetadataPreviewBytes',
+    );
+    _requirePositiveSafeBudgetInteger(
+      maxMetadataPreviewChars,
+      'maxMetadataPreviewChars',
+    );
+
+    acpMaxBase64EncodedLength(maxEmbeddedMediaBytes);
+    if (maxImagePreviewPixels > _maxSafeBudgetInteger ~/ 4) {
+      throw ArgumentError.value(
+        maxImagePreviewPixels,
+        'maxImagePreviewPixels',
+        'decoded preview bytes exceed the cross-platform safe integer range',
+      );
+    }
+
+    _requireAtMost(
+      maxImagePreviewPixels,
+      maxImagePixels,
+      'maxImagePreviewPixels relative to maxImagePixels',
+    );
+    _requireAtMost(
+      maxImagePreviewPixels,
+      maxImagePreviewPixelsGlobal,
+      'maxImagePreviewPixels relative to maxImagePreviewPixelsGlobal',
+    );
+    _requireAtMost(
+      maxMarkdownFallbackBytes,
+      maxMessageTextBytes,
+      'maxMarkdownFallbackBytes relative to maxMessageTextBytes',
+    );
+    _requireAtMost(
+      maxTurnRetainedBytes,
+      maxTimelineBytes,
+      'maxTurnRetainedBytes relative to maxTimelineBytes',
+    );
+    _requireAtMost(
+      maxTimelineBytes,
+      maxUiStateBytes,
+      'maxTimelineBytes relative to maxUiStateBytes',
+    );
+
+    final previewBytes = maxImagePreviewPixels * 4;
+    _requireAtMost(
+      previewBytes,
+      maxImageDecodeBytesGlobal,
+      'maxImagePreviewPixels bytes relative to maxImageDecodeBytesGlobal',
+    );
+    final remainingImageDecodeBytes = maxImageDecodeBytesGlobal - previewBytes;
+    if (maxEmbeddedMediaBytes > remainingImageDecodeBytes) {
+      throw AcpInputLimitExceeded(
+        resource: 'maxEmbeddedMediaBytes after image preview reservation',
+        limit: remainingImageDecodeBytes,
+        observedAtLeast: maxEmbeddedMediaBytes,
+      );
+    }
+  }
+}
+
+/// Shares one host-owned node and byte budget across a structured ACP update.
+///
+/// Callers count each List/Map/model container with [consumeContainerNode] or
+/// [consumeEntry]. A `List<String>` copies each item directly with
+/// [copyString], while a `List<Model>` consumes one entry before copying that
+/// model's fields. Nested Lists and Maps each consume their own container node.
+/// The constructor's `resource` and every method's `field` must be host-owned
+/// constants and must never be derived from an untrusted ACP payload.
+/// Failed [copyMetadata] and [copyJsonValue] calls leave this guard's budgets
+/// unchanged.
+/// Reentrant calls made by a metadata source are rejected.
+final class AcpStructuredUpdateGuard {
+  AcpStructuredUpdateGuard({
+    required AcpInputBudget budget,
+    required String resource,
+  }) : _budget = _validatedAcpInputBudget(budget),
+       _resource = resource;
+
+  final AcpInputBudget _budget;
+  final String _resource;
+
+  var _nodes = 0;
+  var _bytes = 0;
+  var _metadataCopyInProgress = false;
+
+  String copyString(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
+    if (value is! String) {
+      throw FormatException('Invalid $_resource $field: expected a string.');
+    }
+    final byteCount = _boundedAcpUtf8Length(
+      value,
+      limit: _budget.maxStructuredStringBytes,
+      onExceeded: (observedAtLeast) => _throwLimit(
+        field: field,
+        kind: 'string bytes',
+        limit: _budget.maxStructuredStringBytes,
+        observedAtLeast: observedAtLeast,
+      ),
+    );
+    _consume(nodes: 1, bytes: byteCount, field: field);
+    return value;
+  }
+
+  Object? copyScalar(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
+    final int byteCount;
+    if (value is int) {
+      byteCount = value.toString().length;
+    } else if (value is double) {
+      if (!value.isFinite) {
+        throw FormatException(
+          'Invalid $_resource $field: expected a finite JSON scalar.',
+        );
+      }
+      byteCount = value.toString().length;
+    } else if (value is bool) {
+      byteCount = value ? 4 : 5;
+    } else if (value == null) {
+      byteCount = 4;
+    } else {
+      throw FormatException(
+        'Invalid $_resource $field: expected a JSON scalar.',
+      );
+    }
+    _consume(nodes: 1, bytes: byteCount, field: field);
+    return value;
+  }
+
+  int checkCollection(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
+    if (value is! List && value is! Map) {
+      throw FormatException(
+        'Invalid $_resource $field: expected a collection.',
+      );
+    }
+    final int length;
+    try {
+      length = value is List ? value.length : (value as Map).length;
+    } catch (_) {
+      throw FormatException(
+        'Invalid $_resource $field: collection length is unavailable.',
+      );
+    }
+    if (length < 0) {
+      throw FormatException(
+        'Invalid $_resource $field: collection length is negative.',
+      );
+    }
+    if (length > _budget.maxCollectionItems) {
+      _throwLimit(
+        field: field,
+        kind: 'collection items',
+        limit: _budget.maxCollectionItems,
+        observedAtLeast: length,
+      );
+    }
+    return length;
+  }
+
+  Map<String, Object?> copyMetadata(Object? value, {required String field}) {
+    _rejectReentrantMetadataAccess();
+    if (value == null) return Map<String, Object?>.unmodifiable(const {});
+    if (value is! Map) {
+      throw FormatException(
+        'Invalid $_resource $field: expected a JSON object.',
+      );
+    }
+    _metadataCopyInProgress = true;
+    try {
+      return _copyJsonValue(value, field: field) as Map<String, Object?>;
+    } finally {
+      _metadataCopyInProgress = false;
+    }
+  }
+
+  /// Creates a detached, deeply immutable copy of any JSON-compatible value.
+  ///
+  /// The value consumes its actual scalar/container nodes and UTF-8 bytes in
+  /// the shared structured root. It also observes metadata depth, node, entry,
+  /// and byte limits. Failures are transactional and retain no partial value.
+  Object? copyJsonValue(
+    Object? value, {
+    required String field,
+    bool omitEmbeddedMediaDataUris = false,
+  }) {
+    _rejectReentrantMetadataAccess();
+    _metadataCopyInProgress = true;
+    try {
+      return _copyJsonValue(
+        value,
+        field: field,
+        omitEmbeddedMediaDataUris: omitEmbeddedMediaDataUris,
+      );
+    } finally {
+      _metadataCopyInProgress = false;
+    }
+  }
+
+  Object? _copyJsonValue(
+    Object? source, {
+    required String field,
+    bool omitEmbeddedMediaDataUris = false,
+  }) {
+    final maxDepth = math.min(_budget.maxJsonDepth, _budget.maxMetadataDepth);
+    final entryLimit = math.min(
+      _budget.maxCollectionItems,
+      _budget.maxMetadataEntries,
+    );
+    var metadataNodes = 0;
+    var metadataBytes = 0;
+    var rootNodes = _nodes;
+    var rootBytes = _bytes;
+    Object? result;
+    final activeContainers = HashSet<Object>.identity();
+    final pending = <_StructuredMetadataFrame>[
+      _StructuredMetadataValueFrame(
+        source: source,
+        depth: 1,
+        assign: (copy) => result = copy,
+      ),
+    ];
+
+    void checkDepth(int depth) {
+      if (depth > maxDepth) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata depth',
+          limit: maxDepth,
+          observedAtLeast: depth,
+        );
+      }
+    }
+
+    void recordNode(int depth) {
+      checkDepth(depth);
+      if (metadataNodes >= _budget.maxMetadataNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata nodes',
+          limit: _budget.maxMetadataNodes,
+          observedAtLeast: _budget.maxMetadataNodes + 1,
+        );
+      }
+      if (rootNodes >= _budget.maxStructuredUpdateNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'nodes',
+          limit: _budget.maxStructuredUpdateNodes,
+          observedAtLeast: _budget.maxStructuredUpdateNodes + 1,
+        );
+      }
+      metadataNodes += 1;
+      rootNodes += 1;
+    }
+
+    void precheckChildren(int count) {
+      if (count > _budget.maxMetadataNodes - metadataNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata nodes',
+          limit: _budget.maxMetadataNodes,
+          observedAtLeast: _safeObservedAtLeast(
+            metadataNodes,
+            count,
+            _budget.maxMetadataNodes,
+          ),
+        );
+      }
+      if (count > _budget.maxStructuredUpdateNodes - rootNodes) {
+        _throwLimit(
+          field: field,
+          kind: 'nodes',
+          limit: _budget.maxStructuredUpdateNodes,
+          observedAtLeast: _safeObservedAtLeast(
+            rootNodes,
+            count,
+            _budget.maxStructuredUpdateNodes,
+          ),
+        );
+      }
+    }
+
+    void recordBytes(int count) {
+      if (count > _budget.maxMetadataBytes - metadataBytes) {
+        _throwLimit(
+          field: field,
+          kind: 'metadata bytes',
+          limit: _budget.maxMetadataBytes,
+          observedAtLeast: _safeObservedAtLeast(
+            metadataBytes,
+            count,
+            _budget.maxMetadataBytes,
+          ),
+        );
+      }
+      if (count > _budget.maxStructuredUpdateBytes - rootBytes) {
+        _throwLimit(
+          field: field,
+          kind: 'bytes',
+          limit: _budget.maxStructuredUpdateBytes,
+          observedAtLeast: _safeObservedAtLeast(
+            rootBytes,
+            count,
+            _budget.maxStructuredUpdateBytes,
+          ),
+        );
+      }
+      metadataBytes += count;
+      rootBytes += count;
+    }
+
+    void recordString(String string) {
+      final count = _boundedAcpUtf8Length(
+        string,
+        limit: _budget.maxStructuredStringBytes,
+        onExceeded: (observedAtLeast) => _throwLimit(
+          field: field,
+          kind: 'string bytes',
+          limit: _budget.maxStructuredStringBytes,
+          observedAtLeast: observedAtLeast,
+        ),
+      );
+      recordBytes(count);
+    }
+
+    int readLength(Object collection) {
+      final int length;
+      try {
+        length = collection is List
+            ? collection.length
+            : (collection as Map).length;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+      if (length < 0) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection length is negative.',
+        );
+      }
+      return length;
+    }
+
+    List<Object?> snapshotList(List list) {
+      final Iterator<Object?> iterator;
+      try {
+        iterator = list.iterator;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+      final values = <Object?>[];
+      while (true) {
+        final bool hasNext;
+        try {
+          hasNext = iterator.moveNext();
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        if (!hasNext) return values;
+        if (values.length >= entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: entryLimit + 1,
+          );
+        }
+        precheckChildren(values.length + 1);
+        try {
+          values.add(iterator.current);
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+      }
+    }
+
+    List<MapEntry<String, Object?>> snapshotMap(Map map) {
+      final Iterator<MapEntry<Object?, Object?>> iterator;
+      try {
+        iterator = map.entries.cast<MapEntry<Object?, Object?>>().iterator;
+      } catch (_) {
+        throw FormatException(
+          'Invalid $_resource $field: metadata collection access failed.',
+        );
+      }
+      final entries = <MapEntry<String, Object?>>[];
+      while (true) {
+        final bool hasNext;
+        try {
+          hasNext = iterator.moveNext();
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        if (!hasNext) return entries;
+        if (entries.length >= entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: entryLimit + 1,
+          );
+        }
+        precheckChildren(entries.length + 1);
+        final MapEntry<Object?, Object?> entry;
+        try {
+          entry = iterator.current;
+        } catch (_) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata collection access failed.',
+          );
+        }
+        final key = entry.key;
+        if (key is! String) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata key must be a string.',
+          );
+        }
+        recordString(key);
+        entries.add(MapEntry<String, Object?>(key, entry.value));
+      }
+    }
+
+    while (pending.isNotEmpty) {
+      final frame = pending.removeLast();
+      if (frame is _StructuredMetadataListExitFrame) {
+        activeContainers.remove(frame.source);
+        frame.assign(List<Object?>.unmodifiable(frame.copy));
+        continue;
+      }
+      if (frame is _StructuredMetadataMapExitFrame) {
+        activeContainers.remove(frame.source);
+        frame.assign(Map<String, Object?>.unmodifiable(frame.copy));
+        continue;
+      }
+
+      final valueFrame = frame as _StructuredMetadataValueFrame;
+      final current = valueFrame.source;
+      recordNode(valueFrame.depth);
+
+      if (current is List) {
+        if (activeContainers.contains(current)) {
+          throw FormatException(
+            'Invalid $_resource $field: cyclic metadata container.',
+          );
+        }
+        final reportedLength = readLength(current);
+        if (reportedLength > entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: reportedLength,
+          );
+        }
+        precheckChildren(reportedLength);
+        final values = snapshotList(current);
+        precheckChildren(values.length);
+        final copy = List<Object?>.filled(values.length, null);
+        activeContainers.add(current);
+        pending.add(
+          _StructuredMetadataListExitFrame(
+            source: current,
+            copy: copy,
+            assign: valueFrame.assign,
+          ),
+        );
+        for (var index = values.length - 1; index >= 0; index -= 1) {
+          final targetIndex = index;
+          pending.add(
+            _StructuredMetadataValueFrame(
+              source: values[index],
+              depth: valueFrame.depth + 1,
+              assign: (child) => copy[targetIndex] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is Map) {
+        if (activeContainers.contains(current)) {
+          throw FormatException(
+            'Invalid $_resource $field: cyclic metadata container.',
+          );
+        }
+        final reportedLength = readLength(current);
+        if (reportedLength > entryLimit) {
+          _throwLimit(
+            field: field,
+            kind: 'metadata collection items',
+            limit: entryLimit,
+            observedAtLeast: reportedLength,
+          );
+        }
+        precheckChildren(reportedLength);
+        final entries = snapshotMap(current);
+        precheckChildren(entries.length);
+        final copy = <String, Object?>{};
+        activeContainers.add(current);
+        pending.add(
+          _StructuredMetadataMapExitFrame(
+            source: current,
+            copy: copy,
+            assign: valueFrame.assign,
+          ),
+        );
+        for (var index = entries.length - 1; index >= 0; index -= 1) {
+          final entry = entries[index];
+          pending.add(
+            _StructuredMetadataValueFrame(
+              source: entry.value,
+              depth: valueFrame.depth + 1,
+              assign: (child) => copy[entry.key] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is String) {
+        final copied =
+            omitEmbeddedMediaDataUris && _isEmbeddedMediaDataUri(current)
+            ? _embeddedMediaDataOmissionMarker
+            : current;
+        recordString(copied);
+        valueFrame.assign(copied);
+        continue;
+      }
+      if (current is int) {
+        recordBytes(current.toString().length);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current is double) {
+        if (!current.isFinite) {
+          throw FormatException(
+            'Invalid $_resource $field: metadata number must be finite.',
+          );
+        }
+        recordBytes(current.toString().length);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current is bool) {
+        recordBytes(current ? 4 : 5);
+        valueFrame.assign(current);
+        continue;
+      }
+      if (current == null) {
+        recordBytes(4);
+        valueFrame.assign(null);
+        continue;
+      }
+      throw FormatException(
+        'Invalid $_resource $field: metadata contains a non-JSON value.',
+      );
+    }
+
+    _nodes = rootNodes;
+    _bytes = rootBytes;
+    return result;
+  }
+
+  void consumeContainerNode({required String field}) {
+    _rejectReentrantMetadataAccess();
+    _consume(nodes: 1, bytes: 0, field: field);
+  }
+
+  void consumeEntry({required String field}) {
+    _rejectReentrantMetadataAccess();
+    _consume(nodes: 1, bytes: 0, field: field);
+  }
+
+  void _rejectReentrantMetadataAccess() {
+    if (_metadataCopyInProgress) {
+      throw StateError(
+        'Cannot access an AcpStructuredUpdateGuard during a metadata copy.',
+      );
+    }
+  }
+
+  void _consume({
+    required int nodes,
+    required int bytes,
+    required String field,
+  }) {
+    if (nodes > _budget.maxStructuredUpdateNodes - _nodes) {
+      _throwLimit(
+        field: field,
+        kind: 'nodes',
+        limit: _budget.maxStructuredUpdateNodes,
+        observedAtLeast: _safeObservedAtLeast(
+          _nodes,
+          nodes,
+          _budget.maxStructuredUpdateNodes,
+        ),
+      );
+    }
+    if (bytes > _budget.maxStructuredUpdateBytes - _bytes) {
+      _throwLimit(
+        field: field,
+        kind: 'bytes',
+        limit: _budget.maxStructuredUpdateBytes,
+        observedAtLeast: _safeObservedAtLeast(
+          _bytes,
+          bytes,
+          _budget.maxStructuredUpdateBytes,
+        ),
+      );
+    }
+    _nodes += nodes;
+    _bytes += bytes;
+  }
+
+  Never _throwLimit({
+    required String field,
+    required String kind,
+    required int limit,
+    required int observedAtLeast,
+  }) {
+    throw AcpInputLimitExceeded(
+      resource: '$_resource $field $kind',
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+  }
+}
+
+const String _embeddedMediaDataOmissionMarker = '<media omitted>';
+
+bool _isEmbeddedMediaDataUri(String value) {
+  if (!value.startsWith('data:') || value.length <= 5) return false;
+  final headerEnd = math.min(value.length, 256);
+  final header = value.substring(5, headerEnd).toLowerCase();
+  final comma = header.indexOf(',');
+  if (comma < 0) return false;
+  final mediaType = header.substring(0, comma);
+  return (mediaType.startsWith('image/') || mediaType.startsWith('audio/')) &&
+      mediaType.contains(';base64');
+}
+
+/// Deterministically estimates retained JSON-compatible ACP state.
+final class AcpRetainedSizeEstimator {
+  AcpRetainedSizeEstimator({required AcpInputBudget budget})
+    : _budget = budget {
+    budget.validate();
+  }
+
+  final AcpInputBudget _budget;
+
+  int estimate(Object? value) {
+    var nodes = 0;
+    var bytes = 0;
+    final activeContainers = HashSet<Object>.identity();
+    final pending = <_RetainedSizeFrame>[
+      _RetainedValueFrame(value: value, depth: 1),
+    ];
+
+    Never throwLimit(String resource, int limit, int observedAtLeast) {
+      throw AcpInputLimitExceeded(
+        resource: resource,
+        limit: limit,
+        observedAtLeast: observedAtLeast,
+      );
+    }
+
+    void recordNode() {
+      if (nodes >= _budget.maxMetadataNodes) {
+        throwLimit(
+          'ACP retained state nodes',
+          _budget.maxMetadataNodes,
+          _budget.maxMetadataNodes + 1,
+        );
+      }
+      nodes += 1;
+    }
+
+    void precheckNodes(int count) {
+      if (count > _budget.maxMetadataNodes - nodes) {
+        throwLimit(
+          'ACP retained state nodes',
+          _budget.maxMetadataNodes,
+          _safeObservedAtLeast(nodes, count, _budget.maxMetadataNodes),
+        );
+      }
+    }
+
+    void addBytes(int count) {
+      if (count > _maxSafeBudgetInteger - bytes) {
+        throwLimit(
+          'ACP retained state bytes',
+          _maxSafeBudgetInteger,
+          _maxSafeBudgetInteger + 1,
+        );
+      }
+      bytes += count;
+    }
+
+    void addRepeatedOverhead(int count) {
+      if (count > _maxSafeBudgetInteger ~/ 32) {
+        throwLimit(
+          'ACP retained state bytes',
+          _maxSafeBudgetInteger,
+          _maxSafeBudgetInteger + 1,
+        );
+      }
+      addBytes(count * 32);
+    }
+
+    void checkDepth(int depth) {
+      if (depth > _budget.maxMetadataDepth) {
+        throwLimit('ACP retained state depth', _budget.maxMetadataDepth, depth);
+      }
+    }
+
+    int stringBytes(String string) {
+      var result = 0;
+      var index = 0;
+      while (index < string.length) {
+        final codeUnit = string.codeUnitAt(index);
+        final int codePointBytes;
+        if (codeUnit <= 0x7f) {
+          codePointBytes = 1;
+        } else if (codeUnit <= 0x7ff) {
+          codePointBytes = 2;
+        } else if (_isHighSurrogate(codeUnit) &&
+            index + 1 < string.length &&
+            _isLowSurrogate(string.codeUnitAt(index + 1))) {
+          codePointBytes = 4;
+          index += 1;
+        } else {
+          codePointBytes = 3;
+        }
+        if (codePointBytes > _budget.maxStructuredStringBytes - result) {
+          throwLimit(
+            'ACP retained state string bytes',
+            _budget.maxStructuredStringBytes,
+            _safeObservedAtLeast(
+              result,
+              codePointBytes,
+              _budget.maxStructuredStringBytes,
+            ),
+          );
+        }
+        result += codePointBytes;
+        index += 1;
+      }
+      return result;
+    }
+
+    void checkCollectionLength(int length, int limit, String resource) {
+      if (length > limit) throwLimit(resource, limit, length);
+    }
+
+    while (pending.isNotEmpty) {
+      final frame = pending.removeLast();
+      if (frame is _RetainedExitFrame) {
+        activeContainers.remove(frame.container);
+        continue;
+      }
+
+      final valueFrame = frame as _RetainedValueFrame;
+      final current = valueFrame.value;
+      recordNode();
+
+      if (current is List) {
+        if (activeContainers.contains(current)) {
+          throw const FormatException(
+            'Invalid ACP retained state: cyclic container.',
+          );
+        }
+        checkDepth(valueFrame.depth);
+        final length = current.length;
+        checkCollectionLength(
+          length,
+          _budget.maxCollectionItems,
+          'ACP retained state collection items',
+        );
+        precheckNodes(length);
+        addBytes(64);
+        addRepeatedOverhead(length);
+        activeContainers.add(current);
+        pending.add(_RetainedExitFrame(current));
+        for (var index = length - 1; index >= 0; index -= 1) {
+          pending.add(
+            _RetainedValueFrame(
+              value: current[index],
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is Map) {
+        if (activeContainers.contains(current)) {
+          throw const FormatException(
+            'Invalid ACP retained state: cyclic container.',
+          );
+        }
+        checkDepth(valueFrame.depth);
+        final entryLimit = math.min(
+          _budget.maxCollectionItems,
+          _budget.maxMetadataEntries,
+        );
+        final reportedLength = current.length;
+        checkCollectionLength(
+          reportedLength,
+          entryLimit,
+          'ACP retained state map entries',
+        );
+        precheckNodes(reportedLength);
+        final entries = <MapEntry<String, Object?>>[];
+        for (final entry in current.entries) {
+          precheckNodes(entries.length + 1);
+          if (entry.key is! String) {
+            throw const FormatException(
+              'Invalid ACP retained state: map key must be a string.',
+            );
+          }
+          if (entries.length >= entryLimit) {
+            throwLimit(
+              'ACP retained state map entries',
+              entryLimit,
+              entryLimit + 1,
+            );
+          }
+          final key = entry.key as String;
+          addBytes(stringBytes(key));
+          entries.add(MapEntry<String, Object?>(key, entry.value));
+        }
+        precheckNodes(entries.length);
+        addBytes(64);
+        addRepeatedOverhead(entries.length);
+        activeContainers.add(current);
+        pending.add(_RetainedExitFrame(current));
+        for (var index = entries.length - 1; index >= 0; index -= 1) {
+          pending.add(
+            _RetainedValueFrame(
+              value: entries[index].value,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (current is AcpInputOmission) {
+        checkDepth(valueFrame.depth);
+        final isInputLimit =
+            current.reason == AcpInputOmissionReason.inputLimit;
+        final fieldCount = isInputLimit ? 5 : 3;
+        precheckNodes(fieldCount);
+        addBytes(64);
+        addRepeatedOverhead(fieldCount);
+        pending.add(
+          _RetainedValueFrame(
+            value: current.truncated,
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        if (isInputLimit) {
+          pending.add(
+            _RetainedValueFrame(
+              value: current.observedAtLeast!,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+          pending.add(
+            _RetainedValueFrame(
+              value: current.limit!,
+              depth: valueFrame.depth + 1,
+            ),
+          );
+        }
+        pending.add(
+          _RetainedValueFrame(
+            value: current.resource,
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        pending.add(
+          _RetainedValueFrame(
+            value: _omissionReasonWireName(current.reason),
+            depth: valueFrame.depth + 1,
+          ),
+        );
+        continue;
+      }
+
+      if (current is String) {
+        addBytes(stringBytes(current));
+        continue;
+      }
+      if (current is int) {
+        addBytes(current.toString().length);
+        continue;
+      }
+      if (current is double) {
+        if (!current.isFinite) {
+          throw const FormatException(
+            'Invalid ACP retained state: number must be finite.',
+          );
+        }
+        addBytes(current.toString().length);
+        continue;
+      }
+      if (current is bool) {
+        addBytes(current ? 4 : 5);
+        continue;
+      }
+      if (current == null) {
+        addBytes(4);
+        continue;
+      }
+      throw const FormatException(
+        'Invalid ACP retained state: unsupported value.',
+      );
+    }
+
+    return bytes;
+  }
+}
+
+String _omissionReasonWireName(AcpInputOmissionReason reason) =>
+    switch (reason) {
+      AcpInputOmissionReason.inputLimit => 'input_limit',
+      AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
+      AcpInputOmissionReason.invalidImage => 'invalid_image',
+      AcpInputOmissionReason.invalidStructure => 'invalid_structure',
+    };
+
+/// Capacity failure that never includes the rejected ACP payload.
+class AcpInputLimitExceeded implements Exception {
+  const AcpInputLimitExceeded({
+    required this.resource,
+    required this.limit,
+    required this.observedAtLeast,
+  });
+
+  final String resource;
+  final int limit;
+  final int observedAtLeast;
+
+  @override
+  String toString() =>
+      'AcpInputLimitExceeded(resource: $resource, limit: $limit, '
+      'observedAtLeast: $observedAtLeast)';
+}
+
+({
+  Map<String, dynamic> agentCapabilities,
+  List<Map<String, dynamic>> authMethods,
+  Map<String, dynamic> agentInfo,
+})
+copyBoundedInitializeInput({
+  required Object? agentCapabilities,
+  required Object? authMethods,
+  Object? agentInfo,
+  AcpInputBudget budget = const AcpInputBudget(),
+}) {
+  budget.validate();
+  final List<dynamic> rawAuthMethods;
+  if (authMethods == null) {
+    rawAuthMethods = const <Object?>[];
+  } else if (authMethods is List) {
+    rawAuthMethods = authMethods;
+  } else {
+    throw const FormatException(
+      'ACP initialize auth methods must be a JSON array.',
+    );
+  }
+  final authMethodCount = rawAuthMethods.length;
+  if (authMethodCount > budget.maxAuthMethods) {
+    throw AcpInputLimitExceeded(
+      resource: 'ACP initialize auth methods',
+      limit: budget.maxAuthMethods,
+      observedAtLeast: authMethodCount,
+    );
+  }
+  final guard = AcpJsonInputGuard(
+    resource: 'ACP initialize input',
+    maxDepth: math.min(budget.maxJsonDepth, budget.maxCapabilityDepth),
+    maxNodes: budget.maxCapabilityNodes,
+    maxBytes: budget.maxCapabilityBytes,
+  );
+  final copiedAgentCapabilities = guard.copyMap(agentCapabilities);
+  final copiedAuthValues = guard.copyList(
+    _FixedLengthListView(rawAuthMethods, authMethodCount),
+    rootElementObjectError:
+        'ACP initialize auth methods must contain only JSON objects.',
+  );
+  final copiedAgentInfo = guard.copyMap(agentInfo);
+  final copiedAuthMethods = <Map<String, dynamic>>[];
+  for (final value in copiedAuthValues) {
+    copiedAuthMethods.add(value as Map<String, dynamic>);
+  }
+  return (
+    agentCapabilities: copiedAgentCapabilities,
+    authMethods: copiedAuthMethods,
+    agentInfo: copiedAgentInfo,
+  );
+}
+
+/// Iteratively creates bounded defensive copies of JSON-compatible values.
+///
+/// One guard may copy several roots while sharing a single node and byte
+/// budget, which prevents an initialize response from multiplying the limit
+/// across capabilities, authentication methods, and agent metadata.
+/// Do not reuse a guard after any copy throws: failed operations may leave its
+/// internal node and byte counters partially advanced.
+class AcpJsonInputGuard {
+  AcpJsonInputGuard({
+    required this.resource,
+    required this.maxDepth,
+    required this.maxNodes,
+    required this.maxBytes,
+  }) {
+    _requirePositive(maxDepth, 'maxDepth');
+    _requirePositive(maxNodes, 'maxNodes');
+    _requirePositive(maxBytes, 'maxBytes');
+  }
+
+  final String resource;
+  final int maxDepth;
+  final int maxNodes;
+  final int maxBytes;
+
+  var _nodes = 0;
+  var _bytes = 0;
+
+  Map<String, dynamic> copyMap(Object? source) {
+    if (source == null) return <String, dynamic>{};
+    final copy = _copy(source);
+    if (copy is! Map<String, dynamic>) {
+      throw FormatException('$resource must be a JSON object.');
+    }
+    return copy;
+  }
+
+  List<dynamic> copyList(Object? source, {String? rootElementObjectError}) {
+    if (source == null) return <dynamic>[];
+    final copy = _copy(source, rootElementObjectError: rootElementObjectError);
+    if (copy is! List<dynamic>) {
+      throw FormatException('$resource must be a JSON array.');
+    }
+    return copy;
+  }
+
+  Object? _copy(Object? source, {String? rootElementObjectError}) {
+    Object? result;
+    final pending = <_PendingJsonValue>[
+      _PendingJsonValue(
+        source: source,
+        depth: 1,
+        assign: (value) => result = value,
+      ),
+    ];
+
+    while (pending.isNotEmpty) {
+      final current = pending.removeLast();
+      final value = current.source;
+      _recordNode();
+
+      if (value is Map) {
+        _checkContainerDepth(current.depth);
+        final reportedLength = value.length;
+        _precheckChildren(reportedLength);
+        final entries = <MapEntry<dynamic, dynamic>>[];
+        for (final entry in value.entries) {
+          if (entry.key is! String) {
+            throw FormatException(
+              '$resource contains a JSON object with a non-string key.',
+            );
+          }
+          final observedAtLeast = _nodes + entries.length + 1;
+          if (observedAtLeast > maxNodes) {
+            _throwLimit(maxNodes, observedAtLeast);
+          }
+          entries.add(entry);
+        }
+        final copy = <String, dynamic>{};
+        current.assign(copy);
+        for (var index = entries.length - 1; index >= 0; index -= 1) {
+          final entry = entries[index];
+          final key = entry.key as String;
+          _recordStringBytes(key);
+          pending.add(
+            _PendingJsonValue(
+              source: entry.value,
+              depth: current.depth + 1,
+              assign: (child) => copy[key] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (value is List) {
+        _checkContainerDepth(current.depth);
+        final length = value.length;
+        _precheckChildren(length);
+        final copy = List<dynamic>.filled(length, null);
+        current.assign(copy);
+        for (var index = length - 1; index >= 0; index -= 1) {
+          final child = value[index];
+          if (current.depth == 1 &&
+              rootElementObjectError != null &&
+              child is! Map) {
+            throw FormatException(rootElementObjectError);
+          }
+          pending.add(
+            _PendingJsonValue(
+              source: child,
+              depth: current.depth + 1,
+              assign: (child) => copy[index] = child,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (value is String) {
+        _recordStringBytes(value);
+        current.assign(value);
+        continue;
+      }
+      if (value is double && !value.isFinite) {
+        throw FormatException('$resource contains a non-finite JSON number.');
+      }
+      if (value is num) {
+        _recordStringBytes(value.toString());
+        current.assign(value);
+        continue;
+      }
+      if (value is bool) {
+        _recordBytes(value ? 4 : 5);
+        current.assign(value);
+        continue;
+      }
+      if (value == null) {
+        _recordBytes(4);
+        current.assign(null);
+        continue;
+      }
+      throw FormatException('$resource contains a non-JSON value.');
+    }
+
+    return result;
+  }
+
+  void _recordNode() {
+    _nodes += 1;
+    if (_nodes > maxNodes) _throwLimit(maxNodes, _nodes);
+  }
+
+  void _recordBytes(int count) {
+    _bytes += count;
+    if (_bytes > maxBytes) _throwLimit(maxBytes, _bytes);
+  }
+
+  void _recordStringBytes(String value) {
+    final remaining = maxBytes - _bytes;
+    final count = _boundedAcpUtf8Length(
+      value,
+      limit: remaining < 0 ? 0 : remaining,
+      onExceeded: (observedAtLeast) => _throwLimit(
+        maxBytes,
+        _safeObservedAtLeast(_bytes, observedAtLeast, maxBytes),
+      ),
+    );
+    _recordBytes(count);
+  }
+
+  void _precheckChildren(int count) {
+    final observedAtLeast = _nodes + count;
+    if (observedAtLeast > maxNodes) {
+      _throwLimit(maxNodes, observedAtLeast);
+    }
+  }
+
+  void _checkContainerDepth(int depth) {
+    if (depth > maxDepth) _throwLimit(maxDepth, depth);
+  }
+
+  Never _throwLimit(int limit, int observedAtLeast) {
+    throw AcpInputLimitExceeded(
+      resource: resource,
+      limit: limit,
+      observedAtLeast: observedAtLeast,
+    );
+  }
+}
+
+void _requirePositive(int value, String name) {
+  if (value <= 0) {
+    throw ArgumentError.value(value, name, 'must be greater than zero');
+  }
+}
+
+void _requireSafeBudgetInteger(int value, String name) {
+  if (value > _maxSafeBudgetInteger) {
+    throw ArgumentError.value(
+      value,
+      name,
+      'must not exceed the cross-platform safe integer range',
+    );
+  }
+}
+
+void _requirePositiveSafeBudgetInteger(int value, String name) {
+  _requirePositive(value, name);
+  _requireSafeBudgetInteger(value, name);
+}
+
+AcpInputBudget _validatedAcpInputBudget(AcpInputBudget budget) {
+  budget.validate();
+  return budget;
+}
+
+bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+
+bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+
+int _safeObservedAtLeast(int current, int increment, int limit) {
+  if (current <= _maxSafeBudgetInteger - increment) {
+    return current + increment;
+  }
+  return limit + 1;
+}
+
+int _boundedAcpUtf8Length(
+  String value, {
+  required int limit,
+  required Never Function(int observedAtLeast) onExceeded,
+}) {
+  var bytes = 0;
+  var index = 0;
+  while (index < value.length) {
+    final codeUnit = value.codeUnitAt(index);
+    final int increment;
+    if (codeUnit <= 0x7f) {
+      increment = 1;
+    } else if (codeUnit <= 0x7ff) {
+      increment = 2;
+    } else if (_isHighSurrogate(codeUnit) &&
+        index + 1 < value.length &&
+        _isLowSurrogate(value.codeUnitAt(index + 1))) {
+      increment = 4;
+      index += 1;
+    } else {
+      // Dart's UTF-8 encoder replaces either isolated surrogate with U+FFFD.
+      increment = 3;
+    }
+    if (increment > limit - bytes) {
+      onExceeded(_safeObservedAtLeast(bytes, increment, limit));
+    }
+    bytes += increment;
+    index += 1;
+  }
+  return bytes;
+}
+
+void _requireAtMost(int observed, int limit, String resource) {
+  if (observed > limit) {
+    throw AcpInputLimitExceeded(
+      resource: resource,
+      limit: limit,
+      observedAtLeast: observed,
+    );
+  }
+}
+
+class _PendingJsonValue {
+  const _PendingJsonValue({
+    required this.source,
+    required this.depth,
+    required this.assign,
+  });
+
+  final Object? source;
+  final int depth;
+  final void Function(Object? value) assign;
+}
+
+sealed class _StructuredMetadataFrame {
+  const _StructuredMetadataFrame();
+}
+
+final class _StructuredMetadataValueFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataValueFrame({
+    required this.source,
+    required this.depth,
+    required this.assign,
+  });
+
+  final Object? source;
+  final int depth;
+  final void Function(Object? value) assign;
+}
+
+final class _StructuredMetadataListExitFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataListExitFrame({
+    required this.source,
+    required this.copy,
+    required this.assign,
+  });
+
+  final List source;
+  final List<Object?> copy;
+  final void Function(Object? value) assign;
+}
+
+final class _StructuredMetadataMapExitFrame extends _StructuredMetadataFrame {
+  const _StructuredMetadataMapExitFrame({
+    required this.source,
+    required this.copy,
+    required this.assign,
+  });
+
+  final Map source;
+  final Map<String, Object?> copy;
+  final void Function(Object? value) assign;
+}
+
+sealed class _RetainedSizeFrame {
+  const _RetainedSizeFrame();
+}
+
+final class _RetainedValueFrame extends _RetainedSizeFrame {
+  const _RetainedValueFrame({required this.value, required this.depth});
+
+  final Object? value;
+  final int depth;
+}
+
+final class _RetainedExitFrame extends _RetainedSizeFrame {
+  const _RetainedExitFrame(this.container);
+
+  final Object container;
+}
+
+class _FixedLengthListView extends ListBase<dynamic> {
+  _FixedLengthListView(this._source, this._length);
+
+  final List<dynamic> _source;
+  final int _length;
+
+  @override
+  int get length => _length;
+
+  @override
+  set length(int value) => throw UnsupportedError('fixed-length view');
+
+  @override
+  dynamic operator [](int index) => _source[index];
+
+  @override
+  void operator []=(int index, dynamic value) =>
+      throw UnsupportedError('read-only view');
+}

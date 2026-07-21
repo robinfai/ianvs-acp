@@ -180,7 +180,7 @@ Expected: pass.
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/acp_feature_audit.md`
+- Modify: `docs/product_capabilities.md`
 - Modify: `docs/manual_followups.md`
 
 - [x] **Step 1: Run focused tests**

@@ -1,10 +1,22 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
+  test('uses current Codex adapter and reviewed pi adapter', () {
+    final agents = AcpAgentDiscovery.discover(
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (_) => true,
+    );
+
+    expect(agents.first.args.single, '@agentclientprotocol/codex-acp');
+    expect(agents.last.args.last, 'pi-acp@0.0.31');
+  });
+
   test('discovers Codex ACP through npx on PATH', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
@@ -15,10 +27,10 @@ void main() {
     expect(discovered, hasLength(1));
     expect(discovered.single.name, 'Codex');
     expect(discovered.single.command, '/usr/local/bin/npx');
-    expect(discovered.single.args, ['@zed-industries/codex-acp']);
+    expect(discovered.single.args, ['@agentclientprotocol/codex-acp']);
   });
 
-  test('discovers pi ACP through npx when pi is installed', () {
+  test('discovers Pi through npx when pi is installed', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
       environment: const <String, String>{
@@ -30,20 +42,20 @@ void main() {
     );
 
     expect(discovered, hasLength(2));
-    final pi = discovered.singleWhere((server) => server.name == 'pi ACP');
+    final pi = discovered.singleWhere((server) => server.name == 'Pi');
     expect(pi.command, '/usr/local/bin/npx');
-    expect(pi.args, ['-y', 'pi-acp']);
+    expect(pi.args, ['-y', 'pi-acp@0.0.31']);
     expect(pi.env, isEmpty);
   });
 
-  test('does not discover pi ACP when pi is not installed', () {
+  test('does not discover Pi when pi is not installed', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
       environment: const <String, String>{'PATH': '/usr/local/bin:/bin'},
       fileExists: (path) => path == '/usr/local/bin/npx',
     );
 
-    expect(discovered.map((server) => server.name), isNot(contains('pi ACP')));
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
   });
 
   test(
@@ -55,7 +67,7 @@ void main() {
             'OpenAI Codex': {
               'type': 'custom',
               'command': '/opt/homebrew/bin/npx',
-              'args': ['@zed-industries/codex-acp'],
+              'args': ['@agentclientprotocol/codex-acp'],
             },
           },
         }),
@@ -67,30 +79,61 @@ void main() {
     },
   );
 
-  test(
-    'does not suggest pi ACP when same ACP adapter is already configured',
-    () {
-      final discovered = AcpAgentDiscovery.discoverMissing(
-        AcpClientConfig.fromJson({
-          'agent_servers': {
-            'pi': {
-              'type': 'custom',
-              'command': '/opt/homebrew/bin/npx',
-              'args': ['-y', 'pi-acp'],
-            },
+  test('does not suggest Pi when the versioned npx adapter is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'pi': {
+            'type': 'custom',
+            'command': '/opt/homebrew/bin/npx',
+            'args': ['-y', 'pi-acp@0.0.31'],
           },
-        }),
-        environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
-        fileExists: (path) =>
-            path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
-      );
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
 
-      expect(
-        discovered.map((server) => server.name),
-        isNot(contains('pi ACP')),
-      );
-    },
-  );
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
+
+  test('does not suggest Pi when a direct pi-acp wrapper is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Pi': {
+            'type': 'custom',
+            'command': '/Users/example/.local/bin/pi-acp',
+          },
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
+
+  test('does not suggest Pi when an unversioned npx adapter is configured', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Pi': {
+            'type': 'custom',
+            'command': '/opt/homebrew/bin/npx',
+            'args': ['--yes', 'pi-acp'],
+          },
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' || path == '/opt/homebrew/bin/pi',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('Pi')));
+  });
 
   test('writes selected discovered agents to settings file', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
@@ -105,7 +148,7 @@ void main() {
           name: 'Codex',
           type: 'custom',
           command: '/usr/local/bin/npx',
-          args: ['@zed-industries/codex-acp'],
+          args: ['@agentclientprotocol/codex-acp'],
         ),
       ],
     );
@@ -118,4 +161,194 @@ void main() {
       contains('default_agent_server'),
     );
   });
+
+  test('offers and applies migration from the legacy Codex adapter', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
+    addTearDown(() => temp.delete(recursive: true));
+    final configPath = '${temp.path}/settings.json';
+    final file = File(configPath);
+    await file.writeAsString('''
+{
+  "default_agent_server": "OpenAI Codex",
+  "agent_servers": {
+    "OpenAI Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"],
+      "env": {"KEEP_ME": "yes"}
+    }
+  }
+}
+''');
+    final config = AcpClientConfig.fromJson(
+      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      configPath: configPath,
+    );
+
+    final migration = AcpAgentDiscovery.discoverMissing(
+      config,
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) => path == '/opt/homebrew/bin/npx',
+    );
+    expect(migration.single.args, ['@agentclientprotocol/codex-acp']);
+
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
+      config,
+      migration,
+    );
+    final server = migrated.agentServers.single;
+    expect(server.name, 'OpenAI Codex');
+    expect(server.args, ['@agentclientprotocol/codex-acp']);
+    expect(server.env, {'KEEP_ME': 'yes'});
+    expect(migrated.agentName, 'OpenAI Codex');
+  });
+
+  test('migration upgrades every legacy Codex profile', () async {
+    final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
+    addTearDown(() => temp.delete(recursive: true));
+    final configPath = '${temp.path}/settings.json';
+    final file = File(configPath);
+    await file.writeAsString('''
+{
+  "default_agent_server": "Codex",
+  "agent_servers": {
+    "Codex": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp"]
+    },
+    "codex-fast": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["@zed-industries/codex-acp@0.16.0"]
+    },
+    "Other": {
+      "type": "custom",
+      "command": "/usr/local/bin/other-acp",
+      "args": ["serve"]
+    }
+  }
+}
+''');
+    final config = AcpClientConfig.fromJson(
+      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      configPath: configPath,
+    );
+    final migration = AcpAgentDiscovery.discoverMissing(
+      config,
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
+      fileExists: (path) => path == '/opt/homebrew/bin/npx',
+    );
+
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
+      config,
+      migration,
+    );
+
+    expect(
+      migrated.agentServers
+          .where(
+            (server) =>
+                server.name.startsWith('Codex') ||
+                server.name.startsWith('codex'),
+          )
+          .map((server) => server.args.single),
+      everyElement('@agentclientprotocol/codex-acp'),
+    );
+    expect(
+      migrated.agentServers
+          .singleWhere((server) => server.name == 'Other')
+          .args,
+      ['serve'],
+    );
+  });
+  test(
+    'rejects discovered agent secrets when SecretStore is omitted',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+
+      await expectLater(
+        AcpAgentDiscovery.writeSelectedAgentServers(
+          AcpClientConfig(configPath: configPath),
+          const [
+            AgentServerConfig(
+              name: 'Private',
+              type: 'custom',
+              command: '/usr/local/bin/private-agent',
+              env: {'TOKEN': 'private-secret'},
+            ),
+          ],
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(await File(configPath).exists(), isFalse);
+    },
+  );
+
+  test(
+    'migrates discovered agent secrets when SecretStore is provided',
+    () async {
+      final temp = await Directory.systemTemp.createTemp('ianvs_acp_discovery');
+      addTearDown(() => temp.delete(recursive: true));
+      final configPath = '${temp.path}/settings.json';
+      final store = _MemorySecretStore();
+
+      final resolved = await AcpAgentDiscovery.writeSelectedAgentServers(
+        AcpClientConfig(configPath: configPath),
+        const [
+          AgentServerConfig(
+            name: 'Private',
+            type: 'custom',
+            command: '/usr/local/bin/private-agent',
+            env: {'TOKEN': 'private-secret'},
+          ),
+        ],
+        secretStore: store,
+      );
+
+      final contents = await File(configPath).readAsString();
+      final raw = jsonDecode(contents) as Map<String, dynamic>;
+      final reference =
+          raw['agent_servers']['Private']['env_refs']['TOKEN'] as String;
+      expect(contents, isNot(contains('private-secret')));
+      expect(await store.get(reference), 'private-secret');
+      expect(resolved.agentServers.single.env['TOKEN'], 'private-secret');
+    },
+  );
+}
+
+final class _MemorySecretStore implements SecretStore {
+  final Map<String, String> _values = <String, String>{};
+
+  @override
+  Future<void> delete(String reference) async {
+    _values.remove(reference);
+  }
+
+  @override
+  Future<String?> get(String reference) async => _values[reference];
+
+  @override
+  Future<String> put({
+    required String namespace,
+    required String key,
+    required String value,
+  }) async {
+    final reference = referenceFor(namespace: namespace, key: key);
+    _values[reference] = value;
+    return reference;
+  }
+
+  @override
+  String referenceFor({required String namespace, required String key}) =>
+      keychainReferenceFor(namespace: namespace, key: key);
+
+  @override
+  bool referenceMatches(
+    String reference, {
+    required String namespace,
+    required String key,
+  }) => reference == referenceFor(namespace: namespace, key: key);
 }

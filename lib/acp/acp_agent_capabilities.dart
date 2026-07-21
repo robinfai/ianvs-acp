@@ -1,3 +1,5 @@
+import 'acp_input_budget.dart' show AcpInputBudget, copyBoundedInitializeInput;
+
 class AcpAgentCapabilities {
   const AcpAgentCapabilities({
     required this.protocolVersion,
@@ -9,22 +11,32 @@ class AcpAgentCapabilities {
     required this.client,
     required this.rawAgentCapabilities,
     required this.authMethods,
+    this.providers = false,
+    this.nes = false,
+    this.positionEncoding,
     this.agentInfo = const <String, Object?>{},
     this.clientInfo = const <String, Object?>{},
   });
 
   factory AcpAgentCapabilities.fromInitialize({
     required int protocolVersion,
-    required Map<String, dynamic>? agentCapabilities,
-    required List<Map<String, dynamic>>? authMethods,
+    required Object? agentCapabilities,
+    required Object? authMethods,
     required Map<String, dynamic> clientCapabilities,
     required bool hasFsProvider,
     required bool hasTerminalProvider,
     required bool allowReadOutsideWorkspace,
-    Map<String, dynamic>? agentInfo,
+    Object? agentInfo,
     Map<String, dynamic>? clientInfo,
+    AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
-    final rawAgent = _objectMap(agentCapabilities);
+    final copied = copyBoundedInitializeInput(
+      agentCapabilities: agentCapabilities,
+      authMethods: authMethods,
+      agentInfo: agentInfo,
+      budget: inputBudget,
+    );
+    final rawAgent = copied.agentCapabilities;
     return AcpAgentCapabilities(
       protocolVersion: protocolVersion,
       loadSession: _capabilityAdvertised(rawAgent['loadSession']),
@@ -32,6 +44,11 @@ class AcpAgentCapabilities {
       mcp: AcpMcpCapabilities.fromRaw(rawAgent['mcpCapabilities']),
       session: AcpSessionCapabilities.fromRaw(rawAgent),
       auth: AcpAuthCapabilities.fromRaw(rawAgent['auth']),
+      providers: _capabilityAdvertised(rawAgent['providers']),
+      nes: _capabilityAdvertised(rawAgent['nes']),
+      positionEncoding: rawAgent['positionEncoding'] is String
+          ? rawAgent['positionEncoding'] as String
+          : null,
       client: AcpClientCapabilities.fromRaw(
         clientCapabilities,
         hasFsProvider: hasFsProvider,
@@ -39,10 +56,8 @@ class AcpAgentCapabilities {
         allowReadOutsideWorkspace: allowReadOutsideWorkspace,
       ),
       rawAgentCapabilities: rawAgent,
-      authMethods:
-          authMethods?.map((method) => _objectMap(method)).toList() ??
-          const <Map<String, Object?>>[],
-      agentInfo: _objectMap(agentInfo),
+      authMethods: copied.authMethods,
+      agentInfo: copied.agentInfo,
       clientInfo: _objectMap(clientInfo),
     );
   }
@@ -54,6 +69,9 @@ class AcpAgentCapabilities {
   final AcpSessionCapabilities session;
   final AcpAuthCapabilities auth;
   final AcpClientCapabilities client;
+  final bool providers;
+  final bool nes;
+  final String? positionEncoding;
   final Map<String, Object?> rawAgentCapabilities;
   final List<Map<String, Object?>> authMethods;
   final Map<String, Object?> agentInfo;
@@ -127,6 +145,7 @@ class AcpSessionCapabilities {
     required this.additionalDirectories,
     required this.close,
     required this.rawKeys,
+    this.delete = false,
   });
 
   factory AcpSessionCapabilities.fromRaw(Map<String, Object?> agentCaps) {
@@ -144,6 +163,7 @@ class AcpSessionCapabilities {
           _capabilityAdvertised(raw['additionalDirectories']) ||
           _capabilityAdvertised(raw['additional_directories']),
       close: _capabilityAdvertised(raw['close']),
+      delete: _capabilityAdvertised(raw['delete']),
       rawKeys: raw.keys.toList()..sort(),
     );
   }
@@ -154,6 +174,7 @@ class AcpSessionCapabilities {
   final bool configOptions;
   final bool additionalDirectories;
   final bool close;
+  final bool delete;
   final List<String> rawKeys;
 }
 
@@ -165,6 +186,13 @@ class AcpClientCapabilities {
     required this.hasFsProvider,
     required this.hasTerminalProvider,
     required this.allowReadOutsideWorkspace,
+    this.booleanConfigOptions = false,
+    this.plan = false,
+    this.authTerminal = false,
+    this.elicitationForm = false,
+    this.elicitationUrl = false,
+    this.nes = false,
+    this.positionEncodings = const <String>[],
   });
 
   factory AcpClientCapabilities.fromRaw(
@@ -176,6 +204,18 @@ class AcpClientCapabilities {
     final fs = raw['fs'] is Map
         ? _objectMap(raw['fs'])
         : const <String, Object?>{};
+    final session = raw['session'] is Map
+        ? _objectMap(raw['session'])
+        : const <String, Object?>{};
+    final configOptions = session['configOptions'] is Map
+        ? _objectMap(session['configOptions'])
+        : const <String, Object?>{};
+    final auth = raw['auth'] is Map
+        ? _objectMap(raw['auth'])
+        : const <String, Object?>{};
+    final elicitation = raw['elicitation'] is Map
+        ? _objectMap(raw['elicitation'])
+        : const <String, Object?>{};
     return AcpClientCapabilities(
       fsReadTextFile: fs['readTextFile'] == true,
       fsWriteTextFile: fs['writeTextFile'] == true,
@@ -183,6 +223,15 @@ class AcpClientCapabilities {
       hasFsProvider: hasFsProvider,
       hasTerminalProvider: hasTerminalProvider,
       allowReadOutsideWorkspace: allowReadOutsideWorkspace,
+      booleanConfigOptions: _capabilityAdvertised(configOptions['boolean']),
+      plan: _capabilityAdvertised(raw['plan']),
+      authTerminal: auth['terminal'] == true,
+      elicitationForm: _capabilityAdvertised(elicitation['form']),
+      elicitationUrl: _capabilityAdvertised(elicitation['url']),
+      nes: _capabilityAdvertised(raw['nes']),
+      positionEncodings: raw['positionEncodings'] is List
+          ? (raw['positionEncodings'] as List).whereType<String>().toList()
+          : const <String>[],
     );
   }
 
@@ -192,17 +241,18 @@ class AcpClientCapabilities {
   final bool hasFsProvider;
   final bool hasTerminalProvider;
   final bool allowReadOutsideWorkspace;
+  final bool booleanConfigOptions;
+  final bool plan;
+  final bool authTerminal;
+  final bool elicitationForm;
+  final bool elicitationUrl;
+  final bool nes;
+  final List<String> positionEncodings;
 }
 
 Map<String, Object?> _objectMap(Object? raw) {
   if (raw is! Map) return const <String, Object?>{};
-  return raw.map((key, value) => MapEntry(key.toString(), _jsonValue(value)));
-}
-
-Object? _jsonValue(Object? value) {
-  if (value is Map) return _objectMap(value);
-  if (value is List) return value.map(_jsonValue).toList();
-  return value;
+  return raw.map((key, value) => MapEntry(key.toString(), value));
 }
 
 bool _capabilityAdvertised(Object? value) {

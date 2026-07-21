@@ -1,3 +1,5 @@
+import 'acp_input_budget.dart' as acp;
+
 class AcpProjectSessions {
   AcpProjectSessions({required this.cwd, required this.sessions});
 
@@ -22,6 +24,7 @@ class AcpSessionEntry {
     this.additionalDirectories = const <String>[],
     this.updatedAt,
     this.meta = const <String, Object?>{},
+    this.metaOmission,
   });
 
   final String id;
@@ -30,6 +33,7 @@ class AcpSessionEntry {
   final List<String> additionalDirectories;
   final DateTime? updatedAt;
   final Map<String, Object?> meta;
+  final acp.AcpInputOmission? metaOmission;
 
   String get shortId => id.length <= 8 ? id : id.substring(0, 8);
 

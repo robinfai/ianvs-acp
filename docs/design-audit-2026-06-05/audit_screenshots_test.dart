@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
+import 'package:ianvs_acp/ui/components/session_time_label.dart';
 
 import 'audit_fixture.dart';
 
@@ -19,6 +20,11 @@ void main() {
       ..addFont(Future<ByteData>.value(ByteData.sublistView(regular)))
       ..addFont(Future<ByteData>.value(ByteData.sublistView(bold)));
     await loader.load();
+    debugSessionTimeNow = () => DateTime(2026, 7, 8, 12);
+  });
+
+  tearDownAll(() {
+    debugSessionTimeNow = null;
   });
 
   Future<AuditFixture> pumpScenario(

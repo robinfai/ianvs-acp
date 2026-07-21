@@ -12,6 +12,7 @@ class AgentConfigDialog extends StatefulWidget {
     super.key,
     required this.agentServers,
     required this.activeAgentName,
+    this.agentPresets = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
@@ -21,6 +22,7 @@ class AgentConfigDialog extends StatefulWidget {
   });
 
   final List<AgentServerConfig> agentServers;
+  final List<AgentServerConfig> agentPresets;
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
@@ -50,8 +52,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     widget.clientProviders.permissions.trustRules,
   );
   late bool _reviewAgentEnabled =
-      widget.clientProviders.permissions.reviewAgent.enabled ||
-      widget.clientProviders.permissions.reviewAgent.isConfigured;
+      widget.clientProviders.permissions.reviewAgent.enabled;
   late final TextEditingController _reviewServerNameController =
       TextEditingController(
         text:
@@ -79,6 +80,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   .inMilliseconds
                   .toString(),
       );
+  late McpServerConfig? _reviewInlineMcpServer =
+      widget.clientProviders.permissions.reviewAgent.mcpServer;
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -232,11 +235,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       _error = null;
     });
     try {
-      await save(
+      final saved = await save(
         AcpClientConfig(
           activeAgentServer: _agentServerNamed(_defaultAgentName),
-          agentServers: _agentServers,
-          mcpServers: _mcpServers,
+          agentServers: List.unmodifiable(_agentServers),
+          mcpServers: List.unmodifiable(_mcpServers),
           additionalDirectories: List.unmodifiable(_additionalDirectories),
           clientProviders: _clientProvidersConfig(),
           configPath: widget.configPath,
@@ -244,7 +247,18 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         ),
       );
       if (!context.mounted) return;
-      setState(() => _saving = false);
+      setState(() {
+        _saving = false;
+        _agentServers
+          ..clear()
+          ..addAll(saved.agentServers);
+        _mcpServers
+          ..clear()
+          ..addAll(saved.mcpServers);
+        _defaultAgentName = saved.defaultAgentServerName;
+        _reviewInlineMcpServer =
+            saved.clientProviders.permissions.reviewAgent.mcpServer;
+      });
     } catch (error) {
       if (!context.mounted) return;
       setState(() {
@@ -460,9 +474,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   AcpPermissionReviewAgentConfig _reviewAgentConfig() {
+    final serverName = _trimmedOrNull(_reviewServerNameController.text);
     return AcpPermissionReviewAgentConfig(
       enabled: _reviewAgentEnabled,
-      mcpServerName: _trimmedOrNull(_reviewServerNameController.text),
+      mcpServer: serverName == null ? _reviewInlineMcpServer : null,
+      mcpServerName: serverName,
       toolName:
           _trimmedOrNull(_reviewToolNameController.text) ?? 'review_permission',
       model: _trimmedOrNull(_reviewModelController.text),
@@ -528,7 +544,14 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   Future<void> _addAgent() async {
     final server = await showDialog<AgentServerConfig>(
       context: context,
-      builder: (context) => const _AgentServerEditorDialog(),
+      builder: (context) => _AgentServerEditorDialog(
+        presets: widget.agentPresets
+            .where(
+              (preset) =>
+                  !_agentServers.any((server) => server.name == preset.name),
+            )
+            .toList(growable: false),
+      ),
     );
     if (server == null || !mounted) return;
     setState(() {
@@ -542,7 +565,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   Future<void> _editAgent(AgentServerConfig server) async {
     final edited = await showDialog<AgentServerConfig>(
       context: context,
-      builder: (context) => _AgentServerEditorDialog(initialServer: server),
+      builder: (context) => _AgentServerEditorDialog(
+        initialServer: server,
+        presets: widget.agentPresets,
+      ),
     );
     if (edited == null || !mounted) return;
     setState(() {
@@ -877,9 +903,13 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
 }
 
 class _AgentServerEditorDialog extends StatefulWidget {
-  const _AgentServerEditorDialog({this.initialServer});
+  const _AgentServerEditorDialog({
+    this.initialServer,
+    this.presets = const <AgentServerConfig>[],
+  });
 
   final AgentServerConfig? initialServer;
+  final List<AgentServerConfig> presets;
 
   @override
   State<_AgentServerEditorDialog> createState() =>
@@ -887,6 +917,8 @@ class _AgentServerEditorDialog extends StatefulWidget {
 }
 
 class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
+  static const String _customPreset = '__custom__';
+
   late String _type = widget.initialServer?.type ?? 'custom';
   late final TextEditingController _nameController = TextEditingController(
     text: widget.initialServer?.name ?? '',
@@ -903,6 +935,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   final List<TextEditingController> _argControllers = [];
   final List<_NameValueControllers> _envControllers = [];
   final List<_NameValueControllers> _headerControllers = [];
+  late String _selectedPreset = _initialPresetName();
   String? _error;
 
   bool get _isRemote =>
@@ -912,18 +945,29 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
   void initState() {
     super.initState();
     final server = widget.initialServer;
-    if (server == null) return;
+    if (server == null) {
+      if (widget.presets.isNotEmpty) _applyPreset(widget.presets.first);
+      return;
+    }
     _argControllers.addAll(
       server.args.map((arg) => TextEditingController(text: arg)),
     );
     _envControllers.addAll(
       server.env.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitEnvKeys.contains(entry.key),
+        ),
       ),
     );
     _headerControllers.addAll(
       server.headers.entries.map(
-        (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        (entry) => _NameValueControllers(
+          name: entry.key,
+          value: entry.value,
+          initiallyDirty: server.explicitHeaderKeys.contains(entry.key),
+        ),
       ),
     );
   }
@@ -948,6 +992,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final hasPresets = widget.presets.isNotEmpty;
     return AlertDialog(
       title: const Text('Agent Server'),
       content: SizedBox(
@@ -957,100 +1002,67 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _DialogTextField(
-                key: const Key('agent-name-field'),
-                controller: _nameController,
-                label: 'Name',
-                icon: Icons.badge_outlined,
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<String>(
-                key: const Key('agent-type-field'),
-                initialValue: _type,
-                decoration: _fieldDecoration(
-                  label: 'Type',
-                  icon: Icons.cable_rounded,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'custom', child: Text('custom')),
-                  DropdownMenuItem(value: 'stdio', child: Text('stdio')),
-                  DropdownMenuItem(
-                    value: 'websocket',
-                    child: Text('websocket'),
+              if (hasPresets) ...[
+                DropdownButtonFormField<String>(
+                  key: const Key('agent-preset-field'),
+                  initialValue: _selectedPreset,
+                  decoration: _fieldDecoration(
+                    label: 'Agent',
+                    icon: Icons.smart_toy_outlined,
                   ),
-                  DropdownMenuItem(value: 'http', child: Text('http')),
-                  DropdownMenuItem(value: 'sse', child: Text('sse')),
-                ],
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() {
-                    _type = value;
-                    _error = null;
-                  });
-                },
-              ),
-              const SizedBox(height: 10),
-              if (_isRemote) ...[
-                _DialogTextField(
-                  key: const Key('agent-url-field'),
-                  controller: _urlController,
-                  label: 'URL',
-                  icon: Icons.link_rounded,
+                  items: [
+                    for (final preset in widget.presets)
+                      DropdownMenuItem(
+                        value: preset.name,
+                        child: Text(preset.name),
+                      ),
+                    const DropdownMenuItem(
+                      value: _customPreset,
+                      child: Text('Custom agent'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _selectedPreset = value;
+                      final preset = _presetNamed(value);
+                      if (preset != null) _applyPreset(preset);
+                      _error = null;
+                    });
+                  },
                 ),
                 const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Headers',
-                  addLabel: 'Add Header',
-                  itemPrefix: 'agent-header',
-                  controllers: _headerControllers,
-                  onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
-                  }),
-                  onRemove: (index) => setState(() {
-                    _headerControllers.removeAt(index).dispose();
-                  }),
+                _ReadyAgentPanel(
+                  name: _nameController.text,
+                  target: _agentTarget(),
                 ),
-              ] else ...[
-                _DialogTextField(
-                  key: const Key('agent-command-field'),
-                  controller: _commandController,
-                  label: 'Command',
-                  icon: Icons.terminal_rounded,
-                ),
-                const SizedBox(height: 10),
-                _DialogTextField(
-                  key: const Key('agent-cwd-field'),
-                  controller: _cwdController,
-                  label: 'CWD',
-                  icon: Icons.folder_open_outlined,
-                ),
-                const SizedBox(height: 10),
-                _StringListEditor(
-                  title: 'Args',
-                  addLabel: 'Add Arg',
-                  itemPrefix: 'agent-arg',
-                  controllers: _argControllers,
-                  onAdd: () => setState(() {
-                    _argControllers.add(TextEditingController());
-                  }),
-                  onRemove: (index) => setState(() {
-                    _argControllers.removeAt(index).dispose();
-                  }),
-                ),
-                const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Env',
-                  addLabel: 'Add Env',
-                  itemPrefix: 'agent-env',
-                  controllers: _envControllers,
-                  onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
-                  }),
-                  onRemove: (index) => setState(() {
-                    _envControllers.removeAt(index).dispose();
-                  }),
-                ),
+                const SizedBox(height: 8),
               ],
+              ExpansionTile(
+                key: const Key('agent-advanced-settings'),
+                initiallyExpanded: !hasPresets,
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 4),
+                title: const Text(
+                  'Advanced settings',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Change transport, command, arguments, or environment.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+                children: [_buildAdvancedSettings()],
+              ),
               if (_error != null) ...[
                 const SizedBox(height: 10),
                 _InlineError(message: _error!),
@@ -1069,9 +1081,175 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
     );
   }
 
+  Widget _buildAdvancedSettings() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _DialogTextField(
+          key: const Key('agent-name-field'),
+          controller: _nameController,
+          label: 'Name',
+          icon: Icons.badge_outlined,
+        ),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          key: const Key('agent-type-field'),
+          initialValue: _type,
+          decoration: _fieldDecoration(
+            label: 'Type',
+            icon: Icons.cable_rounded,
+          ),
+          items: const [
+            DropdownMenuItem(value: 'custom', child: Text('custom')),
+            DropdownMenuItem(value: 'stdio', child: Text('stdio')),
+            DropdownMenuItem(value: 'websocket', child: Text('websocket')),
+            DropdownMenuItem(value: 'http', child: Text('http')),
+            DropdownMenuItem(value: 'sse', child: Text('sse')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() {
+              _type = value;
+              _selectedPreset = _customPreset;
+              _error = null;
+            });
+          },
+        ),
+        const SizedBox(height: 10),
+        if (_isRemote) ...[
+          _DialogTextField(
+            key: const Key('agent-url-field'),
+            controller: _urlController,
+            label: 'URL',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 10),
+          _NameValueListEditor(
+            title: 'Headers',
+            addLabel: 'Add Header',
+            itemPrefix: 'agent-header',
+            controllers: _headerControllers,
+            onAdd: () => setState(() {
+              _headerControllers.add(
+                _NameValueControllers(initiallyDirty: true),
+              );
+            }),
+            onRemove: (index) => setState(() {
+              _headerControllers.removeAt(index).dispose();
+            }),
+          ),
+        ] else ...[
+          _DialogTextField(
+            key: const Key('agent-command-field'),
+            controller: _commandController,
+            label: 'Command',
+            icon: Icons.terminal_rounded,
+          ),
+          const SizedBox(height: 10),
+          _DialogTextField(
+            key: const Key('agent-cwd-field'),
+            controller: _cwdController,
+            label: 'CWD',
+            icon: Icons.folder_open_outlined,
+          ),
+          const SizedBox(height: 10),
+          _StringListEditor(
+            title: 'Args',
+            addLabel: 'Add Arg',
+            itemPrefix: 'agent-arg',
+            controllers: _argControllers,
+            onAdd: () => setState(() {
+              _argControllers.add(TextEditingController());
+            }),
+            onRemove: (index) => setState(() {
+              _argControllers.removeAt(index).dispose();
+            }),
+          ),
+          const SizedBox(height: 10),
+          _NameValueListEditor(
+            title: 'Env',
+            addLabel: 'Add Env',
+            itemPrefix: 'agent-env',
+            controllers: _envControllers,
+            onAdd: () => setState(() {
+              _envControllers.add(_NameValueControllers(initiallyDirty: true));
+            }),
+            onRemove: (index) => setState(() {
+              _envControllers.removeAt(index).dispose();
+            }),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _initialPresetName() {
+    final initial = widget.initialServer;
+    if (initial != null) {
+      for (final preset in widget.presets) {
+        if (_sameAgentTarget(initial, preset)) return preset.name;
+      }
+      return _customPreset;
+    }
+    return widget.presets.isEmpty ? _customPreset : widget.presets.first.name;
+  }
+
+  AgentServerConfig? _presetNamed(String name) {
+    for (final preset in widget.presets) {
+      if (preset.name == name) return preset;
+    }
+    return null;
+  }
+
+  void _applyPreset(AgentServerConfig preset) {
+    _type = preset.type;
+    _nameController.text = preset.name;
+    _commandController.text = preset.command;
+    _cwdController.text = preset.cwd ?? '';
+    _urlController.text = preset.url;
+    for (final controller in _argControllers) {
+      controller.dispose();
+    }
+    _argControllers
+      ..clear()
+      ..addAll(preset.args.map((arg) => TextEditingController(text: arg)));
+    for (final controllers in _envControllers) {
+      controllers.dispose();
+    }
+    _envControllers
+      ..clear()
+      ..addAll(
+        preset.env.entries.map(
+          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        ),
+      );
+    for (final controllers in _headerControllers) {
+      controllers.dispose();
+    }
+    _headerControllers
+      ..clear()
+      ..addAll(
+        preset.headers.entries.map(
+          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
+        ),
+      );
+  }
+
+  String _agentTarget() {
+    if (_isRemote) return _urlController.text.trim();
+    final args = _stringValues(_argControllers);
+    return <String>[
+      _commandController.text.trim(),
+      ...args,
+    ].where((value) => value.isNotEmpty).join(' ');
+  }
+
   void _submit() {
     try {
-      final json = <String, dynamic>{'type': _type};
+      final json = <String, dynamic>{
+        ...?widget.initialServer?.additionalProperties,
+        'type': _type,
+      };
       if (_isRemote) {
         json['url'] = _urlController.text;
         final headers = _nameValueMap(_headerControllers);
@@ -1090,7 +1268,52 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
         name: _nameController.text.trim(),
         json: json,
       );
-      Navigator.of(context).pop(server);
+      final initial = widget.initialServer;
+      if (initial == null) {
+        Navigator.of(context).pop(server);
+        return;
+      }
+      final sameIdentity = initial.name == server.name;
+      final initialReview = initial.permissionReviewAgent;
+      final inlineReviewServer = initialReview.mcpServer;
+      final review = sameIdentity || inlineReviewServer == null
+          ? initialReview
+          : AcpPermissionReviewAgentConfig(
+              enabled: initialReview.enabled,
+              mcpServer: inlineReviewServer.withSecrets(
+                env: inlineReviewServer.env,
+                headers: inlineReviewServer.headers,
+                envRefs: const <String, String>{},
+                headerRefs: const <String, String>{},
+              ),
+              mcpServerName: initialReview.mcpServerName,
+              toolName: initialReview.toolName,
+              model: initialReview.model,
+              timeout: initialReview.timeout,
+            );
+      Navigator.of(context).pop(
+        server.withSecrets(
+          env: server.env,
+          headers: server.headers,
+          envRefs: sameIdentity
+              ? {
+                  for (final key in server.env.keys)
+                    if (initial.envRefs[key] != null)
+                      key: initial.envRefs[key]!,
+                }
+              : const <String, String>{},
+          headerRefs: sameIdentity
+              ? {
+                  for (final key in server.headers.keys)
+                    if (initial.headerRefs[key] != null)
+                      key: initial.headerRefs[key]!,
+                }
+              : const <String, String>{},
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
+          permissionReviewAgent: review,
+        ),
+      );
     } catch (error) {
       setState(() => _error = '$error');
     }
@@ -1104,6 +1327,77 @@ class _McpServerEditorDialog extends StatefulWidget {
 
   @override
   State<_McpServerEditorDialog> createState() => _McpServerEditorDialogState();
+}
+
+class _ReadyAgentPanel extends StatelessWidget {
+  const _ReadyAgentPanel({required this.name, required this.target});
+
+  final String name;
+  final String target;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.success.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.success.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.check_circle_outline_rounded,
+            color: AppColors.success,
+            size: 20,
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${name.trim()} is ready to add',
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
+                  ),
+                ),
+                if (target.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    target,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+bool _sameAgentTarget(AgentServerConfig left, AgentServerConfig right) {
+  if (left.type != right.type) return false;
+  if (left.command.trim() != right.command.trim()) return false;
+  if (left.url.trim() != right.url.trim()) return false;
+  if (left.args.length != right.args.length) return false;
+  for (var index = 0; index < left.args.length; index += 1) {
+    if (left.args[index] != right.args[index]) return false;
+  }
+  return true;
 }
 
 class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
@@ -1142,7 +1436,13 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
     }
     final env = raw['env'];
     if (env is List) {
-      _envControllers.addAll(_nameValueControllersFromList(env));
+      _envControllers.addAll(
+        _nameValueControllersFromList(
+          env,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitEnvKeys ?? const <String>{},
+        ),
+      );
     }
     final headers = raw['headers'];
     if (headers is Map) {
@@ -1155,11 +1455,22 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
               (entry) => _NameValueControllers(
                 name: entry.key as String,
                 value: entry.value as String,
+                initiallyDirty:
+                    widget.initialServer?.explicitHeaderKeys.contains(
+                      entry.key,
+                    ) ??
+                    false,
               ),
             ),
       );
     } else if (headers is List) {
-      _headerControllers.addAll(_nameValueControllersFromList(headers));
+      _headerControllers.addAll(
+        _nameValueControllersFromList(
+          headers,
+          initiallyDirtyKeys:
+              widget.initialServer?.explicitHeaderKeys ?? const <String>{},
+        ),
+      );
     }
   }
 
@@ -1225,7 +1536,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                 _DialogTextField(
                   key: const Key('mcp-id-field'),
                   controller: _idController,
-                  label: 'ID',
+                  label: 'Server ID',
                   icon: Icons.fingerprint_rounded,
                 ),
               ] else if (_isRemote) ...[
@@ -1242,7 +1553,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-header',
                   controllers: _headerControllers,
                   onAdd: () => setState(() {
-                    _headerControllers.add(_NameValueControllers());
+                    _headerControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _headerControllers.removeAt(index).dispose();
@@ -1275,7 +1588,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
                   itemPrefix: 'mcp-env',
                   controllers: _envControllers,
                   onAdd: () => setState(() {
-                    _envControllers.add(_NameValueControllers());
+                    _envControllers.add(
+                      _NameValueControllers(initiallyDirty: true),
+                    );
                   }),
                   onRemove: (index) => setState(() {
                     _envControllers.removeAt(index).dispose();
@@ -1303,11 +1618,16 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
   void _submit() {
     try {
       final raw = <String, dynamic>{
+        for (final entry
+            in widget.initialServer?.raw.entries ??
+                const <MapEntry<String, dynamic>>[])
+          if (!_mcpEditorManagedKeys.contains(entry.key))
+            entry.key: entry.value,
         'name': _nameController.text,
         'type': _type,
       };
       if (_type == 'acp') {
-        raw['id'] = _idController.text;
+        raw['serverId'] = _idController.text;
       } else if (_isRemote) {
         raw['url'] = _urlController.text;
         final headers = _nameValueEntries(_headerControllers);
@@ -1320,22 +1640,82 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
         if (env.isNotEmpty) raw['env'] = env;
       }
       final server = McpServerConfig.fromJson(index: 0, json: raw);
-      Navigator.of(context).pop(server);
+      final initial = widget.initialServer;
+      if (initial == null) {
+        Navigator.of(context).pop(server);
+        return;
+      }
+      final sameIdentity = initial.name == server.name;
+      final env = <String, String>{
+        for (final item in _nameValueEntries(_envControllers))
+          item['name']!: item['value']!,
+      };
+      final headers = <String, String>{
+        for (final item in _nameValueEntries(_headerControllers))
+          item['name']!: item['value']!,
+      };
+      Navigator.of(context).pop(
+        server.withSecrets(
+          env: env,
+          headers: headers,
+          envRefs: {
+            for (final key in env.keys)
+              if (sameIdentity && initial.envRefs[key] != null)
+                key: initial.envRefs[key]!,
+          },
+          headerRefs: {
+            for (final key in headers.keys)
+              if (sameIdentity && initial.headerRefs[key] != null)
+                key: initial.headerRefs[key]!,
+          },
+          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
+          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
+        ),
+      );
     } catch (error) {
       setState(() => _error = '$error');
     }
   }
 }
 
+const Set<String> _mcpEditorManagedKeys = <String>{
+  'name',
+  'type',
+  'command',
+  'url',
+  'id',
+  'args',
+  'env',
+  'headers',
+  'env_refs',
+  'envRefs',
+  'header_refs',
+  'headerRefs',
+};
+
 class _NameValueControllers {
-  _NameValueControllers({String name = '', String value = ''})
-    : nameController = TextEditingController(text: name),
-      valueController = TextEditingController(text: value);
+  _NameValueControllers({
+    String name = '',
+    String value = '',
+    bool initiallyDirty = false,
+  }) : nameController = TextEditingController(text: name),
+       valueController = TextEditingController(text: value),
+       _dirty = initiallyDirty {
+    _dirtyListener = () => _dirty = true;
+    nameController.addListener(_dirtyListener);
+    valueController.addListener(_dirtyListener);
+  }
 
   final TextEditingController nameController;
   final TextEditingController valueController;
+  late final VoidCallback _dirtyListener;
+  bool _dirty;
+
+  bool get isDirty => _dirty;
 
   void dispose() {
+    nameController.removeListener(_dirtyListener);
+    valueController.removeListener(_dirtyListener);
     nameController.dispose();
     valueController.dispose();
   }
@@ -1598,13 +1978,26 @@ List<Map<String, String>> _nameValueEntries(
   ];
 }
 
-List<_NameValueControllers> _nameValueControllersFromList(List raw) {
+Set<String> _dirtyNameValueKeys(List<_NameValueControllers> controllers) {
+  return Set.unmodifiable(<String>{
+    for (final controllers in controllers)
+      if (controllers.isDirty &&
+          controllers.nameController.text.trim().isNotEmpty)
+        controllers.nameController.text.trim(),
+  });
+}
+
+List<_NameValueControllers> _nameValueControllersFromList(
+  List raw, {
+  Set<String> initiallyDirtyKeys = const <String>{},
+}) {
   return [
     for (final entry in raw)
       if (entry is Map && entry['name'] is String && entry['value'] is String)
         _NameValueControllers(
           name: entry['name'] as String,
           value: entry['value'] as String,
+          initiallyDirty: initiallyDirtyKeys.contains(entry['name']),
         ),
   ];
 }

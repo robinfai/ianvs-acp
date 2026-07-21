@@ -1,0 +1,11 @@
+{
+  "name": "codex-model-probe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.144.1"
+  }
+}

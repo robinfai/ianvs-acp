@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../acp/agent_session.dart';
+import 'session_time_label.dart';
 import '../theme/app_design_tokens.dart';
 
 class SessionSidebar extends StatelessWidget {
@@ -250,7 +251,7 @@ class _SessionTile extends StatelessWidget {
                     ),
                     const SizedBox(width: 4),
                     Text(
-                      _formatCreatedAt(session.displayTime),
+                      formatRelativeSessionTime(session.displayTime),
                       style: const TextStyle(
                         color: AppColors.textTertiary,
                         fontSize: 11,
@@ -264,12 +265,6 @@ class _SessionTile extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _formatCreatedAt(DateTime createdAt) {
-    String two(int value) => value.toString().padLeft(2, '0');
-    return '${createdAt.year}-${two(createdAt.month)}-${two(createdAt.day)} '
-        '${two(createdAt.hour)}:${two(createdAt.minute)}';
   }
 
   String get _agentLabel => session.agentName?.trim() ?? '';

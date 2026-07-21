@@ -1,19 +1,46 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'app.dart';
 import 'config/acp_client_config.dart';
+import 'config/acp_config_store.dart';
+import 'config/macos_keychain_secret_store.dart';
+import 'startup/startup_options.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   final configPath = AcpClientConfig.resolveConfigPath();
+  final startupOptions = StartupOptions.fromArgs([
+    ...Platform.executableArguments,
+    ...args,
+  ]);
   try {
-    final config = await AcpClientConfig.load(path: configPath);
-    runApp(AcpClientApp(config: config));
+    const secretStore = MacosKeychainSecretStore();
+    final config = await AcpConfigStore.loadConfig(
+      configPath: configPath,
+      secretStore: secretStore,
+    );
+    runApp(
+      AcpClientApp(
+        config: config,
+        secretStore: secretStore,
+        initialResumeSessionId: startupOptions.resumeSessionId,
+        initialResumeCwd: startupOptions.resumeCwd,
+        initialResumeAgentName: startupOptions.resumeAgentName,
+        initialTaskId: startupOptions.taskId,
+      ),
+    );
   } catch (error) {
     runApp(
       AcpClientApp(
         config: AcpClientConfig(configPath: configPath),
+        configurationWritable: false,
         startupError: 'Could not load ACP config: $error',
+        initialResumeSessionId: startupOptions.resumeSessionId,
+        initialResumeCwd: startupOptions.resumeCwd,
+        initialResumeAgentName: startupOptions.resumeAgentName,
+        initialTaskId: startupOptions.taskId,
       ),
     );
   }

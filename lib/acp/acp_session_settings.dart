@@ -1,11 +1,17 @@
+import 'acp_input_budget.dart' as acp;
+
 class AcpSessionSettings {
   const AcpSessionSettings({
     this.modes = const AcpSessionModeInfo(),
     this.configOptions = const <AcpConfigOption>[],
+    this.omissions = const <acp.AcpInputOmission>[],
+    this.truncated = false,
   });
 
   final AcpSessionModeInfo modes;
   final List<AcpConfigOption> configOptions;
+  final List<acp.AcpInputOmission> omissions;
+  final bool truncated;
 
   bool get hasModes => modes.availableModes.isNotEmpty;
 
@@ -48,21 +54,33 @@ class AcpSessionSettings {
   AcpSessionSettings copyWith({
     AcpSessionModeInfo? modes,
     List<AcpConfigOption>? configOptions,
+    List<acp.AcpInputOmission>? omissions,
+    bool? truncated,
   }) {
     return AcpSessionSettings(
       modes: modes ?? this.modes,
       configOptions: configOptions ?? this.configOptions,
+      omissions: omissions ?? this.omissions,
+      truncated: truncated ?? this.truncated,
     );
   }
 
   AcpSessionSettings get withConfigOptionsPreference {
     if (configOptions.isEmpty) return this;
-    return AcpSessionSettings(configOptions: configOptions);
+    return AcpSessionSettings(
+      configOptions: configOptions,
+      omissions: omissions,
+      truncated: truncated,
+    );
   }
 
   AcpSessionSettings withPreferredConfigOptions(List<AcpConfigOption> options) {
     if (options.isEmpty) return copyWith(configOptions: options);
-    return AcpSessionSettings(configOptions: options);
+    return AcpSessionSettings(
+      configOptions: options,
+      omissions: omissions,
+      truncated: truncated,
+    );
   }
 
   AcpSessionSettings withCurrentMode(String modeId) {
@@ -208,11 +226,15 @@ class AcpConfigOptionChoice {
     required this.value,
     required this.name,
     this.description,
+    this.groupId,
+    this.groupName,
   });
 
   final String value;
   final String name;
   final String? description;
+  final String? groupId;
+  final String? groupName;
 
   String get label => name.isEmpty ? value : name;
 }

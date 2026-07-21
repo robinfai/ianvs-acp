@@ -8,7 +8,7 @@
 PRODUCT_NAME = ACP Client
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.ianvsAcp
+PRODUCT_BUNDLE_IDENTIFIER = com.ianvs.acp
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Ianvs. All rights reserved.

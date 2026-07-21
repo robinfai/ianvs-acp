@@ -17,16 +17,16 @@ class FakeAgentClient implements AcpAgentClient {
     this.cancelError,
     this.forkError,
     this.closeError,
+    this.deleteError,
     this.authenticateError,
     this.logoutError,
-    this.extensionError,
     this.permissionResponseError,
-    this.extensionResponse = const <String, Object?>{'ok': true},
     this.supportsFork = true,
     this.supportsListSessions = true,
     this.supportsLoadSession = true,
     this.supportsResumeSession = false,
     this.supportsLogout = true,
+    this.supportsDelete = false,
     this.chunkDelay = Duration.zero,
     this.connectDelay = Duration.zero,
     this.createSessionDelay = Duration.zero,
@@ -35,6 +35,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.authMethods = const <Map<String, Object?>>[],
     this.createSessionEvents = const <AgentEvent>[],
     this.forkSessionEvents = const <AgentEvent>[],
+    this.promptEvents,
     List<AgentEvent>? resumeEvents,
     AcpSessionSettings? sessionSettings,
   }) : resumeEvents =
@@ -69,16 +70,16 @@ class FakeAgentClient implements AcpAgentClient {
   final Object? cancelError;
   final Object? forkError;
   final Object? closeError;
+  final Object? deleteError;
   final Object? authenticateError;
   final Object? logoutError;
-  final Object? extensionError;
   final Object? permissionResponseError;
-  final Map<String, Object?> extensionResponse;
   final bool supportsFork;
   final bool supportsListSessions;
   final bool supportsLoadSession;
   final bool supportsResumeSession;
   final bool supportsLogout;
+  final bool supportsDelete;
   final Duration chunkDelay;
   final Duration connectDelay;
   final Duration createSessionDelay;
@@ -87,6 +88,7 @@ class FakeAgentClient implements AcpAgentClient {
   final List<Map<String, Object?>> authMethods;
   final List<AgentEvent> createSessionEvents;
   final List<AgentEvent> forkSessionEvents;
+  final List<AgentEvent>? promptEvents;
   final List<AgentEvent> resumeEvents;
   AcpSessionSettings _settings;
 
@@ -100,17 +102,21 @@ class FakeAgentClient implements AcpAgentClient {
   Object? lastConfigValue;
   String? lastPermissionRequestId;
   AcpPermissionDecision? lastPermissionDecision;
+  String? lastPermissionOptionId;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
+  String? lastDeletedSessionId;
   String? lastAuthenticatedMethodId;
-  String? lastExtensionMethod;
-  Map<String, Object?>? lastExtensionParams;
   String? lastPrompt;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
 
   final StreamController<AcpPermissionRequest> _permissionRequests =
-      StreamController<AcpPermissionRequest>.broadcast();
+      StreamController<AcpPermissionRequest>.broadcast(sync: true);
   bool _permissionRequestsClosed = false;
+
+  final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
+      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  bool _permissionInvalidationsClosed = false;
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -130,9 +136,11 @@ class FakeAgentClient implements AcpAgentClient {
             configOptions: true,
             additionalDirectories: true,
             close: true,
+            delete: supportsDelete,
             rawKeys: [
               'additionalDirectories',
               'close',
+              if (supportsDelete) 'delete',
               'configOptions',
               if (supportsFork) 'fork',
               if (supportsListSessions) 'list',
@@ -158,6 +166,10 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Stream<AcpPermissionRequest> get permissionRequests =>
       _permissionRequests.stream;
+
+  @override
+  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+      _permissionInvalidations.stream;
 
   static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
     modes: AcpSessionModeInfo(
@@ -342,6 +354,16 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   @override
+  Future<void> deleteSession({required String sessionId}) async {
+    if (!connected) throw StateError('Fake client is not connected.');
+    if (!supportsDelete) {
+      throw StateError('Fake client does not support delete.');
+    }
+    if (deleteError != null) throw deleteError!;
+    lastDeletedSessionId = sessionId;
+  }
+
+  @override
   Future<void> authenticate({required String methodId}) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
@@ -373,29 +395,6 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<Map<String, Object?>> sendExtensionRequest({
-    required String method,
-    required Map<String, Object?> params,
-  }) async {
-    if (!connected) {
-      throw StateError('Fake client is not connected.');
-    }
-    if (!method.startsWith('_')) {
-      throw ArgumentError.value(
-        method,
-        'method',
-        'Extension methods must start with underscore (_).',
-      );
-    }
-    if (extensionError != null) {
-      throw extensionError!;
-    }
-    lastExtensionMethod = method;
-    lastExtensionParams = params;
-    return extensionResponse;
-  }
-
-  @override
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
@@ -405,6 +404,17 @@ class FakeAgentClient implements AcpAgentClient {
     lastAttachments = attachments;
     if (promptError != null) {
       throw promptError!;
+    }
+    final customEvents = promptEvents;
+    if (customEvents != null) {
+      for (final event in customEvents) {
+        if (cancelled) break;
+        if (chunkDelay > Duration.zero) {
+          await Future<void>.delayed(chunkDelay);
+        }
+        yield event;
+      }
+      return;
     }
     for (final chunk in const ['Hello', ',', ' I am Codex', '.']) {
       if (cancelled) break;
@@ -433,7 +443,13 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   void emitPermissionRequest(AcpPermissionRequest request) {
+    if (_permissionRequestsClosed) return;
     _permissionRequests.add(request);
+  }
+
+  void emitPermissionInvalidation(AcpPermissionInvalidation event) {
+    if (_permissionInvalidationsClosed) return;
+    _permissionInvalidations.add(event);
   }
 
   Future<void> closePermissionRequests() async {
@@ -442,13 +458,21 @@ class FakeAgentClient implements AcpAgentClient {
     await _permissionRequests.close();
   }
 
+  Future<void> closePermissionInvalidations() async {
+    if (_permissionInvalidationsClosed) return;
+    _permissionInvalidationsClosed = true;
+    await _permissionInvalidations.close();
+  }
+
   @override
   Future<void> respondToPermissionRequest({
     required String id,
     required AcpPermissionDecision decision,
+    String? selectedOptionId,
   }) async {
     lastPermissionRequestId = id;
     lastPermissionDecision = decision;
+    lastPermissionOptionId = selectedOptionId;
     if (permissionResponseError != null) {
       throw permissionResponseError!;
     }
@@ -457,6 +481,9 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     connected = false;
-    await closePermissionRequests();
+    await Future.wait<void>(<Future<void>>[
+      closePermissionRequests(),
+      closePermissionInvalidations(),
+    ]);
   }
 }

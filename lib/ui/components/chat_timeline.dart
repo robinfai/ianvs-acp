@@ -1,13 +1,16 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 
+import '../../acp/acp_input_budget.dart';
 import '../../mermaid/mermaid_view.dart';
 import '../../state/chat_controller.dart';
+import '../bounded_metadata_preview.dart';
+import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
+import '../markdown_render_budget.dart';
+import 'bounded_image_preview.dart';
 import 'dot_grid_background.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -17,6 +20,14 @@ const List<String> _toolCallIdMetadataKeys = [
   'callId',
   'call_id',
 ];
+const _userMessageSelectionColor = Color(0x3d000000);
+const int _maxRenderedTimelineMessages = 200;
+const int _inlineCollectionPreviewItems = 5;
+const int _contentBlockProjectionBatchItems = 16;
+const int _contentBlockVisiblePageItems = 3;
+const double _contentBlocksMaxHeight = 320;
+const double _nestedDetailsMaxHeight = 280;
+const double _commandDetailsMaxHeight = 320;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -25,14 +36,26 @@ class ChatTimeline extends StatefulWidget {
     this.agentName = 'Codex',
     this.hasActiveSession = false,
     this.activeSessionLabel,
+    this.isLoadingSession = false,
+    this.messageListRevision = 0,
     this.onNewSession,
+    this.onTapLink,
+    this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
   });
 
   final List<ChatMessage> messages;
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final bool isLoadingSession;
+  final int messageListRevision;
   final VoidCallback? onNewSession;
+  final MarkdownTapLinkCallback? onTapLink;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -40,13 +63,35 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   final ScrollController _scrollController = ScrollController();
-  late int _messageSignature = _messagesSignature(widget.messages);
+  late AcpImageDecodeBudgetLedger _imageDecodeLedger;
+  late int _messageSignature = _timelineMessagesSignature(
+    widget.messages,
+    messageListRevision: widget.messageListRevision,
+    isLoadingSession: widget.isLoadingSession,
+  );
 
   @override
   void initState() {
     super.initState();
+    widget.inputBudget.validate();
+    _imageDecodeLedger =
+        widget.imageDecodeLedger ??
+        AcpImageDecodeBudgetLedger(budget: widget.inputBudget);
     if (widget.messages.isNotEmpty) {
       _scheduleScrollToBottom();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
+    if (!identical(widget.imageDecodeLedger, oldWidget.imageDecodeLedger) ||
+        (!identical(widget.inputBudget, oldWidget.inputBudget) &&
+            widget.imageDecodeLedger == null)) {
+      _imageDecodeLedger =
+          widget.imageDecodeLedger ??
+          AcpImageDecodeBudgetLedger(budget: widget.inputBudget);
     }
   }
 
@@ -67,32 +112,64 @@ class _ChatTimelineState extends State<ChatTimeline> {
             agentName: widget.agentName,
             hasActiveSession: widget.hasActiveSession,
             activeSessionLabel: widget.activeSessionLabel,
+            isLoadingSession: widget.isLoadingSession,
             onNewSession: widget.onNewSession,
           ),
         ),
       );
     }
 
-    final entries = _timelineEntries(widget.messages);
+    final visibleMessages = _visibleTimelineMessages(widget.messages);
+    final skippedMessageCount = widget.messages.length - visibleMessages.length;
+    final hasTrimmedHistory = skippedMessageCount > 0;
+    final entries = _timelineEntries(visibleMessages);
+    final historyNoticeCount = hasTrimmedHistory ? 1 : 0;
+    final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
-    return DotGridBackground(
-      child: ListView.separated(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
-        itemCount: entries.length,
-        separatorBuilder: (context, index) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          final entry = entries[index];
-          return entry.toolMessages == null
-              ? _MessageBubble(message: entry.message!)
-              : _ToolGroupBubble(messages: entry.toolMessages!);
-        },
+    return _ImageDecodeScope(
+      ledger: _imageDecodeLedger,
+      decoder: widget.boundedImageDecoder,
+      inputBudget: widget.inputBudget,
+      child: DotGridBackground(
+        child: ListView.separated(
+          key: const ValueKey('chat-timeline-list'),
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+          itemCount: entries.length + historyNoticeCount + loadingFooterCount,
+          separatorBuilder: (context, index) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            if (hasTrimmedHistory && index == entries.length) {
+              return _TrimmedHistoryNotice(
+                shownCount: visibleMessages.length,
+                totalCount: widget.messages.length,
+              );
+            }
+            if (index >= entries.length + historyNoticeCount) {
+              return const _SessionLoadingFooter();
+            }
+            final entry = entries[index];
+            return entry.toolMessages == null
+                ? _MessageBubble(
+                    message: entry.message!,
+                    inputBudget: widget.inputBudget,
+                    onTapLink: widget.onTapLink,
+                  )
+                : _ToolGroupBubble(
+                    messages: entry.toolMessages!,
+                    inputBudget: widget.inputBudget,
+                  );
+          },
+        ),
       ),
     );
   }
 
   void _syncMessageSignature() {
-    final nextSignature = _messagesSignature(widget.messages);
+    final nextSignature = _timelineMessagesSignature(
+      widget.messages,
+      messageListRevision: widget.messageListRevision,
+      isLoadingSession: widget.isLoadingSession,
+    );
     if (nextSignature == _messageSignature) return;
     _messageSignature = nextSignature;
     if (widget.messages.isNotEmpty) {
@@ -119,42 +196,63 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 }
 
-int _messagesSignature(List<ChatMessage> messages) {
-  return Object.hashAll([
-    messages.length,
-    for (final message in messages) ...[
-      message.role,
-      message.text.length,
-      message.text,
-      _metadataSignature(message.metadata),
-    ],
-  ]);
+class _ImageDecodeScope extends InheritedWidget {
+  const _ImageDecodeScope({
+    required this.ledger,
+    required this.decoder,
+    required this.inputBudget,
+    required super.child,
+  });
+
+  final AcpImageDecodeBudgetLedger ledger;
+  final BoundedImageDecoder decoder;
+  final AcpInputBudget inputBudget;
+
+  static _ImageDecodeScope of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_ImageDecodeScope>();
+    if (scope == null) throw StateError('Missing image decode scope.');
+    return scope;
+  }
+
+  @override
+  bool updateShouldNotify(_ImageDecodeScope oldWidget) =>
+      !identical(ledger, oldWidget.ledger) ||
+      !identical(decoder, oldWidget.decoder) ||
+      !identical(inputBudget, oldWidget.inputBudget);
 }
 
-int _metadataSignature(Object? value) {
-  if (value is Map) {
-    final entries =
-        value.entries
-            .map((entry) => MapEntry(entry.key.toString(), entry.value))
-            .toList()
-          ..sort((a, b) => a.key.compareTo(b.key));
-    return Object.hashAll([
-      'map',
-      entries.length,
-      for (final entry in entries) ...[
-        entry.key,
-        _metadataSignature(entry.value),
-      ],
-    ]);
-  }
-  if (value is Iterable) {
-    return Object.hashAll([
-      'iterable',
-      for (final item in value) _metadataSignature(item),
-    ]);
-  }
-  if (value is DateTime) return value.microsecondsSinceEpoch;
-  return Object.hash(value.runtimeType, value);
+int _timelineMessagesSignature(
+  List<ChatMessage> messages, {
+  required int messageListRevision,
+  required bool isLoadingSession,
+}) {
+  final visibleMessages = _visibleTimelineMessages(messages);
+  return _messagesSignature(
+    visibleMessages,
+    messageListRevision: messageListRevision,
+    isLoadingSession: isLoadingSession,
+  );
+}
+
+List<ChatMessage> _visibleTimelineMessages(List<ChatMessage> messages) {
+  if (messages.length <= _maxRenderedTimelineMessages) return messages;
+  return messages.sublist(messages.length - _maxRenderedTimelineMessages);
+}
+
+int _messagesSignature(
+  List<ChatMessage> messages, {
+  required int messageListRevision,
+  required bool isLoadingSession,
+}) {
+  return Object.hashAll([
+    messageListRevision,
+    isLoadingSession,
+    for (final message in messages) ...[
+      identityHashCode(message),
+      message.revision,
+    ],
+  ]);
 }
 
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {
@@ -243,12 +341,14 @@ class _EmptyTimeline extends StatelessWidget {
     required this.agentName,
     required this.hasActiveSession,
     this.activeSessionLabel,
+    required this.isLoadingSession,
     this.onNewSession,
   });
 
   final String agentName;
   final bool hasActiveSession;
   final String? activeSessionLabel;
+  final bool isLoadingSession;
   final VoidCallback? onNewSession;
 
   @override
@@ -268,10 +368,21 @@ class _EmptyTimeline extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _CodeCardIllustration(compact: compact),
+                  isLoadingSession
+                      ? SizedBox(
+                          width: compact ? 34 : 40,
+                          height: compact ? 34 : 40,
+                          child: const CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: AppColors.primary,
+                          ),
+                        )
+                      : _CodeCardIllustration(compact: compact),
                   SizedBox(height: compact ? 12 : 14),
                   Text(
-                    hasActiveSession
+                    isLoadingSession
+                        ? 'Loading session'
+                        : hasActiveSession
                         ? 'Session ready'
                         : 'Start a session to chat with $agentName',
                     textAlign: TextAlign.center,
@@ -284,7 +395,9 @@ class _EmptyTimeline extends StatelessWidget {
                   ),
                   SizedBox(height: compact ? 5 : 6),
                   Text(
-                    hasActiveSession
+                    isLoadingSession
+                        ? _loadingSessionSubtitle()
+                        : hasActiveSession
                         ? _activeSessionSubtitle()
                         : 'Ask questions, get help with code, and more.',
                     textAlign: TextAlign.center,
@@ -329,6 +442,83 @@ class _EmptyTimeline extends StatelessWidget {
     final label = activeSessionLabel?.trim();
     final prefix = label == null || label.isEmpty ? '' : '$label loaded. ';
     return '${prefix}No replayed messages were returned; continue below.';
+  }
+
+  String _loadingSessionSubtitle() {
+    final label = activeSessionLabel?.trim();
+    if (label == null || label.isEmpty) {
+      return 'Loading conversation history. Large sessions can take a moment.';
+    }
+    return 'Loading $label. Large sessions can take a moment.';
+  }
+}
+
+class _SessionLoadingFooter extends StatelessWidget {
+  const _SessionLoadingFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.primary,
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              'Loading session history',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrimmedHistoryNotice extends StatelessWidget {
+  const _TrimmedHistoryNotice({
+    required this.shownCount,
+    required this.totalCount,
+  });
+
+  final int shownCount;
+  final int totalCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: AppColors.borderSoft),
+        ),
+        child: Text(
+          'Showing latest $shownCount of $totalCount messages',
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -463,19 +653,29 @@ class _IllustrationLine extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({
+    required this.message,
+    required this.inputBudget,
+    required this.onTapLink,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final MarkdownTapLinkCallback? onTapLink;
 
   @override
   Widget build(BuildContext context) {
     if (message.role == ChatMessageRole.tool) {
-      return _ToolBubble(message: message);
+      return _ToolBubble(message: message, inputBudget: inputBudget);
     }
     if (message.role == ChatMessageRole.status &&
         _stringMetadata(message.metadata, 'kind') != null &&
         _stringMetadata(message.metadata, 'kind') != 'unknown') {
-      return _StatusBubble(message: message);
+      return _StatusBubble(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: message.revision,
+      );
     }
 
     final user = message.role == ChatMessageRole.user;
@@ -494,6 +694,13 @@ class _MessageBubble extends StatelessWidget {
       ChatMessageRole.status => AppColors.border,
     };
     final textColor = user ? Colors.white : AppColors.textPrimary;
+    final markdownDecision = message.text.isEmpty
+        ? null
+        : scanMarkdownForRendering(message.text, budget: inputBudget);
+    final omissions = _distinctOmissions(
+      message.omissions,
+      markdownDecision?.omission,
+    );
 
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -531,18 +738,28 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ],
               ),
-              if (message.text.isNotEmpty) ...[
+              if (markdownDecision != null) ...[
                 const SizedBox(height: 6),
-                MarkdownBody(
-                  data: message.text,
-                  selectable: true,
-                  styleSheet: _markdownStyle(context, textColor, user),
-                  builders: <String, MarkdownElementBuilder>{
-                    'pre': _MermaidCodeBlockBuilder(user: user),
-                  },
-                ),
+                if (markdownDecision.useMarkdown)
+                  _SelectableMessageMarkdown(
+                    data: markdownDecision.text,
+                    user: user,
+                    styleSheet: _markdownStyle(context, textColor, user),
+                    onTapLink: onTapLink,
+                  )
+                else
+                  SelectableText(
+                    markdownDecision.text,
+                    style: TextStyle(color: textColor, height: 1.42),
+                  ),
               ],
-              _ContentBlocksPreview(message: message),
+              for (final omission in omissions)
+                _InputOmissionNotice(omission: omission, user: user),
+              _ContentBlocksPreview(
+                message: message,
+                inputBudget: inputBudget,
+                previewRevision: message.revision,
+              ),
             ],
           ),
         ),
@@ -561,6 +778,17 @@ class _MessageBubble extends StatelessWidget {
         : AppColors.surfaceRaised;
     return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
       p: baseTextStyle,
+      a: baseTextStyle.copyWith(
+        color: user ? Colors.white : AppColors.primaryDark,
+        backgroundColor: user
+            ? Colors.white.withValues(alpha: 0.12)
+            : AppColors.primaryMist,
+        decoration: TextDecoration.underline,
+        decorationColor: user
+            ? Colors.white70
+            : AppColors.primary.withValues(alpha: 0.55),
+        fontWeight: FontWeight.w700,
+      ),
       strong: baseTextStyle.copyWith(fontWeight: FontWeight.w700),
       em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
       code: baseTextStyle.copyWith(
@@ -605,6 +833,136 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+List<AcpInputOmission> _distinctOmissions(
+  List<AcpInputOmission> existing,
+  AcpInputOmission? additional,
+) {
+  final result = <AcpInputOmission>[];
+  final keys = <String>{};
+  for (final omission in <AcpInputOmission>[...existing, ?additional]) {
+    if (keys.add('${omission.reason.name}:${omission.resource}')) {
+      result.add(omission);
+    }
+  }
+  return result;
+}
+
+class _InputOmissionNotice extends StatelessWidget {
+  const _InputOmissionNotice({required this.omission, required this.user});
+
+  final AcpInputOmission omission;
+  final bool user;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        'Content omitted · ${omission.resource}',
+        style: TextStyle(
+          color: user ? Colors.white70 : AppColors.warning,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectableMessageMarkdown extends StatelessWidget {
+  const _SelectableMessageMarkdown({
+    required this.data,
+    required this.user,
+    required this.styleSheet,
+    required this.onTapLink,
+  });
+
+  final String data;
+  final bool user;
+  final MarkdownStyleSheet styleSheet;
+  final MarkdownTapLinkCallback? onTapLink;
+
+  @override
+  Widget build(BuildContext context) {
+    final markdown = MarkdownBody(
+      data: data,
+      selectable: true,
+      styleSheet: styleSheet,
+      onTapLink: onTapLink,
+      imageBuilder: _blockedMarkdownImage,
+      builders: <String, MarkdownElementBuilder>{
+        'pre': _MermaidCodeBlockBuilder(user: user),
+      },
+    );
+
+    if (!user) return markdown;
+
+    return TextSelectionTheme(
+      data: TextSelectionTheme.of(context).copyWith(
+        cursorColor: Colors.white,
+        selectionColor: _userMessageSelectionColor,
+        selectionHandleColor: Colors.white,
+      ),
+      child: DefaultSelectionStyle(
+        cursorColor: Colors.white,
+        selectionColor: _userMessageSelectionColor,
+        child: markdown,
+      ),
+    );
+  }
+}
+
+Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
+  final scheme = uri.scheme.trim().toLowerCase();
+  final source = switch (scheme) {
+    'http' || 'https' when uri.host.trim().isNotEmpty => uri.host.toLowerCase(),
+    '' => 'unknown',
+    _ => scheme,
+  };
+  final altText = alt?.trim();
+  return ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 320),
+    child: Container(
+      padding: const EdgeInsets.only(left: 8, top: 3, bottom: 3),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              [
+                'Image blocked · $source',
+                if (altText != null && altText.isNotEmpty) altText,
+              ].join(' — '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Copy blocked image link',
+            visualDensity: VisualDensity.compact,
+            iconSize: 16,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: uri.toString()));
+            },
+            icon: const Icon(Icons.content_copy_rounded),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {
@@ -683,21 +1041,25 @@ class _MermaidCodeBlockBuilder extends MarkdownElementBuilder {
 }
 
 class _ToolBubble extends StatelessWidget {
-  const _ToolBubble({required this.message});
+  const _ToolBubble({required this.message, required this.inputBudget});
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
     final parsed = _ParsedTool.fromMessage(message);
-    return _ToolFrame(child: _ToolCallCard(parsed: parsed));
+    return _ToolFrame(
+      child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
+    );
   }
 }
 
 class _ToolGroupBubble extends StatelessWidget {
-  const _ToolGroupBubble({required this.messages});
+  const _ToolGroupBubble({required this.messages, required this.inputBudget});
 
   final List<ChatMessage> messages;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -731,7 +1093,11 @@ class _ToolGroupBubble extends StatelessWidget {
             children: [
               const Divider(height: 12, color: Color(0xfffde68a)),
               for (var index = 0; index < parsedTools.length; index++) ...[
-                _ToolSequenceCard(index: index + 1, parsed: parsedTools[index]),
+                _ToolSequenceCard(
+                  index: index + 1,
+                  parsed: parsedTools[index],
+                  inputBudget: inputBudget,
+                ),
                 if (index != parsedTools.length - 1) const SizedBox(height: 6),
               ],
             ],
@@ -759,22 +1125,65 @@ class _ToolFrame extends StatelessWidget {
   }
 }
 
-class _ToolCallCard extends StatelessWidget {
-  const _ToolCallCard({required this.parsed});
+class _ToolCallCard extends StatefulWidget {
+  const _ToolCallCard({required this.parsed, required this.inputBudget});
 
   final _ParsedTool parsed;
+  final AcpInputBudget inputBudget;
+
+  @override
+  State<_ToolCallCard> createState() => _ToolCallCardState();
+}
+
+class _ToolCallCardState extends State<_ToolCallCard> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final details = <_DetailEntry>[
-      if (parsed.id.isNotEmpty) _DetailEntry('Call ID', parsed.id),
-      if (parsed.kind.isNotEmpty) _DetailEntry('Kind', parsed.kind),
-      if (parsed.locations.isNotEmpty)
-        _DetailEntry('Locations', parsed.locations.join('\n')),
-      if (parsed.content.isNotEmpty) _DetailEntry('Content', parsed.content),
-      if (parsed.input.isNotEmpty) _DetailEntry('Input', parsed.input),
-      if (parsed.output.isNotEmpty) _DetailEntry('Output', parsed.output),
-    ];
+    final parsed = widget.parsed;
+    final hasDetails =
+        parsed.id.isNotEmpty ||
+        parsed.kind.isNotEmpty ||
+        parsed.locations.isNotEmpty ||
+        _hasMetadataDetail(parsed.content) ||
+        _hasMetadataDetail(parsed.input) ||
+        _hasMetadataDetail(parsed.output);
+    final details = !_expanded
+        ? const <Widget>[]
+        : <Widget>[
+            if (parsed.id.isNotEmpty)
+              _DetailBlock(entry: _DetailEntry('Call ID', parsed.id)),
+            if (parsed.kind.isNotEmpty)
+              _DetailBlock(entry: _DetailEntry('Kind', parsed.kind)),
+            if (parsed.locations.isNotEmpty)
+              _DetailBlock(
+                entry: _DetailEntry('Locations', parsed.locations.join('\n')),
+              ),
+            if (_hasMetadataDetail(parsed.content))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-content-preview'),
+                label: 'Content',
+                payload: parsed.content,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+            if (_hasMetadataDetail(parsed.input))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-input-preview'),
+                label: 'Input',
+                payload: parsed.input,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+            if (_hasMetadataDetail(parsed.output))
+              _BoundedMetadataDetail(
+                key: const ValueKey('tool-output-preview'),
+                label: 'Output',
+                payload: parsed.output,
+                inputBudget: widget.inputBudget,
+                previewRevision: parsed.previewRevision,
+              ),
+          ];
 
     return Container(
       width: double.infinity,
@@ -785,7 +1194,7 @@ class _ToolCallCard extends StatelessWidget {
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: details.isEmpty
+        child: !hasDetails
             ? Padding(
                 padding: const EdgeInsets.all(10),
                 child: _ToolHeader(parsed: parsed),
@@ -797,18 +1206,25 @@ class _ToolCallCard extends StatelessWidget {
                   childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                   initiallyExpanded: false,
                   maintainState: true,
+                  onExpansionChanged: (expanded) {
+                    if (_expanded == expanded) return;
+                    setState(() => _expanded = expanded);
+                  },
                   leading: const Icon(
                     Icons.build_circle_outlined,
                     color: Color(0xff92400e),
                     size: 18,
                   ),
                   title: _ToolHeader(parsed: parsed, compact: true),
-                  children: [
-                    for (final detail in details) ...[
-                      _DetailBlock(entry: detail),
-                      if (detail != details.last) const SizedBox(height: 6),
-                    ],
-                  ],
+                  children: _expanded
+                      ? [
+                          for (final detail in details) ...[
+                            detail,
+                            if (detail != details.last)
+                              const SizedBox(height: 6),
+                          ],
+                        ]
+                      : const <Widget>[],
                 ),
               ),
       ),
@@ -817,10 +1233,15 @@ class _ToolCallCard extends StatelessWidget {
 }
 
 class _ToolSequenceCard extends StatelessWidget {
-  const _ToolSequenceCard({required this.index, required this.parsed});
+  const _ToolSequenceCard({
+    required this.index,
+    required this.parsed,
+    required this.inputBudget,
+  });
 
   final int index;
   final _ParsedTool parsed;
+  final AcpInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -828,7 +1249,7 @@ class _ToolSequenceCard extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(left: 14),
-          child: _ToolCallCard(parsed: parsed),
+          child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
         ),
         Positioned(
           left: 0,
@@ -1079,9 +1500,15 @@ class _ToolHeader extends StatelessWidget {
 }
 
 class _StatusBubble extends StatelessWidget {
-  const _StatusBubble({required this.message});
+  const _StatusBubble({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1089,10 +1516,22 @@ class _StatusBubble extends StatelessWidget {
     final child = switch (kind) {
       'plan' => _PlanStatus(message: message),
       'diff' => _DiffStatus(message: message),
-      'commands' => _CommandsStatus(message: message),
-      'terminal' => _TerminalStatus(message: message),
+      'commands' => _CommandsStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
+      'terminal' => _TerminalStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
       'mode' => _ModeStatus(message: message),
-      'thought' => _ThoughtStatus(message: message),
+      'thought' => _ThoughtStatus(
+        message: message,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
       'turn' => _TurnStatus(message: message),
       _ => _PlainStatus(message: message),
     };
@@ -1109,7 +1548,14 @@ class _StatusBubble extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: AppColors.border),
           ),
-          child: child,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              child,
+              for (final omission in message.omissions)
+                _InputOmissionNotice(omission: omission, user: false),
+            ],
+          ),
         ),
       ),
     );
@@ -1117,9 +1563,15 @@ class _StatusBubble extends StatelessWidget {
 }
 
 class _ThoughtStatus extends StatelessWidget {
-  const _ThoughtStatus({required this.message});
+  const _ThoughtStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1140,7 +1592,11 @@ class _ThoughtStatus extends StatelessWidget {
             ),
           ),
         ],
-        _ContentBlocksPreview(message: message),
+        _ContentBlocksPreview(
+          message: message,
+          inputBudget: inputBudget,
+          previewRevision: previewRevision,
+        ),
       ],
     );
   }
@@ -1172,36 +1628,238 @@ class _TurnStatus extends StatelessWidget {
   }
 }
 
-class _ContentBlocksPreview extends StatelessWidget {
-  const _ContentBlocksPreview({required this.message});
+class _ContentBlocksPreview extends StatefulWidget {
+  const _ContentBlocksPreview({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
+
+  @override
+  State<_ContentBlocksPreview> createState() => _ContentBlocksPreviewState();
+}
+
+class _ContentBlocksPreviewState extends State<_ContentBlocksPreview> {
+  late _LazyNonTextBlockProjection _projection = _LazyNonTextBlockProjection(
+    _rawBlocks,
+  );
+  var _projectionGeneration = 0;
+  var _projectionScanScheduled = false;
+  var _visibleTarget = _contentBlockVisiblePageItems;
+  var _loadingMore = false;
+
+  Object? get _rawBlocks => widget.message.metadata['contentBlocks'];
+
+  @override
+  void didUpdateWidget(covariant _ContentBlocksPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldRawBlocks = oldWidget.message.metadata['contentBlocks'];
+    if (!identical(_rawBlocks, oldRawBlocks) ||
+        widget.previewRevision != oldWidget.previewRevision) {
+      _projection = _LazyNonTextBlockProjection(_rawBlocks);
+      _projectionGeneration += 1;
+      _projectionScanScheduled = false;
+      _visibleTarget = _contentBlockVisiblePageItems;
+      _loadingMore = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final blocks = _mapList(
-      message.metadata['contentBlocks'],
-    ).where((block) => _stringMetadata(block, 'type') != 'text').toList();
-    if (blocks.isEmpty) return const SizedBox.shrink();
+    if (_projection.rawCount == 0) return const SizedBox.shrink();
+    final needsMoreVisibleItems =
+        !_projection.exhausted && _projection.visibleCount < _visibleTarget;
+    if (needsMoreVisibleItems) _scheduleProjectionScan();
+    if (_projection.visibleCount == 0) {
+      if (_projection.exhausted) return const SizedBox.shrink();
+      return Padding(
+        padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+        child: const _ContentProjectionPendingNotice(),
+      );
+    }
+    final hasPendingItems = !_projection.exhausted;
+    final renderedItemCount =
+        _projection.visibleCount + (hasPendingItems ? 1 : 0);
 
     return Padding(
-      padding: EdgeInsets.only(top: message.text.isEmpty ? 0 : 8),
-      child: Column(
+      padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+      child: SizedBox(
+        height: _boundedNestedListHeight(
+          itemCount: renderedItemCount,
+          estimatedItemHeight: 110,
+          maxHeight: _contentBlocksMaxHeight,
+        ),
+        child: ListView.builder(
+          key: const ValueKey('content-blocks-list'),
+          primary: false,
+          itemCount: renderedItemCount,
+          itemBuilder: (context, index) {
+            if (index >= _projection.visibleCount) {
+              return needsMoreVisibleItems
+                  ? _ContentProjectionPendingRow(
+                      label: _loadingMore
+                          ? 'Loading more content…'
+                          : 'Preparing content preview…',
+                    )
+                  : _ContentProjectionLoadMoreRow(onPressed: _loadMore);
+            }
+            final block = _projection.blockAt(index);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _ContentBlockCard(
+                block: block,
+                inputBudget: widget.inputBudget,
+                previewRevision: widget.previewRevision,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _scheduleProjectionScan() {
+    if (_projection.exhausted || _projectionScanScheduled) return;
+    _projectionScanScheduled = true;
+    final generation = _projectionGeneration;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _projectionGeneration) return;
+      _projectionScanScheduled = false;
+      _projection.scanNextBatch(
+        _contentBlockProjectionBatchItems,
+        visibleTarget: _visibleTarget,
+      );
+      if (_projection.exhausted || _projection.visibleCount >= _visibleTarget) {
+        _loadingMore = false;
+      }
+      setState(() {});
+    });
+  }
+
+  void _loadMore() {
+    if (_projection.exhausted || _loadingMore) return;
+    setState(() {
+      _visibleTarget += _contentBlockVisiblePageItems;
+      _loadingMore = true;
+    });
+  }
+}
+
+class _ContentProjectionPendingNotice extends StatelessWidget {
+  const _ContentProjectionPendingNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      height: 42,
+      child: Row(
         children: [
-          for (final block in blocks) ...[
-            _ContentBlockCard(block: block),
-            if (block != blocks.last) const SizedBox(height: 6),
-          ],
+          SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 8),
+          Text(
+            'Preparing content preview…',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
         ],
       ),
     );
   }
 }
 
+class _ContentProjectionPendingRow extends StatelessWidget {
+  const _ContentProjectionPendingRow({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ContentProjectionLoadMoreRow extends StatelessWidget {
+  const _ContentProjectionLoadMoreRow({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: onPressed,
+          child: const Text('Load more content'),
+        ),
+      ),
+    );
+  }
+}
+
+final class _LazyNonTextBlockProjection {
+  _LazyNonTextBlockProjection(this._rawBlocks)
+    : rawCount = _lazyMapCount(_rawBlocks);
+
+  final Object? _rawBlocks;
+  final int rawCount;
+  final List<Map<String, Object?>> _visibleBlocks = <Map<String, Object?>>[];
+  var _nextRawIndex = 0;
+
+  bool get exhausted => _nextRawIndex >= rawCount;
+  int get visibleCount => _visibleBlocks.length;
+
+  Map<String, Object?> blockAt(int visibleIndex) =>
+      _visibleBlocks[visibleIndex];
+
+  void scanNextBatch(int maxItems, {required int visibleTarget}) {
+    var scanned = 0;
+    while (!exhausted && scanned < maxItems && visibleCount < visibleTarget) {
+      final block = _lazyMapAt(_rawBlocks, _nextRawIndex);
+      _nextRawIndex += 1;
+      scanned += 1;
+      if (block == null || _stringMetadata(block, 'type') == 'text') {
+        continue;
+      }
+      _visibleBlocks.add(block);
+    }
+  }
+}
+
 class _ContentBlockCard extends StatelessWidget {
-  const _ContentBlockCard({required this.block});
+  const _ContentBlockCard({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1209,8 +1867,16 @@ class _ContentBlockCard extends StatelessWidget {
     return switch (type) {
       'image' => _ImageContentBlock(block: block),
       'audio' => _AudioContentBlock(block: block),
-      'resource_link' || 'resource' => _ResourceContentBlock(block: block),
-      _ => _UnknownContentBlock(block: block),
+      'resource_link' || 'resource' => _ResourceContentBlock(
+        block: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
+      _ => _UnknownContentBlock(
+        block: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
+      ),
     };
   }
 }
@@ -1224,25 +1890,20 @@ class _ImageContentBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
     final data = _stringMetadata(block, 'data');
-    final bytes = data == null ? null : _tryDecodeBase64(data);
+    final imageDecode = _ImageDecodeScope.of(context);
     return _InlineContentFrame(
       icon: Icons.image_outlined,
       title: 'Image',
       subtitle: '$mimeType${data == null ? '' : ' · ${data.length} chars'}',
-      child: bytes == null
-          ? null
+      child: data == null
+          ? const Text('Image preview unavailable.')
           : ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: Image.memory(
-                bytes,
-                height: 132,
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Text(
-                    'Image preview unavailable.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  );
-                },
+              child: BoundedImagePreview(
+                data: data,
+                inputBudget: imageDecode.inputBudget,
+                imageDecodeLedger: imageDecode.ledger,
+                decoder: imageDecode.decoder,
               ),
             ),
     );
@@ -1250,9 +1911,15 @@ class _ImageContentBlock extends StatelessWidget {
 }
 
 class _ResourceContentBlock extends StatelessWidget {
-  const _ResourceContentBlock({required this.block});
+  const _ResourceContentBlock({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1286,7 +1953,12 @@ class _ResourceContentBlock extends StatelessWidget {
       subtitle: details.isEmpty ? 'resource' : details.join(' · '),
       child: uri.isEmpty && text == null
           ? null
-          : _ResourceContentDetails(uri: uri, text: text),
+          : _ResourceContentDetails(
+              uri: uri,
+              text: text,
+              inputBudget: inputBudget,
+              previewRevision: previewRevision,
+            ),
     );
   }
 }
@@ -1325,10 +1997,17 @@ class _AudioContentBlock extends StatelessWidget {
 }
 
 class _ResourceContentDetails extends StatelessWidget {
-  const _ResourceContentDetails({required this.uri, required this.text});
+  const _ResourceContentDetails({
+    required this.uri,
+    required this.text,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final String uri;
   final String? text;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1346,14 +2025,11 @@ class _ResourceContentDetails extends StatelessWidget {
           ),
         if (text != null) ...[
           if (uri.isNotEmpty) const SizedBox(height: 8),
-          SelectableText(
-            _previewObject(text),
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontFamily: 'monospace',
-              fontSize: 12,
-              height: 1.35,
-            ),
+          _BoundedMetadataDetail(
+            label: 'Text',
+            payload: text,
+            inputBudget: inputBudget,
+            previewRevision: previewRevision,
           ),
         ],
       ],
@@ -1362,9 +2038,15 @@ class _ResourceContentDetails extends StatelessWidget {
 }
 
 class _UnknownContentBlock extends StatelessWidget {
-  const _UnknownContentBlock({required this.block});
+  const _UnknownContentBlock({
+    required this.block,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> block;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1372,14 +2054,11 @@ class _UnknownContentBlock extends StatelessWidget {
       icon: Icons.extension_outlined,
       title: _stringMetadata(block, 'type') ?? 'Unknown content',
       subtitle: 'raw content block',
-      child: SelectableText(
-        _previewObject(block),
-        style: const TextStyle(
-          color: AppColors.textSecondary,
-          fontFamily: 'monospace',
-          fontSize: 12,
-          height: 1.35,
-        ),
+      child: _BoundedMetadataDetail(
+        label: 'Content',
+        payload: block,
+        inputBudget: inputBudget,
+        previewRevision: previewRevision,
       ),
     );
   }
@@ -1453,7 +2132,8 @@ class _PlanStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = _stringMetadata(message.metadata, 'title') ?? message.text;
     final description = _stringMetadata(message.metadata, 'description');
-    final entries = _mapList(message.metadata['entries']);
+    final rawEntries = message.metadata['entries'];
+    final entryCount = _lazyMapCount(rawEntries);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1469,9 +2149,31 @@ class _PlanStatus extends StatelessWidget {
             ),
           ),
         ],
-        if (entries.isNotEmpty) ...[
+        if (entryCount > 0) ...[
           const SizedBox(height: 10),
-          for (final entry in entries) _PlanEntryRow(entry: entry),
+          SizedBox(
+            height: _boundedNestedListHeight(
+              itemCount: entryCount,
+              estimatedItemHeight: 54,
+              maxHeight: _nestedDetailsMaxHeight,
+            ),
+            child: ListView.separated(
+              key: const ValueKey('plan-entries-list'),
+              primary: false,
+              itemCount: entryCount,
+              separatorBuilder: (context, index) => const SizedBox(height: 2),
+              itemBuilder: (context, index) {
+                final entry = _lazyMapAt(rawEntries, index);
+                return entry == null
+                    ? const SizedBox.shrink()
+                    : _PlanEntryRow(entry: entry);
+              },
+            ),
+          ),
+        ],
+        if (message.metadata['truncated'] == true) ...[
+          const SizedBox(height: 6),
+          const _DetailsIncompleteNotice(),
         ],
       ],
     );
@@ -1572,13 +2274,8 @@ class _DiffStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final uri = _stringMetadata(message.metadata, 'uri') ?? message.text;
     final status = _stringMetadata(message.metadata, 'status') ?? 'started';
-    final changes = _mapList(message.metadata['changes']);
-    final additions = changes.where((change) {
-      return _stringMetadata(change, 'type') == 'addition';
-    }).length;
-    final deletions = changes.where((change) {
-      return _stringMetadata(change, 'type') == 'deletion';
-    }).length;
+    final rawChanges = message.metadata['changes'];
+    final changeCount = _lazyMapCount(rawChanges);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1602,32 +2299,42 @@ class _DiffStatus extends StatelessWidget {
             fontWeight: FontWeight.w700,
           ),
         ),
-        if (changes.isNotEmpty) ...[
+        if (changeCount > 0) ...[
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _StatusPill(label: '+$additions', color: AppColors.success),
-              _StatusPill(label: '-$deletions', color: AppColors.danger),
               _StatusPill(
-                label: '${changes.length} changes',
+                label: '$changeCount changes',
                 color: AppColors.primaryDark,
               ),
             ],
           ),
           const SizedBox(height: 8),
-          _DiffChangesList(changes: changes),
+          _DiffChangesList(rawChanges: rawChanges, changeCount: changeCount),
+        ],
+        if (message.metadata['truncated'] == true) ...[
+          const SizedBox(height: 6),
+          const _DetailsIncompleteNotice(),
         ],
       ],
     );
   }
 }
 
-class _DiffChangesList extends StatelessWidget {
-  const _DiffChangesList({required this.changes});
+class _DiffChangesList extends StatefulWidget {
+  const _DiffChangesList({required this.rawChanges, required this.changeCount});
 
-  final List<Map<String, Object?>> changes;
+  final Object? rawChanges;
+  final int changeCount;
+
+  @override
+  State<_DiffChangesList> createState() => _DiffChangesListState();
+}
+
+class _DiffChangesListState extends State<_DiffChangesList> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
@@ -1636,6 +2343,10 @@ class _DiffChangesList extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: ExpansionTile(
+          onExpansionChanged: (expanded) {
+            if (_expanded == expanded) return;
+            setState(() => _expanded = expanded);
+          },
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           initiallyExpanded: false,
@@ -1647,12 +2358,30 @@ class _DiffChangesList extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
           ),
-          children: [
-            for (final change in changes) ...[
-              _DiffChangeRow(change: change),
-              if (change != changes.last) const SizedBox(height: 6),
-            ],
-          ],
+          children: _expanded
+              ? [
+                  SizedBox(
+                    height: _boundedNestedListHeight(
+                      itemCount: widget.changeCount,
+                      estimatedItemHeight: 92,
+                      maxHeight: _nestedDetailsMaxHeight,
+                    ),
+                    child: ListView.separated(
+                      key: const ValueKey('diff-changes-list'),
+                      primary: false,
+                      itemCount: widget.changeCount,
+                      separatorBuilder: (context, index) =>
+                          const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final change = _lazyMapAt(widget.rawChanges, index);
+                        return change == null
+                            ? const SizedBox.shrink()
+                            : _DiffChangeRow(change: change);
+                      },
+                    ),
+                  ),
+                ]
+              : const <Widget>[],
         ),
       ),
     );
@@ -1722,14 +2451,31 @@ class _DiffChangeRow extends StatelessWidget {
   }
 }
 
-class _CommandsStatus extends StatelessWidget {
-  const _CommandsStatus({required this.message});
+class _CommandsStatus extends StatefulWidget {
+  const _CommandsStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
+
+  @override
+  State<_CommandsStatus> createState() => _CommandsStatusState();
+}
+
+class _CommandsStatusState extends State<_CommandsStatus> {
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final commands = _mapList(message.metadata['commands']);
+    final rawCommands = widget.message.metadata['commands'];
+    final commandCount = _lazyMapCount(rawCommands);
+    final previewCount = commandCount < _inlineCollectionPreviewItems
+        ? commandCount
+        : _inlineCollectionPreviewItems;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1738,7 +2484,7 @@ class _CommandsStatus extends StatelessWidget {
           label: 'Available Commands',
         ),
         const SizedBox(height: 8),
-        if (commands.isEmpty)
+        if (commandCount == 0)
           const Text(
             'No commands available.',
             style: TextStyle(color: AppColors.textSecondary),
@@ -1751,13 +2497,16 @@ class _CommandsStatus extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final command in commands)
-                    Tooltip(
-                      message: _stringMetadata(command, 'description') ?? '',
-                      child: _CommandChip(
-                        label: _stringMetadata(command, 'name') ?? 'command',
+                  for (var index = 0; index < previewCount; index++)
+                    if (_lazyMapAt(rawCommands, index) case final command?)
+                      Tooltip(
+                        message: _stringMetadata(command, 'description') ?? '',
+                        child: _CommandChip(
+                          label: _stringMetadata(command, 'name') ?? 'command',
+                        ),
                       ),
-                    ),
+                  if (commandCount > previewCount)
+                    _TinyCollectionPill('${commandCount - previewCount} more'),
                 ],
               ),
               const SizedBox(height: 8),
@@ -1768,6 +2517,10 @@ class _CommandsStatus extends StatelessWidget {
                 child: Material(
                   color: Colors.transparent,
                   child: ExpansionTile(
+                    onExpansionChanged: (expanded) {
+                      if (_expanded == expanded) return;
+                      setState(() => _expanded = expanded);
+                    },
                     tilePadding: EdgeInsets.zero,
                     childrenPadding: EdgeInsets.zero,
                     title: const Text(
@@ -1778,12 +2531,38 @@ class _CommandsStatus extends StatelessWidget {
                         fontWeight: FontWeight.w800,
                       ),
                     ),
-                    children: [
-                      for (final command in commands) ...[
-                        _CommandDetailCard(command: command),
-                        if (command != commands.last) const SizedBox(height: 6),
-                      ],
-                    ],
+                    children: _expanded
+                        ? [
+                            SizedBox(
+                              height: _boundedNestedListHeight(
+                                itemCount: commandCount,
+                                estimatedItemHeight: 104,
+                                maxHeight: _commandDetailsMaxHeight,
+                              ),
+                              child: ListView.separated(
+                                key: const ValueKey('command-details-list'),
+                                primary: false,
+                                itemCount: commandCount,
+                                separatorBuilder: (context, index) =>
+                                    const SizedBox(height: 6),
+                                itemBuilder: (context, index) {
+                                  final command = _lazyMapAt(
+                                    rawCommands,
+                                    index,
+                                  );
+                                  return command == null
+                                      ? const SizedBox.shrink()
+                                      : _CommandDetailCard(
+                                          command: command,
+                                          inputBudget: widget.inputBudget,
+                                          previewRevision:
+                                              widget.previewRevision,
+                                        );
+                                },
+                              ),
+                            ),
+                          ]
+                        : const <Widget>[],
                   ),
                 ),
               ),
@@ -1794,10 +2573,58 @@ class _CommandsStatus extends StatelessWidget {
   }
 }
 
+class _TinyCollectionPill extends StatelessWidget {
+  const _TinyCollectionPill(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.textSecondary,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailsIncompleteNotice extends StatelessWidget {
+  const _DetailsIncompleteNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      'Details omitted',
+      style: TextStyle(
+        color: AppColors.warning,
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+  }
+}
+
 class _CommandDetailCard extends StatelessWidget {
-  const _CommandDetailCard({required this.command});
+  const _CommandDetailCard({
+    required this.command,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final Map<String, Object?> command;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1844,8 +2671,11 @@ class _CommandDetailCard extends StatelessWidget {
           ],
           if (parameters != null) ...[
             const SizedBox(height: 6),
-            _DetailBlock(
-              entry: _DetailEntry('Parameters', _previewObject(parameters)),
+            _BoundedMetadataDetail(
+              label: 'Parameters',
+              payload: parameters,
+              inputBudget: inputBudget,
+              previewRevision: previewRevision,
             ),
           ],
         ],
@@ -1877,9 +2707,15 @@ class _ModeStatus extends StatelessWidget {
 }
 
 class _TerminalStatus extends StatelessWidget {
-  const _TerminalStatus({required this.message});
+  const _TerminalStatus({
+    required this.message,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
 
   final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
 
   @override
   Widget build(BuildContext context) {
@@ -1934,11 +2770,11 @@ class _TerminalStatus extends StatelessWidget {
         ],
         if (output != null) ...[
           const SizedBox(height: 8),
-          _DetailBlock(
-            entry: _DetailEntry(
-              truncated ? 'Output (truncated)' : 'Output',
-              _previewObject(output),
-            ),
+          _BoundedMetadataDetail(
+            label: truncated ? 'Output (truncated)' : 'Output',
+            payload: output,
+            inputBudget: inputBudget,
+            previewRevision: previewRevision,
           ),
         ],
       ],
@@ -2071,20 +2907,74 @@ class _DetailBlock extends StatelessWidget {
               letterSpacing: 0,
             ),
           ),
-          const SizedBox(height: 5),
-          SelectableText(
-            entry.value,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontFamily: 'monospace',
-              fontSize: 12,
-              height: 1.35,
+          if (entry.value.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            SelectableText(
+              entry.value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.35,
+              ),
             ),
-          ),
+          ],
+          if (entry.omission != null)
+            _InputOmissionNotice(omission: entry.omission!, user: false),
         ],
       ),
     );
   }
+}
+
+class _BoundedMetadataDetail extends StatefulWidget {
+  const _BoundedMetadataDetail({
+    super.key,
+    required this.label,
+    required this.payload,
+    required this.inputBudget,
+    required this.previewRevision,
+  });
+
+  final String label;
+  final Object? payload;
+  final AcpInputBudget inputBudget;
+  final Object previewRevision;
+
+  @override
+  State<_BoundedMetadataDetail> createState() => _BoundedMetadataDetailState();
+}
+
+class _BoundedMetadataDetailState extends State<_BoundedMetadataDetail> {
+  late _DetailEntry _entry = _writeEntry();
+
+  @override
+  void didUpdateWidget(covariant _BoundedMetadataDetail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.payload, oldWidget.payload) ||
+        widget.previewRevision != oldWidget.previewRevision ||
+        !identical(widget.inputBudget, oldWidget.inputBudget) ||
+        widget.label != oldWidget.label) {
+      _entry = _writeEntry();
+    }
+  }
+
+  _DetailEntry _writeEntry() {
+    final preview = writeBoundedMetadataPreview(
+      widget.payload,
+      budget: widget.inputBudget,
+    );
+    return _DetailEntry(
+      widget.label,
+      preview.omission == null && widget.payload is String
+          ? widget.payload! as String
+          : preview.text,
+      preview.omission,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => _DetailBlock(entry: _entry);
 }
 
 class _ParsedTool {
@@ -2097,16 +2987,18 @@ class _ParsedTool {
     required this.input,
     required this.output,
     required this.locations,
+    required this.previewRevision,
   });
 
   final String title;
   final String status;
   final String id;
   final String kind;
-  final String content;
-  final String input;
-  final String output;
+  final Object? content;
+  final Object? input;
+  final Object? output;
   final List<String> locations;
+  final Object previewRevision;
 
   factory _ParsedTool.fromMessage(ChatMessage message) {
     final metadata = message.metadata;
@@ -2136,24 +3028,25 @@ class _ParsedTool {
       kind: _stringMetadata(metadata, 'kind') == 'tool'
           ? ''
           : _stringMetadata(metadata, 'kind') ?? '',
-      content: _previewObject(metadata['content']),
-      input: _previewObject(
-        _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
-      ),
-      output: _previewObject(
-        _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
-      ),
+      content: metadata['content'],
+      input: _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
+      output: _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
       locations: locations,
+      previewRevision: message.revision,
     );
   }
 }
 
 class _DetailEntry {
-  const _DetailEntry(this.label, this.value);
+  const _DetailEntry(this.label, this.value, [this.omission]);
 
   final String label;
   final String value;
+  final AcpInputOmission? omission;
 }
+
+bool _hasMetadataDetail(Object? value) =>
+    value != null && (value is! String || value.isNotEmpty);
 
 String? _stringMetadata(Map<String, Object?> metadata, String key) {
   final value = metadata[key];
@@ -2221,12 +3114,33 @@ String _formatByteCount(int bytes) {
 List<Map<String, Object?>> _mapList(Object? value) {
   if (value is! List) return const [];
   return value.whereType<Map>().map((entry) {
+    if (entry is Map<String, Object?>) return entry;
     return entry.map((key, value) => MapEntry(key.toString(), value));
   }).toList();
 }
 
+int _lazyMapCount(Object? value) => value is List ? value.length : 0;
+
+Map<String, Object?>? _lazyMapAt(Object? value, int index) {
+  if (value is! List || index < 0 || index >= value.length) return null;
+  final entry = value[index];
+  if (entry is Map<String, Object?>) return entry;
+  if (entry is! Map) return null;
+  return entry.map((key, value) => MapEntry(key.toString(), value));
+}
+
+double _boundedNestedListHeight({
+  required int itemCount,
+  required double estimatedItemHeight,
+  required double maxHeight,
+}) {
+  final estimated = itemCount * estimatedItemHeight;
+  return estimated < maxHeight ? estimated : maxHeight;
+}
+
 Map<String, Object?> _mapMetadata(Object? value) {
   if (value is! Map) return const <String, Object?>{};
+  if (value is Map<String, Object?>) return value;
   return value.map((key, value) => MapEntry(key.toString(), value));
 }
 
@@ -2237,25 +3151,9 @@ String? _resourceTitleFromUri(String uri) {
   return parsed.host.isEmpty ? null : parsed.host;
 }
 
-String _previewObject(Object? value) {
-  if (value == null) return '';
-  final text = value is String ? value : _jsonPreview(value);
-  final cleaned = text.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
-  if (cleaned.length <= 1200) return cleaned;
-  return '${cleaned.substring(0, 1200)}\n...';
-}
-
-String _jsonPreview(Object value) {
-  try {
-    const encoder = JsonEncoder.withIndent('  ');
-    return encoder.convert(value);
-  } on Object {
-    return value.toString();
-  }
-}
-
 Map<String, Object?> _objectMap(Object? value) {
   if (value is! Map) return const <String, Object?>{};
+  if (value is Map<String, Object?>) return value;
   return value.map((key, value) => MapEntry(key.toString(), value));
 }
 
@@ -2317,12 +3215,4 @@ Color _stopReasonColor(String value) {
     'refusal' => AppColors.danger,
     _ => AppColors.primaryDark,
   };
-}
-
-Uint8List? _tryDecodeBase64(String value) {
-  try {
-    return base64Decode(value);
-  } on FormatException {
-    return null;
-  }
 }

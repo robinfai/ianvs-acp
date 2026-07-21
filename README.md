@@ -2,17 +2,21 @@
 
 A Flutter macOS desktop client for local Agent Client Protocol agents.
 
-The app can launch stdio ACP agents, create and resume sessions, stream prompt
-turns, display tool calls, render ACP plan and command updates, switch exposed
-session modes/models, close active sessions, and log out when the agent
-advertises those capabilities. It can also pass configured additional
-directories to agents that advertise ACP `additionalDirectories`, fork active
-sessions when the agent supports `session/fork`, and suggest advertised slash
-commands in the prompt input. When an agent advertises authentication methods,
-the Agent menu can start the agent-handled ACP `authenticate` flow. The same
-menu includes Protocol Coverage, which reviews implemented ACP areas against the
-official docs and points each area to its visible configuration and interaction
-surface.
+The app launches local stdio ACP agents through its Rust runtime, creates and
+restores sessions, streams prompt turns, renders plans and tool calls, switches
+advertised model/session options, and handles authentication, permissions,
+filesystem callbacks, and terminal callbacks. Prompt attachments can be
+selected or dropped onto the composer; file, image, and audio content follows
+the negotiated prompt capabilities, with resource-link fallback where needed.
+
+Task Inbox uses the same Rust Core for durable Task/Run state, automatic
+scheduling, retry admission, runtime quotas, and workspace leases. Human-input
+and approval waits pause the run and surface the decision context in Inbox.
+
+See [Product capabilities](docs/product_capabilities.md),
+[ACP runtime coverage](docs/acp_runtime_coverage.md), and
+[Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
+release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
@@ -28,11 +32,21 @@ agent. The app persists those GUI choices to:
 ~/.config/ianvs-acp/settings.json
 ```
 
+On macOS, Agent and MCP `env`/`headers` values entered in Agent Configuration
+are stored in the login Keychain. The JSON file stores only opaque
+`env_refs`/`header_refs`; do not edit or copy those references between config
+files. Existing plaintext values are migrated to Keychain before the JSON is
+atomically replaced. If a referenced Keychain item is missing, startup reports
+the exact field and keeps configuration editing disabled until the credential
+is restored or re-entered.
+
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
-`npx` command running `@zed-industries/codex-acp`, and pi ACP through `npx -y
-pi-acp` when both `npx` and the `pi` command are available. Model provider
-credentials for pi remain user-managed through pi itself or the agent server
+`npx` command running `@agentclientprotocol/codex-acp`, and Pi through the
+`pi-acp` adapter when both `npx` and the `pi` command are available. A direct
+`pi-acp` command or wrapper and `npx -y pi-acp[@version]` are treated as the same
+Pi agent, so discovery does not add a duplicate profile. Model provider
+credentials for Pi remain user-managed through Pi itself or the agent server
 `env` fields in Agent Configuration.
 
 Saved shape example for automation and debugging:
@@ -45,13 +59,13 @@ Saved shape example for automation and debugging:
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["@zed-industries/codex-acp"]
+      "args": ["@agentclientprotocol/codex-acp"]
     },
-    "pi ACP": {
+    "Pi": {
       "type": "custom",
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
-      "args": ["-y", "pi-acp"]
+      "args": ["-y", "pi-acp@0.0.31"]
     }
   },
   "additional_directories": [
@@ -65,8 +79,7 @@ Saved shape example for automation and debugging:
         "-y",
         "@modelcontextprotocol/server-filesystem",
         "/Users/example/project"
-      ],
-      "env": []
+      ]
     }
   ],
   "client_providers": {
@@ -75,8 +88,7 @@ Saved shape example for automation and debugging:
         "mcp_server": {
           "name": "permission-reviewer",
           "command": "/opt/homebrew/bin/npx",
-          "args": ["-y", "@example/permission-reviewer-mcp"],
-          "env": []
+          "args": ["-y", "@example/permission-reviewer-mcp"]
         },
         "tool_name": "review_permission",
         "model": "gpt-5-mini"
@@ -87,7 +99,8 @@ Saved shape example for automation and debugging:
 ```
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; headers may be either an object or a `name`/`value` list. ACP
+`headers`; enter secret header values through Agent Configuration so they are
+stored in Keychain rather than plaintext JSON. ACP
 transport MCP servers use `type: "acp"` with an `id` provided by the component
 that owns the MCP server.
 
@@ -158,9 +171,68 @@ Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
 
 ```sh
 flutter analyze
-flutter test
-flutter build macos --release
+./tool/flutter_test_isolated.sh
 ```
+
+Build and verify a local ad-hoc macOS release:
+
+```sh
+flutter build macos --release
+./tool/verify_macos_bundle.sh 'build/macos/Build/Products/Release/ACP Client.app'
+```
+
+Local ad-hoc builds are for development and verification only. They are not
+external release artifacts.
+
+Formal distribution requires `IANVS_DEVELOPER_ID` to identify a Developer ID
+Application certificate and `IANVS_NOTARY_PROFILE` to name a configured
+`notarytool` Keychain profile. After both are supplied by a protected release
+environment, run:
+
+```sh
+./tool/package_macos_release.sh
+```
+
+The release script fails when either credential is missing. It signs nested
+code from the inside out, verifies the Developer ID signature and secure
+timestamp, submits the archive for notarization, staples and validates the
+ticket, runs Gatekeeper assessment, and produces `build/ACP-Client.zip`.
 
 The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
 use `FakeAgentClient` instead of launching a real agent.
+
+## Runtime architecture
+
+ACP and Workflow have one production authority: a pure Rust Core behind a typed
+FFI host. Rust owns the local stdio/session/prompt/permission path, stable
+session lifecycle and configuration, workspace-scoped attachments, configured
+filesystem and terminal reverse requests, process recovery, Task/Run state,
+and scheduler admission. Flutter owns product projections and human interaction.
+
+Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
+new/load/resume. Filesystem and terminal reverse requests use the ordinary
+permission flow and follow the selected client policy. The ACP client does not
+classify commands or destinations as external egress; external side effects are
+owned by the agent and its tools:
+
+```sh
+flutter run -d macos
+./tool/verify_rust_runtime.sh
+```
+
+The same dylib exposes a typed, revisioned, transactionally durable Task/Run
+Workflow authority. Imported TaskInbox v1 snapshots follow an explicit
+`staged -> ready -> active` migration with an immutable source archive. Once
+active, typed host operations atomically update
+Rust-owned Task/Run state, events, artifacts, approvals, resources, and the
+revisioned UI projection; generic state overwrites remain unavailable. Rust
+also owns atomic scheduler claims with priority, retry-readiness, runtime quota,
+workspace-lease, and per-agent availability admission. Flutter consumes the
+Core-selected claim and retry wake-up without recomputing those decisions.
+
+Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
+until their Rust transports are implemented; the production app never opens a
+parallel compatibility connection. The legacy TaskInbox database is read only
+as a migration source before Rust activation. The ownership contract,
+implemented scope, and remaining transport and runtime work are tracked in
+[Runtime architecture](docs/runtime_architecture.md).

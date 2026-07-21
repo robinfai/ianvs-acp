@@ -1,16 +1,26 @@
+import 'dart:collection';
+
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
+import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
+import '../../tasks/permission_context.dart';
 import '../theme/app_design_tokens.dart';
+import '../bounded_metadata_preview.dart';
 
 typedef PromptSendCallback =
     void Function(String text, List<PromptAttachment> attachments);
 typedef PromptAttachmentPicker = Future<List<PromptAttachment>> Function();
+typedef PromptAttachmentKindPicker =
+    Future<List<PromptAttachment>> Function(PromptAttachmentKind kind);
+
+enum PromptAttachmentKind { file, image, audio }
 
 const Color _permissionAccent = Color(0xffea580c);
 const Color _permissionAccentDark = Color(0xff9a3412);
@@ -28,12 +38,15 @@ class PromptInput extends StatefulWidget {
     required this.onSend,
     required this.onStop,
     this.availableCommands = const <Map<String, Object?>>[],
+    this.availableCommandsRevision = 0,
     this.promptCapabilities,
     this.pendingPermissionRequest,
     this.onAllowPermission,
     this.onDenyPermission,
     this.onCancelPermission,
-    this.toolCallExecutionPolicy = AcpToolCallExecutionPolicy.autoReview,
+    this.onSelectPermissionOption,
+    this.toolCallExecutionPolicy =
+        AcpToolCallExecutionPolicy.defaultPermissions,
     this.hasPermissionReviewer = false,
     this.onToolCallExecutionPolicyChanged,
     this.modelOption,
@@ -41,6 +54,8 @@ class PromptInput extends StatefulWidget {
     this.onModelSelected,
     this.onReasoningEffortSelected,
     this.pickAttachments,
+    this.pickAttachmentsForKind,
+    this.inputBudget = const AcpInputBudget(),
   });
 
   final String agentName;
@@ -49,11 +64,13 @@ class PromptInput extends StatefulWidget {
   final PromptSendCallback onSend;
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
+  final int availableCommandsRevision;
   final AcpPromptCapabilities? promptCapabilities;
   final AcpPermissionRequest? pendingPermissionRequest;
   final VoidCallback? onAllowPermission;
   final VoidCallback? onDenyPermission;
   final VoidCallback? onCancelPermission;
+  final ValueChanged<String>? onSelectPermissionOption;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
   final bool hasPermissionReviewer;
   final ValueChanged<AcpToolCallExecutionPolicy>?
@@ -63,6 +80,8 @@ class PromptInput extends StatefulWidget {
   final ValueChanged<String>? onModelSelected;
   final ValueChanged<String>? onReasoningEffortSelected;
   final PromptAttachmentPicker? pickAttachments;
+  final PromptAttachmentKindPicker? pickAttachmentsForKind;
+  final AcpInputBudget inputBudget;
 
   @override
   State<PromptInput> createState() => _PromptInputState();
@@ -71,41 +90,141 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+  bool _isDraggingAttachments = false;
+  String? _commandQuery;
+  List<_CommandSearchEntry> _commandSearchEntries =
+      const <_CommandSearchEntry>[];
+  LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>
+  _commandParameterPreviewMemo =
+      LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.inputBudget.validate();
+    _commandQuery = _scanBoundedCommandQuery(
+      _controller.text,
+      budget: widget.inputBudget,
+    );
+    _rebuildCommandSearchEntries();
+  }
+
+  @override
+  void didUpdateWidget(covariant PromptInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.inputBudget.validate();
+    if (!identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _commandQuery = _scanBoundedCommandQuery(
+        _controller.text,
+        budget: widget.inputBudget,
+      );
+    }
+    if (!identical(widget.availableCommands, oldWidget.availableCommands) ||
+        widget.availableCommandsRevision !=
+            oldWidget.availableCommandsRevision ||
+        !identical(widget.inputBudget, oldWidget.inputBudget)) {
+      _rebuildCommandSearchEntries();
+    }
+    if ((!widget.enabled || widget.isSending) && _isDraggingAttachments) {
+      _isDraggingAttachments = false;
+    }
+  }
 
   bool get _canSend =>
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
       widget.enabled &&
       !widget.isSending;
 
-  List<Map<String, Object?>> get _commandSuggestions {
-    if (!widget.enabled ||
-        widget.isSending ||
-        widget.availableCommands.isEmpty) {
-      return const <Map<String, Object?>>[];
+  List<_CommandSearchEntry> get _commandSuggestions {
+    if (!widget.enabled || widget.isSending || _commandSearchEntries.isEmpty) {
+      return const <_CommandSearchEntry>[];
     }
-    final input = _controller.text.trimLeft();
-    if (!input.startsWith('/')) return const <Map<String, Object?>>[];
-    if (RegExp(r'^/\S+\s').hasMatch(input)) {
-      return const <Map<String, Object?>>[];
-    }
-
-    final query = input.substring(1).split(RegExp(r'\s+')).first.toLowerCase();
-    return widget.availableCommands
-        .where((command) {
-          final invocation = _commandInvocation(command);
-          if (invocation.isEmpty) return false;
+    final query = _commandQuery;
+    if (query == null) return const <_CommandSearchEntry>[];
+    return _commandSearchEntries
+        .where((entry) {
           if (query.isEmpty) return true;
-          final name = invocation.startsWith('/')
-              ? invocation.substring(1).toLowerCase()
-              : invocation.toLowerCase();
-          final description = _commandString(
-            command,
-            'description',
-          ).toLowerCase();
-          return name.contains(query) || description.contains(query);
+          return entry.lowerName.contains(query) ||
+              entry.lowerDescription.contains(query);
         })
         .take(5)
         .toList(growable: false);
+  }
+
+  void _rebuildCommandSearchEntries() {
+    const maxSearchEntries = 1024;
+    try {
+      final commands = widget.availableCommands;
+      final sourceLength = commands.length;
+      final length = sourceLength < maxSearchEntries
+          ? sourceLength
+          : maxSearchEntries;
+      final entries = <_CommandSearchEntry>[];
+      for (var index = 0; index < length; index += 1) {
+        final command = commands[index];
+        final name = _commandString(command, 'name');
+        final description = _commandString(command, 'description');
+        final invocation = _commandInvocationFromName(name);
+        if (invocation.isEmpty) continue;
+        final lowerName = invocation.substring(1).toLowerCase();
+        final entry = _CommandSearchEntry(
+          command: command,
+          invocation: invocation,
+          lowerName: lowerName,
+          lowerDescription: description.toLowerCase(),
+          description: description,
+        );
+        entries.add(entry);
+      }
+      _commandSearchEntries = List<_CommandSearchEntry>.unmodifiable(entries);
+      _commandParameterPreviewMemo =
+          LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
+    } on Object {
+      _clearCommandSearchCache();
+    }
+  }
+
+  void _clearCommandSearchCache() {
+    _commandSearchEntries = const <_CommandSearchEntry>[];
+    _commandParameterPreviewMemo =
+        LinkedHashMap<_CommandSearchEntry, BoundedMetadataPreview?>();
+  }
+
+  Map<_CommandSearchEntry, BoundedMetadataPreview?> _parameterPreviewsFor(
+    List<_CommandSearchEntry> entries,
+  ) {
+    const maxMemoEntries = 5;
+    final visible = <_CommandSearchEntry, BoundedMetadataPreview?>{};
+    for (final entry in entries) {
+      final BoundedMetadataPreview? preview;
+      if (_commandParameterPreviewMemo.containsKey(entry)) {
+        preview = _commandParameterPreviewMemo.remove(entry);
+      } else {
+        BoundedMetadataPreview? built;
+        try {
+          final parameters = entry.command['parameters'];
+          if (parameters != null) {
+            built = writeBoundedMetadataPreview(
+              parameters,
+              budget: widget.inputBudget,
+            );
+          }
+        } on Object {
+          built = null;
+        }
+        preview = built;
+        if (_commandParameterPreviewMemo.length >= maxMemoEntries) {
+          _commandParameterPreviewMemo.remove(
+            _commandParameterPreviewMemo.keys.first,
+          );
+        }
+      }
+      _commandParameterPreviewMemo[entry] = preview;
+      visible[entry] = preview;
+    }
+    return Map<_CommandSearchEntry, BoundedMetadataPreview?>.unmodifiable(
+      visible,
+    );
   }
 
   @override
@@ -117,6 +236,7 @@ class _PromptInputState extends State<PromptInput> {
   @override
   Widget build(BuildContext context) {
     final commandSuggestions = _commandSuggestions;
+    final commandParameterPreviews = _parameterPreviewsFor(commandSuggestions);
     final pendingPermissionRequest = widget.pendingPermissionRequest;
     return Container(
       color: AppColors.bg,
@@ -136,91 +256,122 @@ class _PromptInputState extends State<PromptInput> {
               _submit();
               return KeyEventResult.handled;
             },
-            child: Container(
-              key: const Key('prompt-input-surface'),
-              constraints: const BoxConstraints(minHeight: 78),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(color: AppColors.border),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.textPrimary.withValues(alpha: 0.05),
-                    blurRadius: 16,
-                    offset: const Offset(0, 5),
+            child: DropTarget(
+              key: const Key('prompt-input-drop-target'),
+              enable: widget.enabled && !widget.isSending,
+              onDragEntered: _handleAttachmentDragEntered,
+              onDragExited: _handleAttachmentDragExited,
+              onDragDone: _handleAttachmentDrop,
+              child: AnimatedContainer(
+                key: const Key('prompt-input-surface'),
+                duration: const Duration(milliseconds: 120),
+                constraints: const BoxConstraints(minHeight: 78),
+                decoration: BoxDecoration(
+                  color: _isDraggingAttachments
+                      ? AppColors.primarySoft
+                      : AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(
+                    color: _isDraggingAttachments
+                        ? AppColors.primary
+                        : AppColors.border,
+                    width: _isDraggingAttachments ? 2 : 1,
                   ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (pendingPermissionRequest != null)
+                  boxShadow: [
+                    BoxShadow(
+                      color: _isDraggingAttachments
+                          ? AppColors.primary.withValues(alpha: 0.16)
+                          : AppColors.textPrimary.withValues(alpha: 0.05),
+                      blurRadius: _isDraggingAttachments ? 22 : 16,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isDraggingAttachments)
+                      _AttachmentDropIndicator(
+                        kinds: _availableAttachmentKinds(
+                          widget.promptCapabilities,
+                        ),
+                      ),
+                    if (pendingPermissionRequest != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                        child: _PromptPermissionCard(
+                          request: pendingPermissionRequest,
+                          onAllow: widget.onAllowPermission,
+                          onDeny: widget.onDenyPermission,
+                          onCancel: widget.onCancelPermission,
+                          onSelectOption: widget.onSelectPermissionOption,
+                        ),
+                      ),
+                    if (commandSuggestions.isNotEmpty)
+                      _CommandSuggestionPanel(
+                        entries: commandSuggestions,
+                        parameterPreviews: commandParameterPreviews,
+                        onSelect: _insertCommand,
+                      ),
+                    TextField(
+                      controller: _controller,
+                      minLines: 1,
+                      maxLines: 4,
+                      keyboardType: TextInputType.multiline,
+                      enabled: widget.enabled && !widget.isSending,
+                      onChanged: _handlePromptChanged,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        height: 1.35,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Send a prompt to ${widget.agentName}...',
+                        hintStyle: const TextStyle(
+                          color: AppColors.textTertiary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        isCollapsed: true,
+                        contentPadding: const EdgeInsets.fromLTRB(
+                          13,
+                          12,
+                          13,
+                          8,
+                        ),
+                        border: InputBorder.none,
+                      ),
+                    ),
+                    if (_attachments.isNotEmpty)
+                      _AttachmentTray(
+                        attachments: _attachments,
+                        promptCapabilities: widget.promptCapabilities,
+                        onRemove: _removeAttachment,
+                      ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-                      child: _PromptPermissionCard(
-                        request: pendingPermissionRequest,
-                        onAllow: widget.onAllowPermission,
-                        onDeny: widget.onDenyPermission,
-                        onCancel: widget.onCancelPermission,
+                      padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+                      child: _ComposerControlBar(
+                        enabled: widget.enabled,
+                        isSending: widget.isSending,
+                        canSend: _canSend,
+                        onPickAttachments: _pickAttachments,
+                        promptCapabilities: widget.promptCapabilities,
+                        pendingPermissionRequest: pendingPermissionRequest,
+                        toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
+                        hasPermissionReviewer: widget.hasPermissionReviewer,
+                        onToolCallExecutionPolicyChanged:
+                            widget.onToolCallExecutionPolicyChanged,
+                        modelOption: widget.modelOption,
+                        reasoningEffortOption: widget.reasoningEffortOption,
+                        onModelSelected: widget.onModelSelected,
+                        onReasoningEffortSelected:
+                            widget.onReasoningEffortSelected,
+                        onSend: _submit,
+                        onStop: widget.onStop,
                       ),
                     ),
-                  if (commandSuggestions.isNotEmpty)
-                    _CommandSuggestionPanel(
-                      commands: commandSuggestions,
-                      onSelect: _insertCommand,
-                    ),
-                  TextField(
-                    controller: _controller,
-                    minLines: 1,
-                    maxLines: 4,
-                    keyboardType: TextInputType.multiline,
-                    enabled: widget.enabled && !widget.isSending,
-                    onChanged: (_) => setState(() {}),
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 13,
-                      height: 1.35,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Send a prompt to ${widget.agentName}...',
-                      hintStyle: const TextStyle(
-                        color: AppColors.textTertiary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      isCollapsed: true,
-                      contentPadding: const EdgeInsets.fromLTRB(13, 12, 13, 8),
-                      border: InputBorder.none,
-                    ),
-                  ),
-                  if (_attachments.isNotEmpty)
-                    _AttachmentTray(
-                      attachments: _attachments,
-                      promptCapabilities: widget.promptCapabilities,
-                      onRemove: _removeAttachment,
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-                    child: _ComposerControlBar(
-                      enabled: widget.enabled,
-                      isSending: widget.isSending,
-                      canSend: _canSend,
-                      onPickAttachments: _pickAttachments,
-                      pendingPermissionRequest: pendingPermissionRequest,
-                      toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
-                      hasPermissionReviewer: widget.hasPermissionReviewer,
-                      onToolCallExecutionPolicyChanged:
-                          widget.onToolCallExecutionPolicyChanged,
-                      modelOption: widget.modelOption,
-                      reasoningEffortOption: widget.reasoningEffortOption,
-                      onModelSelected: widget.onModelSelected,
-                      onReasoningEffortSelected:
-                          widget.onReasoningEffortSelected,
-                      onSend: _submit,
-                      onStop: widget.onStop,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -235,44 +386,107 @@ class _PromptInputState extends State<PromptInput> {
     final attachments = List<PromptAttachment>.unmodifiable(_attachments);
     widget.onSend(text, attachments);
     _controller.clear();
+    _commandQuery = null;
     _attachments.clear();
     setState(() {});
   }
 
-  void _insertCommand(Map<String, Object?> command) {
-    final invocation = _commandInvocation(command);
-    if (invocation.isEmpty) return;
-    final text = '$invocation ';
+  void _insertCommand(_CommandSearchEntry entry) {
+    final text = '${entry.invocation} ';
     _controller.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
     );
+    _commandQuery = null;
     setState(() {});
   }
 
-  Future<void> _pickAttachments() async {
+  void _handlePromptChanged(String value) {
+    _commandQuery = _scanBoundedCommandQuery(value, budget: widget.inputBudget);
+    setState(() {});
+  }
+
+  Future<void> _pickAttachments(PromptAttachmentKind kind) async {
     try {
-      final picker = widget.pickAttachments ?? _pickWithFilePicker;
-      final selected = await picker();
+      final selected = await switch (widget.pickAttachmentsForKind) {
+        final picker? => picker(kind),
+        null => switch (widget.pickAttachments) {
+          final picker? => picker(),
+          null => _pickWithFilePicker(kind),
+        },
+      };
       if (!mounted || !widget.enabled || widget.isSending || selected.isEmpty) {
         return;
       }
-      setState(() {
-        for (final attachment in selected) {
-          final duplicate = _attachments.any(
-            (existing) => existing.path == attachment.path,
-          );
-          if (!duplicate) {
-            _attachments.add(attachment);
-          }
-        }
-      });
+      _addAttachments(selected);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not attach file: $error')));
     }
+  }
+
+  void _handleAttachmentDragEntered(DropEventDetails details) {
+    if (!widget.enabled || widget.isSending || _isDraggingAttachments) return;
+    setState(() => _isDraggingAttachments = true);
+  }
+
+  void _handleAttachmentDragExited(DropEventDetails details) {
+    if (!_isDraggingAttachments) return;
+    setState(() => _isDraggingAttachments = false);
+  }
+
+  void _handleAttachmentDrop(DropDoneDetails details) {
+    if (_isDraggingAttachments) {
+      setState(() => _isDraggingAttachments = false);
+    }
+    if (!widget.enabled || widget.isSending) return;
+    _attachDroppedItems(details.files);
+  }
+
+  void _attachDroppedItems(List<DropItem> items) {
+    final attachments = <PromptAttachment>[];
+    var ignoredDirectories = 0;
+    for (final item in items) {
+      if (item is DropItemDirectory) {
+        ignoredDirectories += 1;
+        continue;
+      }
+      if (item.path.isEmpty) continue;
+      attachments.add(
+        PromptAttachment.fromPath(
+          path: item.path,
+          name: item.name,
+          mimeType: item.mimeType,
+        ),
+      );
+    }
+    if (!mounted || !widget.enabled || widget.isSending) return;
+    _addAttachments(attachments);
+    if (ignoredDirectories > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ignoredDirectories == 1
+                ? 'Folders cannot be attached. Drop individual files instead.'
+                : '$ignoredDirectories folders were skipped. Drop individual files instead.',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _addAttachments(Iterable<PromptAttachment> selected) {
+    if (!mounted || !widget.enabled || widget.isSending) return;
+    setState(() {
+      for (final attachment in selected) {
+        final duplicate = _attachments.any(
+          (existing) => existing.path == attachment.path,
+        );
+        if (!duplicate) _attachments.add(attachment);
+      }
+    });
   }
 
   void _removeAttachment(PromptAttachment attachment) {
@@ -288,15 +502,72 @@ class _PromptPermissionCard extends StatelessWidget {
     required this.onAllow,
     required this.onDeny,
     required this.onCancel,
+    required this.onSelectOption,
   });
 
   final AcpPermissionRequest request;
   final VoidCallback? onAllow;
   final VoidCallback? onDeny;
   final VoidCallback? onCancel;
+  final ValueChanged<String>? onSelectOption;
+
+  bool _isRejectChoice(AcpPermissionChoice choice) {
+    return choice.decision == AcpPermissionDecision.deny;
+  }
+
+  Widget _structuredChoiceButton(
+    AcpPermissionChoice choice, {
+    required bool contextIsComplete,
+  }) {
+    final canSelect = contextIsComplete
+        ? choice.decision != null
+        : choice.explicitDecision == AcpPermissionDecision.deny;
+    final onPressed = onSelectOption == null || !canSelect
+        ? null
+        : () => onSelectOption!(choice.optionId);
+    if (_isRejectChoice(choice)) {
+      return OutlinedButton.icon(
+        key: Key('prompt-permission-option-${choice.optionId}'),
+        onPressed: onPressed,
+        icon: const Icon(Icons.block_rounded, size: 15),
+        label: Text(choice.name),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.danger,
+          backgroundColor: Colors.white,
+          minimumSize: const Size(0, 34),
+          padding: const EdgeInsets.symmetric(horizontal: 11),
+          side: const BorderSide(color: Color(0xfffecaca)),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+        ),
+      );
+    }
+    if (choice.decision != AcpPermissionDecision.allow) {
+      return OutlinedButton(
+        key: Key('prompt-permission-option-${choice.optionId}'),
+        onPressed: null,
+        child: Text(choice.name),
+      );
+    }
+    return FilledButton.icon(
+      key: Key('prompt-permission-option-${choice.optionId}'),
+      onPressed: onPressed,
+      icon: const Icon(Icons.check_rounded, size: 15),
+      label: Text(choice.name),
+      style: FilledButton.styleFrom(
+        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xffc2410c),
+        minimumSize: const Size(0, 34),
+        padding: const EdgeInsets.symmetric(horizontal: 11),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final displayContext = permissionDisplayContextForRequest(request);
     return Container(
       key: const Key('prompt-permission-card'),
       width: double.infinity,
@@ -326,7 +597,8 @@ class _PromptPermissionCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final compact = constraints.maxWidth < 700;
+                final compact =
+                    constraints.maxWidth < 700 || request.choices.length > 3;
                 final details = Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -437,6 +709,14 @@ class _PromptPermissionCard extends StatelessWidget {
                               letterSpacing: 0,
                             ),
                           ),
+                          if (!displayContext.isComplete ||
+                              displayContext.entries.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            _PermissionContextView(
+                              key: ObjectKey(request),
+                              displayContext: displayContext,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -447,33 +727,42 @@ class _PromptPermissionCard extends StatelessWidget {
                   runSpacing: 6,
                   alignment: WrapAlignment.end,
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: onDeny,
-                      icon: const Icon(Icons.block_rounded, size: 15),
-                      label: Text(request.denyActionLabel),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.danger,
-                        backgroundColor: Colors.white,
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 11),
-                        side: const BorderSide(color: Color(0xfffecaca)),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
+                    if (request.choices.isNotEmpty)
+                      ...request.choices.map(
+                        (choice) => _structuredChoiceButton(
+                          choice,
+                          contextIsComplete: displayContext.isComplete,
+                        ),
+                      )
+                    else ...[
+                      OutlinedButton.icon(
+                        onPressed: onDeny,
+                        icon: const Icon(Icons.block_rounded, size: 15),
+                        label: Text(request.denyActionLabel),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.danger,
+                          backgroundColor: Colors.white,
+                          minimumSize: const Size(0, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                          side: const BorderSide(color: Color(0xfffecaca)),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ),
-                    ),
-                    FilledButton.icon(
-                      onPressed: onAllow,
-                      icon: const Icon(Icons.check_rounded, size: 15),
-                      label: Text(request.allowActionLabel),
-                      style: FilledButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        backgroundColor: const Color(0xffc2410c),
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 11),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
+                      FilledButton.icon(
+                        onPressed: displayContext.isComplete ? onAllow : null,
+                        icon: const Icon(Icons.check_rounded, size: 15),
+                        label: Text(request.allowActionLabel),
+                        style: FilledButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          backgroundColor: const Color(0xffc2410c),
+                          minimumSize: const Size(0, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ),
-                    ),
+                    ],
                     IconButton(
                       tooltip: 'Cancel permission request',
                       onPressed: onCancel,
@@ -516,6 +805,93 @@ class _PromptPermissionCard extends StatelessWidget {
   }
 }
 
+class _PermissionContextView extends StatefulWidget {
+  const _PermissionContextView({super.key, required this.displayContext});
+
+  final PermissionDisplayContext displayContext;
+
+  @override
+  State<_PermissionContextView> createState() => _PermissionContextViewState();
+}
+
+class _PermissionContextViewState extends State<_PermissionContextView> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      key: const Key('prompt-permission-context'),
+      constraints: const BoxConstraints(maxHeight: 180),
+      child: Scrollbar(
+        controller: _scrollController,
+        child: SingleChildScrollView(
+          key: const Key('prompt-permission-context-scroll'),
+          controller: _scrollController,
+          scrollDirection: Axis.vertical,
+          child: widget.displayContext.isComplete
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final entry in widget.displayContext.entries)
+                      Padding(
+                        key: Key(
+                          'prompt-permission-context-${_permissionContextEntryKey(entry.label)}',
+                        ),
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.label,
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            SelectableText(
+                              entry.value,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                )
+              : Text(
+                  PermissionDisplayContext.incompleteWarning,
+                  key: const Key('prompt-permission-context-warning'),
+                  style: const TextStyle(
+                    color: AppColors.danger,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+String _permissionContextEntryKey(String label) {
+  return switch (label) {
+    'Command' => 'command',
+    'Working directory' => 'cwd',
+    'Path' => 'path',
+    'Target' => 'target',
+    _ => throw StateError('Unsupported permission context label: $label'),
+  };
+}
+
 class _ComposerDivider extends StatelessWidget {
   const _ComposerDivider();
 
@@ -530,12 +906,218 @@ class _ComposerDivider extends StatelessWidget {
   }
 }
 
+class _AttachmentDropIndicator extends StatelessWidget {
+  const _AttachmentDropIndicator({required this.kinds});
+
+  final List<PromptAttachmentKind> kinds;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('prompt-attachment-drop-indicator'),
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: AppColors.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.34)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.file_download_outlined,
+            size: 18,
+            color: AppColors.primaryDark,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              _attachmentDropLabel(kinds),
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.primaryDark,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachmentPickerControl extends StatelessWidget {
+  const _AttachmentPickerControl({
+    required this.enabled,
+    required this.promptCapabilities,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final AcpPromptCapabilities? promptCapabilities;
+  final ValueChanged<PromptAttachmentKind> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final kinds = _availableAttachmentKinds(promptCapabilities);
+    final tooltip = _attachmentPickerTooltip(kinds);
+    if (kinds.length == 1) {
+      return Semantics(
+        button: true,
+        label: tooltip,
+        child: IconButton(
+          tooltip: tooltip,
+          onPressed: enabled
+              ? () => onSelected(PromptAttachmentKind.file)
+              : null,
+          icon: const Icon(
+            Icons.add_rounded,
+            key: Key('prompt-attachment-picker'),
+          ),
+          color: AppColors.textSecondary,
+          disabledColor: AppColors.textTertiary,
+          iconSize: 20,
+          visualDensity: VisualDensity.compact,
+          splashRadius: 18,
+        ),
+      );
+    }
+
+    return PopupMenuButton<PromptAttachmentKind>(
+      tooltip: tooltip,
+      enabled: enabled,
+      onSelected: onSelected,
+      itemBuilder: (context) => <PopupMenuEntry<PromptAttachmentKind>>[
+        for (final kind in kinds)
+          PopupMenuItem<PromptAttachmentKind>(
+            value: kind,
+            child: _AttachmentPickerMenuItem(
+              kind: kind,
+              embedsFiles: promptCapabilities?.embeddedContext == true,
+            ),
+          ),
+      ],
+      icon: const Icon(Icons.add_rounded, key: Key('prompt-attachment-picker')),
+      color: AppColors.surface,
+      iconColor: AppColors.textSecondary,
+      iconSize: 20,
+    );
+  }
+}
+
+List<PromptAttachmentKind> _availableAttachmentKinds(
+  AcpPromptCapabilities? capabilities,
+) => <PromptAttachmentKind>[
+  PromptAttachmentKind.file,
+  if (capabilities?.image == true) PromptAttachmentKind.image,
+  if (capabilities?.audio == true) PromptAttachmentKind.audio,
+];
+
+String _attachmentDropLabel(List<PromptAttachmentKind> kinds) {
+  final labels = kinds
+      .map(
+        (kind) => switch (kind) {
+          PromptAttachmentKind.file => 'files',
+          PromptAttachmentKind.image => 'images',
+          PromptAttachmentKind.audio => 'audio',
+        },
+      )
+      .toList(growable: false);
+  if (labels.length == 1) return 'Drop ${labels.single} here';
+  return 'Drop ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last} here';
+}
+
+class _AttachmentPickerMenuItem extends StatelessWidget {
+  const _AttachmentPickerMenuItem({
+    required this.kind,
+    required this.embedsFiles,
+  });
+
+  final PromptAttachmentKind kind;
+  final bool embedsFiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label, description) = switch (kind) {
+      PromptAttachmentKind.file => (
+        Icons.attach_file_rounded,
+        'Add file',
+        embedsFiles
+            ? 'Embedded with ACP context'
+            : 'Shared as an ACP resource link',
+      ),
+      PromptAttachmentKind.image => (
+        Icons.image_outlined,
+        'Add image',
+        'Supported by the connected ACP agent',
+      ),
+      PromptAttachmentKind.audio => (
+        Icons.audio_file_outlined,
+        'Add audio',
+        'Supported by the connected ACP agent',
+      ),
+    };
+    return Row(
+      children: [
+        Icon(icon, color: AppColors.primaryDark, size: 19),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                description,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String _attachmentPickerTooltip(List<PromptAttachmentKind> kinds) {
+  final labels = kinds
+      .map(
+        (kind) => switch (kind) {
+          PromptAttachmentKind.file => 'file',
+          PromptAttachmentKind.image => 'image',
+          PromptAttachmentKind.audio => 'audio',
+        },
+      )
+      .toList(growable: false);
+  if (labels.length == 1) return 'Attach ${labels.single}';
+  return 'Attach ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last}';
+}
+
 class _ComposerControlBar extends StatelessWidget {
   const _ComposerControlBar({
     required this.enabled,
     required this.isSending,
     required this.canSend,
     required this.onPickAttachments,
+    required this.promptCapabilities,
     required this.pendingPermissionRequest,
     required this.toolCallExecutionPolicy,
     required this.hasPermissionReviewer,
@@ -551,7 +1133,8 @@ class _ComposerControlBar extends StatelessWidget {
   final bool enabled;
   final bool isSending;
   final bool canSend;
-  final VoidCallback onPickAttachments;
+  final ValueChanged<PromptAttachmentKind> onPickAttachments;
+  final AcpPromptCapabilities? promptCapabilities;
   final AcpPermissionRequest? pendingPermissionRequest;
   final AcpToolCallExecutionPolicy toolCallExecutionPolicy;
   final bool hasPermissionReviewer;
@@ -566,19 +1149,10 @@ class _ComposerControlBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final attach = Semantics(
-      button: true,
-      label: 'Attach file',
-      child: IconButton(
-        tooltip: 'Attach file',
-        onPressed: !enabled || isSending ? null : onPickAttachments,
-        icon: const Icon(Icons.add_rounded),
-        color: AppColors.textSecondary,
-        disabledColor: AppColors.textTertiary,
-        iconSize: 20,
-        visualDensity: VisualDensity.compact,
-        splashRadius: 18,
-      ),
+    final attach = _AttachmentPickerControl(
+      enabled: enabled && !isSending,
+      promptCapabilities: promptCapabilities,
+      onSelected: onPickAttachments,
     );
     final policy = _ToolCallPolicySelector(
       value: toolCallExecutionPolicy,
@@ -590,7 +1164,7 @@ class _ComposerControlBar extends StatelessWidget {
         (modelOption != null && modelOption!.options.isNotEmpty) ||
             (reasoningEffortOption != null &&
                 reasoningEffortOption!.options.isNotEmpty)
-        ? _SessionConfigSelector(
+        ? _SessionConfigSelectors(
             modelOption: modelOption,
             reasoningEffortOption: reasoningEffortOption,
             enabled: enabled && !isSending,
@@ -788,8 +1362,8 @@ class _ToolCallPolicySelector extends StatelessWidget {
   }
 }
 
-class _SessionConfigSelector extends StatelessWidget {
-  const _SessionConfigSelector({
+class _SessionConfigSelectors extends StatelessWidget {
+  const _SessionConfigSelectors({
     required this.modelOption,
     required this.reasoningEffortOption,
     required this.enabled,
@@ -805,209 +1379,86 @@ class _SessionConfigSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final effortLabel = reasoningEffortOption?.currentChoiceLabel;
     final hasModelChoices =
         modelOption != null && modelOption!.options.isNotEmpty;
     final hasEffortChoices =
         reasoningEffortOption != null &&
         reasoningEffortOption!.options.isNotEmpty;
-    final label = hasModelChoices ? modelOption!.currentChoiceLabel : 'Session';
     final modelEnabled = enabled && hasModelChoices && onModelSelected != null;
     final effortEnabled =
         enabled && hasEffortChoices && onReasoningEffortSelected != null;
-    return PopupMenuButton<_SessionConfigSelection>(
-      tooltip: 'Model and reasoning effort',
-      enabled: modelEnabled || effortEnabled,
-      onSelected: (selection) {
-        switch (selection.kind) {
-          case _SessionConfigSelectionKind.model:
-            onModelSelected?.call(selection.value);
-          case _SessionConfigSelectionKind.reasoningEffort:
-            onReasoningEffortSelected?.call(selection.value);
-        }
-      },
-      itemBuilder: (context) {
-        return <PopupMenuEntry<_SessionConfigSelection>>[
-          if (hasModelChoices) ...[
-            const PopupMenuItem<_SessionConfigSelection>(
-              enabled: false,
-              child: _PopupSectionHeader(
-                icon: Icons.memory_rounded,
-                label: 'Model',
-              ),
-            ),
-            for (final choice in modelOption!.options)
-              PopupMenuItem<_SessionConfigSelection>(
-                enabled: modelEnabled,
-                value: _SessionConfigSelection.model(choice.value),
-                child: _PopupChoiceRow(
-                  selected: choice.value == modelOption!.currentValue,
-                  icon: Icons.memory_rounded,
-                  label: choice.label,
-                  description: choice.description ?? '',
-                ),
-              ),
-          ],
-          if (hasModelChoices && hasEffortChoices)
-            const PopupMenuDivider(height: 8),
-          if (hasEffortChoices) ...[
-            const PopupMenuItem<_SessionConfigSelection>(
-              enabled: false,
-              child: _PopupSectionHeader(
-                icon: Icons.psychology_alt_rounded,
-                label: 'Reasoning',
-              ),
-            ),
-            for (final choice in reasoningEffortOption!.options)
-              PopupMenuItem<_SessionConfigSelection>(
-                enabled: effortEnabled,
-                value: _SessionConfigSelection.reasoningEffort(choice.value),
-                child: _PopupChoiceRow(
-                  selected: choice.value == reasoningEffortOption!.currentValue,
-                  icon: Icons.psychology_alt_rounded,
-                  label: choice.label,
-                  description: choice.description ?? '',
-                ),
-              ),
-          ],
-        ];
-      },
-      child: _ComposerSplitControlButton(
-        modelLabel: label,
-        effortLabel: effortLabel,
-        enabled: modelEnabled || effortEnabled,
-      ),
-    );
-  }
-}
-
-enum _SessionConfigSelectionKind { model, reasoningEffort }
-
-class _SessionConfigSelection {
-  const _SessionConfigSelection.model(this.value)
-    : kind = _SessionConfigSelectionKind.model;
-
-  const _SessionConfigSelection.reasoningEffort(this.value)
-    : kind = _SessionConfigSelectionKind.reasoningEffort;
-
-  final _SessionConfigSelectionKind kind;
-  final String value;
-}
-
-class _ComposerSplitControlButton extends StatelessWidget {
-  const _ComposerSplitControlButton({
-    required this.modelLabel,
-    required this.effortLabel,
-    required this.enabled,
-  });
-
-  final String modelLabel;
-  final String? effortLabel;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = enabled ? AppColors.primaryDark : AppColors.textTertiary;
-    final borderColor = enabled
-        ? AppColors.primary.withValues(alpha: 0.14)
-        : AppColors.border;
-    return Container(
-      height: 30,
-      constraints: const BoxConstraints(maxWidth: 268),
-      decoration: BoxDecoration(
-        color: AppColors.primarySoft,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(
-            child: _SplitControlSegment(
-              icon: Icons.memory_rounded,
-              label: modelLabel,
-              color: color,
-            ),
-          ),
-          if (effortLabel != null && effortLabel!.isNotEmpty) ...[
-            Container(width: 1, height: 18, color: borderColor),
-            Flexible(
-              child: _SplitControlSegment(
-                icon: Icons.psychology_alt_rounded,
-                label: effortLabel!,
-                color: color,
-              ),
-            ),
-          ],
-          const SizedBox(width: 2),
-          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 17),
-          const SizedBox(width: 7),
-        ],
-      ),
-    );
-  }
-}
-
-class _SplitControlSegment extends StatelessWidget {
-  const _SplitControlSegment({
-    required this.icon,
-    required this.label,
-    required this.color,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 9),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: color,
-                fontSize: 13,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PopupSectionHeader extends StatelessWidget {
-  const _PopupSectionHeader({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      alignment: WrapAlignment.end,
       children: [
-        Icon(icon, size: 15, color: AppColors.textSecondary),
-        const SizedBox(width: 8),
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 11,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 0,
+        if (hasModelChoices)
+          _SessionConfigDropdown(
+            key: const Key('prompt-model-selector'),
+            tooltip: 'Select model',
+            icon: Icons.memory_rounded,
+            option: modelOption!,
+            enabled: modelEnabled,
+            includeChoiceGroup: true,
+            onSelected: onModelSelected,
           ),
-        ),
+        if (hasEffortChoices)
+          _SessionConfigDropdown(
+            key: const Key('prompt-reasoning-effort-selector'),
+            tooltip: 'Select reasoning effort',
+            icon: Icons.psychology_alt_rounded,
+            option: reasoningEffortOption!,
+            enabled: effortEnabled,
+            onSelected: onReasoningEffortSelected,
+          ),
       ],
+    );
+  }
+}
+
+class _SessionConfigDropdown extends StatelessWidget {
+  const _SessionConfigDropdown({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.option,
+    required this.enabled,
+    required this.onSelected,
+    this.includeChoiceGroup = false,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final AcpConfigOption option;
+  final bool enabled;
+  final ValueChanged<String>? onSelected;
+  final bool includeChoiceGroup;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: tooltip,
+      enabled: enabled,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        for (final choice in option.options)
+          PopupMenuItem<String>(
+            value: choice.value,
+            child: _PopupChoiceRow(
+              selected: choice.value == option.currentValue,
+              icon: icon,
+              label: includeChoiceGroup && choice.groupName != null
+                  ? '${choice.groupName} · ${choice.label}'
+                  : choice.label,
+              description: choice.description ?? '',
+            ),
+          ),
+      ],
+      child: _ComposerControlButton(
+        icon: icon,
+        label: option.currentChoiceLabel,
+        enabled: enabled,
+      ),
     );
   }
 }
@@ -1203,12 +1654,14 @@ String _policyDescription(
 
 class _CommandSuggestionPanel extends StatelessWidget {
   const _CommandSuggestionPanel({
-    required this.commands,
+    required this.entries,
+    required this.parameterPreviews,
     required this.onSelect,
   });
 
-  final List<Map<String, Object?>> commands;
-  final ValueChanged<Map<String, Object?>> onSelect;
+  final List<_CommandSearchEntry> entries;
+  final Map<_CommandSearchEntry, BoundedMetadataPreview?> parameterPreviews;
+  final ValueChanged<_CommandSearchEntry> onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -1218,20 +1671,35 @@ class _CommandSuggestionPanel extends StatelessWidget {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
         itemBuilder: (context, index) {
-          final command = commands[index];
-          final invocation = _commandInvocation(command);
-          final description = _commandString(command, 'description');
+          final entry = entries[index];
           return _CommandSuggestionTile(
-            invocation: invocation,
-            description: description,
-            onTap: () => onSelect(command),
+            invocation: entry.invocation,
+            description: entry.description,
+            onTap: () => onSelect(entry),
+            parametersPreview: parameterPreviews[entry],
           );
         },
         separatorBuilder: (_, _) => const SizedBox(height: 3),
-        itemCount: commands.length,
+        itemCount: entries.length,
       ),
     );
   }
+}
+
+final class _CommandSearchEntry {
+  const _CommandSearchEntry({
+    required this.command,
+    required this.invocation,
+    required this.lowerName,
+    required this.lowerDescription,
+    required this.description,
+  });
+
+  final Map<String, Object?> command;
+  final String invocation;
+  final String lowerName;
+  final String lowerDescription;
+  final String description;
 }
 
 class _CommandSuggestionTile extends StatelessWidget {
@@ -1239,11 +1707,13 @@ class _CommandSuggestionTile extends StatelessWidget {
     required this.invocation,
     required this.description,
     required this.onTap,
+    required this.parametersPreview,
   });
 
   final String invocation;
   final String description;
   final VoidCallback onTap;
+  final BoundedMetadataPreview? parametersPreview;
 
   @override
   Widget build(BuildContext context) {
@@ -1251,48 +1721,75 @@ class _CommandSuggestionTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.sm),
       onTap: onTap,
       child: Container(
-        height: 38,
+        constraints: const BoxConstraints(minHeight: 38),
         padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: AppColors.surfaceRaised,
           borderRadius: BorderRadius.circular(AppRadius.sm),
           border: Border.all(color: AppColors.border),
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.terminal_rounded,
-              color: AppColors.primaryDark,
-              size: 15,
-            ),
-            const SizedBox(width: 7),
-            SizedBox(
-              width: 126,
-              child: Text(
-                invocation,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
+            Row(
+              children: [
+                const Icon(
+                  Icons.terminal_rounded,
+                  color: AppColors.primaryDark,
+                  size: 15,
                 ),
-              ),
-            ),
-            if (description.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  description,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
+                const SizedBox(width: 7),
+                SizedBox(
+                  width: 126,
+                  child: Text(
+                    invocation,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0,
+                    ),
                   ),
                 ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      description,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (parametersPreview != null) ...[
+              const SizedBox(height: 3),
+              SelectableText(
+                parametersPreview!.text,
+                key: const Key('command-parameters-preview'),
+                maxLines: 1,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                ),
               ),
+              if (parametersPreview!.omission != null)
+                Text(
+                  'Details omitted · ${parametersPreview!.omission!.resource}',
+                  style: const TextStyle(
+                    color: AppColors.warning,
+                    fontSize: 10,
+                  ),
+                ),
             ],
           ],
         ),
@@ -1301,10 +1798,79 @@ class _CommandSuggestionTile extends StatelessWidget {
   }
 }
 
-String _commandInvocation(Map<String, Object?> command) {
-  final name = _commandString(command, 'name');
+String _commandInvocationFromName(String name) {
   if (name.isEmpty) return '';
   return name.startsWith('/') ? name : '/$name';
+}
+
+String? _scanBoundedCommandQuery(
+  String input, {
+  required AcpInputBudget budget,
+}) {
+  const maxCommandQueryCodeUnits = 1024;
+  final limit = budget.maxStructuredStringBytes < maxCommandQueryCodeUnits
+      ? budget.maxStructuredStringBytes
+      : maxCommandQueryCodeUnits;
+  final inputLength = input.length;
+  var index = 0;
+
+  while (index < inputLength) {
+    if (index >= limit) return null;
+    final scalar = _commandQueryScalarAt(input, index, limit: limit);
+    if (scalar == null) return null;
+    if (!_isUnicodeWhitespace(scalar.codePoint)) break;
+    index += scalar.codeUnits;
+  }
+  if (index >= inputLength || index >= limit) return null;
+  if (input.codeUnitAt(index) != 0x2f) return null;
+  index += 1;
+  final queryStart = index;
+
+  while (index < inputLength) {
+    if (index >= limit) return null;
+    final scalar = _commandQueryScalarAt(input, index, limit: limit);
+    if (scalar == null || _isUnicodeWhitespace(scalar.codePoint)) return null;
+    index += scalar.codeUnits;
+  }
+  return input.substring(queryStart, index).toLowerCase();
+}
+
+({int codePoint, int codeUnits})? _commandQueryScalarAt(
+  String input,
+  int index, {
+  required int limit,
+}) {
+  final first = input.codeUnitAt(index);
+  if (first < 0xd800 || first > 0xdbff) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  final secondIndex = index + 1;
+  if (secondIndex >= input.length) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  if (secondIndex >= limit) return null;
+  final second = input.codeUnitAt(secondIndex);
+  if (second < 0xdc00 || second > 0xdfff) {
+    return (codePoint: first, codeUnits: 1);
+  }
+  return (
+    codePoint: 0x10000 + ((first - 0xd800) << 10) + second - 0xdc00,
+    codeUnits: 2,
+  );
+}
+
+bool _isUnicodeWhitespace(int codePoint) {
+  return (codePoint >= 0x09 && codePoint <= 0x0d) ||
+      codePoint == 0x20 ||
+      codePoint == 0x85 ||
+      codePoint == 0xa0 ||
+      codePoint == 0x1680 ||
+      (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+      codePoint == 0x2028 ||
+      codePoint == 0x2029 ||
+      codePoint == 0x202f ||
+      codePoint == 0x205f ||
+      codePoint == 0x3000;
 }
 
 String _commandString(Map<String, Object?> command, String key) {
@@ -1312,8 +1878,15 @@ String _commandString(Map<String, Object?> command, String key) {
   return value is String ? value.trim() : '';
 }
 
-Future<List<PromptAttachment>> _pickWithFilePicker() async {
+Future<List<PromptAttachment>> _pickWithFilePicker(
+  PromptAttachmentKind kind,
+) async {
   final result = await FilePicker.platform.pickFiles(
+    type: switch (kind) {
+      PromptAttachmentKind.file => FileType.any,
+      PromptAttachmentKind.image => FileType.image,
+      PromptAttachmentKind.audio => FileType.audio,
+    },
     allowMultiple: true,
     withData: false,
   );
