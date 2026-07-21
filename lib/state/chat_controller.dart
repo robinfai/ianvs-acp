@@ -16,7 +16,7 @@ import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
 import 'connection_state.dart';
-import '../tasks/egress_policy.dart';
+import '../tasks/permission_context.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
 
@@ -4878,8 +4878,6 @@ class ChatController extends ChangeNotifier {
   }
 
   void _resolvePendingPermissionForPolicy(AcpPermissionRequest request) {
-    if (_holdEgressSensitivePermissionForManualReview(request)) return;
-
     switch (toolCallExecutionPolicy) {
       case AcpToolCallExecutionPolicy.defaultPermissions:
         return;
@@ -4907,31 +4905,6 @@ class ChatController extends ChangeNotifier {
         );
         return;
     }
-  }
-
-  bool _holdEgressSensitivePermissionForManualReview(
-    AcpPermissionRequest request,
-  ) {
-    final match = egressPolicyMatchForPermission(request);
-    final coreRequiresHuman = request.metadata['requiresExplicitHuman'] == true;
-    if (match == null && !coreRequiresHuman) return false;
-
-    _recordPermissionReview(
-      request,
-      AcpPermissionReviewResult(
-        risk: 'egress',
-        rationale: coreRequiresHuman
-            ? 'Rust Core requires an explicit human decision.'
-            : 'Export-sensitive command requires manual approval.',
-        reviewer: coreRequiresHuman ? 'rust-core-egress' : 'egress-policy',
-        details: <String, Object?>{
-          'egressSensitive': true,
-          'egressReason': match?.reason ?? 'core_human_gate',
-          if (match != null) 'commandLine': match.commandLine,
-        },
-      ),
-    );
-    return true;
   }
 
   Future<void> _resolvePermissionRequest(

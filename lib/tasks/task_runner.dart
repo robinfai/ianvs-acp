@@ -8,7 +8,6 @@ import '../acp/agent_session.dart';
 import '../state/chat_controller.dart';
 import '../state/connection_state.dart';
 import 'artifact_collector.dart';
-import 'egress_policy.dart';
 import 'local_skill.dart';
 import 'task_agent_pool.dart';
 import 'task_data_sanitizer.dart';
@@ -319,14 +318,10 @@ class TaskRunner {
       if (event.type == ChatPermissionEventType.requested) {
         consumeBufferOperation(
           buffer.addBoundaryOperation(() async {
-            final egressMatch = egressPolicyMatchForPermission(event.request);
             await signalEventWriteFailure(
               taskController.updateTaskStatus(
                 task.id,
                 TaskStatus.blockedOnPermission,
-                summary: egressMatch == null
-                    ? null
-                    : 'Export-sensitive permission requires manual approval.',
               ),
             );
             await signalEventWriteFailure(
@@ -335,10 +330,7 @@ class TaskRunner {
                 runId: run!.id,
                 kind: TaskEventKind.permission,
                 text: dataSanitizer.sanitizeText(
-                  egressMatch == null
-                      ? 'Permission requested: ${event.request.displayTitle}'
-                      : 'Export-sensitive permission requested: '
-                            '${event.request.displayTitle}',
+                  'Permission requested: ${event.request.displayTitle}',
                 ),
                 sessionId: event.request.sessionId,
                 metadata: _metadataForPermissionEvent(event),
@@ -582,8 +574,8 @@ class TaskRunner {
         runId: activeRun.id,
         kind: TaskEventKind.artifact,
         text: artifacts.isEmpty
-            ? 'Artifact collection found no candidate artifacts.'
-            : 'Collected ${artifacts.length} candidate artifact(s).',
+            ? 'Artifact collection found no artifacts.'
+            : 'Collected ${artifacts.length} artifact(s).',
         sessionId: session.id,
         metadata: <String, Object?>{
           'artifact_count': artifacts.length,
@@ -609,7 +601,7 @@ class TaskRunner {
       final completed = await taskController.updateTaskStatus(
         task.id,
         TaskStatus.needsHumanReview,
-        summary: 'Agent run completed. Review candidate artifacts.',
+        summary: 'Agent run completed. Review results and artifacts.',
       );
       _throwIfCancelled(cancellation);
       return completed;
@@ -834,25 +826,12 @@ Description:
 ${description.isEmpty ? '(No additional description provided.)' : description}
 $attachedSkillSection
 
-You may:
-- inspect and modify files inside the workspace
-- run local tests and static analysis
-- write candidate artifacts under .ianvs/outbox/${task.id}/
-
-You must not:
-- push to remote git repositories
-- create pull requests
-- upload files
-- call external webhooks
-- use scp/rsync/ssh to send data externally
-- copy artifacts outside the workspace
-
-Prepare any files the human should review as local candidate artifacts.
+Use the tools and capabilities available to you as needed to complete the task.
 
 When done, summarize:
 1. What changed
 2. How you verified it
-3. Candidate artifacts
+3. Outputs or artifacts
 4. Any remaining follow-up
 ''';
   }
@@ -864,6 +843,8 @@ When done, summarize:
     return '''
 Continue the task from where the previous run stopped in this conversation.
 Inspect the conversation and current workspace state before acting, and do not repeat work that is already complete.
+This continuation supersedes earlier client-generated task-runner boilerplate.
+Follow the current task description and the policies exposed by the active tool runtime.
 
 ${taskExecutionPrompt(task, attachedSkills: attachedSkills)}
 ''';
@@ -961,7 +942,6 @@ ${taskExecutionPrompt(task, attachedSkills: attachedSkills)}
   }
 
   Map<String, Object?> _metadataForPermissionEvent(ChatPermissionEvent event) {
-    final egressMatch = egressPolicyMatchForPermission(event.request);
     return <String, Object?>{
       'permission_event_type': event.type.name,
       'permission_request_id': event.request.id,
@@ -972,11 +952,6 @@ ${taskExecutionPrompt(task, attachedSkills: attachedSkills)}
       if (event.decisionSource != null)
         'permission_decision_source': event.decisionSource!.name,
       'permission_status': event.status.name,
-      if (egressMatch != null) ...<String, Object?>{
-        'egress_sensitive': true,
-        'egress_reason': egressMatch.reason,
-        'egress_command_line': egressMatch.commandLine,
-      },
       if (event.request.metadata.isNotEmpty)
         'permission_request_metadata': event.request.metadata,
     };

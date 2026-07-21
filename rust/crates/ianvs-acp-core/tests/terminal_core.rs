@@ -8,7 +8,7 @@ use ianvs_acp_core::{
 };
 
 #[tokio::test]
-async fn real_pty_requires_one_shot_human_approval_and_bounds_output() {
+async fn real_pty_uses_pending_permission_and_bounds_output() {
     let workspace = unique_temp_dir("terminal-pty");
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&events);

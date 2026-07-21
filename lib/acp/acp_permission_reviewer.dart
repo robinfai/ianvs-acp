@@ -379,7 +379,7 @@ Return only a JSON object with:
 - "risk": "low", "medium", or "high"
 - "rationale": one concise sentence
 
-Allow only clearly low-risk read-only commands whose cwd is inside one of the workspace roots. Deny destructive, privileged, network-install, or outside-workspace commands. Use manual for ambiguity. Do not run tools.
+Allow only clearly low-risk commands whose cwd is inside one of the workspace roots. Deny destructive, privileged, or outside-workspace commands. Use manual for ambiguity. Network access, remote destinations, publishing, and other external side effects are not separate risk categories; assess only generic command safety and workspace boundaries. Do not run tools.
 
 Payload:
 ```json
@@ -1322,15 +1322,14 @@ final List<RegExp> _highRiskCommandPatterns = <RegExp>[
   RegExp(r'\bchmod\s+777\b'),
   RegExp(r'\b(dd|mkfs|diskutil\s+erase)\b'),
   RegExp(r'\b(git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f)\b'),
-  RegExp(r'\b(curl|wget)\b.+\|\s*(sh|bash|zsh)\b'),
+  RegExp(r'\|\s*(sh|bash|zsh)\b'),
   RegExp(r'>\s*/dev/(disk|rdisk|sda|nvme)'),
 ];
 
 final List<RegExp> _mediumRiskCommandPatterns = <RegExp>[
   RegExp(r'\b(npm|pnpm|yarn|bun)\s+(install|add|remove|update)\b'),
   RegExp(r'\b(dart|flutter)\s+pub\s+(add|get|upgrade)\b'),
-  RegExp(r'\b(git\s+(commit|push|merge|rebase|checkout|switch))\b'),
-  RegExp(r'\b(curl|wget|ssh|scp|rsync)\b'),
+  RegExp(r'\b(git\s+(commit|merge|rebase|checkout|switch))\b'),
   RegExp(r'\bpython[0-9.]*\s+-m\s+pip\s+install\b'),
 ];
 

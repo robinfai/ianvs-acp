@@ -2588,7 +2588,6 @@ fn project_filesystem_permission(approval: &FilesystemApproval) -> PermissionReq
         title: title.to_string(),
         tool_kind: tool_kind.to_string(),
         raw_input: Some(serde_json::json!({ "path": approval.path })),
-        requires_explicit_human: true,
         options: vec![
             PermissionOptionProjection {
                 option_id: FILESYSTEM_ALLOW_ONCE_OPTION_ID.to_string(),
@@ -2665,7 +2664,6 @@ fn project_terminal_permission(approval: &crate::TerminalApproval) -> Permission
             "args": args,
             "cwd": approval.cwd,
         })),
-        requires_explicit_human: true,
         options: vec![
             PermissionOptionProjection {
                 option_id: TERMINAL_ALLOW_ONCE_OPTION_ID.to_string(),
@@ -3106,7 +3104,6 @@ fn project_permission_request(
             |kind| format!("{kind:?}").to_lowercase(),
         ),
         raw_input: request.tool_call.fields.raw_input.clone(),
-        requires_explicit_human: false,
         options: request
             .options
             .iter()

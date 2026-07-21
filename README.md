@@ -210,8 +210,10 @@ filesystem and terminal reverse requests, process recovery, Task/Run state,
 and scheduler admission. Flutter owns product projections and human interaction.
 
 Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
-new/load/resume. Filesystem and terminal egress operations marked
-`requiresExplicitHuman` wait for an allow-once UI decision before execution:
+new/load/resume. Filesystem and terminal reverse requests use the ordinary
+permission flow and follow the selected client policy. The ACP client does not
+classify commands or destinations as external egress; external side effects are
+owned by the agent and its tools:
 
 ```sh
 flutter run -d macos
@@ -232,5 +234,5 @@ Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
 until their Rust transports are implemented; the production app never opens a
 parallel compatibility connection. The legacy TaskInbox database is read only
 as a migration source before Rust activation. The ownership contract,
-implemented scope, and remaining transport and hard-egress work are tracked in
+implemented scope, and remaining transport and runtime work are tracked in
 [Runtime architecture](docs/runtime_architecture.md).

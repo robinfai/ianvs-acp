@@ -1,8 +1,7 @@
 use std::fs;
 
 use ianvs_acp_core::{
-    EgressError, EgressIntent, EgressKind, ExecutionGateError, HumanEgressDecision,
-    HumanEgressGate, RuntimeStateError, RuntimeStateMachine, RuntimeStatus, SessionStatus,
+    ExecutionGateError, RuntimeStateError, RuntimeStateMachine, RuntimeStatus, SessionStatus,
     WorkflowStateError, WorkflowStateMachine, WorkspaceError, WorkspaceExecutionGate,
     WorkspaceScope,
 };
@@ -100,83 +99,6 @@ fn workspace_scope_rejects_existing_symlink_escape() {
     assert!(matches!(
         scope.resolve_for_creation("escape-link/output.txt"),
         Err(WorkspaceError::OutsideWorkspace(_))
-    ));
-    fs::remove_dir_all(root).unwrap();
-    fs::remove_dir_all(outside).unwrap();
-}
-
-#[test]
-fn egress_requires_pending_one_shot_human_permit() {
-    let root = unique_temp_dir("egress");
-    let scope = WorkspaceScope::new(&root, std::iter::empty::<&str>()).unwrap();
-    let mut gate = HumanEgressGate::new();
-    gate.request(
-        EgressIntent {
-            id: "egress-1".to_string(),
-            task_id: Some("task-1".to_string()),
-            session_id: Some("session-1".to_string()),
-            kind: EgressKind::GitPush,
-            summary: "Push reviewed changes".to_string(),
-            workspace_path: scope.cwd().display().to_string(),
-            target: Some("origin".to_string()),
-            command: vec!["git".to_string(), "push".to_string(), "origin".to_string()],
-        },
-        &scope,
-    )
-    .unwrap();
-    let permit = gate
-        .decide("egress-1", HumanEgressDecision::AllowOnce)
-        .unwrap()
-        .unwrap();
-    assert_eq!(permit.intent().kind, EgressKind::GitPush);
-    assert!(matches!(
-        gate.decide("egress-1", HumanEgressDecision::AllowOnce),
-        Err(EgressError::UnknownIntent(_))
-    ));
-    assert_eq!(permit.consume().id, "egress-1");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn egress_file_write_is_canonicalized_inside_workspace() {
-    let root = unique_temp_dir("egress-path");
-    let outside = unique_temp_dir("egress-outside");
-    let scope = WorkspaceScope::new(&root, std::iter::empty::<&str>()).unwrap();
-    let mut gate = HumanEgressGate::new();
-    let request = gate
-        .request(
-            EgressIntent {
-                id: "write-1".to_string(),
-                task_id: None,
-                session_id: Some("session-1".to_string()),
-                kind: EgressKind::FileWrite,
-                summary: "Write output".to_string(),
-                workspace_path: scope.cwd().display().to_string(),
-                target: Some("nested/output.txt".to_string()),
-                command: vec![],
-            },
-            &scope,
-        )
-        .unwrap();
-    assert!(
-        std::path::Path::new(request.target.as_deref().unwrap())
-            .starts_with(root.canonicalize().unwrap())
-    );
-    assert!(matches!(
-        gate.request(
-            EgressIntent {
-                id: "write-2".to_string(),
-                task_id: None,
-                session_id: None,
-                kind: EgressKind::FileWrite,
-                summary: "Escape".to_string(),
-                workspace_path: scope.cwd().display().to_string(),
-                target: Some(outside.join("output.txt").display().to_string()),
-                command: vec![],
-            },
-            &scope,
-        ),
-        Err(EgressError::Workspace(WorkspaceError::OutsideWorkspace(_)))
     ));
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/tasks/artifact_collector.dart';
 import 'package:ianvs_acp/tasks/task_data_sanitizer.dart';
@@ -112,154 +111,21 @@ void main() {
     },
   );
 
-  test('ArtifactCollector records outbox file hash size and preview', () async {
+  test('ArtifactCollector ignores legacy outbox contents', () async {
     final workspace = await Directory.systemTemp.createTemp(
-      'ianvs-artifacts-outbox-',
+      'ianvs-artifacts-legacy-outbox-',
     );
     addTearDown(() => workspace.delete(recursive: true));
     final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
     await outbox.create(recursive: true);
-    const content = 'export candidate\n';
-    await File('${outbox.path}/report.md').writeAsString(content);
+    await File('${outbox.path}/report.md').writeAsString('legacy candidate');
 
-    final collector = ArtifactCollector(
-      clock: () => DateTime(2026, 7, 7, 8),
-      idGenerator: _ids().next,
+    final artifacts = await ArtifactCollector().collect(
+      _task(workspace.path),
+      _run(),
     );
 
-    final artifacts = await collector.collect(_task(workspace.path), _run());
-
-    final outboxArtifact = artifacts.single;
-    expect(outboxArtifact.kind, ArtifactKind.outboxFile);
-    expect(outboxArtifact.path, '.ianvs/outbox/task-1/report.md');
-    expect(outboxArtifact.sizeBytes, utf8.encode(content).length);
-    expect(
-      outboxArtifact.sha256,
-      sha256.convert(utf8.encode(content)).toString(),
-    );
-    expect(outboxArtifact.contentPreview, content);
-    expect(outboxArtifact.metadata['truncated'], isFalse);
-    expect(outboxArtifact.metadata['binary'], isFalse);
-    expect(outboxArtifact.metadata['raw_payload'], isTrue);
-  });
-
-  test(
-    'ArtifactCollector redacts secrets from outbox names and paths',
-    () async {
-      final workspace = await Directory.systemTemp.createTemp(
-        'ianvs-artifacts-outbox-secret-name-',
-      );
-      addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File(
-        '${outbox.path}/Authorization:Bearer file-token.md',
-      ).writeAsString('safe content');
-
-      final artifacts = await ArtifactCollector().collect(
-        _task(workspace.path),
-        _run(),
-      );
-
-      final artifact = artifacts.single;
-      expect(artifact.title, taskDataRedactedValue);
-      expect(artifact.path, taskDataRedactedValue);
-      expect(artifact.metadata['relative_path'], taskDataRedactedValue);
-    },
-  );
-
-  test(
-    'ArtifactCollector rejects an outbox symlink outside workspace',
-    () async {
-      if (Platform.isWindows) return;
-      final workspace = await Directory.systemTemp.createTemp(
-        'ianvs-artifacts-outbox-link-',
-      );
-      final external = await Directory.systemTemp.createTemp(
-        'ianvs-artifacts-external-',
-      );
-      addTearDown(() => workspace.delete(recursive: true));
-      addTearDown(() => external.delete(recursive: true));
-      await File('${external.path}/secret.txt').writeAsString('outside secret');
-      final outboxParent = Directory('${workspace.path}/.ianvs/outbox');
-      await outboxParent.create(recursive: true);
-      await Link(
-        '${outboxParent.path}/task-1',
-      ).create(external.path, recursive: false);
-      final collector = ArtifactCollector(idGenerator: _ids().next);
-
-      final artifacts = await collector.collect(_task(workspace.path), _run());
-
-      expect(artifacts, isEmpty);
-    },
-  );
-
-  test(
-    'ArtifactCollector rejects a file replaced by a symlink before open',
-    () async {
-      if (!Platform.isMacOS && !Platform.isLinux) return;
-      final workspace = await Directory.systemTemp.createTemp(
-        'ianvs-artifacts-file-swap-',
-      );
-      final external = await Directory.systemTemp.createTemp(
-        'ianvs-artifacts-file-swap-external-',
-      );
-      addTearDown(() => workspace.delete(recursive: true));
-      addTearDown(() => external.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      final candidate = File('${outbox.path}/report.md');
-      await candidate.writeAsString('safe candidate');
-      final secret = File('${external.path}/secret.txt');
-      await secret.writeAsString('outside secret');
-      var replaced = false;
-      final collector = ArtifactCollector(
-        idGenerator: _ids().next,
-        beforeSecureRead: (_) async {
-          await candidate.delete();
-          await Link(candidate.path).create(secret.path);
-          replaced = true;
-        },
-      );
-
-      final artifacts = await collector.collect(_task(workspace.path), _run());
-
-      expect(replaced, isTrue);
-      expect(artifacts, isEmpty);
-    },
-  );
-
-  test('ArtifactCollector truncates large outbox previews', () async {
-    final workspace = await Directory.systemTemp.createTemp(
-      'ianvs-artifacts-large-',
-    );
-    addTearDown(() => workspace.delete(recursive: true));
-    await _initGitRepo(workspace);
-    final tracked = File('${workspace.path}/large.txt');
-    await tracked.writeAsString('small\n');
-    await _git(workspace, ['add', 'large.txt']);
-    await _git(workspace, ['commit', '-m', 'initial']);
-    await tracked.writeAsString(List.filled(30, 'changed\n').join());
-
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    await File(
-      '${outbox.path}/large.md',
-    ).writeAsString(List.filled(80, 'x').join());
-
-    final collector = ArtifactCollector(
-      previewLimit: 24,
-      clock: () => DateTime(2026, 7, 7, 8),
-      idGenerator: _ids().next,
-    );
-
-    final artifacts = await collector.collect(_task(workspace.path), _run());
-
-    final file = artifacts.singleWhere(
-      (artifact) => artifact.kind == ArtifactKind.outboxFile,
-    );
-    expect(utf8.encode(file.contentPreview!).length, lessThanOrEqualTo(24));
-    expect(file.metadata['truncated'], isTrue);
+    expect(artifacts, isEmpty);
   });
 
   test('ArtifactCollector caps retained full diff at one MiB', () async {
@@ -302,9 +168,7 @@ void main() {
         'ianvs-artifacts-ids-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/report.md').writeAsString('candidate');
+      await _createDirtyGitRepo(workspace);
       final task = _task(workspace.path);
       final firstRun = _run();
       final secondRun = TaskRunRecord(
@@ -354,9 +218,7 @@ void main() {
         'ianvs-artifacts-same-run-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/report.md').writeAsString('candidate');
+      await _createDirtyGitRepo(workspace);
 
       final first = await ArtifactCollector().collect(
         _task(workspace.path),
@@ -380,10 +242,7 @@ void main() {
         'ianvs-artifacts-multiple-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/first.md').writeAsString('first');
-      await File('${outbox.path}/second.md').writeAsString('second');
+      await _createDirtyGitRepo(workspace, includeDiff: true);
 
       final artifacts = await ArtifactCollector().collect(
         _task(workspace.path),
@@ -405,9 +264,7 @@ void main() {
         'ianvs-artifacts-injected-id-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/report.md').writeAsString('candidate');
+      await _createDirtyGitRepo(workspace);
       final prefixes = <String>[];
       final collector = ArtifactCollector(
         idGenerator: (prefix) {
@@ -437,9 +294,7 @@ void main() {
       'ianvs-artifacts-nonce-retry-',
     );
     addTearDown(() => workspace.delete(recursive: true));
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    await File('${outbox.path}/report.md').writeAsString('candidate');
+    await _createDirtyGitRepo(workspace);
     final requestedLengths = <int>[];
     var nonceCalls = 0;
     final collector = ArtifactCollector(
@@ -463,9 +318,7 @@ void main() {
       'ianvs-artifacts-nonce-collisions-',
     );
     addTearDown(() => workspace.delete(recursive: true));
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    await File('${outbox.path}/report.md').writeAsString('candidate');
+    await _createDirtyGitRepo(workspace);
     var nonceCalls = 0;
     final collector = ArtifactCollector(
       nonceGenerator: (length) {
@@ -488,9 +341,7 @@ void main() {
       'ianvs-artifacts-invalid-nonce-',
     );
     addTearDown(() => workspace.delete(recursive: true));
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    await File('${outbox.path}/report.md').writeAsString('candidate');
+    await _createDirtyGitRepo(workspace);
     final collector = ArtifactCollector(
       nonceGenerator: (length) => List<int>.filled(length - 1, 0),
     );
@@ -506,9 +357,7 @@ void main() {
       'ianvs-artifacts-metadata-',
     );
     addTearDown(() => workspace.delete(recursive: true));
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    await File('${outbox.path}/report.md').writeAsString('candidate');
+    await _createDirtyGitRepo(workspace);
     final collector = ArtifactCollector(
       dataSanitizer: const TaskDataSanitizer(maxMetadataBytes: 8),
       idGenerator: _ids().next,
@@ -796,11 +645,7 @@ void main() {
         'ianvs-artifacts-cancel-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/report.md').writeAsString('candidate');
       final cancellation = ArtifactCollectionCancellation();
-      var outboxReads = 0;
       final status = _FakeProcess(
         onKill: (signal, process) {
           if (!process.exitCodeCompleter.isCompleted) {
@@ -818,7 +663,6 @@ void main() {
       final collecting = ArtifactCollector(
         processStarter: harness.start,
         terminationGracePeriod: const Duration(milliseconds: 10),
-        beforeSecureRead: (_) => outboxReads += 1,
       ).collect(_task(workspace.path), _run(), cancellation: cancellation);
       await _waitUntil(() => harness.arguments.length == 2);
 
@@ -836,7 +680,6 @@ void main() {
         ),
       );
       expect(harness.arguments, hasLength(2));
-      expect(outboxReads, 0);
       expect(status.signals, contains(ProcessSignal.sigterm));
       expect(status.exitCodeAwaited, isTrue);
     },
@@ -1039,9 +882,6 @@ void main() {
         'ianvs-artifacts-errors-',
       );
       addTearDown(() => workspace.delete(recursive: true));
-      final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-      await outbox.create(recursive: true);
-      await File('${outbox.path}/report.md').writeAsString('candidate');
       var calls = 0;
       final collector = ArtifactCollector(
         terminationGracePeriod: const Duration(milliseconds: 10),
@@ -1055,7 +895,7 @@ void main() {
       );
 
       final first = await collector.collect(_task(workspace.path), _run());
-      expect(first.single.kind, ArtifactKind.outboxFile);
+      expect(first, isEmpty);
 
       calls = 0;
       final rev = _FakeProcess(
@@ -1627,6 +1467,22 @@ Future<void> _initGitRepo(Directory workspace) async {
   await _git(workspace, ['init']);
   await _git(workspace, ['config', 'user.email', 'test@example.com']);
   await _git(workspace, ['config', 'user.name', 'Test User']);
+}
+
+Future<void> _createDirtyGitRepo(
+  Directory workspace, {
+  bool includeDiff = false,
+}) async {
+  await _initGitRepo(workspace);
+  final candidate = File('${workspace.path}/candidate.txt');
+  if (!includeDiff) {
+    await candidate.writeAsString('untracked\n');
+    return;
+  }
+  await candidate.writeAsString('before\n');
+  await _git(workspace, ['add', 'candidate.txt']);
+  await _git(workspace, ['commit', '-m', 'initial']);
+  await candidate.writeAsString('after\n');
 }
 
 Future<void> _git(Directory workspace, List<String> args) async {

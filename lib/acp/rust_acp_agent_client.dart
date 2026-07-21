@@ -971,8 +971,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
       requestedAt: DateTime.now(),
       metadata: <String, Object?>{
         if (value['rawInput'] != null) 'rawInput': value['rawInput'],
-        if (value['requiresExplicitHuman'] == true)
-          'requiresExplicitHuman': true,
       },
     );
     _pendingPermissions[request.id] = request;

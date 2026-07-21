@@ -15,7 +15,7 @@
 - 权限请求提供稳定的内容指纹和 generation，评审、界面和响应绑定同一实例。
 - 文件 provider 只接受非空、已登记、未关闭的 session context，不回退到历史根。
 - secret 引用从配置身份、目标身份和字段路径派生，读取和删除都校验所有权。
-- egress 策略分析最终可执行语义，在内存中分析 env 值且不记录 secret。
+- 权限展示与审计只保留安全摘要且不记录 secret。2026-07-21 的责任边界调整已取消客户端 egress 命令分类；外部副作用由 agent 与其工具负责。
 - Markdown 渲染不允许自动网络或文件 I/O。
 - transport、模型、渲染、任务和 artifact 在首次接收不可信数据时应用 byte、item、depth、pixel 和 lifetime 预算。
 - session close 释放 replay、tool-call、terminal、stream 和 workspace-root 状态。

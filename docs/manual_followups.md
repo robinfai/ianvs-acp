@@ -1,6 +1,6 @@
 # Manual follow-ups
 
-Updated: 2026-07-19
+Updated: 2026-07-21
 
 This list contains only work that still requires a product decision, a real
 external service, or desktop interaction. Implemented runtime work belongs in
@@ -29,14 +29,6 @@ Status: hidden.
 Evaluate session fork and MCP-over-ACP independently after their upstream
 contracts stabilize. Each feature needs a typed product command/event shape and
 must preserve one Rust authority for session state.
-
-## External egress executors
-
-Status: Core admission exists; product executors remain to be connected.
-
-Wire git push, pull-request creation, and upload executors through Rust workspace
-leases and egress permits. Define destination allowlists, credential boundaries,
-audit retention, retries, and cancellation before enabling unattended use.
 
 ## Permission audit retention
 

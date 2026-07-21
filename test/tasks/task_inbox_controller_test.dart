@@ -1069,7 +1069,7 @@ void main() {
         runId: 'run-1',
         approvedArtifactIds: const ['artifact-1'],
         rejectedArtifactIds: const ['artifact-2'],
-        rationale: 'Only the diff should leave the machine.',
+        rationale: 'Approve the relevant diff and reject the stale file.',
       );
 
       expect(reviewed.map((artifact) => artifact.status), [

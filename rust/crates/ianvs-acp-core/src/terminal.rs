@@ -11,10 +11,7 @@ use thiserror::Error;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::{
-    EgressIntent, EgressKind, EgressPermit, HumanEgressDecision, HumanEgressGate, WorkspaceError,
-    WorkspaceScope,
-};
+use crate::{WorkspaceError, WorkspaceScope};
 
 const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1_048_576;
 const MAX_OUTPUT_BYTE_LIMIT: usize = 8_388_608;
@@ -155,8 +152,6 @@ pub enum TerminalError {
     Process(String),
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
-    #[error("terminal egress gate rejected the operation: {0}")]
-    Egress(String),
 }
 
 type TerminalListener = dyn Fn(TerminalRuntimeEvent) + Send + Sync + 'static;
@@ -166,7 +161,6 @@ pub struct TerminalManager {
     admission: Mutex<()>,
     scopes: Mutex<HashMap<String, WorkspaceScope>>,
     pending: Mutex<HashMap<String, PreparedTerminalCreate>>,
-    egress: Mutex<HumanEgressGate>,
     terminals: Mutex<HashMap<String, ManagedTerminal>>,
     listener: Arc<TerminalListener>,
 }
@@ -191,7 +185,6 @@ impl TerminalManager {
             admission: Mutex::new(()),
             scopes: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
-            egress: Mutex::new(HumanEgressGate::new()),
             terminals: Mutex::new(HashMap::new()),
             listener: Arc::new(listener),
         })
@@ -242,21 +235,6 @@ impl TerminalManager {
         let session_id = spec.session_id.clone();
         let cwd_display = cwd.display().to_string();
         let approval_id = Uuid::new_v4().to_string();
-        let intent = EgressIntent {
-            id: approval_id.clone(),
-            task_id: None,
-            session_id: Some(spec.session_id.clone()),
-            kind: EgressKind::CommandExecution,
-            summary: format!("Run {}", command.join(" ")),
-            workspace_path: scope.cwd().display().to_string(),
-            target: None,
-            command: command.clone(),
-        };
-        self.egress
-            .lock()
-            .expect("terminal egress mutex poisoned")
-            .request(intent, &scope)
-            .map_err(|error| TerminalError::Egress(error.to_string()))?;
         self.pending
             .lock()
             .expect("terminal pending mutex poisoned")
@@ -275,14 +253,7 @@ impl TerminalManager {
             .lock()
             .expect("terminal admission mutex poisoned");
         let prepared = self.take_pending(approval_id)?;
-        let permit = self
-            .egress
-            .lock()
-            .expect("terminal egress mutex poisoned")
-            .decide(approval_id, HumanEgressDecision::AllowOnce)
-            .map_err(|error| TerminalError::Egress(error.to_string()))?
-            .ok_or_else(|| TerminalError::UnknownApproval(approval_id.to_string()))?;
-        self.spawn(prepared, permit)
+        self.spawn(prepared)
     }
 
     pub fn deny_create(&self, approval_id: &str) -> Result<(), TerminalError> {
@@ -291,11 +262,6 @@ impl TerminalManager {
             .lock()
             .expect("terminal admission mutex poisoned");
         self.take_pending(approval_id)?;
-        self.egress
-            .lock()
-            .expect("terminal egress mutex poisoned")
-            .decide(approval_id, HumanEgressDecision::Deny)
-            .map_err(|error| TerminalError::Egress(error.to_string()))?;
         Ok(())
     }
 
@@ -404,23 +370,10 @@ impl TerminalManager {
             .ok_or_else(|| TerminalError::UnknownApproval(approval_id.to_string()))
     }
 
-    fn spawn(
-        &self,
-        prepared: PreparedTerminalCreate,
-        permit: EgressPermit,
-    ) -> Result<String, TerminalError> {
-        let authorized = permit.consume();
+    fn spawn(&self, prepared: PreparedTerminalCreate) -> Result<String, TerminalError> {
         let expected_command = std::iter::once(prepared.spec.command.clone())
             .chain(prepared.spec.args.iter().cloned())
             .collect::<Vec<_>>();
-        if authorized.kind != EgressKind::CommandExecution
-            || authorized.session_id.as_deref() != Some(&prepared.spec.session_id)
-            || authorized.command != expected_command
-        {
-            return Err(TerminalError::Egress(
-                "one-shot permit does not match terminal request".to_string(),
-            ));
-        }
         self.require_capacity(&prepared.spec.session_id)?;
         let terminal_id = Uuid::new_v4().to_string();
         let limit = effective_output_limit(&self.config, prepared.spec.output_byte_limit);

@@ -4,15 +4,12 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import '../platform/secure_file_reader.dart';
 import 'task_data_sanitizer.dart';
 import 'task_record.dart';
 
 typedef ArtifactCollectorClock = DateTime Function();
 typedef ArtifactCollectorIdGenerator = String Function(String prefix);
 typedef ArtifactCollectorNonceGenerator = List<int> Function(int length);
-typedef ArtifactCollectorBeforeSecureRead =
-    FutureOr<void> Function(String relativePath);
 typedef ArtifactCollectorProcessStarter =
     Future<Process> Function(
       String executable,
@@ -77,7 +74,6 @@ class ArtifactCollector {
     ArtifactCollectorClock? clock,
     this.idGenerator,
     this.nonceGenerator,
-    this.beforeSecureRead,
     ArtifactCollectorProcessStarter? processStarter,
     Duration commandTimeout = const Duration(seconds: 30),
     Duration terminationGracePeriod = const Duration(milliseconds: 500),
@@ -100,7 +96,6 @@ class ArtifactCollector {
   final ArtifactCollectorClock _clock;
   final ArtifactCollectorIdGenerator? idGenerator;
   final ArtifactCollectorNonceGenerator? nonceGenerator;
-  final ArtifactCollectorBeforeSecureRead? beforeSecureRead;
   final ArtifactCollectorProcessStarter _processStarter;
   final Duration _commandTimeout;
   final Duration _terminationGracePeriod;
@@ -204,11 +199,6 @@ class ArtifactCollector {
         }
       }
     }
-
-    _throwIfCancelled(cancellation);
-    artifacts.addAll(
-      await _collectOutbox(task, run, workspace, cancellation: cancellation),
-    );
     _throwIfCancelled(cancellation);
     return List.unmodifiable(artifacts);
   }
@@ -431,114 +421,6 @@ class ArtifactCollector {
       timer.cancel();
       removeCancellationListener?.call();
     }
-  }
-
-  Future<List<ArtifactRecord>> _collectOutbox(
-    TaskRecord task,
-    TaskRunRecord run,
-    Directory workspace, {
-    required ArtifactCollectionCancellation? cancellation,
-  }) async {
-    _throwIfCancelled(cancellation);
-    final ianvsDirectory = Directory(_joinPath(workspace.path, '.ianvs'));
-    final outboxParent = Directory(
-      _joinPath(workspace.path, '.ianvs', 'outbox'),
-    );
-    final outbox = Directory(
-      _joinPath(workspace.path, '.ianvs', 'outbox', task.id),
-    );
-    if (!outbox.existsSync()) return const <ArtifactRecord>[];
-
-    late final String resolvedWorkspacePath;
-    late final String resolvedOutboxPath;
-    try {
-      for (final directory in <Directory>[
-        ianvsDirectory,
-        outboxParent,
-        outbox,
-      ]) {
-        final type = await FileSystemEntity.type(
-          directory.path,
-          followLinks: false,
-        );
-        if (type == FileSystemEntityType.link) {
-          return const <ArtifactRecord>[];
-        }
-      }
-      resolvedWorkspacePath = await workspace.resolveSymbolicLinks();
-      resolvedOutboxPath = await outbox.resolveSymbolicLinks();
-    } on Object {
-      return const <ArtifactRecord>[];
-    }
-    if (!_isPathWithin(resolvedWorkspacePath, resolvedOutboxPath)) {
-      return const <ArtifactRecord>[];
-    }
-
-    final relativePaths = <String>[];
-    try {
-      await for (final entity in outbox.list(
-        recursive: true,
-        followLinks: false,
-      )) {
-        _throwIfCancelled(cancellation);
-        if (entity is! File) continue;
-        relativePaths.add(_relativePath(workspace.path, entity.path));
-      }
-    } on Object {
-      return const <ArtifactRecord>[];
-    }
-    relativePaths.sort();
-
-    final artifacts = <ArtifactRecord>[];
-    for (final relativePath in relativePaths) {
-      _throwIfCancelled(cancellation);
-      await beforeSecureRead?.call(relativePath);
-      _throwIfCancelled(cancellation);
-      final record = await _artifactForOutboxFile(
-        task,
-        run,
-        resolvedWorkspacePath,
-        relativePath,
-      );
-      if (record != null) artifacts.add(record);
-    }
-    return artifacts;
-  }
-
-  Future<ArtifactRecord?> _artifactForOutboxFile(
-    TaskRecord task,
-    TaskRunRecord run,
-    String resolvedWorkspacePath,
-    String relativePath,
-  ) async {
-    final read = await readWorkspaceFileSecurely(
-      resolvedWorkspacePath: resolvedWorkspacePath,
-      relativePath: relativePath,
-      previewLimit: previewLimit,
-    );
-    if (read == null) return null;
-    final binary = read.previewBytes.contains(0);
-    final contentPreview = binary
-        ? null
-        : utf8.decode(read.previewBytes, allowMalformed: true);
-    return _artifact(
-      task: task,
-      run: run,
-      kind: ArtifactKind.outboxFile,
-      title: relativePath,
-      path: relativePath,
-      contentPreview: contentPreview,
-      sha256: read.sha256,
-      sizeBytes: read.sizeBytes,
-      metadata: <String, Object?>{
-        'source': 'outbox',
-        'relative_path': relativePath,
-        'preview_limit_bytes': previewLimit,
-        'truncated': read.sizeBytes > previewLimit,
-        'binary': binary,
-        'raw_payload': true,
-      },
-    );
   }
 
   ArtifactRecord _artifact({
@@ -826,47 +708,6 @@ List<String> _gitArguments(String workspacePath, List<String> args) {
     workspacePath,
     ...commandArgs,
   ];
-}
-
-String _joinPath(String first, String second, [String? third, String? fourth]) {
-  final parts = [first, second, ?third, ?fourth];
-  return parts
-      .where((part) => part.isNotEmpty)
-      .join(Platform.pathSeparator)
-      .replaceAll(
-        RegExp('${RegExp.escape(Platform.pathSeparator)}+'),
-        Platform.pathSeparator,
-      );
-}
-
-String _relativePath(String rootPath, String filePath) {
-  final normalizedRoot = _withoutTrailingSeparator(
-    File(rootPath).absolute.path,
-  );
-  final normalizedFile = File(filePath).absolute.path;
-  final prefix = '$normalizedRoot${Platform.pathSeparator}';
-  if (!normalizedFile.startsWith(prefix)) return normalizedFile;
-  return normalizedFile.substring(prefix.length);
-}
-
-String _withoutTrailingSeparator(String path) {
-  var value = path;
-  while (value.endsWith(Platform.pathSeparator) &&
-      value.length > Platform.pathSeparator.length) {
-    value = value.substring(0, value.length - Platform.pathSeparator.length);
-  }
-  return value;
-}
-
-bool _isPathWithin(String rootPath, String candidatePath) {
-  var root = _withoutTrailingSeparator(File(rootPath).absolute.path);
-  var candidate = File(candidatePath).absolute.path;
-  if (Platform.isWindows) {
-    root = root.toLowerCase();
-    candidate = candidate.toLowerCase();
-  }
-  return candidate == root ||
-      candidate.startsWith('$root${Platform.pathSeparator}');
 }
 
 Future<Process> _defaultProcessStarter(

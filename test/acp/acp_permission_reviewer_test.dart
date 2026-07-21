@@ -303,6 +303,71 @@ void main() {
     expect(analysis['cwdWithinWorkspace'], isTrue);
   });
 
+  test('permission review does not special-case external commands', () {
+    for (final commandLine in <String>[
+      'git push origin main',
+      'curl https://example.com/data',
+      'wget https://example.com/archive.zip',
+      'ssh example.com true',
+      'scp report.md example.com:/tmp/report.md',
+      'rsync report.md example.com:/tmp/report.md',
+    ]) {
+      final payload = acpPermissionReviewPayload(
+        AcpPermissionRequest(
+          id: 'permission-$commandLine',
+          title: 'Run command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 5, 31, 12),
+          metadata: <String, Object?>{
+            'command': commandLine,
+            'cwd': '/workspace',
+            'workspaceRoot': '/workspace',
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+
+      final analysis = payload['analysis'] as Map<String, Object?>;
+      expect(analysis['risk'], 'low', reason: commandLine);
+      expect(analysis['suggestedDecision'], 'allow', reason: commandLine);
+      expect(
+        analysis['signals'],
+        isNot(contains('medium_risk_command_pattern')),
+        reason: commandLine,
+      );
+    }
+  });
+
+  test('permission review still flags generic pipe-to-shell execution', () {
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-pipe-shell',
+        title: 'Run command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const ['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 5, 31, 12),
+        metadata: const <String, Object?>{
+          'command': 'printf "echo ok" | bash',
+          'cwd': '/workspace',
+          'workspaceRoot': '/workspace',
+        },
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'high');
+    expect(analysis['suggestedDecision'], 'deny');
+    expect(analysis['signals'], contains('high_risk_command_pattern'));
+  });
+
   test('permission review payload flags risky commands outside workspace', () {
     final payload = acpPermissionReviewPayload(
       AcpPermissionRequest(
@@ -513,6 +578,8 @@ void main() {
       expect(fake.lastPrompt, contains('"model": "review-model"'));
       expect(fake.lastPrompt, contains('"additionalDirectories"'));
       expect(fake.lastPrompt, contains('"line": "ls -la"'));
+      expect(fake.lastPrompt, contains('not separate risk categories'));
+      expect(fake.lastPrompt, isNot(contains('network-install')));
     },
   );
 

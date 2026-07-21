@@ -1,6 +1,6 @@
 # ACP runtime coverage
 
-Updated: 2026-07-19
+Updated: 2026-07-21
 
 This document records the ACP surface implemented by the production Rust
 runtime. It is a coverage map, not a second protocol specification. The official
@@ -45,9 +45,10 @@ corresponding client provider is enabled.
   temporary file and atomic rename.
 - `terminal/create`, `terminal/output`, `terminal/wait_for_exit`,
   `terminal/kill`, and `terminal/release` use bounded session-owned PTY handles.
-- Filesystem access and terminal creation require the fixed human allow-once
-  path. Trust rules, review agents, and full-access UI policy cannot bypass the
-  Core `requiresExplicitHuman` gate.
+- Filesystem access and terminal creation use the ordinary permission path.
+  Default permissions, trust rules, review agents, and full-access policy apply
+  consistently; the ACP client does not classify outbound effects or provide a
+  network-isolation boundary.
 
 ## Product projections
 

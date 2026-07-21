@@ -320,7 +320,7 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn filesystem_reverse_requests_require_human_approval_and_core_scope() {
+fn filesystem_reverse_requests_use_permissions_and_core_scope() {
     let workspace = unique_temp_dir("filesystem-runtime");
     std::fs::write(workspace.join("input.txt"), "first\nsecond\nthird\n").unwrap();
     let output = workspace.join("output.txt");
@@ -390,7 +390,6 @@ fn filesystem_reverse_requests_require_human_approval_and_core_scope() {
         RuntimeEvent::PermissionRequest { request } => {
             assert_eq!(request.title, "Read file");
             assert_eq!(request.options[0].kind, "allow_once");
-            assert!(request.requires_explicit_human);
             request.request_id
         }
         other => panic!("unexpected read permission: {other:?}"),
@@ -412,7 +411,6 @@ fn filesystem_reverse_requests_require_human_approval_and_core_scope() {
     let write_request_id = match write_permission.event {
         RuntimeEvent::PermissionRequest { request } => {
             assert_eq!(request.title, "Write file");
-            assert!(request.requires_explicit_human);
             request.request_id
         }
         other => panic!("unexpected write permission: {other:?}"),
@@ -990,7 +988,7 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn terminal_reverse_requests_use_real_pty_and_hard_human_approval() {
+fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
@@ -1054,7 +1052,6 @@ fn terminal_reverse_requests_use_real_pty_and_hard_human_approval() {
     let permission_id = match permission.event {
         RuntimeEvent::PermissionRequest { request } => {
             assert_eq!(request.tool_kind, "execute");
-            assert!(request.requires_explicit_human);
             assert!(request.tool_call_id.starts_with("terminal:"));
             assert_eq!(request.options[0].option_id, "ianvs_terminal_allow_once");
             assert_eq!(

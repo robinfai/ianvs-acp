@@ -19,7 +19,7 @@ pub struct AgentLaunchConfig {
     /// Optional working directory for the agent process.
     #[serde(default)]
     pub process_cwd: Option<String>,
-    /// Maximum time a permission request may wait for a human decision.
+    /// Maximum time a permission request may wait for a client decision.
     /// Hosts may omit this to use the core default.
     #[serde(default)]
     pub permission_timeout_ms: Option<u64>,
@@ -38,10 +38,10 @@ pub struct AgentLaunchConfig {
     /// Advertise and enforce the Rust PTY-backed ACP terminal provider.
     #[serde(default)]
     pub enable_terminal_provider: bool,
-    /// Advertise the Rust workspace-scoped, human-gated text read provider.
+    /// Advertise the Rust workspace-scoped, permission-gated text read provider.
     #[serde(default)]
     pub enable_filesystem_read_text_file: bool,
-    /// Advertise the Rust workspace-scoped, human-gated atomic text writer.
+    /// Advertise the Rust workspace-scoped, permission-gated atomic text writer.
     #[serde(default)]
     pub enable_filesystem_write_text_file: bool,
     /// Global live plus approval-pending terminal quota.
@@ -353,9 +353,6 @@ pub struct PermissionRequestProjection {
     pub title: String,
     pub tool_kind: String,
     pub raw_input: Option<serde_json::Value>,
-    /// True when policy/trust automation must not resolve this request.
-    #[serde(default)]
-    pub requires_explicit_human: bool,
     pub options: Vec<PermissionOptionProjection>,
 }
 

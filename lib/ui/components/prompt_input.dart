@@ -10,7 +10,7 @@ import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
-import '../../tasks/egress_policy.dart';
+import '../../tasks/permission_context.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
 

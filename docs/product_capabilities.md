@@ -1,6 +1,6 @@
 # Product capabilities
 
-Updated: 2026-07-19
+Updated: 2026-07-21
 
 This is the user-facing capability map. The product has one production authority
 for ACP and Workflow state. Runtime ownership and protocol details live in
@@ -21,12 +21,13 @@ for ACP and Workflow state. Runtime ownership and protocol details live in
 
 ## Human decisions and automation
 
-- Permission requests pause in Rust until a matching human response, timeout,
+- Permission requests pause in Rust until a matching client response, timeout,
   cancellation, or lifecycle invalidation wins.
 - The UI offers the agent-provided choices, explicit allow/deny/cancel actions,
   trust rules, automatic sidecar review, and an in-process bounded audit view.
-- Filesystem access and terminal creation marked `requiresExplicitHuman` always
-  wait for manual allow-once. Automatic policy cannot approve them.
+- Filesystem access and terminal creation follow the same permission policy as
+  other agent tool calls. The agent owns external-side-effect decisions; the
+  ACP client does not attempt command-based egress isolation.
 - Task Inbox scheduling, priority, retries, runtime quota, and workspace leases
   are decided atomically by Rust. Flutter starts only the claimed worker and
   uses the Core-provided next wake time.

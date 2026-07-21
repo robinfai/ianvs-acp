@@ -1,6 +1,6 @@
 # Runtime architecture
 
-Updated: 2026-07-19
+Updated: 2026-07-21
 
 This document is the authoritative ownership contract for the production
 runtime. ACP protocol handling, agent processes, session authority, workflow
@@ -15,7 +15,7 @@ ACP agent process
       ▼
 ianvs-acp-core (pure Rust)
   protocol + process supervision + Session/Task/Run state
-  scheduling + retry + workspace/egress enforcement
+  scheduling + retry + workspace and execution boundaries
   terminal provider + PTY + SQLite recovery
       │ stable product commands and versioned projections
       ▼
@@ -40,7 +40,7 @@ Rust command/event model instead of creating a second runtime implementation.
 | Agent process lifetime, stderr capture, failure detection, and recovery policy | Agent configuration forms and user-facing failure presentation |
 | Session, Task, and Run transitions | Timeline, plan, tool-call, workspace, session, and pane projections |
 | Command admission, concurrency, cancellation, timeouts, and bounded queues | Asking the user for a permission choice |
-| Workspace canonicalization, mutation leases, and hard egress decisions | Returning the selected permission option to Rust |
+| Workspace canonicalization, mutation leases, and filesystem/terminal execution boundaries | Rendering permission choices and applying the selected client policy |
 | `terminal/*`, PTY/VT state, SQLite persistence, restart recovery, and retries | Terminal viewport and recovered-state presentation |
 
 Flutter must never keep a second authoritative ACP connection for a
@@ -145,15 +145,18 @@ explicit cancel, connection loss, and disposal use a first-wins settlement and
 emit `permission_invalidated` with a stable reason. Flutter clears a permission
 card only when request id, lifecycle id, and session id still match.
 
-Configured filesystem reverse requests use the same rule. Both reads (local
-content leaving the workspace for the agent) and writes become Rust-owned
-pending operations and require a fixed allow-once choice. Core bounds pending
-content, validates the session `WorkspaceScope`, verifies read file identity,
-and performs approved writes through a same-directory create-new temporary file
-plus atomic rename. Flutter never receives file contents or an executable write
-command. These Core-originated filesystem and terminal requests carry
-`requiresExplicitHuman`; Flutter's trust rules, auto-review, and full-access
-policy must leave them pending for a manual choice.
+Configured filesystem reverse requests use the same generic permission
+lifecycle as other ACP tool calls. Reads and writes become Rust-owned pending
+operations while Core bounds pending content, validates the session
+`WorkspaceScope`, verifies read file identity, and performs allowed writes
+through a same-directory create-new temporary file plus atomic rename. Flutter
+never receives file contents or an executable write command. Terminal creation
+is likewise projected as an ordinary permission request; default permissions,
+trust rules, auto-review, and full access apply without a hidden exception.
+
+Neither Rust nor Flutter classifies arbitrary commands, URLs, or destinations as
+"egress", and the ACP client does not claim to provide network isolation. The
+agent and its tool runtime own whether an action has external side effects.
 
 ## Repository status
 
@@ -163,7 +166,7 @@ policy must leave them pending for a manual choice.
 | Typed ACP v1 stdio path | Implemented for the stable session slice | Initialize, capability projection, authentication/logout, new/list/load-or-resume/close/delete session, typed MCP configuration, text/media prompt, cancel, permission response, mode/config change, notifications, stderr, and process recovery use the official Rust SDK |
 | Stable FFI + Dart projection | Implemented for ACP, terminal, and Workflow slices | ABI v5 exposes individual ACP functions/events plus typed Workflow, complete TaskInbox, scheduler-registry, and atomic scheduler-claim commands/projections; schema v3 has strict sequence and camelCase field validation plus real Dart -> dylib -> Rust integration tests |
 | Session state | Implemented for the slice | Rust rejects illegal parallel prompts and owns permission/cancel transitions |
-| Permission lifetime / timeout | Implemented | Configurable human timeout, bounded pending map, first-wins invalidation, and late-choice rejection |
+| Permission lifetime / timeout | Implemented | Configurable timeout, bounded pending map, first-wins invalidation, and late-choice rejection |
 | Backpressure | Implemented at host queues | Bounded command and event queues; event production blocks instead of growing memory without limit |
 | Workspace path boundary | Implemented as Core primitives | Canonical roots, lexical and symlink escape rejection; creation still requires an atomic/open-at write path to close TOCTOU |
 | Task/Run state + mutation gate | Durable active Core authority path implemented | `staged -> ready -> active` is explicit. Legal typed FFI commands retain a Rust RAII workspace lease; Rust rejects projection attempts to rewrite authority fields and commits complete TaskInbox state before returning |
@@ -175,13 +178,13 @@ policy must leave them pending for a manual choice.
 | Authentication/logout | Implemented | Core projects advertised auth methods/logout capability, validates method ids, sends typed SDK requests, and completes request-correlated stable events |
 | Session configuration | Implemented | Initial and updated select/boolean options are bounded and normalized; invalid values and concurrent mutations fail closed, and immediate complete-state notifications are retained without exposing SDK payloads |
 | Prompt attachments | Implemented | FFI accepts no ACP content JSON; Core validates bounded product metadata and workspace identity, verifies stable file metadata during reads, and constructs typed SDK content with resource-link fallback for unsupported or oversized media |
-| ACP filesystem provider | Implemented on the Rust default path | Configured typed `fs/read_text_file` and `fs/write_text_file` reverse requests are session-scoped, bounded, and hard-gated by one-shot human approval. Reads verify device/inode/size; writes use create-new temporary files and atomic replacement inside canonical roots |
+| ACP filesystem provider | Implemented on the Rust default path | Configured typed `fs/read_text_file` and `fs/write_text_file` reverse requests are session-scoped, bounded, and use the generic permission flow. Reads verify device/inode/size; writes use create-new temporary files and atomic replacement inside canonical roots |
 | MCP session setup | Implemented for stable transports | Product DTOs for stdio, HTTP, and SSE are bounded and converted to typed SDK values for session new/load/resume; peer HTTP/SSE support is validated. Unstable MCP-over-ACP remains unavailable |
 | Session fork | Pending in Rust | Fork remains feature-gated unstable in the official Rust schema and is not exposed by the production client |
 | Scheduler / worker / runtime registry | Default production cutover implemented | The Rust repository adapter supplies the authoritative projection; Flutter publishes runtime observations and delegates priority/retry/runtime-quota/workspace admission plus dispatch to the ABI v5 atomic claim, then runs the selected worker |
 | SQLite persistence and crash recovery | Durable Workflow and ACP session recovery | Workflow uses WAL/FULL, strict v1→v5 migration, revision CAS and complete projection commits. A separate `NOFOLLOW` session registry persists canonical scopes; bounded process restart reinitializes ACP and load/resumes every registered session before returning Ready |
 | ACP terminal provider + real PTY | Implemented on the Rust default path | All five typed ACP `terminal/*` reverse requests use bounded, session-owned `portable-pty` handles. Create validates the workspace/cwd, counts live plus approval-pending quotas, and projects attach/output/exit/release events without exposing ACP envelopes |
-| Hard human-controlled egress | Implemented for terminal and filesystem operations | `terminal/create`, filesystem reads, and filesystem writes cannot execute until Flutter returns the fixed allow-once choice and Rust consumes its opaque one-shot `EgressPermit`; denial, timeout, cancellation, connection loss, and workspace escape fail closed. Git push/PR/upload executors remain to be wired |
+| Generic reverse-request admission | Implemented for terminal and filesystem operations | `terminal/create`, filesystem reads, and filesystem writes remain pending until the selected permission policy settles them. Rust retains workspace, quota, operation-identity, timeout, cancellation, and connection-loss checks; outbound classification and network isolation are intentionally outside the ACP client |
 | Automatic agent restart/session recovery | Implemented for recoverable sessions | Rust retries bounded failures with exponential delay, invalidates in-flight work/permissions, reinitializes the process, and load/resumes SQLite-registered sessions before Ready. Recovery fails closed when the peer cannot restore sessions |
 
 ## Activation and verification
@@ -205,13 +208,27 @@ development at an explicit dylib. It is not a protocol escape hatch.
 
 ## Planned evolution
 
-1. Connect remaining git push/PR/upload executors to Rust workspace and egress
-   admission.
-2. Implement Rust remote ACP transports while keeping unsupported configurations
+The task-dispatch and background-execution contract is specified in
+[Task dispatch and Autopilot design](superpowers/specs/2026-07-21-task-dispatch-autopilot-design.md).
+Its product-facing state language, information architecture, and staged user
+experience are specified in
+[Task dispatch product experience](superpowers/specs/2026-07-21-task-dispatch-product-experience.md).
+Its P0/P1 correctness and recovery gates must be met before adding automatic
+trigger volume or moving authority into a background process.
+
+1. Split execution capacity from workspace leases, add structured scheduler
+   admission results, and make local capacity reservation precede atomic claim.
+2. Add fenced executor ownership leases, start acknowledgement, heartbeat,
+   idempotent terminal writes, and orphan recovery to the Rust Workflow authority.
+3. Keep git push, pull-request creation, and uploads in the agent/tool layer;
+   surface their progress and results through ordinary task and permission events.
+4. Implement Rust remote ACP transports while keeping unsupported configurations
    fail-closed.
-3. Evaluate unstable fork and MCP-over-ACP separately without exposing raw ACP
+5. Evaluate unstable fork and MCP-over-ACP separately without exposing raw ACP
    payloads through FFI.
-4. Add `ianvs-acpd` only when headless/background continuity is required.
+6. Add `ianvs-acpd` as the single execution host for headless/background
+   continuity. It must consume the same Rust command/event model; once enabled,
+   Flutter becomes an IPC UI client and cannot retain a second dispatcher.
 
 ## Flutter boundary modules
 

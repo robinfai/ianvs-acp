@@ -4,7 +4,7 @@ use ianvs_acp_core::{
 };
 
 #[test]
-fn filesystem_read_and_write_require_one_shot_human_approval() {
+fn filesystem_read_and_write_use_pending_permission_operations() {
     let workspace = unique_temp_dir("filesystem-core");
     let input = workspace.join("input.txt");
     std::fs::write(&input, "first\nsecond\nthird\n").unwrap();
@@ -75,7 +75,7 @@ fn filesystem_scope_and_selected_file_identity_fail_closed() {
     ));
     assert!(matches!(
         manager.request_write("session-1", &escaped, "no".to_string()),
-        Err(FilesystemError::Workspace(_) | FilesystemError::Egress(_))
+        Err(FilesystemError::Workspace(_))
     ));
     let read = manager
         .request_read("session-1", &inside, None, None)

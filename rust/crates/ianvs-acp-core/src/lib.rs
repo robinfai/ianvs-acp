@@ -12,7 +12,6 @@
 )]
 
 mod durable_workflow;
-mod egress;
 mod execution_gate;
 mod filesystem;
 mod model;
@@ -32,9 +31,6 @@ pub use durable_workflow::{
     DurableWorkflow, DurableWorkflowError, SchedulerClaimProjection,
     TaskInboxMaterializedProjection, TaskInboxStageProjection, WORKFLOW_SCHEMA_VERSION,
     WorkflowCommand, WorkflowOpenProjection, WorkflowProjection,
-};
-pub use egress::{
-    EgressError, EgressIntent, EgressKind, EgressPermit, HumanEgressDecision, HumanEgressGate,
 };
 pub use execution_gate::{ExecutionGateError, WorkspaceExecutionGate, WorkspaceExecutionLease};
 pub use filesystem::{

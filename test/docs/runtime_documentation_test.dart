@@ -27,7 +27,7 @@ void main() {
     ];
     for (final path in docs) {
       expect(File(path).existsSync(), isTrue, reason: 'Missing $path');
-      expect(File(path).readAsStringSync(), contains('Updated: 2026-07-19'));
+      expect(File(path).readAsStringSync(), contains('Updated: 2026-07-21'));
     }
 
     final readme = File('README.md').readAsStringSync();
@@ -40,7 +40,6 @@ void main() {
     for (final heading in const <String>[
       'Remote ACP agent transports',
       'Unstable protocol features',
-      'External egress executors',
       'Permission audit retention',
       'Terminal experience',
       'ACP Registry',

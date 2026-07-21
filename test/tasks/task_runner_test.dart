@@ -60,8 +60,11 @@ void main() {
     expect(chat.currentSession?.cwd, '/workspace/app');
     expect(fake.lastPrompt, contains('Task ID: task-1'));
     expect(fake.lastPrompt, contains('Workspace: /workspace/app'));
-    expect(fake.lastPrompt, contains('You must not:'));
-    expect(fake.lastPrompt, contains('push to remote git repositories'));
+    expect(fake.lastPrompt, isNot(contains('.ianvs/outbox/')));
+    expect(fake.lastPrompt, isNot(contains('You must not:')));
+    expect(fake.lastPrompt, isNot(contains('push to remote git repositories')));
+    expect(fake.lastPrompt, isNot(contains('external actions')));
+    expect(fake.lastPrompt, isNot(contains('external side effects')));
 
     expect(taskController.runs.single.id, 'run-1');
     expect(taskController.runs.single.status, TaskStatus.needsHumanReview);
@@ -196,6 +199,12 @@ void main() {
       expect(fake.sessionCount, 0);
       expect(fake.lastResumeCwd, '/workspace/app');
       expect(fake.lastPrompt, contains('Continue the task from where'));
+      expect(fake.lastPrompt, contains('supersedes earlier client-generated'));
+      expect(fake.lastPrompt, isNot(contains('.ianvs/outbox/')));
+      expect(
+        fake.lastPrompt,
+        isNot(contains('push to remote git repositories')),
+      );
       expect(
         taskController.events.map((event) => event.text),
         contains('Resumed linked ACP session existing-session.'),
@@ -1973,7 +1982,7 @@ void main() {
     final artifactEvent = taskController.events.singleWhere(
       (event) => event.kind == TaskEventKind.artifact,
     );
-    expect(artifactEvent.text, 'Collected 1 candidate artifact(s).');
+    expect(artifactEvent.text, 'Collected 1 artifact(s).');
     expect(artifactEvent.metadata['artifact_count'], 1);
     expect(artifactEvent.metadata['artifact_ids'], ['artifact-1']);
   });
@@ -2151,7 +2160,7 @@ void main() {
   );
 
   test(
-    'TaskRunner marks egress-sensitive permission as export-sensitive',
+    'TaskRunner follows full-access policy for agent-owned external actions',
     () async {
       final store = _MemoryTaskStore();
       final ids = _DeterministicIds();
@@ -2163,7 +2172,7 @@ void main() {
       addTearDown(taskController.dispose);
       await taskController.load();
       final task = await taskController.createTask(
-        title: 'Export-sensitive task',
+        title: 'Agent-owned external action',
         description: '',
         workspacePath: '/workspace/app',
         agentName: 'Codex',
@@ -2193,7 +2202,7 @@ void main() {
       await _waitUntil(() => fake.lastPrompt != null);
       fake.emitPermissionRequest(
         AcpPermissionRequest(
-          id: 'permission-egress',
+          id: 'permission-external-action',
           title: 'Run: git push origin main',
           rationale: 'Publish changes.',
           sessionId: 'fake-session-1',
@@ -2206,35 +2215,24 @@ void main() {
       );
 
       await _waitUntil(
-        () =>
-            taskController.tasks.single.status ==
-            TaskStatus.blockedOnPermission,
+        () => fake.lastPermissionRequestId == 'permission-external-action',
       );
-      expect(chat.pendingPermissionRequest?.id, 'permission-egress');
-      expect(fake.lastPermissionRequestId, isNull);
-      expect(fake.lastPermissionDecision, isNull);
-      expect(
-        taskController.tasks.single.summary,
-        'Export-sensitive permission requires manual approval.',
-      );
-
-      await chat.resolvePermissionRequest(AcpPermissionDecision.deny);
       await pending;
 
       final permissionEvents = taskController.events
           .where((event) => event.kind == TaskEventKind.permission)
           .toList();
       expect(permissionEvents.map((event) => event.text), [
-        'Export-sensitive permission requested: Command: git push origin main',
-        'Permission denied: Command: git push origin main',
+        'Permission requested: Command: git push origin main',
+        'Permission allowed: Command: git push origin main',
       ]);
-      expect(permissionEvents.first.metadata['egress_sensitive'], isTrue);
-      expect(permissionEvents.first.metadata['egress_reason'], 'git_push');
+      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
       expect(
-        permissionEvents.first.metadata['egress_command_line'],
-        'git push origin main',
+        permissionEvents.first.metadata,
+        isNot(contains('egress_sensitive')),
       );
-      expect(permissionEvents.last.metadata['permission_decision'], 'deny');
+      expect(permissionEvents.first.metadata, isNot(contains('egress_reason')));
+      expect(permissionEvents.last.metadata['permission_decision'], 'allow');
       expect(
         store.savedSnapshots.map((snapshot) => snapshot.tasks.single.status),
         contains(TaskStatus.blockedOnPermission),

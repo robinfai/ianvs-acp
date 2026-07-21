@@ -8,10 +8,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{
-    EgressIntent, EgressKind, EgressPermit, HumanEgressDecision, HumanEgressGate, WorkspaceError,
-    WorkspaceScope,
-};
+use crate::{WorkspaceError, WorkspaceScope};
 
 const MAX_PENDING_OPERATIONS: usize = 64;
 const MAX_PENDING_WRITE_BYTES: usize = 32 * 1024 * 1024;
@@ -73,8 +70,6 @@ pub enum FilesystemError {
     OperationChanged,
     #[error("filesystem I/O failed: {0}")]
     Io(String),
-    #[error("filesystem egress gate rejected the operation: {0}")]
-    Egress(String),
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
 }
@@ -82,7 +77,6 @@ pub enum FilesystemError {
 #[derive(Debug)]
 enum PreparedFilesystemOperation {
     Read {
-        session_id: String,
         scope: WorkspaceScope,
         path: PathBuf,
         line: Option<u32>,
@@ -92,7 +86,6 @@ enum PreparedFilesystemOperation {
         size: u64,
     },
     Write {
-        session_id: String,
         scope: WorkspaceScope,
         path: PathBuf,
         content: String,
@@ -114,7 +107,6 @@ pub struct FilesystemManager {
     admission: Mutex<()>,
     scopes: Mutex<HashMap<String, WorkspaceScope>>,
     pending: Mutex<HashMap<String, PreparedFilesystemOperation>>,
-    egress: Mutex<HumanEgressGate>,
 }
 
 impl FilesystemManager {
@@ -125,7 +117,6 @@ impl FilesystemManager {
             admission: Mutex::new(()),
             scopes: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
-            egress: Mutex::new(HumanEgressGate::new()),
         }
     }
 
@@ -171,21 +162,12 @@ impl FilesystemManager {
         }
         let approval_id = Uuid::new_v4().to_string();
         let canonical_path = path.display().to_string();
-        self.request_egress(
-            &approval_id,
-            &session_id,
-            &scope,
-            EgressKind::ExternalCopy,
-            "Read file for agent",
-            &canonical_path,
-        )?;
         self.pending
             .lock()
             .expect("filesystem pending mutex poisoned")
             .insert(
                 approval_id.clone(),
                 PreparedFilesystemOperation::Read {
-                    session_id: session_id.clone(),
                     scope,
                     path,
                     line,
@@ -227,21 +209,12 @@ impl FilesystemManager {
         }
         let approval_id = Uuid::new_v4().to_string();
         let canonical_path = path.display().to_string();
-        self.request_egress(
-            &approval_id,
-            &session_id,
-            &scope,
-            EgressKind::FileWrite,
-            "Write file for agent",
-            &canonical_path,
-        )?;
         self.pending
             .lock()
             .expect("filesystem pending mutex poisoned")
             .insert(
                 approval_id.clone(),
                 PreparedFilesystemOperation::Write {
-                    session_id: session_id.clone(),
                     scope,
                     path,
                     content,
@@ -261,14 +234,7 @@ impl FilesystemManager {
             .lock()
             .expect("filesystem admission mutex poisoned");
         let prepared = self.take_pending(approval_id)?;
-        let permit = self
-            .egress
-            .lock()
-            .expect("filesystem egress mutex poisoned")
-            .decide(approval_id, HumanEgressDecision::AllowOnce)
-            .map_err(|error| FilesystemError::Egress(error.to_string()))?
-            .ok_or_else(|| FilesystemError::UnknownApproval(approval_id.to_string()))?;
-        execute(prepared, permit)
+        execute(prepared)
     }
 
     pub fn deny(&self, approval_id: &str) -> Result<(), FilesystemError> {
@@ -277,11 +243,6 @@ impl FilesystemManager {
             .lock()
             .expect("filesystem admission mutex poisoned");
         self.take_pending(approval_id)?;
-        self.egress
-            .lock()
-            .expect("filesystem egress mutex poisoned")
-            .decide(approval_id, HumanEgressDecision::Deny)
-            .map_err(|error| FilesystemError::Egress(error.to_string()))?;
         Ok(())
     }
 
@@ -324,35 +285,6 @@ impl FilesystemManager {
         Ok(())
     }
 
-    fn request_egress(
-        &self,
-        approval_id: &str,
-        session_id: &str,
-        scope: &WorkspaceScope,
-        kind: EgressKind,
-        summary: &str,
-        target: &str,
-    ) -> Result<(), FilesystemError> {
-        self.egress
-            .lock()
-            .expect("filesystem egress mutex poisoned")
-            .request(
-                EgressIntent {
-                    id: approval_id.to_string(),
-                    task_id: None,
-                    session_id: Some(session_id.to_string()),
-                    kind,
-                    summary: summary.to_string(),
-                    workspace_path: scope.cwd().display().to_string(),
-                    target: Some(target.to_string()),
-                    command: Vec::new(),
-                },
-                scope,
-            )
-            .map_err(|error| FilesystemError::Egress(error.to_string()))?;
-        Ok(())
-    }
-
     fn take_pending(
         &self,
         approval_id: &str,
@@ -367,12 +299,9 @@ impl FilesystemManager {
 
 fn execute(
     prepared: PreparedFilesystemOperation,
-    permit: EgressPermit,
 ) -> Result<FilesystemOperationResult, FilesystemError> {
-    let authorized = permit.consume();
     match prepared {
         PreparedFilesystemOperation::Read {
-            session_id,
             scope,
             path,
             line,
@@ -381,36 +310,18 @@ fn execute(
             inode,
             size,
         } => {
-            verify_permit(&authorized, EgressKind::ExternalCopy, &session_id, &path)?;
             scope.resolve_existing(&path)?;
             read_text(&path, line, limit, device, inode, size).map(FilesystemOperationResult::Read)
         }
         PreparedFilesystemOperation::Write {
-            session_id,
             scope,
             path,
             content,
         } => {
-            verify_permit(&authorized, EgressKind::FileWrite, &session_id, &path)?;
             write_text_atomic(&scope, &path, content.as_bytes())?;
             Ok(FilesystemOperationResult::Written)
         }
     }
-}
-
-fn verify_permit(
-    authorized: &EgressIntent,
-    kind: EgressKind,
-    session_id: &str,
-    path: &Path,
-) -> Result<(), FilesystemError> {
-    if authorized.kind != kind
-        || authorized.session_id.as_deref() != Some(session_id)
-        || authorized.target.as_deref() != Some(path.to_string_lossy().as_ref())
-    {
-        return Err(FilesystemError::OperationChanged);
-    }
-    Ok(())
 }
 
 fn read_text(
