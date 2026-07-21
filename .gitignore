@@ -35,6 +35,7 @@ migrate_working_dir/
 /coverage/
 /rust/target/
 .worktrees/
+/prototypes/inbox-autopilot/qa/
 
 # Symbolication related
 app.*.symbols
