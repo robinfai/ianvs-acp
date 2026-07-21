@@ -211,6 +211,7 @@ assert_static_release_contract() {
   grep -q 'contents: read' "${workflow}"
   grep -q 'flutter build macos --config-only --no-pub' "${workflow}"
   grep -q 'pod install --deployment --project-directory=macos' "${workflow}"
+  grep -q 'tool/verify_rust_runtime[.]sh' "${workflow}"
   ! grep -q 'cache: true' "${workflow}"
   ! grep -q 'secrets[.]' "${workflow}"
   ! grep -Eq 'uses:.*@(main|master|v[0-9]+)([[:space:]]|$)' "${workflow}"

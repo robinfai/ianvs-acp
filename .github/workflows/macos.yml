@@ -69,6 +69,9 @@ jobs:
       - name: Test release script safety contracts
         run: ./tool/release_scripts_test.sh
 
+      - name: Verify Rust runtime and FFI integration
+        run: ./tool/verify_rust_runtime.sh
+
       - name: Test Flutter code with isolated HOME
         run: ./tool/flutter_test_isolated.sh
 
