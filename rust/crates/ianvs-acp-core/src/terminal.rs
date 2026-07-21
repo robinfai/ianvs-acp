@@ -727,10 +727,7 @@ fn spawn_output_reader(
         .name(format!("ianvs-terminal-output-{terminal_id}"))
         .spawn(move || {
             let mut chunk = [0_u8; 8_192];
-            loop {
-                let Ok(count) = reader.read(&mut chunk) else {
-                    break;
-                };
+            while let Ok(count) = reader.read(&mut chunk) {
                 if count == 0 {
                     break;
                 }
