@@ -51,8 +51,12 @@ void main() {
       addTearDown(reopened.dispose);
       final recovered = reopened.open(databasePath);
       expect(recovered.revision, 5);
-      expect(recovered.recoveredFailedTaskIds, <String>['task-1']);
-      expect(recovered.tasks.single.status, IanvsWorkflowTaskStatus.failed);
+      expect(recovered.recovery?.runs.single.taskId, 'task-1');
+      expect(
+        recovered.recovery?.runs.single.recoveryState,
+        IanvsRecoveryState.requeued,
+      );
+      expect(recovered.tasks.single.status, IanvsWorkflowTaskStatus.queued);
       expect(recovered.runs.single.status, IanvsWorkflowRunStatus.failed);
 
       expect(
@@ -222,20 +226,63 @@ void main() {
       final schedulerClaim = workflow.schedulerClaimNext(
         runId: 'run-active',
         dispatchEventId: 'event-dispatch-active',
+        executorLeaseId: 'lease-active',
+        executorId: 'test-host',
+        commandId: 'command-claim-active',
         now: now.add(const Duration(minutes: 4)),
+        leaseExpiresAt: now.add(const Duration(minutes: 5)),
+        capacityReservations: <IanvsSchedulerCapacityReservation>[
+          IanvsSchedulerCapacityReservation(
+            reservationId: 'reservation-active',
+            agentName: 'fixture-edited',
+            hostInstanceId: 'test-host',
+            createdAt: now.add(const Duration(minutes: 3)),
+            expiresAt: now.add(const Duration(minutes: 5)),
+          ),
+        ],
       );
       expect(schedulerClaim.claim?.taskId, 'task-active');
       expect(schedulerClaim.claim?.attempt, 1);
       expect(schedulerClaim.nextWakeAt, isNull);
       expect(schedulerClaim.workflow.revision, 8);
-      workflow.applyTaskInbox(
+      final executorLease = schedulerClaim.claim!.executorLease;
+      workflow.applyExecutorLeaseCommand(
+        IanvsExecutorLeaseCommand(
+          context: IanvsExecutorCommandContext(
+            runId: 'run-active',
+            executorLeaseId: executorLease.leaseId,
+            generation: executorLease.generation,
+            commandId: 'command-ack-active',
+            now: now.add(const Duration(minutes: 4)),
+          ),
+          operation: IanvsExecutorLeaseOperation.acknowledgeStart,
+          nextExpiresAt: now.add(const Duration(minutes: 15)),
+        ),
+      );
+      IanvsTaskInboxMaterializedProjection applyAsExecutor(
+        IanvsTaskInboxCommand command, {
+        required String commandId,
+        required DateTime at,
+      }) => workflow.applyTaskInboxAsExecutor(
+        context: IanvsExecutorCommandContext(
+          runId: 'run-active',
+          executorLeaseId: executorLease.leaseId,
+          generation: executorLease.generation,
+          commandId: commandId,
+          now: at,
+        ),
+        command: command,
+      );
+      applyAsExecutor(
         IanvsTaskInboxCommand.transitionRun(
           runId: 'run-active',
           transition: IanvsTaskInboxRunTransition.start,
           updatedAt: now.add(const Duration(minutes: 5)),
         ),
+        commandId: 'command-start-active',
+        at: now.add(const Duration(minutes: 5)),
       );
-      workflow.applyTaskInbox(
+      applyAsExecutor(
         IanvsTaskInboxCommand.appendEvents(
           events: <TaskEventRecord>[
             TaskEventRecord(
@@ -249,8 +296,10 @@ void main() {
           ],
           updatedAt: now.add(const Duration(minutes: 6)),
         ),
+        commandId: 'command-event-active',
+        at: now.add(const Duration(minutes: 6)),
       );
-      workflow.applyTaskInbox(
+      applyAsExecutor(
         IanvsTaskInboxCommand.replaceArtifacts(
           taskId: 'task-active',
           runId: 'run-active',
@@ -267,8 +316,10 @@ void main() {
           ],
           updatedAt: now.add(const Duration(minutes: 7)),
         ),
+        commandId: 'command-artifact-active',
+        at: now.add(const Duration(minutes: 7)),
       );
-      workflow.applyTaskInbox(
+      applyAsExecutor(
         IanvsTaskInboxCommand.upsertApproval(
           approval: ApprovalRequestRecord(
             id: 'approval-active',
@@ -281,6 +332,8 @@ void main() {
           ),
           updatedAt: now.add(const Duration(minutes: 8)),
         ),
+        commandId: 'command-approval-active',
+        at: now.add(const Duration(minutes: 8)),
       );
       final complete = workflow.applyTaskInbox(
         IanvsTaskInboxCommand.upsertResource(
@@ -300,6 +353,22 @@ void main() {
       expect(complete.taskInbox.artifacts.single.id, 'artifact-active');
       expect(complete.taskInbox.approvals.single.id, 'approval-active');
       expect(complete.taskInbox.resources.single.id, 'resource-active');
+      final firstEventPage = workflow.runtimeEvents(
+        runId: 'run-active',
+        afterSequence: 0,
+        limit: 1,
+      );
+      expect(firstEventPage.events.single.event.id, 'event-dispatch-active');
+      expect(firstEventPage.hasMore, isTrue);
+      final secondEventPage = workflow.runtimeEvents(
+        runId: 'run-active',
+        afterSequence: firstEventPage.nextSequence,
+        limit: 1,
+      );
+      expect(secondEventPage.events.single.event.id, 'event-active');
+      expect(secondEventPage.events.single.executorLeaseId, 'lease-active');
+      expect(secondEventPage.events.single.executorGeneration, 1);
+      expect(secondEventPage.events.single.commandId, 'command-event-active');
       workflow.dispose();
 
       final reopened = IanvsRustWorkflow(
@@ -308,14 +377,18 @@ void main() {
       addTearDown(reopened.dispose);
       final recovered = reopened.open(databasePath);
       expect(recovered.revision, 14);
-      expect(recovered.recoveredFailedTaskIds, <String>['task-active']);
+      expect(recovered.recovery?.runs.single.taskId, 'task-active');
+      expect(
+        recovered.recovery?.runs.single.recoveryState,
+        IanvsRecoveryState.reviewRequired,
+      );
       expect(recovered.migration.phase, IanvsWorkflowMigrationPhase.active);
       final current = reopened.currentTaskInbox()!;
       expect(
         current.tasks.singleWhere((task) => task.id == 'task-active').status,
-        TaskStatus.failed,
+        TaskStatus.needsHumanReview,
       );
-      expect(current.runs.single.status, TaskStatus.failed);
+      expect(current.runs.single.status, TaskStatus.needsHumanReview);
       expect(
         current.events.map((event) => event.id),
         containsAll(<String>['event-dispatch-active', 'event-active']),
@@ -327,13 +400,20 @@ void main() {
         reopened.taskInboxSource()?.tasks.single.status,
         TaskStatus.approvedForExport,
       );
-      final deleted = reopened.applyTaskInbox(
-        IanvsTaskInboxCommand.deleteTask(
-          taskId: 'task-active',
+      reopened.applyTaskInbox(
+        IanvsTaskInboxCommand.transitionRun(
+          runId: 'run-active',
+          transition: IanvsTaskInboxRunTransition.requestChanges,
           updatedAt: now.add(const Duration(minutes: 10)),
         ),
       );
-      expect(deleted.workflow.revision, 15);
+      final deleted = reopened.applyTaskInbox(
+        IanvsTaskInboxCommand.deleteTask(
+          taskId: 'task-active',
+          updatedAt: now.add(const Duration(minutes: 11)),
+        ),
+      );
+      expect(deleted.workflow.revision, 16);
       expect(
         deleted.taskInbox.tasks.map((task) => task.id),
         isNot(contains('task-active')),

@@ -31,6 +31,12 @@ trap 'exit 143' TERM
 
 flutter pub get
 flutter build macos --release --no-pub
+SRCROOT="${project_root}/macos" \
+CONFIGURATION=Release \
+TARGET_BUILD_DIR="${project_root}/build/macos/Build/Products/Release" \
+FRAMEWORKS_FOLDER_PATH='ACP Client.app/Contents/Frameworks' \
+EXECUTABLE_FOLDER_PATH='ACP Client.app/Contents/MacOS' \
+  "${project_root}/macos/scripts/build_ianvs_acp_rust.sh"
 IANVS_CODESIGN_BIN=/usr/bin/codesign \
   "${script_dir}/sign_macos_bundle.sh" "${app}" "${IANVS_DEVELOPER_ID}"
 "${script_dir}/verify_macos_bundle.sh" --distribution "${app}"

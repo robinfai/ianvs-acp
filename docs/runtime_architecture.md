@@ -15,22 +15,27 @@ ACP agent process
       ▼
 ianvs-acp-core (pure Rust)
   protocol + process supervision + Session/Task/Run state
-  scheduling + retry + workspace and execution boundaries
-  terminal provider + PTY + SQLite recovery
+  scheduling + fenced execution + idempotency + classified recovery
+  append-only events + typed Workflow IR + structured results + coordinator
+  terminal provider + PTY + SQLite recovery/checkpoints
       │ stable product commands and versioned projections
       ▼
-ianvs-acp-ffi                    optional ianvs-acpd (later)
-      │
+ianvs-acpd (single Task/Workflow execution host)
+      │ bounded versioned JSON-line IPC over a mode-0600 Unix socket
       ▼
 Flutter/Dart
-  Timeline / Plan / Tool Call / Workspace / Pane UI
+  sequence-cursor projections / Timeline / Plan / Workspace / Pane UI
   permission dialogs and human choices
   Terminal viewport
+
+ianvs-acp-ffi remains the typed adapter for foreground interactive ACP
+sessions and native integration tests. It is not a second Task dispatcher.
 ```
 
-The core crate has no Flutter, Dart, C ABI, or widget-lifecycle dependency. The
-FFI crate is a replaceable host adapter. A future daemon must consume the same
-Rust command/event model instead of creating a second runtime implementation.
+The core crate has no Flutter, Dart, C ABI, or widget-lifecycle dependency.
+Both host adapters consume its same typed command/event model. Production
+Task execution belongs to `ianvs-acpd`; Flutter never creates a parallel
+`TaskScheduler` for an app-owned Rust TaskInbox.
 
 ## Ownership rules
 
@@ -61,6 +66,14 @@ workflowStageTaskInbox / workflowMaterializeTaskInbox / workflowActivateTaskInbo
 workflowApplyTaskInbox(typed product command) / workflowTaskInboxSource
 workflowSchedulerConfigure / workflowSchedulerSetRuntimeStatus
 workflowSchedulerClaimNext
+executorLeaseCommand / executorTakeover / runtimeEvents(afterSequence, limit)
+
+Flutter -> ianvs-acpd
+TaskInbox commands and current revisioned projection
+runtime event cursor queries
+Workflow Definition / Workflow Run / Step commands
+structured Agent result submission
+plan proposal / activation / usage accounting
 
 Rust -> Dart
 sessionUpdate / sessionCatalog / authenticationChanged
@@ -122,17 +135,62 @@ unchanged. Crash recovery rewrites normalized state and the complete current
 TaskInbox projection in the same transaction.
 
 The Core scheduler registry records per-agent availability, capability, and
-concurrency observations. Its typed `claim_next` operation atomically chooses a
+concurrency observations. Expiring host reservations are supplied before a
+claim. Its typed `claim_next` operation atomically chooses a
 queued task by priority and creation order, enforces retry readiness, global and
 per-agent quotas, runtime availability, exclusions, and canonical workspace
 leases, then commits the dispatched Run, dispatch event, complete TaskInbox
-projection, and SQLite revision together. A no-op poll does not advance the
-revision and returns the earliest eligible Core-selected `nextWakeAt` retry
-deadline. The host may implement the timer, but does not recompute retry policy.
-On the default Workflow path, the production Flutter scheduler publishes runtime
-observations, consumes this atomic claim and wake deadline, and starts only the
-worker selected by Core. It does not retain a Dart workspace lease or a second
-Task/Run authority.
+projection, executor lease/generation, selected reservation, and SQLite revision
+together. No capacity creates no Run, attempt, event, lease, or revision. A
+no-op poll returns a structured admission reason and the earliest eligible
+Core-selected `nextWakeAt` deadline.
+
+Every executor mutation is fenced by lease id and generation. Start
+acknowledgement, heartbeat, takeover, release, and command idempotency are
+durable. Recovery distinguishes work that was never started from uncertainty
+after session creation, prompt submission, tools, permissions, or possible
+workspace mutation; uncertain work is never silently replayed.
+
+High-volume runtime events are append-only rows with per-Run monotonic sequence
+cursors. Event append is bounded and attributed to lease/generation/command.
+Periodic TaskInbox checkpoints are retained in a bounded window; heartbeat does
+not rewrite the complete projection. Flutter reconnects by revision and event
+sequence.
+
+`ianvs-acpd` owns the database advisory lock, scheduler, capacity reservations,
+Agent processes, executor heartbeats, and background continuity. Its Unix socket
+is deterministic per database, mode 0600, request/response sizes and concurrent
+clients are bounded, and a second daemon cannot own the same database even via a
+different socket. A permission request that cannot be settled headlessly is
+cancelled fail-closed, projected as an ordered permission event, and leaves the
+Run in durable human review without retaining execution capacity. The app
+packages and signs the daemon beside its executable.
+
+## Typed Workflow and coordinator
+
+Workflow Definition versions are immutable. Workflow Runs and Step Runs have
+independent CAS revisions and survive daemon restart. The v1 IR includes
+`agent`, `parallel`, `map`, `reduce`, `condition`, `approval`, `wait`, and
+`checkpoint`; dependencies must be acyclic and fit static node, depth, and
+fan-out limits. Inputs are typed bindings or artifact references. Conditions
+are typed predicates—arbitrary JavaScript never receives runtime authority.
+
+Agent Step results use a bounded JSON Schema subset. Core extracts exactly one
+JSON value, validates type/property/required/item and scalar constraints,
+stores hashes and validation issues, allows at most two correction attempts,
+and persists only a validated typed output. The ordinary completion command
+cannot bypass a Step result schema. Exhaustion becomes explicit human review in
+both Step state and the durable ledgers.
+
+The coordinator uses semantic capability profiles rather than vendor names.
+Every proposal records reason, provenance, and base/new PlanVersion; Rust
+revalidates the entire graph and refuses to remove or rewrite a started Step.
+Task and Progress Ledgers are durable and bounded. `maxPlanNodes`, `maxFanOut`,
+`maxDepth`, `maxReplans`, `maxInvocations`, `maxConcurrentAgents`, token budget,
+and cost budget are mandatory hard limits. Global Agent concurrency and each
+semantic profile's parallelism are checked before a Step starts and again when a
+Run is restored. Handoff/help/abstain and decentralized swarm behavior remain
+unavailable experiments.
 
 Persisted absolute workspace identities may outlive a deleted checkout, so
 startup and legacy migration retain them after canonicalizing the nearest
@@ -162,9 +220,9 @@ agent and its tool runtime own whether an action has external side effects.
 
 | Area | Status | Evidence / remaining work |
 | --- | --- | --- |
-| Crate separation | Implemented | `rust/crates/ianvs-acp-core` and `rust/crates/ianvs-acp-ffi`; daemon intentionally absent |
+| Crate separation | Implemented | `ianvs-acp-core`, typed `ianvs-acp-ffi`, and single-owner `ianvs-acpd` |
 | Typed ACP v1 stdio path | Implemented for the stable session slice | Initialize, capability projection, authentication/logout, new/list/load-or-resume/close/delete session, typed MCP configuration, text/media prompt, cancel, permission response, mode/config change, notifications, stderr, and process recovery use the official Rust SDK |
-| Stable FFI + Dart projection | Implemented for ACP, terminal, and Workflow slices | ABI v5 exposes individual ACP functions/events plus typed Workflow, complete TaskInbox, scheduler-registry, and atomic scheduler-claim commands/projections; schema v3 has strict sequence and camelCase field validation plus real Dart -> dylib -> Rust integration tests |
+| Stable host projection | Implemented | ABI v7 covers foreground ACP plus typed Task authority; daemon protocol v1 covers Task/Workflow execution and cursor projections. Strict camelCase decoders and real Dart → daemon/dylib → Rust tests are present |
 | Session state | Implemented for the slice | Rust rejects illegal parallel prompts and owns permission/cancel transitions |
 | Permission lifetime / timeout | Implemented | Configurable timeout, bounded pending map, first-wins invalidation, and late-choice rejection |
 | Backpressure | Implemented at host queues | Bounded command and event queues; event production blocks instead of growing memory without limit |
@@ -181,8 +239,13 @@ agent and its tool runtime own whether an action has external side effects.
 | ACP filesystem provider | Implemented on the Rust default path | Configured typed `fs/read_text_file` and `fs/write_text_file` reverse requests are session-scoped, bounded, and use the generic permission flow. Reads verify device/inode/size; writes use create-new temporary files and atomic replacement inside canonical roots |
 | MCP session setup | Implemented for stable transports | Product DTOs for stdio, HTTP, and SSE are bounded and converted to typed SDK values for session new/load/resume; peer HTTP/SSE support is validated. Unstable MCP-over-ACP remains unavailable |
 | Session fork | Pending in Rust | Fork remains feature-gated unstable in the official Rust schema and is not exposed by the production client |
-| Scheduler / worker / runtime registry | Default production cutover implemented | The Rust repository adapter supplies the authoritative projection; Flutter publishes runtime observations and delegates priority/retry/runtime-quota/workspace admission plus dispatch to the ABI v5 atomic claim, then runs the selected worker |
-| SQLite persistence and crash recovery | Durable Workflow and ACP session recovery | Workflow uses WAL/FULL, strict v1→v5 migration, revision CAS and complete projection commits. A separate `NOFOLLOW` session registry persists canonical scopes; bounded process restart reinitializes ACP and load/resumes every registered session before returning Ready |
+| Scheduler / executor ownership | Implemented in daemon | Reservation-before-claim, structured admission, persisted executor generation, ack/heartbeat/takeover, idempotency, and stale-write fencing are Rust-owned |
+| Event store | Implemented | Append-only per-Run events, sequence cursors, bounded replay, periodic checkpoints, and bounded retention |
+| SQLite persistence and crash recovery | Durable Workflow and ACP session recovery | Workflow schema v9 uses WAL/FULL, revision CAS, classified recovery, event/checkpoint tables, immutable Workflow Definitions, and revisioned Workflow Runs. A separate `NOFOLLOW` session registry persists canonical scopes |
+| Headless execution host | Implemented | `ianvs-acpd` retains background execution across Flutter disconnect; database lock and socket E2E prove a single owner and cursor reconnect |
+| Typed Workflow IR | Implemented v1 | Eight initial node kinds, DAG/depth/fan-out validation, durable Plan/Step state, typed inputs, artifacts, retry/permission fields, and budgets |
+| Structured Agent results | Implemented | Bounded exact-one-JSON extraction, strict schema subset, durable validation attempts, at most two corrections, non-bypassable typed output, and explicit review exhaustion |
+| Bounded coordinator | Implemented, opt-in | Semantic profiles, policy-validated proposals, immutable started Steps and provenance, Task/Progress Ledgers, and hard graph/replan/invocation/concurrency/token/cost limits |
 | ACP terminal provider + real PTY | Implemented on the Rust default path | All five typed ACP `terminal/*` reverse requests use bounded, session-owned `portable-pty` handles. Create validates the workspace/cwd, counts live plus approval-pending quotas, and projects attach/output/exit/release events without exposing ACP envelopes |
 | Generic reverse-request admission | Implemented for terminal and filesystem operations | `terminal/create`, filesystem reads, and filesystem writes remain pending until the selected permission policy settles them. Rust retains workspace, quota, operation-identity, timeout, cancellation, and connection-loss checks; outbound classification and network isolation are intentionally outside the ACP client |
 | Automatic agent restart/session recovery | Implemented for recoverable sessions | Rust retries bounded failures with exponential delay, invalidates in-flight work/permissions, reinitializes the process, and load/resumes SQLite-registered sessions before Ready. Recovery fails closed when the peer cannot restore sessions |
@@ -195,8 +258,8 @@ Run a macOS development build against the default Rust stdio client:
 flutter run -d macos
 ```
 
-Xcode builds `ianvs-acp-ffi` and embeds
-`libianvs_acp_ffi.dylib` in the app Frameworks directory. For the Rust tests,
+Xcode builds `ianvs-acp-ffi` and `ianvs-acpd`, embeds the dylib in Frameworks,
+and places the signed daemon beside the app executable. For the Rust tests,
 native ABI tests, and real FFI fixture chain:
 
 ```sh
@@ -213,22 +276,19 @@ The task-dispatch and background-execution contract is specified in
 Its product-facing state language, information architecture, and staged user
 experience are specified in
 [Task dispatch product experience](superpowers/specs/2026-07-21-task-dispatch-product-experience.md).
-Its P0/P1 correctness and recovery gates must be met before adding automatic
-trigger volume or moving authority into a background process.
+Its P0/P1 correctness and recovery gates are implemented in the Rust-owned
+background host. Automatic trigger volume remains gated on operational evidence
+from that path rather than introducing another execution authority.
 
-1. Split execution capacity from workspace leases, add structured scheduler
-   admission results, and make local capacity reservation precede atomic claim.
-2. Add fenced executor ownership leases, start acknowledgement, heartbeat,
-   idempotent terminal writes, and orphan recovery to the Rust Workflow authority.
-3. Keep git push, pull-request creation, and uploads in the agent/tool layer;
+1. Keep git push, pull-request creation, and uploads in the agent/tool layer;
    surface their progress and results through ordinary task and permission events.
-4. Implement Rust remote ACP transports while keeping unsupported configurations
+2. Implement Rust remote ACP transports while keeping unsupported configurations
    fail-closed.
-5. Evaluate unstable fork and MCP-over-ACP separately without exposing raw ACP
+3. Evaluate unstable fork and MCP-over-ACP separately without exposing raw ACP
    payloads through FFI.
-6. Add `ianvs-acpd` as the single execution host for headless/background
-   continuity. It must consume the same Rust command/event model; once enabled,
-   Flutter becomes an IPC UI client and cannot retain a second dispatcher.
+4. Benchmark opt-in bounded replanning against the static Workflow baseline with
+   model/token/cost normalization before enabling any dynamic organization by
+   default.
 
 ## Flutter boundary modules
 

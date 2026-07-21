@@ -25,11 +25,146 @@ class TaskClaim {
     required this.task,
     required this.run,
     required this.dispatchEvent,
+    this.reservationId,
+    this.executorLease,
   });
 
   final TaskRecord task;
   final TaskRunRecord run;
   final TaskEventRecord dispatchEvent;
+  final String? reservationId;
+  final TaskExecutorLease? executorLease;
+}
+
+enum TaskExecutorLeaseState {
+  claimed,
+  starting,
+  active,
+  expired,
+  released,
+  superseded,
+}
+
+class TaskExecutorLease {
+  const TaskExecutorLease({
+    required this.leaseId,
+    required this.runId,
+    required this.executorId,
+    required this.generation,
+    required this.reservationId,
+    required this.acquiredAt,
+    required this.expiresAt,
+    required this.lastHeartbeatAt,
+    required this.state,
+    this.startAcknowledgedAt,
+    this.releasedAt,
+  });
+
+  final String leaseId;
+  final String runId;
+  final String executorId;
+  final int generation;
+  final String reservationId;
+  final DateTime acquiredAt;
+  final DateTime expiresAt;
+  final DateTime lastHeartbeatAt;
+  final DateTime? startAcknowledgedAt;
+  final DateTime? releasedAt;
+  final TaskExecutorLeaseState state;
+}
+
+class TaskExecutorCommandContext {
+  const TaskExecutorCommandContext({
+    required this.runId,
+    required this.executorLeaseId,
+    required this.generation,
+    required this.commandId,
+    required this.now,
+  });
+
+  final String runId;
+  final String executorLeaseId;
+  final int generation;
+  final String commandId;
+  final DateTime now;
+}
+
+class TaskStoredRuntimeEvent {
+  const TaskStoredRuntimeEvent({
+    required this.sequence,
+    required this.event,
+    this.executorLeaseId,
+    this.executorGeneration,
+    this.commandId,
+  });
+
+  final int sequence;
+  final TaskEventRecord event;
+  final String? executorLeaseId;
+  final int? executorGeneration;
+  final String? commandId;
+}
+
+class TaskRuntimeEventPage {
+  TaskRuntimeEventPage({
+    required this.runId,
+    required this.afterSequence,
+    required List<TaskStoredRuntimeEvent> events,
+    required this.nextSequence,
+    required this.hasMore,
+  }) : events = List<TaskStoredRuntimeEvent>.unmodifiable(events);
+
+  final String runId;
+  final int afterSequence;
+  final List<TaskStoredRuntimeEvent> events;
+  final int nextSequence;
+  final bool hasMore;
+}
+
+class TaskCapacityReservation {
+  const TaskCapacityReservation({
+    required this.reservationId,
+    required this.agentName,
+    required this.hostInstanceId,
+    required this.createdAt,
+    required this.expiresAt,
+  });
+
+  final String reservationId;
+  final String agentName;
+  final String hostInstanceId;
+  final DateTime createdAt;
+  final DateTime expiresAt;
+}
+
+enum TaskSchedulingAdmissionReason {
+  claimed,
+  queueEmpty,
+  globalCapacity,
+  noExecutorCapacity,
+  agentCapacity,
+  runtimeUnavailable,
+  runtimeStatusStale,
+  workspaceBusy,
+  retryNotReady,
+  noMatchingRuntime,
+  excluded,
+}
+
+class TaskSchedulingAdmission {
+  const TaskSchedulingAdmission({
+    required this.reason,
+    required this.retryable,
+    this.nextWakeAt,
+    this.selectedReservationId,
+    this.blockedTaskIds = const <String>[],
+  });
+
+  final TaskSchedulingAdmissionReason reason;
+  final bool retryable;
+  final DateTime? nextWakeAt;
+  final String? selectedReservationId;
+  final List<String> blockedTaskIds;
 }
 
 class TaskSchedulingPoll {
@@ -37,11 +172,16 @@ class TaskSchedulingPoll {
     required this.repository,
     required this.claim,
     required this.nextWakeAt,
+    this.admission = const TaskSchedulingAdmission(
+      reason: TaskSchedulingAdmissionReason.queueEmpty,
+      retryable: false,
+    ),
   });
 
   final TaskRepositorySnapshot repository;
   final TaskClaim? claim;
   final DateTime? nextWakeAt;
+  final TaskSchedulingAdmission admission;
 }
 
 class TaskDeleteExpectation {
@@ -190,6 +330,7 @@ abstract class TaskRepository {
   Future<TaskRecord> updateTask(
     TaskRecord task, {
     required TaskRecord expected,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> deleteTask(
@@ -214,11 +355,13 @@ abstract class TaskRepository {
     TaskRunRecord run, {
     required TaskRunRecord expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> replaceArtifactsForRun({
@@ -227,18 +370,21 @@ abstract class TaskRepository {
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> updateArtifacts({
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> upsertApproval(
     ApprovalRequestRecord approval, {
     ApprovalRequestRecord? expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   });
 
   Future<void> upsertResource(
@@ -277,8 +423,41 @@ abstract interface class AtomicTaskSchedulingRepository {
   Future<TaskSchedulingPoll> claimNextTask({
     required String runId,
     required String dispatchEventId,
+    required String executorLeaseId,
+    required String executorId,
+    required String commandId,
     required DateTime now,
+    required DateTime leaseExpiresAt,
     Set<String> excludedTaskIds = const <String>{},
+    List<TaskCapacityReservation> capacityReservations =
+        const <TaskCapacityReservation>[],
+  });
+}
+
+abstract interface class ExecutorLeaseTaskRepository {
+  Future<TaskExecutorLease?> executorLeaseForRun(String runId);
+
+  Future<TaskExecutorLease> acknowledgeExecutorStart({
+    required TaskExecutorCommandContext context,
+    required DateTime nextExpiresAt,
+  });
+
+  Future<TaskExecutorLease> heartbeatExecutor({
+    required TaskExecutorCommandContext context,
+    required DateTime nextExpiresAt,
+  });
+
+  Future<TaskExecutorLease> releaseExecutor({
+    required TaskExecutorCommandContext context,
+    bool cancelled = false,
+  });
+}
+
+abstract interface class RuntimeEventTaskRepository {
+  Future<TaskRuntimeEventPage> runtimeEvents({
+    required String runId,
+    required int afterSequence,
+    int limit = 200,
   });
 }
 

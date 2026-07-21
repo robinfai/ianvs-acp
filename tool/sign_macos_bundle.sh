@@ -61,6 +61,7 @@ sign_nested_root() {
 }
 
 sign_nested_root "${app}/Contents/Frameworks"
+sign_nested_root "${app}/Contents/MacOS"
 sign_nested_root "${app}/Contents/PlugIns"
 sign_nested_root "${app}/Contents/XPCServices"
 sign_nested_root "${app}/Contents/Helpers"

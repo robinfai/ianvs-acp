@@ -340,6 +340,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     connection.spawn({
                         let connection = connection.clone();
                         async move {
+                            if std::env::var("IANVS_FIXTURE_SKIP_PERMISSION").as_deref() == Ok("1")
+                            {
+                                connection.send_notification(SessionNotification::new(
+                                    session_id,
+                                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                        ContentBlock::Text(TextContent::new(
+                                            "headless fixture complete".to_string(),
+                                        )),
+                                    )),
+                                ))?;
+                                return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                            }
                             let tool_call = ToolCallUpdate::new(
                                 "fixture-tool",
                                 ToolCallUpdateFields::new()

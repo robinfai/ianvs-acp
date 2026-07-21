@@ -81,7 +81,7 @@ pub enum RuntimeError {
 
 #[derive(Debug)]
 enum RuntimeCommand {
-    StartAgent(AgentLaunchConfig),
+    StartAgent(Box<AgentLaunchConfig>),
     CreateSession {
         request_id: String,
         cwd: String,
@@ -424,7 +424,7 @@ impl RuntimeHandle {
     }
 
     pub fn start_agent(&self, config: AgentLaunchConfig) -> Result<(), RuntimeError> {
-        self.send(RuntimeCommand::StartAgent(config))
+        self.send(RuntimeCommand::StartAgent(Box::new(config)))
     }
 
     pub fn create_session(

@@ -12,7 +12,7 @@ void main() {
 
     final opened = workflow.open('/tmp/workflow.sqlite3');
     expect(opened.revision, 0);
-    expect(opened.recoveredFailedTaskIds, isEmpty);
+    expect(opened.recovery?.runs, isEmpty);
 
     final projection = workflow.apply(
       IanvsWorkflowCommand.createTask(
@@ -162,6 +162,7 @@ void main() {
     workflow.configureScheduler(maxConcurrentTasks: 2);
     expect(native.lastSchedulerConfig, <String, Object?>{
       'maxConcurrentTasks': 2,
+      'runtimeStatusFreshnessSeconds': 30,
     });
     final observedAt = DateTime.utc(2026, 7, 17, 11);
     workflow.setSchedulerRuntimeStatus(
@@ -184,7 +185,11 @@ void main() {
     final claim = workflow.schedulerClaimNext(
       runId: 'run-1',
       dispatchEventId: 'event-1',
+      executorLeaseId: 'lease-1',
+      executorId: 'test-host',
+      commandId: 'command-1',
       now: observedAt,
+      leaseExpiresAt: observedAt.add(const Duration(minutes: 1)),
       excludedTaskIds: const <String>['task-deferred'],
     );
     expect(claim.claim, isNull);
@@ -193,9 +198,17 @@ void main() {
     expect(native.lastClaimRequest, <String, Object?>{
       'runId': 'run-1',
       'dispatchEventId': 'event-1',
+      'executorLeaseId': 'lease-1',
+      'executorId': 'test-host',
+      'commandId': 'command-1',
       'now': observedAt.toIso8601String(),
+      'leaseExpiresAt': observedAt
+          .add(const Duration(minutes: 1))
+          .toIso8601String(),
       'excludedTaskIds': <String>['task-deferred'],
+      'capacityReservations': <Object?>[],
     });
+    expect(claim.admission.reason, IanvsSchedulerAdmissionReason.retryNotReady);
   });
 }
 
@@ -219,7 +232,7 @@ final class _FakeWorkflowNative implements IanvsWorkflowNativeApi {
   String _migrationPhase = 'native';
 
   @override
-  int get ffiVersion => 5;
+  int get ffiVersion => 7;
 
   @override
   Object createWorkflow() => handle;
@@ -311,6 +324,17 @@ final class _FakeWorkflowNative implements IanvsWorkflowNativeApi {
   }
 
   @override
+  String? applyTaskInboxAsExecutor(
+    Object workflow,
+    Map<String, Object?> request,
+  ) {
+    return applyTaskInbox(
+      workflow,
+      Map<String, Object?>.from(request['command']! as Map),
+    );
+  }
+
+  @override
   String? configureScheduler(Object workflow, Map<String, Object?> config) {
     lastSchedulerConfig = Map<String, Object?>.from(config);
     return _projection();
@@ -333,7 +357,39 @@ final class _FakeWorkflowNative implements IanvsWorkflowNativeApi {
       'taskInbox': _taskInboxCurrent ?? _emptyTaskInbox(),
       'claim': null,
       'nextWakeAt': DateTime.utc(2026, 7, 17, 11, 5).toIso8601String(),
+      'admission': <String, Object?>{
+        'reason': 'retry_not_ready',
+        'retryable': true,
+        'nextWakeAt': DateTime.utc(2026, 7, 17, 11, 5).toIso8601String(),
+        'blockedTaskIds': <String>['task-deferred'],
+      },
     });
+  }
+
+  @override
+  String? executorLeaseForRun(Object workflow, String runId) {
+    return jsonEncode(<String, Object?>{'lease': null});
+  }
+
+  @override
+  String? runtimeEvents(
+    Object workflow,
+    String runId,
+    int afterSequence,
+    int limit,
+  ) {
+    return jsonEncode(<String, Object?>{
+      'runId': runId,
+      'afterSequence': afterSequence,
+      'events': <Object?>[],
+      'nextSequence': afterSequence,
+      'hasMore': false,
+    });
+  }
+
+  @override
+  String? executorLeaseCommand(Object workflow, Map<String, Object?> command) {
+    return null;
   }
 
   @override
@@ -367,7 +423,10 @@ final class _FakeWorkflowNative implements IanvsWorkflowNativeApi {
       },
       'snapshot': <String, Object?>{'tasks': _tasks, 'runs': const <Object?>[]},
       if (recovery)
-        'recovery': const <String, Object?>{'failedTaskIds': <String>[]},
+        'recovery': const <String, Object?>{
+          'detectedAt': '2026-07-21T00:00:00.000Z',
+          'runs': <Object?>[],
+        },
       'normalizedHistoricalTaskIds': ?normalizedHistoricalTaskIds,
     });
   }

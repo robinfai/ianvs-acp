@@ -14,7 +14,9 @@ import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
 import 'acp/unavailable_acp_agent_client.dart';
+import 'rust/ianvs_daemon_workflow.dart';
 import 'rust/ianvs_rust_task_repository.dart';
+import 'rust/ianvs_workflow_native.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
@@ -60,6 +62,8 @@ typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef SessionWindowOpener = Future<void> Function(List<String> args);
 typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
+typedef TaskDaemonAuthorityFactory =
+    Future<IanvsWorkflowAuthority> Function(String databasePath);
 
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
@@ -106,6 +110,42 @@ Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
   };
 }
 
+List<Map<String, Object?>> _daemonAgentConfigurations(AcpClientConfig config) {
+  if (config.mcpServers.any((server) => server.type == 'acp')) {
+    return const <Map<String, Object?>>[];
+  }
+  final mcpServers = config.mcpServers
+      .map(_rustMcpServerProjection)
+      .toList(growable: false);
+  final sessionStorePath = _rustAcpSessionDatabasePath(config.configPath);
+  return <Map<String, Object?>>[
+    for (final server in config.selectableAgentServers)
+      if (server.isStdio && server.secretRefsResolved)
+        <String, Object?>{
+          'agentName': server.name,
+          'command': server.command,
+          'args': server.args,
+          'environment': server.env,
+          'processCwd': server.cwd,
+          'sessionStorePath': sessionStorePath,
+          'additionalDirectories': config.additionalDirectories,
+          'mcpServers': mcpServers,
+          'enableTerminalProvider': config.clientProviders.terminal.enabled,
+          'enableFilesystemReadTextFile':
+              config.clientProviders.filesystem.readTextFile,
+          'enableFilesystemWriteTextFile':
+              config.clientProviders.filesystem.writeTextFile,
+        },
+  ];
+}
+
+Future<IanvsWorkflowAuthority> _startTaskDaemon(String databasePath) async {
+  final socketPath = await IanvsDaemonProcess.ensureRunning(
+    databasePath: databasePath,
+  );
+  return IanvsDaemonWorkflow(socketPath: socketPath);
+}
+
 class _PendingDeepLinkRequest {
   const _PendingDeepLinkRequest({required this.key, required this.request});
 
@@ -134,6 +174,7 @@ class AcpClientApp extends StatefulWidget {
     this.taskInboxMaintenanceInterval = const Duration(hours: 1),
     this.createAgentClient,
     this.createTaskAgentClient,
+    this.createTaskDaemonAuthority,
     this.agentClientFactoryKey,
     this.taskAgentClientFactoryKey,
     this.workspaceStateStore,
@@ -163,6 +204,7 @@ class AcpClientApp extends StatefulWidget {
   final Duration taskInboxMaintenanceInterval;
   final AcpAgentClientFactory? createAgentClient;
   final AcpAgentClientFactory? createTaskAgentClient;
+  final TaskDaemonAuthorityFactory? createTaskDaemonAuthority;
 
   /// Change this key when [createAgentClient] changes behavior. Keep it stable
   /// across ordinary widget rebuilds.
@@ -213,6 +255,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       HashSet<ArchivedSessionSnapshot>.identity();
   TaskInboxController? _taskInboxController;
   TaskScheduler? _taskScheduler;
+  bool _taskExecutionHostedByDaemon = false;
   String? _selectedTaskId;
   bool _ownsTaskInboxController = false;
   String? _taskInboxStorePath;
@@ -615,15 +658,22 @@ class _AcpClientAppState extends State<AcpClientApp>
               .convert(utf8.encode(canonicalJson(bootstrap.toJson())))
               .toString();
       await migrationRepository.close();
+      final authority =
+          await (widget.createTaskDaemonAuthority ?? _startTaskDaemon)(
+            rustPath,
+          );
       repository = IanvsRustTaskRepository(
         databasePath: rustPath,
         bootstrapSnapshot: bootstrap,
         sourceChecksum: checksum,
+        authority: authority,
       );
       await repository.initialize();
+      if (authority is IanvsDaemonWorkflow) {
+        await authority.configureAgents(_daemonAgentConfigurations(_config));
+      }
       controller = TaskInboxController(repository: repository);
-      scheduler = _createTaskScheduler(controller);
-      await scheduler.start(dispatchQueuedTasks: false);
+      await controller.load();
       if (!mounted || serial != _taskInboxInitializationSerial) {
         final cleanup = _startTaskPersistenceCleanup(
           scheduler: scheduler,
@@ -644,10 +694,10 @@ class _AcpClientAppState extends State<AcpClientApp>
       _ownedTaskRepositoryPath = authorityPath;
       _taskInboxController = controller;
       _ownsTaskInboxController = true;
-      _taskScheduler = scheduler;
+      _taskScheduler = null;
+      _taskExecutionHostedByDaemon = true;
       _startTaskInboxRefresh(controller);
       _startTaskInboxMaintenance(controller);
-      scheduler.startDispatching();
       setState(() {});
     } on Object catch (error) {
       var reportedError = error;
@@ -724,6 +774,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     final scheduler = _taskScheduler;
     scheduler?.stop();
     _taskScheduler = null;
+    _taskExecutionHostedByDaemon = false;
     final controller = _ownsTaskInboxController ? _taskInboxController : null;
     _taskInboxController = null;
     final repository = _ownedTaskRepository;
@@ -1357,6 +1408,22 @@ class _AcpClientAppState extends State<AcpClientApp>
         await scheduler.enqueueTask(task.id);
       } on TaskPersistenceStalledException catch (error) {
         scheduler.handlePersistenceFault(error);
+        if (mounted) {
+          _taskInboxInitializationError = _taskInboxErrorMessage(error);
+        }
+      }
+      if (mounted) setState(() {});
+      return;
+    }
+    if (_taskExecutionHostedByDaemon) {
+      try {
+        await taskController.updateTask(
+          task.id,
+          status: TaskStatus.queued,
+          summary: 'Queued for daemon agent run.',
+          error: null,
+        );
+      } on TaskPersistenceStalledException catch (error) {
         if (mounted) {
           _taskInboxInitializationError = _taskInboxErrorMessage(error);
         }

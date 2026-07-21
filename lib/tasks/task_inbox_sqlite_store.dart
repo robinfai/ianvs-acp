@@ -230,6 +230,7 @@ class TaskInboxSqliteStore
   Future<TaskRecord> updateTask(
     TaskRecord task, {
     required TaskRecord expected,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (task.id != expected.id || task.createdAt != expected.createdAt) {
       throw ArgumentError('Updated task must keep its identity.');
@@ -461,6 +462,7 @@ class TaskInboxSqliteStore
     TaskRunRecord run, {
     required TaskRunRecord expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (run.id != expected.id ||
         run.taskId != expected.taskId ||
@@ -486,6 +488,7 @@ class TaskInboxSqliteStore
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (events.isEmpty) return;
     await initialize();
@@ -504,6 +507,7 @@ class TaskInboxSqliteStore
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     await initialize();
     _writeTransaction<void>((database) {
@@ -538,6 +542,7 @@ class TaskInboxSqliteStore
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (expectedArtifacts.isEmpty && artifacts.isEmpty) return;
     if (expectedArtifacts.length != artifacts.length) {
@@ -581,6 +586,7 @@ class TaskInboxSqliteStore
     ApprovalRequestRecord approval, {
     ApprovalRequestRecord? expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     await initialize();
     _writeTransaction<void>((database) {

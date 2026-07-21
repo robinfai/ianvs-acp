@@ -491,11 +491,32 @@ impl WorkflowStateMachine {
         self.leases.len()
     }
 
+    /// Count Runs that still consume executor capacity. Workspace mutation
+    /// leases intentionally outlive executor capacity while a Run waits for
+    /// human review.
+    #[must_use]
+    pub fn active_execution_count(&self) -> usize {
+        self.runs
+            .values()
+            .filter(|run| run_consumes_execution_capacity(run.status))
+            .count()
+    }
+
     #[must_use]
     pub fn active_run_count_for_agent(&self, agent_name: &str) -> usize {
         self.leases
             .keys()
             .filter_map(|run_id| self.runs.get(run_id))
+            .filter_map(|run| self.tasks.get(&run.task_id))
+            .filter(|task| task.agent_name == agent_name)
+            .count()
+    }
+
+    #[must_use]
+    pub fn active_execution_count_for_agent(&self, agent_name: &str) -> usize {
+        self.runs
+            .values()
+            .filter(|run| run_consumes_execution_capacity(run.status))
             .filter_map(|run| self.tasks.get(&run.task_id))
             .filter(|task| task.agent_name == agent_name)
             .count()
@@ -577,6 +598,16 @@ const fn run_requires_lease(status: RunStatus) -> bool {
             | RunStatus::WaitingUserInput
             | RunStatus::CollectingArtifacts
             | RunStatus::NeedsHumanReview
+    )
+}
+
+const fn run_consumes_execution_capacity(status: RunStatus) -> bool {
+    matches!(
+        status,
+        RunStatus::Dispatched
+            | RunStatus::Running
+            | RunStatus::WaitingPermission
+            | RunStatus::CollectingArtifacts
     )
 }
 

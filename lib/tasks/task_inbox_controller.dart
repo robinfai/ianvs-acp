@@ -67,6 +67,8 @@ class TaskInboxController extends ChangeNotifier {
   int _idCounter = 0;
   int _persistenceGeneration = 0;
   TaskPersistenceStalledException? _persistenceFault;
+  final Map<String, TaskExecutorLease> _executorLeasesByRunId =
+      <String, TaskExecutorLease>{};
   final Set<Future<void>> _repositoryOperations = <Future<void>>{};
   Completer<void>? _persistenceQuiesced;
 
@@ -401,7 +403,11 @@ class TaskInboxController extends ChangeNotifier {
   }
 
   Future<TaskSchedulingPoll> claimNextScheduledTask({
+    required String executorId,
+    required DateTime leaseExpiresAt,
     Set<String> excludedTaskIds = const <String>{},
+    List<TaskCapacityReservation> capacityReservations =
+        const <TaskCapacityReservation>[],
   }) async {
     if (!_loaded) await load();
     final target = repository;
@@ -417,15 +423,141 @@ class TaskInboxController extends ChangeNotifier {
         () => scheduling.claimNextTask(
           runId: _newId('run'),
           dispatchEventId: _newId('event'),
+          executorLeaseId: _newId('executor-lease'),
+          executorId: executorId,
+          commandId: _newId('command'),
           now: _clock(),
+          leaseExpiresAt: leaseExpiresAt,
           excludedTaskIds: excludedTaskIds,
+          capacityReservations: capacityReservations,
         ),
       );
       _snapshot = poll.repository.snapshot;
       _revision = poll.repository.revision;
+      final executorLease = poll.claim?.executorLease;
+      if (executorLease != null) {
+        _executorLeasesByRunId[executorLease.runId] = executorLease;
+      }
       notifyListeners();
       return poll;
     });
+  }
+
+  TaskExecutorLease? executorLeaseForRun(String runId) =>
+      _executorLeasesByRunId[runId];
+
+  Future<TaskRuntimeEventPage> runtimeEvents({
+    required String runId,
+    required int afterSequence,
+    int limit = 200,
+  }) async {
+    if (!_loaded) await load();
+    final target = repository;
+    if (target is! RuntimeEventTaskRepository) {
+      throw UnsupportedError(
+        'This task repository does not provide sequenced runtime events.',
+      );
+    }
+    final eventRepository = target as RuntimeEventTaskRepository;
+    return _awaitRepository(
+      'runtimeEvents',
+      () => eventRepository.runtimeEvents(
+        runId: runId,
+        afterSequence: afterSequence,
+        limit: limit,
+      ),
+    );
+  }
+
+  Future<TaskExecutorLease> acknowledgeExecutorStart(
+    String runId, {
+    required DateTime nextExpiresAt,
+  }) {
+    return _applyExecutorLeaseCommand(
+      runId,
+      operation: 'acknowledgeExecutorStart',
+      nextExpiresAt: nextExpiresAt,
+      invoke: (repository, context) => repository.acknowledgeExecutorStart(
+        context: context,
+        nextExpiresAt: nextExpiresAt,
+      ),
+    );
+  }
+
+  Future<TaskExecutorLease> heartbeatExecutor(
+    String runId, {
+    required DateTime nextExpiresAt,
+  }) {
+    return _applyExecutorLeaseCommand(
+      runId,
+      operation: 'heartbeatExecutor',
+      nextExpiresAt: nextExpiresAt,
+      invoke: (repository, context) => repository.heartbeatExecutor(
+        context: context,
+        nextExpiresAt: nextExpiresAt,
+      ),
+    );
+  }
+
+  Future<TaskExecutorLease> releaseExecutor(
+    String runId, {
+    bool cancelled = false,
+  }) {
+    return _applyExecutorLeaseCommand(
+      runId,
+      operation: 'releaseExecutor',
+      invoke: (repository, context) =>
+          repository.releaseExecutor(context: context, cancelled: cancelled),
+    );
+  }
+
+  Future<TaskExecutorLease> _applyExecutorLeaseCommand(
+    String runId, {
+    required String operation,
+    DateTime? nextExpiresAt,
+    required Future<TaskExecutorLease> Function(
+      ExecutorLeaseTaskRepository repository,
+      TaskExecutorCommandContext context,
+    )
+    invoke,
+  }) async {
+    if (!_loaded) await load();
+    final target = repository;
+    if (target is! ExecutorLeaseTaskRepository) {
+      throw UnsupportedError(
+        'This task repository does not provide executor ownership.',
+      );
+    }
+    final executorRepository = target as ExecutorLeaseTaskRepository;
+    var lease = _executorLeasesByRunId[runId];
+    lease ??= await _awaitRepository(
+      'executorLeaseForRun',
+      () => executorRepository.executorLeaseForRun(runId),
+    );
+    if (lease == null) throw StateError('Executor lease not found: $runId');
+    final now = _clock();
+    if (nextExpiresAt != null && !now.isBefore(nextExpiresAt)) {
+      throw ArgumentError.value(
+        nextExpiresAt,
+        'nextExpiresAt',
+        'must be in the future',
+      );
+    }
+    final context = TaskExecutorCommandContext(
+      runId: runId,
+      executorLeaseId: lease.leaseId,
+      generation: lease.generation,
+      commandId: _newId('command'),
+      now: now,
+    );
+    final updated = await _withStateTransition(
+      () => _awaitRepository(
+        operation,
+        () => invoke(executorRepository, context),
+      ),
+    );
+    _executorLeasesByRunId[runId] = updated;
+    return updated;
   }
 
   Future<TaskRunRecord> updateRun(
@@ -523,6 +655,7 @@ class TaskInboxController extends ChangeNotifier {
           expectedArtifacts: expectedArtifacts,
           artifacts: sanitizedArtifacts,
           updatedAt: now,
+          executorContext: _newExecutorMutationContext(runId),
         ),
       );
       final retained = _snapshot.artifacts
@@ -612,6 +745,7 @@ class TaskInboxController extends ChangeNotifier {
           expectedArtifacts: previousArtifacts,
           artifacts: updatedRunArtifacts,
           updatedAt: now,
+          executorContext: _newExecutorMutationContext(runId),
         ),
       );
       final merged =
@@ -687,6 +821,11 @@ class TaskInboxController extends ChangeNotifier {
           expectedArtifacts: expectedArtifacts,
           artifacts: changed,
           updatedAt: now,
+          executorContext: _newExecutorMutationContext(
+            artifacts.map((artifact) => artifact.runId).toSet().length == 1
+                ? artifacts.first.runId
+                : null,
+          ),
         ),
       );
       final changedById = <String, ArtifactRecord>{
@@ -896,6 +1035,7 @@ class TaskInboxController extends ChangeNotifier {
           resolved,
           expected: existing,
           updatedAt: now,
+          executorContext: _newExecutorMutationContext(existing.runId),
         ),
       );
       final approvals = [..._snapshot.approvals];
@@ -1183,6 +1323,24 @@ class TaskInboxController extends ChangeNotifier {
     throw StateError('Could not generate a unique task id.');
   }
 
+  TaskExecutorCommandContext? _newExecutorMutationContext(String? runId) {
+    if (runId == null) return null;
+    final lease = _executorLeasesByRunId[runId];
+    if (lease == null ||
+        lease.state == TaskExecutorLeaseState.expired ||
+        lease.state == TaskExecutorLeaseState.released ||
+        lease.state == TaskExecutorLeaseState.superseded) {
+      return null;
+    }
+    return TaskExecutorCommandContext(
+      runId: runId,
+      executorLeaseId: lease.leaseId,
+      generation: lease.generation,
+      commandId: _newId('command'),
+      now: _clock(),
+    );
+  }
+
   bool _recordIdExists(String id) {
     if (taskById(id) != null) return true;
     return _snapshot.runs.any((run) => run.id == id) ||
@@ -1304,7 +1462,12 @@ class TaskInboxController extends ChangeNotifier {
     );
     final persisted = await _awaitRepository(
       'updateRun',
-      () => repository.updateRun(updated, expected: existing, updatedAt: now),
+      () => repository.updateRun(
+        updated,
+        expected: existing,
+        updatedAt: now,
+        executorContext: _newExecutorMutationContext(existing.id),
+      ),
     );
     if (_adoptAuthoritativeProjection()) {
       notifyListeners();
@@ -1380,7 +1543,13 @@ class TaskInboxController extends ChangeNotifier {
     );
     final persisted = await _awaitRepository(
       'updateTask',
-      () => repository.updateTask(updated, expected: existing),
+      () => repository.updateTask(
+        updated,
+        expected: existing,
+        executorContext: _newExecutorMutationContext(
+          existing.currentRunId ?? updated.currentRunId,
+        ),
+      ),
     );
     if (_adoptAuthoritativeProjection()) {
       notifyListeners();
@@ -1427,7 +1596,11 @@ class TaskInboxController extends ChangeNotifier {
     );
     await _awaitRepository(
       'appendEvents',
-      () => repository.appendEvents(<TaskEventRecord>[event], updatedAt: now),
+      () => repository.appendEvents(
+        <TaskEventRecord>[event],
+        updatedAt: now,
+        executorContext: _newExecutorMutationContext(event.runId),
+      ),
     );
     _snapshot = _snapshot.copyWith(
       events: [..._snapshot.events, event],

@@ -157,7 +157,7 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
   bool freed = false;
 
   @override
-  int get ffiVersion => 5;
+  int get ffiVersion => 7;
 
   @override
   Object createRuntime() => handle;

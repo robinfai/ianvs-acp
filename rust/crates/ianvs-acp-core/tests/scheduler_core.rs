@@ -1,7 +1,8 @@
 use std::fs;
 
 use ianvs_acp_core::{
-    DurableWorkflow, InboxTaskStatus, SchedulerClaimRequest, SchedulerConfig, SchedulerCore,
+    DurableWorkflow, InboxTaskStatus, RecoveryState, SchedulerAdmissionReason,
+    SchedulerCapacityReservation, SchedulerClaimRequest, SchedulerConfig, SchedulerCore,
     SchedulerRuntimeAvailability, SchedulerRuntimeStatus, TaskInboxCommand, TaskInboxRunTransition,
     TaskInboxSnapshot, WorkflowStateMachine,
 };
@@ -35,6 +36,7 @@ fn scheduler_claim_owns_priority_retry_runtime_quota_and_workspace_admission() {
     scheduler
         .configure(SchedulerConfig {
             max_concurrent_tasks: 2,
+            runtime_status_freshness_seconds: 86_400,
         })
         .unwrap();
     scheduler
@@ -77,7 +79,10 @@ fn scheduler_claim_owns_priority_retry_runtime_quota_and_workspace_admission() {
         )
         .unwrap();
     assert!(second.claim.is_none());
-    assert!(second.next_wake_at.is_none());
+    assert_eq!(
+        second.next_wake_at.as_deref(),
+        Some("2026-07-17T12:00:00.000Z")
+    );
     assert_eq!(snapshot.runs.len(), 1);
 
     snapshot
@@ -139,7 +144,14 @@ fn scheduler_poll_returns_earliest_core_retry_wake_without_mutation() {
         .claim_next(
             &mut snapshot,
             &mut workflow,
-            claim("run-unused", "event-unused", "2026-07-17T10:00:00.000"),
+            SchedulerClaimRequest {
+                capacity_reservations: vec![reservation_local("agent-a")],
+                ..claim_without_reservations(
+                    "run-unused",
+                    "event-unused",
+                    "2026-07-17T10:00:00.000",
+                )
+            },
         )
         .unwrap();
     assert!(poll.claim.is_none());
@@ -193,6 +205,19 @@ fn durable_scheduler_noop_does_not_advance_revision_and_claim_is_atomic() {
                 1,
             ))
             .unwrap();
+        let no_capacity = durable
+            .scheduler_claim_next(claim_without_reservations(
+                "run-no-capacity",
+                "event-no-capacity",
+                "2026-07-17T10:00:00.000Z",
+            ))
+            .unwrap();
+        assert!(no_capacity.claim.is_none());
+        assert_eq!(
+            no_capacity.admission.reason,
+            SchedulerAdmissionReason::NoExecutorCapacity
+        );
+        assert_eq!(no_capacity.revision, 3);
         let claimed = durable
             .scheduler_claim_next(claim("run-1", "event-1", "2026-07-17T10:00:00.000Z"))
             .unwrap();
@@ -208,14 +233,183 @@ fn durable_scheduler_noop_does_not_advance_revision_and_claim_is_atomic() {
 
     let reopened = DurableWorkflow::open(&database).unwrap();
     assert_eq!(reopened.open_projection().revision, 5);
+    assert_eq!(reopened.open_projection().recovery.runs.len(), 1);
     assert_eq!(
-        reopened.open_projection().recovery.failed_task_ids,
-        ["task-1"]
+        reopened.open_projection().recovery.runs[0].recovery_state,
+        RecoveryState::Requeued
     );
     let current = reopened.current_task_inbox().unwrap();
+    assert_eq!(current.tasks[0].status, InboxTaskStatus::Queued);
     assert_eq!(current.runs[0].status, InboxTaskStatus::Failed);
     assert_eq!(current.events[0].id, "event-1");
     drop(reopened);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn reservations_are_agent_bound_expiring_and_runtime_freshness_is_core_owned() {
+    let directory = unique_temp_dir("scheduler-reservations");
+    let workspace = directory.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let source: TaskInboxSnapshot = serde_json::from_value(serde_json::json!({
+        "schema": "ianvs-acp.task-inbox.v1",
+        "updated_at": "2026-07-17T10:00:00.000Z",
+        "tasks": [task_json("task-a", "normal", &workspace, "agent-a", "2026-07-17T09:00:00.000Z", None)],
+        "runs": [],
+        "events": [],
+        "artifacts": [],
+        "approvals": [],
+        "resources": []
+    }))
+    .unwrap();
+    let imported = source.workflow_import().unwrap();
+    let mut snapshot = source;
+    let mut workflow = WorkflowStateMachine::restore(imported.snapshot).unwrap();
+    let before_snapshot = snapshot.clone();
+    let before_workflow = workflow.snapshot();
+    let mut scheduler = SchedulerCore::new();
+    scheduler
+        .set_runtime_status(runtime(
+            "agent-a",
+            SchedulerRuntimeAvailability::Available,
+            1,
+        ))
+        .unwrap();
+
+    let mismatched = scheduler
+        .claim_next(
+            &mut snapshot,
+            &mut workflow,
+            SchedulerClaimRequest {
+                capacity_reservations: vec![reservation("agent-b")],
+                ..claim_without_reservations(
+                    "run-mismatch",
+                    "event-mismatch",
+                    "2026-07-17T10:00:00.000Z",
+                )
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        mismatched.admission.reason,
+        SchedulerAdmissionReason::NoExecutorCapacity
+    );
+    assert_eq!(snapshot, before_snapshot);
+    assert_eq!(workflow.snapshot(), before_workflow);
+
+    let expired = scheduler
+        .claim_next(
+            &mut snapshot,
+            &mut workflow,
+            SchedulerClaimRequest {
+                capacity_reservations: vec![SchedulerCapacityReservation {
+                    expires_at: "2026-07-17T09:59:59.999Z".to_string(),
+                    created_at: "2026-07-17T09:00:00.000Z".to_string(),
+                    ..reservation("agent-a")
+                }],
+                ..claim_without_reservations(
+                    "run-expired",
+                    "event-expired",
+                    "2026-07-17T10:00:00.000Z",
+                )
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        expired.admission.reason,
+        SchedulerAdmissionReason::NoExecutorCapacity
+    );
+    assert_eq!(snapshot, before_snapshot);
+
+    let stale = scheduler
+        .claim_next(
+            &mut snapshot,
+            &mut workflow,
+            claim("run-stale", "event-stale", "2026-07-17T10:01:00.000Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        stale.admission.reason,
+        SchedulerAdmissionReason::RuntimeStatusStale
+    );
+    assert_eq!(snapshot, before_snapshot);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn human_review_releases_execution_capacity_but_keeps_workspace_lease() {
+    let directory = unique_temp_dir("scheduler-review-capacity");
+    let first_workspace = directory.join("first");
+    let second_workspace = directory.join("second");
+    fs::create_dir(&first_workspace).unwrap();
+    fs::create_dir(&second_workspace).unwrap();
+    let mut snapshot: TaskInboxSnapshot = serde_json::from_value(serde_json::json!({
+        "schema": "ianvs-acp.task-inbox.v1",
+        "updated_at": "2026-07-17T10:00:00.000Z",
+        "tasks": [
+            task_json("first", "high", &first_workspace, "agent-a", "2026-07-17T09:00:00.000Z", None),
+            task_json("second", "normal", &second_workspace, "agent-b", "2026-07-17T09:01:00.000Z", None)
+        ],
+        "runs": [],
+        "events": [],
+        "artifacts": [],
+        "approvals": [],
+        "resources": []
+    }))
+    .unwrap();
+    let imported = snapshot.workflow_import().unwrap();
+    let mut workflow = WorkflowStateMachine::restore(imported.snapshot).unwrap();
+    let mut scheduler = SchedulerCore::new();
+    scheduler
+        .configure(SchedulerConfig {
+            max_concurrent_tasks: 1,
+            runtime_status_freshness_seconds: 3_600,
+        })
+        .unwrap();
+    for agent in ["agent-a", "agent-b"] {
+        scheduler
+            .set_runtime_status(runtime(agent, SchedulerRuntimeAvailability::Available, 1))
+            .unwrap();
+    }
+    let first = scheduler
+        .claim_next(
+            &mut snapshot,
+            &mut workflow,
+            claim("run-first", "event-first", "2026-07-17T10:00:00.000Z"),
+        )
+        .unwrap()
+        .claim
+        .unwrap();
+    for transition in [
+        TaskInboxRunTransition::Start,
+        TaskInboxRunTransition::CollectArtifacts,
+        TaskInboxRunTransition::RequireHumanReview,
+    ] {
+        snapshot
+            .apply_command(
+                &mut workflow,
+                TaskInboxCommand::TransitionRun {
+                    run_id: first.run_id.clone(),
+                    transition,
+                    updated_at: "2026-07-17T10:01:00.000Z".to_string(),
+                    ended_at: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(workflow.active_execution_count(), 0);
+    assert_eq!(workflow.active_run_count(), 1);
+    let second = scheduler
+        .claim_next(
+            &mut snapshot,
+            &mut workflow,
+            claim("run-second", "event-second", "2026-07-17T10:02:00.000Z"),
+        )
+        .unwrap()
+        .claim
+        .unwrap();
+    assert_eq!(second.task_id, "second");
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -264,8 +458,55 @@ fn claim(run_id: &str, event_id: &str, now: &str) -> SchedulerClaimRequest {
     SchedulerClaimRequest {
         run_id: run_id.to_string(),
         dispatch_event_id: event_id.to_string(),
+        executor_lease_id: format!("lease-{run_id}"),
+        executor_id: "test-executor".to_string(),
+        command_id: format!("command-{run_id}"),
         now: now.to_string(),
+        lease_expires_at: if now.ends_with('Z') {
+            "2026-07-18T00:00:00.000Z".to_string()
+        } else {
+            "2026-07-18T00:00:00.000".to_string()
+        },
         excluded_task_ids: Vec::new(),
+        capacity_reservations: vec![reservation("agent-a"), reservation("agent-b")],
+    }
+}
+
+fn claim_without_reservations(run_id: &str, event_id: &str, now: &str) -> SchedulerClaimRequest {
+    SchedulerClaimRequest {
+        run_id: run_id.to_string(),
+        dispatch_event_id: event_id.to_string(),
+        executor_lease_id: format!("lease-{run_id}"),
+        executor_id: "test-executor".to_string(),
+        command_id: format!("command-{run_id}"),
+        now: now.to_string(),
+        lease_expires_at: if now.ends_with('Z') {
+            "2026-07-18T00:00:00.000Z".to_string()
+        } else {
+            "2026-07-18T00:00:00.000".to_string()
+        },
+        excluded_task_ids: Vec::new(),
+        capacity_reservations: Vec::new(),
+    }
+}
+
+fn reservation(agent_name: &str) -> SchedulerCapacityReservation {
+    SchedulerCapacityReservation {
+        reservation_id: format!("reservation-{agent_name}"),
+        agent_name: agent_name.to_string(),
+        host_instance_id: "test-host".to_string(),
+        created_at: "2026-07-17T09:59:59.000Z".to_string(),
+        expires_at: "2026-07-18T00:00:00.000Z".to_string(),
+    }
+}
+
+fn reservation_local(agent_name: &str) -> SchedulerCapacityReservation {
+    SchedulerCapacityReservation {
+        reservation_id: format!("reservation-local-{agent_name}"),
+        agent_name: agent_name.to_string(),
+        host_instance_id: "test-host".to_string(),
+        created_at: "2026-07-17T09:59:59.000".to_string(),
+        expires_at: "2026-07-18T00:00:00.000".to_string(),
     }
 }
 

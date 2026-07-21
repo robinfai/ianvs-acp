@@ -17,7 +17,9 @@ final class IanvsRustTaskRepository
     implements
         TaskRepository,
         AuthoritativeTaskRepositoryProjection,
-        AtomicTaskSchedulingRepository {
+        AtomicTaskSchedulingRepository,
+        ExecutorLeaseTaskRepository,
+        RuntimeEventTaskRepository {
   IanvsRustTaskRepository({
     required this.databasePath,
     required this.bootstrapSnapshot,
@@ -59,25 +61,25 @@ final class IanvsRustTaskRepository
     return _initializeFuture ??= Future<void>.sync(_initializeOnce);
   }
 
-  void _initializeOnce() {
-    final opened = _authority.open(databasePath);
+  Future<void> _initializeOnce() async {
+    final opened = await _authority.open(databasePath);
     switch (opened.migration.phase) {
       case IanvsWorkflowMigrationPhase.native:
-        _authority.stageTaskInbox(
+        await _authority.stageTaskInbox(
           source: bootstrapSnapshot,
           sourceChecksum: sourceChecksum,
         );
-        _authority.materializeTaskInbox();
-        _setMaterialized(_authority.activateTaskInbox());
+        await _authority.materializeTaskInbox();
+        _setMaterialized(await _authority.activateTaskInbox());
       case IanvsWorkflowMigrationPhase.staged:
         _requireMatchingImport(opened.migration);
-        _authority.materializeTaskInbox();
-        _setMaterialized(_authority.activateTaskInbox());
+        await _authority.materializeTaskInbox();
+        _setMaterialized(await _authority.activateTaskInbox());
       case IanvsWorkflowMigrationPhase.ready:
         _requireMatchingImport(opened.migration);
-        _setMaterialized(_authority.activateTaskInbox());
+        _setMaterialized(await _authority.activateTaskInbox());
       case IanvsWorkflowMigrationPhase.active:
-        final current = _authority.currentTaskInbox();
+        final current = await _authority.currentTaskInbox();
         if (current == null) {
           throw StateError('Active Rust workflow has no TaskInbox projection.');
         }
@@ -100,13 +102,14 @@ final class IanvsRustTaskRepository
   @override
   Future<TaskRepositorySnapshot> loadRepository() async {
     await initialize();
+    await _refreshProjection();
     return authoritativeProjection;
   }
 
   @override
   Future<TaskRecord> insertTask(TaskRecord task) {
-    return _mutate(() {
-      _commit(
+    return _mutate(() async {
+      await _commit(
         _authority.applyTaskInbox(IanvsTaskInboxCommand.createTask(task)),
       );
       return _task(task.id);
@@ -117,8 +120,9 @@ final class IanvsRustTaskRepository
   Future<TaskRecord> updateTask(
     TaskRecord task, {
     required TaskRecord expected,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       _expectTask(expected);
       final definitionChanged =
           task.workspacePath != expected.workspacePath ||
@@ -129,43 +133,47 @@ final class IanvsRustTaskRepository
             'Task definition and authority status cannot change together.',
           );
         }
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.updateTaskDefinition(
               task: task,
               updatedAt: task.updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       } else if (task.status == expected.status) {
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.updateTaskProjection(
               task: task,
               updatedAt: task.updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       } else if (task.status == TaskStatus.queued) {
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.queueTaskProjection(
               task: task,
               updatedAt: task.updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       } else if (task.status == TaskStatus.cancelled) {
         final run = _currentRun(
           expected,
         )?.copyWith(status: TaskStatus.cancelled, endedAt: task.updatedAt);
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.cancelTaskProjection(
               task: task,
               run: run,
               updatedAt: task.updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       } else {
@@ -183,14 +191,15 @@ final class IanvsRustTaskRepository
               : currentRun.endedAt,
           error: task.error ?? currentRun.error,
         );
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.transitionRunProjection(
               task: task,
               run: run,
               transition: transition,
               updatedAt: task.updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       }
@@ -203,9 +212,9 @@ final class IanvsRustTaskRepository
     TaskDeleteExpectation expected, {
     required DateTime updatedAt,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       _expectTask(expected.task);
-      _commit(
+      await _commit(
         _authority.applyTaskInbox(
           IanvsTaskInboxCommand.deleteTask(
             taskId: expected.task.id,
@@ -222,7 +231,7 @@ final class IanvsRustTaskRepository
     required TaskRecord task,
     required TaskRunRecord run,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       _expectTask(expectedTask);
       if (run.status != TaskStatus.dispatched ||
           task.status != TaskStatus.dispatched) {
@@ -230,7 +239,7 @@ final class IanvsRustTaskRepository
           'Rust run creation must enter the dispatched state.',
         );
       }
-      _commit(
+      await _commit(
         _authority.applyTaskInbox(
           IanvsTaskInboxCommand.dispatchRunProjection(
             task: task,
@@ -259,7 +268,11 @@ final class IanvsRustTaskRepository
     final poll = await claimNextTask(
       runId: run.id,
       dispatchEventId: dispatchEvent.id,
+      executorLeaseId: 'executor-${run.id}',
+      executorId: 'repository-adapter',
+      commandId: 'claim-${run.id}',
       now: run.startedAt,
+      leaseExpiresAt: run.startedAt.add(const Duration(minutes: 1)),
       excludedTaskIds: excluded,
     );
     return poll.claim?.task.id == expectedTask.id ? poll.claim : null;
@@ -270,23 +283,25 @@ final class IanvsRustTaskRepository
     TaskRunRecord run, {
     required TaskRunRecord expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       _expectRun(expected);
       if (run.status == expected.status) {
-        _commit(
-          _authority.applyTaskInbox(
+        await _commit(
+          _applyTaskInbox(
             IanvsTaskInboxCommand.updateRunProjection(
               run: run,
               updatedAt: updatedAt,
             ),
+            executorContext: executorContext,
           ),
         );
       } else {
         final task = _task(expected.taskId);
         if (run.status == TaskStatus.cancelled) {
-          _commit(
-            _authority.applyTaskInbox(
+          await _commit(
+            _applyTaskInbox(
               IanvsTaskInboxCommand.cancelTaskProjection(
                 task: task.copyWith(
                   status: TaskStatus.cancelled,
@@ -295,17 +310,19 @@ final class IanvsRustTaskRepository
                 run: run,
                 updatedAt: updatedAt,
               ),
+              executorContext: executorContext,
             ),
           );
         } else {
-          _commit(
-            _authority.applyTaskInbox(
+          await _commit(
+            _applyTaskInbox(
               IanvsTaskInboxCommand.transitionRunProjection(
                 task: task.copyWith(status: run.status, updatedAt: updatedAt),
                 run: run,
                 transition: _transition(expected.status, run.status),
                 updatedAt: updatedAt,
               ),
+              executorContext: executorContext,
             ),
           );
         }
@@ -318,14 +335,16 @@ final class IanvsRustTaskRepository
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
-      _commit(
-        _authority.applyTaskInbox(
+    return _mutate(() async {
+      await _commit(
+        _applyTaskInbox(
           IanvsTaskInboxCommand.appendEvents(
             events: events,
             updatedAt: updatedAt,
           ),
+          executorContext: executorContext,
         ),
       );
     });
@@ -338,17 +357,19 @@ final class IanvsRustTaskRepository
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       _expectArtifacts(expectedArtifacts, taskId: taskId, runId: runId);
-      _commit(
-        _authority.applyTaskInbox(
+      await _commit(
+        _applyTaskInbox(
           IanvsTaskInboxCommand.replaceArtifacts(
             taskId: taskId,
             runId: runId,
             artifacts: artifacts,
             updatedAt: updatedAt,
           ),
+          executorContext: executorContext,
         ),
       );
     });
@@ -359,20 +380,22 @@ final class IanvsRustTaskRepository
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       if (!_recordsEqual(
         authoritativeProjection.snapshot.artifacts,
         expectedArtifacts,
       )) {
         throw const TaskRepositoryConflict('Artifact projection is stale.');
       }
-      _commit(
-        _authority.applyTaskInbox(
+      await _commit(
+        _applyTaskInbox(
           IanvsTaskInboxCommand.replaceArtifactSet(
             artifacts: artifacts,
             updatedAt: updatedAt,
           ),
+          executorContext: executorContext,
         ),
       );
     });
@@ -383,18 +406,20 @@ final class IanvsRustTaskRepository
     ApprovalRequestRecord approval, {
     ApprovalRequestRecord? expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       final current = _approvalOrNull(approval.id);
       if (!_recordEqual(current, expected)) {
         throw const TaskRepositoryConflict('Approval projection is stale.');
       }
-      _commit(
-        _authority.applyTaskInbox(
+      await _commit(
+        _applyTaskInbox(
           IanvsTaskInboxCommand.upsertApproval(
             approval: approval,
             updatedAt: updatedAt,
           ),
+          executorContext: executorContext,
         ),
       );
     });
@@ -406,12 +431,12 @@ final class IanvsRustTaskRepository
     WorkspaceResource? expected,
     required DateTime updatedAt,
   }) {
-    return _mutate(() {
+    return _mutate(() async {
       final current = _resourceOrNull(resource.id);
       if (!_recordEqual(current, expected)) {
         throw const TaskRepositoryConflict('Resource projection is stale.');
       }
-      _commit(
+      await _commit(
         _authority.applyTaskInbox(
           IanvsTaskInboxCommand.upsertResource(
             resource: resource,
@@ -425,20 +450,31 @@ final class IanvsRustTaskRepository
   @override
   Future<int> revision() async {
     await initialize();
+    await _refreshProjection();
     return authoritativeProjection.revision;
+  }
+
+  Future<void> _refreshProjection() async {
+    final current = await _authority.currentTaskInboxProjection();
+    if (current == null) {
+      throw StateError('Active Rust workflow has no TaskInbox projection.');
+    }
+    _setMaterialized(current);
   }
 
   @override
   Future<void> configureScheduler({required int maxConcurrentTasks}) {
-    return _mutate(() {
-      _authority.configureScheduler(maxConcurrentTasks: maxConcurrentTasks);
+    return _mutate(() async {
+      await _authority.configureScheduler(
+        maxConcurrentTasks: maxConcurrentTasks,
+      );
     });
   }
 
   @override
   Future<void> publishRuntimeStatus(LocalRuntimeStatus status) {
-    return _mutate(() {
-      _authority.setSchedulerRuntimeStatus(
+    return _mutate(() async {
+      await _authority.setSchedulerRuntimeStatus(
         IanvsSchedulerRuntimeStatus(
           agentName: status.agentName,
           availability: _runtimeAvailability(status.availability),
@@ -456,15 +492,36 @@ final class IanvsRustTaskRepository
   Future<TaskSchedulingPoll> claimNextTask({
     required String runId,
     required String dispatchEventId,
+    required String executorLeaseId,
+    required String executorId,
+    required String commandId,
     required DateTime now,
+    required DateTime leaseExpiresAt,
     Set<String> excludedTaskIds = const <String>{},
+    List<TaskCapacityReservation> capacityReservations =
+        const <TaskCapacityReservation>[],
   }) {
-    return _mutate(() {
-      final projected = _authority.schedulerClaimNext(
+    return _mutate(() async {
+      final projected = await _authority.schedulerClaimNext(
         runId: runId,
         dispatchEventId: dispatchEventId,
+        executorLeaseId: executorLeaseId,
+        executorId: executorId,
+        commandId: commandId,
         now: now,
+        leaseExpiresAt: leaseExpiresAt,
         excludedTaskIds: excludedTaskIds.toList(growable: false),
+        capacityReservations: capacityReservations
+            .map(
+              (reservation) => IanvsSchedulerCapacityReservation(
+                reservationId: reservation.reservationId,
+                agentName: reservation.agentName,
+                hostInstanceId: reservation.hostInstanceId,
+                createdAt: reservation.createdAt,
+                expiresAt: reservation.expiresAt,
+              ),
+            )
+            .toList(growable: false),
       );
       _projection = TaskRepositorySnapshot(
         revision: projected.workflow.revision,
@@ -477,13 +534,122 @@ final class IanvsRustTaskRepository
           task: _task(claim.taskId),
           run: _run(claim.runId),
           dispatchEvent: _event(claim.dispatchEventId),
+          reservationId: claim.reservationId,
+          executorLease: _executorLease(claim.executorLease),
         );
       }
       return TaskSchedulingPoll(
         repository: authoritativeProjection,
         claim: taskClaim,
         nextWakeAt: projected.nextWakeAt,
+        admission: TaskSchedulingAdmission(
+          reason: _admissionReason(projected.admission.reason),
+          retryable: projected.admission.retryable,
+          nextWakeAt: projected.admission.nextWakeAt,
+          selectedReservationId: projected.admission.selectedReservationId,
+          blockedTaskIds: projected.admission.blockedTaskIds,
+        ),
       );
+    });
+  }
+
+  @override
+  Future<TaskExecutorLease?> executorLeaseForRun(String runId) {
+    return _mutate(() async {
+      final lease = await _authority.executorLeaseForRun(runId);
+      return lease == null ? null : _executorLease(lease);
+    });
+  }
+
+  @override
+  Future<TaskRuntimeEventPage> runtimeEvents({
+    required String runId,
+    required int afterSequence,
+    int limit = 200,
+  }) {
+    return _mutate(() async {
+      final page = await _authority.runtimeEvents(
+        runId: runId,
+        afterSequence: afterSequence,
+        limit: limit,
+      );
+      return TaskRuntimeEventPage(
+        runId: page.runId,
+        afterSequence: page.afterSequence,
+        events: page.events
+            .map(
+              (stored) => TaskStoredRuntimeEvent(
+                sequence: stored.sequence,
+                event: stored.event,
+                executorLeaseId: stored.executorLeaseId,
+                executorGeneration: stored.executorGeneration,
+                commandId: stored.commandId,
+              ),
+            )
+            .toList(growable: false),
+        nextSequence: page.nextSequence,
+        hasMore: page.hasMore,
+      );
+    });
+  }
+
+  @override
+  Future<TaskExecutorLease> acknowledgeExecutorStart({
+    required TaskExecutorCommandContext context,
+    required DateTime nextExpiresAt,
+  }) {
+    return _executorLeaseCommand(
+      context: context,
+      operation: IanvsExecutorLeaseOperation.acknowledgeStart,
+      nextExpiresAt: nextExpiresAt,
+    );
+  }
+
+  @override
+  Future<TaskExecutorLease> heartbeatExecutor({
+    required TaskExecutorCommandContext context,
+    required DateTime nextExpiresAt,
+  }) {
+    return _executorLeaseCommand(
+      context: context,
+      operation: IanvsExecutorLeaseOperation.heartbeat,
+      nextExpiresAt: nextExpiresAt,
+    );
+  }
+
+  @override
+  Future<TaskExecutorLease> releaseExecutor({
+    required TaskExecutorCommandContext context,
+    bool cancelled = false,
+  }) {
+    return _executorLeaseCommand(
+      context: context,
+      operation: cancelled
+          ? IanvsExecutorLeaseOperation.cancel
+          : IanvsExecutorLeaseOperation.release,
+    );
+  }
+
+  Future<TaskExecutorLease> _executorLeaseCommand({
+    required TaskExecutorCommandContext context,
+    required IanvsExecutorLeaseOperation operation,
+    DateTime? nextExpiresAt,
+  }) {
+    return _mutate(() async {
+      final lease = await _authority.applyExecutorLeaseCommand(
+        IanvsExecutorLeaseCommand(
+          context: IanvsExecutorCommandContext(
+            runId: context.runId,
+            executorLeaseId: context.executorLeaseId,
+            generation: context.generation,
+            commandId: context.commandId,
+            now: context.now,
+          ),
+          operation: operation,
+          nextExpiresAt: nextExpiresAt,
+        ),
+      );
+      return _executorLease(lease);
     });
   }
 
@@ -491,13 +657,13 @@ final class IanvsRustTaskRepository
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    _authority.dispose();
+    await _authority.dispose();
   }
 
-  Future<T> _mutate<T>(T Function() operation) async {
+  Future<T> _mutate<T>(FutureOr<T> Function() operation) async {
     await initialize();
     try {
-      return operation();
+      return await operation();
     } on StateError catch (error) {
       final message = error.message.toString();
       if (message.contains('revision') && message.contains('conflict')) {
@@ -507,8 +673,29 @@ final class IanvsRustTaskRepository
     }
   }
 
-  void _commit(IanvsTaskInboxMaterializedProjection projection) {
-    _setMaterialized(projection);
+  Future<void> _commit(
+    FutureOr<IanvsTaskInboxMaterializedProjection> projection,
+  ) async {
+    _setMaterialized(await projection);
+  }
+
+  FutureOr<IanvsTaskInboxMaterializedProjection> _applyTaskInbox(
+    IanvsTaskInboxCommand command, {
+    TaskExecutorCommandContext? executorContext,
+  }) {
+    if (executorContext == null) {
+      return _authority.applyTaskInbox(command);
+    }
+    return _authority.applyTaskInboxAsExecutor(
+      context: IanvsExecutorCommandContext(
+        runId: executorContext.runId,
+        executorLeaseId: executorContext.executorLeaseId,
+        generation: executorContext.generation,
+        commandId: executorContext.commandId,
+        now: executorContext.now,
+      ),
+      command: command,
+    );
   }
 
   void _setMaterialized(IanvsTaskInboxMaterializedProjection projection) {
@@ -651,6 +838,54 @@ IanvsSchedulerRuntimeAvailability _runtimeAvailability(
   RuntimeAvailability.misconfigured =>
     IanvsSchedulerRuntimeAvailability.misconfigured,
 };
+
+TaskSchedulingAdmissionReason _admissionReason(
+  IanvsSchedulerAdmissionReason reason,
+) => switch (reason) {
+  IanvsSchedulerAdmissionReason.claimed =>
+    TaskSchedulingAdmissionReason.claimed,
+  IanvsSchedulerAdmissionReason.queueEmpty =>
+    TaskSchedulingAdmissionReason.queueEmpty,
+  IanvsSchedulerAdmissionReason.globalCapacity =>
+    TaskSchedulingAdmissionReason.globalCapacity,
+  IanvsSchedulerAdmissionReason.noExecutorCapacity =>
+    TaskSchedulingAdmissionReason.noExecutorCapacity,
+  IanvsSchedulerAdmissionReason.agentCapacity =>
+    TaskSchedulingAdmissionReason.agentCapacity,
+  IanvsSchedulerAdmissionReason.runtimeUnavailable =>
+    TaskSchedulingAdmissionReason.runtimeUnavailable,
+  IanvsSchedulerAdmissionReason.runtimeStatusStale =>
+    TaskSchedulingAdmissionReason.runtimeStatusStale,
+  IanvsSchedulerAdmissionReason.workspaceBusy =>
+    TaskSchedulingAdmissionReason.workspaceBusy,
+  IanvsSchedulerAdmissionReason.retryNotReady =>
+    TaskSchedulingAdmissionReason.retryNotReady,
+  IanvsSchedulerAdmissionReason.noMatchingRuntime =>
+    TaskSchedulingAdmissionReason.noMatchingRuntime,
+  IanvsSchedulerAdmissionReason.excluded =>
+    TaskSchedulingAdmissionReason.excluded,
+};
+
+TaskExecutorLease _executorLease(IanvsExecutorLease lease) => TaskExecutorLease(
+  leaseId: lease.leaseId,
+  runId: lease.runId,
+  executorId: lease.executorId,
+  generation: lease.generation,
+  reservationId: lease.reservationId,
+  acquiredAt: lease.acquiredAt,
+  expiresAt: lease.expiresAt,
+  lastHeartbeatAt: lease.lastHeartbeatAt,
+  startAcknowledgedAt: lease.startAcknowledgedAt,
+  releasedAt: lease.releasedAt,
+  state: switch (lease.state) {
+    IanvsExecutorLeaseState.claimed => TaskExecutorLeaseState.claimed,
+    IanvsExecutorLeaseState.starting => TaskExecutorLeaseState.starting,
+    IanvsExecutorLeaseState.active => TaskExecutorLeaseState.active,
+    IanvsExecutorLeaseState.expired => TaskExecutorLeaseState.expired,
+    IanvsExecutorLeaseState.released => TaskExecutorLeaseState.released,
+    IanvsExecutorLeaseState.superseded => TaskExecutorLeaseState.superseded,
+  },
+);
 
 bool _recordEqual(Object? left, Object? right) {
   if (left == null || right == null) return left == right;

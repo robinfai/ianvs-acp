@@ -12,6 +12,9 @@ ACP schema consumed by `ianvs-acp-core` is the source of wire-level truth.
   transport, protocol negotiation, sessions, providers, and recovery.
 - `rust/crates/ianvs-acp-ffi` exposes typed product commands and normalized
   events. Raw JSON-RPC envelopes do not cross the ABI.
+- `rust/crates/ianvs-acpd` is the single background Task/Workflow execution
+  owner. Flutter connects through bounded local IPC and resumes by revision and
+  event sequence; it does not start a second dispatcher.
 - `lib/acp/rust_acp_agent_client.dart` is a Flutter projection adapter. It does
   not implement ACP framing or open a second connection.
 - Local stdio agents are supported. Remote WebSocket and HTTP/SSE agent
@@ -73,6 +76,6 @@ flutter analyze --no-pub
 flutter test --no-pub
 ```
 
-The native suite includes Core unit/integration tests, ABI tests, and a real
-Dart → dylib → Rust fixture-agent path. Widget and state tests use
+The native suite includes Core unit/integration tests, daemon socket tests, ABI
+tests, and real Dart → daemon/dylib → Rust fixture-agent paths. Widget and state tests use
 `FakeAgentClient`; they do not launch a compatibility ACP runtime.

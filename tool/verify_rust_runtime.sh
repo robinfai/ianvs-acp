@@ -7,6 +7,7 @@ cd "${PROJECT_ROOT}/rust"
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --locked -p ianvs-acp-ffi
+cargo build --locked -p ianvs-acpd
 cargo build --locked -p ianvs-acp-core --bin ianvs-acp-fixture-agent
 
 cd "${PROJECT_ROOT}"
@@ -16,7 +17,8 @@ bash tool/flutter_test_isolated.sh \
   test/rust/ianvs_acp_ffi_integration_test.dart \
   test/rust/ianvs_workflow_native_test.dart \
   test/rust/ianvs_workflow_ffi_integration_test.dart \
-  test/rust/ianvs_rust_task_repository_ffi_integration_test.dart
+  test/rust/ianvs_rust_task_repository_ffi_integration_test.dart \
+  test/rust/ianvs_daemon_workflow_integration_test.dart
 
 IANVS_ACP_RUST_LIBRARY="${PROJECT_ROOT}/rust/target/debug/libianvs_acp_ffi.dylib" \
   bash tool/flutter_test_isolated.sh \

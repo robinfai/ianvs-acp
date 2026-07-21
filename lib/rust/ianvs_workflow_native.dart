@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 
@@ -33,6 +34,11 @@ abstract interface class IanvsWorkflowNativeApi {
 
   String? applyTaskInbox(Object workflow, Map<String, Object?> command);
 
+  String? applyTaskInboxAsExecutor(
+    Object workflow,
+    Map<String, Object?> request,
+  );
+
   String? configureScheduler(Object workflow, Map<String, Object?> config);
 
   String? setSchedulerRuntimeStatus(
@@ -42,6 +48,17 @@ abstract interface class IanvsWorkflowNativeApi {
 
   String? schedulerClaimNext(Object workflow, Map<String, Object?> request);
 
+  String? executorLeaseForRun(Object workflow, String runId);
+
+  String? runtimeEvents(
+    Object workflow,
+    String runId,
+    int afterSequence,
+    int limit,
+  );
+
+  String? executorLeaseCommand(Object workflow, Map<String, Object?> command);
+
   String? currentTaskInbox(Object workflow);
 
   String? lastError(Object workflow);
@@ -50,39 +67,67 @@ abstract interface class IanvsWorkflowNativeApi {
 }
 
 abstract interface class IanvsWorkflowAuthority {
-  IanvsWorkflowProjection open(String databasePath);
+  FutureOr<IanvsWorkflowProjection> open(String databasePath);
 
-  IanvsTaskInboxStageProjection stageTaskInbox({
+  FutureOr<IanvsTaskInboxStageProjection> stageTaskInbox({
     required TaskInboxSnapshot source,
     required String sourceChecksum,
   });
 
-  TaskInboxSnapshot? taskInboxSource();
+  FutureOr<TaskInboxSnapshot?> taskInboxSource();
 
-  IanvsTaskInboxMaterializedProjection materializeTaskInbox();
+  FutureOr<IanvsTaskInboxMaterializedProjection> materializeTaskInbox();
 
-  IanvsTaskInboxMaterializedProjection activateTaskInbox();
+  FutureOr<IanvsTaskInboxMaterializedProjection> activateTaskInbox();
 
-  IanvsTaskInboxMaterializedProjection applyTaskInbox(
+  FutureOr<IanvsTaskInboxMaterializedProjection> applyTaskInbox(
     IanvsTaskInboxCommand command,
   );
 
-  IanvsWorkflowProjection configureScheduler({required int maxConcurrentTasks});
+  FutureOr<IanvsTaskInboxMaterializedProjection> applyTaskInboxAsExecutor({
+    required IanvsExecutorCommandContext context,
+    required IanvsTaskInboxCommand command,
+  });
 
-  IanvsWorkflowProjection setSchedulerRuntimeStatus(
+  FutureOr<IanvsWorkflowProjection> configureScheduler({
+    required int maxConcurrentTasks,
+    int runtimeStatusFreshnessSeconds = 30,
+  });
+
+  FutureOr<IanvsWorkflowProjection> setSchedulerRuntimeStatus(
     IanvsSchedulerRuntimeStatus status,
   );
 
-  IanvsSchedulerClaimProjection schedulerClaimNext({
+  FutureOr<IanvsSchedulerClaimProjection> schedulerClaimNext({
     required String runId,
     required String dispatchEventId,
+    required String executorLeaseId,
+    required String executorId,
+    required String commandId,
     required DateTime now,
+    required DateTime leaseExpiresAt,
     List<String> excludedTaskIds = const <String>[],
+    List<IanvsSchedulerCapacityReservation> capacityReservations =
+        const <IanvsSchedulerCapacityReservation>[],
   });
 
-  TaskInboxSnapshot? currentTaskInbox();
+  FutureOr<IanvsExecutorLease?> executorLeaseForRun(String runId);
 
-  void dispose();
+  FutureOr<IanvsRuntimeEventPage> runtimeEvents({
+    required String runId,
+    required int afterSequence,
+    int limit = 200,
+  });
+
+  FutureOr<IanvsExecutorLease> applyExecutorLeaseCommand(
+    IanvsExecutorLeaseCommand command,
+  );
+
+  FutureOr<TaskInboxSnapshot?> currentTaskInbox();
+
+  FutureOr<IanvsTaskInboxMaterializedProjection?> currentTaskInboxProjection();
+
+  FutureOr<void> dispose();
 }
 
 final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
@@ -97,7 +142,7 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
     _workflow = _native.createWorkflow();
   }
 
-  static const int expectedFfiVersion = 5;
+  static const int expectedFfiVersion = 7;
 
   final IanvsWorkflowNativeApi _native;
   late final Object _workflow;
@@ -229,8 +274,24 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
   }
 
   @override
+  IanvsTaskInboxMaterializedProjection applyTaskInboxAsExecutor({
+    required IanvsExecutorCommandContext context,
+    required IanvsTaskInboxCommand command,
+  }) {
+    _ensureOpened();
+    return _decodeMaterializedTaskInbox(
+      _native.applyTaskInboxAsExecutor(_workflow, <String, Object?>{
+        'context': context.toJson(),
+        'command': command.toJson(),
+      }),
+      operation: 'applyTaskInboxAsExecutor',
+    );
+  }
+
+  @override
   IanvsWorkflowProjection configureScheduler({
     required int maxConcurrentTasks,
+    int runtimeStatusFreshnessSeconds = 30,
   }) {
     _ensureOpened();
     if (maxConcurrentTasks < 1) {
@@ -240,9 +301,17 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
         'must be positive',
       );
     }
+    if (runtimeStatusFreshnessSeconds < 1) {
+      throw ArgumentError.value(
+        runtimeStatusFreshnessSeconds,
+        'runtimeStatusFreshnessSeconds',
+        'must be positive',
+      );
+    }
     return _decodeProjection(
       _native.configureScheduler(_workflow, <String, Object?>{
         'maxConcurrentTasks': maxConcurrentTasks,
+        'runtimeStatusFreshnessSeconds': runtimeStatusFreshnessSeconds,
       }),
       operation: 'configureScheduler',
     );
@@ -263,16 +332,29 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
   IanvsSchedulerClaimProjection schedulerClaimNext({
     required String runId,
     required String dispatchEventId,
+    required String executorLeaseId,
+    required String executorId,
+    required String commandId,
     required DateTime now,
+    required DateTime leaseExpiresAt,
     List<String> excludedTaskIds = const <String>[],
+    List<IanvsSchedulerCapacityReservation> capacityReservations =
+        const <IanvsSchedulerCapacityReservation>[],
   }) {
     _ensureOpened();
     final encoded = _native.schedulerClaimNext(_workflow, <String, Object?>{
       'runId': _requiredText(runId, 'runId'),
       'dispatchEventId': _requiredText(dispatchEventId, 'dispatchEventId'),
+      'executorLeaseId': _requiredText(executorLeaseId, 'executorLeaseId'),
+      'executorId': _requiredText(executorId, 'executorId'),
+      'commandId': _requiredText(commandId, 'commandId'),
       'now': now.toIso8601String(),
+      'leaseExpiresAt': leaseExpiresAt.toIso8601String(),
       'excludedTaskIds': excludedTaskIds
           .map((taskId) => _requiredText(taskId, 'excludedTaskIds'))
+          .toList(growable: false),
+      'capacityReservations': capacityReservations
+          .map((reservation) => reservation.toJson())
           .toList(growable: false),
     });
     if (encoded == null) {
@@ -289,6 +371,77 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
     }
     return IanvsSchedulerClaimProjection.fromJson(
       decoded.map((key, value) => MapEntry(key.toString(), value)),
+    );
+  }
+
+  @override
+  IanvsExecutorLease? executorLeaseForRun(String runId) {
+    _ensureOpened();
+    final encoded = _native.executorLeaseForRun(
+      _workflow,
+      _requiredText(runId, 'runId'),
+    );
+    if (encoded == null) {
+      throw StateError(
+        'executorLeaseForRun failed: '
+        '${_native.lastError(_workflow) ?? 'unknown native error'}',
+      );
+    }
+    final decoded = _jsonMap(jsonDecode(encoded), 'executor lease envelope');
+    final lease = decoded['lease'];
+    return lease == null
+        ? null
+        : IanvsExecutorLease.fromJson(_jsonMap(lease, 'lease'));
+  }
+
+  @override
+  IanvsRuntimeEventPage runtimeEvents({
+    required String runId,
+    required int afterSequence,
+    int limit = 200,
+  }) {
+    _ensureOpened();
+    if (afterSequence < 0) {
+      throw ArgumentError.value(
+        afterSequence,
+        'afterSequence',
+        'must be nonnegative',
+      );
+    }
+    if (limit < 1 || limit > IanvsRuntimeEventPage.maxLimit) {
+      throw ArgumentError.value(limit, 'limit', 'must be between 1 and 500');
+    }
+    final encoded = _native.runtimeEvents(
+      _workflow,
+      _requiredText(runId, 'runId'),
+      afterSequence,
+      limit,
+    );
+    if (encoded == null) {
+      throw StateError(
+        'runtimeEvents failed: '
+        '${_native.lastError(_workflow) ?? 'unknown native error'}',
+      );
+    }
+    return IanvsRuntimeEventPage.fromJson(
+      _jsonMap(jsonDecode(encoded), 'runtime event page'),
+    );
+  }
+
+  @override
+  IanvsExecutorLease applyExecutorLeaseCommand(
+    IanvsExecutorLeaseCommand command,
+  ) {
+    _ensureOpened();
+    final encoded = _native.executorLeaseCommand(_workflow, command.toJson());
+    if (encoded == null) {
+      throw StateError(
+        'applyExecutorLeaseCommand failed: '
+        '${_native.lastError(_workflow) ?? 'unknown native error'}',
+      );
+    }
+    return IanvsExecutorLease.fromJson(
+      _jsonMap(jsonDecode(encoded), 'executor lease'),
     );
   }
 
@@ -320,6 +473,16 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
       _native.currentTaskInbox(_workflow),
       field: 'current',
       operation: 'currentTaskInbox',
+    );
+  }
+
+  @override
+  IanvsTaskInboxMaterializedProjection? currentTaskInboxProjection() {
+    final taskInbox = currentTaskInbox();
+    if (taskInbox == null) return null;
+    return IanvsTaskInboxMaterializedProjection(
+      workflow: snapshot(),
+      taskInbox: taskInbox,
     );
   }
 
@@ -717,6 +880,236 @@ final class IanvsSchedulerRuntimeStatus {
   };
 }
 
+final class IanvsSchedulerCapacityReservation {
+  IanvsSchedulerCapacityReservation({
+    required this.reservationId,
+    required this.agentName,
+    required this.hostInstanceId,
+    required this.createdAt,
+    required this.expiresAt,
+  }) {
+    _requiredText(reservationId, 'reservationId');
+    _requiredText(agentName, 'agentName');
+    _requiredText(hostInstanceId, 'hostInstanceId');
+    if (!createdAt.isBefore(expiresAt)) {
+      throw ArgumentError.value(
+        expiresAt,
+        'expiresAt',
+        'must be after createdAt',
+      );
+    }
+  }
+
+  final String reservationId;
+  final String agentName;
+  final String hostInstanceId;
+  final DateTime createdAt;
+  final DateTime expiresAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'reservationId': reservationId,
+    'agentName': agentName,
+    'hostInstanceId': hostInstanceId,
+    'createdAt': createdAt.toIso8601String(),
+    'expiresAt': expiresAt.toIso8601String(),
+  };
+}
+
+enum IanvsExecutorLeaseState {
+  claimed,
+  starting,
+  active,
+  expired,
+  released,
+  superseded,
+}
+
+enum IanvsExecutorLeaseOperation {
+  acknowledgeStart,
+  heartbeat,
+  release,
+  cancel,
+  markOrphaned,
+}
+
+final class IanvsExecutorCommandContext {
+  IanvsExecutorCommandContext({
+    required this.runId,
+    required this.executorLeaseId,
+    required this.generation,
+    required this.commandId,
+    required this.now,
+  }) {
+    _requiredText(runId, 'runId');
+    _requiredText(executorLeaseId, 'executorLeaseId');
+    _requiredText(commandId, 'commandId');
+    if (generation < 1) {
+      throw ArgumentError.value(generation, 'generation', 'must be positive');
+    }
+  }
+
+  final String runId;
+  final String executorLeaseId;
+  final int generation;
+  final String commandId;
+  final DateTime now;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'runId': runId,
+    'executorLeaseId': executorLeaseId,
+    'generation': generation,
+    'commandId': commandId,
+    'now': now.toIso8601String(),
+  };
+}
+
+final class IanvsExecutorLeaseCommand {
+  const IanvsExecutorLeaseCommand({
+    required this.context,
+    required this.operation,
+    this.nextExpiresAt,
+  });
+
+  final IanvsExecutorCommandContext context;
+  final IanvsExecutorLeaseOperation operation;
+  final DateTime? nextExpiresAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'context': context.toJson(),
+    'operation': operation.jsonValue,
+    'nextExpiresAt': ?nextExpiresAt?.toIso8601String(),
+  };
+}
+
+extension on IanvsExecutorLeaseOperation {
+  String get jsonValue => switch (this) {
+    IanvsExecutorLeaseOperation.acknowledgeStart => 'acknowledge_start',
+    IanvsExecutorLeaseOperation.heartbeat => 'heartbeat',
+    IanvsExecutorLeaseOperation.release => 'release',
+    IanvsExecutorLeaseOperation.cancel => 'cancel',
+    IanvsExecutorLeaseOperation.markOrphaned => 'mark_orphaned',
+  };
+}
+
+final class IanvsExecutorLease {
+  const IanvsExecutorLease({
+    required this.leaseId,
+    required this.runId,
+    required this.executorId,
+    required this.generation,
+    required this.reservationId,
+    required this.acquiredAt,
+    required this.expiresAt,
+    required this.lastHeartbeatAt,
+    required this.startAcknowledgedAt,
+    required this.releasedAt,
+    required this.state,
+  });
+
+  factory IanvsExecutorLease.fromJson(Map<String, Object?> json) {
+    final generation = _nonnegativeInt(json, 'generation');
+    if (generation < 1) {
+      throw const FormatException('Executor generation must be positive.');
+    }
+    return IanvsExecutorLease(
+      leaseId: _requiredJsonString(json, 'leaseId'),
+      runId: _requiredJsonString(json, 'runId'),
+      executorId: _requiredJsonString(json, 'executorId'),
+      generation: generation,
+      reservationId: _requiredJsonString(json, 'reservationId'),
+      acquiredAt: _requiredJsonDateTime(json, 'acquiredAt'),
+      expiresAt: _requiredJsonDateTime(json, 'expiresAt'),
+      lastHeartbeatAt: _requiredJsonDateTime(json, 'lastHeartbeatAt'),
+      startAcknowledgedAt: _optionalJsonDateTime(json, 'startAcknowledgedAt'),
+      releasedAt: _optionalJsonDateTime(json, 'releasedAt'),
+      state: _executorLeaseState(json['state']),
+    );
+  }
+
+  final String leaseId;
+  final String runId;
+  final String executorId;
+  final int generation;
+  final String reservationId;
+  final DateTime acquiredAt;
+  final DateTime expiresAt;
+  final DateTime lastHeartbeatAt;
+  final DateTime? startAcknowledgedAt;
+  final DateTime? releasedAt;
+  final IanvsExecutorLeaseState state;
+}
+
+final class IanvsStoredRuntimeEvent {
+  const IanvsStoredRuntimeEvent({
+    required this.sequence,
+    required this.event,
+    required this.executorLeaseId,
+    required this.executorGeneration,
+    required this.commandId,
+  });
+
+  factory IanvsStoredRuntimeEvent.fromJson(Map<String, Object?> json) {
+    final event = TaskEventRecord.fromJson(json['event']);
+    if (event == null) {
+      throw const FormatException('Stored runtime event is invalid.');
+    }
+    final rawGeneration = json['executorGeneration'];
+    final generation = rawGeneration == null
+        ? null
+        : _nonnegativeInt(json, 'executorGeneration');
+    if (generation == 0) {
+      throw const FormatException('executorGeneration must be positive.');
+    }
+    return IanvsStoredRuntimeEvent(
+      sequence: _nonnegativeInt(json, 'sequence'),
+      event: event,
+      executorLeaseId: _optionalJsonString(json, 'executorLeaseId'),
+      executorGeneration: generation,
+      commandId: _optionalJsonString(json, 'commandId'),
+    );
+  }
+
+  final int sequence;
+  final TaskEventRecord event;
+  final String? executorLeaseId;
+  final int? executorGeneration;
+  final String? commandId;
+}
+
+final class IanvsRuntimeEventPage {
+  IanvsRuntimeEventPage({
+    required this.runId,
+    required this.afterSequence,
+    required List<IanvsStoredRuntimeEvent> events,
+    required this.nextSequence,
+    required this.hasMore,
+  }) : events = List<IanvsStoredRuntimeEvent>.unmodifiable(events);
+
+  factory IanvsRuntimeEventPage.fromJson(Map<String, Object?> json) {
+    return IanvsRuntimeEventPage(
+      runId: _requiredJsonString(json, 'runId'),
+      afterSequence: _nonnegativeInt(json, 'afterSequence'),
+      events: _jsonList(json['events'], 'events')
+          .map(
+            (event) => IanvsStoredRuntimeEvent.fromJson(
+              _jsonMap(event, 'runtime event'),
+            ),
+          )
+          .toList(growable: false),
+      nextSequence: _nonnegativeInt(json, 'nextSequence'),
+      hasMore: _requiredJsonBool(json, 'hasMore'),
+    );
+  }
+
+  static const int maxLimit = 500;
+
+  final String runId;
+  final int afterSequence;
+  final List<IanvsStoredRuntimeEvent> events;
+  final int nextSequence;
+  final bool hasMore;
+}
+
 extension on IanvsSchedulerRuntimeAvailability {
   String get jsonValue => switch (this) {
     IanvsSchedulerRuntimeAvailability.unknown => 'unknown',
@@ -837,6 +1230,139 @@ final class IanvsWorkflowRun {
   final IanvsWorkflowRunStatus status;
 }
 
+enum IanvsRecoveryState {
+  requeued,
+  orphaned,
+  waiting,
+  reviewRequired,
+  terminal,
+}
+
+enum IanvsPromptSubmissionState {
+  notSubmitted,
+  submitted,
+  unknown,
+  notApplicable,
+}
+
+enum IanvsWorkspaceMutationPossibility {
+  none,
+  readOnly,
+  possible,
+  confirmed,
+  unknown,
+}
+
+enum IanvsSuggestedRecoveryAction {
+  requeue,
+  resumeSession,
+  retryReadOnly,
+  humanReview,
+  keepWaiting,
+  terminal,
+}
+
+final class IanvsRunRecoveryRecord {
+  const IanvsRunRecoveryRecord({
+    required this.taskId,
+    required this.runId,
+    required this.previousState,
+    required this.recoveryState,
+    required this.reason,
+    required this.promptSubmissionState,
+    required this.workspaceMutationPossibility,
+    required this.suggestedAction,
+    required this.executorLeaseId,
+  });
+
+  factory IanvsRunRecoveryRecord.fromJson(Map<String, Object?> json) {
+    return IanvsRunRecoveryRecord(
+      taskId: _requiredJsonString(json, 'taskId'),
+      runId: _requiredJsonString(json, 'runId'),
+      previousState: _requiredJsonString(json, 'previousState'),
+      recoveryState: switch (_requiredJsonString(json, 'recoveryState')) {
+        'requeued' => IanvsRecoveryState.requeued,
+        'orphaned' => IanvsRecoveryState.orphaned,
+        'waiting' => IanvsRecoveryState.waiting,
+        'review_required' => IanvsRecoveryState.reviewRequired,
+        'terminal' => IanvsRecoveryState.terminal,
+        final value => throw FormatException('Unknown recovery state: $value'),
+      },
+      reason: _requiredJsonString(json, 'reason'),
+      promptSubmissionState: switch (_requiredJsonString(
+        json,
+        'promptSubmissionState',
+      )) {
+        'not_submitted' => IanvsPromptSubmissionState.notSubmitted,
+        'submitted' => IanvsPromptSubmissionState.submitted,
+        'unknown' => IanvsPromptSubmissionState.unknown,
+        'not_applicable' => IanvsPromptSubmissionState.notApplicable,
+        final value => throw FormatException(
+          'Unknown prompt submission state: $value',
+        ),
+      },
+      workspaceMutationPossibility: switch (_requiredJsonString(
+        json,
+        'workspaceMutationPossibility',
+      )) {
+        'none' => IanvsWorkspaceMutationPossibility.none,
+        'read_only' => IanvsWorkspaceMutationPossibility.readOnly,
+        'possible' => IanvsWorkspaceMutationPossibility.possible,
+        'confirmed' => IanvsWorkspaceMutationPossibility.confirmed,
+        'unknown' => IanvsWorkspaceMutationPossibility.unknown,
+        final value => throw FormatException(
+          'Unknown workspace mutation possibility: $value',
+        ),
+      },
+      suggestedAction: switch (_requiredJsonString(json, 'suggestedAction')) {
+        'requeue' => IanvsSuggestedRecoveryAction.requeue,
+        'resume_session' => IanvsSuggestedRecoveryAction.resumeSession,
+        'retry_read_only' => IanvsSuggestedRecoveryAction.retryReadOnly,
+        'human_review' => IanvsSuggestedRecoveryAction.humanReview,
+        'keep_waiting' => IanvsSuggestedRecoveryAction.keepWaiting,
+        'terminal' => IanvsSuggestedRecoveryAction.terminal,
+        final value => throw FormatException(
+          'Unknown suggested recovery action: $value',
+        ),
+      },
+      executorLeaseId: _optionalJsonString(json, 'executorLeaseId'),
+    );
+  }
+
+  final String taskId;
+  final String runId;
+  final String previousState;
+  final IanvsRecoveryState recoveryState;
+  final String reason;
+  final IanvsPromptSubmissionState promptSubmissionState;
+  final IanvsWorkspaceMutationPossibility workspaceMutationPossibility;
+  final IanvsSuggestedRecoveryAction suggestedAction;
+  final String? executorLeaseId;
+}
+
+final class IanvsRecoveryReport {
+  IanvsRecoveryReport({
+    required this.detectedAt,
+    required List<IanvsRunRecoveryRecord> runs,
+  }) : runs = List<IanvsRunRecoveryRecord>.unmodifiable(runs);
+
+  factory IanvsRecoveryReport.fromJson(Map<String, Object?> json) {
+    return IanvsRecoveryReport(
+      detectedAt: DateTime.parse(_requiredJsonString(json, 'detectedAt')),
+      runs: _jsonList(json['runs'], 'recovery.runs')
+          .map(
+            (value) => IanvsRunRecoveryRecord.fromJson(
+              _jsonMap(value, 'recovery run'),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  final DateTime detectedAt;
+  final List<IanvsRunRecoveryRecord> runs;
+}
+
 final class IanvsWorkflowProjection {
   IanvsWorkflowProjection._({
     required this.schemaVersion,
@@ -844,12 +1370,9 @@ final class IanvsWorkflowProjection {
     required this.migration,
     required List<IanvsWorkflowTask> tasks,
     required List<IanvsWorkflowRun> runs,
-    required List<String> recoveredFailedTaskIds,
+    required this.recovery,
   }) : tasks = List<IanvsWorkflowTask>.unmodifiable(tasks),
-       runs = List<IanvsWorkflowRun>.unmodifiable(runs),
-       recoveredFailedTaskIds = List<String>.unmodifiable(
-         recoveredFailedTaskIds,
-       );
+       runs = List<IanvsWorkflowRun>.unmodifiable(runs);
 
   factory IanvsWorkflowProjection.fromJson(Map<String, Object?> json) {
     final schemaVersion = json['schemaVersion'];
@@ -867,10 +1390,7 @@ final class IanvsWorkflowProjection {
     final rawRuns = _jsonList(snapshot['runs'], 'snapshot.runs');
     final recovery = json['recovery'] == null
         ? null
-        : _jsonMap(json['recovery'], 'recovery');
-    final recovered = recovery == null
-        ? const <String>[]
-        : _stringList(recovery['failedTaskIds'], 'recovery.failedTaskIds');
+        : IanvsRecoveryReport.fromJson(_jsonMap(json['recovery'], 'recovery'));
     return IanvsWorkflowProjection._(
       schemaVersion: schemaVersion as int,
       revision: revision,
@@ -881,7 +1401,7 @@ final class IanvsWorkflowProjection {
       runs: rawRuns
           .map((value) => IanvsWorkflowRun.fromJson(_jsonMap(value, 'run')))
           .toList(growable: false),
-      recoveredFailedTaskIds: recovered,
+      recovery: recovery,
     );
   }
 
@@ -892,7 +1412,7 @@ final class IanvsWorkflowProjection {
   final IanvsWorkflowMigration migration;
   final List<IanvsWorkflowTask> tasks;
   final List<IanvsWorkflowRun> runs;
-  final List<String> recoveredFailedTaskIds;
+  final IanvsRecoveryReport? recovery;
 }
 
 final class IanvsTaskInboxStageProjection {
@@ -944,6 +1464,8 @@ final class IanvsSchedulerClaim {
     required this.agentName,
     required this.workspacePath,
     required this.attempt,
+    required this.reservationId,
+    required this.executorLease,
   });
 
   factory IanvsSchedulerClaim.fromJson(Map<String, Object?> json) {
@@ -958,6 +1480,10 @@ final class IanvsSchedulerClaim {
       agentName: _requiredJsonString(json, 'agentName'),
       workspacePath: _requiredJsonString(json, 'workspacePath'),
       attempt: attempt,
+      reservationId: _requiredJsonString(json, 'reservationId'),
+      executorLease: IanvsExecutorLease.fromJson(
+        _jsonMap(json['executorLease'], 'executorLease'),
+      ),
     );
   }
 
@@ -967,6 +1493,61 @@ final class IanvsSchedulerClaim {
   final String agentName;
   final String workspacePath;
   final int attempt;
+  final String reservationId;
+  final IanvsExecutorLease executorLease;
+}
+
+enum IanvsSchedulerAdmissionReason {
+  claimed,
+  queueEmpty,
+  globalCapacity,
+  noExecutorCapacity,
+  agentCapacity,
+  runtimeUnavailable,
+  runtimeStatusStale,
+  workspaceBusy,
+  retryNotReady,
+  noMatchingRuntime,
+  excluded,
+}
+
+final class IanvsSchedulerAdmission {
+  const IanvsSchedulerAdmission({
+    required this.reason,
+    required this.retryable,
+    required this.nextWakeAt,
+    required this.selectedReservationId,
+    required this.blockedTaskIds,
+  });
+
+  factory IanvsSchedulerAdmission.fromJson(Map<String, Object?> json) {
+    final rawBlockedTaskIds = json['blockedTaskIds'] ?? const <Object?>[];
+    if (rawBlockedTaskIds is! List) {
+      throw const FormatException('Scheduler blockedTaskIds must be a list.');
+    }
+    return IanvsSchedulerAdmission(
+      reason: _schedulerAdmissionReason(json['reason']),
+      retryable: _requiredJsonBool(json, 'retryable'),
+      nextWakeAt: _optionalJsonDateTime(json, 'nextWakeAt'),
+      selectedReservationId: _optionalJsonString(json, 'selectedReservationId'),
+      blockedTaskIds: List<String>.unmodifiable(
+        rawBlockedTaskIds.map((value) {
+          if (value is! String || value.isEmpty || value.trim() != value) {
+            throw const FormatException(
+              'Scheduler blockedTaskIds must contain canonical strings.',
+            );
+          }
+          return value;
+        }),
+      ),
+    );
+  }
+
+  final IanvsSchedulerAdmissionReason reason;
+  final bool retryable;
+  final DateTime? nextWakeAt;
+  final String? selectedReservationId;
+  final List<String> blockedTaskIds;
 }
 
 final class IanvsSchedulerClaimProjection {
@@ -975,6 +1556,7 @@ final class IanvsSchedulerClaimProjection {
     required this.taskInbox,
     required this.claim,
     required this.nextWakeAt,
+    required this.admission,
   });
 
   factory IanvsSchedulerClaimProjection.fromJson(Map<String, Object?> json) {
@@ -986,6 +1568,9 @@ final class IanvsSchedulerClaimProjection {
           ? null
           : IanvsSchedulerClaim.fromJson(_jsonMap(rawClaim, 'claim')),
       nextWakeAt: _optionalJsonDateTime(json, 'nextWakeAt'),
+      admission: IanvsSchedulerAdmission.fromJson(
+        _jsonMap(json['admission'], 'admission'),
+      ),
     );
   }
 
@@ -993,6 +1578,7 @@ final class IanvsSchedulerClaimProjection {
   final TaskInboxSnapshot taskInbox;
   final IanvsSchedulerClaim? claim;
   final DateTime? nextWakeAt;
+  final IanvsSchedulerAdmission admission;
 }
 
 final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
@@ -1049,6 +1635,11 @@ final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
           Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
           Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
         >('ianvs_workflow_apply_task_inbox');
+    _applyTaskInboxAsExecutor = _library
+        .lookupFunction<
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+        >('ianvs_workflow_apply_task_inbox_as_executor');
     _configureScheduler = _library
         .lookupFunction<
           Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
@@ -1064,6 +1655,21 @@ final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
           Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
           Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
         >('ianvs_workflow_scheduler_claim_next');
+    _executorLeaseForRun = _library
+        .lookupFunction<
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+        >('ianvs_workflow_executor_lease_for_run');
+    _runtimeEvents = _library
+        .lookupFunction<
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Uint64, Uint32),
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int, int)
+        >('ianvs_workflow_runtime_events');
+    _executorLeaseCommand = _library
+        .lookupFunction<
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>),
+          Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+        >('ianvs_workflow_executor_lease_command');
     _currentTaskInbox = _library
         .lookupFunction<
           Pointer<Utf8> Function(Pointer<Void>),
@@ -1105,11 +1711,19 @@ final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
   late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
   _applyTaskInbox;
   late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+  _applyTaskInboxAsExecutor;
+  late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
   _configureScheduler;
   late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
   _setSchedulerRuntimeStatus;
   late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
   _schedulerClaimNext;
+  late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+  _executorLeaseForRun;
+  late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int, int)
+  _runtimeEvents;
+  late final Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>)
+  _executorLeaseCommand;
   late final Pointer<Utf8> Function(Pointer<Void>) _currentTaskInbox;
   late final Pointer<Utf8> Function(Pointer<Void>) _workflowLastError;
   late final void Function(Pointer<Utf8>) _stringFree;
@@ -1184,6 +1798,18 @@ final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
   }
 
   @override
+  String? applyTaskInboxAsExecutor(
+    Object workflow,
+    Map<String, Object?> request,
+  ) {
+    return _withUtf8(jsonEncode(request), (encoded) {
+      return _takeNativeString(
+        _applyTaskInboxAsExecutor(_pointer(workflow), encoded),
+      );
+    });
+  }
+
+  @override
   String? configureScheduler(Object workflow, Map<String, Object?> config) {
     return _withUtf8(jsonEncode(config), (encoded) {
       return _takeNativeString(
@@ -1209,6 +1835,38 @@ final class FfiIanvsWorkflowNativeApi implements IanvsWorkflowNativeApi {
     return _withUtf8(jsonEncode(request), (encoded) {
       return _takeNativeString(
         _schedulerClaimNext(_pointer(workflow), encoded),
+      );
+    });
+  }
+
+  @override
+  String? executorLeaseForRun(Object workflow, String runId) {
+    return _withUtf8(runId, (encoded) {
+      return _takeNativeString(
+        _executorLeaseForRun(_pointer(workflow), encoded),
+      );
+    });
+  }
+
+  @override
+  String? runtimeEvents(
+    Object workflow,
+    String runId,
+    int afterSequence,
+    int limit,
+  ) {
+    return _withUtf8(runId, (encoded) {
+      return _takeNativeString(
+        _runtimeEvents(_pointer(workflow), encoded, afterSequence, limit),
+      );
+    });
+  }
+
+  @override
+  String? executorLeaseCommand(Object workflow, Map<String, Object?> command) {
+    return _withUtf8(jsonEncode(command), (encoded) {
+      return _takeNativeString(
+        _executorLeaseCommand(_pointer(workflow), encoded),
       );
     });
   }
@@ -1319,10 +1977,27 @@ DateTime? _optionalJsonDateTime(Map<String, Object?> json, String name) {
   return parsed;
 }
 
+DateTime _requiredJsonDateTime(Map<String, Object?> json, String name) {
+  final value = _requiredJsonString(json, name);
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) {
+    throw FormatException('$name must be an ISO-8601 timestamp.');
+  }
+  return parsed;
+}
+
 int _nonnegativeInt(Map<String, Object?> json, String name) {
   final value = json[name];
   if (value is! int || value < 0) {
     throw FormatException('$name must be a nonnegative int.');
+  }
+  return value;
+}
+
+bool _requiredJsonBool(Map<String, Object?> json, String name) {
+  final value = json[name];
+  if (value is! bool) {
+    throw FormatException('$name must be a boolean.');
   }
   return value;
 }
@@ -1372,5 +2047,34 @@ IanvsWorkflowRunStatus _runStatus(Object? value) {
     'cancelled' => IanvsWorkflowRunStatus.cancelled,
     'rejected' => IanvsWorkflowRunStatus.rejected,
     _ => throw FormatException('Unknown workflow run status: $value'),
+  };
+}
+
+IanvsSchedulerAdmissionReason _schedulerAdmissionReason(Object? value) {
+  return switch (value) {
+    'claimed' => IanvsSchedulerAdmissionReason.claimed,
+    'queue_empty' => IanvsSchedulerAdmissionReason.queueEmpty,
+    'global_capacity' => IanvsSchedulerAdmissionReason.globalCapacity,
+    'no_executor_capacity' => IanvsSchedulerAdmissionReason.noExecutorCapacity,
+    'agent_capacity' => IanvsSchedulerAdmissionReason.agentCapacity,
+    'runtime_unavailable' => IanvsSchedulerAdmissionReason.runtimeUnavailable,
+    'runtime_status_stale' => IanvsSchedulerAdmissionReason.runtimeStatusStale,
+    'workspace_busy' => IanvsSchedulerAdmissionReason.workspaceBusy,
+    'retry_not_ready' => IanvsSchedulerAdmissionReason.retryNotReady,
+    'no_matching_runtime' => IanvsSchedulerAdmissionReason.noMatchingRuntime,
+    'excluded' => IanvsSchedulerAdmissionReason.excluded,
+    _ => throw FormatException('Unknown scheduler admission reason: $value'),
+  };
+}
+
+IanvsExecutorLeaseState _executorLeaseState(Object? value) {
+  return switch (value) {
+    'claimed' => IanvsExecutorLeaseState.claimed,
+    'starting' => IanvsExecutorLeaseState.starting,
+    'active' => IanvsExecutorLeaseState.active,
+    'expired' => IanvsExecutorLeaseState.expired,
+    'released' => IanvsExecutorLeaseState.released,
+    'superseded' => IanvsExecutorLeaseState.superseded,
+    _ => throw FormatException('Unknown executor lease state: $value'),
   };
 }

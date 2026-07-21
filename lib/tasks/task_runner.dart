@@ -100,8 +100,12 @@ class TaskRunner {
   }
 
   Future<TaskAgentLease?> tryAcquireAgent(TaskRecord task) {
+    return tryAcquireAgentName(task.agentName);
+  }
+
+  Future<TaskAgentLease?> tryAcquireAgentName(String agentName) {
     if (_disposing) throw StateError('TaskRunner is disposing.');
-    return agentPool.tryAcquire(task.agentName);
+    return agentPool.tryAcquire(agentName);
   }
 
   Future<void> resetAgent(String agentName) async {

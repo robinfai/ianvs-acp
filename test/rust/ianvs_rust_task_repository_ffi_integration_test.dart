@@ -8,6 +8,7 @@ import 'package:ianvs_acp/tasks/runtime_registry.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:ianvs_acp/tasks/task_scheduler.dart';
 
 void main() {
@@ -68,14 +69,34 @@ void main() {
         summary: 'Queued by Rust.',
       );
 
-      final claimed = await first.claimNextScheduledTask();
+      final claimed = await first.claimNextScheduledTask(
+        executorId: 'test-host',
+        leaseExpiresAt: now.add(const Duration(minutes: 1)),
+        capacityReservations: <TaskCapacityReservation>[
+          _capacityReservation('reservation-1', 'fixture', now),
+        ],
+      );
       expect(claimed.claim?.task.id, created.id);
       expect(claimed.claim?.task.status, TaskStatus.dispatched);
       expect(claimed.claim?.run.status, TaskStatus.dispatched);
       expect(claimed.claim?.dispatchEvent.text, 'Task dispatched.');
       expect(claimed.nextWakeAt, isNull);
+      final dispatchPage = await first.runtimeEvents(
+        runId: claimed.claim!.run.id,
+        afterSequence: 0,
+        limit: 10,
+      );
+      expect(
+        dispatchPage.events.single.event.id,
+        claimed.claim!.dispatchEvent.id,
+      );
+      expect(dispatchPage.nextSequence, greaterThan(0));
 
       final runId = claimed.claim!.run.id;
+      await first.acknowledgeExecutorStart(
+        runId,
+        nextExpiresAt: now.add(const Duration(minutes: 5)),
+      );
       now = now.add(const Duration(minutes: 1));
       await first.updateRun(
         runId,
@@ -95,6 +116,7 @@ void main() {
         endedAt: now,
         error: 'fixture failure',
       );
+      await first.releaseExecutor(runId);
       expect(first.taskById(created.id)?.status, TaskStatus.failed);
 
       now = now.add(const Duration(minutes: 1));
@@ -109,7 +131,13 @@ void main() {
           'next_retry_at': wakeAt.toIso8601String(),
         },
       );
-      final waiting = await first.claimNextScheduledTask();
+      final waiting = await first.claimNextScheduledTask(
+        executorId: 'test-host',
+        leaseExpiresAt: now.add(const Duration(minutes: 1)),
+        capacityReservations: <TaskCapacityReservation>[
+          _capacityReservation('reservation-wait', 'fixture', now),
+        ],
+      );
       expect(waiting.claim, isNull);
       expect(waiting.nextWakeAt, wakeAt);
 
@@ -146,7 +174,13 @@ void main() {
         ),
       );
       now = wakeAt;
-      final retried = await reopened.claimNextScheduledTask();
+      final retried = await reopened.claimNextScheduledTask(
+        executorId: 'test-host',
+        leaseExpiresAt: now.add(const Duration(minutes: 1)),
+        capacityReservations: <TaskCapacityReservation>[
+          _capacityReservation('reservation-2', 'fixture', now),
+        ],
+      );
       expect(retried.claim?.task.id, created.id);
       expect(retried.claim?.run.attempt, 2);
       expect(retried.repository.snapshot.runs.length, 2);
@@ -220,12 +254,25 @@ void main() {
   );
 }
 
-final class _RustProjectionWorker implements TaskWorker {
+final class _RustProjectionWorker implements CapacityReservableTaskWorker {
   _RustProjectionWorker(this.controller);
 
   final TaskInboxController controller;
   final List<String> startedTaskIds = <String>[];
   final Completer<void> completed = Completer<void>();
+
+  @override
+  Future<TaskWorkerReservation?> tryReserveAgent(String agentName) async {
+    final now = DateTime.utc(2026, 7, 17, 12);
+    return _TestWorkerReservation(
+      worker: this,
+      reservation: _capacityReservation(
+        'scheduler-reservation',
+        agentName,
+        now,
+      ),
+    );
+  }
 
   @override
   Future<TaskRecord> run(TaskRecord task) async {
@@ -238,3 +285,52 @@ final class _RustProjectionWorker implements TaskWorker {
     return controller.taskById(task.id)!;
   }
 }
+
+final class _TestWorkerReservation implements TaskWorkerReservation {
+  _TestWorkerReservation({required this.worker, required this.reservation});
+
+  final _RustProjectionWorker worker;
+  final TaskCapacityReservation reservation;
+  bool _released = false;
+
+  @override
+  String get agentName => reservation.agentName;
+
+  @override
+  TaskCapacityReservation get capacityReservation => reservation;
+
+  @override
+  DateTime get createdAt => reservation.createdAt;
+
+  @override
+  DateTime get expiresAt => reservation.expiresAt;
+
+  @override
+  String get hostInstanceId => reservation.hostInstanceId;
+
+  @override
+  String get reservationId => reservation.reservationId;
+
+  @override
+  Future<void> release() async {
+    _released = true;
+  }
+
+  @override
+  Future<TaskRecord> run(TaskRecord task) {
+    if (_released) throw StateError('Reservation was released before use.');
+    return worker.run(task);
+  }
+}
+
+TaskCapacityReservation _capacityReservation(
+  String id,
+  String agentName,
+  DateTime now,
+) => TaskCapacityReservation(
+  reservationId: id,
+  agentName: agentName,
+  hostInstanceId: 'test-host',
+  createdAt: now.subtract(const Duration(seconds: 1)),
+  expiresAt: now.add(const Duration(minutes: 1)),
+);

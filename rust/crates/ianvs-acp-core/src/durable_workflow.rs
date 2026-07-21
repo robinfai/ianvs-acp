@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    RecoveryReport, SchedulerClaim, SchedulerClaimRequest, SchedulerConfig, SchedulerCore,
+    ExecutorCommandContext, ExecutorLease, ExecutorLeaseCommand, ExecutorTakeoverRequest,
+    IdempotencyKey, RecoveryReport, RuntimeEventAppendReceipt, RuntimeEventPage,
+    SchedulerAdmission, SchedulerClaim, SchedulerClaimRequest, SchedulerConfig, SchedulerCore,
     SchedulerError, SchedulerRuntimeStatus, SqliteWorkflowStore, TaskInboxCommand, TaskInboxError,
     TaskInboxMutationError, TaskInboxSnapshot, WorkflowMigrationMetadata, WorkflowSnapshot,
     WorkflowStateError, WorkflowStateMachine, WorkflowStoreError,
@@ -91,7 +93,7 @@ pub enum WorkflowCommand {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowProjection {
     pub schema_version: u32,
@@ -115,7 +117,7 @@ impl WorkflowProjection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowOpenProjection {
     pub schema_version: u32,
@@ -125,7 +127,7 @@ pub struct WorkflowOpenProjection {
     pub recovery: RecoveryReport,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskInboxStageProjection {
     pub schema_version: u32,
@@ -135,7 +137,7 @@ pub struct TaskInboxStageProjection {
     pub normalized_historical_task_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskInboxMaterializedProjection {
     pub schema_version: u32,
@@ -145,7 +147,7 @@ pub struct TaskInboxMaterializedProjection {
     pub task_inbox: TaskInboxSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchedulerClaimProjection {
     pub schema_version: u32,
@@ -155,6 +157,14 @@ pub struct SchedulerClaimProjection {
     pub task_inbox: TaskInboxSnapshot,
     pub claim: Option<SchedulerClaim>,
     pub next_wake_at: Option<String>,
+    pub admission: SchedulerAdmission,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutorTaskInboxCommand {
+    pub context: ExecutorCommandContext,
+    pub command: TaskInboxCommand,
 }
 
 #[derive(Debug, Error)]
@@ -169,6 +179,14 @@ pub enum DurableWorkflowError {
     TaskInboxMutation(#[from] TaskInboxMutationError),
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
+    #[error(transparent)]
+    Execution(#[from] crate::ExecutionError),
+    #[error(transparent)]
+    WorkflowIr(#[from] crate::WorkflowIrError),
+    #[error(transparent)]
+    StructuredResult(#[from] crate::StructuredResultError),
+    #[error(transparent)]
+    Coordinator(#[from] crate::CoordinatorError),
 }
 
 /// Single-owner durable workflow authority.
@@ -194,6 +212,176 @@ impl DurableWorkflow {
 
     pub fn open_in_memory() -> Result<Self, DurableWorkflowError> {
         Self::from_store(SqliteWorkflowStore::open_in_memory()?)
+    }
+
+    pub fn register_workflow_definition(
+        &mut self,
+        definition: &crate::WorkflowDefinition,
+    ) -> Result<(), DurableWorkflowError> {
+        self.store.register_workflow_definition(definition)?;
+        Ok(())
+    }
+
+    pub fn workflow_definition(
+        &self,
+        definition_id: &str,
+        version: u32,
+    ) -> Result<Option<crate::WorkflowDefinition>, DurableWorkflowError> {
+        Ok(self
+            .store
+            .load_workflow_definition(definition_id, version)?)
+    }
+
+    pub fn create_workflow_run(
+        &mut self,
+        run: &crate::WorkflowRun,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        Ok(self.store.create_workflow_run(run)?)
+    }
+
+    pub fn workflow_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<crate::WorkflowRun>, DurableWorkflowError> {
+        Ok(self.store.load_workflow_run(run_id)?)
+    }
+
+    pub fn start_workflow_step(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        input: serde_json::Value,
+        now: &str,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        run.start_step(step_id, input, now, &definition)?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
+    }
+
+    pub fn complete_workflow_step(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        output: serde_json::Value,
+        artifacts: Vec<crate::ArtifactReference>,
+        now: &str,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        run.complete_step(&definition, step_id, output, artifacts, now)?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
+    }
+
+    pub fn submit_workflow_step_result(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        raw: &str,
+        artifacts: Vec<crate::ArtifactReference>,
+        now: &str,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        let plan = run
+            .plans
+            .last()
+            .ok_or(crate::WorkflowIrError::InvalidPlanSequence)?;
+        let step = plan
+            .steps
+            .iter()
+            .find(|candidate| candidate.step_id == step_id)
+            .ok_or_else(|| crate::WorkflowIrError::StepNotFound(step_id.to_string()))?;
+        let schema_id = step
+            .result_schema_id
+            .as_deref()
+            .ok_or_else(|| crate::WorkflowIrError::MissingResultSchema(step_id.to_string()))?;
+        let schema = definition
+            .result_schemas
+            .iter()
+            .find(|schema| schema.schema_id == schema_id)
+            .ok_or_else(|| crate::WorkflowIrError::MissingResultSchema(schema_id.to_string()))?;
+        run.submit_structured_result(step_id, schema, raw, artifacts, now)?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
+    }
+
+    pub fn propose_workflow_plan(
+        &mut self,
+        run_id: &str,
+        proposal: crate::PlanProposal,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        run.propose_plan(&definition, proposal)?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
+    }
+
+    pub fn activate_workflow_plan(
+        &mut self,
+        run_id: &str,
+        proposal_id: &str,
+        now: &str,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        run.activate_plan(&definition, proposal_id, now)?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
+    }
+
+    pub fn record_workflow_usage(
+        &mut self,
+        run_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_micros: u64,
+        now: &str,
+    ) -> Result<crate::WorkflowRun, DurableWorkflowError> {
+        let mut run = self.workflow_run(run_id)?.ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run was not found".to_string())
+        })?;
+        let definition = self
+            .workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("Workflow Definition was not found".to_string())
+            })?;
+        run.record_usage(
+            input_tokens,
+            output_tokens,
+            cost_micros,
+            &definition.budget_policy,
+            now,
+        )?;
+        Ok(self.store.save_workflow_run(&run, run.revision)?)
     }
 
     fn from_store(mut store: SqliteWorkflowStore) -> Result<Self, DurableWorkflowError> {
@@ -297,6 +485,13 @@ impl DurableWorkflow {
         self.task_inbox.as_ref()
     }
 
+    #[must_use]
+    pub fn current_task_inbox_projection(&self) -> Option<TaskInboxMaterializedProjection> {
+        self.task_inbox
+            .clone()
+            .map(|task_inbox| self.task_inbox_projection(task_inbox))
+    }
+
     pub fn activate_task_inbox(
         &mut self,
     ) -> Result<TaskInboxMaterializedProjection, DurableWorkflowError> {
@@ -318,6 +513,24 @@ impl DurableWorkflow {
         if self.migration.phase != crate::WorkflowMigrationPhase::Active {
             return Err(WorkflowStoreError::TaskInboxNotActive.into());
         }
+        if let Some(run_id) = task_inbox_command_run_id(&command)?
+            && self
+                .store
+                .executor_lease_for_run(run_id)?
+                .is_some_and(|lease| lease.state.accepts_mutation())
+        {
+            return Err(crate::ExecutionError::FencedMutationRequired.into());
+        }
+        self.apply_task_inbox_unfenced(command)
+    }
+
+    fn apply_task_inbox_unfenced(
+        &mut self,
+        command: TaskInboxCommand,
+    ) -> Result<TaskInboxMaterializedProjection, DurableWorkflowError> {
+        if let TaskInboxCommand::AppendEvents { events, updated_at } = &command {
+            return self.append_task_inbox_events_unfenced(command.clone(), events, updated_at);
+        }
         let mut candidate = WorkflowStateMachine::restore(self.state.snapshot())?;
         let mut task_inbox = self.task_inbox.clone().ok_or_else(|| {
             WorkflowStoreError::InvalidValue("active TaskInbox projection is missing".to_string())
@@ -331,6 +544,92 @@ impl DurableWorkflow {
         self.task_inbox = Some(task_inbox.clone());
         self.revision = revision;
         Ok(self.task_inbox_projection(task_inbox))
+    }
+
+    pub fn apply_task_inbox_as_executor(
+        &mut self,
+        request: ExecutorTaskInboxCommand,
+    ) -> Result<TaskInboxMaterializedProjection, DurableWorkflowError> {
+        if self.migration.phase != crate::WorkflowMigrationPhase::Active {
+            return Err(WorkflowStoreError::TaskInboxNotActive.into());
+        }
+        request.context.validate()?;
+        let command_type = task_inbox_command_type(&request.command);
+        let idempotency_key = IdempotencyKey::for_payload(
+            &request.context.command_id,
+            command_type,
+            &request.context.now,
+            &request,
+        )?;
+        if let TaskInboxCommand::AppendEvents { events, updated_at } = &request.command {
+            if let Some(record) = self.store.idempotency_record(&idempotency_key)? {
+                let _: RuntimeEventAppendReceipt = decode_stored_result(&record.result_projection)?;
+                return Ok(
+                    self.task_inbox_projection(self.task_inbox.clone().ok_or_else(|| {
+                        WorkflowStoreError::InvalidValue(
+                            "active TaskInbox projection is missing".to_string(),
+                        )
+                    })?),
+                );
+            }
+            let mut candidate = WorkflowStateMachine::restore(self.state.snapshot())?;
+            let mut task_inbox = self.task_inbox.clone().ok_or_else(|| {
+                WorkflowStoreError::InvalidValue(
+                    "active TaskInbox projection is missing".to_string(),
+                )
+            })?;
+            task_inbox.apply_command(&mut candidate, request.command.clone())?;
+            let receipt = self.store.append_runtime_events_as_executor(
+                &task_inbox,
+                events,
+                updated_at,
+                &request.context,
+                self.revision,
+                &idempotency_key,
+            )?;
+            self.state = candidate;
+            self.task_inbox = Some(task_inbox.clone());
+            self.revision = receipt.revision;
+            return Ok(self.task_inbox_projection(task_inbox));
+        }
+        if let Some(record) = self.store.idempotency_record(&idempotency_key)? {
+            return decode_stored_result(&record.result_projection);
+        }
+        let command_run_id = task_inbox_command_run_id(&request.command)?
+            .ok_or(crate::ExecutionError::LeaseRunMismatch)?;
+        if command_run_id != request.context.run_id {
+            return Err(crate::ExecutionError::LeaseRunMismatch.into());
+        }
+        let mut candidate = WorkflowStateMachine::restore(self.state.snapshot())?;
+        let mut task_inbox = self.task_inbox.clone().ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("active TaskInbox projection is missing".to_string())
+        })?;
+        task_inbox.apply_command(&mut candidate, request.command)?;
+        let snapshot = candidate.snapshot();
+        let projected_revision = self.revision.checked_add(1).ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("workflow revision overflow".to_string())
+        })?;
+        let result = TaskInboxMaterializedProjection {
+            schema_version: WORKFLOW_SCHEMA_VERSION,
+            revision: projected_revision,
+            migration: self.migration.clone(),
+            snapshot: snapshot.clone(),
+            task_inbox: task_inbox.clone(),
+        };
+        let result_json = encode_stored_result(&result)?;
+        let revision = self.store.save_active_task_inbox_as_executor(
+            &snapshot,
+            &task_inbox,
+            &request.context,
+            self.revision,
+            &idempotency_key,
+            &result_json,
+        )?;
+        self.state = candidate;
+        self.task_inbox = Some(task_inbox.clone());
+        self.revision = revision;
+        debug_assert_eq!(revision, result.revision);
+        Ok(result)
     }
 
     pub fn configure_scheduler(
@@ -356,6 +655,15 @@ impl DurableWorkflow {
         if self.migration.phase != crate::WorkflowMigrationPhase::Active {
             return Err(WorkflowStoreError::TaskInboxNotActive.into());
         }
+        let idempotency_key = IdempotencyKey::for_payload(
+            &request.command_id,
+            "scheduler.claim",
+            &request.now,
+            &request,
+        )?;
+        if let Some(record) = self.store.idempotency_record(&idempotency_key)? {
+            return decode_stored_result(&record.result_projection);
+        }
         let mut candidate = WorkflowStateMachine::restore(self.state.snapshot())?;
         let mut task_inbox = self.task_inbox.clone().ok_or_else(|| {
             WorkflowStoreError::InvalidValue("active TaskInbox projection is missing".to_string())
@@ -363,24 +671,86 @@ impl DurableWorkflow {
         let poll = self
             .scheduler
             .claim_next(&mut task_inbox, &mut candidate, request)?;
-        if poll.claim.is_some() {
+        let claimed = poll.claim.is_some();
+        let projected_revision = if claimed {
+            self.revision.checked_add(1).ok_or_else(|| {
+                WorkflowStoreError::InvalidValue("workflow revision overflow".to_string())
+            })?
+        } else {
+            self.revision
+        };
+        let result = SchedulerClaimProjection {
+            schema_version: WORKFLOW_SCHEMA_VERSION,
+            revision: projected_revision,
+            migration: self.migration.clone(),
+            snapshot: candidate.snapshot(),
+            task_inbox: task_inbox.clone(),
+            claim: poll.claim.clone(),
+            next_wake_at: poll.next_wake_at.clone(),
+            admission: poll.admission.clone(),
+        };
+        let result_json = encode_stored_result(&result)?;
+        if claimed {
             let snapshot = candidate.snapshot();
-            let revision =
-                self.store
-                    .save_active_task_inbox(&snapshot, &task_inbox, self.revision)?;
+            let lease = &poll
+                .claim
+                .as_ref()
+                .expect("claim checked above")
+                .executor_lease;
+            let revision = self.store.save_active_task_inbox_with_executor_lease(
+                &snapshot,
+                &task_inbox,
+                lease,
+                self.revision,
+                &idempotency_key,
+                &result_json,
+            )?;
             self.state = candidate;
             self.task_inbox = Some(task_inbox.clone());
             self.revision = revision;
+        } else {
+            self.store
+                .record_idempotency_result(&idempotency_key, self.revision, &result_json)?;
         }
-        Ok(SchedulerClaimProjection {
-            schema_version: WORKFLOW_SCHEMA_VERSION,
-            revision: self.revision,
-            migration: self.migration.clone(),
-            snapshot: self.state.snapshot(),
-            task_inbox,
-            claim: poll.claim,
-            next_wake_at: poll.next_wake_at,
-        })
+        debug_assert_eq!(self.revision, result.revision);
+        Ok(result)
+    }
+
+    pub fn executor_lease_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<ExecutorLease>, DurableWorkflowError> {
+        Ok(self.store.executor_lease_for_run(run_id)?)
+    }
+
+    pub fn runtime_events(
+        &self,
+        run_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<RuntimeEventPage, DurableWorkflowError> {
+        Ok(self.store.runtime_events(run_id, after_sequence, limit)?)
+    }
+
+    pub fn apply_executor_lease_command(
+        &mut self,
+        command: &ExecutorLeaseCommand,
+    ) -> Result<ExecutorLease, DurableWorkflowError> {
+        Ok(self.store.apply_executor_lease_command(command)?)
+    }
+
+    pub fn validate_executor_context(
+        &self,
+        context: &ExecutorCommandContext,
+    ) -> Result<ExecutorLease, DurableWorkflowError> {
+        Ok(self.store.validate_executor_context(context)?)
+    }
+
+    pub fn takeover_executor_lease(
+        &mut self,
+        request: &ExecutorTakeoverRequest,
+    ) -> Result<ExecutorLease, DurableWorkflowError> {
+        Ok(self.store.takeover_executor_lease(request)?)
     }
 
     pub fn apply(
@@ -418,6 +788,114 @@ impl DurableWorkflow {
             task_inbox,
         }
     }
+
+    fn append_task_inbox_events_unfenced(
+        &mut self,
+        command: TaskInboxCommand,
+        events: &[crate::InboxEventRecord],
+        updated_at: &str,
+    ) -> Result<TaskInboxMaterializedProjection, DurableWorkflowError> {
+        let mut candidate = WorkflowStateMachine::restore(self.state.snapshot())?;
+        let mut task_inbox = self.task_inbox.clone().ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("active TaskInbox projection is missing".to_string())
+        })?;
+        task_inbox.apply_command(&mut candidate, command)?;
+        let receipt =
+            self.store
+                .append_runtime_events(&task_inbox, events, updated_at, self.revision)?;
+        self.state = candidate;
+        self.task_inbox = Some(task_inbox.clone());
+        self.revision = receipt.revision;
+        Ok(self.task_inbox_projection(task_inbox))
+    }
+}
+
+fn task_inbox_command_run_id(
+    command: &TaskInboxCommand,
+) -> Result<Option<&str>, crate::ExecutionError> {
+    let run_id = match command {
+        TaskInboxCommand::TransitionRun { run_id, .. }
+        | TaskInboxCommand::ReplaceArtifacts { run_id, .. } => Some(run_id.as_str()),
+        TaskInboxCommand::TransitionRunProjection { run, .. }
+        | TaskInboxCommand::UpdateRunProjection { run, .. } => Some(run.id.as_str()),
+        TaskInboxCommand::CancelTaskProjection { run, .. } => {
+            run.as_ref().map(|run| run.id.as_str())
+        }
+        TaskInboxCommand::UpdateTaskProjection { task, .. }
+        | TaskInboxCommand::QueueTaskProjection { task, .. } => task.current_run_id.as_deref(),
+        TaskInboxCommand::AppendEvents { events, .. } => {
+            let Some(first) = events.first() else {
+                return Ok(None);
+            };
+            if events.iter().any(|event| event.run_id != first.run_id) {
+                return Err(crate::ExecutionError::LeaseRunMismatch);
+            }
+            Some(first.run_id.as_str())
+        }
+        TaskInboxCommand::ReplaceArtifactSet { artifacts, .. } => {
+            let Some(first) = artifacts.first() else {
+                return Ok(None);
+            };
+            if artifacts
+                .iter()
+                .any(|artifact| artifact.run_id != first.run_id)
+            {
+                return Err(crate::ExecutionError::LeaseRunMismatch);
+            }
+            Some(first.run_id.as_str())
+        }
+        TaskInboxCommand::UpsertApproval { approval, .. } => approval.run_id.as_deref(),
+        TaskInboxCommand::CreateTask { .. }
+        | TaskInboxCommand::QueueTask { .. }
+        | TaskInboxCommand::UpdateTaskDefinition { .. }
+        | TaskInboxCommand::DispatchRun { .. }
+        | TaskInboxCommand::DispatchRunProjection { .. }
+        | TaskInboxCommand::CancelTask { .. }
+        | TaskInboxCommand::DeleteTask { .. }
+        | TaskInboxCommand::UpsertResource { .. } => None,
+    };
+    Ok(run_id)
+}
+
+const fn task_inbox_command_type(command: &TaskInboxCommand) -> &'static str {
+    match command {
+        TaskInboxCommand::CreateTask { .. } => "task_inbox.create_task",
+        TaskInboxCommand::QueueTask { .. } => "task_inbox.queue_task",
+        TaskInboxCommand::UpdateTaskDefinition { .. } => "task_inbox.update_task_definition",
+        TaskInboxCommand::DispatchRun { .. } => "task_inbox.dispatch_run",
+        TaskInboxCommand::TransitionRun { .. } => "task_inbox.transition_run",
+        TaskInboxCommand::CancelTask { .. } => "task_inbox.cancel_task",
+        TaskInboxCommand::DeleteTask { .. } => "task_inbox.delete_task",
+        TaskInboxCommand::UpdateTaskProjection { .. } => "task_inbox.update_task_projection",
+        TaskInboxCommand::QueueTaskProjection { .. } => "task_inbox.queue_task_projection",
+        TaskInboxCommand::DispatchRunProjection { .. } => "task_inbox.dispatch_run_projection",
+        TaskInboxCommand::TransitionRunProjection { .. } => "task_inbox.transition_run_projection",
+        TaskInboxCommand::UpdateRunProjection { .. } => "task_inbox.update_run_projection",
+        TaskInboxCommand::CancelTaskProjection { .. } => "task_inbox.cancel_task_projection",
+        TaskInboxCommand::AppendEvents { .. } => "task_inbox.append_events",
+        TaskInboxCommand::ReplaceArtifacts { .. } => "task_inbox.replace_artifacts",
+        TaskInboxCommand::ReplaceArtifactSet { .. } => "task_inbox.replace_artifact_set",
+        TaskInboxCommand::UpsertApproval { .. } => "task_inbox.upsert_approval",
+        TaskInboxCommand::UpsertResource { .. } => "task_inbox.upsert_resource",
+    }
+}
+
+fn encode_stored_result<T: Serialize>(value: &T) -> Result<String, WorkflowStoreError> {
+    serde_json::to_string(value).map_err(|error| {
+        WorkflowStoreError::InvalidValue(format!("failed to encode idempotency result: {error}"))
+    })
+}
+
+fn decode_stored_result<T: for<'de> Deserialize<'de>>(
+    encoded: &str,
+) -> Result<T, DurableWorkflowError> {
+    serde_json::from_str(encoded)
+        .map_err(|error| {
+            WorkflowStoreError::InvalidValue(format!(
+                "invalid persisted idempotency result: {error}"
+            ))
+        })
+        .map_err(Into::into)
 }
 
 fn apply_command(

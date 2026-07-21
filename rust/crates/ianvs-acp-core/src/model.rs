@@ -32,6 +32,9 @@ pub struct AgentLaunchConfig {
     /// Optional dedicated `SQLite` file for durable ACP session recovery.
     #[serde(default)]
     pub session_store_path: Option<String>,
+    /// Additional workspace roots advertised when creating an ACP session.
+    #[serde(default)]
+    pub additional_directories: Vec<String>,
     /// Product-level MCP server inputs projected into typed ACP session setup.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerLaunchConfig>,
@@ -93,6 +96,14 @@ impl AgentLaunchConfig {
         }
         if self.mcp_servers.len() > 64 {
             return Err("mcpServers exceeds 64 entries");
+        }
+        if self.additional_directories.len() > 256
+            || self
+                .additional_directories
+                .iter()
+                .any(|path| !canonical_bounded_text(path, 32 * 1024))
+        {
+            return Err("additionalDirectories is invalid");
         }
         let mut mcp_names = std::collections::HashSet::new();
         for server in &self.mcp_servers {
@@ -476,7 +487,7 @@ pub struct SessionCatalogEntryProjection {
     pub meta: Option<serde_json::Value>,
 }
 
-/// Events emitted by the Rust runtime to any host (Flutter FFI or future daemon).
+/// Events emitted by the Rust runtime to either typed host adapter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",

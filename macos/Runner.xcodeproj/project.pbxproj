@@ -470,6 +470,7 @@
 			);
 			outputPaths = (
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/libianvs_acp_ffi.dylib",
+				"${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}/ianvs-acpd",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;

@@ -16,6 +16,7 @@ import 'package:ianvs_acp/tasks/task_agent_pool.dart';
 import 'package:ianvs_acp/tasks/task_data_sanitizer.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
+import 'package:ianvs_acp/tasks/task_repository.dart';
 import 'package:ianvs_acp/tasks/task_runner.dart';
 
 import '../support/memory_task_repository.dart';
@@ -2817,6 +2818,7 @@ class _CountingAgentEventStore extends MemoryTaskRepository {
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (events.any(
       (event) =>
@@ -2842,6 +2844,7 @@ class _BlockingAssistantEventStore extends MemoryTaskRepository {
     TaskRunRecord run, {
     required TaskRunRecord expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
     if (run.status == TaskStatus.failed) terminalWriteCalls += 1;
     return super.updateRun(run, expected: expected, updatedAt: updatedAt);
@@ -2851,6 +2854,7 @@ class _BlockingAssistantEventStore extends MemoryTaskRepository {
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (events.any((event) => event.text.startsWith('Task run failed:'))) {
       terminalWriteCalls += 1;
@@ -2876,6 +2880,7 @@ class _FailingAssistantEventStore extends MemoryTaskRepository {
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) {
     if (events.any((event) => event.kind == TaskEventKind.assistant)) {
       throw StateError('assistant event write failed');

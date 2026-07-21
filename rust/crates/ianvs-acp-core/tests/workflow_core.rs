@@ -2,8 +2,8 @@ use std::fs;
 use std::time::Duration;
 
 use ianvs_acp_core::{
-    DurableWorkflow, DurableWorkflowError, ExecutionGateError, RetryPolicy, RunStatus,
-    SqliteWorkflowStore, TaskFailureReason, TaskInboxCommand, TaskInboxMutationError,
+    DurableWorkflow, DurableWorkflowError, ExecutionGateError, RecoveryState, RetryPolicy,
+    RunStatus, SqliteWorkflowStore, TaskFailureReason, TaskInboxCommand, TaskInboxMutationError,
     TaskInboxSnapshot, TaskStatus, WorkflowCommand, WorkflowMigrationPhase, WorkflowSnapshot,
     WorkflowStateError, WorkflowStateMachine, WorkflowStoreError,
 };
@@ -127,7 +127,7 @@ fn sqlite_snapshot_round_trip_restores_authoritative_state() {
 }
 
 #[test]
-fn sqlite_recovery_fails_live_runs_but_preserves_user_input() {
+fn sqlite_recovery_requeues_safe_unstarted_work_but_preserves_user_input() {
     let first_workspace = unique_temp_dir("workflow-sqlite-live");
     let second_workspace = unique_temp_dir("workflow-sqlite-user");
     let mut workflow = WorkflowStateMachine::new();
@@ -148,7 +148,9 @@ fn sqlite_recovery_fails_live_runs_but_preserves_user_input() {
     let mut store = SqliteWorkflowStore::open_in_memory().unwrap();
     store.save_snapshot(&workflow.snapshot()).unwrap();
     let report = store.recover_interrupted().unwrap();
-    assert_eq!(report.failed_task_ids, ["live"]);
+    assert_eq!(report.runs.len(), 1);
+    assert_eq!(report.runs[0].task_id, "live");
+    assert_eq!(report.runs[0].recovery_state, RecoveryState::Requeued);
     let snapshot = store.load_snapshot().unwrap();
     let live = snapshot
         .tasks
@@ -160,7 +162,7 @@ fn sqlite_recovery_fails_live_runs_but_preserves_user_input() {
         .iter()
         .find(|task| task.id == "user")
         .unwrap();
-    assert_eq!(live.status, TaskStatus::Failed);
+    assert_eq!(live.status, TaskStatus::Queued);
     assert_eq!(user.status, TaskStatus::BlockedOnUserInput);
     assert_eq!(
         snapshot
@@ -212,9 +214,13 @@ fn durable_workflow_commits_commands_and_recovers_on_reopen() {
 
     let reopened = DurableWorkflow::open(&database).unwrap();
     let projection = reopened.open_projection();
-    assert_eq!(projection.recovery.failed_task_ids, ["task-1"]);
+    assert_eq!(projection.recovery.runs.len(), 1);
+    assert_eq!(
+        projection.recovery.runs[0].recovery_state,
+        RecoveryState::Requeued
+    );
     assert_eq!(projection.revision, 5);
-    assert_eq!(projection.snapshot.tasks[0].status, TaskStatus::Failed);
+    assert_eq!(projection.snapshot.tasks[0].status, TaskStatus::Queued);
     assert_eq!(projection.snapshot.runs[0].status, RunStatus::Failed);
     fs::remove_dir_all(directory).unwrap();
 }
@@ -469,9 +475,10 @@ fn full_task_inbox_migrates_to_atomic_rust_owned_mutations_and_recovery() {
         WorkflowMigrationPhase::Active
     );
     assert_eq!(reopened.open_projection().revision, 13);
+    assert_eq!(reopened.open_projection().recovery.runs.len(), 1);
     assert_eq!(
-        reopened.open_projection().recovery.failed_task_ids,
-        ["task-2"]
+        reopened.open_projection().recovery.runs[0].recovery_state,
+        RecoveryState::ReviewRequired
     );
     assert_eq!(reopened.task_inbox_source().unwrap(), Some(source));
     assert_eq!(
@@ -486,7 +493,7 @@ fn full_task_inbox_migrates_to_atomic_rust_owned_mutations_and_recovery() {
             .find(|task| task.id == "task-2")
             .unwrap()
             .status,
-        ianvs_acp_core::InboxTaskStatus::Failed
+        ianvs_acp_core::InboxTaskStatus::NeedsHumanReview
     );
     assert_eq!(
         current
@@ -495,7 +502,7 @@ fn full_task_inbox_migrates_to_atomic_rust_owned_mutations_and_recovery() {
             .find(|run| run.id == "run-2")
             .unwrap()
             .status,
-        ianvs_acp_core::InboxTaskStatus::Failed
+        ianvs_acp_core::InboxTaskStatus::NeedsHumanReview
     );
     assert_eq!(current.events[0].id, "event-2");
     assert_eq!(current.artifacts[0].id, "artifact-2");

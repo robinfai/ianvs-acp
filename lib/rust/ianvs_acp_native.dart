@@ -125,7 +125,7 @@ final class IanvsRustRuntime {
     _pollTimer = Timer.periodic(pollInterval, (_) => _drainEvents());
   }
 
-  static const int expectedFfiVersion = 5;
+  static const int expectedFfiVersion = 7;
 
   final IanvsAcpNativeApi _native;
   final Duration pollInterval;

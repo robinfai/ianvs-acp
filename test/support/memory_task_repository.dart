@@ -166,6 +166,7 @@ class MemoryTaskRepository
   Future<TaskRecord> updateTask(
     TaskRecord task, {
     required TaskRecord expected,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (task.id != expected.id || task.createdAt != expected.createdAt) {
       throw ArgumentError('Updated task must keep its identity.');
@@ -381,6 +382,7 @@ class MemoryTaskRepository
     TaskRunRecord run, {
     required TaskRunRecord expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (run.id != expected.id ||
         run.taskId != expected.taskId ||
@@ -405,6 +407,7 @@ class MemoryTaskRepository
   Future<void> appendEvents(
     List<TaskEventRecord> events, {
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (events.isEmpty) return;
     await _beforeWrite('appendEvents');
@@ -429,6 +432,7 @@ class MemoryTaskRepository
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     await _beforeWrite('replaceArtifactsForRun');
     final current = _snapshot.artifacts
@@ -479,6 +483,7 @@ class MemoryTaskRepository
     required List<ArtifactRecord> expectedArtifacts,
     required List<ArtifactRecord> artifacts,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (expectedArtifacts.isEmpty && artifacts.isEmpty) return;
     await _beforeWrite('updateArtifacts');
@@ -521,6 +526,7 @@ class MemoryTaskRepository
     ApprovalRequestRecord approval, {
     ApprovalRequestRecord? expected,
     required DateTime updatedAt,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     await _beforeWrite('upsertApproval');
     final approvals = [..._snapshot.approvals];

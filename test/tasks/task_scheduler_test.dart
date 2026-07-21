@@ -2411,6 +2411,7 @@ class _StallTaskAUpdateStore extends MemoryTaskRepository {
   Future<TaskRecord> updateTask(
     TaskRecord task, {
     required TaskRecord expected,
+    TaskExecutorCommandContext? executorContext,
   }) async {
     if (task.id == 'task-a' && task.status == TaskStatus.running) {
       if (!updateStarted.isCompleted) updateStarted.complete();

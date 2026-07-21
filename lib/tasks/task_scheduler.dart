@@ -20,6 +20,8 @@ class TaskScheduler {
     WorkspaceExecutionGate? workspaceGate,
     this.runtimeRegistry,
     this.retryPolicy = const RetryPolicy(),
+    this.executorLeaseTtl = const Duration(seconds: 30),
+    this.executorHeartbeatInterval = const Duration(seconds: 10),
     this.onPersistenceFault,
     DateTime Function()? clock,
     TaskWakeTimerFactory? wakeTimerFactory,
@@ -33,6 +35,13 @@ class TaskScheduler {
         'Must be greater than zero.',
       );
     }
+    if (executorLeaseTtl <= Duration.zero ||
+        executorHeartbeatInterval <= Duration.zero ||
+        executorHeartbeatInterval >= executorLeaseTtl) {
+      throw ArgumentError(
+        'Executor heartbeat interval must be positive and shorter than its lease TTL.',
+      );
+    }
   }
 
   final TaskInboxController taskController;
@@ -41,6 +50,8 @@ class TaskScheduler {
   final WorkspaceExecutionGate workspaceGate;
   final LocalRuntimeRegistry? runtimeRegistry;
   final RetryPolicy retryPolicy;
+  final Duration executorLeaseTtl;
+  final Duration executorHeartbeatInterval;
   final void Function(TaskPersistenceStalledException error)?
   onPersistenceFault;
   final DateTime Function() _clock;
@@ -423,43 +434,140 @@ class TaskScheduler {
         _dispatchEnabled &&
         !_disposed &&
         _activeTaskIds.length < maxConcurrentTasks) {
-      final poll = await taskController.claimNextScheduledTask(
-        excludedTaskIds: excludedTaskIds,
-      );
-      final nextWakeAt = poll.nextWakeAt;
-      if (nextWakeAt != null) _scheduleRetryWake(nextWakeAt);
-      final claim = poll.claim;
-      if (claim == null) return;
-      final task = claim.task;
-      TaskWorkerLease? workerLease;
-      final reservableWorker = worker;
-      if (reservableWorker is ReservableTaskWorker) {
+      final reservations = await _reserveAtomicCapacity(excludedTaskIds);
+      TaskWorkerReservation? selectedReservation;
+      TaskWorkerReservation? transferredReservation;
+      try {
+        final poll = await taskController.claimNextScheduledTask(
+          executorId: reservations.isEmpty
+              ? 'flutter-${identityHashCode(worker).toRadixString(16)}'
+              : reservations.first.hostInstanceId,
+          leaseExpiresAt: _clock().add(executorLeaseTtl),
+          excludedTaskIds: excludedTaskIds,
+          capacityReservations: reservations
+              .map((reservation) => reservation.capacityReservation)
+              .toList(growable: false),
+        );
+        final nextWakeAt = poll.nextWakeAt;
+        if (nextWakeAt != null) _scheduleRetryWake(nextWakeAt);
+        _scheduleAdmissionWake(poll.admission.reason);
+        final claim = poll.claim;
+        if (claim == null) return;
+        final selectedReservationId = claim.reservationId;
+        for (final reservation in reservations) {
+          if (reservation.reservationId == selectedReservationId) {
+            selectedReservation = reservation;
+            break;
+          }
+        }
+        if (selectedReservation == null ||
+            selectedReservation.agentName != claim.task.agentName) {
+          throw StateError(
+            'Rust selected an unknown or mismatched worker reservation.',
+          );
+        }
+        if (!_started || !_dispatchEnabled || _disposed) {
+          return;
+        }
+        final task = claim.task;
+        _activeTaskIds.add(task.id);
+        final activeRun = _runTask(task, selectedReservation);
+        transferredReservation = selectedReservation;
+        selectedReservation = null;
+        _activeRuns.add(activeRun);
+        unawaited(
+          activeRun.then<void>(
+            (_) => _activeRuns.remove(activeRun),
+            onError: (Object _, StackTrace _) {
+              _activeRuns.remove(activeRun);
+            },
+          ),
+        );
+      } finally {
+        await _releaseWorkerReservations(
+          reservations.where(
+            (reservation) =>
+                !identical(reservation, selectedReservation) &&
+                !identical(reservation, transferredReservation),
+          ),
+        );
+        await _releaseWorkerLease(selectedReservation);
+      }
+    }
+  }
+
+  Future<List<TaskWorkerReservation>> _reserveAtomicCapacity(
+    Set<String> excludedTaskIds,
+  ) async {
+    final reservableWorker = worker;
+    if (reservableWorker is! CapacityReservableTaskWorker) {
+      return const <TaskWorkerReservation>[];
+    }
+    final agentNames =
+        taskController.tasks
+            .where(
+              (task) =>
+                  task.status == TaskStatus.queued &&
+                  !excludedTaskIds.contains(task.id),
+            )
+            .map((task) => task.agentName)
+            .toSet()
+            .toList(growable: false)
+          ..sort();
+    final reservations = <TaskWorkerReservation>[];
+    final reservationIds = <String>{};
+    try {
+      for (final agentName in agentNames) {
+        if (!_started || !_dispatchEnabled || _disposed) break;
+        TaskWorkerReservation? reservation;
         try {
-          workerLease = await reservableWorker.tryAcquire(task);
+          reservation = await reservableWorker.tryReserveAgent(agentName);
         } on Object {
-          await _failAtomicClaimWithoutWorker(task);
+          _scheduleRuntimeWake();
           continue;
         }
-        if (workerLease == null) {
-          await _failAtomicClaimWithoutWorker(task);
-          continue;
+        if (reservation == null) continue;
+        if (reservation.agentName.trim() != agentName.trim() ||
+            !_clock().isBefore(reservation.expiresAt) ||
+            !reservationIds.add(reservation.reservationId)) {
+          await _releaseWorkerLease(reservation);
+          throw StateError('Worker returned an invalid capacity reservation.');
         }
+        reservations.add(reservation);
       }
-      if (!_started || !_dispatchEnabled || _disposed) {
-        await _releaseWorkerLease(workerLease);
-        return;
-      }
-      _activeTaskIds.add(task.id);
-      final activeRun = _runTask(task, workerLease);
-      _activeRuns.add(activeRun);
-      unawaited(
-        activeRun.then<void>(
-          (_) => _activeRuns.remove(activeRun),
-          onError: (Object _, StackTrace _) {
-            _activeRuns.remove(activeRun);
-          },
-        ),
-      );
+      return reservations;
+    } on Object {
+      await _releaseWorkerReservations(reservations);
+      rethrow;
+    }
+  }
+
+  Future<void> _releaseWorkerReservations(
+    Iterable<TaskWorkerReservation> reservations,
+  ) async {
+    for (final reservation in reservations) {
+      await _releaseWorkerLease(reservation);
+    }
+  }
+
+  void _scheduleAdmissionWake(TaskSchedulingAdmissionReason reason) {
+    switch (reason) {
+      case TaskSchedulingAdmissionReason.noExecutorCapacity:
+      case TaskSchedulingAdmissionReason.agentCapacity:
+      case TaskSchedulingAdmissionReason.runtimeUnavailable:
+      case TaskSchedulingAdmissionReason.runtimeStatusStale:
+      case TaskSchedulingAdmissionReason.noMatchingRuntime:
+        _scheduleRuntimeWake();
+        break;
+      case TaskSchedulingAdmissionReason.workspaceBusy:
+      case TaskSchedulingAdmissionReason.globalCapacity:
+        _scheduleRefreshRetry();
+        break;
+      case TaskSchedulingAdmissionReason.claimed:
+      case TaskSchedulingAdmissionReason.queueEmpty:
+      case TaskSchedulingAdmissionReason.retryNotReady:
+      case TaskSchedulingAdmissionReason.excluded:
+        break;
     }
   }
 
@@ -491,18 +599,6 @@ class TaskScheduler {
       }
       if (!_started || !_dispatchEnabled || _disposed) return;
       await taskController.publishSchedulingRuntimeStatus(status);
-    }
-  }
-
-  Future<void> _failAtomicClaimWithoutWorker(TaskRecord task) async {
-    _activeTaskIds.add(task.id);
-    try {
-      await _handleWorkerError(
-        task,
-        StateError('Agent runtime capacity was unavailable after dispatch.'),
-      );
-    } finally {
-      _releaseTask(task);
     }
   }
 
@@ -713,8 +809,30 @@ class TaskScheduler {
   }
 
   Future<void> _runTask(TaskRecord task, TaskWorkerLease? workerLease) async {
+    Timer? heartbeatTimer;
+    final runId = task.currentRunId;
     try {
       final currentTask = taskController.taskById(task.id) ?? task;
+      if (runId != null && taskController.executorLeaseForRun(runId) != null) {
+        await taskController.acknowledgeExecutorStart(
+          runId,
+          nextExpiresAt: _clock().add(executorLeaseTtl),
+        );
+        heartbeatTimer = Timer.periodic(executorHeartbeatInterval, (_) {
+          unawaited(
+            taskController
+                .heartbeatExecutor(
+                  runId,
+                  nextExpiresAt: _clock().add(executorLeaseTtl),
+                )
+                .catchError((Object _) {
+                  // The active run observes the ownership failure through its
+                  // next fenced mutation or terminal release.
+                  return taskController.executorLeaseForRun(runId)!;
+                }),
+          );
+        });
+      }
       final result = workerLease == null
           ? await worker.run(currentTask)
           : await workerLease.run(currentTask);
@@ -728,6 +846,15 @@ class TaskScheduler {
         _stopForPersistenceFault(persistenceError);
       }
     } finally {
+      heartbeatTimer?.cancel();
+      if (runId != null && taskController.executorLeaseForRun(runId) != null) {
+        try {
+          await taskController.releaseExecutor(runId);
+        } on Object {
+          // Expiry recovery classifies an ownership release that could not be
+          // durably acknowledged during shutdown or process loss.
+        }
+      }
       await _releaseWorkerLease(workerLease);
       _releaseTask(task);
       _scheduleDrain();

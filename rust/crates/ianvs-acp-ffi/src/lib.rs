@@ -12,7 +12,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use ianvs_acp_core::{
-    AgentLaunchConfig, DurableWorkflow, PermissionDecision, PromptAttachmentInput, RuntimeHandle,
+    AgentLaunchConfig, DurableWorkflow, ExecutorLeaseCommand, ExecutorTakeoverRequest,
+    ExecutorTaskInboxCommand, PermissionDecision, PromptAttachmentInput, RuntimeHandle,
     SchedulerClaimRequest, SchedulerConfig, SchedulerRuntimeStatus, SessionConfigValueProjection,
     TASK_INBOX_SCHEMA, TaskInboxCommand, TaskInboxSnapshot, WorkflowCommand,
 };
@@ -98,7 +99,7 @@ impl IanvsWorkflow {
 /// ABI version for compatibility checks before any other call.
 #[unsafe(no_mangle)]
 pub extern "C" fn ianvs_acp_ffi_version() -> u32 {
-    5
+    7
 }
 
 /// Allocate a new, stopped runtime.
@@ -816,6 +817,37 @@ pub unsafe extern "C" fn ianvs_workflow_apply_task_inbox(
     })
 }
 
+/// Apply a `TaskInbox` mutation from the current fenced executor generation.
+///
+/// # Safety
+///
+/// `workflow` and `request_json` must be live pointers for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_workflow_apply_task_inbox_as_executor(
+    workflow: *mut IanvsWorkflow,
+    request_json: *const c_char,
+) -> *mut c_char {
+    let Some(workflow) = (unsafe { workflow.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let request_json = match unsafe { read_string(request_json, "requestJson") } {
+        Ok(request) => request,
+        Err(error) => return workflow_error(workflow, error),
+    };
+    workflow.run_string(|slot| {
+        let request: ExecutorTaskInboxCommand = serde_json::from_str(&request_json)
+            .map_err(|error| format!("invalid executor TaskInbox command: {error}"))?;
+        let authority = slot
+            .as_mut()
+            .ok_or_else(|| "workflow handle is not open".to_string())?;
+        let projection = authority
+            .apply_task_inbox_as_executor(request)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&projection)
+            .map_err(|error| format!("failed to encode TaskInbox projection: {error}"))
+    })
+}
+
 /// Configure Rust-owned global scheduler admission limits.
 ///
 /// # Safety
@@ -911,6 +943,130 @@ pub unsafe extern "C" fn ianvs_workflow_scheduler_claim_next(
             .map_err(|error| error.to_string())?;
         serde_json::to_string(&projection)
             .map_err(|error| format!("failed to encode scheduler claim: {error}"))
+    })
+}
+
+/// Read the latest persisted executor lease for a Run.
+///
+/// # Safety
+///
+/// `workflow` and `run_id` must be live pointers for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_workflow_executor_lease_for_run(
+    workflow: *mut IanvsWorkflow,
+    run_id: *const c_char,
+) -> *mut c_char {
+    let Some(workflow) = (unsafe { workflow.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let run_id = match unsafe { read_string(run_id, "runId") } {
+        Ok(run_id) => run_id,
+        Err(error) => return workflow_error(workflow, error),
+    };
+    workflow.run_string(|slot| {
+        let authority = slot
+            .as_ref()
+            .ok_or_else(|| "workflow handle is not open".to_string())?;
+        let lease = authority
+            .executor_lease_for_run(&run_id)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&serde_json::json!({"lease": lease}))
+            .map_err(|error| format!("failed to encode executor lease: {error}"))
+    })
+}
+
+/// Query append-only Task events for one Run after an exclusive sequence
+/// cursor. The bounded page can be used by reconnecting Flutter clients.
+///
+/// # Safety
+///
+/// `workflow` and `run_id` must be live pointers and `run_id` must be valid,
+/// NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_workflow_runtime_events(
+    workflow: *mut IanvsWorkflow,
+    run_id: *const c_char,
+    after_sequence: u64,
+    limit: u32,
+) -> *mut c_char {
+    let Some(workflow) = (unsafe { workflow.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let run_id = match unsafe { read_string(run_id, "runId") } {
+        Ok(run_id) => run_id,
+        Err(error) => return workflow_error(workflow, error),
+    };
+    workflow.run_string(|slot| {
+        let authority = slot
+            .as_ref()
+            .ok_or_else(|| "workflow handle is not open".to_string())?;
+        let page = authority
+            .runtime_events(&run_id, after_sequence, limit as usize)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&page)
+            .map_err(|error| format!("failed to encode runtime event page: {error}"))
+    })
+}
+
+/// Apply a typed executor ownership command.
+///
+/// # Safety
+///
+/// `workflow` and `command_json` must be live pointers for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_workflow_executor_lease_command(
+    workflow: *mut IanvsWorkflow,
+    command_json: *const c_char,
+) -> *mut c_char {
+    let Some(workflow) = (unsafe { workflow.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let command_json = match unsafe { read_string(command_json, "commandJson") } {
+        Ok(command) => command,
+        Err(error) => return workflow_error(workflow, error),
+    };
+    workflow.run_string(|slot| {
+        let command: ExecutorLeaseCommand = serde_json::from_str(&command_json)
+            .map_err(|error| format!("invalid executor lease command: {error}"))?;
+        let authority = slot
+            .as_mut()
+            .ok_or_else(|| "workflow handle is not open".to_string())?;
+        let lease = authority
+            .apply_executor_lease_command(&command)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&lease)
+            .map_err(|error| format!("failed to encode executor lease: {error}"))
+    })
+}
+
+/// Replace an expired executor lease with the next fencing generation.
+///
+/// # Safety
+///
+/// `workflow` and `request_json` must be live pointers for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_workflow_executor_takeover(
+    workflow: *mut IanvsWorkflow,
+    request_json: *const c_char,
+) -> *mut c_char {
+    let Some(workflow) = (unsafe { workflow.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let request_json = match unsafe { read_string(request_json, "requestJson") } {
+        Ok(request) => request,
+        Err(error) => return workflow_error(workflow, error),
+    };
+    workflow.run_string(|slot| {
+        let request: ExecutorTakeoverRequest = serde_json::from_str(&request_json)
+            .map_err(|error| format!("invalid executor takeover request: {error}"))?;
+        let authority = slot
+            .as_mut()
+            .ok_or_else(|| "workflow handle is not open".to_string())?;
+        let lease = authority
+            .takeover_executor_lease(&request)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&lease)
+            .map_err(|error| format!("failed to encode executor lease: {error}"))
     })
 }
 

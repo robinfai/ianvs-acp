@@ -16,6 +16,7 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/rust/ianvs_workflow_native.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
@@ -571,6 +572,7 @@ void main() {
         config: AcpClientConfig(configPath: configPath),
         autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) async => const <AgentServerConfig>[],
+        createTaskDaemonAuthority: (_) async => IanvsRustWorkflow(),
       ),
       const Size(1400, 900),
     );
@@ -672,6 +674,7 @@ void main() {
           config: AcpClientConfig(configPath: configPath),
           autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) async => const <AgentServerConfig>[],
+          createTaskDaemonAuthority: (_) async => IanvsRustWorkflow(),
         ),
         const Size(1400, 900),
       );
