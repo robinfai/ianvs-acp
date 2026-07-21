@@ -1002,9 +1002,7 @@ unsafe fn read_string(pointer: *const c_char, name: &str) -> Result<String, Stri
 }
 
 fn into_c_string(value: String) -> *mut c_char {
-    CString::new(value)
-        .map(CString::into_raw)
-        .unwrap_or(ptr::null_mut())
+    CString::new(value).map_or(ptr::null_mut(), CString::into_raw)
 }
 
 fn workflow_error(workflow: &IanvsWorkflow, error: String) -> *mut c_char {
