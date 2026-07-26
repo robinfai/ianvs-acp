@@ -160,6 +160,7 @@ pub enum ProgressLedgerKind {
     PlanActivated,
     StepReady,
     StepStarted,
+    StepWaiting,
     StepCompleted,
     StepFailed,
     BudgetUpdated,

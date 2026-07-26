@@ -1,0 +1,99 @@
+name: Linux verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      FLUTTER_ARCHIVE_URL: >-
+        https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.0-stable.tar.xz
+      FLUTTER_ARCHIVE_SHA256: e1ec95e6c550458a34de93580cb85dac24da0e9bedb9bb42811f050ac5a0c7d5
+      FLUTTER_FRAMEWORK_REVISION: 559ffa3f75e7402d65a8def9c28389a9b2e6fe42
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang \
+            cmake \
+            libgtk-3-dev \
+            libsecret-tools \
+            libstdc++-12-dev \
+            liblzma-dev \
+            ninja-build \
+            pkg-config
+
+      - name: Install Rust 1.90
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup default 1.90.0
+          rustup component add clippy rustfmt
+
+      - name: Install Flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/flutter_linux_3.44.0-stable.tar.xz"
+          sdk_parent="$RUNNER_TEMP/flutter-sdk"
+          curl --fail --proto '=https' --tlsv1.2 --location \
+            --retry 5 --retry-all-errors \
+            --output "$archive" "$FLUTTER_ARCHIVE_URL"
+          printf '%s  %s\n' "$FLUTTER_ARCHIVE_SHA256" "$archive" \
+            | sha256sum -c -
+          mkdir -p "$sdk_parent"
+          tar -xJf "$archive" -C "$sdk_parent"
+          flutter_root="$sdk_parent/flutter"
+          printf 'FLUTTER_ROOT=%s\n' "$flutter_root" >>"$GITHUB_ENV"
+          printf '%s\n' "$flutter_root/bin" >>"$GITHUB_PATH"
+
+      - name: Verify Flutter toolchain identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_json=$(flutter --version --machine)
+          test "$(printf '%s' "$version_json" | jq -r .frameworkVersion)" = '3.44.0'
+          test "$(printf '%s' "$version_json" | jq -r .frameworkRevision)" \
+            = "$FLUTTER_FRAMEWORK_REVISION"
+
+      - name: Resolve Dart dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+
+      - name: Verify Rust runtime and FFI integration
+        run: ./tool/verify_rust_runtime.sh
+
+      - name: Test Flutter code with isolated HOME
+        run: ./tool/flutter_test_isolated.sh
+
+      - name: Build Linux release bundle
+        run: flutter build linux --release --no-pub
+
+      - name: Verify bundled Rust runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=build/linux/x64/release/bundle
+          test -x "$bundle/ianvs-acpd"
+          test -f "$bundle/lib/libianvs_acp_ffi.so"
+          ldd "$bundle/ianvs-acpd"
+          ldd "$bundle/lib/libianvs_acp_ffi.so"

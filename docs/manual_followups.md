@@ -61,7 +61,8 @@ Run before a release candidate:
 - connect to each supported local agent adapter and complete create, prompt,
   permission, cancel, restore, close, and recovery flows;
 - validate file/image/audio attachment behavior for each advertised model;
-- verify macOS keychain entitlements in the signed application;
+- verify macOS Keychain entitlements in the signed application and Linux
+  Secret Service behavior under GNOME Keyring/KWallet;
 - exercise Inbox automatic execution, human-decision pause/resume, retry wakeup,
   and application restart recovery;
 - verify compact-window keyboard focus, screen-reader labels, drag/drop, file
@@ -74,4 +75,5 @@ Automated baseline:
 flutter analyze --no-pub
 flutter test --no-pub
 flutter build macos --release
+flutter build linux --release
 ```

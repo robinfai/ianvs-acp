@@ -14,8 +14,10 @@ void main() {
         'ianvs-daemon-dart-',
       );
       final databasePath = '${directory.path}/workflow.sqlite3';
-      final socketPath =
-          '/private/tmp/ianvs-acpd-dart-${DateTime.now().microsecondsSinceEpoch}.sock';
+      final socketPath = IanvsDaemonProcess.socketPathForDatabase(
+        databasePath,
+        temporaryDirectory: directory.path,
+      );
       final binary = File('rust/target/debug/ianvs-acpd').absolute.path;
       expect(
         File(binary).existsSync(),

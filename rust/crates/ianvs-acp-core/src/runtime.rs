@@ -377,6 +377,49 @@ pub struct RuntimeHandle {
     worker: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone)]
+pub struct RuntimeCommandHandle {
+    command_sender: tokio_mpsc::Sender<RuntimeCommand>,
+}
+
+impl std::fmt::Debug for RuntimeCommandHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeCommandHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuntimeCommandHandle {
+    pub fn respond_permission(
+        &self,
+        request_id: impl Into<String>,
+        decision: PermissionDecision,
+    ) -> Result<(), RuntimeError> {
+        send_runtime_command(
+            &self.command_sender,
+            RuntimeCommand::RespondPermission {
+                request_id: checked_request_id(request_id.into())?,
+                decision,
+            },
+        )
+    }
+
+    pub fn cancel(
+        &self,
+        request_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        send_runtime_command(
+            &self.command_sender,
+            RuntimeCommand::Cancel {
+                request_id: checked_request_id(request_id.into())?,
+                session_id: checked_session_id(session_id.into())?,
+            },
+        )
+    }
+}
+
 impl std::fmt::Debug for RuntimeHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -425,6 +468,13 @@ impl RuntimeHandle {
 
     pub fn start_agent(&self, config: AgentLaunchConfig) -> Result<(), RuntimeError> {
         self.send(RuntimeCommand::StartAgent(Box::new(config)))
+    }
+
+    #[must_use]
+    pub fn command_handle(&self) -> RuntimeCommandHandle {
+        RuntimeCommandHandle {
+            command_sender: self.command_sender.clone(),
+        }
     }
 
     pub fn create_session(
@@ -616,13 +666,18 @@ impl RuntimeHandle {
     }
 
     fn send(&self, command: RuntimeCommand) -> Result<(), RuntimeError> {
-        self.command_sender
-            .try_send(command)
-            .map_err(|error| match error {
-                tokio_mpsc::error::TrySendError::Full(_) => RuntimeError::Backpressure,
-                tokio_mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
-            })
+        send_runtime_command(&self.command_sender, command)
     }
+}
+
+fn send_runtime_command(
+    sender: &tokio_mpsc::Sender<RuntimeCommand>,
+    command: RuntimeCommand,
+) -> Result<(), RuntimeError> {
+    sender.try_send(command).map_err(|error| match error {
+        tokio_mpsc::error::TrySendError::Full(_) => RuntimeError::Backpressure,
+        tokio_mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
+    })
 }
 
 impl Drop for RuntimeHandle {

@@ -875,7 +875,12 @@ impl WorkflowRun {
         step.status = StepRunStatus::Running;
         step.attempt = step.attempt.saturating_add(1);
         step.started_at = Some(now.to_string());
+        step.ended_at = None;
         step.input = Some(input);
+        step.output = None;
+        step.artifacts.clear();
+        step.error = None;
+        step.structured_result = None;
         if let Some(entry) = self.task_ledger.iter_mut().rev().find(|entry| {
             entry.step_id == step_id && entry.plan_version == self.active_plan_version
         }) {
@@ -923,6 +928,190 @@ impl WorkflowRun {
             ));
         }
         self.complete_validated_step(step_id, output, artifacts, now)
+    }
+
+    pub fn wait_step(
+        &mut self,
+        step_id: &str,
+        needs_human_review: bool,
+        now: &str,
+    ) -> Result<(), WorkflowIrError> {
+        self.ensure_progress_capacity()
+            .map_err(|_| WorkflowIrError::InvalidStepState)?;
+        let step = self.step_mut(step_id)?;
+        if step.status != StepRunStatus::Running {
+            return Err(WorkflowIrError::StepNotReady(step_id.to_string()));
+        }
+        step.status = if needs_human_review {
+            StepRunStatus::NeedsHumanReview
+        } else {
+            StepRunStatus::Waiting
+        };
+        let step_plan_version = step.plan_version;
+        if let Some(entry) = self
+            .task_ledger
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.step_id == step_id && entry.plan_version == step_plan_version)
+        {
+            entry.status = crate::TaskLedgerStatus::Waiting;
+            entry.updated_at = now.to_string();
+        }
+        self.status = self.derived_status();
+        self.updated_at = now.to_string();
+        self.append_progress(
+            if needs_human_review {
+                crate::ProgressLedgerKind::HumanReview
+            } else {
+                crate::ProgressLedgerKind::StepWaiting
+            },
+            Some(step_id.to_string()),
+            if needs_human_review {
+                "Step is waiting for human approval."
+            } else {
+                "Step is waiting for a durable signal or deadline."
+            },
+            BTreeMap::new(),
+            now,
+        )
+        .map_err(|_| WorkflowIrError::InvalidStepState)
+    }
+
+    pub fn resume_step(&mut self, step_id: &str, now: &str) -> Result<(), WorkflowIrError> {
+        let step = self.step_mut(step_id)?;
+        if !matches!(
+            step.status,
+            StepRunStatus::Waiting | StepRunStatus::NeedsHumanReview
+        ) {
+            return Err(WorkflowIrError::StepNotReady(step_id.to_string()));
+        }
+        step.status = StepRunStatus::Running;
+        let step_plan_version = step.plan_version;
+        if let Some(entry) = self
+            .task_ledger
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.step_id == step_id && entry.plan_version == step_plan_version)
+        {
+            entry.status = crate::TaskLedgerStatus::Running;
+            entry.updated_at = now.to_string();
+        }
+        self.status = WorkflowRunStatus::Running;
+        self.updated_at = now.to_string();
+        Ok(())
+    }
+
+    pub fn resolve_approval_step(
+        &mut self,
+        definition: &WorkflowDefinition,
+        step_id: &str,
+        approved: bool,
+        now: &str,
+    ) -> Result<(), WorkflowIrError> {
+        let kind = self
+            .plans
+            .last()
+            .ok_or(WorkflowIrError::InvalidPlanSequence)?
+            .steps
+            .iter()
+            .find(|step| step.step_id == step_id)
+            .ok_or_else(|| WorkflowIrError::StepNotFound(step_id.to_string()))?
+            .kind
+            .clone();
+        if !matches!(kind, StepKind::Approval { .. }) {
+            return Err(WorkflowIrError::InvalidStepState);
+        }
+        if approved {
+            self.resume_step(step_id, now)?;
+            self.complete_step(
+                definition,
+                step_id,
+                serde_json::json!({"approved": true}),
+                Vec::new(),
+                now,
+            )
+        } else {
+            self.fail_step(
+                definition,
+                step_id,
+                "Workflow approval was denied.",
+                false,
+                now,
+            )?;
+            Ok(())
+        }
+    }
+
+    pub fn fail_step(
+        &mut self,
+        definition: &WorkflowDefinition,
+        step_id: &str,
+        error: &str,
+        retryable: bool,
+        now: &str,
+    ) -> Result<bool, WorkflowIrError> {
+        if error.is_empty() || error.trim() != error {
+            return Err(WorkflowIrError::InvalidText("stepError"));
+        }
+        self.ensure_progress_capacity()
+            .map_err(|_| WorkflowIrError::InvalidStepState)?;
+        let retry_limit = self
+            .plans
+            .last()
+            .ok_or(WorkflowIrError::InvalidPlanSequence)?
+            .steps
+            .iter()
+            .find(|step| step.step_id == step_id)
+            .ok_or_else(|| WorkflowIrError::StepNotFound(step_id.to_string()))?
+            .retry_limit;
+        let step = self.step_mut(step_id)?;
+        if !matches!(
+            step.status,
+            StepRunStatus::Running | StepRunStatus::Waiting | StepRunStatus::NeedsHumanReview
+        ) {
+            return Err(WorkflowIrError::StepNotReady(step_id.to_string()));
+        }
+        let will_retry = retryable && step.attempt <= retry_limit;
+        step.status = if will_retry {
+            StepRunStatus::Ready
+        } else {
+            StepRunStatus::Failed
+        };
+        step.error = Some(error.to_string());
+        step.ended_at = Some(now.to_string());
+        let step_plan_version = step.plan_version;
+        if let Some(entry) = self
+            .task_ledger
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.step_id == step_id && entry.plan_version == step_plan_version)
+        {
+            entry.status = if will_retry {
+                crate::TaskLedgerStatus::Ready
+            } else {
+                crate::TaskLedgerStatus::Failed
+            };
+            entry.updated_at = now.to_string();
+        }
+        self.status = self.derived_status();
+        self.updated_at = now.to_string();
+        self.append_progress(
+            crate::ProgressLedgerKind::StepFailed,
+            Some(step_id.to_string()),
+            if will_retry {
+                "Step failed and was admitted for retry."
+            } else {
+                "Step failed without an available retry."
+            },
+            BTreeMap::from([
+                ("error".to_string(), Value::String(error.to_string())),
+                ("retrying".to_string(), Value::Bool(will_retry)),
+            ]),
+            now,
+        )
+        .map_err(|_| WorkflowIrError::InvalidStepState)?;
+        self.validate(definition)?;
+        Ok(will_retry)
     }
 
     fn complete_validated_step(
@@ -1044,6 +1233,56 @@ impl WorkflowRun {
         }
         self.updated_at = now.to_string();
         Ok(result)
+    }
+
+    pub fn start_structured_correction(
+        &mut self,
+        definition: &WorkflowDefinition,
+        step_id: &str,
+        now: &str,
+    ) -> Result<(), WorkflowIrError> {
+        if self.definition_id != definition.definition_id
+            || self.definition_version != definition.version
+        {
+            return Err(WorkflowIrError::DefinitionMismatch);
+        }
+        self.ensure_progress_capacity()
+            .map_err(|_| WorkflowIrError::InvalidStepState)?;
+        if self.usage.invocations >= definition.budget_policy.max_invocations {
+            return Err(WorkflowIrError::InvocationBudgetExhausted);
+        }
+        let correction_attempt = {
+            let step = self
+                .step_runs
+                .iter()
+                .find(|step| step.step_id == step_id)
+                .ok_or_else(|| WorkflowIrError::StepNotFound(step_id.to_string()))?;
+            let result = step
+                .structured_result
+                .as_ref()
+                .ok_or(WorkflowIrError::InvalidStepState)?;
+            if step.status != StepRunStatus::Running
+                || result.status != crate::StructuredResultStatus::CorrectionRequired
+            {
+                return Err(WorkflowIrError::InvalidStepState);
+            }
+            u64::try_from(result.attempts.len()).unwrap_or(u64::MAX)
+        };
+        self.usage.invocations = self.usage.invocations.saturating_add(1);
+        self.status = WorkflowRunStatus::Running;
+        self.updated_at = now.to_string();
+        self.append_progress(
+            crate::ProgressLedgerKind::StepStarted,
+            Some(step_id.to_string()),
+            "Structured result correction was requested.",
+            BTreeMap::from([(
+                "correctionAttempt".to_string(),
+                Value::from(correction_attempt),
+            )]),
+            now,
+        )
+        .map_err(|_| WorkflowIrError::InvalidStepState)?;
+        self.validate(definition)
     }
 
     pub fn propose_plan(
@@ -1267,6 +1506,12 @@ impl WorkflowRun {
 
     fn derived_status(&self) -> WorkflowRunStatus {
         if self
+            .step_runs
+            .iter()
+            .any(|run| run.status == StepRunStatus::Failed)
+        {
+            WorkflowRunStatus::Failed
+        } else if self
             .step_runs
             .iter()
             .any(|run| run.status == StepRunStatus::NeedsHumanReview)

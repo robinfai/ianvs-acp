@@ -1,9 +1,10 @@
 use ianvs_acp_core::{
     AgentLaunchConfig, ArtifactReference, ExecutorLease, ExecutorLeaseCommand,
-    ExecutorTakeoverRequest, ExecutorTaskInboxCommand, PlanProposal, RuntimeEventPage,
-    SchedulerClaimProjection, SchedulerClaimRequest, SchedulerConfig, SchedulerRuntimeStatus,
-    TaskInboxCommand, TaskInboxMaterializedProjection, TaskInboxSnapshot, TaskInboxStageProjection,
-    WorkflowDefinition, WorkflowOpenProjection, WorkflowProjection, WorkflowRun,
+    ExecutorTakeoverRequest, ExecutorTaskInboxCommand, PermissionDecision, PlanProposal,
+    RuntimeEventPage, SchedulerClaimProjection, SchedulerClaimRequest, SchedulerConfig,
+    SchedulerRuntimeStatus, TaskInboxCommand, TaskInboxMaterializedProjection, TaskInboxSnapshot,
+    TaskInboxStageProjection, WorkflowDefinition, WorkflowOpenProjection, WorkflowProjection,
+    WorkflowRun, WorkflowStepTaskBinding, WorkflowTaskReconciliation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +135,39 @@ pub enum DaemonCommand {
         cost_micros: u64,
         now: String,
     },
+    ReconcileWorkflowTasks {
+        now: String,
+    },
+    WorkflowStepTaskBindings {
+        #[serde(rename = "runId")]
+        run_id: String,
+    },
+    ResolveWorkflowApprovalStep {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "stepId")]
+        step_id: String,
+        approved: bool,
+        now: String,
+    },
+    SignalWorkflowWaitStep {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "stepId")]
+        step_id: String,
+        #[serde(rename = "signalName")]
+        signal_name: String,
+        payload: serde_json::Value,
+        now: String,
+    },
+    RespondTaskPermission {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "requestId")]
+        permission_request_id: String,
+        decision: PermissionDecision,
+        now: String,
+    },
     Shutdown,
 }
 
@@ -210,6 +244,12 @@ pub enum DaemonResult {
     },
     WorkflowRun {
         run: Option<WorkflowRun>,
+    },
+    WorkflowStepTaskBindings {
+        bindings: Vec<WorkflowStepTaskBinding>,
+    },
+    WorkflowTasksReconciled {
+        reconciliation: WorkflowTaskReconciliation,
     },
     Ack,
     Error {

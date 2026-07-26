@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
 import 'package:ianvs_acp/rust/ianvs_workflow_native.dart';
 import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
@@ -8,7 +9,8 @@ import 'package:ianvs_acp/tasks/workspace_resource.dart';
 
 void main() {
   final root = Directory.current.path;
-  final libraryPath = '$root/rust/target/debug/libianvs_acp_ffi.dylib';
+  final libraryPath =
+      FfiIanvsAcpNativeApi.tryResolveLibraryPath(currentDirectory: root) ?? '';
   final artifactsAvailable = File(libraryPath).existsSync();
 
   test(

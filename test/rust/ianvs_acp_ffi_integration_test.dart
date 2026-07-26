@@ -7,7 +7,8 @@ import 'package:ianvs_acp/rust/ianvs_runtime_event.dart';
 
 void main() {
   final root = Directory.current.path;
-  final libraryPath = '$root/rust/target/debug/libianvs_acp_ffi.dylib';
+  final libraryPath =
+      FfiIanvsAcpNativeApi.tryResolveLibraryPath(currentDirectory: root) ?? '';
   final agentPath = '$root/rust/target/debug/ianvs-acp-fixture-agent';
   final artifactsAvailable =
       File(libraryPath).existsSync() && File(agentPath).existsSync();

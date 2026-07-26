@@ -95,6 +95,10 @@ abstract interface class SecretStore {
 }
 
 String keychainReferenceFor({required String namespace, required String key}) {
+  return 'keychain://ianvs-acp/${secretAccountFor(namespace: namespace, key: key)}';
+}
+
+String secretAccountFor({required String namespace, required String key}) {
   if (namespace.isEmpty) {
     throw ArgumentError.value(namespace, 'namespace', 'Must not be empty.');
   }
@@ -107,6 +111,5 @@ String keychainReferenceFor({required String namespace, required String key}) {
     ..add(length.buffer.asUint8List())
     ..add(namespaceBytes)
     ..add(utf8.encode(key));
-  final account = sha256.convert(identity.takeBytes());
-  return 'keychain://ianvs-acp/$account';
+  return sha256.convert(identity.takeBytes()).toString();
 }

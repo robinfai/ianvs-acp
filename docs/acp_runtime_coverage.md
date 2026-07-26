@@ -1,6 +1,6 @@
 # ACP runtime coverage
 
-Updated: 2026-07-21
+Updated: 2026-07-26
 
 This document records the ACP surface implemented by the production Rust
 runtime. It is a coverage map, not a second protocol specification. The official
@@ -14,7 +14,9 @@ ACP schema consumed by `ianvs-acp-core` is the source of wire-level truth.
   events. Raw JSON-RPC envelopes do not cross the ABI.
 - `rust/crates/ianvs-acpd` is the single background Task/Workflow execution
   owner. Flutter connects through bounded local IPC and resumes by revision and
-  event sequence; it does not start a second dispatcher.
+  event sequence; it does not start a second dispatcher. The daemon restores a
+  prior Task session when supported, batches timeline persistence, waits for
+  live permission decisions, and captures bounded completion artifacts.
 - `lib/acp/rust_acp_agent_client.dart` is a Flutter projection adapter. It does
   not implement ACP framing or open a second connection.
 - Local stdio agents are supported. Remote WebSocket and HTTP/SSE agent
@@ -77,5 +79,6 @@ flutter test --no-pub
 ```
 
 The native suite includes Core unit/integration tests, daemon socket tests, ABI
-tests, and real Dart → daemon/dylib → Rust fixture-agent paths. Widget and state tests use
-`FakeAgentClient`; they do not launch a compatibility ACP runtime.
+tests, and real Dart → daemon/native-library → Rust fixture-agent paths. Widget
+and state tests use `FakeAgentClient`; they do not launch a compatibility ACP
+runtime.

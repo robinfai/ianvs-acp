@@ -21,10 +21,11 @@ use crate::{
     RecoveryState, RunRecoveryRecord, RunState, RunStatus, RuntimeEventAppendReceipt,
     RuntimeEventPage, StoredRuntimeEvent, SuggestedRecoveryAction, TaskInboxError,
     TaskInboxSnapshot, TaskState, TaskStatus, WORKFLOW_SNAPSHOT_RETENTION, WorkflowDefinition,
-    WorkflowIrError, WorkflowRun, WorkflowSnapshot, WorkspaceMutationPossibility,
+    WorkflowIrError, WorkflowRun, WorkflowSnapshot, WorkflowStepTaskBinding,
+    WorkspaceMutationPossibility,
 };
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const MAX_WORKFLOW_IR_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -431,6 +432,245 @@ impl SqliteWorkflowStore {
             });
         }
         Ok(committed)
+    }
+
+    pub fn workflow_run_ids(&self) -> Result<Vec<String>, WorkflowStoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT run_id FROM workflow_runs ORDER BY created_at, run_id")?;
+        let run_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(run_ids)
+    }
+
+    pub fn workflow_step_task_bindings(
+        &self,
+        workflow_run_id: &str,
+    ) -> Result<Vec<WorkflowStepTaskBinding>, WorkflowStoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT workflow_run_id, plan_version, step_id, task_id,
+                    task_run_id, input_revision, consumed_event_sequence,
+                    created_at, updated_at
+             FROM workflow_step_task_bindings
+             WHERE workflow_run_id = ?1
+             ORDER BY plan_version, step_id",
+        )?;
+        let rows = statement
+            .query_map([workflow_run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(
+                |(
+                    workflow_run_id,
+                    plan_version,
+                    step_id,
+                    task_id,
+                    task_run_id,
+                    input_revision,
+                    consumed_event_sequence,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ok(WorkflowStepTaskBinding {
+                        workflow_run_id,
+                        plan_version: u32::try_from(plan_version).map_err(|_| {
+                            WorkflowStoreError::InvalidValue(
+                                "workflow binding plan version is outside u32 range".to_string(),
+                            )
+                        })?,
+                        step_id,
+                        task_id,
+                        task_run_id,
+                        input_revision: u64::try_from(input_revision).map_err(|_| {
+                            WorkflowStoreError::InvalidValue(
+                                "workflow binding input revision is outside u64 range".to_string(),
+                            )
+                        })?,
+                        consumed_event_sequence: u64::try_from(consumed_event_sequence).map_err(
+                            |_| {
+                                WorkflowStoreError::InvalidValue(
+                                    "workflow binding event sequence is outside u64 range"
+                                        .to_string(),
+                                )
+                            },
+                        )?,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    pub fn save_workflow_step_task_binding(
+        &mut self,
+        binding: &WorkflowStepTaskBinding,
+    ) -> Result<(), WorkflowStoreError> {
+        validate_workflow_step_task_binding(binding)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        upsert_workflow_step_task_binding(&transaction, binding)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn save_workflow_reconciliation(
+        &mut self,
+        run: &WorkflowRun,
+        expected_run_revision: u64,
+        workflow: Option<&WorkflowSnapshot>,
+        current: Option<&TaskInboxSnapshot>,
+        expected_workflow_revision: u64,
+        bindings: &[WorkflowStepTaskBinding],
+    ) -> Result<(WorkflowRun, u64), WorkflowStoreError> {
+        if run.revision != expected_run_revision {
+            return Err(WorkflowStoreError::Conflict {
+                expected: expected_run_revision,
+                actual: run.revision,
+            });
+        }
+        if workflow.is_some() != current.is_some() {
+            return Err(WorkflowStoreError::InvalidValue(
+                "workflow reconciliation projections must be supplied together".to_string(),
+            ));
+        }
+        let definition = self
+            .load_workflow_definition(&run.definition_id, run.definition_version)?
+            .ok_or_else(|| {
+                WorkflowStoreError::InvalidValue(
+                    "Workflow Run references a missing Definition".to_string(),
+                )
+            })?;
+        run.validate(&definition)?;
+        for binding in bindings {
+            validate_workflow_step_task_binding(binding)?;
+            if binding.workflow_run_id != run.run_id {
+                return Err(WorkflowStoreError::InvalidValue(
+                    "workflow binding targets another Workflow Run".to_string(),
+                ));
+            }
+        }
+        let encoded_task_inbox = match (workflow, current) {
+            (Some(workflow), Some(current)) => {
+                let synchronized = current.synchronized_with_workflow(workflow)?;
+                if synchronized != *current {
+                    return Err(WorkflowStoreError::InvalidValue(
+                        "TaskInbox projection disagrees with workflow authority".to_string(),
+                    ));
+                }
+                Some(encode_current_task_inbox(current)?)
+            }
+            (None, None) => None,
+            _ => unreachable!("projection presence checked above"),
+        };
+        let mut committed = run.clone();
+        committed.revision = expected_run_revision.checked_add(1).ok_or_else(|| {
+            WorkflowStoreError::InvalidValue("Workflow Run revision overflow".to_string())
+        })?;
+        let encoded_run = encode_workflow_ir(&committed)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let actual_run_revision = transaction
+            .query_row(
+                "SELECT revision FROM workflow_runs WHERE run_id = ?1",
+                [&run.run_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .and_then(|revision| u64::try_from(revision).ok())
+            .unwrap_or(0);
+        if actual_run_revision != expected_run_revision {
+            return Err(WorkflowStoreError::Conflict {
+                expected: expected_run_revision,
+                actual: actual_run_revision,
+            });
+        }
+        transaction.execute(
+            "UPDATE workflow_runs
+             SET revision = ?1, payload_json = ?2, updated_at = ?3
+             WHERE run_id = ?4 AND revision = ?5",
+            params![
+                checked_revision_for_sql(committed.revision)?,
+                encoded_run,
+                committed.updated_at,
+                committed.run_id,
+                checked_revision_for_sql(expected_run_revision)?,
+            ],
+        )?;
+        for binding in bindings {
+            upsert_workflow_step_task_binding(&transaction, binding)?;
+        }
+        let workflow_revision = if let (Some(workflow), Some(current), Some(encoded_task_inbox)) =
+            (workflow, current, encoded_task_inbox)
+        {
+            require_revision(&transaction, expected_workflow_revision)?;
+            if query_migration_metadata(&transaction)?.phase != WorkflowMigrationPhase::Active {
+                return Err(WorkflowStoreError::TaskInboxNotActive);
+            }
+            transaction.execute("DELETE FROM runs", [])?;
+            transaction.execute("DELETE FROM tasks", [])?;
+            insert_snapshot_rows(&transaction, workflow)?;
+            if transaction.execute(
+                "UPDATE task_inbox_current SET payload_json = ?1 WHERE singleton = 1",
+                [&encoded_task_inbox],
+            )? != 1
+            {
+                return Err(WorkflowStoreError::InvalidValue(
+                    "active TaskInbox projection is missing".to_string(),
+                ));
+            }
+            let next_revision = next_revision(expected_workflow_revision)?;
+            transaction.execute(
+                "UPDATE workflow_meta SET revision = ?1 WHERE singleton = 1",
+                [checked_revision_for_sql(next_revision)?],
+            )?;
+            sync_runtime_events(&transaction, current, None, None, None)?;
+            insert_workflow_checkpoint(
+                &transaction,
+                next_revision,
+                latest_runtime_event_sequence(&transaction)?,
+                &encoded_task_inbox,
+                &current.updated_at,
+            )?;
+            next_revision
+        } else {
+            expected_workflow_revision
+        };
+        transaction.commit()?;
+        Ok((committed, workflow_revision))
+    }
+
+    pub fn latest_runtime_event_sequence_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<u64, WorkflowStoreError> {
+        let sequence = self.connection.query_row(
+            "SELECT COALESCE(MAX(sequence), 0)
+             FROM runtime_events WHERE run_id = ?1",
+            [run_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        u64::try_from(sequence).map_err(|_| {
+            WorkflowStoreError::InvalidValue(
+                "runtime event sequence is outside u64 range".to_string(),
+            )
+        })
     }
 
     pub fn materialize_task_inbox(
@@ -1231,6 +1471,9 @@ impl SqliteWorkflowStore {
         if version < 9 {
             migrate_v8_to_v9(&mut self.connection)?;
         }
+        if version < 10 {
+            migrate_v9_to_v10(&mut self.connection)?;
+        }
         Ok(())
     }
 }
@@ -1509,6 +1752,106 @@ fn migrate_v8_to_v9(connection: &mut Connection) -> Result<(), WorkflowStoreErro
          PRAGMA user_version = 9;",
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_v9_to_v10(connection: &mut Connection) -> Result<(), WorkflowStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE workflow_step_task_bindings (
+            workflow_run_id TEXT NOT NULL,
+            plan_version INTEGER NOT NULL CHECK (plan_version > 0),
+            step_id TEXT NOT NULL,
+            task_id TEXT NOT NULL UNIQUE,
+            task_run_id TEXT UNIQUE,
+            input_revision INTEGER NOT NULL CHECK (input_revision >= 0),
+            consumed_event_sequence INTEGER NOT NULL
+                CHECK (consumed_event_sequence >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workflow_run_id, plan_version, step_id),
+            FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(run_id)
+                ON DELETE CASCADE
+         ) STRICT;
+         CREATE INDEX workflow_step_task_bindings_run
+             ON workflow_step_task_bindings(workflow_run_id, updated_at);
+         PRAGMA user_version = 10;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn validate_workflow_step_task_binding(
+    binding: &WorkflowStepTaskBinding,
+) -> Result<(), WorkflowStoreError> {
+    for (field, value) in [
+        ("workflowRunId", binding.workflow_run_id.as_str()),
+        ("stepId", binding.step_id.as_str()),
+        ("taskId", binding.task_id.as_str()),
+        ("createdAt", binding.created_at.as_str()),
+        ("updatedAt", binding.updated_at.as_str()),
+    ] {
+        if value.is_empty()
+            || value.trim() != value
+            || value.len() > 32 * 1024
+            || value.as_bytes().contains(&0)
+        {
+            return Err(WorkflowStoreError::InvalidValue(format!(
+                "workflow binding {field} must be canonical bounded text"
+            )));
+        }
+    }
+    if binding.plan_version == 0 {
+        return Err(WorkflowStoreError::InvalidValue(
+            "workflow binding plan version must be positive".to_string(),
+        ));
+    }
+    if binding.task_run_id.as_deref().is_some_and(|value| {
+        value.is_empty()
+            || value.trim() != value
+            || value.len() > 32 * 1024
+            || value.as_bytes().contains(&0)
+    }) {
+        return Err(WorkflowStoreError::InvalidValue(
+            "workflow binding task run id must be canonical bounded text".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn upsert_workflow_step_task_binding(
+    transaction: &Transaction<'_>,
+    binding: &WorkflowStepTaskBinding,
+) -> Result<(), WorkflowStoreError> {
+    let changed = transaction.execute(
+        "INSERT INTO workflow_step_task_bindings (
+            workflow_run_id, plan_version, step_id, task_id, task_run_id,
+            input_revision, consumed_event_sequence, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(workflow_run_id, plan_version, step_id) DO UPDATE SET
+            task_run_id = excluded.task_run_id,
+            input_revision = excluded.input_revision,
+            consumed_event_sequence = excluded.consumed_event_sequence,
+            updated_at = excluded.updated_at
+         WHERE workflow_step_task_bindings.task_id = excluded.task_id
+           AND workflow_step_task_bindings.created_at = excluded.created_at",
+        params![
+            binding.workflow_run_id,
+            i64::from(binding.plan_version),
+            binding.step_id,
+            binding.task_id,
+            binding.task_run_id,
+            checked_revision_for_sql(binding.input_revision)?,
+            checked_revision_for_sql(binding.consumed_event_sequence)?,
+            binding.created_at,
+            binding.updated_at,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(WorkflowStoreError::InvalidValue(
+            "workflow Step-to-Task binding identity is immutable".to_string(),
+        ));
+    }
     Ok(())
 }
 

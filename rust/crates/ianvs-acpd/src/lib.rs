@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use ianvs_acp_core::{AgentLaunchConfig, DurableWorkflow};
+use ianvs_acp_core::{AgentLaunchConfig, DurableWorkflow, RuntimeCommandHandle};
 use protocol::{
     DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonResponse, DaemonResult,
 };
@@ -66,6 +66,17 @@ struct DaemonState {
     workflow: DurableWorkflow,
     agents: BTreeMap<String, AgentLaunchConfig>,
     busy_agents: BTreeSet<String>,
+    live_runtimes: BTreeMap<String, RuntimeCommandHandle>,
+    pending_permissions: BTreeMap<String, PendingTaskPermission>,
+}
+
+#[derive(Clone)]
+struct PendingTaskPermission {
+    task_id: String,
+    run_id: String,
+    approval_id: String,
+    option_ids: BTreeSet<String>,
+    denied_option_ids: BTreeSet<String>,
 }
 
 impl DaemonHost {
@@ -99,6 +110,8 @@ impl DaemonHost {
                 workflow,
                 agents: BTreeMap::new(),
                 busy_agents: BTreeSet::new(),
+                live_runtimes: BTreeMap::new(),
+                pending_permissions: BTreeMap::new(),
             })),
             shutdown: Arc::new(AtomicBool::new(false)),
             active_clients: Arc::new(AtomicUsize::new(0)),
@@ -510,6 +523,65 @@ fn execute_command(
                     .map_err(|error| error.to_string())?,
             ),
         }),
+        DaemonCommand::ReconcileWorkflowTasks { now } => {
+            let agent_names = state.agents.keys().cloned().collect();
+            Ok(DaemonResult::WorkflowTasksReconciled {
+                reconciliation: state
+                    .workflow
+                    .reconcile_workflow_tasks(&agent_names, &now)
+                    .map_err(|error| error.to_string())?,
+            })
+        }
+        DaemonCommand::WorkflowStepTaskBindings { run_id } => {
+            Ok(DaemonResult::WorkflowStepTaskBindings {
+                bindings: state
+                    .workflow
+                    .workflow_step_task_bindings(&run_id)
+                    .map_err(|error| error.to_string())?,
+            })
+        }
+        DaemonCommand::ResolveWorkflowApprovalStep {
+            run_id,
+            step_id,
+            approved,
+            now,
+        } => Ok(DaemonResult::WorkflowRun {
+            run: Some(
+                state
+                    .workflow
+                    .resolve_workflow_approval_step(&run_id, &step_id, approved, &now)
+                    .map_err(|error| error.to_string())?,
+            ),
+        }),
+        DaemonCommand::SignalWorkflowWaitStep {
+            run_id,
+            step_id,
+            signal_name,
+            payload,
+            now,
+        } => Ok(DaemonResult::WorkflowRun {
+            run: Some(
+                state
+                    .workflow
+                    .signal_workflow_wait_step(&run_id, &step_id, &signal_name, payload, &now)
+                    .map_err(|error| error.to_string())?,
+            ),
+        }),
+        DaemonCommand::RespondTaskPermission {
+            run_id,
+            permission_request_id,
+            decision,
+            now,
+        } => {
+            executor::respond_task_permission(
+                &mut state,
+                &run_id,
+                &permission_request_id,
+                decision,
+                &now,
+            )?;
+            Ok(DaemonResult::Ack)
+        }
         DaemonCommand::Shutdown => {
             if !allow_shutdown {
                 return Err("daemon shutdown is disabled for this host".to_string());

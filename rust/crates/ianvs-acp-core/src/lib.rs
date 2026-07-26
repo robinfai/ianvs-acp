@@ -43,7 +43,8 @@ pub use coordinator::{
 pub use durable_workflow::{
     DurableWorkflow, DurableWorkflowError, ExecutorTaskInboxCommand, SchedulerClaimProjection,
     TaskInboxMaterializedProjection, TaskInboxStageProjection, WORKFLOW_SCHEMA_VERSION,
-    WorkflowCommand, WorkflowOpenProjection, WorkflowProjection,
+    WorkflowCommand, WorkflowOpenProjection, WorkflowProjection, WorkflowStepTaskBinding,
+    WorkflowTaskReconciliation,
 };
 pub use event_store::{
     MAX_RUNTIME_EVENT_APPEND_BATCH, MAX_RUNTIME_EVENT_QUERY_LIMIT, MAX_RUNTIME_EVENT_REPLAY,
@@ -77,7 +78,7 @@ pub use persistence::{
     WorkflowMigrationPhase, WorkflowStoreError,
 };
 pub use retry::{RetryPolicy, TaskFailureReason};
-pub use runtime::{RuntimeError, RuntimeHandle};
+pub use runtime::{RuntimeCommandHandle, RuntimeError, RuntimeHandle};
 pub use scheduler::{
     SchedulerAdmission, SchedulerAdmissionReason, SchedulerCapacityReservation, SchedulerClaim,
     SchedulerClaimRequest, SchedulerConfig, SchedulerCore, SchedulerError, SchedulerPoll,

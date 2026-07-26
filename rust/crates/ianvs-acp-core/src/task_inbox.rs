@@ -288,6 +288,10 @@ pub enum TaskInboxCommand {
         task: InboxTaskRecord,
         updated_at: String,
     },
+    QueueTaskCorrectionProjection {
+        task: InboxTaskRecord,
+        updated_at: String,
+    },
     UpdateTaskDefinition {
         task: InboxTaskRecord,
         updated_at: String,
@@ -314,6 +318,11 @@ pub enum TaskInboxCommand {
         task: InboxTaskRecord,
         run: InboxRunRecord,
         transition: TaskInboxRunTransition,
+        updated_at: String,
+    },
+    FailRunAndQueueRetryProjection {
+        task: InboxTaskRecord,
+        run: InboxRunRecord,
         updated_at: String,
     },
     CancelTask {
@@ -562,6 +571,7 @@ impl TaskInboxSnapshot {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_task_inbox_command(
     snapshot: &mut TaskInboxSnapshot,
     workflow: &mut WorkflowStateMachine,
@@ -580,6 +590,10 @@ fn apply_task_inbox_command(
         }
         TaskInboxCommand::QueueTaskProjection { task, updated_at } => {
             workflow.queue_task(&task.id)?;
+            update_task_projection(snapshot, workflow, task, updated_at)
+        }
+        TaskInboxCommand::QueueTaskCorrectionProjection { task, updated_at } => {
+            workflow.queue_completed_task_for_correction(&task.id)?;
             update_task_projection(snapshot, workflow, task, updated_at)
         }
         TaskInboxCommand::UpdateTaskDefinition { task, updated_at } => {
@@ -608,6 +622,11 @@ fn apply_task_inbox_command(
             transition,
             updated_at,
         } => transition_run_projection(snapshot, workflow, task, run, transition, updated_at),
+        TaskInboxCommand::FailRunAndQueueRetryProjection {
+            task,
+            run,
+            updated_at,
+        } => fail_run_and_queue_retry_projection(snapshot, workflow, task, run, updated_at),
         TaskInboxCommand::CancelTask {
             task_id,
             updated_at,
@@ -815,6 +834,27 @@ fn transition_run_projection(
         return Err(TaskInboxMutationError::AuthorityFieldMismatch);
     }
     apply_run_transition(workflow, &run.id, transition)?;
+    update_run_projection(snapshot, workflow, run, updated_at.clone())?;
+    update_task_projection(snapshot, workflow, task, updated_at)
+}
+
+fn fail_run_and_queue_retry_projection(
+    snapshot: &mut TaskInboxSnapshot,
+    workflow: &mut WorkflowStateMachine,
+    task: InboxTaskRecord,
+    run: InboxRunRecord,
+    updated_at: String,
+) -> Result<String, TaskInboxMutationError> {
+    if task.id != run.task_id
+        || task.status != InboxTaskStatus::Queued
+        || task.current_run_id.is_some()
+        || run.status != InboxTaskStatus::Failed
+        || run.ended_at.is_none()
+    {
+        return Err(TaskInboxMutationError::AuthorityFieldMismatch);
+    }
+    workflow.fail_run(&run.id)?;
+    workflow.queue_task(&task.id)?;
     update_run_projection(snapshot, workflow, run, updated_at.clone())?;
     update_task_projection(snapshot, workflow, task, updated_at)
 }

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -6,8 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ianvs_acp_core::{
-    AgentLaunchConfig, ExecutorLeaseState, InboxTaskStatus, PlanProposal, TaskInboxCommand,
-    TaskInboxSnapshot, WorkflowDefinition, WorkflowRun,
+    AgentLaunchConfig, BudgetPolicy, ExecutorLeaseState, InboxApprovalStatus, InboxArtifactKind,
+    InboxTaskStatus, InputBinding, PermissionDecision, PlanProposal, PlanVersion,
+    SemanticCapabilityProfile, StepDefinition, StepKind, TaskInboxCommand, TaskInboxSnapshot,
+    WORKFLOW_IR_SCHEMA_VERSION, WorkflowDefinition, WorkflowRun, WorkflowRunStatus,
 };
 use ianvs_acpd::protocol::{
     DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonResponse, DaemonResult,
@@ -23,11 +26,7 @@ fn daemon_remains_the_single_execution_host_across_flutter_disconnect() {
     let permission_workspace = directory.join("permission-workspace");
     fs::create_dir(&permission_workspace).unwrap();
     let database = directory.join("workflow.sqlite3");
-    let socket = Path::new("/private/tmp").join(format!(
-        "ianvs-acpd-{}-{}.sock",
-        std::process::id(),
-        unique_suffix()
-    ));
+    let socket = directory.join("ianvs-acpd.sock");
     let host = DaemonHost::bind(&database, &socket, true).unwrap();
     let server = thread::spawn(move || host.serve().unwrap());
     wait_for_socket(&socket);
@@ -173,7 +172,7 @@ fn daemon_remains_the_single_execution_host_across_flutter_disconnect() {
         DaemonResult::TaskInboxProjection { .. }
     ));
     let deadline = Instant::now() + Duration::from_secs(15);
-    let permission_run_id = loop {
+    let (permission_run_id, permission_request_id) = loop {
         let DaemonResult::TaskInboxSnapshot {
             snapshot: Some(snapshot),
         } = reconnected.call(DaemonCommand::CurrentTaskInbox)
@@ -186,15 +185,67 @@ fn daemon_remains_the_single_execution_host_across_flutter_disconnect() {
             .find(|task| task.id == "task-permission")
             .unwrap();
         assert_ne!(task.status, InboxTaskStatus::Failed);
-        if task.status == InboxTaskStatus::NeedsHumanReview {
+        if task.status == InboxTaskStatus::BlockedOnPermission {
             assert!(snapshot.events.iter().any(|event| {
                 event.task_id == task.id && event.kind == ianvs_acp_core::InboxEventKind::Permission
             }));
-            break task.current_run_id.clone().unwrap();
+            let approval = snapshot
+                .approvals
+                .iter()
+                .find(|approval| approval.task_id == task.id)
+                .unwrap();
+            assert_eq!(approval.status, InboxApprovalStatus::Pending);
+            let request_id = approval.metadata["permission_request_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            break (task.current_run_id.clone().unwrap(), request_id);
         }
-        assert!(Instant::now() < deadline, "permission review timed out");
+        assert!(Instant::now() < deadline, "permission wait timed out");
         thread::sleep(Duration::from_millis(100));
     };
+    assert!(matches!(
+        reconnected.call(DaemonCommand::RespondTaskPermission {
+            run_id: permission_run_id.clone(),
+            permission_request_id,
+            decision: PermissionDecision::Selected {
+                option_id: "allow-once".to_string(),
+            },
+            now: "2026-07-21T10:01:02.000Z".to_string(),
+        }),
+        DaemonResult::Ack
+    ));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let DaemonResult::TaskInboxSnapshot {
+            snapshot: Some(snapshot),
+        } = reconnected.call(DaemonCommand::CurrentTaskInbox)
+        else {
+            panic!("daemon returned an unexpected resumed TaskInbox result")
+        };
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == "task-permission")
+            .unwrap();
+        assert_ne!(task.status, InboxTaskStatus::Failed);
+        if task.status == InboxTaskStatus::NeedsHumanReview {
+            assert!(snapshot.events.iter().any(|event| {
+                event.task_id == task.id
+                    && event.kind == ianvs_acp_core::InboxEventKind::Assistant
+                    && event.text.contains("permission:allow-once")
+            }));
+            let approval = snapshot
+                .approvals
+                .iter()
+                .find(|approval| approval.task_id == task.id)
+                .unwrap();
+            assert_eq!(approval.status, InboxApprovalStatus::Approved);
+            break;
+        }
+        assert!(Instant::now() < deadline, "permission resume timed out");
+        thread::sleep(Duration::from_millis(100));
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let DaemonResult::ExecutorLease { lease: Some(lease) } =
@@ -255,11 +306,7 @@ fn fixture_agent(command: &str, skip_permission: bool) -> AgentLaunchConfig {
 fn daemon_exposes_typed_workflow_ir_results_and_bounded_replanning() {
     let directory = unique_temp_dir("daemon-workflow-ir");
     let database = directory.join("workflow.sqlite3");
-    let socket = Path::new("/private/tmp").join(format!(
-        "ianvs-acpd-ir-{}-{}.sock",
-        std::process::id(),
-        unique_suffix()
-    ));
+    let socket = directory.join("ianvs-acpd-ir.sock");
     let host = DaemonHost::bind(&database, &socket, true).unwrap();
     let server = thread::spawn(move || host.serve().unwrap());
     wait_for_socket(&socket);
@@ -419,11 +466,236 @@ fn daemon_exposes_typed_workflow_ir_results_and_bounded_replanning() {
     fs::remove_dir_all(directory).unwrap();
 }
 
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
+#[test]
+#[allow(clippy::too_many_lines)]
+fn daemon_automatically_flows_workflow_agent_tasks_into_local_successors() {
+    let directory = unique_temp_dir("daemon-workflow-dispatch");
+    let workspace = directory.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let database = directory.join("workflow.sqlite3");
+    let socket = directory.join("ianvs-acpd-workflow-dispatch.sock");
+    let host = DaemonHost::bind(&database, &socket, true).unwrap();
+    let server = thread::spawn(move || host.serve().unwrap());
+    wait_for_socket(&socket);
+    let mut client = Client::connect(&socket);
+    let source: TaskInboxSnapshot = serde_json::from_value(serde_json::json!({
+        "schema": "ianvs-acp.task-inbox.v1",
+        "updated_at": "2026-07-26T08:00:00.000Z",
+        "tasks": [],
+        "runs": [],
+        "events": [],
+        "artifacts": [],
+        "approvals": [],
+        "resources": []
+    }))
+    .unwrap();
+    assert!(matches!(
+        client.call(DaemonCommand::StageTaskInbox {
+            source,
+            source_checksum: "sha256:daemon-workflow-dispatch".to_string(),
+        }),
+        DaemonResult::TaskInboxStage { .. }
+    ));
+    assert!(matches!(
+        client.call(DaemonCommand::MaterializeTaskInbox),
+        DaemonResult::TaskInboxProjection { .. }
+    ));
+    assert!(matches!(
+        client.call(DaemonCommand::ActivateTaskInbox),
+        DaemonResult::TaskInboxProjection { .. }
+    ));
+    let fixture = env!("CARGO_BIN_EXE_ianvs-acpd-fixture-agent");
+    assert!(matches!(
+        client.call(DaemonCommand::ConfigureAgents {
+            agents: vec![fixture_agent(fixture, true)],
+        }),
+        DaemonResult::AgentsConfigured { .. }
+    ));
+    let definition = WorkflowDefinition {
+        schema_version: WORKFLOW_IR_SCHEMA_VERSION,
+        definition_id: "automatic-flow".to_string(),
+        version: 1,
+        name: "Automatic flow".to_string(),
+        created_at: "2026-07-26T08:00:00.000Z".to_string(),
+        provenance: "daemon E2E".to_string(),
+        budget_policy: BudgetPolicy {
+            max_plan_nodes: 8,
+            max_fan_out: 2,
+            max_depth: 4,
+            max_replans: 1,
+            max_invocations: 4,
+            max_concurrent_agents: 1,
+            token_budget: 10_000,
+            cost_budget_micros: 100_000,
+        },
+        capability_profiles: vec![SemanticCapabilityProfile {
+            profile_id: "fixture".to_string(),
+            summary: "Fixture ACP agent".to_string(),
+            capabilities: BTreeSet::from(["write".to_string()]),
+            max_parallelism: 1,
+        }],
+        result_schemas: Vec::new(),
+        initial_plan: PlanVersion {
+            version: 1,
+            reason: "initial".to_string(),
+            provenance: "daemon E2E".to_string(),
+            created_at: "2026-07-26T08:00:00.000Z".to_string(),
+            steps: vec![
+                StepDefinition {
+                    step_id: "prepare".to_string(),
+                    kind: StepKind::Checkpoint,
+                    depends_on: Vec::new(),
+                    inputs: BTreeMap::new(),
+                    result_schema_id: None,
+                    retry_limit: 0,
+                    permission_profile: None,
+                },
+                StepDefinition {
+                    step_id: "write".to_string(),
+                    kind: StepKind::Agent {
+                        capability_profile: "fixture".to_string(),
+                        prompt_template: "Complete this workflow Step.".to_string(),
+                    },
+                    depends_on: vec!["prepare".to_string()],
+                    inputs: BTreeMap::from([(
+                        "workspacePath".to_string(),
+                        InputBinding::Literal {
+                            value: serde_json::json!(workspace),
+                        },
+                    )]),
+                    result_schema_id: None,
+                    retry_limit: 0,
+                    permission_profile: None,
+                },
+                StepDefinition {
+                    step_id: "approve".to_string(),
+                    kind: StepKind::Approval {
+                        approval_profile: "human".to_string(),
+                    },
+                    depends_on: vec!["write".to_string()],
+                    inputs: BTreeMap::new(),
+                    result_schema_id: None,
+                    retry_limit: 0,
+                    permission_profile: None,
+                },
+                StepDefinition {
+                    step_id: "finish".to_string(),
+                    kind: StepKind::Checkpoint,
+                    depends_on: vec!["approve".to_string()],
+                    inputs: BTreeMap::new(),
+                    result_schema_id: None,
+                    retry_limit: 0,
+                    permission_profile: None,
+                },
+            ],
+        },
+    };
+    assert!(matches!(
+        client.call(DaemonCommand::RegisterWorkflowDefinition {
+            definition: definition.clone(),
+        }),
+        DaemonResult::Ack
+    ));
+    let run = WorkflowRun::new(
+        "automatic-flow-run".to_string(),
+        &definition,
+        "2026-07-26T08:00:00.000Z".to_string(),
+    )
+    .unwrap();
+    assert!(matches!(
+        client.call(DaemonCommand::CreateWorkflowRun { run }),
+        DaemonResult::WorkflowRun { run: Some(_) }
+    ));
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let DaemonResult::WorkflowRun { run: Some(run) } =
+            client.call(DaemonCommand::WorkflowRun {
+                run_id: "automatic-flow-run".to_string(),
+            })
+        else {
+            panic!("daemon returned an unexpected automatic Workflow Run")
+        };
+        if run.status == WorkflowRunStatus::NeedsHumanReview {
+            assert_eq!(
+                run.step_runs
+                    .iter()
+                    .find(|step| step.step_id == "write")
+                    .unwrap()
+                    .status,
+                ianvs_acp_core::StepRunStatus::Succeeded
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automatic workflow did not reach approval: {:?}",
+            run.status
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    let DaemonResult::TaskInboxSnapshot {
+        snapshot: Some(snapshot),
+    } = client.call(DaemonCommand::CurrentTaskInbox)
+    else {
+        panic!("daemon returned an unexpected automatic TaskInbox")
+    };
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].status, InboxTaskStatus::Done);
+    assert!(snapshot.artifacts.iter().any(|artifact| {
+        artifact.kind == InboxArtifactKind::AgentSummary
+            && artifact
+                .content_preview
+                .as_deref()
+                .is_some_and(|value| value.contains("headless fixture complete"))
+    }));
+    let DaemonResult::WorkflowStepTaskBindings { bindings } =
+        client.call(DaemonCommand::WorkflowStepTaskBindings {
+            run_id: "automatic-flow-run".to_string(),
+        })
+    else {
+        panic!("daemon returned unexpected Workflow Step bindings")
+    };
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].step_id, "write");
+    assert!(bindings[0].task_run_id.is_some());
+
+    assert!(matches!(
+        client.call(DaemonCommand::ResolveWorkflowApprovalStep {
+            run_id: "automatic-flow-run".to_string(),
+            step_id: "approve".to_string(),
+            approved: true,
+            now: "2026-07-26T08:01:00.000Z".to_string(),
+        }),
+        DaemonResult::WorkflowRun { run: Some(_) }
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let DaemonResult::WorkflowRun { run: Some(run) } =
+            client.call(DaemonCommand::WorkflowRun {
+                run_id: "automatic-flow-run".to_string(),
+            })
+        else {
+            panic!("daemon returned an unexpected resolved Workflow Run")
+        };
+        if run.status == WorkflowRunStatus::Succeeded {
+            assert!(
+                run.step_runs
+                    .iter()
+                    .all(|step| step.status == ianvs_acp_core::StepRunStatus::Succeeded)
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "local successor did not finish");
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(matches!(
+        client.call(DaemonCommand::Shutdown),
+        DaemonResult::Ack
+    ));
+    drop(client);
+    server.join().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 struct Client {

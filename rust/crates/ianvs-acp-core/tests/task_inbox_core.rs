@@ -1,7 +1,8 @@
 use std::fs;
 
 use ianvs_acp_core::{
-    RunStatus, TaskInboxError, TaskInboxSnapshot, TaskStatus, WorkflowStateMachine,
+    InboxTaskStatus, RunStatus, TaskInboxCommand, TaskInboxError, TaskInboxSnapshot, TaskStatus,
+    WorkflowStateMachine,
 };
 use serde_json::{Value, json};
 
@@ -85,6 +86,48 @@ fn task_inbox_rejects_lossy_fields_and_non_run_statuses() {
         snapshot.workflow_import(),
         Err(TaskInboxError::InvalidRunStatus { run_id, .. }) if run_id == "run-1"
     ));
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn failed_run_and_retry_queue_are_applied_as_one_projection_change() {
+    let workspace = unique_temp_dir("task-inbox-atomic-retry");
+    let mut value = fixture(&workspace);
+    value["tasks"][0]["status"] = json!("running");
+    value["runs"][0]["status"] = json!("running");
+    let mut snapshot: TaskInboxSnapshot = serde_json::from_value(value).unwrap();
+    let imported = snapshot.workflow_import().unwrap();
+    let mut workflow = WorkflowStateMachine::restore(imported.snapshot).unwrap();
+    let mut task = snapshot.tasks[0].clone();
+    task.status = InboxTaskStatus::Queued;
+    task.current_run_id = None;
+    task.summary = Some("Runtime unavailable. Retrying shortly.".to_string());
+    task.error = None;
+    task.metadata.insert(
+        "next_retry_at".to_string(),
+        json!("2026-07-17T08:01:00.000Z"),
+    );
+    let mut run = snapshot.runs[0].clone();
+    run.status = InboxTaskStatus::Failed;
+    run.ended_at = Some("2026-07-17T08:00:00.000Z".to_string());
+    run.error = Some("runtime unavailable".to_string());
+
+    snapshot
+        .apply_command(
+            &mut workflow,
+            TaskInboxCommand::FailRunAndQueueRetryProjection {
+                task,
+                run,
+                updated_at: "2026-07-17T08:00:00.000Z".to_string(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(snapshot.tasks[0].status, InboxTaskStatus::Queued);
+    assert!(snapshot.tasks[0].current_run_id.is_none());
+    assert_eq!(snapshot.runs[0].status, InboxTaskStatus::Failed);
+    assert_eq!(workflow.task("task-1").unwrap().status, TaskStatus::Queued);
+    assert_eq!(workflow.run("run-1").unwrap().status, RunStatus::Failed);
     fs::remove_dir_all(workspace).unwrap();
 }
 

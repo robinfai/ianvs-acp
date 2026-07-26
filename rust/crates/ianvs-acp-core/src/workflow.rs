@@ -253,6 +253,17 @@ impl WorkflowStateMachine {
         Ok(())
     }
 
+    pub fn queue_completed_task_for_correction(
+        &mut self,
+        task_id: &str,
+    ) -> Result<(), WorkflowStateError> {
+        let task = self.task_mut(task_id)?;
+        require_task(task, &[TaskStatus::Done], "done")?;
+        task.status = TaskStatus::Queued;
+        task.current_run_id = None;
+        Ok(())
+    }
+
     pub fn update_task_definition(
         &mut self,
         task_id: &str,

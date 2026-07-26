@@ -20,7 +20,7 @@ import 'rust/ianvs_workflow_native.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
-import 'config/macos_keychain_secret_store.dart';
+import 'config/platform_secret_store.dart';
 import 'config/secret_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
@@ -162,7 +162,7 @@ class AcpClientApp extends StatefulWidget {
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
-    this.secretStore = const MacosKeychainSecretStore(),
+    this.secretStore = const PlatformSecretStore(),
     this.configurationWritable = true,
     this.initialResumeSessionId,
     this.initialResumeCwd,

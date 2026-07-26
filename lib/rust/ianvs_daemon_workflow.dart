@@ -10,9 +10,62 @@ import 'ianvs_workflow_native.dart';
 final class IanvsDaemonProcess {
   IanvsDaemonProcess._();
 
-  static String socketPathForDatabase(String databasePath) {
+  static String socketPathForDatabase(
+    String databasePath, {
+    String? temporaryDirectory,
+  }) {
     final digest = sha256.convert(utf8.encode(databasePath)).toString();
-    return '/private/tmp/ianvs-acpd-${digest.substring(0, 32)}.sock';
+    final configuredDirectory = Platform.environment['IANVS_ACPD_SOCKET_DIR']
+        ?.trim();
+    final socketDirectory =
+        temporaryDirectory ??
+        (configuredDirectory == null || configuredDirectory.isEmpty
+            ? null
+            : configuredDirectory) ??
+        _defaultSocketDirectory();
+    if (socketDirectory.isEmpty ||
+        !FileSystemEntity.isAbsolute(socketDirectory)) {
+      throw ArgumentError.value(
+        socketDirectory,
+        'temporaryDirectory',
+        'Daemon socket directory must be an absolute path.',
+      );
+    }
+    final socketRoot = _withoutTrailingSeparator(socketDirectory);
+    final separator = socketRoot.endsWith('/') || socketRoot.endsWith('\\')
+        ? ''
+        : '/';
+    return '$socketRoot${separator}ianvs-acpd-'
+        '${digest.substring(0, 32)}.sock';
+  }
+
+  static String _defaultSocketDirectory() {
+    if (Platform.isMacOS) {
+      const macosSocketDirectory = '/private/tmp';
+      if (Directory(macosSocketDirectory).existsSync()) {
+        return macosSocketDirectory;
+      }
+    }
+    if (Platform.isLinux) {
+      final runtimeDirectory = Platform.environment['XDG_RUNTIME_DIR']?.trim();
+      if (runtimeDirectory != null &&
+          runtimeDirectory.isNotEmpty &&
+          FileSystemEntity.isAbsolute(runtimeDirectory) &&
+          Directory(runtimeDirectory).existsSync()) {
+        return runtimeDirectory;
+      }
+    }
+    return Directory.systemTemp.path;
+  }
+
+  static String _withoutTrailingSeparator(String path) {
+    var end = path.length;
+    while (end > 1 &&
+        (path.codeUnitAt(end - 1) == 0x2f ||
+            path.codeUnitAt(end - 1) == 0x5c)) {
+      end -= 1;
+    }
+    return path.substring(0, end);
   }
 
   static Future<String> ensureRunning({
@@ -98,6 +151,219 @@ final class IanvsDaemonWorkflow implements IanvsWorkflowAuthority {
       throw const FormatException('Daemon agentNames must be a string list.');
     }
     return List<String>.unmodifiable(names.cast<String>());
+  }
+
+  Future<void> registerWorkflowDefinition(
+    Map<String, Object?> definition,
+  ) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'register_workflow_definition',
+      'definition': definition,
+    });
+    _expectType(result, 'ack');
+  }
+
+  Future<Map<String, Object?>?> workflowDefinition({
+    required String definitionId,
+    required int version,
+  }) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'workflow_definition',
+      'definitionId': definitionId,
+      'version': version,
+    });
+    _expectType(result, 'workflow_definition');
+    final definition = result['definition'];
+    return definition == null ? null : _map(definition, 'workflow definition');
+  }
+
+  Future<Map<String, Object?>> createWorkflowRun(
+    Map<String, Object?> run,
+  ) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'create_workflow_run',
+      'run': run,
+    });
+    _expectType(result, 'workflow_run');
+    return _map(result['run'], 'workflow run');
+  }
+
+  Future<Map<String, Object?>?> workflowRun(String runId) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'workflow_run',
+      'runId': runId,
+    });
+    _expectType(result, 'workflow_run');
+    final run = result['run'];
+    return run == null ? null : _map(run, 'workflow run');
+  }
+
+  Future<Map<String, Object?>> startWorkflowStep({
+    required String runId,
+    required String stepId,
+    required Object? input,
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'start_workflow_step',
+    'runId': runId,
+    'stepId': stepId,
+    'input': input,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> completeWorkflowStep({
+    required String runId,
+    required String stepId,
+    required Object? output,
+    List<Map<String, Object?>> artifacts = const <Map<String, Object?>>[],
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'complete_workflow_step',
+    'runId': runId,
+    'stepId': stepId,
+    'output': output,
+    'artifacts': artifacts,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> submitWorkflowStepResult({
+    required String runId,
+    required String stepId,
+    required String raw,
+    List<Map<String, Object?>> artifacts = const <Map<String, Object?>>[],
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'submit_workflow_step_result',
+    'runId': runId,
+    'stepId': stepId,
+    'raw': raw,
+    'artifacts': artifacts,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> proposeWorkflowPlan({
+    required String runId,
+    required Map<String, Object?> proposal,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'propose_workflow_plan',
+    'runId': runId,
+    'proposal': proposal,
+  });
+
+  Future<Map<String, Object?>> activateWorkflowPlan({
+    required String runId,
+    required String proposalId,
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'activate_workflow_plan',
+    'runId': runId,
+    'proposalId': proposalId,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> recordWorkflowUsage({
+    required String runId,
+    required int inputTokens,
+    required int outputTokens,
+    required int costMicros,
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'record_workflow_usage',
+    'runId': runId,
+    'inputTokens': inputTokens,
+    'outputTokens': outputTokens,
+    'costMicros': costMicros,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> reconcileWorkflowTasks({DateTime? now}) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'reconcile_workflow_tasks',
+      'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+    });
+    _expectType(result, 'workflow_tasks_reconciled');
+    return _map(result['reconciliation'], 'workflow task reconciliation');
+  }
+
+  Future<List<Map<String, Object?>>> workflowStepTaskBindings(
+    String runId,
+  ) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'workflow_step_task_bindings',
+      'runId': runId,
+    });
+    _expectType(result, 'workflow_step_task_bindings');
+    final bindings = result['bindings'];
+    if (bindings is! List) {
+      throw const FormatException('Daemon workflow bindings must be a list.');
+    }
+    return List<Map<String, Object?>>.unmodifiable(
+      bindings.map((binding) => _map(binding, 'workflow task binding')),
+    );
+  }
+
+  Future<Map<String, Object?>> resolveWorkflowApprovalStep({
+    required String runId,
+    required String stepId,
+    required bool approved,
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'resolve_workflow_approval_step',
+    'runId': runId,
+    'stepId': stepId,
+    'approved': approved,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<Map<String, Object?>> signalWorkflowWaitStep({
+    required String runId,
+    required String stepId,
+    required String signalName,
+    Object? payload,
+    DateTime? now,
+  }) => _workflowRunResult(<String, Object?>{
+    'operation': 'signal_workflow_wait_step',
+    'runId': runId,
+    'stepId': stepId,
+    'signalName': signalName,
+    'payload': payload,
+    'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+  });
+
+  Future<void> respondTaskPermission({
+    required String runId,
+    required String requestId,
+    String? optionId,
+    bool cancel = false,
+    DateTime? now,
+  }) async {
+    final selectedOption = optionId?.trim();
+    if (cancel == (selectedOption != null && selectedOption.isNotEmpty)) {
+      throw ArgumentError(
+        'Provide exactly one of a non-empty optionId or cancel: true.',
+      );
+    }
+    final result = await _call(<String, Object?>{
+      'operation': 'respond_task_permission',
+      'runId': runId,
+      'requestId': requestId,
+      'decision': cancel
+          ? const <String, Object?>{'decision': 'cancelled'}
+          : <String, Object?>{
+              'decision': 'selected',
+              'optionId': selectedOption!,
+            },
+      'now': (now ?? DateTime.now()).toUtc().toIso8601String(),
+    });
+    _expectType(result, 'ack');
+  }
+
+  Future<Map<String, Object?>> _workflowRunResult(
+    Map<String, Object?> command,
+  ) async {
+    final result = await _call(command);
+    _expectType(result, 'workflow_run');
+    return _map(result['run'], 'workflow run');
   }
 
   @override

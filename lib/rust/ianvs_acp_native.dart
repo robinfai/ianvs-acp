@@ -581,24 +581,69 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
     Map<String, String>? environment,
     String? resolvedExecutable,
     String? currentDirectory,
+    String? operatingSystem,
+  }) {
+    final resolved = tryResolveLibraryPath(
+      environment: environment,
+      resolvedExecutable: resolvedExecutable,
+      currentDirectory: currentDirectory,
+      operatingSystem: operatingSystem,
+    );
+    if (resolved != null) return resolved;
+    final candidates = libraryPathCandidates(
+      resolvedExecutable: resolvedExecutable,
+      currentDirectory: currentDirectory,
+      operatingSystem: operatingSystem,
+    );
+    throw StateError(
+      'ianvs ACP Rust library not found. Checked: ${candidates.join(', ')}',
+    );
+  }
+
+  static String? tryResolveLibraryPath({
+    Map<String, String>? environment,
+    String? resolvedExecutable,
+    String? currentDirectory,
+    String? operatingSystem,
   }) {
     final env = environment ?? Platform.environment;
     final configured = env['IANVS_ACP_RUST_LIBRARY']?.trim();
     if (configured != null && configured.isNotEmpty) return configured;
+    for (final candidate in libraryPathCandidates(
+      resolvedExecutable: resolvedExecutable,
+      currentDirectory: currentDirectory,
+      operatingSystem: operatingSystem,
+    )) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+    return null;
+  }
+
+  static List<String> libraryPathCandidates({
+    String? resolvedExecutable,
+    String? currentDirectory,
+    String? operatingSystem,
+  }) {
     final executable = resolvedExecutable ?? Platform.resolvedExecutable;
     final executableDirectory = File(executable).parent;
     final workingDirectory = currentDirectory ?? Directory.current.path;
-    final candidates = <String>[
-      '${executableDirectory.path}/../Frameworks/libianvs_acp_ffi.dylib',
-      '$workingDirectory/rust/target/debug/libianvs_acp_ffi.dylib',
-      '$workingDirectory/rust/target/release/libianvs_acp_ffi.dylib',
+    final system = operatingSystem ?? Platform.operatingSystem;
+    final fileName = switch (system) {
+      'macos' => 'libianvs_acp_ffi.dylib',
+      'linux' => 'libianvs_acp_ffi.so',
+      'windows' => 'ianvs_acp_ffi.dll',
+      _ => throw UnsupportedError(
+        'ianvs ACP Rust runtime is unsupported on $system.',
+      ),
+    };
+    return <String>[
+      if (system == 'macos')
+        '${executableDirectory.path}/../Frameworks/$fileName',
+      if (system == 'linux') '${executableDirectory.path}/lib/$fileName',
+      '${executableDirectory.path}/$fileName',
+      '$workingDirectory/rust/target/debug/$fileName',
+      '$workingDirectory/rust/target/release/$fileName',
     ];
-    for (final candidate in candidates) {
-      if (File(candidate).existsSync()) return candidate;
-    }
-    throw StateError(
-      'ianvs ACP Rust library not found. Checked: ${candidates.join(', ')}',
-    );
   }
 
   final DynamicLibrary _library;

@@ -70,7 +70,7 @@ Required proof covers:
    invocation, token, cost, global/profile concurrency, node, fan-out, and depth
    limits.
 
-SQLite is now schema v9; the foreground FFI contract is v7 and daemon IPC is
+SQLite is now schema v10; the foreground FFI contract is v7 and daemon IPC is
 v1. Rust workspace tests, daemon/Dart integration tests, full Flutter tests,
 `flutter analyze`, clippy with warnings denied, and diff whitespace checks are
 the completion gates.

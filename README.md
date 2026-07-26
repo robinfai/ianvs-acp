@@ -1,6 +1,7 @@
 # ACP Client
 
-A Flutter macOS desktop client for local Agent Client Protocol agents.
+A Flutter Linux and macOS desktop client for local Agent Client Protocol
+agents.
 
 The app launches local stdio ACP agents through its Rust runtime, creates and
 restores sessions, streams prompt turns, renders plans and tool calls, switches
@@ -32,13 +33,15 @@ agent. The app persists those GUI choices to:
 ~/.config/ianvs-acp/settings.json
 ```
 
-On macOS, Agent and MCP `env`/`headers` values entered in Agent Configuration
-are stored in the login Keychain. The JSON file stores only opaque
+Agent and MCP `env`/`headers` values entered in Agent Configuration are stored
+in the platform credential service: login Keychain on macOS and Secret Service
+through `secret-tool` on Linux. The JSON file stores only opaque
 `env_refs`/`header_refs`; do not edit or copy those references between config
-files. Existing plaintext values are migrated to Keychain before the JSON is
-atomically replaced. If a referenced Keychain item is missing, startup reports
-the exact field and keeps configuration editing disabled until the credential
-is restored or re-entered.
+files. Existing plaintext values are migrated before the JSON is atomically
+replaced. If a referenced credential is missing, startup reports the exact
+field and keeps configuration editing disabled until the credential is
+restored or re-entered. Linux users need a running Secret Service provider
+(for example GNOME Keyring or KWallet) and the `secret-tool` command.
 
 On startup, the app can detect missing local ACP agents and ask whether to add
 them to `agent_servers`. The built-in detectors cover Codex through a local
@@ -174,6 +177,20 @@ flutter analyze
 ./tool/flutter_test_isolated.sh
 ```
 
+Linux development additionally needs a C++ toolchain, CMake, Ninja, pkg-config,
+GTK 3 development headers, and `secret-tool`. On Debian/Ubuntu:
+
+```sh
+sudo apt-get install clang cmake ninja-build pkg-config libgtk-3-dev \
+  libsecret-tools liblzma-dev
+flutter run -d linux
+flutter build linux --release
+```
+
+The Linux CMake build compiles the Rust FFI library and `ianvs-acpd`, then
+places `libianvs_acp_ffi.so` under the bundle `lib/` directory and the daemon
+beside the app executable.
+
 Build and verify a local ad-hoc macOS release:
 
 ```sh
@@ -203,11 +220,12 @@ use `FakeAgentClient` instead of launching a real agent.
 
 ## Runtime architecture
 
-ACP and Workflow have one production authority: a pure Rust Core behind a typed
-FFI host. Rust owns the local stdio/session/prompt/permission path, stable
-session lifecycle and configuration, workspace-scoped attachments, configured
-filesystem and terminal reverse requests, process recovery, Task/Run state,
-and scheduler admission. Flutter owns product projections and human interaction.
+ACP and Workflow have one production authority: a pure Rust Core behind typed
+FFI and daemon hosts. Rust owns the local stdio/session/prompt/permission path,
+stable session lifecycle and configuration, workspace-scoped attachments,
+configured filesystem and terminal reverse requests, process recovery,
+Task/Run state, and scheduler admission. Flutter owns product projections and
+human interaction.
 
 Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
 new/load/resume. Filesystem and terminal reverse requests use the ordinary
@@ -216,12 +234,12 @@ classify commands or destinations as external egress; external side effects are
 owned by the agent and its tools:
 
 ```sh
-flutter run -d macos
+flutter run -d linux # or: flutter run -d macos
 ./tool/verify_rust_runtime.sh
 ```
 
-The same dylib exposes a typed, revisioned, transactionally durable Task/Run
-Workflow authority. Imported TaskInbox v1 snapshots follow an explicit
+The same native library exposes a typed, revisioned, transactionally durable
+Task/Run Workflow authority. Imported TaskInbox v1 snapshots follow an explicit
 `staged -> ready -> active` migration with an immutable source archive. Once
 active, typed host operations atomically update
 Rust-owned Task/Run state, events, artifacts, approvals, resources, and the
@@ -229,6 +247,17 @@ revisioned UI projection; generic state overwrites remain unavailable. Rust
 also owns atomic scheduler claims with priority, retry-readiness, runtime quota,
 workspace-lease, and per-agent availability admission. Flutter consumes the
 Core-selected claim and retry wake-up without recomputing those decisions.
+
+Workflow IR runs are reconciled into Task Inbox by the daemon. Ready Agent steps
+are atomically bound to durable Tasks, completed Task Runs advance dependent
+steps, and retry ownership stays at one layer: Workflow Step policy for bound
+tasks and daemon retry policy for ordinary tasks. Local Condition, Checkpoint,
+Parallel, Approval, and Wait steps execute without creating ACP sessions.
+Long-lived Tasks restore their previous ACP session when supported, permission
+requests remain in a durable wait state until answered, and completed runs
+capture bounded agent-summary and Git status/diff artifacts. Invalid structured
+results are automatically re-prompted in the same Task/session up to the Core
+correction limit before human review.
 
 Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
 until their Rust transports are implemented; the production app never opens a

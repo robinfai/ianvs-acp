@@ -146,6 +146,36 @@ void main() {
       '/custom/libianvs.dylib',
     );
   });
+
+  test('resolves platform-specific packaged and development libraries', () {
+    expect(
+      FfiIanvsAcpNativeApi.libraryPathCandidates(
+        operatingSystem: 'linux',
+        resolvedExecutable: '/opt/ianvs/ianvs_acp',
+        currentDirectory: '/workspace',
+      ),
+      <String>[
+        '/opt/ianvs/lib/libianvs_acp_ffi.so',
+        '/opt/ianvs/libianvs_acp_ffi.so',
+        '/workspace/rust/target/debug/libianvs_acp_ffi.so',
+        '/workspace/rust/target/release/libianvs_acp_ffi.so',
+      ],
+    );
+    expect(
+      FfiIanvsAcpNativeApi.libraryPathCandidates(
+        operatingSystem: 'macos',
+        resolvedExecutable: '/Applications/ianvs.app/Contents/MacOS/ianvs',
+        currentDirectory: '/workspace',
+      ),
+      <String>[
+        '/Applications/ianvs.app/Contents/MacOS/../Frameworks/'
+            'libianvs_acp_ffi.dylib',
+        '/Applications/ianvs.app/Contents/MacOS/libianvs_acp_ffi.dylib',
+        '/workspace/rust/target/debug/libianvs_acp_ffi.dylib',
+        '/workspace/rust/target/release/libianvs_acp_ffi.dylib',
+      ],
+    );
+  });
 }
 
 final class _FakeNativeApi implements IanvsAcpNativeApi {
