@@ -100,6 +100,11 @@ the normal pending-candidate review path; an explicit trusted option can restore
 active, disabled, and deleted history with temporal metadata, pinned state,
 entities, and supersede links. The daemon deduplicates both modes, rejects
 secret-like content, and records import provenance in audit events.
+Reviewed `task_episode` memories keep structured goals, constraints, tools,
+mistakes, and successful patterns. They remain pending under the default
+high-confidence policy, stay out of pinned and maintenance merge paths, and are
+injected as at most two examples in a separate episodic context section. JSONL
+backup and restore preserve that structure.
 
 ## Official Feature Index
 

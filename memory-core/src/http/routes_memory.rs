@@ -6,10 +6,10 @@ use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::memory::engine::{
     clear_memory, create_manual_memory, list_audit, list_memory, patch_memory, search_memory,
-    soft_delete_memory, ClearMemoryRequest, ClearMemoryResponse, CreateMemoryRequest,
-    DestroyDatabaseRequest, DestroyDatabaseResponse, ListAuditResponse, ListMemoryResponse,
-    MemoryFeedbackRequest, MemoryFeedbackResponse, MemoryResponse, PatchMemoryRequest,
-    SearchRequest, SearchResponse,
+    soft_delete_memory, task_episode_is_acceptable, ClearMemoryRequest, ClearMemoryResponse,
+    CreateMemoryRequest, DestroyDatabaseRequest, DestroyDatabaseResponse, ListAuditResponse,
+    ListMemoryResponse, MemoryFeedbackRequest, MemoryFeedbackResponse, MemoryResponse,
+    PatchMemoryRequest, SearchRequest, SearchResponse,
 };
 use crate::memory::transfer::{
     export_memory, import_memory, ExportMemoryRequest, ExportMemoryResponse, ImportMemoryRequest,
@@ -35,6 +35,11 @@ pub async fn create(
     State(state): State<AppState>,
     Json(request): Json<CreateMemoryRequest>,
 ) -> Result<Json<MemoryResponse>, ApiError> {
+    if !task_episode_is_acceptable(request.kind, request.episode.as_ref()) {
+        return Err(ApiError::BadRequest(
+            "task_episode memory requires episode.goal and episode.successfulPattern".to_string(),
+        ));
+    }
     let item = create_manual_memory(&state.db, request).await?;
     best_effort_index(&state, &item).await;
     Ok(Json(item))

@@ -3,7 +3,8 @@ pub fn kind_priority(kind: &str) -> i64 {
         "project_rule" => 0,
         "architecture_decision" => 1,
         "user_preference" => 2,
-        "session_summary" => 3,
+        "task_episode" => 3,
+        "session_summary" => 4,
         _ => 9,
     }
 }

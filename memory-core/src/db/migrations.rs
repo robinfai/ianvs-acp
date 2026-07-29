@@ -52,6 +52,13 @@ pub async fn run(pool: &SqlitePool) -> sqlx::Result<()> {
     ensure_column(
         pool,
         "memory_candidates",
+        "episode_json",
+        "episode_json text",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "memory_candidates",
         "source_turn_id",
         "source_turn_id text",
     )

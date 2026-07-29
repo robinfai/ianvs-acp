@@ -199,6 +199,7 @@ class MemoryCandidate {
     this.reason,
     this.source = '',
     this.instructionScopes = const <String>[],
+    this.episode,
     required this.status,
   });
 
@@ -210,6 +211,7 @@ class MemoryCandidate {
   final String? reason;
   final String source;
   final List<String> instructionScopes;
+  final Map<String, Object?>? episode;
   final String status;
 
   factory MemoryCandidate.fromJson(Object? raw) {
@@ -227,6 +229,9 @@ class MemoryCandidate {
       instructionScopes: _stringList(
         raw['instructionScopes'] ?? raw['instruction_scopes'],
       ),
+      episode: raw['episode'] is Map
+          ? Map<String, Object?>.from(raw['episode'] as Map)
+          : null,
       status: raw['status'] as String? ?? '',
     );
   }
@@ -239,6 +244,7 @@ class MemoryCandidate {
     String? reason,
     String? source,
     List<String>? instructionScopes,
+    Map<String, Object?>? episode,
     String? status,
   }) {
     return MemoryCandidate(
@@ -250,6 +256,7 @@ class MemoryCandidate {
       reason: reason ?? this.reason,
       source: source ?? this.source,
       instructionScopes: instructionScopes ?? this.instructionScopes,
+      episode: episode ?? this.episode,
       status: status ?? this.status,
     );
   }

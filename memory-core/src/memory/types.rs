@@ -7,6 +7,25 @@ pub enum MemoryKind {
     ProjectRule,
     ArchitectureDecision,
     SessionSummary,
+    TaskEpisode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskEpisodeData {
+    pub goal: String,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+    pub mistake: Option<String>,
+    pub successful_pattern: String,
+}
+
+impl TaskEpisodeData {
+    pub fn is_valid(&self) -> bool {
+        !self.goal.trim().is_empty() && !self.successful_pattern.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

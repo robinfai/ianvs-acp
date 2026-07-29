@@ -518,6 +518,7 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
               current.text,
               current.reason,
               current.confidence,
+              current.episode,
               ...current.instructionScopes,
             ]),
           );
@@ -1474,6 +1475,7 @@ class _MemoryRecordEditorDialogState extends State<_MemoryRecordEditorDialog> {
     'project_rule',
     'architecture_decision',
     'session_summary',
+    'task_episode',
   ];
   static const List<String> _scopes = [
     'global',
@@ -1715,6 +1717,7 @@ class _MemoryCandidateCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPending = candidate.status.trim().toLowerCase() == 'pending';
     final source = candidate.source.trim();
+    final episodeSummary = _taskEpisodeSummary(candidate.episode);
     final metaParts = [
       candidate.kind,
       candidate.scope,
@@ -1746,6 +1749,18 @@ class _MemoryCandidateCard extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               candidate.reason!.trim(),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+          if (episodeSummary != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              episodeSummary,
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 12,
@@ -1803,6 +1818,27 @@ class _MemoryCandidateCard extends StatelessWidget {
     if (confidence == null) return 'confidence --';
     return '${(confidence * 100).round()}%';
   }
+}
+
+String? _taskEpisodeSummary(Map<String, Object?>? episode) {
+  if (episode == null) return null;
+  final goal = episode['goal']?.toString().trim() ?? '';
+  final successfulPattern =
+      episode['successfulPattern']?.toString().trim() ?? '';
+  if (goal.isEmpty && successfulPattern.isEmpty) return null;
+  final tools = episode['toolsUsed'];
+  final toolLabels = tools is List
+      ? tools
+            .whereType<Object>()
+            .map((value) => value.toString().trim())
+            .where((value) => value.isNotEmpty)
+            .join(', ')
+      : '';
+  return [
+    if (goal.isNotEmpty) 'goal: $goal',
+    if (toolLabels.isNotEmpty) 'tools: $toolLabels',
+    if (successfulPattern.isNotEmpty) 'pattern: $successfulPattern',
+  ].join(' · ');
 }
 
 class _MemoryChangeRequestCard extends StatelessWidget {
@@ -1969,6 +2005,7 @@ class _CandidateEditorDialogState extends State<_CandidateEditorDialog> {
     'project_rule',
     'architecture_decision',
     'session_summary',
+    'task_episode',
   ];
   static const List<String> _scopes = [
     'global',
@@ -2072,6 +2109,7 @@ class _ChangeRequestEditorDialogState
     'project_rule',
     'architecture_decision',
     'session_summary',
+    'task_episode',
   ];
   static const List<String> _scopes = [
     'global',

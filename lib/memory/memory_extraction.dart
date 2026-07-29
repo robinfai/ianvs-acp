@@ -22,6 +22,49 @@ class ExtractedMemoryEntity {
   }
 }
 
+class ExtractedTaskEpisode {
+  const ExtractedTaskEpisode({
+    required this.goal,
+    this.constraints = const <String>[],
+    this.toolsUsed = const <String>[],
+    this.mistake,
+    required this.successfulPattern,
+  });
+
+  final String goal;
+  final List<String> constraints;
+  final List<String> toolsUsed;
+  final String? mistake;
+  final String successfulPattern;
+
+  bool get isValid =>
+      goal.trim().isNotEmpty && successfulPattern.trim().isNotEmpty;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'goal': goal,
+    if (constraints.isNotEmpty) 'constraints': constraints,
+    if (toolsUsed.isNotEmpty) 'toolsUsed': toolsUsed,
+    if (mistake != null) 'mistake': mistake,
+    'successfulPattern': successfulPattern,
+  };
+
+  factory ExtractedTaskEpisode.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('Task episode must be an object.');
+    }
+    return ExtractedTaskEpisode(
+      goal: raw['goal'] as String? ?? '',
+      constraints: _stringList(raw['constraints']),
+      toolsUsed: _stringList(raw['toolsUsed'] ?? raw['tools_used']),
+      mistake: raw['mistake'] as String?,
+      successfulPattern:
+          raw['successfulPattern'] as String? ??
+          raw['successful_pattern'] as String? ??
+          '',
+    );
+  }
+}
+
 class ExtractedMemoryCandidate {
   const ExtractedMemoryCandidate({
     required this.kind,
@@ -31,6 +74,7 @@ class ExtractedMemoryCandidate {
     this.reason,
     this.instructionScopes = const <String>[],
     this.entities = const <ExtractedMemoryEntity>[],
+    this.episode,
   });
 
   final String kind;
@@ -40,6 +84,7 @@ class ExtractedMemoryCandidate {
   final String? reason;
   final List<String> instructionScopes;
   final List<ExtractedMemoryEntity> entities;
+  final ExtractedTaskEpisode? episode;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'kind': kind,
@@ -50,6 +95,7 @@ class ExtractedMemoryCandidate {
     if (instructionScopes.isNotEmpty) 'instructionScopes': instructionScopes,
     if (entities.isNotEmpty)
       'entities': entities.map((entity) => entity.toJson()).toList(),
+    if (episode != null) 'episode': episode!.toJson(),
   };
 
   factory ExtractedMemoryCandidate.fromJson(Object? raw) {
@@ -57,6 +103,7 @@ class ExtractedMemoryCandidate {
       throw const FormatException('Memory candidate must be an object.');
     }
     final entities = raw['entities'];
+    final episode = raw['episode'];
     return ExtractedMemoryCandidate(
       kind: raw['kind'] as String? ?? '',
       scope: raw['scope'] as String? ?? '',
@@ -72,6 +119,7 @@ class ExtractedMemoryCandidate {
                 .where((entity) => entity.text.trim().isNotEmpty)
                 .toList(growable: false)
           : const <ExtractedMemoryEntity>[],
+      episode: episode is Map ? ExtractedTaskEpisode.fromJson(episode) : null,
     );
   }
 }
@@ -96,15 +144,17 @@ Allowed memory kinds:
 2. project_rule
 3. architecture_decision
 4. session_summary
+5. task_episode
 Do not extract secrets, temporary one-off instructions, unverified assumptions, long code snippets, or error logs.
 If the user says something is only for this answer, turn, message, or request, return no candidate for it.
 If the user says something is for this session, conversation, or chat, use kind "session_summary" and scope "session".
 Treat clear self-introductions such as "我叫 Rodriguez", "我是 Rodriguez", "my name is Rodriguez", or "I'm Rodriguez" as durable user_preference memories unless the user marks them as one-off or session-only.
 Treat clear preference statements such as "我偏好中文回复", "请始终用中文回复", "I prefer concise answers", "By default, reply in Chinese", or "Please reply in Chinese from now on" as user_preference memories unless the user marks them as one-off or session-only.
 Treat clear project directives such as "本项目禁止使用 nc", "以后这个项目不要用 nc", or "In this repo, never use netcat" as project_rule memories, and clear architecture decision statements such as "架构决定..." or "Architecture decision: ..." as architecture_decision memories.
+Use task_episode only when this turn contains a completed, reusable task outcome with concrete evidence. Store the goal, important constraints, tools used, a mistake to avoid when present, and the successful pattern. Prefer repo scope when the experience is project-specific, otherwise workspace scope. Do not create task episodes for routine chat, unverified attempts, or generic advice, and return at most one task_episode candidate per turn.
 Return JSON only.
 Schema:
-{"candidates":[{"kind":"user_preference | project_rule | architecture_decision | session_summary","scope":"global | workspace | repo | session","text":"Clear, concise memory text.","confidence":0.0,"reason":"Short reason why this is durable and useful.","instructionScopes":["global | workspace | repo"],"entities":[{"text":"Named person, project, tool, identifier, short alias, or tag.","type":"person | project | tool | identifier | tag | entity"}]}]}
+{"candidates":[{"kind":"user_preference | project_rule | architecture_decision | session_summary | task_episode","scope":"global | workspace | repo | session","text":"Clear, concise memory summary.","confidence":0.0,"reason":"Short reason why this is durable and useful.","instructionScopes":["global | workspace | repo"],"entities":[{"text":"Named person, project, tool, identifier, short alias, or tag.","type":"person | project | tool | identifier | tag | entity"}],"episode":{"goal":"Completed task goal; required for task_episode only.","constraints":["Important constraint."],"toolsUsed":["Tool or verification command."],"mistake":"Optional mistake to avoid.","successfulPattern":"Reusable sequence that succeeded; required for task_episode only."}}]}
 Use instructionScopes only when a custom memory instruction influenced this candidate.
 $customInstructions
 
@@ -164,7 +214,9 @@ List<ExtractedMemoryCandidate> parseExtractedMemoryCandidates(String raw) {
       .where((candidate) {
         return candidate.kind.trim().isNotEmpty &&
             candidate.scope.trim().isNotEmpty &&
-            candidate.text.trim().isNotEmpty;
+            candidate.text.trim().isNotEmpty &&
+            (candidate.kind.trim().toLowerCase() != 'task_episode' ||
+                candidate.episode?.isValid == true);
       })
       .toList(growable: false);
   return normalizeExtractedMemoryCandidates(parsed);
@@ -176,6 +228,10 @@ List<ExtractedMemoryCandidate> normalizeExtractedMemoryCandidates(
   if (candidates.isEmpty) return const <ExtractedMemoryCandidate>[];
   final normalized = <ExtractedMemoryCandidate>[];
   for (final candidate in candidates) {
+    if (candidate.kind.trim().toLowerCase() == 'task_episode' &&
+        !_validTaskEpisode(candidate.episode)) {
+      continue;
+    }
     final lifetime = _memoryLifetime(candidate.text);
     if (lifetime == _MemoryLifetime.oneOff) continue;
     if (lifetime == _MemoryLifetime.session) {
@@ -210,6 +266,7 @@ List<ExtractedMemoryCandidate> normalizeExtractedMemoryCandidates(
           reason: candidate.reason,
           instructionScopes: candidate.instructionScopes,
           entities: candidate.entities,
+          episode: candidate.episode,
         ),
       );
     }
@@ -951,7 +1008,20 @@ ExtractedMemoryCandidate _mergeDuplicateCandidate(
       fallback.instructionScopes,
     ),
     entities: _mergeEntities(existing.entities, fallback.entities),
+    episode: existing.episode ?? fallback.episode,
   );
+}
+
+bool _validTaskEpisode(ExtractedTaskEpisode? episode) {
+  if (episode == null || !episode.isValid) return false;
+  final values = <String>[
+    episode.goal,
+    episode.successfulPattern,
+    ...episode.constraints,
+    ...episode.toolsUsed,
+    ?episode.mistake,
+  ];
+  return !values.any(_looksLikeSecret);
 }
 
 List<String> _mergeStrings(List<String> primary, List<String> fallback) {

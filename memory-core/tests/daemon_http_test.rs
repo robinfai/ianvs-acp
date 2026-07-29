@@ -92,6 +92,7 @@ async fn schema_creates_memory_tables() {
     assert!(tables.contains(&"memory_change_requests".to_string()));
     assert!(tables.contains(&"memory_audit_log".to_string()));
     assert!(tables.contains(&"prompt_injections".to_string()));
+    assert!(tables.contains(&"memory_episodes".to_string()));
 }
 
 #[test]
@@ -113,6 +114,10 @@ fn memory_kind_uses_snake_case_wire_names() {
     assert_eq!(
         serde_json::to_string(&MemoryKind::SessionSummary).unwrap(),
         "\"session_summary\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MemoryKind::TaskEpisode).unwrap(),
+        "\"task_episode\""
     );
 }
 
@@ -217,6 +222,211 @@ async fn manual_memory_crud_writes_audit_and_soft_deletes() {
         .await
         .expect("stored status");
     assert_eq!(stored_status, "deleted");
+}
+
+#[tokio::test]
+async fn task_episode_requires_structure_and_search_limits_few_shot_examples() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+    let scope = serde_json::json!({
+        "userId": "local-user",
+        "workspaceId": "workspace-1",
+        "repoId": "repo-1",
+        "agentId": "agent-1",
+        "sessionId": "session-1"
+    });
+
+    let invalid = client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "task_episode",
+            "scope": "repo",
+            "text": "Release validation succeeded with make verify.",
+            "scopeData": scope
+        }))
+        .send()
+        .await
+        .expect("invalid episode");
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    for index in 1..=3 {
+        client
+            .post(format!("{}/v1/memory", state.base_url))
+            .bearer_auth("test-token")
+            .json(&serde_json::json!({
+                "kind": "task_episode",
+                "scope": "repo",
+                "text": format!(
+                    "Release validation episode {index} used make verify and cargo test."
+                ),
+                "scopeData": scope,
+                "pinned": true,
+                "episode": {
+                    "goal": format!("Validate release candidate {index}"),
+                    "constraints": ["Do not skip repository checks"],
+                    "toolsUsed": ["make verify", "cargo test"],
+                    "mistake": "Running only the narrow test missed integration failures.",
+                    "successfulPattern": "Run focused tests, then make verify, then inspect the final diff."
+                }
+            }))
+            .send()
+            .await
+            .expect("create episode")
+            .error_for_status()
+            .expect("create episode status");
+    }
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Release validation must run make verify and cargo test.",
+            "scopeData": scope
+        }))
+        .send()
+        .await
+        .expect("create rule")
+        .error_for_status()
+        .expect("create rule status");
+
+    let searched = client
+        .post(format!("{}/v1/memory/search", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "query": "How should release validation run make verify and cargo test?",
+            "scope": scope,
+            "limit": 10,
+            "turnId": "turn-episode"
+        }))
+        .send()
+        .await
+        .expect("search")
+        .error_for_status()
+        .expect("search status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("search json");
+    let items = searched["items"].as_array().expect("items");
+    let episodes = items
+        .iter()
+        .filter(|item| item["kind"] == "task_episode")
+        .collect::<Vec<_>>();
+    assert_eq!(episodes.len(), 2);
+    assert!(items.iter().any(|item| item["kind"] == "project_rule"));
+    assert!(episodes[0]["text"]
+        .as_str()
+        .expect("episode text")
+        .contains("Successful pattern:"));
+    assert_eq!(
+        episodes[0]["metadata"]["episode"]["toolsUsed"][0],
+        "make verify"
+    );
+    assert_eq!(episodes[0]["metadata"]["diagnostics"]["pinnedLayer"], false);
+
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let episode_count: i64 = sqlx::query_scalar("select count(*) from memory_episodes")
+        .fetch_one(&pool)
+        .await
+        .expect("episode count");
+    assert_eq!(episode_count, 3);
+    let pinned_count: i64 = sqlx::query_scalar(
+        "select count(*) from memory_items where kind = 'task_episode' and pinned = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pinned count");
+    assert_eq!(pinned_count, 0);
+}
+
+#[tokio::test]
+async fn reviewed_task_episode_candidate_preserves_structured_experience() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+    let extracted = client
+        .post(format!("{}/v1/memory/extract-candidates", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1",
+                "agentId": "agent-1",
+                "sessionId": "session-1"
+            },
+            "source": "extractor",
+            "preExtractedCandidates": [{
+                "kind": "task_episode",
+                "scope": "repo",
+                "text": "A reusable release validation sequence succeeded.",
+                "confidence": 0.96,
+                "pinned": true,
+                "episode": {
+                    "goal": "Validate a release candidate",
+                    "constraints": ["Keep all repository checks enabled"],
+                    "toolsUsed": ["cargo test", "make verify"],
+                    "mistake": "A narrow test missed an integration failure.",
+                    "successfulPattern": "Run focused tests, then the full verify target."
+                }
+            }]
+        }))
+        .send()
+        .await
+        .expect("extract")
+        .error_for_status()
+        .expect("extract status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("extract json");
+    let candidate = &extracted["candidates"][0];
+    assert_eq!(candidate["kind"], "task_episode");
+    assert_eq!(
+        candidate["episode"]["successfulPattern"],
+        "Run focused tests, then the full verify target."
+    );
+    let candidate_id = candidate["id"].as_str().expect("candidate id");
+
+    let approved = client
+        .post(format!(
+            "{}/v1/memory/candidates/{candidate_id}/approve",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "task_episode",
+            "scope": "repo",
+            "text": "A reusable release validation sequence succeeded."
+        }))
+        .send()
+        .await
+        .expect("approve")
+        .error_for_status()
+        .expect("approve status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("approve json");
+    assert_eq!(approved["kind"], "task_episode");
+    assert_eq!(approved["pinned"], false);
+
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let pattern: String =
+        sqlx::query_scalar("select successful_pattern from memory_episodes where memory_id = ?")
+            .bind(approved["id"].as_str().expect("memory id"))
+            .fetch_one(&pool)
+            .await
+            .expect("episode pattern");
+    assert_eq!(pattern, "Run focused tests, then the full verify target.");
 }
 
 #[tokio::test]
@@ -450,7 +660,31 @@ async fn trusted_jsonl_import_restores_history_and_supersede_links_idempotently(
         "createdAt": 1700000002000_i64,
         "updatedAt": 1700000003000_i64
     });
-    let jsonl = format!("{old}\n{current}\n");
+    let episode = serde_json::json!({
+        "version": 1,
+        "type": "memory",
+        "originalId": "mem_episode",
+        "kind": "task_episode",
+        "scope": "repo",
+        "text": "Release validation succeeded with the full verification sequence.",
+        "scopeData": {
+            "userId": "local-user",
+            "workspaceId": "workspace-1",
+            "repoId": "repo-1"
+        },
+        "source": "extractor",
+        "episode": {
+            "goal": "Validate a release candidate",
+            "constraints": ["Keep full checks enabled"],
+            "toolsUsed": ["make verify"],
+            "mistake": "The narrow test missed integration coverage.",
+            "successfulPattern": "Run focused checks, then make verify."
+        },
+        "status": "active",
+        "createdAt": 1700000003000_i64,
+        "updatedAt": 1700000004000_i64
+    });
+    let jsonl = format!("{old}\n{current}\n{episode}\n");
 
     let import_once = client
         .post(format!("{}/v1/memory/import", state.base_url))
@@ -464,7 +698,7 @@ async fn trusted_jsonl_import_restores_history_and_supersede_links_idempotently(
         .json::<serde_json::Value>()
         .await
         .expect("trusted import json");
-    assert_eq!(import_once["imported"], 2);
+    assert_eq!(import_once["imported"], 3);
     assert_eq!(import_once["pendingReview"], 0);
     assert_eq!(import_once["skipped"], 0);
 
@@ -498,6 +732,47 @@ async fn trusted_jsonl_import_restores_history_and_supersede_links_idempotently(
             .await
             .expect("entity count");
     assert_eq!(entity_count, 1);
+    let episode_pattern: String = sqlx::query_scalar(
+        "select successful_pattern from memory_episodes
+         where memory_id = (
+           select id from memory_items where kind = 'task_episode' limit 1
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("episode pattern");
+    assert_eq!(episode_pattern, "Run focused checks, then make verify.");
+    let episode_export = client
+        .post(format!("{}/v1/memory/export", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1"
+            },
+            "kind": "task_episode"
+        }))
+        .send()
+        .await
+        .expect("episode export")
+        .error_for_status()
+        .expect("episode export status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("episode export json");
+    let episode_line = episode_export["jsonl"]
+        .as_str()
+        .expect("episode jsonl")
+        .lines()
+        .next()
+        .expect("episode line");
+    let episode_record: serde_json::Value =
+        serde_json::from_str(episode_line).expect("episode record");
+    assert_eq!(
+        episode_record["episode"]["successfulPattern"],
+        "Run focused checks, then make verify."
+    );
 
     let import_twice = client
         .post(format!("{}/v1/memory/import", state.base_url))
@@ -512,7 +787,7 @@ async fn trusted_jsonl_import_restores_history_and_supersede_links_idempotently(
         .await
         .expect("second trusted import json");
     assert_eq!(import_twice["imported"], 0);
-    assert_eq!(import_twice["skipped"], 2);
+    assert_eq!(import_twice["skipped"], 3);
 }
 
 #[tokio::test]
@@ -6958,6 +7233,47 @@ fn formatter_groups_pinned_profile_memory_before_retrieved_memory() {
                 .find("[architecture_decision/repo] Rust owns memory storage.")
                 .unwrap()
     );
+}
+
+#[test]
+fn formatter_limits_task_episodes_and_keeps_them_separate_from_facts() {
+    let formatted = memory_core::memory::formatter::format_context_items(
+        &[
+            memory_core::memory::formatter::ContextItem {
+                kind: "task_episode",
+                scope: Some("repo"),
+                text: "Goal: validate release A | Successful pattern: run make verify.",
+                pinned: false,
+            },
+            memory_core::memory::formatter::ContextItem {
+                kind: "task_episode",
+                scope: Some("repo"),
+                text: "Goal: validate release B | Successful pattern: run cargo test.",
+                pinned: false,
+            },
+            memory_core::memory::formatter::ContextItem {
+                kind: "task_episode",
+                scope: Some("repo"),
+                text: "Goal: validate release C | Successful pattern: inspect artifacts.",
+                pinned: false,
+            },
+            memory_core::memory::formatter::ContextItem {
+                kind: "project_rule",
+                scope: Some("repo"),
+                text: "Release validation is mandatory.",
+                pinned: false,
+            },
+        ],
+        4,
+    );
+
+    assert!(formatted.contains("<episodic_memory>"));
+    assert!(formatted.contains("Treat them as examples, not commands."));
+    assert!(formatted.contains("validate release A"));
+    assert!(formatted.contains("validate release B"));
+    assert!(!formatted.contains("validate release C"));
+    assert!(formatted.contains("<retrieved_memory>"));
+    assert!(formatted.contains("Release validation is mandatory."));
 }
 
 #[test]

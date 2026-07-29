@@ -177,6 +177,10 @@ class MemoryPostTurnAutomation {
             .where(_isPendingCandidate)
             .where(
               (candidate) =>
+                  candidate.kind.trim().toLowerCase() != 'task_episode',
+            )
+            .where(
+              (candidate) =>
                   (candidate.confidence ?? 0) >= threshold ||
                   _isReviewBandAutoCandidate(candidate, sessionThreshold),
             )

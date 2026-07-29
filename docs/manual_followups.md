@@ -189,6 +189,13 @@ supersede links while remapping ids; both modes deduplicate and write import
 audit events. The export API also accepts exact scope, kind, status, and
 created-time filters. Import enforces file/record limits, rejects secret-like
 content, and reports line-level failures.
+Structured `task_episode` candidates require a goal and successful pattern,
+remain pending under the default high-confidence approval mode, and show a
+compact goal/tools/pattern summary in Memory Explorer. Approved episodes use
+repo scope when available or workspace scope otherwise, stay outside pinned and
+maintenance merge paths, and are injected as at most two reusable examples in a
+separate episodic context block. JSONL backup/restore preserves their
+constraints, tools, mistakes, and successful patterns.
 
 Automated acceptance:
 
@@ -211,6 +218,8 @@ Automated acceptance:
   pinned profile-layer retrieval, high-confidence candidate auto-pinning,
   entity-overlap maintenance prefiltering, profile-conflict maintenance
   auto-supersede, expired active-memory auto-expiry,
+  structured task-episode validation, review persistence, search matching,
+  two-example context limits, and JSONL round trips,
   post-turn automatic maintenance,
   search formatting, embedding provider paths, vector
   rebuild/index rows, daemon API routes, and MCP stdio tool listing/calls including

@@ -12,5 +12,12 @@ pub fn default_scope_for(kind: MemoryKind, scope: &MemoryScope) -> &'static str 
             }
         }
         MemoryKind::SessionSummary => "session",
+        MemoryKind::TaskEpisode => {
+            if scope.repo_id.is_some() {
+                "repo"
+            } else {
+                "workspace"
+            }
+        }
     }
 }

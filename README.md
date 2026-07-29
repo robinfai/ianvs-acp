@@ -107,6 +107,13 @@ without one profile block crowding out the others. When Memory is enabled,
 Flutter also prepends a small memory-capability notice even when no prior memory
 matches the current turn, so the main agent does not tell the user that
 cross-session memory is unavailable while automatic extraction/review is active.
+Reviewed `task_episode` memories preserve a structured goal, constraints, tools
+used, mistake, and successful pattern. They default to repo scope when possible,
+stay pending under the default high-confidence approval mode, never enter the
+pinned profile layer, and are excluded from automatic maintenance merges.
+Search can match both their summary and structured fields, then prompt context
+places at most two examples in a separate `<episodic_memory>` section so prior
+work is reusable as an example without being treated as a command.
 High-confidence stable
 candidates such as global user preferences plus workspace/repo project rules and
 architecture decisions are auto-pinned when approved, so user identity and hard
@@ -254,7 +261,8 @@ backup and import a JSONL file in either `pending_review` or explicitly selected
 `trusted` mode. Pending review creates normal review candidates and skips
 disabled/deleted history; trusted import restores active, disabled, and deleted
 records directly, including temporal metadata, pinned state, entities, and
-supersede links. Import deduplicates existing records, rejects secret-like
+supersede links; structured task episodes are preserved in both export and
+import paths. Import deduplicates existing records, rejects secret-like
 content, writes auditable `candidate.create` or `memory.import` events, and
 reports skipped records and per-line errors. The daemon export API additionally
 supports exact memory scope, kind, status, and creation-date filters.

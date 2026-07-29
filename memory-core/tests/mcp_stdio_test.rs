@@ -607,6 +607,100 @@ async fn mcp_stdio_remember_defaults_to_auto_high_confidence_policy() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_keeps_high_confidence_task_episodes_pending() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let http = reqwest::Client::new();
+
+    let exe = env!("CARGO_BIN_EXE_memory-core");
+    let mut child = Command::new(exe)
+        .args(["--mode", "mcp-stdio", "--daemon-url", &state.base_url])
+        .env("MEMORY_DAEMON_TOKEN", "test-token")
+        .env("MEMORY_REVIEW_APPROVAL_MODE", "auto_high_confidence")
+        .env("MEMORY_REVIEW_HIGH_CONFIDENCE_THRESHOLD", "0.90")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 35,
+            "method": "tools/call",
+            "params": {
+                "name": "memory.remember",
+                "arguments": {
+                    "scope": {
+                        "userId": "local-user",
+                        "workspaceId": "workspace-1",
+                        "repoId": "repo-1"
+                    },
+                    "preExtractedCandidates": [{
+                        "kind": "task_episode",
+                        "scope": "repo",
+                        "text": "Release validation succeeded with the full verification sequence.",
+                        "confidence": 0.99,
+                        "reason": "Reusable task experience.",
+                        "episode": {
+                            "goal": "Validate a release candidate",
+                            "constraints": ["Keep full checks enabled"],
+                            "toolsUsed": ["make verify"],
+                            "mistake": "A narrow test missed integration coverage.",
+                            "successfulPattern": "Run focused checks, then make verify."
+                        }
+                    }]
+                }
+            }
+        })
+    )
+    .expect("write remember");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut remember_line = String::new();
+    reader.read_line(&mut remember_line).expect("read remember");
+    let remember_response: serde_json::Value =
+        serde_json::from_str(remember_line.trim()).expect("remember json");
+    let remember_text = remember_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("remember text");
+    assert!(!remember_text.contains("\"approvedMemories\""));
+    assert!(!remember_text.contains("\"maintenanceResult\""));
+
+    let pending = http
+        .get(format!(
+            "{}/v1/memory/candidates?userId=local-user&repoId=repo-1&status=pending",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("list candidates")
+        .json::<serde_json::Value>()
+        .await
+        .expect("candidate json");
+    assert_eq!(
+        pending["candidates"].as_array().expect("candidates").len(),
+        1
+    );
+    assert_eq!(pending["candidates"][0]["kind"], "task_episode");
+    assert_eq!(
+        pending["candidates"][0]["episode"]["goal"],
+        "Validate a release candidate"
+    );
+
+    child.kill().ok();
+    child.wait().ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_remember_auto_approves_review_band_stable_memory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")

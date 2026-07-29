@@ -53,6 +53,55 @@ void main() {
     expect(candidates.single.entities.single.text, 'Rodriguez');
   });
 
+  test('parses structured task episode candidates', () {
+    final candidates = parseExtractedMemoryCandidates('''
+{
+  "candidates": [
+    {
+      "kind": "task_episode",
+      "scope": "repo",
+      "text": "Release validation succeeded with the full verification sequence.",
+      "confidence": 0.94,
+      "episode": {
+        "goal": "Validate a release candidate",
+        "constraints": ["Keep full checks enabled"],
+        "toolsUsed": ["cargo test", "make verify"],
+        "mistake": "A narrow test missed integration coverage.",
+        "successfulPattern": "Run focused tests, then make verify."
+      }
+    }
+  ]
+}
+''');
+
+    expect(candidates, hasLength(1));
+    expect(candidates.single.kind, 'task_episode');
+    expect(candidates.single.episode?.goal, 'Validate a release candidate');
+    expect(candidates.single.episode?.toolsUsed, ['cargo test', 'make verify']);
+    expect(
+      candidates.single.toJson()['episode'],
+      containsPair('successfulPattern', 'Run focused tests, then make verify.'),
+    );
+  });
+
+  test('drops task episode candidates without a reusable pattern', () {
+    final candidates = parseExtractedMemoryCandidates('''
+{
+  "candidates": [
+    {
+      "kind": "task_episode",
+      "scope": "repo",
+      "text": "The task finished.",
+      "confidence": 0.94,
+      "episode": {"goal": "Finish the task", "successfulPattern": ""}
+    }
+  ]
+}
+''');
+
+    expect(candidates, isEmpty);
+  });
+
   test('drops extractor one-off candidates before review', () {
     final candidates = parseExtractedMemoryCandidates('''
 {
@@ -80,6 +129,9 @@ void main() {
     expect(prompt, contains('"entities"'));
     expect(prompt, contains('"type"'));
     expect(prompt, contains('"instructionScopes"'));
+    expect(prompt, contains('"episode"'));
+    expect(prompt, contains('task_episode'));
+    expect(prompt, contains('return at most one task_episode'));
     expect(prompt, contains('only for this answer'));
     expect(prompt, contains('use kind "session_summary" and scope "session"'));
     expect(prompt, contains('clear self-introductions'));

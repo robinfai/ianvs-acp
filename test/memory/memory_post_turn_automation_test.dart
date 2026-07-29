@@ -92,6 +92,41 @@ void main() {
     },
   );
 
+  test('keeps high-confidence task episodes pending for review', () async {
+    final approved = <String>[];
+    var maintenanceRuns = 0;
+
+    final result = await MemoryPostTurnAutomation.apply(
+      memory: const MemoryConfig(enabled: true),
+      candidates: const [
+        MemoryCandidate(
+          id: 'cand_episode',
+          kind: 'task_episode',
+          scope: 'repo',
+          text: 'Release validation succeeded with the full verify sequence.',
+          confidence: 0.99,
+          reason: 'Reusable task experience.',
+          status: 'pending',
+        ),
+      ],
+      approveCandidate: (candidate) async => approved.add(candidate.id),
+      runMaintenance: () async {
+        maintenanceRuns += 1;
+        return const MaintenanceRunResult(
+          autoApplied: 0,
+          needsReview: 0,
+          skipped: 0,
+          changeRequests: <MemoryChangeRequest>[],
+        );
+      },
+    );
+
+    expect(approved, isEmpty);
+    expect(maintenanceRuns, 0);
+    expect(result.approvedCandidates, 0);
+    expect(result.pendingCandidateReviews, 1);
+  });
+
   test('does not call maintenance when maintenance mode is disabled', () async {
     var maintenanceRuns = 0;
 

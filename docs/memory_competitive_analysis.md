@@ -43,8 +43,8 @@ Primary sources:
 
 已具备：
 
-- 四类 reviewed memory：`user_preference`、`project_rule`、
-  `architecture_decision`、`session_summary`。
+- 五类 reviewed memory：`user_preference`、`project_rule`、
+  `architecture_decision`、`session_summary`、`task_episode`。
 - scope：global、workspace、repo、session，并带 user/workspace/repo/agent/session
   过滤。
 - 本地 SQLite 事实库、sqlite-vec 检索索引、本地 embedding 和
@@ -71,6 +71,9 @@ Primary sources:
   lookup，过期或尚未生效的记忆会降权。
 - `memory_entities` 提供轻量 entity/tag 存储；manual memory 和 extracted candidate
   都可带 entities，审批后用于 normalized entity matching。
+- `task_episode` 使用独立结构保存 goal、constraints、tools used、mistake 和
+  successful pattern；默认进入人工核查，不参与自动 pinned 或 maintenance 合并，
+  检索后以独立 few-shot 区块最多注入 2 条。
 - `memory_items.pinned` 提供第一版 profile/block 常驻层；高置信 global 用户偏好和
   repo 项目规则/架构决策候选批准后会自动 pinned，搜索诊断标记 `pinnedLayer`，
   并派生 `profileBlock` label/description/limit，例如 `user_profile` 和
@@ -85,8 +88,8 @@ Primary sources:
 - memory quality eval 已覆盖关键检索不变量，但还不是完整质量套件。
 - 检索排序已有语义/词面、entity/tag、scope、kind、更新时间、反馈、访问强化、
   低幅度 decay/recency、轻量 temporal validity 和 supersede 链。
-- active memory 仍是扁平文本项；已有 pinned profile 层，但还没有完整 block
-  label/description/value/limit UI。
+- 普通 semantic memory 仍是扁平文本项；已有 pinned profile 层和结构化
+  task episode，但还没有完整 block label/description/value/limit UI。
 - Audit log 已能看到 retrieval 诊断摘要；每轮对话也能看到 `Memory used`
   面板并直接提交 helpful/not relevant/stale 反馈。
 - 维护整理已处理相似文本、过期时效和明确同主题 profile 冲突；复杂事实冲突仍需要
@@ -407,9 +410,18 @@ Success:
 
 - 用户能备份和迁移 memory，而不需要直接操作 SQLite。
 
-### P2: later
+### P2: staged
 
 #### 9. Episodic skill memories
+
+Status: first pass implemented. `task_episode` candidates must include a
+structured goal and successful pattern, may include constraints, tools used,
+and a recorded mistake, and default to repo scope when available or workspace
+scope otherwise. They stay pending under high-confidence automatic approval,
+never enter the pinned profile layer, and are excluded from maintenance merges.
+Search matches both the summary and structured fields, then injects at most two
+reviewed examples in a separate `<episodic_memory>` block. JSONL pending and
+trusted imports preserve the structured episode data.
 
 Why: 对 coding agent，有价值的不只是事实，还有“怎么做成功了”。
 
@@ -465,6 +477,9 @@ Success:
 5. 做 entity/tag boost。先轻量实现，不上完整图。
 6. 扩展 pinned blocks UI。第一版 pinned 层已把最重要的稳定事实从概率检索和普通注入区里拿出来。
 7. 扩展 custom instructions 命中解释，并做 import/export、episodic memories。
+
+Status: 上述顺序已完成第一版闭环；完整 pinned block 编辑界面和 custom
+instruction 命中解释仍可继续深化。
 
 ## Do not adopt yet
 

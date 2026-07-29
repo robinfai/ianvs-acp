@@ -115,21 +115,27 @@ void main() {
     expect((item.metadata!['diagnostics'] as Map)['feedbackScore'], 0.65);
   });
 
-  test('MemoryCandidate parses instruction scope matches', () {
+  test('MemoryCandidate parses instruction scope and episode metadata', () {
     final candidate = MemoryCandidate.fromJson({
       'id': 'cand_1',
-      'kind': 'project_rule',
+      'kind': 'task_episode',
       'scope': 'repo',
-      'text': 'Never use nc/netcat.',
+      'text': 'Release validation succeeded.',
       'confidence': 0.91,
       'reason': 'Matches repo memory policy.',
       'source': 'extractor',
       'instructionScopes': ['repo', 'workspace'],
+      'episode': {
+        'goal': 'Validate a release',
+        'toolsUsed': ['make verify'],
+        'successfulPattern': 'Run the full verification target.',
+      },
       'status': 'pending',
     });
 
     expect(candidate.source, 'extractor');
     expect(candidate.instructionScopes, ['repo', 'workspace']);
+    expect(candidate.episode?['goal'], 'Validate a release');
   });
 
   test('MemoryApiClient posts memory feedback', () async {

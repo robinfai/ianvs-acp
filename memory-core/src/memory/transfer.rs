@@ -1,7 +1,7 @@
 use crate::error::ApiError;
 use crate::memory::engine::MemoryEntityInput;
 use crate::memory::redactor;
-use crate::memory::types::{MemoryKind, MemoryScope};
+use crate::memory::types::{MemoryKind, MemoryScope, TaskEpisodeData};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
@@ -72,6 +72,7 @@ struct MemoryTransferRecord {
     source_turn_id: Option<String>,
     #[serde(default)]
     entities: Vec<MemoryEntityInput>,
+    episode: Option<TaskEpisodeData>,
     observed_at: Option<i64>,
     valid_from: Option<i64>,
     valid_until: Option<i64>,
@@ -205,6 +206,7 @@ pub async fn export_memory(
     let mut lines = Vec::with_capacity(rows.len().min(MAX_EXPORT_RECORDS));
     for row in rows.into_iter().take(MAX_EXPORT_RECORDS) {
         let entities = load_entities(pool, &row.id).await?;
+        let episode = load_episode(pool, &row.id).await?;
         let kind = serde_json::from_value(serde_json::Value::String(row.kind))
             .map_err(|error| ApiError::Anyhow(error.into()))?;
         let record = MemoryTransferRecord {
@@ -225,6 +227,7 @@ pub async fn export_memory(
             source_session_id: row.source_session_id,
             source_turn_id: row.source_turn_id,
             entities,
+            episode,
             observed_at: row.observed_at,
             valid_from: row.valid_from,
             valid_until: row.valid_until,
@@ -311,12 +314,18 @@ async fn import_pending(
         let id = format!("cand_{}", Uuid::new_v4());
         let entities_json = serde_json::to_string(&record.entities)
             .map_err(|error| ApiError::Anyhow(error.into()))?;
+        let episode_json = record
+            .episode
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| ApiError::Anyhow(error.into()))?;
         sqlx::query(
             "insert into memory_candidates
              (id, user_id, workspace_id, repo_id, agent_id, session_id,
               source_turn_id, source, kind, scope, text, reason, confidence,
-              pinned, entities_json, instruction_scopes_json, status, created_at)
-             values (?, ?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?, ?, ?, ?, '[\"import\"]', 'pending', ?)",
+              pinned, entities_json, episode_json, instruction_scopes_json, status, created_at)
+             values (?, ?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?, ?, ?, ?, ?, '[\"import\"]', 'pending', ?)",
         )
         .bind(&id)
         .bind(&record.scope_data.user_id)
@@ -330,8 +339,13 @@ async fn import_pending(
         .bind(redactor::redact(record.text.trim()))
         .bind("Imported from JSONL backup; review before activation.")
         .bind(record.confidence.unwrap_or(1.0))
-        .bind(if record.pinned { 1_i64 } else { 0_i64 })
+        .bind(if record.pinned && record.kind != MemoryKind::TaskEpisode {
+            1_i64
+        } else {
+            0_i64
+        })
         .bind(entities_json)
+        .bind(episode_json)
         .bind(now)
         .execute(&mut *transaction)
         .await?;
@@ -392,7 +406,8 @@ async fn import_trusted(
             .as_ref()
             .and_then(|original_id| id_map.get(original_id))
             .cloned();
-        let pinned = record.pinned && record.status == "active";
+        let pinned =
+            record.pinned && record.status == "active" && record.kind != MemoryKind::TaskEpisode;
         sqlx::query(
             "insert into memory_items
              (id, user_id, workspace_id, repo_id, agent_id, session_id, source,
@@ -429,6 +444,14 @@ async fn import_trusted(
             &prepared_record.id,
             &record.entities,
             created_at,
+        )
+        .await?;
+        insert_episode(
+            &mut transaction,
+            &prepared_record.id,
+            record.episode.as_ref(),
+            created_at,
+            updated_at,
         )
         .await?;
         write_import_audit(
@@ -509,6 +532,12 @@ fn validate_record(record: &MemoryTransferRecord) -> Result<(), String> {
     }
     if record.scope_data.user_id.trim().is_empty() {
         return Err("scopeData.userId is required".to_string());
+    }
+    if record.kind == MemoryKind::TaskEpisode {
+        let Some(episode) = record.episode.as_ref() else {
+            return Err("task_episode requires episode metadata".to_string());
+        };
+        validate_episode(episode)?;
     }
     Ok(())
 }
@@ -635,6 +664,31 @@ async fn load_entities(
         .collect())
 }
 
+async fn load_episode(
+    pool: &SqlitePool,
+    memory_id: &str,
+) -> Result<Option<TaskEpisodeData>, ApiError> {
+    let row = sqlx::query(
+        "select goal, constraints_json, tools_used_json, mistake, successful_pattern
+         from memory_episodes where memory_id = ?",
+    )
+    .bind(memory_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let constraints_json: String = row.get("constraints_json");
+    let tools_used_json: String = row.get("tools_used_json");
+    Ok(Some(TaskEpisodeData {
+        goal: row.get("goal"),
+        constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
+        tools_used: serde_json::from_str(&tools_used_json).unwrap_or_default(),
+        mistake: row.get("mistake"),
+        successful_pattern: row.get("successful_pattern"),
+    }))
+}
+
 async fn insert_entities(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     memory_id: &str,
@@ -667,6 +721,80 @@ async fn insert_entities(
         .bind(created_at)
         .execute(&mut **transaction)
         .await?;
+    }
+    Ok(())
+}
+
+async fn insert_episode(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    memory_id: &str,
+    episode: Option<&TaskEpisodeData>,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<(), ApiError> {
+    let Some(episode) = episode else {
+        return Ok(());
+    };
+    let constraints = episode
+        .constraints
+        .iter()
+        .map(|value| redactor::redact(value.trim()))
+        .collect::<Vec<_>>();
+    let tools_used = episode
+        .tools_used
+        .iter()
+        .map(|value| redactor::redact(value.trim()))
+        .collect::<Vec<_>>();
+    sqlx::query(
+        "insert into memory_episodes
+         (memory_id, goal, constraints_json, tools_used_json, mistake,
+          successful_pattern, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(memory_id)
+    .bind(redactor::redact(episode.goal.trim()))
+    .bind(serde_json::to_string(&constraints).map_err(|error| ApiError::Anyhow(error.into()))?)
+    .bind(serde_json::to_string(&tools_used).map_err(|error| ApiError::Anyhow(error.into()))?)
+    .bind(
+        episode
+            .mistake
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(redactor::redact),
+    )
+    .bind(redactor::redact(episode.successful_pattern.trim()))
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn validate_episode(episode: &TaskEpisodeData) -> Result<(), String> {
+    if !episode.is_valid() {
+        return Err("task_episode requires episode.goal and episode.successfulPattern".to_string());
+    }
+    let mut fields = episode
+        .constraints
+        .iter()
+        .chain(episode.tools_used.iter())
+        .map(String::as_str)
+        .chain([episode.goal.as_str(), episode.successful_pattern.as_str()])
+        .chain(episode.mistake.as_deref());
+    if fields.any(|value| redactor::contains_secret(value.trim())) {
+        return Err("task_episode metadata looks like it contains a secret".to_string());
+    }
+    if episode.goal.chars().count() > 1_000
+        || episode.successful_pattern.chars().count() > 1_000
+        || episode
+            .mistake
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > 1_000)
+        || episode.constraints.len() > 12
+        || episode.tools_used.len() > 12
+    {
+        return Err("task_episode metadata exceeds the supported limits".to_string());
     }
     Ok(())
 }
@@ -747,6 +875,7 @@ fn kind_to_wire(kind: MemoryKind) -> &'static str {
         MemoryKind::ProjectRule => "project_rule",
         MemoryKind::ArchitectureDecision => "architecture_decision",
         MemoryKind::SessionSummary => "session_summary",
+        MemoryKind::TaskEpisode => "task_episode",
     }
 }
 

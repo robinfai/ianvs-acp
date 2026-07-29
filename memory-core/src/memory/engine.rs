@@ -1,6 +1,6 @@
 use crate::config::MaintenanceLlmConfig;
 use crate::embedding::embedder::Embedder;
-use crate::memory::types::{MemoryKind, MemoryScope};
+use crate::memory::types::{MemoryKind, MemoryScope, TaskEpisodeData};
 use crate::memory::{formatter, ranker, redactor};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ const PINNED_LAYER_RELEVANCE_SCORE: f32 = 0.88;
 const PROFILE_AUTO_CONFIDENCE_THRESHOLD: f32 = 0.75;
 const AUTO_SUPERSEDE_CONFIDENCE_THRESHOLD: f32 = 0.90;
 const PINNED_AUTO_ACCESS_THRESHOLD: i64 = 3;
+const MAX_EPISODIC_SEARCH_ITEMS: usize = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +31,7 @@ pub struct CreateMemoryRequest {
     pub scope_data: MemoryScope,
     #[serde(default)]
     pub entities: Vec<MemoryEntityInput>,
+    pub episode: Option<TaskEpisodeData>,
     pub observed_at: Option<i64>,
     pub valid_from: Option<i64>,
     pub valid_until: Option<i64>,
@@ -96,6 +98,7 @@ pub struct PreExtractedCandidate {
     pub instruction_scopes: Vec<String>,
     #[serde(default)]
     pub entities: Vec<MemoryEntityInput>,
+    pub episode: Option<TaskEpisodeData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +134,7 @@ pub struct MemoryCandidateResponse {
     pub confidence: Option<f32>,
     pub reason: Option<String>,
     pub instruction_scopes: Vec<String>,
+    pub episode: Option<TaskEpisodeData>,
     pub status: String,
 }
 
@@ -390,6 +394,8 @@ pub async fn create_manual_memory(
     let kind = kind_to_wire(request.kind);
     let text = redactor::redact(request.text.trim());
     let source = normalize_memory_source(request.source.as_deref());
+    let episode = normalize_task_episode(request.kind, request.episode);
+    let pinned = request.pinned && request.kind != MemoryKind::TaskEpisode;
     sqlx::query(
         "insert into memory_items
         (id, user_id, workspace_id, repo_id, agent_id, session_id, kind, scope, text, source, source_session_id, source_turn_id, observed_at, valid_from, valid_until, supersedes_memory_id, pinned, status, created_at, updated_at)
@@ -411,12 +417,13 @@ pub async fn create_manual_memory(
     .bind(request.valid_from)
     .bind(request.valid_until)
     .bind(request.supersedes_memory_id.as_deref())
-    .bind(if request.pinned { 1_i64 } else { 0_i64 })
+    .bind(if pinned { 1_i64 } else { 0_i64 })
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
     upsert_memory_entities(pool, &id, &request.entities).await?;
+    upsert_memory_episode(pool, &id, episode.as_ref(), now).await?;
     write_audit(
         pool,
         "user",
@@ -424,7 +431,7 @@ pub async fn create_manual_memory(
         Some(&id),
         None,
         None,
-        serde_json::json!({"source": source}),
+        serde_json::json!({"source": source, "episodic": episode.is_some()}),
     )
     .await?;
     get_memory(pool, &id).await
@@ -657,6 +664,7 @@ pub async fn destroy_database(pool: &SqlitePool) -> sqlx::Result<DestroyDatabase
         "memory_accesses",
         "memory_feedback",
         "memory_entities",
+        "memory_episodes",
         "vector_index_metadata",
     ] {
         sqlx::query(&format!("delete from {table}"))
@@ -891,6 +899,10 @@ pub async fn create_candidates(
     let source = normalize_candidate_source(request.source.as_deref());
     let now = Utc::now().timestamp_millis();
     for candidate in request.pre_extracted_candidates {
+        let episode = normalize_task_episode(candidate.kind, candidate.episode);
+        if candidate.kind == MemoryKind::TaskEpisode && episode.is_none() {
+            continue;
+        }
         if !crate::memory::policy::accepts_candidate(&candidate.text, candidate.confidence) {
             continue;
         }
@@ -996,13 +1008,16 @@ pub async fn create_candidates(
         );
         let entities_json =
             serde_json::to_string(&candidate.entities).unwrap_or_else(|_| "[]".to_string());
+        let episode_json = episode
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok());
         let instruction_scopes = clean_instruction_scopes(candidate.instruction_scopes);
         let instruction_scopes_json =
             serde_json::to_string(&instruction_scopes).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             "insert into memory_candidates
-            (id, user_id, workspace_id, repo_id, agent_id, session_id, source_turn_id, source, kind, scope, text, reason, confidence, pinned, entities_json, instruction_scopes_json, status, created_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            (id, user_id, workspace_id, repo_id, agent_id, session_id, source_turn_id, source, kind, scope, text, reason, confidence, pinned, entities_json, episode_json, instruction_scopes_json, status, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
         )
         .bind(&id)
         .bind(&request.scope.user_id)
@@ -1019,6 +1034,7 @@ pub async fn create_candidates(
         .bind(candidate.confidence)
         .bind(if pinned { 1_i64 } else { 0_i64 })
         .bind(&entities_json)
+        .bind(&episode_json)
         .bind(&instruction_scopes_json)
         .bind(now)
         .execute(pool)
@@ -1045,6 +1061,7 @@ pub async fn create_candidates(
             confidence: candidate.confidence,
             reason: candidate.reason,
             instruction_scopes,
+            episode,
             status: "pending".to_string(),
         });
     }
@@ -1069,7 +1086,7 @@ pub async fn list_candidates(
     let limit = limit.unwrap_or(200).clamp(1, 500);
     let offset = offset.unwrap_or(0).max(0);
     let rows = sqlx::query(
-        "select id, kind, source, scope, text, confidence, reason, instruction_scopes_json, status
+        "select id, kind, source, scope, text, confidence, reason, instruction_scopes_json, episode_json, status
          from memory_candidates
          where (? is null or user_id = ?)
            and (? is null or status = ?)
@@ -1405,7 +1422,7 @@ pub async fn approve_candidate(
 ) -> sqlx::Result<MemoryResponse> {
     let actor = candidate_approval_actor(request.actor.as_deref());
     let row = sqlx::query(
-        "select user_id, workspace_id, repo_id, agent_id, session_id, source, source_turn_id, entities_json, pinned
+        "select user_id, workspace_id, repo_id, agent_id, session_id, source, source_turn_id, entities_json, episode_json, pinned
          from memory_candidates where id = ? and status = 'pending'",
     )
     .bind(candidate_id)
@@ -1423,6 +1440,10 @@ pub async fn approve_candidate(
         .as_deref()
         .and_then(|value| serde_json::from_str::<Vec<MemoryEntityInput>>(value).ok())
         .unwrap_or_default();
+    let episode = row
+        .get::<Option<String>, _>("episode_json")
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<TaskEpisodeData>(value).ok());
     let item = create_manual_memory(
         pool,
         CreateMemoryRequest {
@@ -1434,6 +1455,7 @@ pub async fn approve_candidate(
             source_turn_id: row.get("source_turn_id"),
             scope_data,
             entities,
+            episode,
             observed_at: None,
             valid_from: None,
             valid_until: None,
@@ -1997,7 +2019,11 @@ pub async fn run_maintenance(
         .collect::<HashSet<_>>();
     let high_confidence_auto = mode == "high_confidence_auto";
     let now = Utc::now().timestamp_millis();
-    let memories = list_maintenance_memory(pool, &request.scope, max_items).await?;
+    let memories = list_maintenance_memory(pool, &request.scope, max_items)
+        .await?
+        .into_iter()
+        .filter(|memory| memory.kind != MemoryKind::TaskEpisode)
+        .collect::<Vec<_>>();
     let expired_memories =
         list_expired_maintenance_memory(pool, &request.scope, max_items, now).await?;
     let entities_by_memory = load_entities_by_memory(pool).await?;
@@ -2697,6 +2723,7 @@ pub async fn search_memory(
     let feedback_stats = load_feedback_stats(pool).await?;
     let access_stats = load_access_stats(pool).await?;
     let entities_by_memory = load_entities_by_memory(pool).await?;
+    let episodes_by_memory = load_task_episodes_by_memory(pool).await?;
     let query_entity_terms = query_entity_terms(&request.query, &tokens);
     let decay_reference_time = request
         .reference_time
@@ -2763,7 +2790,10 @@ pub async fn search_memory(
     for row in rows {
         let id: String = row.get("id");
         let text: String = row.get("text");
-        let lexical_score = lexical_score(&text, &tokens);
+        let kind: String = row.get("kind");
+        let episode = episodes_by_memory.get(&id);
+        let searchable_text = episode_search_text(&text, episode);
+        let lexical_score = lexical_score(&searchable_text, &tokens);
         let vector_score = vector_scores.get(&id).copied();
         let entities = entities_by_memory.get(&id).cloned().unwrap_or_default();
         let entity_score = entity_score(&entities, &query_entity_terms);
@@ -2782,7 +2812,6 @@ pub async fn search_memory(
         {
             continue;
         }
-        let kind: String = row.get("kind");
         let scope: String = row.get("scope");
         let relevance_score = vector_score
             .unwrap_or(0.0)
@@ -2838,7 +2867,7 @@ pub async fn search_memory(
                 id,
                 kind,
                 scope,
-                text,
+                text: episode.map(episode_prompt_text).unwrap_or(text),
                 score,
                 metadata: serde_json::json!({
                     "pinned": pinned,
@@ -2850,6 +2879,7 @@ pub async fn search_memory(
                     "validUntil": row.get::<Option<i64>, _>("valid_until"),
                     "supersedesMemoryId": row.get::<Option<String>, _>("supersedes_memory_id"),
                     "entities": entities,
+                    "episode": episode,
                     "diagnostics": {
                         "lexicalScore": lexical_score,
                         "vectorScore": vector_score.unwrap_or(0.0),
@@ -2935,8 +2965,20 @@ fn select_search_items(scored: Vec<ScoredSearchItem>, limit: usize) -> Vec<Searc
     if scored.is_empty() || limit == 0 {
         return Vec::new();
     }
-    let selected_len = scored.len().min(limit);
-    let mut selected_indexes = (0..selected_len).collect::<Vec<_>>();
+    let mut selected_indexes = Vec::with_capacity(scored.len().min(limit));
+    let mut episodic_items = 0;
+    for (index, item) in scored.iter().enumerate() {
+        if item.3.kind == "task_episode" {
+            if episodic_items >= MAX_EPISODIC_SEARCH_ITEMS {
+                continue;
+            }
+            episodic_items += 1;
+        }
+        selected_indexes.push(index);
+        if selected_indexes.len() >= limit {
+            break;
+        }
+    }
     balance_selected_pinned_profiles(&scored, &mut selected_indexes);
     selected_indexes
         .into_iter()
@@ -2955,7 +2997,10 @@ fn balance_selected_pinned_profiles(scored: &[ScoredSearchItem], selected_indexe
         return;
     }
 
-    for candidate_index in selected_indexes.len()..scored.len() {
+    for candidate_index in 0..scored.len() {
+        if selected_indexes.contains(&candidate_index) {
+            continue;
+        }
         let Some(candidate_key) = search_item_profile_block_key(&scored[candidate_index].3) else {
             continue;
         };
@@ -3117,6 +3162,162 @@ async fn upsert_memory_entities(
         .await?;
     }
     Ok(())
+}
+
+pub fn task_episode_is_acceptable(kind: MemoryKind, episode: Option<&TaskEpisodeData>) -> bool {
+    kind != MemoryKind::TaskEpisode || normalize_task_episode(kind, episode.cloned()).is_some()
+}
+
+fn normalize_task_episode(
+    kind: MemoryKind,
+    episode: Option<TaskEpisodeData>,
+) -> Option<TaskEpisodeData> {
+    if kind != MemoryKind::TaskEpisode {
+        return None;
+    }
+    let episode = episode?;
+    if !episode.is_valid() {
+        return None;
+    }
+    let goal = clean_episode_field(&episode.goal, 1_000)?;
+    let successful_pattern = clean_episode_field(&episode.successful_pattern, 1_000)?;
+    let mistake = episode
+        .mistake
+        .as_deref()
+        .and_then(|value| clean_episode_field(value, 1_000));
+    let constraints = clean_episode_list(episode.constraints, 12, 400);
+    let tools_used = clean_episode_list(episode.tools_used, 12, 200);
+    Some(TaskEpisodeData {
+        goal,
+        constraints,
+        tools_used,
+        mistake,
+        successful_pattern,
+    })
+}
+
+fn clean_episode_field(value: &str, max_chars: usize) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() > max_chars
+        || redactor::contains_secret(trimmed)
+    {
+        return None;
+    }
+    Some(redactor::redact(trimmed))
+}
+
+fn clean_episode_list(values: Vec<String>, max_items: usize, max_chars: usize) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    for value in values {
+        let Some(value) = clean_episode_field(&value, max_chars) else {
+            continue;
+        };
+        if cleaned.contains(&value) {
+            continue;
+        }
+        cleaned.push(value);
+        if cleaned.len() >= max_items {
+            break;
+        }
+    }
+    cleaned
+}
+
+async fn upsert_memory_episode(
+    pool: &SqlitePool,
+    memory_id: &str,
+    episode: Option<&TaskEpisodeData>,
+    now: i64,
+) -> sqlx::Result<()> {
+    let Some(episode) = episode else {
+        return Ok(());
+    };
+    let constraints_json =
+        serde_json::to_string(&episode.constraints).unwrap_or_else(|_| "[]".to_string());
+    let tools_used_json =
+        serde_json::to_string(&episode.tools_used).unwrap_or_else(|_| "[]".to_string());
+    sqlx::query(
+        "insert into memory_episodes
+         (memory_id, goal, constraints_json, tools_used_json, mistake,
+          successful_pattern, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?)
+         on conflict(memory_id) do update set
+           goal = excluded.goal,
+           constraints_json = excluded.constraints_json,
+           tools_used_json = excluded.tools_used_json,
+           mistake = excluded.mistake,
+           successful_pattern = excluded.successful_pattern,
+           updated_at = excluded.updated_at",
+    )
+    .bind(memory_id)
+    .bind(&episode.goal)
+    .bind(constraints_json)
+    .bind(tools_used_json)
+    .bind(episode.mistake.as_deref())
+    .bind(&episode.successful_pattern)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_task_episodes_by_memory(
+    pool: &SqlitePool,
+) -> sqlx::Result<HashMap<String, TaskEpisodeData>> {
+    let rows = sqlx::query(
+        "select memory_id, goal, constraints_json, tools_used_json, mistake,
+                successful_pattern
+         from memory_episodes",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut episodes = HashMap::new();
+    for row in rows {
+        let constraints_json: String = row.get("constraints_json");
+        let tools_used_json: String = row.get("tools_used_json");
+        episodes.insert(
+            row.get("memory_id"),
+            TaskEpisodeData {
+                goal: row.get("goal"),
+                constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
+                tools_used: serde_json::from_str(&tools_used_json).unwrap_or_default(),
+                mistake: row.get("mistake"),
+                successful_pattern: row.get("successful_pattern"),
+            },
+        );
+    }
+    Ok(episodes)
+}
+
+fn episode_search_text(summary: &str, episode: Option<&TaskEpisodeData>) -> String {
+    let Some(episode) = episode else {
+        return summary.to_string();
+    };
+    format!("{summary} {}", episode_prompt_text(episode))
+}
+
+fn episode_prompt_text(episode: &TaskEpisodeData) -> String {
+    let mut parts = vec![format!("Goal: {}", episode.goal)];
+    if !episode.constraints.is_empty() {
+        parts.push(format!("Constraints: {}", episode.constraints.join(", ")));
+    }
+    if !episode.tools_used.is_empty() {
+        parts.push(format!("Tools used: {}", episode.tools_used.join(", ")));
+    }
+    if let Some(mistake) = episode
+        .mistake
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("Mistake to avoid: {mistake}"));
+    }
+    parts.push(format!(
+        "Successful pattern: {}",
+        episode.successful_pattern
+    ));
+    parts.join(" | ")
 }
 
 async fn load_entities_by_memory(
@@ -4504,6 +4705,9 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> sqlx::Result<MemoryCandidat
         .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
         .map(clean_instruction_scopes)
         .unwrap_or_default();
+    let episode = row
+        .get::<Option<String>, _>("episode_json")
+        .and_then(|json| serde_json::from_str::<TaskEpisodeData>(&json).ok());
     Ok(MemoryCandidateResponse {
         id: row.get("id"),
         kind: serde_json::from_value(serde_json::Value::String(kind))
@@ -4514,6 +4718,7 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> sqlx::Result<MemoryCandidat
         confidence: row.get("confidence"),
         reason: row.get("reason"),
         instruction_scopes,
+        episode,
         status: row.get("status"),
     })
 }
@@ -4566,6 +4771,7 @@ fn kind_to_wire(kind: MemoryKind) -> &'static str {
         MemoryKind::ProjectRule => "project_rule",
         MemoryKind::ArchitectureDecision => "architecture_decision",
         MemoryKind::SessionSummary => "session_summary",
+        MemoryKind::TaskEpisode => "task_episode",
     }
 }
 
@@ -4760,6 +4966,9 @@ fn should_pin_candidate(
     confidence: Option<f32>,
     explicitly_pinned: bool,
 ) -> bool {
+    if kind == MemoryKind::TaskEpisode {
+        return false;
+    }
     if explicitly_pinned {
         return true;
     }

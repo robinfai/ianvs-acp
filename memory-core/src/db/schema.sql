@@ -38,6 +38,7 @@ create table if not exists memory_candidates (
   confidence real,
   pinned integer not null default 0,
   entities_json text,
+  episode_json text,
   instruction_scopes_json text,
   transcript_hash text,
   status text not null default 'pending',
@@ -110,6 +111,17 @@ create table if not exists memory_entities (
   entity_type text not null,
   normalized_text text not null,
   created_at integer not null
+);
+
+create table if not exists memory_episodes (
+  memory_id text primary key,
+  goal text not null,
+  constraints_json text not null,
+  tools_used_json text not null,
+  mistake text,
+  successful_pattern text not null,
+  created_at integer not null,
+  updated_at integer not null
 );
 
 create index if not exists idx_memory_items_scope

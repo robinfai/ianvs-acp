@@ -247,6 +247,14 @@ async fn approve_candidates_from_policy(
     };
     let mut approved = Vec::new();
     for candidate in candidates {
+        if mode == "auto_high_confidence"
+            && candidate
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("task_episode"))
+        {
+            continue;
+        }
         let confidence = candidate
             .get("confidence")
             .and_then(|value| value.as_f64())
