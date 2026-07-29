@@ -11,10 +11,12 @@ void main() {
     final prompt = extractor.buildExtractionPrompt(
       userPrompt: '本项目严禁使用 nc。',
       assistantAnswer: '记住了。',
+      repoInstructions: 'Always keep repo safety rules.',
     );
 
     expect(prompt, contains('Return JSON only'));
     expect(prompt, contains('project_rule'));
+    expect(prompt, contains('[repo] Always keep repo safety rules.'));
     expect(prompt, contains('本项目严禁使用 nc。'));
   });
 
@@ -27,6 +29,7 @@ void main() {
       assistantAnswer: '记住了。',
       cwd: '/workspace',
       model: 'gpt-5-mini',
+      repoInstructions: 'Always keep repo safety rules.',
     );
 
     expect(fake.didConnect, isTrue);
@@ -35,6 +38,7 @@ void main() {
     expect(fake.lastConfigId, 'model');
     expect(fake.lastConfigValue, 'gpt-5-mini');
     expect(fake.lastPrompt, contains('本项目严禁使用 nc。'));
+    expect(fake.lastPrompt, contains('[repo] Always keep repo safety rules.'));
     expect(candidates, hasLength(1));
     expect(candidates.single.kind, 'project_rule');
     expect(candidates.single.scope, 'repo');

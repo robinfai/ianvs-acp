@@ -1,12 +1,89 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/memory/memory_api_client.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
+import 'package:ianvs_acp/memory/memory_runtime_status.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/components/memory_explorer_page.dart';
+import 'package:ianvs_acp/ui/shell/app_shell.dart';
 
 void _noop() {}
 
+MemoryExplorerActions _emptyMemoryExplorerActions() {
+  return MemoryExplorerActions(
+    loadMemory: () async => const <MemoryRecord>[],
+    loadCandidates: () async => const <MemoryCandidate>[],
+    loadChangeRequests: () async => const <MemoryChangeRequest>[],
+    loadAudit: () async => const <MemoryAuditEvent>[],
+    approveCandidate: (_) async {},
+    rejectCandidate: (_) async {},
+    approveChangeRequest: (_) async {},
+    rejectChangeRequest: (_) async {},
+    runMaintenance: () async => const MaintenanceRunResult(
+      autoApplied: 0,
+      needsReview: 0,
+      skipped: 0,
+      changeRequests: <MemoryChangeRequest>[],
+    ),
+    clearData: (_) async => const MemoryClearResult(
+      clearedMemory: 0,
+      rejectedCandidates: 0,
+      rejectedChangeRequests: 0,
+    ),
+  );
+}
+
 void main() {
+  test('MemoryAutomationNotice labels automatic cleanup', () {
+    const notice = MemoryAutomationNotice(
+      sequence: 1,
+      maintenanceAutoRejectedCandidates: 1,
+      maintenanceAutoRejectedChangeRequests: 2,
+    );
+
+    expect(notice.shouldPrompt, isTrue);
+    expect(notice.label, '3 memory reviews cleaned');
+  });
+
+  test('MemoryAutomationNotice routes review by automatic event type', () {
+    expect(
+      const MemoryAutomationNotice(
+        sequence: 1,
+        maintenanceAutoApplied: 1,
+      ).initialReviewTab(0),
+      MemoryExplorerInitialTab.changeRequests,
+    );
+    expect(
+      const MemoryAutomationNotice(
+        sequence: 2,
+        maintenanceAutoRejectedChangeRequests: 1,
+      ).initialReviewTab(0),
+      MemoryExplorerInitialTab.changeRequests,
+    );
+    expect(
+      const MemoryAutomationNotice(
+        sequence: 3,
+        maintenanceAutoRejectedCandidates: 1,
+      ).initialReviewTab(0),
+      MemoryExplorerInitialTab.candidates,
+    );
+    expect(
+      const MemoryAutomationNotice(
+        sequence: 4,
+        approvedCandidates: 1,
+      ).initialReviewTab(0),
+      MemoryExplorerInitialTab.candidates,
+    );
+    expect(
+      const MemoryAutomationNotice(sequence: 5).initialReviewTab(1),
+      MemoryExplorerInitialTab.candidates,
+    );
+  });
+
   Widget toolbar(
     app_state.ConnectionStatus status, {
     String agentName = 'Codex',
@@ -92,6 +169,515 @@ void main() {
     expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Resume'), findsOneWidget);
     expect(find.text('Reconnect'), findsOneWidget);
+  });
+
+  testWidgets('AppShell renders memory status in the bottom bar', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memoryStatus: MemoryRuntimeStatus.running,
+        ),
+      ),
+    );
+
+    expect(find.text('memory on'), findsOneWidget);
+  });
+
+  testWidgets('AppShell prompts review when memory pending count increases', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    Widget app(int pendingCount) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryPendingCount: pendingCount,
+          memoryExplorerActions: _emptyMemoryExplorerActions(),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(0));
+    await tester.pumpWidget(app(3));
+    await tester.pumpAndSettle();
+
+    expect(find.text('3 memory reviews pending'), findsOneWidget);
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Memory'), findsOneWidget);
+  });
+
+  testWidgets('pending review prompt opens memory candidates directly', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    final actions = MemoryExplorerActions(
+      loadMemory: () async => const <MemoryRecord>[],
+      loadCandidates: () async => const [
+        MemoryCandidate(
+          id: 'cand_review',
+          kind: 'user_preference',
+          scope: 'global',
+          text: '用户希望被称呼为 Rodriguez。',
+          confidence: 0.82,
+          source: 'extractor',
+          status: 'pending',
+        ),
+      ],
+      loadChangeRequests: () async => const <MemoryChangeRequest>[],
+      loadAudit: () async => const <MemoryAuditEvent>[],
+      approveCandidate: (_) async {},
+      rejectCandidate: (_) async {},
+      approveChangeRequest: (_) async {},
+      rejectChangeRequest: (_) async {},
+      runMaintenance: () async => const MaintenanceRunResult(
+        autoApplied: 0,
+        needsReview: 0,
+        skipped: 0,
+        changeRequests: <MemoryChangeRequest>[],
+      ),
+      clearData: (_) async => const MemoryClearResult(
+        clearedMemory: 0,
+        rejectedCandidates: 0,
+        rejectedChangeRequests: 0,
+      ),
+    );
+
+    Widget app(int pendingCount) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryPendingCount: pendingCount,
+          memoryExplorerActions: actions,
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(0));
+    await tester.pumpWidget(app(1));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用户希望被称呼为 Rodriguez。'), findsOneWidget);
+  });
+
+  testWidgets('pending review prompt opens change requests when present', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    final actions = MemoryExplorerActions(
+      loadMemory: () async => const <MemoryRecord>[],
+      loadCandidates: () async => const <MemoryCandidate>[],
+      loadChangeRequests: () async => const [
+        MemoryChangeRequest(
+          id: 'req_pending',
+          action: 'update',
+          targetMemoryIds: ['mem_pref'],
+          targetMemoryText: '用户名字是 Rod。',
+          proposedKind: 'user_preference',
+          proposedScope: 'global',
+          proposedText: '用户希望被称呼为 Rodriguez。',
+          reason: 'MCP proposed an update that needs review.',
+          confidence: 0.78,
+          source: 'mcp',
+          status: 'pending',
+          createdAt: 1,
+        ),
+      ],
+      loadAudit: () async => const <MemoryAuditEvent>[],
+      approveCandidate: (_) async {},
+      rejectCandidate: (_) async {},
+      approveChangeRequest: (_) async {},
+      rejectChangeRequest: (_) async {},
+      runMaintenance: () async => const MaintenanceRunResult(
+        autoApplied: 0,
+        needsReview: 0,
+        skipped: 0,
+        changeRequests: <MemoryChangeRequest>[],
+      ),
+      clearData: (_) async => const MemoryClearResult(
+        clearedMemory: 0,
+        rejectedCandidates: 0,
+        rejectedChangeRequests: 0,
+      ),
+    );
+
+    Widget app({
+      required int pendingCount,
+      required int pendingChangeRequestCount,
+    }) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryPendingCount: pendingCount,
+          memoryPendingChangeRequestCount: pendingChangeRequestCount,
+          memoryExplorerActions: actions,
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(pendingCount: 0, pendingChangeRequestCount: 0));
+    await tester.pumpWidget(app(pendingCount: 1, pendingChangeRequestCount: 1));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 memory reviews pending'), findsOneWidget);
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用户希望被称呼为 Rodriguez。'), findsOneWidget);
+  });
+
+  testWidgets('AppShell respects disabled memory review prompts', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    Widget app(int pendingCount) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(
+            enabled: true,
+            review: MemoryReviewConfig(autoOpen: 'never'),
+          ),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryPendingCount: pendingCount,
+          memoryExplorerActions: _emptyMemoryExplorerActions(),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(0));
+    await tester.pumpWidget(app(2));
+    await tester.pump();
+
+    expect(find.text('2 memory reviews pending'), findsNothing);
+  });
+
+  testWidgets('AppShell prompts after automatic memory processing', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    Widget app(MemoryAutomationNotice? notice) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryAutomationNotice: notice,
+          memoryExplorerActions: _emptyMemoryExplorerActions(),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(null));
+    await tester.pumpWidget(
+      app(
+        const MemoryAutomationNotice(
+          sequence: 1,
+          approvedCandidates: 1,
+          autoAppliedChangeRequests: 1,
+          maintenanceNeedsReview: 1,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('2 memory changes auto applied · 1 needs review'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Memory'), findsOneWidget);
+  });
+
+  testWidgets('maintenance review prompt opens change requests directly', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    final actions = MemoryExplorerActions(
+      loadMemory: () async => const <MemoryRecord>[],
+      loadCandidates: () async => const <MemoryCandidate>[],
+      loadChangeRequests: () async => const [
+        MemoryChangeRequest(
+          id: 'req_review',
+          action: 'merge',
+          targetMemoryIds: ['mem_a', 'mem_b'],
+          targetMemoryText: '用户名字是 Rodriguez。',
+          proposedKind: 'user_preference',
+          proposedScope: 'global',
+          proposedText: '用户希望被称呼为 Rodriguez。',
+          reason: 'Two name memories should be merged.',
+          confidence: 0.82,
+          source: 'maintenance',
+          status: 'pending',
+          createdAt: 1,
+        ),
+      ],
+      loadAudit: () async => const <MemoryAuditEvent>[],
+      approveCandidate: (_) async {},
+      rejectCandidate: (_) async {},
+      approveChangeRequest: (_) async {},
+      rejectChangeRequest: (_) async {},
+      runMaintenance: () async => const MaintenanceRunResult(
+        autoApplied: 0,
+        needsReview: 1,
+        skipped: 0,
+        changeRequests: <MemoryChangeRequest>[],
+      ),
+      clearData: (_) async => const MemoryClearResult(
+        clearedMemory: 0,
+        rejectedCandidates: 0,
+        rejectedChangeRequests: 0,
+      ),
+    );
+
+    Widget app(MemoryAutomationNotice? notice) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryAutomationNotice: notice,
+          memoryExplorerActions: actions,
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(null));
+    await tester.pumpWidget(
+      app(const MemoryAutomationNotice(sequence: 1, maintenanceNeedsReview: 1)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用户希望被称呼为 Rodriguez。'), findsOneWidget);
+  });
+
+  testWidgets('auto-applied change request prompt opens reviewed requests', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    final actions = MemoryExplorerActions(
+      loadMemory: () async => const <MemoryRecord>[],
+      loadCandidates: () async => const <MemoryCandidate>[],
+      loadChangeRequests: () async => const [
+        MemoryChangeRequest(
+          id: 'req_auto',
+          action: 'supersede',
+          targetMemoryIds: ['mem_old'],
+          targetMemoryText: '用户名字是 Rod。',
+          proposedKind: 'user_preference',
+          proposedScope: 'global',
+          proposedText: '用户希望被称呼为 Rodriguez。',
+          reason: 'High-confidence correction was applied automatically.',
+          confidence: 0.94,
+          source: 'maintenance',
+          status: 'approved',
+          createdAt: 1,
+          reviewedAt: 2,
+        ),
+      ],
+      loadAudit: () async => const <MemoryAuditEvent>[],
+      approveCandidate: (_) async {},
+      rejectCandidate: (_) async {},
+      approveChangeRequest: (_) async {},
+      rejectChangeRequest: (_) async {},
+      runMaintenance: () async => const MaintenanceRunResult(
+        autoApplied: 1,
+        needsReview: 0,
+        skipped: 0,
+        changeRequests: <MemoryChangeRequest>[],
+      ),
+      clearData: (_) async => const MemoryClearResult(
+        clearedMemory: 0,
+        rejectedCandidates: 0,
+        rejectedChangeRequests: 0,
+      ),
+    );
+
+    Widget app(MemoryAutomationNotice? notice) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(enabled: true),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryAutomationNotice: notice,
+          memoryExplorerActions: actions,
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(null));
+    await tester.pumpWidget(
+      app(const MemoryAutomationNotice(sequence: 1, maintenanceAutoApplied: 1)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用户希望被称呼为 Rodriguez。'), findsOneWidget);
+    expect(
+      find.text('supersede · 94% · approved · maintenance'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'automation prompt opens pending candidates when candidate review remains',
+    (tester) async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/work',
+      );
+      addTearDown(controller.dispose);
+
+      final actions = MemoryExplorerActions(
+        loadMemory: () async => const <MemoryRecord>[],
+        loadCandidates: () async => const [
+          MemoryCandidate(
+            id: 'cand_left_for_review',
+            kind: 'project_rule',
+            scope: 'repo',
+            text: '本项目的验证暗号可能是蓝色灯塔-43130。',
+            confidence: 0.74,
+            source: 'extractor',
+            status: 'pending',
+          ),
+        ],
+        loadChangeRequests: () async => const <MemoryChangeRequest>[],
+        loadAudit: () async => const <MemoryAuditEvent>[],
+        approveCandidate: (_) async {},
+        rejectCandidate: (_) async {},
+        approveChangeRequest: (_) async {},
+        rejectChangeRequest: (_) async {},
+        runMaintenance: () async => const MaintenanceRunResult(
+          autoApplied: 0,
+          needsReview: 0,
+          skipped: 0,
+          changeRequests: <MemoryChangeRequest>[],
+        ),
+        clearData: (_) async => const MemoryClearResult(
+          clearedMemory: 0,
+          rejectedCandidates: 0,
+          rejectedChangeRequests: 0,
+        ),
+      );
+
+      Widget app({required int pendingCount, MemoryAutomationNotice? notice}) {
+        return MaterialApp(
+          home: AppShell(
+            controller: controller,
+            memory: const MemoryConfig(enabled: true),
+            memoryStatus: MemoryRuntimeStatus.running,
+            memoryPendingCount: pendingCount,
+            memoryAutomationNotice: notice,
+            memoryExplorerActions: actions,
+          ),
+        );
+      }
+
+      await tester.pumpWidget(app(pendingCount: 0));
+      await tester.pumpWidget(
+        app(
+          pendingCount: 0,
+          notice: const MemoryAutomationNotice(
+            sequence: 1,
+            approvedCandidates: 1,
+            pendingCandidateReviews: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('1 memory change auto applied · 1 needs review'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Review'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('本项目的验证暗号可能是蓝色灯塔-43130。'), findsOneWidget);
+    },
+  );
+
+  testWidgets('AppShell suppresses automatic memory prompt when disabled', (
+    tester,
+  ) async {
+    final controller = ChatController(client: FakeAgentClient(), cwd: '/work');
+    addTearDown(controller.dispose);
+
+    Widget app(MemoryAutomationNotice? notice) {
+      return MaterialApp(
+        home: AppShell(
+          controller: controller,
+          memory: const MemoryConfig(
+            enabled: true,
+            review: MemoryReviewConfig(autoOpen: 'never'),
+          ),
+          memoryStatus: MemoryRuntimeStatus.running,
+          memoryAutomationNotice: notice,
+          memoryExplorerActions: _emptyMemoryExplorerActions(),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(app(null));
+    await tester.pumpWidget(
+      app(const MemoryAutomationNotice(sequence: 1, approvedCandidates: 1)),
+    );
+    await tester.pump();
+
+    expect(find.text('1 memory change auto applied'), findsNothing);
   });
 
   testWidgets('AgentToolbar lets users select configured agents', (

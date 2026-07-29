@@ -14,10 +14,16 @@ class AcpSidecarMemoryExtractor {
   String buildExtractionPrompt({
     required String userPrompt,
     required String assistantAnswer,
+    String globalInstructions = '',
+    String workspaceInstructions = '',
+    String repoInstructions = '',
   }) {
     return buildMemoryExtractionPrompt(
       userPrompt: userPrompt,
       assistantAnswer: assistantAnswer,
+      globalInstructions: globalInstructions,
+      workspaceInstructions: workspaceInstructions,
+      repoInstructions: repoInstructions,
     );
   }
 
@@ -26,6 +32,9 @@ class AcpSidecarMemoryExtractor {
     required String assistantAnswer,
     required String cwd,
     String? model,
+    String globalInstructions = '',
+    String workspaceInstructions = '',
+    String repoInstructions = '',
   }) async {
     final client = clientFactory();
     try {
@@ -49,6 +58,9 @@ class AcpSidecarMemoryExtractor {
         prompt: buildExtractionPrompt(
           userPrompt: userPrompt,
           assistantAnswer: assistantAnswer,
+          globalInstructions: globalInstructions,
+          workspaceInstructions: workspaceInstructions,
+          repoInstructions: repoInstructions,
         ),
       )) {
         if (event.type == AgentEventType.error) {

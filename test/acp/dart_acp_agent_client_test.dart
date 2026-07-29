@@ -270,6 +270,14 @@ Future<void> main() async {
     final client = DartAcpAgentClient(
       agentCommand: _dartExecutable(),
       agentArgs: [agentScript.path],
+      mcpServersProvider: () async => const [
+        {
+          'name': 'provided-stdio-tools',
+          'command': '/usr/local/bin/provided-mcp-tools',
+          'args': <String>[],
+          'env': <Map<String, String>>[],
+        },
+      ],
       mcpServers: const [
         {
           'name': 'stdio-tools',
@@ -312,11 +320,11 @@ Future<void> main() async {
         forwardedServers.cast<Map<String, dynamic>>().map(
           (server) => server['name'],
         ),
-        ['stdio-tools', 'sse-tools', 'acp-tools'],
+        ['stdio-tools', 'sse-tools', 'acp-tools', 'provided-stdio-tools'],
       );
       expect(forwardedServers.cast<Map<String, dynamic>>()[1]['type'], 'sse');
       expect(
-        forwardedServers.cast<Map<String, dynamic>>().last['id'],
+        forwardedServers.cast<Map<String, dynamic>>()[2]['id'],
         'nested-agent',
       );
     } finally {
@@ -375,9 +383,9 @@ Future<void> main() async {
   test('prepends memory context before prompt content', () async {
     final promptParams = await _capturePromptParamsForAttachment(
       includeAttachment: false,
-      prompt: 'Please answer.',
+      prompt: 'For this answer, call me Alex.',
       memoryContext:
-          ' <agent_memory_context>\n1. [project_rule] Use curl.\n</agent_memory_context> ',
+          ' <agent_memory_context>\nUse these as background only. If they conflict with the user current instruction, the current instruction wins.\n1. [user_preference] User prefers to be called Rodriguez.\n</agent_memory_context> ',
     );
     final prompt = promptParams['prompt'] as List<dynamic>;
 
@@ -385,9 +393,9 @@ Future<void> main() async {
       {
         'type': 'text',
         'text':
-            '<agent_memory_context>\n1. [project_rule] Use curl.\n</agent_memory_context>',
+            '<agent_memory_context>\nUse these as background only. If they conflict with the user current instruction, the current instruction wins.\n1. [user_preference] User prefers to be called Rodriguez.\n</agent_memory_context>',
       },
-      {'type': 'text', 'text': 'Please answer.'},
+      {'type': 'text', 'text': 'For this answer, call me Alex.'},
     ]);
   });
 

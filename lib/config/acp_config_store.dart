@@ -17,10 +17,20 @@ class AcpConfigStore {
 
     final file = File(path);
     final raw = await _readExistingJson(file);
+    final existingMemory = raw['memory'] ?? raw['memoryConfig'];
     for (final key in _managedConfigKeys) {
       raw.remove(key);
     }
-    final canonicalJson = <String, dynamic>{...raw, ...toSettingsJson(config)};
+    final settingsJson = toSettingsJson(config);
+    final memoryJson = settingsJson['memory'];
+    if (existingMemory is Map && memoryJson is Map) {
+      settingsJson['memory'] = _mergeConfigMapPreservingUnknown(
+        existingMemory,
+        memoryJson,
+        deprecatedKeys: _deprecatedMemoryConfigKeys,
+      );
+    }
+    final canonicalJson = <String, dynamic>{...raw, ...settingsJson};
 
     await file.parent.create(recursive: true);
     const encoder = JsonEncoder.withIndent('  ');
@@ -73,6 +83,51 @@ class AcpConfigStore {
   }
 }
 
+Map<String, Object?> _mergeConfigMapPreservingUnknown(
+  Map existing,
+  Map canonical, {
+  Set<String> deprecatedKeys = const <String>{},
+}) {
+  final merged = <String, Object?>{};
+  for (final entry in existing.entries) {
+    final key = entry.key;
+    if (key is! String || deprecatedKeys.contains(key)) continue;
+    merged[key] = entry.value;
+  }
+  for (final entry in canonical.entries) {
+    final key = entry.key;
+    if (key is! String) continue;
+    merged.remove(key);
+    merged.remove(_camelCaseKey(key));
+    final existingValue = existing[key] ?? existing[_camelCaseKey(key)];
+    final canonicalValue = entry.value;
+    if (existingValue is Map && canonicalValue is Map) {
+      merged[key] = _mergeConfigMapPreservingUnknown(
+        existingValue,
+        canonicalValue,
+      );
+    } else {
+      merged[key] = canonicalValue;
+    }
+  }
+  return merged;
+}
+
+String _camelCaseKey(String key) {
+  final buffer = StringBuffer();
+  var uppercaseNext = false;
+  for (final unit in key.codeUnits) {
+    final character = String.fromCharCode(unit);
+    if (character == '_') {
+      uppercaseNext = true;
+      continue;
+    }
+    buffer.write(uppercaseNext ? character.toUpperCase() : character);
+    uppercaseNext = false;
+  }
+  return buffer.toString();
+}
+
 const Set<String> _managedConfigKeys = <String>{
   'default_agent_server',
   'defaultAgentServer',
@@ -86,4 +141,13 @@ const Set<String> _managedConfigKeys = <String>{
   'clientProviders',
   'memory',
   'memoryConfig',
+};
+
+const Set<String> _deprecatedMemoryConfigKeys = <String>{
+  'daemon_base_url',
+  'daemonBaseUrl',
+  'daemon_token_env',
+  'daemonTokenEnv',
+  'auto_start_daemon',
+  'autoStartDaemon',
 };

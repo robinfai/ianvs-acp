@@ -18,6 +18,19 @@ void main() {
     expect(discovered.single.args, ['@zed-industries/codex-acp']);
   });
 
+  test('discovers Pi ACP adapter through pi-acp on PATH', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{'PATH': '/usr/local/bin:/bin'},
+      fileExists: (path) => path == '/usr/local/bin/pi-acp',
+    );
+
+    expect(discovered, hasLength(1));
+    expect(discovered.single.name, 'Pi');
+    expect(discovered.single.command, '/usr/local/bin/pi-acp');
+    expect(discovered.single.args, isEmpty);
+  });
+
   test(
     'does not suggest Codex when same ACP adapter is already configured',
     () {

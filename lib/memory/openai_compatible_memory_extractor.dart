@@ -10,6 +10,9 @@ class OpenAiCompatibleMemoryExtractor {
     required this.model,
     this.apiKey,
     this.timeout = const Duration(seconds: 20),
+    this.globalInstructions = '',
+    this.workspaceInstructions = '',
+    this.repoInstructions = '',
     HttpClient? httpClient,
   }) : _httpClient = httpClient ?? HttpClient();
 
@@ -17,6 +20,9 @@ class OpenAiCompatibleMemoryExtractor {
   final String model;
   final String? apiKey;
   final Duration timeout;
+  final String globalInstructions;
+  final String workspaceInstructions;
+  final String repoInstructions;
   final HttpClient _httpClient;
 
   Future<List<ExtractedMemoryCandidate>> extract({
@@ -46,6 +52,9 @@ class OpenAiCompatibleMemoryExtractor {
               'content': buildMemoryExtractionPrompt(
                 userPrompt: userPrompt,
                 assistantAnswer: assistantAnswer,
+                globalInstructions: globalInstructions,
+                workspaceInstructions: workspaceInstructions,
+                repoInstructions: repoInstructions,
               ),
             },
           ],

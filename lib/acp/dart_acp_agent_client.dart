@@ -16,6 +16,8 @@ import 'prompt_attachment.dart';
 import 'streamable_http_acp_transport.dart';
 import 'web_socket_acp_transport.dart';
 
+typedef AcpMcpServersProvider = Future<List<Map<String, dynamic>>> Function();
+
 class DartAcpAgentClient implements AcpAgentClient {
   DartAcpAgentClient({
     String? agentCommand,
@@ -26,6 +28,7 @@ class DartAcpAgentClient implements AcpAgentClient {
     this.agentHttpUrl,
     Map<String, String>? agentHeaders,
     List<Map<String, dynamic>>? mcpServers,
+    this.mcpServersProvider,
     List<String>? additionalDirectories,
     this.enableFilesystemReadTextFile = false,
     this.enableFilesystemWriteTextFile = false,
@@ -53,6 +56,7 @@ class DartAcpAgentClient implements AcpAgentClient {
   final Uri? agentHttpUrl;
   final Map<String, String> agentHeaders;
   final List<Map<String, dynamic>> mcpServers;
+  final AcpMcpServersProvider? mcpServersProvider;
   final List<String> additionalDirectories;
   final bool enableFilesystemReadTextFile;
   final bool enableFilesystemWriteTextFile;
@@ -112,9 +116,12 @@ class DartAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> connect() async {
     await _disposeActiveClient(closePermissionStream: false);
-    final configuredMcpServers = mcpServers
-        .map(Map<String, dynamic>.from)
-        .toList();
+    final providedMcpServers =
+        await mcpServersProvider?.call() ?? const <Map<String, dynamic>>[];
+    final configuredMcpServers = <Map<String, dynamic>>[
+      ...mcpServers,
+      ...providedMcpServers,
+    ].map(Map<String, dynamic>.from).toList();
     final sessionMcpServers = configuredMcpServers
         .map(Map<String, dynamic>.from)
         .toList();

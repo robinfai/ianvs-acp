@@ -15,6 +15,11 @@ void main() {
           enabled: true,
           extractor: MemoryExtractorConfig(agent: 'Codex', model: 'gpt-5-mini'),
           llm: MemoryLlmConfig(apiKeyEnv: 'OLLAMA_API_KEY'),
+          maintenance: MemoryMaintenanceConfig(
+            idleEnabled: true,
+            idleAfterTurns: 4,
+            idleMaxPendingReviews: 2,
+          ),
         ),
       ),
     );
@@ -30,6 +35,10 @@ void main() {
       (memory['llm'] as Map<String, Object?>)['api_key_env'],
       'OLLAMA_API_KEY',
     );
+    final maintenance = memory['maintenance'] as Map<String, Object?>;
+    expect(maintenance['idle_enabled'], true);
+    expect(maintenance['idle_after_turns'], 4);
+    expect(maintenance['idle_max_pending_reviews'], 2);
   });
 
   test('writes config while preserving unknown top-level fields', () async {
@@ -163,6 +172,61 @@ void main() {
       5000,
     );
   });
+
+  test(
+    'writes memory config while preserving future fields and dropping deprecated daemon fields',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'ianvs_acp_config_store_memory',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      await file.writeAsString('''
+{
+  "memory": {
+    "enabled": true,
+    "daemon_base_url": "http://127.0.0.1:43129",
+    "daemonTokenEnv": "OLD_TOKEN_ENV",
+    "future_policy": {
+      "idle_compaction": true
+    },
+    "extractor": {
+      "provider": "acp-sidecar",
+      "agent": "Old Agent",
+      "experimental_prompt_budget": 512
+    },
+    "maintenance": {
+      "mode": "manual_review",
+      "future_window": "weekly"
+    }
+  }
+}
+''');
+
+      await AcpConfigStore.writeConfig(
+        config: const AcpClientConfig(
+          memory: MemoryConfig(
+            enabled: true,
+            extractor: MemoryExtractorConfig(agent: 'Codex'),
+            maintenance: MemoryMaintenanceConfig(mode: 'high_confidence_auto'),
+          ),
+        ),
+        configPath: file.path,
+      );
+
+      final decoded =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final memory = decoded['memory'] as Map<String, dynamic>;
+      expect(memory['enabled'], isTrue);
+      expect(memory, isNot(contains('daemon_base_url')));
+      expect(memory, isNot(contains('daemonTokenEnv')));
+      expect(memory['future_policy'], {'idle_compaction': true});
+      expect(memory['extractor']['agent'], 'Codex');
+      expect(memory['extractor']['experimental_prompt_budget'], 512);
+      expect(memory['maintenance']['mode'], 'high_confidence_auto');
+      expect(memory['maintenance']['future_window'], 'weekly');
+    },
+  );
 
   test('creates config file when it does not exist', () async {
     final temp = await Directory.systemTemp.createTemp(

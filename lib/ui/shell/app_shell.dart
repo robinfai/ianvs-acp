@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../../acp/agent_session.dart';
+import '../../config/acp_agent_discovery.dart';
 import '../../config/acp_client_config.dart';
 import '../../memory/memory_config.dart';
+import '../../memory/memory_runtime_status.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../components/agent_config_dialog.dart';
@@ -37,6 +39,11 @@ class AppShell extends StatelessWidget {
     this.configPath,
     this.defaultAgentName,
     this.startupError,
+    this.memoryStatus = MemoryRuntimeStatus.disabled,
+    this.memoryPendingCount = 0,
+    this.memoryPendingChangeRequestCount = 0,
+    this.memoryAutomationNotice,
+    this.memoryExplorerActions,
     this.canSwitchAgent = true,
     this.onSelectAgent,
     this.onSelectSession,
@@ -55,6 +62,11 @@ class AppShell extends StatelessWidget {
   final String? configPath;
   final String? defaultAgentName;
   final String? startupError;
+  final MemoryRuntimeStatus memoryStatus;
+  final int memoryPendingCount;
+  final int memoryPendingChangeRequestCount;
+  final MemoryAutomationNotice? memoryAutomationNotice;
+  final MemoryExplorerActions? memoryExplorerActions;
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final ValueChanged<AgentSession>? onSelectSession;
@@ -84,6 +96,16 @@ class AppShell extends StatelessWidget {
           body: SafeArea(
             child: Column(
               children: [
+                _MemoryReviewPromptNotifier(
+                  pendingCount: memoryPendingCount,
+                  pendingChangeRequestCount: memoryPendingChangeRequestCount,
+                  automationNotice: memoryAutomationNotice,
+                  autoOpen: memory.review.autoOpen,
+                  canOpen: memory.enabled && memoryExplorerActions != null,
+                  onReview: (initialTab) => unawaited(
+                    _showMemoryExplorerPage(context, initialTab: initialTab),
+                  ),
+                ),
                 AgentToolbar(
                   agentName: agentName,
                   agentServers: agentServers,
@@ -137,6 +159,7 @@ class AppShell extends StatelessWidget {
                             activeSessionLabel:
                                 controller.currentSession?.displayTitle,
                             onNewSession: startNewSession,
+                            onMemoryFeedback: controller.submitMemoryFeedback,
                           );
 
                           if (hideSidebar) return timeline;
@@ -215,6 +238,8 @@ class AppShell extends StatelessWidget {
                 ),
                 StatusBar(
                   controller: controller,
+                  memoryStatus: memoryStatus,
+                  memoryPendingCount: memoryPendingCount,
                   onShowSessionSettings: () =>
                       _showSessionSettingsDialog(context),
                   onShowCapabilities: () => _showCapabilitiesDialog(context),
@@ -254,9 +279,17 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  Future<void> _showMemoryExplorerPage(BuildContext context) async {
+  Future<void> _showMemoryExplorerPage(
+    BuildContext context, {
+    MemoryExplorerInitialTab initialTab = MemoryExplorerInitialTab.allMemory,
+  }) async {
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (context) => const MemoryExplorerPage()),
+      MaterialPageRoute<void>(
+        builder: (context) => MemoryExplorerPage(
+          actions: memoryExplorerActions,
+          initialTab: initialTab,
+        ),
+      ),
     );
   }
 
@@ -342,11 +375,19 @@ class AppShell extends StatelessWidget {
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {
+    final detectedAgentServers = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig(
+        agentServers: agentServers,
+        defaultAgentServerName: defaultAgentName,
+        configPath: configPath,
+      ),
+    );
     await showDialog<void>(
       context: context,
       builder: (context) {
         return AgentConfigDialog(
           agentServers: agentServers,
+          detectedAgentServers: detectedAgentServers,
           mcpServers: mcpServers,
           additionalDirectories: additionalDirectories,
           clientProviders: clientProviders,
@@ -405,6 +446,183 @@ class AppShell extends StatelessWidget {
         updatedAt: selection.conversation.updatedAt,
       ),
     );
+  }
+}
+
+class MemoryAutomationNotice {
+  const MemoryAutomationNotice({
+    required this.sequence,
+    this.approvedCandidates = 0,
+    this.pendingCandidateReviews = 0,
+    this.autoAppliedChangeRequests = 0,
+    this.maintenanceAutoApplied = 0,
+    this.maintenanceNeedsReview = 0,
+    this.maintenanceSkipped = 0,
+    this.maintenanceAutoRejectedCandidates = 0,
+    this.maintenanceAutoRejectedChangeRequests = 0,
+  });
+
+  final int sequence;
+  final int approvedCandidates;
+  final int pendingCandidateReviews;
+  final int autoAppliedChangeRequests;
+  final int maintenanceAutoApplied;
+  final int maintenanceNeedsReview;
+  final int maintenanceSkipped;
+  final int maintenanceAutoRejectedCandidates;
+  final int maintenanceAutoRejectedChangeRequests;
+
+  int get autoApplied =>
+      approvedCandidates + autoAppliedChangeRequests + maintenanceAutoApplied;
+
+  int get needsReview => pendingCandidateReviews + maintenanceNeedsReview;
+
+  int get autoCleaned =>
+      maintenanceAutoRejectedCandidates + maintenanceAutoRejectedChangeRequests;
+
+  bool get shouldPrompt =>
+      autoApplied > 0 || needsReview > 0 || autoCleaned > 0;
+
+  MemoryExplorerInitialTab initialReviewTab(int pendingCount) {
+    if (maintenanceNeedsReview > 0 ||
+        autoAppliedChangeRequests > 0 ||
+        maintenanceAutoApplied > 0 ||
+        maintenanceAutoRejectedChangeRequests > 0) {
+      return MemoryExplorerInitialTab.changeRequests;
+    }
+    if (pendingCandidateReviews > 0 ||
+        approvedCandidates > 0 ||
+        maintenanceAutoRejectedCandidates > 0 ||
+        pendingCount > 0) {
+      return MemoryExplorerInitialTab.candidates;
+    }
+    return MemoryExplorerInitialTab.allMemory;
+  }
+
+  String get label {
+    final parts = <String>[];
+    if (autoApplied > 0) {
+      final suffix = autoApplied == 1 ? 'change' : 'changes';
+      parts.add('$autoApplied memory $suffix auto applied');
+    }
+    if (needsReview > 0) {
+      final suffix = needsReview == 1 ? 'needs review' : 'need review';
+      parts.add('$needsReview $suffix');
+    }
+    if (autoCleaned > 0) {
+      final suffix = autoCleaned == 1 ? 'review' : 'reviews';
+      parts.add('$autoCleaned memory $suffix cleaned');
+    }
+    if (parts.isEmpty && maintenanceSkipped > 0) {
+      parts.add('$maintenanceSkipped skipped');
+    }
+    return parts.join(' · ');
+  }
+}
+
+class _MemoryReviewPromptNotifier extends StatefulWidget {
+  const _MemoryReviewPromptNotifier({
+    required this.pendingCount,
+    required this.pendingChangeRequestCount,
+    required this.automationNotice,
+    required this.autoOpen,
+    required this.canOpen,
+    required this.onReview,
+  });
+
+  final int pendingCount;
+  final int pendingChangeRequestCount;
+  final MemoryAutomationNotice? automationNotice;
+  final String autoOpen;
+  final bool canOpen;
+  final ValueChanged<MemoryExplorerInitialTab> onReview;
+
+  @override
+  State<_MemoryReviewPromptNotifier> createState() =>
+      _MemoryReviewPromptNotifierState();
+}
+
+class _MemoryReviewPromptNotifierState
+    extends State<_MemoryReviewPromptNotifier> {
+  late int _lastPendingCount;
+  int? _lastAutomationNoticeSequence;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastPendingCount = widget.pendingCount;
+  }
+
+  @override
+  void didUpdateWidget(covariant _MemoryReviewPromptNotifier oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final countIncreased = widget.pendingCount > _lastPendingCount;
+    _lastPendingCount = widget.pendingCount;
+    final notice = widget.automationNotice;
+    if (notice != null &&
+        notice.shouldPrompt &&
+        notice.sequence != _lastAutomationNoticeSequence &&
+        _canPrompt(widget)) {
+      _lastAutomationNoticeSequence = notice.sequence;
+      _schedulePrompt(
+        notice.label,
+        noticeSequence: notice.sequence,
+        initialTab: notice.initialReviewTab(widget.pendingCount),
+      );
+      return;
+    }
+    if (!countIncreased || widget.pendingCount <= 0 || !_canPrompt(widget)) {
+      return;
+    }
+    _schedulePrompt(
+      '${widget.pendingCount} memory reviews pending',
+      pendingCount: widget.pendingCount,
+      initialTab: widget.pendingChangeRequestCount > 0
+          ? MemoryExplorerInitialTab.changeRequests
+          : MemoryExplorerInitialTab.candidates,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
+
+  bool _canPrompt(_MemoryReviewPromptNotifier widget) {
+    final autoOpen = widget.autoOpen.trim().toLowerCase();
+    return widget.canOpen &&
+        autoOpen != 'never' &&
+        autoOpen != 'off' &&
+        autoOpen != 'false';
+  }
+
+  void _schedulePrompt(
+    String message, {
+    int? pendingCount,
+    int? noticeSequence,
+    MemoryExplorerInitialTab initialTab = MemoryExplorerInitialTab.allMemory,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (pendingCount != null && widget.pendingCount != pendingCount) {
+        return;
+      }
+      if (noticeSequence != null &&
+          widget.automationNotice?.sequence != noticeSequence) {
+        return;
+      }
+      if (!_canPrompt(widget)) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      if (messenger == null) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(message),
+          action: SnackBarAction(
+            label: 'Review',
+            onPressed: () => widget.onReview(initialTab),
+          ),
+        ),
+      );
+    });
   }
 }
 

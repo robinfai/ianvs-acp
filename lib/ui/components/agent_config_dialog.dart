@@ -13,6 +13,7 @@ class AgentConfigDialog extends StatefulWidget {
     super.key,
     required this.agentServers,
     required this.activeAgentName,
+    this.detectedAgentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
@@ -23,6 +24,7 @@ class AgentConfigDialog extends StatefulWidget {
   });
 
   final List<AgentServerConfig> agentServers;
+  final List<AgentServerConfig> detectedAgentServers;
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
@@ -89,14 +91,69 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       TextEditingController(text: widget.memory.extractor.agent);
   late final TextEditingController _memoryExtractorModelController =
       TextEditingController(text: widget.memory.extractor.model);
-  late final TextEditingController _memoryDaemonBaseUrlController =
-      TextEditingController(text: widget.memory.daemonBaseUrl ?? '');
-  late final TextEditingController _memoryDaemonTokenEnvController =
-      TextEditingController(text: widget.memory.daemonTokenEnv);
+  late final TextEditingController
+  _memoryExtractorGlobalInstructionsController = TextEditingController(
+    text: widget.memory.extractor.globalInstructions,
+  );
+  late final TextEditingController
+  _memoryExtractorWorkspaceInstructionsController = TextEditingController(
+    text: widget.memory.extractor.workspaceInstructions,
+  );
+  late final TextEditingController _memoryExtractorRepoInstructionsController =
+      TextEditingController(text: widget.memory.extractor.repoInstructions);
   late final TextEditingController _memoryLlmBaseUrlController =
       TextEditingController(text: widget.memory.llm.baseUrl);
   late final TextEditingController _memoryApiKeyEnvController =
       TextEditingController(text: widget.memory.llm.apiKeyEnv);
+  late final TextEditingController _memoryProfileMaxItemsController =
+      TextEditingController(text: widget.memory.profile.maxItems.toString());
+  late bool _memoryMaintenanceEnabled = widget.memory.maintenance.enabled;
+  late bool _memoryMaintenanceRunAfterExtraction =
+      widget.memory.maintenance.runAfterExtraction;
+  late bool _memoryMaintenanceIdleEnabled =
+      widget.memory.maintenance.idleEnabled;
+  late String _memoryMaintenanceMode = _knownOrFallback(
+    widget.memory.maintenance.mode,
+    const ['high_confidence_auto', 'manual_review'],
+    'high_confidence_auto',
+  );
+  late String _memoryMaintenanceCostMode = _knownOrFallback(
+    widget.memory.maintenance.costMode,
+    const ['low_cost'],
+    'low_cost',
+  );
+  late final TextEditingController _memoryMaintenanceHighThresholdController =
+      TextEditingController(
+        text: widget.memory.maintenance.highConfidenceThreshold.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceReviewThresholdController =
+      TextEditingController(
+        text: widget.memory.maintenance.reviewThreshold.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceMaxBatchController =
+      TextEditingController(
+        text: widget.memory.maintenance.maxItemsPerBatch.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceIdleTurnsController =
+      TextEditingController(
+        text: widget.memory.maintenance.idleAfterTurns.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceIdlePendingController =
+      TextEditingController(
+        text: widget.memory.maintenance.idleMaxPendingReviews.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceManualActionsController =
+      TextEditingController(
+        text: widget.memory.maintenance.manualOnlyActions.join(', '),
+      );
+  late String _memoryApprovalMode =
+      MemoryApprovalMode.isKnown(widget.memory.review.approvalMode)
+      ? widget.memory.review.approvalMode
+      : MemoryApprovalMode.autoHighConfidence;
+  late String _memoryReviewAutoOpen =
+      MemoryReviewAutoOpen.isKnown(widget.memory.review.autoOpen)
+      ? widget.memory.review.autoOpen
+      : MemoryReviewAutoOpen.highConfidence;
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -116,10 +173,18 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _memoryEmbeddingModelController.dispose();
     _memoryExtractorAgentController.dispose();
     _memoryExtractorModelController.dispose();
-    _memoryDaemonBaseUrlController.dispose();
-    _memoryDaemonTokenEnvController.dispose();
+    _memoryExtractorGlobalInstructionsController.dispose();
+    _memoryExtractorWorkspaceInstructionsController.dispose();
+    _memoryExtractorRepoInstructionsController.dispose();
     _memoryLlmBaseUrlController.dispose();
     _memoryApiKeyEnvController.dispose();
+    _memoryProfileMaxItemsController.dispose();
+    _memoryMaintenanceHighThresholdController.dispose();
+    _memoryMaintenanceReviewThresholdController.dispose();
+    _memoryMaintenanceMaxBatchController.dispose();
+    _memoryMaintenanceIdleTurnsController.dispose();
+    _memoryMaintenanceIdlePendingController.dispose();
+    _memoryMaintenanceManualActionsController.dispose();
     super.dispose();
   }
 
@@ -487,6 +552,56 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             onChanged: (value) => setState(() => _memoryEnabled = value),
           ),
           const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-approval-mode-field'),
+            initialValue: _memoryApprovalMode,
+            decoration: const InputDecoration(
+              labelText: 'Memory approval mode',
+              prefixIcon: Icon(Icons.fact_check_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: MemoryApprovalMode.autoHighConfidence,
+                child: Text('Auto high confidence'),
+              ),
+              DropdownMenuItem(
+                value: MemoryApprovalMode.manual,
+                child: Text('Manual approval'),
+              ),
+              DropdownMenuItem(
+                value: MemoryApprovalMode.autoApprove,
+                child: Text('Auto approve'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _memoryApprovalMode = value);
+            },
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-review-auto-open-field'),
+            initialValue: _memoryReviewAutoOpen,
+            decoration: const InputDecoration(
+              labelText: 'Memory review prompt',
+              prefixIcon: Icon(Icons.notification_important_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: MemoryReviewAutoOpen.highConfidence,
+                child: Text('Prompt on pending'),
+              ),
+              DropdownMenuItem(
+                value: MemoryReviewAutoOpen.never,
+                child: Text('Never prompt'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryReviewAutoOpen = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
           _DialogTextField(
             key: const Key('memory-embedding-model-field'),
             controller: _memoryEmbeddingModelController,
@@ -509,17 +624,27 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           ),
           const SizedBox(height: 8),
           _DialogTextField(
-            key: const Key('memory-daemon-url-field'),
-            controller: _memoryDaemonBaseUrlController,
-            label: 'Memory daemon URL',
-            icon: Icons.dns_outlined,
+            key: const Key('memory-extractor-global-instructions-field'),
+            controller: _memoryExtractorGlobalInstructionsController,
+            label: 'Global memory instructions',
+            icon: Icons.public_rounded,
+            maxLines: 3,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
-            key: const Key('memory-daemon-token-env-field'),
-            controller: _memoryDaemonTokenEnvController,
-            label: 'Daemon token env',
-            icon: Icons.key_outlined,
+            key: const Key('memory-extractor-workspace-instructions-field'),
+            controller: _memoryExtractorWorkspaceInstructionsController,
+            label: 'Workspace memory instructions',
+            icon: Icons.workspaces_outline,
+            maxLines: 3,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-repo-instructions-field'),
+            controller: _memoryExtractorRepoInstructionsController,
+            label: 'Repo memory instructions',
+            icon: Icons.rule_folder_outlined,
+            maxLines: 3,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
@@ -534,6 +659,120 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             controller: _memoryApiKeyEnvController,
             label: 'API key env',
             icon: Icons.key_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-profile-max-items-field'),
+            controller: _memoryProfileMaxItemsController,
+            label: 'Profile memory limit',
+            icon: Icons.layers_outlined,
+          ),
+          const SizedBox(height: 10),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-enabled-switch'),
+            title: 'Enable maintenance',
+            value: _memoryMaintenanceEnabled,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-run-after-extraction-switch'),
+            title: 'Auto organize after turns',
+            value: _memoryMaintenanceRunAfterExtraction,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceRunAfterExtraction = value),
+          ),
+          const SizedBox(height: 8),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-idle-switch'),
+            title: 'Idle organize',
+            value: _memoryMaintenanceIdleEnabled,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceIdleEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-maintenance-mode-field'),
+            initialValue: _memoryMaintenanceMode,
+            decoration: const InputDecoration(
+              labelText: 'Maintenance mode',
+              prefixIcon: Icon(Icons.auto_fix_high_rounded),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: 'high_confidence_auto',
+                child: Text('High confidence auto'),
+              ),
+              DropdownMenuItem(
+                value: 'manual_review',
+                child: Text('Manual review'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryMaintenanceMode = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-maintenance-cost-mode-field'),
+            initialValue: _memoryMaintenanceCostMode,
+            decoration: const InputDecoration(
+              labelText: 'Maintenance cost mode',
+              prefixIcon: Icon(Icons.savings_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'low_cost', child: Text('Low cost')),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryMaintenanceCostMode = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-high-threshold-field'),
+            controller: _memoryMaintenanceHighThresholdController,
+            label: 'Auto threshold',
+            icon: Icons.trending_up_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-review-threshold-field'),
+            controller: _memoryMaintenanceReviewThresholdController,
+            label: 'Review threshold',
+            icon: Icons.rate_review_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-max-batch-field'),
+            controller: _memoryMaintenanceMaxBatchController,
+            label: 'Max items per batch',
+            icon: Icons.filter_9_plus_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-idle-after-turns-field'),
+            controller: _memoryMaintenanceIdleTurnsController,
+            label: 'Idle after turns',
+            icon: Icons.hourglass_bottom_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-idle-max-pending-field'),
+            controller: _memoryMaintenanceIdlePendingController,
+            label: 'Idle max pending',
+            icon: Icons.pending_actions_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-manual-actions-field'),
+            controller: _memoryMaintenanceManualActionsController,
+            label: 'Manual-only actions',
+            icon: Icons.pan_tool_alt_outlined,
           ),
         ],
       ),
@@ -558,11 +797,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   MemoryConfig _memoryConfig() {
     return MemoryConfig(
       enabled: _memoryEnabled,
-      autoStartDaemon: widget.memory.autoStartDaemon,
-      daemonBaseUrl: _trimmedOrNull(_memoryDaemonBaseUrlController.text),
-      daemonTokenEnv:
-          _trimmedOrNull(_memoryDaemonTokenEnvController.text) ??
-          const MemoryConfig().daemonTokenEnv,
       dataDir: widget.memory.dataDir,
       embedding: MemoryEmbeddingConfig(
         provider: widget.memory.embedding.provider,
@@ -582,6 +816,13 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             _trimmedOrNull(_memoryExtractorModelController.text) ??
             const MemoryExtractorConfig().model,
         fallbackProvider: widget.memory.extractor.fallbackProvider,
+        globalInstructions: _memoryExtractorGlobalInstructionsController.text
+            .trim(),
+        workspaceInstructions: _memoryExtractorWorkspaceInstructionsController
+            .text
+            .trim(),
+        repoInstructions: _memoryExtractorRepoInstructionsController.text
+            .trim(),
       ),
       llm: MemoryLlmConfig(
         provider: widget.memory.llm.provider,
@@ -593,7 +834,51 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             _trimmedOrNull(_memoryApiKeyEnvController.text) ??
             const MemoryLlmConfig().apiKeyEnv,
       ),
-      review: widget.memory.review,
+      review: MemoryReviewConfig(
+        approvalMode: _memoryApprovalMode,
+        autoOpen: _memoryReviewAutoOpen,
+        highConfidenceThreshold: widget.memory.review.highConfidenceThreshold,
+      ),
+      maintenance: _memoryMaintenanceConfig(),
+      profile: MemoryProfileConfig(
+        maxItems: _nonNegativeIntValue(
+          _memoryProfileMaxItemsController.text,
+          'Profile memory limit',
+        ),
+      ),
+    );
+  }
+
+  MemoryMaintenanceConfig _memoryMaintenanceConfig() {
+    return MemoryMaintenanceConfig(
+      enabled: _memoryMaintenanceEnabled,
+      mode: _memoryMaintenanceMode,
+      costMode: _memoryMaintenanceCostMode,
+      runAfterExtraction: _memoryMaintenanceRunAfterExtraction,
+      idleEnabled: _memoryMaintenanceIdleEnabled,
+      idleAfterTurns: _positiveIntValue(
+        _memoryMaintenanceIdleTurnsController.text,
+        'Idle after turns',
+      ),
+      idleMaxPendingReviews: _nonNegativeIntValue(
+        _memoryMaintenanceIdlePendingController.text,
+        'Idle max pending',
+      ),
+      highConfidenceThreshold: _probabilityValue(
+        _memoryMaintenanceHighThresholdController.text,
+        'Auto threshold',
+      ),
+      reviewThreshold: _probabilityValue(
+        _memoryMaintenanceReviewThresholdController.text,
+        'Review threshold',
+      ),
+      maxItemsPerBatch: _positiveIntValue(
+        _memoryMaintenanceMaxBatchController.text,
+        'Max items per batch',
+      ),
+      manualOnlyActions: _commaSeparatedValues(
+        _memoryMaintenanceManualActionsController.text,
+      ),
     );
   }
 
@@ -663,10 +948,28 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     });
   }
 
+  List<AgentServerConfig> get _availableDetectedAgentServers {
+    return widget.detectedAgentServers
+        .where(
+          (server) => !_agentServers.any(
+            (configured) => configured.name == server.name,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   Future<void> _addAgent() async {
+    final choice = await showDialog<_AgentTemplateChoice>(
+      context: context,
+      builder: (context) =>
+          _AgentTemplateDialog(agentServers: _availableDetectedAgentServers),
+    );
+    if (choice == null || !mounted) return;
+
     final server = await showDialog<AgentServerConfig>(
       context: context,
-      builder: (context) => const _AgentServerEditorDialog(),
+      builder: (context) =>
+          _AgentServerEditorDialog(initialServer: choice.server),
     );
     if (server == null || !mounted) return;
     setState(() {
@@ -1012,6 +1315,149 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
       ),
     );
   }
+}
+
+class _AgentTemplateChoice {
+  const _AgentTemplateChoice.blank() : server = null;
+
+  const _AgentTemplateChoice.detected(this.server);
+
+  final AgentServerConfig? server;
+}
+
+class _AgentTemplateDialog extends StatelessWidget {
+  const _AgentTemplateDialog({required this.agentServers});
+
+  final List<AgentServerConfig> agentServers;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Detected Agent Templates'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Start from a detected ACP agent, then review and edit the fields before saving.',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (agentServers.isEmpty)
+              const Text(
+                'No local ACP agents were detected. Add a blank agent to configure one manually.',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
+                ),
+              )
+            else
+              for (final server in agentServers) ...[
+                _AgentTemplateTile(server: server),
+                if (server != agentServers.last) const SizedBox(height: 8),
+              ],
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  Navigator.of(context).pop(const _AgentTemplateChoice.blank()),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Blank Agent'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AgentTemplateTile extends StatelessWidget {
+  const _AgentTemplateTile({required this.server});
+
+  final AgentServerConfig server;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        onTap: () =>
+            Navigator.of(context).pop(_AgentTemplateChoice.detected(server)),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceRaised,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.hub_outlined,
+                size: 20,
+                color: AppColors.textTertiary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      server.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _agentTemplateTarget(server),
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _agentTemplateTarget(AgentServerConfig server) {
+  final args = server.args.isEmpty ? '' : ' ${server.args.join(' ')}';
+  return '${server.displayTarget}$args';
 }
 
 class _AgentServerEditorDialog extends StatefulWidget {
@@ -1486,18 +1932,21 @@ class _DialogTextField extends StatelessWidget {
     required this.label,
     required this.icon,
     this.obscureText = false,
+    this.maxLines = 1,
   });
 
   final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
       obscureText: obscureText,
+      maxLines: maxLines,
       decoration: _fieldDecoration(label: label, icon: icon),
     );
   }
@@ -1710,6 +2159,46 @@ List<String> _stringValues(List<TextEditingController> controllers) {
 String? _trimmedOrNull(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String _knownOrFallback(
+  String value,
+  List<String> knownValues,
+  String fallback,
+) {
+  return knownValues.contains(value) ? value : fallback;
+}
+
+double _probabilityValue(String value, String label) {
+  final parsed = double.tryParse(value.trim());
+  if (parsed == null || parsed < 0 || parsed > 1) {
+    throw FormatException('$label must be a number from 0 to 1.');
+  }
+  return parsed;
+}
+
+int _positiveIntValue(String value, String label) {
+  final parsed = int.tryParse(value.trim());
+  if (parsed == null || parsed <= 0) {
+    throw FormatException('$label must be a positive integer.');
+  }
+  return parsed;
+}
+
+int _nonNegativeIntValue(String value, String label) {
+  final parsed = int.tryParse(value.trim());
+  if (parsed == null || parsed < 0) {
+    throw FormatException('$label must be zero or a positive integer.');
+  }
+  return parsed;
+}
+
+List<String> _commaSeparatedValues(String value) {
+  return value
+      .split(',')
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toList(growable: false);
 }
 
 Map<String, String> _nameValueMap(List<_NameValueControllers> controllers) {

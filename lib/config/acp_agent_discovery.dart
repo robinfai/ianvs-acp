@@ -10,6 +10,7 @@ class AcpAgentDiscovery {
 
   static const String codexAgentName = 'Codex';
   static const String codexAcpPackage = '@zed-industries/codex-acp';
+  static const String piAgentName = 'Pi';
 
   static List<AgentServerConfig> discoverMissing(
     AcpClientConfig config, {
@@ -29,6 +30,7 @@ class AcpAgentDiscovery {
     Map<String, String>? environment,
     FileExists? fileExists,
   }) {
+    final candidates = <AgentServerConfig>[];
     final npx = _resolveExecutable(
       'npx',
       environment: environment,
@@ -38,16 +40,33 @@ class AcpAgentDiscovery {
         '/usr/local/bin/npx',
       ],
     );
-    if (npx == null) return const <AgentServerConfig>[];
+    if (npx != null) {
+      candidates.add(
+        AgentServerConfig(
+          name: codexAgentName,
+          type: 'custom',
+          command: npx,
+          args: const <String>[codexAcpPackage],
+        ),
+      );
+    }
 
-    return <AgentServerConfig>[
-      AgentServerConfig(
-        name: codexAgentName,
-        type: 'custom',
-        command: npx,
-        args: const <String>[codexAcpPackage],
-      ),
-    ];
+    final piAcp = _resolveExecutable(
+      'pi-acp',
+      environment: environment,
+      fileExists: fileExists,
+      preferredPaths: const <String>[
+        '/opt/homebrew/bin/pi-acp',
+        '/usr/local/bin/pi-acp',
+      ],
+    );
+    if (piAcp != null) {
+      candidates.add(
+        AgentServerConfig(name: piAgentName, type: 'custom', command: piAcp),
+      );
+    }
+
+    return candidates;
   }
 
   static Future<AcpClientConfig> writeSelectedAgentServers(

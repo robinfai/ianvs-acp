@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 
 void main() {
@@ -292,6 +293,9 @@ void main() {
     await tester.pump();
     await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
     await tester.pumpAndSettle();
+    expect(find.text('Detected Agent Templates'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Blank Agent'));
+    await tester.pumpAndSettle();
     expect(find.text('Agent Server'), findsOneWidget);
     await tester.enterText(
       find.byKey(const Key('agent-name-field')),
@@ -307,6 +311,9 @@ void main() {
     await tester.ensureVisible(find.widgetWithText(TextButton, 'Add Agent'));
     await tester.pump();
     await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
+    await tester.pumpAndSettle();
+    expect(find.text('Detected Agent Templates'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Blank Agent'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('agent-name-field')),
@@ -353,6 +360,66 @@ void main() {
       'Authorization': 'Bearer token',
     });
   });
+
+  testWidgets(
+    'AgentConfigDialog edits a detected agent template before saving',
+    (tester) async {
+      AcpClientConfig? savedConfig;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AgentConfigDialog(
+              configPath: '/Users/example/.config/ianvs-acp/settings.json',
+              activeAgentName: 'Codex',
+              onSaveConfig: (config) async {
+                savedConfig = config;
+                return config;
+              },
+              detectedAgentServers: const [
+                AgentServerConfig(
+                  name: 'Pi',
+                  type: 'custom',
+                  command: '/usr/local/bin/pi-acp',
+                ),
+              ],
+              agentServers: const [
+                AgentServerConfig(
+                  name: 'Codex',
+                  type: 'custom',
+                  command: '/usr/local/bin/npx',
+                  args: ['@zed-industries/codex-acp'],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.ensureVisible(find.widgetWithText(TextButton, 'Add Agent'));
+      await tester.pump();
+      await tester.tap(find.widgetWithText(TextButton, 'Add Agent'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Detected Agent Templates'), findsOneWidget);
+      await tester.tap(find.text('Pi'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Agent Server'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('agent-name-field')),
+        'Pi Dev',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Save Agent'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+
+      final pi = savedConfig?.agentServerNamed('Pi Dev');
+      expect(pi?.command, '/usr/local/bin/pi-acp');
+      expect(pi?.args, isEmpty);
+    },
+  );
 
   testWidgets('AgentConfigDialog adds MCP servers', (tester) async {
     AcpClientConfig? savedConfig;
@@ -552,11 +619,15 @@ void main() {
 
     expect(find.text('Memory'), findsOneWidget);
     expect(find.text('Enable memory'), findsOneWidget);
+    expect(find.text('Memory approval mode'), findsOneWidget);
+    expect(find.text('Memory review prompt'), findsOneWidget);
     expect(find.text('Extractor agent'), findsOneWidget);
     expect(find.text('Extractor model'), findsOneWidget);
     expect(find.text('Embedding model'), findsOneWidget);
-    expect(find.text('Memory daemon URL'), findsOneWidget);
-    expect(find.text('Daemon token env'), findsOneWidget);
+    expect(find.text('Profile memory limit'), findsOneWidget);
+    expect(find.text('Auto organize after turns'), findsOneWidget);
+    expect(find.text('Memory daemon URL'), findsNothing);
+    expect(find.text('Daemon token env'), findsNothing);
   });
 
   testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
@@ -567,6 +638,9 @@ void main() {
           body: AgentConfigDialog(
             configPath: '/Users/example/.config/ianvs-acp/settings.json',
             activeAgentName: 'Codex',
+            memory: const MemoryConfig(
+              maintenance: MemoryMaintenanceConfig(idleEnabled: true),
+            ),
             onSaveConfig: (config) async {
               savedConfig = config;
               return config;
@@ -587,6 +661,14 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('memory-enabled-switch')));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('memory-approval-mode-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto high confidence').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-review-auto-open-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Never prompt').last);
+    await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('memory-embedding-model-field')),
       'intfloat/multilingual-e5-small',
@@ -600,6 +682,18 @@ void main() {
       'gpt-5-mini',
     );
     await tester.enterText(
+      find.byKey(const Key('memory-extractor-global-instructions-field')),
+      'Only remember durable user preferences.',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-extractor-workspace-instructions-field')),
+      'Ignore one-off workspace chatter.',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-extractor-repo-instructions-field')),
+      'Prioritize repo rules and architecture decisions.',
+    );
+    await tester.enterText(
       find.byKey(const Key('memory-llm-base-url-field')),
       'http://127.0.0.1:11434/v1',
     );
@@ -608,12 +702,59 @@ void main() {
       'OLLAMA_API_KEY',
     );
     await tester.enterText(
-      find.byKey(const Key('memory-daemon-url-field')),
-      'http://127.0.0.1:43129',
+      find.byKey(const Key('memory-profile-max-items-field')),
+      '2',
+    );
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('memory-maintenance-mode-field')),
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-maintenance-mode-field')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Manual review').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('memory-maintenance-run-after-extraction-switch')),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const Key('memory-maintenance-run-after-extraction-switch')),
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('memory-maintenance-high-threshold-field')),
+      '0.91',
     );
     await tester.enterText(
+      find.byKey(const Key('memory-maintenance-review-threshold-field')),
+      '0.77',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-maintenance-max-batch-field')),
+      '8',
+    );
+    expect(
+      find.byKey(const Key('memory-maintenance-idle-switch')),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-maintenance-idle-after-turns-field')),
+      '4',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-maintenance-idle-max-pending-field')),
+      '2',
+    );
+    await tester.enterText(
+      find.byKey(const Key('memory-maintenance-manual-actions-field')),
+      'delete, expire',
+    );
+    expect(find.byKey(const Key('memory-daemon-url-field')), findsNothing);
+    expect(
       find.byKey(const Key('memory-daemon-token-env-field')),
-      'IANVS_MEMORY_TOKEN',
+      findsNothing,
     );
 
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
@@ -626,9 +767,34 @@ void main() {
     );
     expect(savedConfig?.memory.extractor.agent, 'Codex');
     expect(savedConfig?.memory.extractor.model, 'gpt-5-mini');
+    expect(
+      savedConfig?.memory.extractor.globalInstructions,
+      'Only remember durable user preferences.',
+    );
+    expect(
+      savedConfig?.memory.extractor.workspaceInstructions,
+      'Ignore one-off workspace chatter.',
+    );
+    expect(
+      savedConfig?.memory.extractor.repoInstructions,
+      'Prioritize repo rules and architecture decisions.',
+    );
     expect(savedConfig?.memory.llm.baseUrl, 'http://127.0.0.1:11434/v1');
     expect(savedConfig?.memory.llm.apiKeyEnv, 'OLLAMA_API_KEY');
-    expect(savedConfig?.memory.daemonBaseUrl, 'http://127.0.0.1:43129');
-    expect(savedConfig?.memory.daemonTokenEnv, 'IANVS_MEMORY_TOKEN');
+    expect(savedConfig?.memory.review.approvalMode, 'auto_high_confidence');
+    expect(savedConfig?.memory.review.autoOpen, 'never');
+    expect(savedConfig?.memory.profile.maxItems, 2);
+    expect(savedConfig?.memory.maintenance.mode, 'manual_review');
+    expect(savedConfig?.memory.maintenance.runAfterExtraction, isFalse);
+    expect(savedConfig?.memory.maintenance.idleEnabled, isTrue);
+    expect(savedConfig?.memory.maintenance.idleAfterTurns, 4);
+    expect(savedConfig?.memory.maintenance.idleMaxPendingReviews, 2);
+    expect(savedConfig?.memory.maintenance.highConfidenceThreshold, 0.91);
+    expect(savedConfig?.memory.maintenance.reviewThreshold, 0.77);
+    expect(savedConfig?.memory.maintenance.maxItemsPerBatch, 8);
+    expect(savedConfig?.memory.maintenance.manualOnlyActions, [
+      'delete',
+      'expire',
+    ]);
   });
 }
