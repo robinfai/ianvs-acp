@@ -805,3 +805,267 @@ async fn search_uses_vector_index_when_lexical_query_does_not_match() {
     assert_eq!(search["items"].as_array().unwrap().len(), 1);
     assert_eq!(search["items"][0]["id"], memory["id"]);
 }
+#[tokio::test]
+async fn memory_eval_fixture_guards_retrieval_invariants() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalFixture {
+        cases: Vec<EvalCase>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalCase {
+        name: String,
+        setup: Vec<EvalMemory>,
+        query: String,
+        scope: EvalScope,
+        #[serde(default)]
+        reference_time: Option<i64>,
+        #[serde(default)]
+        maintenance: Option<EvalMaintenance>,
+        #[serde(default)]
+        expected_first_label: Option<String>,
+        expected_labels: Vec<String>,
+        forbidden_labels: Vec<String>,
+        #[serde(default)]
+        expected_text_contains: Vec<String>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalMaintenance {
+        auto_applied: i64,
+        needs_review: i64,
+        active_count: usize,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalMemory {
+        label: String,
+        kind: String,
+        scope: String,
+        text: String,
+        workspace_id: String,
+        repo_id: String,
+        agent_id: String,
+        session_id: String,
+        #[serde(default)]
+        entities: Vec<EvalEntity>,
+        #[serde(default)]
+        observed_at: Option<i64>,
+        #[serde(default)]
+        valid_from: Option<i64>,
+        #[serde(default)]
+        valid_until: Option<i64>,
+        #[serde(default)]
+        pinned: bool,
+    }
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalEntity {
+        text: String,
+        #[serde(rename = "type")]
+        entity_type: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvalScope {
+        workspace_id: String,
+        repo_id: String,
+        agent_id: String,
+        session_id: String,
+    }
+
+    let fixture: EvalFixture =
+        serde_json::from_str(include_str!("fixtures/memory_eval_cases.json"))
+            .expect("eval fixture");
+    assert!(!fixture.cases.is_empty());
+
+    for case in fixture.cases {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+            .await
+            .expect("daemon");
+        let client = reqwest::Client::new();
+        let mut label_to_id = std::collections::HashMap::new();
+
+        for memory in case.setup {
+            let mut payload = serde_json::json!({
+                "kind": memory.kind,
+                "scope": memory.scope,
+                "text": memory.text,
+                "pinned": memory.pinned,
+                "scopeData": {
+                    "userId": "local-user",
+                    "workspaceId": memory.workspace_id,
+                    "repoId": memory.repo_id,
+                    "agentId": memory.agent_id,
+                    "sessionId": memory.session_id
+                }
+            });
+            if !memory.entities.is_empty() {
+                payload["entities"] = serde_json::json!(memory.entities);
+            }
+            if let Some(observed_at) = memory.observed_at {
+                payload["observedAt"] = serde_json::json!(observed_at);
+            }
+            if let Some(valid_from) = memory.valid_from {
+                payload["validFrom"] = serde_json::json!(valid_from);
+            }
+            if let Some(valid_until) = memory.valid_until {
+                payload["validUntil"] = serde_json::json!(valid_until);
+            }
+            let created = client
+                .post(format!("{}/v1/memory", state.base_url))
+                .bearer_auth("test-token")
+                .json(&payload)
+                .send()
+                .await
+                .unwrap_or_else(|error| panic!("{} create memory: {error}", case.name))
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|error| panic!("{} memory json: {error}", case.name));
+            label_to_id.insert(
+                memory.label,
+                created["id"].as_str().expect("id").to_string(),
+            );
+        }
+
+        if let Some(maintenance) = &case.maintenance {
+            let maintenance_result = client
+                .post(format!("{}/v1/memory/maintenance/run", state.base_url))
+                .bearer_auth("test-token")
+                .json(&serde_json::json!({
+                    "enabled": true,
+                    "mode": "high_confidence_auto",
+                    "scope": {
+                        "userId": "local-user",
+                        "workspaceId": case.scope.workspace_id,
+                        "repoId": case.scope.repo_id,
+                        "agentId": case.scope.agent_id,
+                        "sessionId": case.scope.session_id
+                    },
+                    "highConfidenceThreshold": 0.90,
+                    "reviewThreshold": 0.75,
+                    "maxItemsPerBatch": 12
+                }))
+                .send()
+                .await
+                .unwrap_or_else(|error| panic!("{} maintenance: {error}", case.name))
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|error| panic!("{} maintenance json: {error}", case.name));
+            assert_eq!(
+                maintenance_result["autoApplied"], maintenance.auto_applied,
+                "{} maintenance autoApplied",
+                case.name
+            );
+            assert_eq!(
+                maintenance_result["needsReview"], maintenance.needs_review,
+                "{} maintenance needsReview",
+                case.name
+            );
+
+            let active_memory = client
+                .get(format!(
+                    "{}/v1/memory?userId=local-user&workspaceId={}&repoId={}&status=active",
+                    state.base_url, case.scope.workspace_id, case.scope.repo_id
+                ))
+                .bearer_auth("test-token")
+                .send()
+                .await
+                .unwrap_or_else(|error| panic!("{} list active memory: {error}", case.name))
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|error| panic!("{} active memory json: {error}", case.name));
+            assert_eq!(
+                active_memory["items"]
+                    .as_array()
+                    .expect("active memory")
+                    .len(),
+                maintenance.active_count,
+                "{} active memory count after maintenance",
+                case.name
+            );
+        }
+
+        let mut search_payload = serde_json::json!({
+            "query": case.query,
+            "scope": {
+                "userId": "local-user",
+                "workspaceId": case.scope.workspace_id,
+                "repoId": case.scope.repo_id,
+                "agentId": case.scope.agent_id,
+                "sessionId": case.scope.session_id
+            },
+            "limit": 10
+        });
+        if let Some(reference_time) = case.reference_time {
+            search_payload["referenceTime"] = serde_json::json!(reference_time);
+        }
+        let search = client
+            .post(format!("{}/v1/memory/search", state.base_url))
+            .bearer_auth("test-token")
+            .json(&search_payload)
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("{} search: {error}", case.name))
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or_else(|error| panic!("{} search json: {error}", case.name));
+        let items = search["items"].as_array().expect("items");
+        let returned_ids = items
+            .iter()
+            .map(|item| item["id"].as_str().expect("id"))
+            .collect::<std::collections::HashSet<_>>();
+
+        if let Some(expected_first_label) = case.expected_first_label {
+            let expected_id = label_to_id.get(&expected_first_label).unwrap_or_else(|| {
+                panic!(
+                    "{} missing expected first label {expected_first_label}",
+                    case.name
+                )
+            });
+            let first_id = items
+                .first()
+                .unwrap_or_else(|| panic!("{} should return at least one item", case.name))["id"]
+                .as_str()
+                .expect("first id");
+            assert_eq!(
+                first_id,
+                expected_id.as_str(),
+                "{} should rank {expected_first_label} first",
+                case.name
+            );
+        }
+
+        for expected in case.expected_labels {
+            let expected_id = label_to_id
+                .get(&expected)
+                .unwrap_or_else(|| panic!("{} missing expected label {expected}", case.name));
+            assert!(
+                returned_ids.contains(expected_id.as_str()),
+                "{} should return {expected}",
+                case.name
+            );
+        }
+        for needle in case.expected_text_contains {
+            assert!(
+                items.iter().any(|item| item["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(&needle))),
+                "{} should return text containing {needle}",
+                case.name
+            );
+        }
+        for forbidden in case.forbidden_labels {
+            let forbidden_id = label_to_id
+                .get(&forbidden)
+                .unwrap_or_else(|| panic!("{} missing forbidden label {forbidden}", case.name));
+            assert!(
+                !returned_ids.contains(forbidden_id.as_str()),
+                "{} should not return {forbidden}",
+                case.name
+            );
+        }
+    }
+}

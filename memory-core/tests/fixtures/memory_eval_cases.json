@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "name": "bilingual verification phrase recall",
+      "setup": [
+        {
+          "label": "verification_phrase",
+          "kind": "project_rule",
+          "scope": "repo",
+          "text": "本项目的验证暗号是 blue lighthouse。",
+          "workspaceId": "workspace-1",
+          "repoId": "repo-1",
+          "agentId": "agent-1",
+          "sessionId": "session-1"
+        },
+        {
+          "label": "unrelated_phrase",
+          "kind": "session_summary",
+          "scope": "session",
+          "text": "昨天讨论的是 dark harbor 这个测试短语。",
+          "workspaceId": "workspace-1",
+          "repoId": "repo-1",
+          "agentId": "agent-1",
+          "sessionId": "session-1"
+        }
+      ],
+      "query": "blue lighthouse 是什么",
+      "scope": {
+        "workspaceId": "workspace-1",
+        "repoId": "repo-1",
+        "agentId": "agent-1",
+        "sessionId": "session-1"
+      },
+      "expectedLabels": [
+        "verification_phrase"
+      ],
+      "forbiddenLabels": []
+    },
+    {
+      "name": "repo scoped rule does not leak across repos",
+      "setup": [
+        {
+          "label": "current_repo_rule",
+          "kind": "project_rule",
+          "scope": "repo",
+          "text": "Basalt release checks must use curl health endpoints.",
+          "workspaceId": "workspace-1",
+          "repoId": "repo-1",
+          "agentId": "agent-1",
+          "sessionId": "session-1"
+        },
+        {
+          "label": "other_repo_rule",
+          "kind": "project_rule",
+          "scope": "repo",
+          "text": "Basalt release checks must use the external staging dashboard.",
+          "workspaceId": "workspace-1",
+          "repoId": "repo-2",
+          "agentId": "agent-1",
+          "sessionId": "session-2"
+        }
+      ],
+      "query": "Basalt release checks",
+      "scope": {
+        "workspaceId": "workspace-1",
+        "repoId": "repo-1",
+        "agentId": "agent-1",
+        "sessionId": "session-1"
+      },
+      "expectedLabels": [
+        "current_repo_rule"
+      ],
+      "forbiddenLabels": [
+        "other_repo_rule"
+      ]
+    },
+    {
+      "name": "session scoped memory does not leak across sessions",
+      "setup": [
+        {
+          "label": "session_only_note",
+          "kind": "session_summary",
+          "scope": "session",
+          "text": "Temporary test phrase is amber vault.",
+          "workspaceId": "workspace-1",
+          "repoId": "repo-1",
+          "agentId": "agent-1",
+          "sessionId": "session-13"
+        }
+      ],
+      "query": "amber vault",
+      "scope": {
+        "workspaceId": "workspace-1",
+        "repoId": "repo-1",
+        "agentId": "agent-1",
+        "sessionId": "session-14"
+      },
+      "expectedLabels": [],
+      "forbiddenLabels": [
+        "session_only_note"
+      ]
+    }
+  ]
+}
