@@ -95,6 +95,11 @@ derived from the app's maintenance config.
 Post-turn automatic candidate approvals and maintenance approvals also surface a
 bottom review prompt so users can inspect what changed without approving every
 step up front.
+Memory Explorer also provides JSONL backup export and import. Imports default to
+the normal pending-candidate review path; an explicit trusted option can restore
+active, disabled, and deleted history with temporal metadata, pinned state,
+entities, and supersede links. The daemon deduplicates both modes, rejects
+secret-like content, and records import provenance in audit events.
 
 ## Official Feature Index
 

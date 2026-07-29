@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'acp/agent_session.dart';
@@ -636,6 +638,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
       disableMemory: _disableMemoryRecord,
       restoreMemory: _restoreMemoryRecord,
       submitFeedback: _submitMemoryRecordFeedback,
+      exportBackup: _exportMemoryBackup,
+      importBackup: _importMemoryBackup,
       runMaintenance: _runMemoryMaintenance,
       clearData: _clearMemoryData,
       maintenanceEnabled: _config.memory.maintenance.enabled,
@@ -798,6 +802,65 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
     unawaited(_refreshMemoryPendingCount());
     return result;
+  }
+
+  Future<MemoryExportResult?> _exportMemoryBackup() async {
+    final result = await _withMemoryClient(
+      (client) => client.exportMemory(
+        scope: MemoryScopeData(
+          userId: _memoryUserId(),
+          workspaceId: _memoryScopeCwd(),
+          repoId: _memoryScopeCwd(),
+          agentId: _config.agentName,
+          sessionId: _controller.currentSession?.id,
+        ),
+      ),
+    );
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: 'Export Memory Backup',
+      fileName: _memoryBackupFileName(DateTime.now()),
+      type: FileType.custom,
+      allowedExtensions: const ['jsonl'],
+      bytes: Uint8List.fromList(utf8.encode(result.jsonl)),
+    );
+    return path == null ? null : result;
+  }
+
+  Future<MemoryImportResult?> _importMemoryBackup(String mode) async {
+    final picked = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Import Memory Backup',
+      type: FileType.custom,
+      allowedExtensions: const ['jsonl'],
+      allowMultiple: false,
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return null;
+    final file = picked.files.single;
+    if (file.size > 20 * 1024 * 1024) {
+      throw const FormatException('Memory backup exceeds the 20 MB limit.');
+    }
+    final bytes =
+        file.bytes ??
+        (file.path == null ? null : await File(file.path!).readAsBytes());
+    if (bytes == null) {
+      throw const FileSystemException('Unable to read the selected backup.');
+    }
+    final result = await _withMemoryClient(
+      (client) => client.importMemory(jsonl: utf8.decode(bytes), mode: mode),
+    );
+    unawaited(_refreshMemoryPendingCount());
+    return result;
+  }
+
+  String _memoryBackupFileName(DateTime value) {
+    final utc = value.toUtc();
+    return 'ianvs-acp-memory-'
+        '${utc.year.toString().padLeft(4, '0')}'
+        '${utc.month.toString().padLeft(2, '0')}'
+        '${utc.day.toString().padLeft(2, '0')}-'
+        '${utc.hour.toString().padLeft(2, '0')}'
+        '${utc.minute.toString().padLeft(2, '0')}'
+        '${utc.second.toString().padLeft(2, '0')}.jsonl';
   }
 
   Future<T> _withMemoryClient<T>(

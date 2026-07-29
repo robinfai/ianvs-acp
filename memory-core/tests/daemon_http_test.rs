@@ -220,6 +220,302 @@ async fn manual_memory_crud_writes_audit_and_soft_deletes() {
 }
 
 #[tokio::test]
+async fn memory_export_returns_filtered_jsonl_with_entities_and_temporal_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "project_rule",
+            "scope": "repo",
+            "text": "Run make verify before merging this repository.",
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1"
+            },
+            "entities": [
+                {"text": "make verify", "type": "command"}
+            ],
+            "observedAt": 1700000000000_i64,
+            "validFrom": 1700000001000_i64,
+            "pinned": true
+        }))
+        .send()
+        .await
+        .expect("create repo memory")
+        .error_for_status()
+        .expect("create repo status");
+    client
+        .post(format!("{}/v1/memory", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "kind": "user_preference",
+            "scope": "global",
+            "text": "Prefer concise answers.",
+            "scopeData": {"userId": "local-user"}
+        }))
+        .send()
+        .await
+        .expect("create global memory")
+        .error_for_status()
+        .expect("create global status");
+
+    let exported = client
+        .post(format!("{}/v1/memory/export", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "scopeData": {
+                "userId": "local-user",
+                "workspaceId": "workspace-1",
+                "repoId": "repo-1"
+            },
+            "memoryScope": "repo",
+            "kind": "project_rule",
+            "status": "active",
+            "createdFrom": 0_i64,
+            "createdUntil": i64::MAX
+        }))
+        .send()
+        .await
+        .expect("export")
+        .error_for_status()
+        .expect("export status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("export json");
+
+    assert_eq!(exported["exported"], 1);
+    assert_eq!(exported["truncated"], false);
+    let lines = exported["jsonl"]
+        .as_str()
+        .expect("jsonl")
+        .lines()
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1);
+    let record: serde_json::Value = serde_json::from_str(lines[0]).expect("record");
+    assert_eq!(record["version"], 1);
+    assert_eq!(record["type"], "memory");
+    assert_eq!(record["kind"], "project_rule");
+    assert_eq!(record["scope"], "repo");
+    assert_eq!(record["scopeData"]["repoId"], "repo-1");
+    assert_eq!(record["observedAt"], 1700000000000_i64);
+    assert_eq!(record["validFrom"], 1700000001000_i64);
+    assert_eq!(record["pinned"], true);
+    assert_eq!(record["entities"][0]["text"], "make verify");
+    assert_eq!(record["entities"][0]["type"], "command");
+}
+
+#[tokio::test]
+async fn pending_jsonl_import_creates_review_candidates_and_skips_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+    let active = serde_json::json!({
+        "version": 1,
+        "type": "memory",
+        "originalId": "mem_backup_active",
+        "kind": "project_rule",
+        "scope": "repo",
+        "text": "Use curl for service health checks in this repository.",
+        "scopeData": {
+            "userId": "local-user",
+            "workspaceId": "workspace-1",
+            "repoId": "repo-1"
+        },
+        "source": "manual",
+        "entities": [{"text": "curl", "type": "tool"}],
+        "status": "active"
+    });
+    let disabled = serde_json::json!({
+        "version": 1,
+        "type": "memory",
+        "originalId": "mem_backup_disabled",
+        "kind": "user_preference",
+        "scope": "global",
+        "text": "This old preference should remain disabled.",
+        "scopeData": {"userId": "local-user"},
+        "status": "disabled"
+    });
+    let jsonl = format!("{active}\n{disabled}\n");
+
+    let imported = client
+        .post(format!("{}/v1/memory/import", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "jsonl": jsonl,
+            "mode": "pending_review"
+        }))
+        .send()
+        .await
+        .expect("import")
+        .error_for_status()
+        .expect("import status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("import json");
+    assert_eq!(imported["imported"], 0);
+    assert_eq!(imported["pendingReview"], 1);
+    assert_eq!(imported["skipped"], 1);
+    assert_eq!(imported["errors"].as_array().expect("errors").len(), 1);
+
+    let candidates = client
+        .get(format!(
+            "{}/v1/memory/candidates?userId=local-user&repoId=repo-1&status=pending",
+            state.base_url
+        ))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .expect("candidate list")
+        .error_for_status()
+        .expect("candidate status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("candidate json");
+    let candidates = candidates["candidates"].as_array().expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["source"], "import");
+    assert_eq!(candidates[0]["text"], active["text"]);
+
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let entities_json: String =
+        sqlx::query_scalar("select entities_json from memory_candidates limit 1")
+            .fetch_one(&pool)
+            .await
+            .expect("entities json");
+    assert!(entities_json.contains("curl"));
+    let audit_count: i64 = sqlx::query_scalar(
+        "select count(*) from memory_audit_log
+         where actor = 'import' and action = 'candidate.create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit count");
+    assert_eq!(audit_count, 1);
+}
+
+#[tokio::test]
+async fn trusted_jsonl_import_restores_history_and_supersede_links_idempotently() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")
+        .await
+        .expect("daemon");
+    let client = reqwest::Client::new();
+    let old = serde_json::json!({
+        "version": 1,
+        "type": "memory",
+        "originalId": "mem_old",
+        "kind": "project_rule",
+        "scope": "repo",
+        "text": "Run the legacy test command before release.",
+        "scopeData": {
+            "userId": "local-user",
+            "workspaceId": "workspace-1",
+            "repoId": "repo-1"
+        },
+        "source": "manual",
+        "validUntil": 1700000002000_i64,
+        "status": "disabled",
+        "createdAt": 1700000000000_i64,
+        "updatedAt": 1700000002000_i64
+    });
+    let current = serde_json::json!({
+        "version": 1,
+        "type": "memory",
+        "originalId": "mem_current",
+        "kind": "project_rule",
+        "scope": "repo",
+        "text": "Run make verify before release.",
+        "scopeData": {
+            "userId": "local-user",
+            "workspaceId": "workspace-1",
+            "repoId": "repo-1"
+        },
+        "source": "maintenance",
+        "entities": [{"text": "make verify", "type": "command"}],
+        "validFrom": 1700000002000_i64,
+        "supersedesOriginalId": "mem_old",
+        "pinned": true,
+        "status": "active",
+        "createdAt": 1700000002000_i64,
+        "updatedAt": 1700000003000_i64
+    });
+    let jsonl = format!("{old}\n{current}\n");
+
+    let import_once = client
+        .post(format!("{}/v1/memory/import", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({"jsonl": jsonl, "mode": "trusted"}))
+        .send()
+        .await
+        .expect("trusted import")
+        .error_for_status()
+        .expect("trusted import status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("trusted import json");
+    assert_eq!(import_once["imported"], 2);
+    assert_eq!(import_once["pendingReview"], 0);
+    assert_eq!(import_once["skipped"], 0);
+
+    let pool = memory_core::db::sqlite::open(temp.path())
+        .await
+        .expect("db");
+    let old_row: (String, String, i64) =
+        sqlx::query_as("select id, status, pinned from memory_items where text = ?")
+            .bind("Run the legacy test command before release.")
+            .fetch_one(&pool)
+            .await
+            .expect("old row");
+    let current_row: (String, String, Option<String>, i64, String) = sqlx::query_as(
+        "select id, status, supersedes_memory_id, pinned, source
+         from memory_items where text = ?",
+    )
+    .bind("Run make verify before release.")
+    .fetch_one(&pool)
+    .await
+    .expect("current row");
+    assert_eq!(old_row.1, "disabled");
+    assert_eq!(old_row.2, 0);
+    assert_eq!(current_row.1, "active");
+    assert_eq!(current_row.2.as_deref(), Some(old_row.0.as_str()));
+    assert_eq!(current_row.3, 1);
+    assert_eq!(current_row.4, "import");
+    let entity_count: i64 =
+        sqlx::query_scalar("select count(*) from memory_entities where memory_id = ?")
+            .bind(&current_row.0)
+            .fetch_one(&pool)
+            .await
+            .expect("entity count");
+    assert_eq!(entity_count, 1);
+
+    let import_twice = client
+        .post(format!("{}/v1/memory/import", state.base_url))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({"jsonl": jsonl, "mode": "trusted_import"}))
+        .send()
+        .await
+        .expect("second trusted import")
+        .error_for_status()
+        .expect("second trusted import status")
+        .json::<serde_json::Value>()
+        .await
+        .expect("second trusted import json");
+    assert_eq!(import_twice["imported"], 0);
+    assert_eq!(import_twice["skipped"], 2);
+}
+
+#[tokio::test]
 async fn patch_memory_to_disabled_writes_disable_audit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = memory_core::test_support::spawn_test_daemon(temp.path(), "test-token")

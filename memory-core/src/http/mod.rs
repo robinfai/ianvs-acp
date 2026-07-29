@@ -25,6 +25,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/memory/candidates", get(routes_candidates::list))
         .route("/v1/memory/search", post(routes_memory::search))
+        .route("/v1/memory/export", post(routes_memory::export))
+        .route("/v1/memory/import", post(routes_memory::import))
         .route("/v1/memory/clear", post(routes_memory::clear))
         .route(
             "/v1/memory/destroy-database",

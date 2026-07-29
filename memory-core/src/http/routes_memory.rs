@@ -11,6 +11,10 @@ use crate::memory::engine::{
     MemoryFeedbackRequest, MemoryFeedbackResponse, MemoryResponse, PatchMemoryRequest,
     SearchRequest, SearchResponse,
 };
+use crate::memory::transfer::{
+    export_memory, import_memory, ExportMemoryRequest, ExportMemoryResponse, ImportMemoryRequest,
+    ImportMemoryResponse,
+};
 use crate::memory::types::MemoryKind;
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +132,22 @@ pub async fn clear(
         )));
     }
     let result = clear_memory(&state.db, request).await?;
+    best_effort_rebuild_vector_index(&state).await;
+    Ok(Json(result))
+}
+
+pub async fn export(
+    State(state): State<AppState>,
+    Json(request): Json<ExportMemoryRequest>,
+) -> Result<Json<ExportMemoryResponse>, ApiError> {
+    Ok(Json(export_memory(&state.db, request).await?))
+}
+
+pub async fn import(
+    State(state): State<AppState>,
+    Json(request): Json<ImportMemoryRequest>,
+) -> Result<Json<ImportMemoryResponse>, ApiError> {
+    let result = import_memory(&state.db, request).await?;
     best_effort_rebuild_vector_index(&state).await;
     Ok(Json(result))
 }

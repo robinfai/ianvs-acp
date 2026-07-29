@@ -386,6 +386,15 @@ Success:
 
 #### 8. Import/export and backup
 
+Status: first pass implemented. Memory Explorer can save a scoped JSONL backup
+and import it either as pending candidates or through an explicitly selected
+trusted restore. The daemon export API supports exact memory scope, kind,
+status, and created-time filters; trusted restore preserves active/disabled/
+deleted state, temporal metadata, pinned state, entities, and supersede links
+while remapping ids. Both modes deduplicate records and write import audit
+events. Imports are capped by file size and record count, reject secret-like
+content, and surface per-line errors.
+
 Why: 本地数据需要可迁移、可审查。
 
 Design:

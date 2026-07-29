@@ -825,6 +825,90 @@ void main() {
     },
   );
 
+  test('MemoryApiClient exports and imports JSONL backups', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+
+    final paths = <String>[];
+    final bodies = <Map>[];
+    final subscription = server.listen((request) async {
+      paths.add(request.uri.path);
+      expect(
+        request.headers.value(HttpHeaders.authorizationHeader),
+        'Bearer secret-token',
+      );
+      final body = jsonDecode(await utf8.decodeStream(request)) as Map;
+      bodies.add(body);
+      request.response.headers.contentType = ContentType.json;
+      if (request.uri.path.endsWith('/export')) {
+        request.response.write(
+          jsonEncode({
+            'jsonl': '{"version":1,"type":"memory","kind":"project_rule"}\n',
+            'exported': 1,
+            'truncated': false,
+          }),
+        );
+      } else {
+        request.response.write(
+          jsonEncode({
+            'imported': 0,
+            'pendingReview': 1,
+            'skipped': 2,
+            'errors': [
+              {'line': 3, 'message': 'disabled history requires trusted mode'},
+            ],
+          }),
+        );
+      }
+      await request.response.close();
+    });
+    addTearDown(subscription.cancel);
+
+    final client = MemoryApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:${server.port}'),
+      token: 'secret-token',
+    );
+    addTearDown(client.close);
+    final exported = await client.exportMemory(
+      scope: const MemoryScopeData(
+        userId: 'local-user',
+        workspaceId: 'workspace-1',
+        repoId: 'repo-1',
+      ),
+      memoryScope: 'repo',
+      kind: 'project_rule',
+      status: 'active',
+      createdFrom: 1,
+      createdUntil: 2,
+    );
+    final imported = await client.importMemory(
+      jsonl: exported.jsonl,
+      mode: 'pending_review',
+    );
+
+    expect(paths, ['/v1/memory/export', '/v1/memory/import']);
+    expect(bodies.first, {
+      'scopeData': {
+        'userId': 'local-user',
+        'workspaceId': 'workspace-1',
+        'repoId': 'repo-1',
+      },
+      'memoryScope': 'repo',
+      'kind': 'project_rule',
+      'status': 'active',
+      'createdFrom': 1,
+      'createdUntil': 2,
+    });
+    expect(bodies.last['mode'], 'pending_review');
+    expect(bodies.last['jsonl'], exported.jsonl);
+    expect(exported.exported, 1);
+    expect(exported.truncated, isFalse);
+    expect(imported.imported, 0);
+    expect(imported.pendingReview, 1);
+    expect(imported.skipped, 2);
+    expect(imported.errors.single.line, 3);
+  });
+
   test('MemoryApiClient times out stalled daemon search', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(server.close);

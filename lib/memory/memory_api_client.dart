@@ -467,6 +467,75 @@ class MemoryClearResult {
   }
 }
 
+class MemoryExportResult {
+  const MemoryExportResult({
+    required this.jsonl,
+    required this.exported,
+    required this.truncated,
+  });
+
+  final String jsonl;
+  final int exported;
+  final bool truncated;
+
+  factory MemoryExportResult.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('Memory export result must be an object.');
+    }
+    return MemoryExportResult(
+      jsonl: raw['jsonl'] as String? ?? '',
+      exported: raw['exported'] as int? ?? 0,
+      truncated: raw['truncated'] as bool? ?? false,
+    );
+  }
+}
+
+class MemoryImportError {
+  const MemoryImportError({required this.line, required this.message});
+
+  final int line;
+  final String message;
+
+  factory MemoryImportError.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('Memory import error must be an object.');
+    }
+    return MemoryImportError(
+      line: raw['line'] as int? ?? 0,
+      message: raw['message'] as String? ?? '',
+    );
+  }
+}
+
+class MemoryImportResult {
+  const MemoryImportResult({
+    required this.imported,
+    required this.pendingReview,
+    required this.skipped,
+    required this.errors,
+  });
+
+  final int imported;
+  final int pendingReview;
+  final int skipped;
+  final List<MemoryImportError> errors;
+
+  factory MemoryImportResult.fromJson(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('Memory import result must be an object.');
+    }
+    final errors = raw['errors'];
+    return MemoryImportResult(
+      imported: raw['imported'] as int? ?? 0,
+      pendingReview: raw['pendingReview'] as int? ?? 0,
+      skipped: raw['skipped'] as int? ?? 0,
+      errors: errors is List
+          ? errors.map(MemoryImportError.fromJson).toList(growable: false)
+          : const <MemoryImportError>[],
+    );
+  }
+}
+
 class MemoryAuditEvent {
   const MemoryAuditEvent({
     required this.id,
@@ -796,6 +865,35 @@ class MemoryApiClient {
       'level': level,
     });
     return MemoryClearResult.fromJson(response);
+  }
+
+  Future<MemoryExportResult> exportMemory({
+    required MemoryScopeData scope,
+    String? memoryScope,
+    String? kind,
+    String? status,
+    int? createdFrom,
+    int? createdUntil,
+  }) async {
+    final body = <String, Object?>{'scopeData': scope.toJson()};
+    if (memoryScope != null) body['memoryScope'] = memoryScope;
+    if (kind != null) body['kind'] = kind;
+    if (status != null) body['status'] = status;
+    if (createdFrom != null) body['createdFrom'] = createdFrom;
+    if (createdUntil != null) body['createdUntil'] = createdUntil;
+    final response = await _postJson('/v1/memory/export', body);
+    return MemoryExportResult.fromJson(response);
+  }
+
+  Future<MemoryImportResult> importMemory({
+    required String jsonl,
+    String mode = 'pending_review',
+  }) async {
+    final response = await _postJson('/v1/memory/import', {
+      'jsonl': jsonl,
+      'mode': mode,
+    });
+    return MemoryImportResult.fromJson(response);
   }
 
   void close({bool force = false}) => _httpClient.close(force: force);

@@ -182,6 +182,13 @@ instruction scopes are preserved on candidates for review. Clear data now soft-c
 scope, including the current session, and rejects pending reviews in that scope;
 the daemon also has a confirmation-protected destroy endpoint for
 support/development use.
+Memory Explorer can save scoped JSONL backups and import them through either the
+pending review path or an explicit trusted restore. Trusted restore preserves
+active/disabled/deleted history, temporal metadata, pinned state, entities, and
+supersede links while remapping ids; both modes deduplicate and write import
+audit events. The export API also accepts exact scope, kind, status, and
+created-time filters. Import enforces file/record limits, rejects secret-like
+content, and reports line-level failures.
 
 Automated acceptance:
 
@@ -212,6 +219,9 @@ Automated acceptance:
   high-confidence non-destructive auto-approval,
   forgiving MCP review-policy and maintenance mode parsing, automatic approval
   actor attribution, and `memory.forget` remaining pending for destructive review.
+- JSONL export/import tests verify scope/kind/status/date filtering, entity and
+  temporal metadata export, pending-review candidate creation, trusted history
+  restore, supersede id remapping, deduplication, and import audit attribution.
 - `test/memory` verifies Flutter memory config, daemon client search metadata,
   feedback posting, candidate/change-request/maintenance API behavior,
   forgiving review and maintenance mode parsing so hand-written config keeps

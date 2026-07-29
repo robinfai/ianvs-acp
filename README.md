@@ -249,6 +249,15 @@ nearby candidates still skip the LLM.
 selected memory scope and rejects pending reviews in that scope; the daemon also
 has a confirmation-protected advanced destroy route for wiping memory tables
 during development or support.
+Memory Explorer can export the currently visible semantic scope as a JSONL
+backup and import a JSONL file in either `pending_review` or explicitly selected
+`trusted` mode. Pending review creates normal review candidates and skips
+disabled/deleted history; trusted import restores active, disabled, and deleted
+records directly, including temporal metadata, pinned state, entities, and
+supersede links. Import deduplicates existing records, rejects secret-like
+content, writes auditable `candidate.create` or `memory.import` events, and
+reports skipped records and per-line errors. The daemon export API additionally
+supports exact memory scope, kind, status, and creation-date filters.
 Candidate handling is controlled by `memory.review.approval_mode`.
 `auto_high_confidence` is the default and approves candidates at or above the
 configured confidence threshold. Review-band `session_summary`, stable

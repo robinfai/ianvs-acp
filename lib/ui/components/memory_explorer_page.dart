@@ -20,6 +20,8 @@ class MemoryExplorerActions {
     this.disableMemory,
     this.restoreMemory,
     this.submitFeedback,
+    this.exportBackup,
+    this.importBackup,
     this.maintenanceEnabled = true,
     this.maintenanceMaxItemsPerBatch = 12,
   });
@@ -43,6 +45,8 @@ class MemoryExplorerActions {
     String? reason,
   )?
   submitFeedback;
+  final Future<MemoryExportResult?> Function()? exportBackup;
+  final Future<MemoryImportResult?> Function(String mode)? importBackup;
   final Future<MaintenanceRunResult> Function() runMaintenance;
   final Future<MemoryClearResult> Function(String level) clearData;
   final bool maintenanceEnabled;
@@ -91,9 +95,11 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
   String? _busyChangeRequestId;
   bool _organizing = false;
   bool _clearingData = false;
+  bool _transferringData = false;
   MemoryExplorerInitialTab? _organizeReviewTab;
   String? _organizeSummary;
   String? _clearSummary;
+  String? _transferSummary;
 
   @override
   void initState() {
@@ -137,6 +143,18 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
           style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0),
         ),
         actions: [
+          if (widget.actions?.importBackup != null)
+            IconButton(
+              tooltip: 'Import JSONL backup',
+              onPressed: _transferringData ? null : _importMemoryBackup,
+              icon: const Icon(Icons.upload_file_rounded),
+            ),
+          if (widget.actions?.exportBackup != null)
+            IconButton(
+              tooltip: 'Export JSONL backup',
+              onPressed: _transferringData ? null : _exportMemoryBackup,
+              icon: const Icon(Icons.download_rounded),
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: OutlinedButton.icon(
@@ -170,6 +188,21 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
                 _searchController.clear();
                 setState(() => _searchQuery = '');
               },
+            ),
+          if (_transferSummary != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _transferSummary!,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             ),
           Expanded(
             child: TabBarView(
@@ -579,6 +612,67 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
       _changeRequestFuture = actions.loadChangeRequests();
       _auditFuture = actions.loadAudit();
     });
+  }
+
+  Future<void> _exportMemoryBackup() async {
+    final exportBackup = widget.actions?.exportBackup;
+    if (exportBackup == null || _transferringData) return;
+    setState(() {
+      _transferringData = true;
+      _transferSummary = null;
+    });
+    try {
+      final result = await exportBackup();
+      if (!mounted || result == null) return;
+      setState(() {
+        _transferSummary =
+            '${result.exported} memory records exported'
+            '${result.truncated ? ' · export limit reached' : ''}';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Memory export failed: $error')));
+    } finally {
+      if (mounted) setState(() => _transferringData = false);
+    }
+  }
+
+  Future<void> _importMemoryBackup() async {
+    final importBackup = widget.actions?.importBackup;
+    if (importBackup == null || _transferringData) return;
+    final mode = await showDialog<String>(
+      context: context,
+      builder: (context) => const _MemoryImportDialog(),
+    );
+    if (mode == null || !mounted) return;
+    setState(() {
+      _transferringData = true;
+      _transferSummary = null;
+    });
+    try {
+      final result = await importBackup(mode);
+      if (!mounted || result == null) return;
+      setState(() {
+        _transferSummary =
+            '${result.imported} imported · '
+            '${result.pendingReview} pending review · '
+            '${result.skipped} skipped · '
+            '${result.errors.length} errors';
+        _memoryFuture = widget.actions!.loadMemory();
+        _candidateFuture = widget.actions!.loadCandidates();
+        _changeRequestFuture = widget.actions!.loadChangeRequests();
+        _auditFuture = widget.actions!.loadAudit();
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Memory import failed: $error')));
+    } finally {
+      if (mounted) setState(() => _transferringData = false);
+    }
   }
 
   Future<void> _organizeMemory() async {
@@ -1001,6 +1095,39 @@ class _BulkReviewBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MemoryImportDialog extends StatelessWidget {
+  const _MemoryImportDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Import memory backup'),
+      content: const SizedBox(
+        width: 440,
+        child: Text(
+          'Pending review is safer for files from another source. '
+          'Trusted import restores active, disabled, and deleted history '
+          'directly and should only be used for a backup you trust.',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        OutlinedButton(
+          onPressed: () => Navigator.of(context).pop('trusted'),
+          child: const Text('Trusted import'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop('pending_review'),
+          child: const Text('Review first'),
+        ),
+      ],
     );
   }
 }

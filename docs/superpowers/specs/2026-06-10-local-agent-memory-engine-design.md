@@ -408,6 +408,13 @@ change requests：
 - `POST /v1/memory/change-requests/:id/approve`
 - `POST /v1/memory/change-requests/:id/reject`
 
+备份迁移：
+
+- `POST /v1/memory/export`：返回 JSONL；可按 memory scope、kind、status 和
+  created-time range 过滤。
+- `POST /v1/memory/import`：`pending_review` 创建待审 candidate；
+  `trusted` 显式恢复完整历史和关联元数据。
+
 清理：
 
 - `POST /v1/memory/clear`：支持 `session`、`repo`、`workspace`、`all`，默认软删除。
@@ -483,9 +490,10 @@ MCP bridge 没有显式 `MEMORY_REVIEW_APPROVAL_MODE` 时，默认使用 `auto_h
 - Candidates
 - Change requests
 - Audit log
+- Import/export JSONL backup
 - Clear data
 
-当前实现支持 active/disabled memory 列表、workspace/repo/agent/session/kind 过滤与分页、active memory 来源展示、事后 edit/disable/feedback、disabled memory 只读核查与 restore、pending candidates 审批、approved/rejected candidates 只读核查、pending/reviewed change requests 来源展示和审批、audit log、高置信候选写入或自动 change request 后的自动整理、一键 Organize 按配置批次手动整理、以及 session/repo/workspace/all 软清理。Explorer 搜索框会在本地过滤 All memory、Candidates、Change requests 和 Audit log，不额外调用 LLM 或 daemon；Audit log 还支持按 retrieval、memory changes、candidate events、change requests、maintenance、clear 分类筛选，方便核查自动流程；Candidates 和 Change requests 可以对当前可见的 pending 项批量 approve/reject，方便用户先筛选再批量处理。Disable 会保留记录但移出检索，并写 `memory.disable` 审计；Restore 会重新启用 disabled memory，并写 `memory.restore` 审计；Helpful/Not relevant/Stale 反馈会写 `memory.feedback`，并触发后端已有的自动 promote/unpin/expire/disable 逻辑。
+当前实现支持 active/disabled memory 列表、workspace/repo/agent/session/kind 过滤与分页、active memory 来源展示、事后 edit/disable/feedback、disabled memory 只读核查与 restore、pending candidates 审批、approved/rejected candidates 只读核查、pending/reviewed change requests 来源展示和审批、audit log、高置信候选写入或自动 change request 后的自动整理、一键 Organize 按配置批次手动整理、JSONL 备份导入导出、以及 session/repo/workspace/all 软清理。JSONL 导出 API 可按 exact scope、kind、status、created-time range 筛选；导入默认进入 pending candidate review，显式 trusted import 才直接恢复 active/disabled/deleted 状态、temporal metadata、pinned、entities 和 supersede links，同时重映射 id。两种模式都去重、拒绝 secret-like 内容、记录 import audit，并返回逐行错误。Explorer 搜索框会在本地过滤 All memory、Candidates、Change requests 和 Audit log，不额外调用 LLM 或 daemon；Audit log 还支持按 retrieval、memory changes、candidate events、change requests、maintenance、clear 分类筛选，方便核查自动流程；Candidates 和 Change requests 可以对当前可见的 pending 项批量 approve/reject，方便用户先筛选再批量处理。Disable 会保留记录但移出检索，并写 `memory.disable` 审计；Restore 会重新启用 disabled memory，并写 `memory.restore` 审计；Helpful/Not relevant/Stale 反馈会写 `memory.feedback`，并触发后端已有的自动 promote/unpin/expire/disable 逻辑。
 
 ### Agent Configuration
 

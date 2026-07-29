@@ -102,6 +102,75 @@ void main() {
     );
   });
 
+  testWidgets('JSONL backup actions export and import with review choice', (
+    tester,
+  ) async {
+    var exportCalls = 0;
+    String? importMode;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MemoryExplorerPage(
+          actions: MemoryExplorerActions(
+            loadMemory: () async => const <MemoryRecord>[],
+            loadCandidates: () async => const <MemoryCandidate>[],
+            loadChangeRequests: () async => const <MemoryChangeRequest>[],
+            loadAudit: () async => const <MemoryAuditEvent>[],
+            approveCandidate: (_) async {},
+            rejectCandidate: (_) async {},
+            approveChangeRequest: (_) async {},
+            rejectChangeRequest: (_) async {},
+            exportBackup: () async {
+              exportCalls += 1;
+              return const MemoryExportResult(
+                jsonl: '{"version":1}\n',
+                exported: 3,
+                truncated: false,
+              );
+            },
+            importBackup: (mode) async {
+              importMode = mode;
+              return const MemoryImportResult(
+                imported: 0,
+                pendingReview: 2,
+                skipped: 1,
+                errors: <MemoryImportError>[],
+              );
+            },
+            runMaintenance: () async => const MaintenanceRunResult(
+              autoApplied: 0,
+              needsReview: 0,
+              skipped: 0,
+              changeRequests: <MemoryChangeRequest>[],
+            ),
+            clearData: (_) async => const MemoryClearResult(
+              clearedMemory: 0,
+              rejectedCandidates: 0,
+              rejectedChangeRequests: 0,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Export JSONL backup'));
+    await tester.pumpAndSettle();
+    expect(exportCalls, 1);
+    expect(find.text('3 memory records exported'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Import JSONL backup'));
+    await tester.pumpAndSettle();
+    expect(find.text('Import memory backup'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Review first'));
+    await tester.pumpAndSettle();
+
+    expect(importMode, 'pending_review');
+    expect(
+      find.text('0 imported · 2 pending review · 1 skipped · 0 errors'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('search filters memory review lists across tabs', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
