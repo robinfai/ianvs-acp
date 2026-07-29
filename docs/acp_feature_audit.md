@@ -28,14 +28,73 @@ user-level field persisted to `settings.json`: `default_agent_server`,
 `client_providers`.
 
 The Local Memory Engine is implemented as a local extension around ACP rather
-than an ACP transport proxy. When memory is enabled and a daemon endpoint/token
-are configured, Flutter injects reviewed memory as background context before
-`session/prompt` using the active workspace, repo, and session scope; session
-lookups are also tied to the active agent. After prompt turns, Flutter can
+than an ACP transport proxy. When memory is enabled, Flutter starts an app-owned
+daemon on a dynamic local port, injects reviewed memory as background context
+before `session/prompt` using the active workspace, repo, and session scope,
+and ties session lookups to the active agent. After prompt turns, Flutter can
 extract pending memory candidates through either an ACP sidecar agent or an
 OpenAI-compatible LLM endpoint. The Rust `memory-core` daemon owns local
 storage, review state, hybrid vector/keyword search, audit history, embeddings,
-and its stdio MCP bridge.
+and its stdio MCP bridge. When retrieved memories are injected into a prompt
+turn, the chat timeline shows a compact `Memory used` panel with memory text,
+kind, scope, score, and helpful/not-relevant/stale feedback actions; stable
+helpful memories and repeatedly semantically retrieved stable user preferences,
+workspace/repo rules, and workspace/repo architecture decisions can be promoted
+into the small profile layer, while not-relevant pinned memories are removed
+from that layer, repeated not-relevant feedback can disable a memory from
+retrieval, and stale memories are disabled from retrieval.
+Pinned-only profile injections are audited but do not count as access
+reinforcement unless the memory also has a lexical, entity, or vector hit.
+Duplicate candidate output is skipped before review, and high-confidence stable
+same-topic corrections can auto-create and approve a supersede change request so
+ordinary follow-up prompts see the new fact while the old one remains available
+for audit and historical lookup.
+Explicit `记住`/`remember` prompts and clear preferred-name phrases such as
+`以后叫我 ...` / `call me ...` also get a local fallback candidate if the
+configured extractor produces nothing or fails; fallback candidates are merged
+with extractor output and same preferred-name duplicates are skipped before
+candidate creation. Extractor output and fallback candidates are normalized
+before review: one-off current-prompt hints are treated as temporary, and
+current-session remembers or name overrides stay in session memory instead of
+turning into global preferences. Local fallback also classifies project
+passphrases and verification phrases as repo-scoped project rules, extracts
+their short identifiers, and backend search uses short CJK lexical tokens so
+Chinese question-style recall is not dependent on embedding similarity alone.
+Flutter also treats daemon auto-applied change requests as a post-turn
+maintenance trigger, so automatic corrections can be followed by the same
+low-cost cleanup pass as high-confidence candidate approvals.
+Memory Explorer loads pending/approved/rejected candidates plus pending and
+reviewed change requests; candidate and change request cards include source so
+users can distinguish extractor, MCP, and maintenance output, and reviewed items
+are read-only so automatic approvals remain visible for post-run inspection
+without adding to the pending review count. Candidate lists use candidate
+semantic scope: global candidates remain visible for the user, workspace/repo
+candidates remain reviewable across sessions in scope, and session candidates
+stay tied to the current agent/session. All memory and MCP `memory.list` use
+the same semantic scope, so approved global/workspace/repo memories stay
+reviewable from the current repo while session memories remain isolated. Daemon
+search uses the same semantic scope, so active prompt recall does not miss
+broader workspace/repo memories.
+Change request lists use the current
+workspace/repo/agent/session scope while still showing broader workspace/repo
+maintenance suggestions. Audit lists use the same semantic scope, so global or
+workspace memories retrieved while working in a repo remain visible in post-run
+audit. Maintenance uses the same semantic scope for active and expired memory,
+so manual Organize can clean session memories visible in the current repo even
+when no active agent/session is supplied. Conservative idle maintenance is
+configurable and on by default; it runs after a quiet turn interval only if
+pending review count stays under the configured limit and the current extraction
+did not create new review work. Approved candidates keep their source,
+source session, and source turn on the resulting active memory, and All memory
+cards show the source turn when it is available.
+Automatic approval audit actors stay
+distinct: post-turn extraction writes `extractor`, MCP memory writes `mcp`, and
+maintenance writes `maintenance`. MCP auto-approved remembers and updates also
+trigger the same bounded low-cost maintenance pass, using the bridge environment
+derived from the app's maintenance config.
+Post-turn automatic candidate approvals and maintenance approvals also surface a
+bottom review prompt so users can inspect what changed without approving every
+step up front.
 
 ## Official Feature Index
 
@@ -49,7 +108,7 @@ and its stdio MCP bridge.
 | Session fork | https://agentclientprotocol.com/protocol/v1/session-setup | Draft-compatible | Session settings exposes `Fork Session` when `sessionCapabilities.fork` is advertised. Forking now sends `sessionId`, current `cwd`, compatible `mcpServers`, and advertised additional directories when supported, then creates a new active independent session, keeps the original session in history, clears the local timeline for the fork, and captures initial fork response modes/config options plus immediate session updates. The upstream fork RFD is still draft, so live-agent validation remains useful. |
 | Session list / metadata | https://agentclientprotocol.com/protocol/v1/session-list | Done | Resume dialog uses `session/list` with pagination, groups by project, supports text search at project and conversation levels, and preserves `additionalDirectories` from listed sessions. `session_info_update` now updates the active session title/time without adding noise to the chat timeline. |
 | Prompt turn | https://agentclientprotocol.com/protocol/v1/prompt-turn | Done for text/resource-link/embedded file prompts | `session/prompt`, streaming, stop/cancel, turn-ended status, and user echo suppression are in place. Small text attachments are embedded as `resource.text` when the agent advertises `promptCapabilities.embeddedContext`; image and audio attachments are embedded as `image`/`audio` content when the agent advertises matching prompt capabilities; small generic binary attachments are embedded as `resource.blob` when embedded context is advertised. Prompt-side `@file` and URL mentions are preserved as `resource_link` content even when selected attachments force the raw prompt path, with sentence-ending punctuation kept out of link targets. Unsupported or oversized attachments fall back to `resource_link`. The prompt input marks selected files with capability-aware send modes: Image, Audio, Embed, or Link. |
-| Local Memory Engine | Local extension around ACP | Partial: daemon APIs, callable MCP bridge, configured prompt search, and candidate extraction | Flutter carries `MemoryConfig`, Agent Configuration controls for daemon URL/token env, Memory Review/Explorer surfaces, prompt middleware, ACP sidecar extraction, and OpenAI-compatible LLM extraction. Memory defaults off; when `daemon_base_url` and a token env are configured, Flutter calls daemon search with active workspace/repo/session scope, ties session lookups to the active agent, injects returned items as background context before `session/prompt`, then posts extracted candidates after successful turns. Daemon search and extraction failures/timeouts are non-fatal. Rust `memory-core` owns SQLite/sqlite-vec storage, reviewed CRUD/candidates/change requests/audit, hybrid vector/keyword scope-filtered search/formatting, local and OpenAI-compatible embedding providers, daemon APIs, and MCP stdio `memory.search`/`memory.list`/`memory.remember` calls. `memory-core` never proxies ACP. Full daemon auto-start, live review action wiring, clear-data UX, and real extraction-quality validation remain follow-ups. |
+| Local Memory Engine | Local extension around ACP | Partial: app-owned daemon, auto-attached MCP bridge, prompt search, candidate extraction, custom extraction instructions, candidate review, change request review, automatic/manual maintenance, pinned profile layer, and scoped clearing | Flutter carries `MemoryConfig`, Agent Configuration controls for memory model/extractor/review/maintenance settings, Memory Review/Explorer surfaces, prompt middleware, ACP sidecar extraction, and OpenAI-compatible LLM extraction. Memory defaults off; when enabled, Flutter starts an app-owned `memory-core` daemon on a dynamic local port with an internal token, stops it when Memory is disabled or the app exits, calls daemon search with active workspace/repo/session scope, ties session lookups to the active agent, injects returned items as background context before `session/prompt`, records injected memory ids against a local turn id with only an injected-text hash, then posts extracted candidates after successful turns. Prompt context separates the top pinned stable memories into `<profile_memory>` before ordinary `<retrieved_memory>` hits, keeping identity/preferences/project rules stable without making all memory equally prominent. Agent Configuration can persist global/workspace/repo extraction instructions under `memory.extractor`, and ACP sidecar plus OpenAI-compatible extractors include those instructions in the extraction prompt so automatic candidate generation follows project-specific memory policy before review. Main ACP sessions also receive an app-owned stdio MCP bridge for `memory.search`, `memory.list`, `memory.remember`, `memory.update`, and `memory.forget`; sidecar extraction agents do not get this bridge to avoid recursive maintenance calls. Candidate handling skips same-scope duplicates that already exist as active memory or pending candidates, defaults to high-confidence auto-approval, auto-approves review-band stable memories without auto-pinning review-band stable long-term entries, keeps below-threshold or unknown candidates for post-run review, applies the same policy to MCP `memory.remember`, allows high-confidence non-destructive MCP `memory.update` to auto-approve, and can still be switched to full manual or full auto-approval. Pending review counts surface in the status bar, and newly increased pending reviews show a bottom prompt with a direct Memory Explorer action unless `memory.review.auto_open` is set to `never`. Successful auto-approval can trigger a bounded low-cost maintenance pass by default, while All memory keeps a manual `Organize` action for on-demand cleanup. Memory Explorer can approve, edit, or reject pending candidates and change requests, persists pending change request edits through the daemon with `change_request.update` audit, list/edit/disable active memory through workspace/repo/agent/session/kind filters with pagination, show disabled memory as read-only history, soft-clear selected scopes including the current session, and refresh audit state; disabling active memory keeps the record visible but removes it from retrieval and writes `memory.disable` audit. Audit log shows compact retrieval diagnostics from search score, pinned layer, semantic hit, lexical match, feedback, access count, and decay plus `memory.promote` / `memory.unpin` / `memory.expire` / `memory.disable` events for feedback- or access-driven profile-layer, stale-memory, and repeated-not-relevant changes; Maintenance runs over the latest configured batch for semantic-scoped active memories, auto-expires records whose `validUntil` has already passed, calls the configured LLM extractor only after local text/entity prefiltering finds nearby memory groups, respects disabled/manual-review/manual-only action settings, auto-applies allowed high-confidence non-delete changes, and leaves review-band or destructive requests pending. Daemon search and extraction failures/timeouts are non-fatal. Rust `memory-core` owns SQLite/sqlite-vec storage, reviewed CRUD/candidates/change requests/audit, scoped clear, confirmation-protected destroy, hybrid vector/keyword/entity/pinned scope-filtered search/formatting, search-time semantic access/feedback/decay ranking adjustment plus feedback- and access-driven profile promotion/unpin/stale expiry/repeated-not-relevant disable, reference-time temporal demotion for valid-from/valid-until memory metadata, reviewed supersede chains for current-vs-old facts, local and OpenAI-compatible embedding providers, daemon APIs, and MCP stdio `memory.search`/`memory.list`/`memory.remember`/`memory.update`/`memory.forget` calls. `memory.update` uses change requests and can auto-approve high-confidence non-destructive updates; `memory.forget` remains pending because delete is destructive. `memory-core` never proxies ACP. Daemon bundling and real extraction-quality validation remain follow-ups. |
 | Content blocks | https://agentclientprotocol.com/protocol/v1/content | Mostly done | Text, image output preview, audio content metadata, resource/resource_link cards, and unknown content fallback render in timeline. Prompt-side text and generic binary attachments are gated by `embeddedContext`, image attachments by `image`, and audio attachments by `audio`, with the same mode classification reused by the prompt UI. File links remain available as fallback, but model/agent-specific support can still vary. |
 | Tool calls / permissions | https://agentclientprotocol.com/protocol/v1/tool-calls | Done for per-request approval, explicit trust rules, prompt-side sidecar review, prompt-side execution policy, and exportable bounded in-process history | Tool calls render as compact cards. Consecutive tool calls are grouped by tool name/count and expand on click, with chunk coalescing across common call id aliases. `session/request_permission` now surfaces an in-app approval card inside the prompt composer with Allow Once, Deny, and Cancel actions, using agent-provided allow/deny labels when they are more specific. The prompt composer exposes tool-call execution policy modes: `默认权限` keeps all requests manual, `自动审查` applies configured trust rules first, then calls either a configured sidecar MCP review agent or a default sidecar session with the same active ACP agent/model, and asks for undecided requests; `完全访问权限` auto-allows requests. Requests are recorded in the Agents menu Permission History as pending, allowed, denied, or cancelled, keep the newest bounded in-process audit entries, can be exported as JSON, and include whether a resolved decision came from a manual action, trust rule, review agent, policy, or system cancellation. Explicit `client_providers.permissions.trust_rules` can auto-allow or auto-deny matching tool requests and are editable in Agent Configuration. `client_providers.permissions.review_agent` can point to a sidecar MCP server/tool and optional model; review opinions and decisions are stored with the audit entry. When no UI listener is active, requests are conservatively returned as `cancelled` instead of being auto-approved; when the permission stream closes or session teardown completes through close/logout, pending requests are cancelled. Long-term persisted audit retention remains a product/security follow-up. |
 | File system provider | https://agentclientprotocol.com/protocol/v1/file-system | Done with GUI config when explicitly enabled | The client defaults to `fs/read_text_file=false` and `fs/write_text_file=false`. Agent Configuration can enable `client_providers.filesystem.read_text_file`, `write_text_file`, and `allow_read_outside_workspace`; requests are workspace-jailed to `cwd` plus advertised additional directories by default and still require permission approval unless matched by an explicit permission trust rule. `allow_read_outside_workspace` only relaxes reads, never writes. |
@@ -61,6 +120,18 @@ and its stdio MCP bridge.
 | Extensibility / `_meta` | https://agentclientprotocol.com/protocol/v1/extensibility | Mostly done for manual extension requests | Raw capability `_meta` and session list `_meta` are displayed. The Agents menu exposes an advanced Extension Request dialog that validates underscore-prefixed custom methods, accepts JSON object params, sends JSON-RPC requests, and renders raw results/errors. Vendor-specific workflows remain intentionally unopinionated. |
 | MCP servers | https://agentclientprotocol.com/protocol/v1/session-setup | Done with GUI config | User config supports top-level `mcp_servers`, validates JSON-compatible entries, known transport types, transport-specific `command`/`url` requirements, and remote headers as either an object or name/value list. Agent Configuration can create, edit, and delete MCP servers, and compatible entries are forwarded through `dart_acp` for session creation/loading. Stdio entries are always allowed; HTTP, SSE, and ACP transport entries are only forwarded when advertised in `mcpCapabilities`. Unknown transport types are rejected from config and skipped if injected programmatically. |
 | ACP Registry | https://agentclientprotocol.com/get-started/registry | Follow-up: official feature is stable; local Codex discovery exists | The official Registry is now stabilized and provides a standard way to discover, install, and configure compatible agents. This client does not yet browse/import/install registry entries, but startup discovery can add a missing local Codex ACP adapter entry to the saved user config, and Agent Configuration can edit that entry afterwards. The new Protocol Coverage GUI makes the remaining Registry gap visible in-product while Registry strategy remains a product follow-up. |
+
+Memory Explorer also lets people restore disabled memory during post-run review. Restore reactivates the record for retrieval and writes `memory.restore` audit, keeping disable/restore as a visible correction trail rather than a hidden state flip.
+
+Memory Explorer search now filters All memory, Candidates, Change requests, and Audit log locally, and Audit log has category filters for retrieval, memory changes, candidate events, change requests, maintenance, and clear events. People can inspect or correct automatically applied memory without paging through every record or triggering another model call.
+
+Pending memory review counts refresh after each successful prompt turn, so MCP-created candidates or change requests surface in the status bar and review prompt even when extractor output is empty or fails.
+
+Pinned profile memories now expose derived `profileBlock` metadata, prompt labels, and All memory card labels, so post-run review can distinguish user profile, workspace profile, and project profile memories without maintaining separate block records.
+
+Memory Explorer active memory cards also expose Helpful, Not relevant, and Stale feedback. Those actions call the same daemon feedback API as the chat timeline and let post-run review drive automatic promote, unpin, expire, or repeated-not-relevant disable behavior.
+
+Memory Explorer can bulk approve or reject the currently visible pending candidates and change requests, so users can search or filter a post-run queue and clear trusted or unwanted items in one action instead of clicking every card.
 
 ## UX Review With Computer Use
 

@@ -1391,8 +1391,10 @@ pub struct ExtractCandidatesRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtractCandidatesResponse {
     pub candidates: Vec<MemoryCandidateResponse>,
+    pub auto_applied_change_requests: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1453,7 +1455,7 @@ pub async fn create_candidates(pool: &SqlitePool, request: ExtractCandidatesRequ
             status: "pending".to_string(),
         });
     }
-    Ok(ExtractCandidatesResponse { candidates: accepted })
+    Ok(ExtractCandidatesResponse { candidates: accepted, auto_applied_change_requests: 0 })
 }
 
 pub async fn approve_candidate(pool: &SqlitePool, candidate_id: &str, request: ApproveCandidateRequest) -> sqlx::Result<MemoryResponse> {
@@ -2347,10 +2349,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/memory/memory_config.dart';
 
 void main() {
-  test('MemoryConfig defaults to enabled local memory with ACP sidecar extractor', () {
+  test('MemoryConfig defaults to disabled local memory with ACP sidecar extractor', () {
     const config = MemoryConfig();
-    expect(config.enabled, true);
-    expect(config.autoStartDaemon, true);
+    expect(config.enabled, false);
     expect(config.embedding.provider, 'fastembed-local');
     expect(config.embedding.model, 'intfloat/multilingual-e5-small');
     expect(config.embedding.dimension, 384);
@@ -2389,8 +2390,7 @@ Create `lib/memory/memory_config.dart`:
 ```dart
 class MemoryConfig {
   const MemoryConfig({
-    this.enabled = true,
-    this.autoStartDaemon = true,
+    this.enabled = false,
     this.dataDir,
     this.embedding = const MemoryEmbeddingConfig(),
     this.extractor = const MemoryExtractorConfig(),
@@ -2399,7 +2399,6 @@ class MemoryConfig {
   });
 
   final bool enabled;
-  final bool autoStartDaemon;
   final String? dataDir;
   final MemoryEmbeddingConfig embedding;
   final MemoryExtractorConfig extractor;
@@ -2409,8 +2408,7 @@ class MemoryConfig {
   factory MemoryConfig.fromJson(Object? raw) {
     if (raw is! Map) return const MemoryConfig();
     return MemoryConfig(
-      enabled: raw['enabled'] as bool? ?? true,
-      autoStartDaemon: raw['auto_start_daemon'] as bool? ?? raw['autoStartDaemon'] as bool? ?? true,
+      enabled: raw['enabled'] as bool? ?? false,
       dataDir: raw['data_dir'] as String? ?? raw['dataDir'] as String?,
       embedding: MemoryEmbeddingConfig.fromJson(raw['embedding']),
       extractor: MemoryExtractorConfig.fromJson(raw['extractor']),
@@ -2421,7 +2419,6 @@ class MemoryConfig {
 
   Map<String, Object?> toJson() => {
     'enabled': enabled,
-    'auto_start_daemon': autoStartDaemon,
     if (dataDir != null) 'data_dir': dataDir,
     'embedding': embedding.toJson(),
     'extractor': extractor.toJson(),

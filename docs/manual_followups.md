@@ -27,44 +27,241 @@ Non-blocking because: the Rust daemon, storage/search/review APIs, callable MCP
 search/list/remember bridge, Flutter config, prompt middleware, Memory
 Review/Explorer UI, ACP sidecar extraction, OpenAI-compatible LLM extraction,
 and pending-candidate posting are implemented behind local-first settings.
-Memory now defaults off in the app and prompt injection/extraction are only
-installed when `memory.daemon_base_url` plus a token env are configured. Agent
-Configuration can edit those daemon fields, and daemon search/extraction
-timeouts are non-fatal. Long-term write and destructive UI actions still need
-the real review/clear backend callbacks before they become clickable.
+Memory now defaults off in the app. When enabled, Flutter starts an app-owned
+`memory-core` daemon on a dynamic local port, uses an internal token, and stops
+that child process when Memory is disabled or the app exits. Daemon
+search/extraction timeouts are non-fatal. Memory Explorer now has real active
+memory and pending-candidate loading, and pending candidates can be approved,
+edited before approval, or rejected. Candidate handling defaults to
+high-confidence auto-approval, while review-band stable memories
+(`session_summary/session`, `user_preference/global`, and repo/workspace project
+rules or architecture decisions) are auto-approved so people mainly review
+below-threshold or unknown candidates after a run. The post-turn auto-approval
+pass only touches `pending` candidate rows, leaving already approved or rejected
+history as read-only review context instead of retrying it. Review-band stable
+approvals do not automatically enter the pinned profile layer. The daemon list APIs support
+workspace/repo/agent/session/kind filters plus pagination, and prompt injection
+records keep injected memory ids and a text hash without storing the raw
+prompt. Candidate creation skips same-scope duplicates that already exist as
+active memory or pending candidates, writes `candidate.skip_duplicate` audit
+events, auto-supersedes high-confidence same-topic corrections through the
+change request path, and keeps repeated or clearly updated extractor/MCP output
+out of the human review queue.
+Main ACP sessions receive the app-owned daemon's stdio MCP bridge for
+memory search/list/remember/update/forget tools, while sidecar extraction
+sessions skip that bridge. Search responses include retrieval diagnostics for
+lexical/vector/entity/scope/feedback/reinforcement scoring and `semanticHit`.
+Returned memories with lexical, entity, or vector hits are recorded as access
+events, while pinned-only profile injections stay audited but do not reinforce
+access counts. Explicit helpful/not-relevant/stale feedback can adjust
+search-time ranking, stable memories marked helpful are promoted into the small
+profile layer, and stable memories with three successful retrievals and no
+negative feedback are promoted automatically; those successful retrievals must
+have a lexical, entity, or vector hit. Pinned memories marked not-relevant are
+removed from that layer, repeated not-relevant feedback with no helpful
+correction disables the memory without physically deleting it, stale memories
+are disabled and stop participating in retrieval, recent semantic access gives a
+small recency boost, long-unused
+memories receive a low-impact `decayScore` while staying searchable, and Audit
+log cards show compact retrieval diagnostics plus readable automatic
+layer-change and disable reasons. The chat
+timeline shows a per-turn `Memory used` panel for
+injected memories, including kind/scope/score/text and direct helpful,
+not-relevant, or stale feedback actions. Memory Explorer exposes the same
+feedback actions on active memory cards for post-run review, so people can
+correct memory quality without waiting for that memory to be retrieved again.
+Memory items support optional
+observed/valid-from/valid-until/
+supersedes metadata, and search defaults to the current time while still
+allowing an explicit reference time for historical lookup. Reviewed or
+high-confidence automatic `supersede` change requests create a replacement
+memory, set `supersedes_memory_id`, and mark the old active memory with
+`valid_until` instead of deleting it. Memory items also
+support lightweight entities/tags stored in `memory_entities`; extracted
+candidates can carry entities, and approved candidates index those entities for
+normalized entity matching during search. Memory items can also be marked
+`pinned`, and high-confidence stable candidates such as global user preferences
+plus workspace/repo project rules and architecture decisions are auto-pinned on
+approval so they remain available as a small profile layer even when the next
+query has no lexical/vector/entity overlap. Repeated successful retrieval can
+also promote the same stable kinds
+into this layer when no not-relevant/stale feedback exists; pinned-only returns
+without lexical/vector/entity overlap do not count toward that promotion.
+Prompt context now separates up to 4 pinned memories into
+`<profile_memory>` before ordinary `<retrieved_memory>` results and balances
+that small budget across profile blocks before filling remaining slots by rank,
+while search balances pinned profile blocks before applying the response limit
+when one block would otherwise crowd another block out, so durable
+identity/preferences/project rules are stable without flooding the turn. When
+Memory is enabled but no old memory matches the current turn, Flutter still
+prepends a small capability notice so the main agent knows durable memory can be
+captured after the turn instead of telling the user that cross-session memory is
+unavailable. Audit diagnostics label these retrievals as `pinned`, and feedback-driven
+`memory.promote` / `memory.unpin` / `memory.expire` events show when that layer
+or a stale memory changes. Explicit user `记住`/`remember` prompts, clear
+preferred-name patterns such as `以后叫我 ...` / `call me ...`, direct
+self-introductions such as `我叫 ...` / `my name is ...`, and clear durable
+preference statements such as `我偏好中文回复` / `请始终用中文回复` /
+`I prefer concise answers` / `Please reply in Chinese from now on` now have a
+local fallback candidate path when the configured extractor returns no
+candidates or fails. Clear project directives such as `本项目禁止使用 nc` /
+`以后这个项目不要用 nc` / `In this repo, never use netcat` and explicit
+architecture decisions such as `架构决定...` also use local fallback into
+repo-scoped project rule or architecture-decision candidates. Fallback candidates are merged with extractor
+output, same preferred-name/name/preference duplicates and same-scope project
+rule or architecture-decision duplicates with a shared rule entity stay as one
+candidate, and the fallback can raise confidence or add entities when the
+extractor caught the same fact cautiously. Obvious API keys, tokens, passwords,
+and private keys are still skipped. Extractor output
+and fallback candidates are normalized before review: one-off explicit remembers
+and preferred-name/name/preference/project overrides are not written, while
+current-session remembers, name overrides, preference overrides, and project
+directives are kept as session summaries instead of global/repo long-term
+memories. Local fallback also recognizes project passphrases and verification phrases as
+repo-scoped project rules, extracts their short identifiers, and backend search
+adds short CJK lexical tokens so Chinese question-style recall does not depend
+only on embedding similarity.
+Clear durable preferences, repo directives, and architecture decisions from
+local fallback use high-confidence scores so approved user intent and hard
+project context can enter the pinned profile layer without waiting for feedback.
+Maintenance also uses entity overlap
+as a local prefilter before creating review-band suggestions or calling the
+configured LLM extractor, and successful high-confidence candidate auto-approval,
+daemon auto-applied change requests, or a turn that retrieved memory can trigger
+one bounded low-cost maintenance pass after a turn. Conservative idle
+maintenance is configurable and enabled by default; quiet successful turns can
+trigger the same bounded pass only after the configured turn interval and while
+pending reviews stay under the configured limit. Already approved or rejected
+candidate history does not block that idle pass. Memory Explorer also loads
+pending/approved/rejected candidates and pending/reviewed change requests from
+the daemon, shows candidate/change-request source for post-run inspection,
+supports approve/edit/reject for pending requests plus bulk
+approve/reject over the currently visible filtered pending items, keeps reviewed
+items visible as read-only history, lets users edit or disable active memory after
+automatic approval, see whether an active memory came from manual input,
+extractor, MCP, or maintenance, restore disabled memory after post-run review,
+refreshes memory and audit views after review, filter All memory/Candidates/Change requests/Audit
+locally through the Explorer search box, narrow Audit log by retrieval, memory
+change, candidate, change request, maintenance, or clear event type, submit helpful/not-relevant/stale
+feedback for active memory, and still
+exposes a manual All memory `Organize`
+action for on-demand scoped maintenance over the latest configured batch. Change
+request loading uses the current workspace/repo/agent/session scope while still
+including broader workspace/repo requests, and cards show source so users can
+distinguish MCP requests from
+maintenance suggestions while reviewing. Manual
+or automatic duplicate change requests with the same scoped action, targets, and
+proposed change are reused and audited as `change_request.skip_duplicate`, so
+repeated maintenance/MCP runs do not create extra review cards. Manual
+disables keep the record visible and auditable while removing it from retrieval
+and write `memory.disable` audit events; restores write `memory.restore` audit events.
+Automatic approvals preserve their source in
+audit: post-turn extraction uses `extractor`, MCP `memory.remember` uses `mcp`,
+and maintenance auto-approval uses `maintenance` on both the approval event and
+the resulting memory change events; approved candidates keep their source on the
+resulting active memory. When
+pending reviews increase or a turn auto-applies memory changes, the app shows a
+bottom review prompt with a direct Memory Explorer action;
+`memory.review.auto_open = "never"` disables that prompt for quieter workflows. High-confidence
+maintenance requests can be auto-applied through the same change request path
+when the configured maintenance mode and manual-only action list allow it, while
+destructive requests remain manual. Maintenance also auto-expires active memory
+whose `validUntil` timestamp has already passed, keeping the change auditable
+without requiring the user to find stale records by hand. Clear same-topic
+profile conflicts, such as an older and newer preferred-name memory, are
+auto-superseded during maintenance so the newer active memory links back to the
+old record instead of creating an ambiguous merge. The maintenance pass only calls the
+configured LLM extractor after local text-similarity or entity-overlap
+prefiltering finds nearby active memories, and sends memory candidates rather
+than complete transcripts/prompts. LLM maintenance proposals cannot retarget
+memory outside the prefiltered pair; invalid target ids fall back to the local
+proposal. Extractor configuration also supports
+global/workspace/repo memory instructions, which are included in both ACP
+sidecar and OpenAI-compatible extraction prompts before candidate review; matched
+instruction scopes are preserved on candidates for review. Clear data now soft-clears the selected
+scope, including the current session, and rejects pending reviews in that scope;
+the daemon also has a confirmation-protected destroy endpoint for
+support/development use.
 
 Automated acceptance:
 
 - `cargo test --manifest-path memory-core/Cargo.toml` verifies the daemon
-  schema, manual CRUD, manual secret redaction, candidate review, hybrid
+  schema, manual CRUD, manual secret redaction, candidate review, change request
+  create/list/approve/reject behavior, soft delete and restore audit behavior, manual maintenance
+  merge behavior, scoped clear behavior, destroy confirmation behavior, hybrid
   vector/keyword scope-filtered search behavior including session isolation,
-  same-session-id isolation across agents, and older relevant matches, search
-  formatting, embedding provider paths, vector rebuild/index rows, daemon API
-  routes, and MCP stdio tool listing/calls.
-- `test/memory` verifies Flutter memory config, daemon client search and
-  candidate-post behavior, prompt context formatting, daemon HTTP search
-  context building and timeout handling, prompt middleware, ACP sidecar
-  extraction, and OpenAI-compatible LLM extraction.
+  same-session-id isolation across agents, older relevant matches, full-scope
+  memory/candidate list filtering and pagination, candidate duplicate skipping,
+  high-confidence candidate auto-supersede,
+  fixed memory eval cases for bilingual recall, repo/session isolation, pinned
+  profile recall, entity alias recall, current/historical temporal ranking, and
+  maintenance duplicate-merge/expiry regressions,
+  search injection id/hash
+  records, retrieval diagnostics including pinned-only non-semantic hits,
+  semantic access recording, feedback-based ranking
+  demotion, search-time recency decay, reference-time temporal demotion,
+  supersede-chain approval, explicit and candidate-derived entity/tag matching,
+  pinned profile-layer retrieval, high-confidence candidate auto-pinning,
+  entity-overlap maintenance prefiltering, profile-conflict maintenance
+  auto-supersede, expired active-memory auto-expiry,
+  post-turn automatic maintenance,
+  search formatting, embedding provider paths, vector
+  rebuild/index rows, daemon API routes, and MCP stdio tool listing/calls including
+  `memory.remember` high-confidence and review-band stable-memory
+  auto-approval without auto-pinning review-band stable memory, `memory.update`
+  high-confidence non-destructive auto-approval,
+  forgiving MCP review-policy and maintenance mode parsing, automatic approval
+  actor attribution, and `memory.forget` remaining pending for destructive review.
+- `test/memory` verifies Flutter memory config, daemon client search metadata,
+  feedback posting, candidate/change-request/maintenance API behavior,
+  forgiving review and maintenance mode parsing so hand-written config keeps
+  automatic defaults,
+  memory MCP review-policy environment wiring,
+  prompt context formatting,
+  explicit remember and preferred-name fallback candidate generation,
+  extractor/fallback candidate lifecycle normalization and merging, and secret
+  skipping,
+  review-band stable-memory auto-approval while leaving unknown review-band
+  candidates pending,
+  daemon HTTP search context building and timeout handling, prompt middleware,
+  ACP sidecar extraction, and OpenAI-compatible LLM extraction.
 - `test/config/acp_client_config_test.dart` verifies persisted memory config
   parsing with the rest of the user settings.
+- `test/config/acp_config_store_test.dart` verifies memory config serialization
+  preserves future nested fields while dropping deprecated daemon endpoint/token
+  fields.
 - `test/state/chat_controller_test.dart` verifies prompt sending keeps working
-  when memory middleware is present or fails.
+  when memory middleware is present or fails, records used memories on the user
+  turn, and delegates memory feedback.
 - `test/ui/memory_review_panel_test.dart` and
   `test/ui/memory_explorer_page_test.dart` verify the review and explorer UI
-  surfaces and keep actions disabled until callbacks are provided.
+  surfaces, including pending-candidate approve/edit/reject wiring, visible
+  pending candidate/change-request bulk actions, pending change request approval,
+  reviewed candidate/change-request history,
+  active-memory edit/disable/feedback actions, disabled-memory read-only history,
+  the All memory Organize action summary, session clear selection, and scoped clear
+  confirmation.
 - `test/ui/agent_config_dialog_test.dart` and
   `test/ui/acp_client_app_test.dart` verify memory settings are visible,
-  editable, saved, and passed from app config into the shell, including daemon
-  endpoint/token env fields.
+  editable, saved, and passed from app config into the shell, including the
+  memory approval mode, review prompt setting,
+  maintenance mode/threshold/batch/action settings, and without exposing daemon
+  endpoint/token fields.
+- `test/ui/app_shell_test.dart` verifies pending memory reviews surface as a
+  bottom prompt with a direct Memory Explorer action, and that `auto_open =
+  never` suppresses the prompt.
+- `test/ui/chat_timeline_test.dart` verifies the per-turn `Memory used` panel
+  and feedback actions.
 
 Manual decision:
 
 - Validate a real macOS app session with the local `memory-core` daemon and a
   real ACP sidecar or OpenAI-compatible LLM extractor, including extraction
-  quality, approval flow, prompt injection, and search relevance.
-- Decide final product policy for daemon auto-start/bundling, data directory
-  visibility, clear-data UX, retention/audit wording, and whether memory should
-  stay opt-in for all agents or auto-enable only for trusted local agents.
+  quality, custom memory instruction behavior, approval flow, prompt injection,
+  and search relevance.
+- Decide final product policy for daemon bundling, data directory visibility,
+  retention/audit wording, and whether memory should stay opt-in for all agents
+  or auto-enable only for trusted local agents.
 
 ### remote-transports
 

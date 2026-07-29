@@ -38,6 +38,8 @@ memory-core/target/
 # Local agent workspaces
 .worktrees/
 .superpowers/
+.serena/
+.fastembed_cache/
 
 # Symbolication related
 app.*.symbols
