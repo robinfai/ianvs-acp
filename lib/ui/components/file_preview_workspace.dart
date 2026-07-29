@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:path/path.dart' as p;
 
 import '../../platform/file_manager.dart';
@@ -831,7 +832,7 @@ class _PreviewBody extends StatelessWidget {
   }
 }
 
-class _MarkdownFilePreview extends StatelessWidget {
+class _MarkdownFilePreview extends StatefulWidget {
   const _MarkdownFilePreview({
     required this.text,
     required this.documentPath,
@@ -847,75 +848,82 @@ class _MarkdownFilePreview extends StatelessWidget {
   final FilePreviewLinkHandler onTapLink;
 
   @override
+  State<_MarkdownFilePreview> createState() => _MarkdownFilePreviewState();
+}
+
+class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
+  final ScrollController _scrollController = ScrollController();
+  late List<_MarkdownHeading> _headings = _markdownHeadings(widget.text);
+  var _outlineCollapsed = false;
+  int? _activeHeadingIndex;
+
+  @override
+  void didUpdateWidget(covariant _MarkdownFilePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text == widget.text &&
+        oldWidget.documentPath == widget.documentPath) {
+      return;
+    }
+    _headings = _markdownHeadings(widget.text);
+    _activeHeadingIndex = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final headings = _markdownHeadings(text);
+    final headingBuilder = _MarkdownHeadingBuilder(_headings);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final showOutline = constraints.maxWidth >= 560 && headings.isNotEmpty;
+        final showOutline = constraints.maxWidth >= 560 && _headings.isNotEmpty;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (showOutline) ...[
               SizedBox(
-                width: 150,
-                child: ColoredBox(
-                  color: AppColors.surfaceRaised,
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(14, 18, 10, 18),
-                    children: [
-                      const Text(
-                        '文档大纲',
-                        style: TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      for (final heading in headings.take(18))
-                        Padding(
-                          padding: EdgeInsets.only(
-                            left: (heading.level - 1) * 8,
-                            bottom: 9,
-                          ),
-                          child: Text(
-                            heading.text,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: heading.level == 1
-                                  ? AppColors.primaryDark
-                                  : AppColors.textSecondary,
-                              fontSize: 11,
-                              height: 1.3,
-                              fontWeight: heading.level == 1
-                                  ? FontWeight.w800
-                                  : FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                width: _outlineCollapsed ? 44 : 180,
+                child: _MarkdownOutline(
+                  headings: _headings,
+                  collapsed: _outlineCollapsed,
+                  activeHeadingIndex: _activeHeadingIndex,
+                  onToggle: () =>
+                      setState(() => _outlineCollapsed = !_outlineCollapsed),
+                  onSelect: _scrollToHeading,
                 ),
               ),
               const VerticalDivider(width: 1, color: AppColors.border),
             ],
             Expanded(
               child: SingleChildScrollView(
+                key: const ValueKey('markdown-preview-scroll'),
+                controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(28, 24, 32, 44),
                 child: MarkdownBody(
-                  data: text,
+                  data: widget.text,
                   selectable: true,
-                  onTapLink: onTapLink,
+                  onTapLink: widget.onTapLink,
                   imageBuilder: (uri, title, alt) => MarkdownPreviewImage(
                     uri: uri,
                     alt: alt,
-                    workspacePath: workspacePath,
-                    baseDirectory: p.dirname(documentPath),
-                    additionalDirectories: additionalDirectories,
+                    workspacePath: widget.workspacePath,
+                    baseDirectory: p.dirname(widget.documentPath),
+                    additionalDirectories: widget.additionalDirectories,
                   ),
                   builders: <String, MarkdownElementBuilder>{
                     'pre': MarkdownCodeBlockBuilder(user: false),
+                    'h1': headingBuilder,
+                    'h2': headingBuilder,
+                    'h3': headingBuilder,
+                    'h4': headingBuilder,
                   },
                   styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
                       .copyWith(
@@ -968,6 +976,176 @@ class _MarkdownFilePreview extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+
+  Future<void> _scrollToHeading(int index) async {
+    if (index < 0 || index >= _headings.length) return;
+    final headingContext = _headings[index].key.currentContext;
+    if (headingContext == null) return;
+    setState(() => _activeHeadingIndex = index);
+    await Scrollable.ensureVisible(
+      headingContext,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      alignment: .04,
+    );
+  }
+}
+
+class _MarkdownOutline extends StatelessWidget {
+  const _MarkdownOutline({
+    required this.headings,
+    required this.collapsed,
+    required this.activeHeadingIndex,
+    required this.onToggle,
+    required this.onSelect,
+  });
+
+  final List<_MarkdownHeading> headings;
+  final bool collapsed;
+  final int? activeHeadingIndex;
+  final VoidCallback onToggle;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surfaceRaised,
+      child: collapsed
+          ? Align(
+              alignment: Alignment.topCenter,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: IconButton(
+                  tooltip: '展开文档大纲',
+                  onPressed: onToggle,
+                  icon: const Icon(Icons.toc_rounded, size: 19),
+                  color: AppColors.textSecondary,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(10, 8, 8, 18),
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: Text(
+                          '文档大纲',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '收起文档大纲',
+                      onPressed: onToggle,
+                      icon: const Icon(
+                        Icons.keyboard_double_arrow_left_rounded,
+                        size: 17,
+                      ),
+                      color: AppColors.textSecondary,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                for (
+                  var index = 0;
+                  index < headings.length && index < 18;
+                  index += 1
+                )
+                  _MarkdownOutlineItem(
+                    key: ValueKey('markdown-outline-heading-$index'),
+                    heading: headings[index],
+                    selected: activeHeadingIndex == index,
+                    onTap: () => onSelect(index),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+class _MarkdownOutlineItem extends StatelessWidget {
+  const _MarkdownOutlineItem({
+    super.key,
+    required this.heading,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _MarkdownHeading heading;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(left: (heading.level - 1) * 9, bottom: 3),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primarySoft : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+          child: Text(
+            heading.text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: selected || heading.level == 1
+                  ? AppColors.primaryDark
+                  : AppColors.textSecondary,
+              fontSize: 11,
+              height: 1.3,
+              fontWeight: selected || heading.level == 1
+                  ? FontWeight.w800
+                  : FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MarkdownHeadingBuilder extends MarkdownElementBuilder {
+  _MarkdownHeadingBuilder(this.headings);
+
+  final List<_MarkdownHeading> headings;
+  var _index = 0;
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    if (_index >= headings.length) return null;
+    final heading = headings[_index];
+    final level = int.tryParse(element.tag.substring(1));
+    final text = element.textContent.trim();
+    if (heading.level != level || heading.text != text) return null;
+    _index += 1;
+    return Semantics(
+      key: heading.key,
+      header: true,
+      child: SelectableText(text, style: preferredStyle ?? parentStyle),
     );
   }
 }
@@ -1271,12 +1449,30 @@ class _PreviewStatus extends StatelessWidget {
   }
 }
 
-List<({int level, String text})> _markdownHeadings(String source) {
-  final result = <({int level, String text})>[];
-  for (final line in source.split('\n')) {
-    final match = RegExp(r'^(#{1,4})\s+(.+?)\s*#*\s*$').firstMatch(line);
-    if (match == null) continue;
-    result.add((level: match.group(1)!.length, text: match.group(2)!));
+final class _MarkdownHeading {
+  _MarkdownHeading({required this.level, required this.text});
+
+  final int level;
+  final String text;
+  final GlobalKey key = GlobalKey();
+}
+
+List<_MarkdownHeading> _markdownHeadings(String source) {
+  final document = md.Document(extensionSet: md.ExtensionSet.gitHubFlavored);
+  final nodes = document.parseLines(source.split('\n'));
+  final result = <_MarkdownHeading>[];
+  for (final node in nodes) {
+    if (node is! md.Element || node.tag.length != 2) continue;
+    final level = switch (node.tag) {
+      'h1' => 1,
+      'h2' => 2,
+      'h3' => 3,
+      'h4' => 4,
+      _ => null,
+    };
+    final text = node.textContent.trim();
+    if (level == null || text.isEmpty) continue;
+    result.add(_MarkdownHeading(level: level, text: text));
   }
   return result;
 }

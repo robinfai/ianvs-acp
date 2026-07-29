@@ -133,6 +133,67 @@ void main() {
     },
   );
 
+  testWidgets('Markdown outline collapses and scrolls to selected heading', (
+    tester,
+  ) async {
+    final workspace = createWorkspace();
+    final markdown = File('${workspace.path}/outline.md')
+      ..writeAsStringSync(
+        [
+          'Document start',
+          '==============',
+          '',
+          ...List<String>.generate(
+            45,
+            (index) => 'Paragraph $index with enough content for scrolling.',
+          ).expand((line) => <String>[line, '']),
+          '## Target section',
+          '',
+          'Target body.',
+          '',
+          '### Final section',
+        ].join('\n'),
+      );
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      previewApp(
+        workspacePath: workspace.path,
+        markdown: '[Open outline](${markdown.path})',
+      ),
+    );
+    await openMarkdownLink(tester, text: 'Open outline', href: markdown.path);
+
+    expect(find.byTooltip('收起文档大纲'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('markdown-outline-heading-1')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byTooltip('收起文档大纲'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('展开文档大纲'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('markdown-outline-heading-1')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byTooltip('展开文档大纲'));
+    await tester.pumpAndSettle();
+    final scroll = tester.widget<SingleChildScrollView>(
+      find.byKey(const ValueKey('markdown-preview-scroll')),
+    );
+    expect(scroll.controller?.offset, 0);
+
+    await tester.tap(find.byKey(const ValueKey('markdown-outline-heading-1')));
+    await tester.pumpAndSettle();
+
+    expect(scroll.controller?.offset, greaterThan(0));
+  });
+
   testWidgets('Markdown file preview uses the shared fenced code block', (
     tester,
   ) async {
