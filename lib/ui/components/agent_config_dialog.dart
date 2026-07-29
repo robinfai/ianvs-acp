@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../../config/acp_client_config.dart';
+import '../../memory/memory_config.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef AcpConfigSaveCallback =
@@ -16,6 +17,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
+    this.memory = const MemoryConfig(),
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
@@ -26,6 +28,7 @@ class AgentConfigDialog extends StatefulWidget {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final MemoryConfig memory;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -82,6 +85,76 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       );
   late McpServerConfig? _reviewInlineMcpServer =
       widget.clientProviders.permissions.reviewAgent.mcpServer;
+  late bool _memoryEnabled = widget.memory.enabled;
+  late final TextEditingController _memoryEmbeddingModelController =
+      TextEditingController(text: widget.memory.embedding.model);
+  late final TextEditingController _memoryExtractorAgentController =
+      TextEditingController(text: widget.memory.extractor.agent);
+  late final TextEditingController _memoryExtractorModelController =
+      TextEditingController(text: widget.memory.extractor.model);
+  late final TextEditingController
+  _memoryExtractorGlobalInstructionsController = TextEditingController(
+    text: widget.memory.extractor.globalInstructions,
+  );
+  late final TextEditingController
+  _memoryExtractorWorkspaceInstructionsController = TextEditingController(
+    text: widget.memory.extractor.workspaceInstructions,
+  );
+  late final TextEditingController _memoryExtractorRepoInstructionsController =
+      TextEditingController(text: widget.memory.extractor.repoInstructions);
+  late final TextEditingController _memoryLlmBaseUrlController =
+      TextEditingController(text: widget.memory.llm.baseUrl);
+  late final TextEditingController _memoryApiKeyEnvController =
+      TextEditingController(text: widget.memory.llm.apiKeyEnv);
+  late final TextEditingController _memoryProfileMaxItemsController =
+      TextEditingController(text: widget.memory.profile.maxItems.toString());
+  late bool _memoryMaintenanceEnabled = widget.memory.maintenance.enabled;
+  late bool _memoryMaintenanceRunAfterExtraction =
+      widget.memory.maintenance.runAfterExtraction;
+  late bool _memoryMaintenanceIdleEnabled =
+      widget.memory.maintenance.idleEnabled;
+  late String _memoryMaintenanceMode = _knownOrFallback(
+    widget.memory.maintenance.mode,
+    const ['high_confidence_auto', 'manual_review'],
+    'high_confidence_auto',
+  );
+  late String _memoryMaintenanceCostMode = _knownOrFallback(
+    widget.memory.maintenance.costMode,
+    const ['low_cost'],
+    'low_cost',
+  );
+  late final TextEditingController _memoryMaintenanceHighThresholdController =
+      TextEditingController(
+        text: widget.memory.maintenance.highConfidenceThreshold.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceReviewThresholdController =
+      TextEditingController(
+        text: widget.memory.maintenance.reviewThreshold.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceMaxBatchController =
+      TextEditingController(
+        text: widget.memory.maintenance.maxItemsPerBatch.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceIdleTurnsController =
+      TextEditingController(
+        text: widget.memory.maintenance.idleAfterTurns.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceIdlePendingController =
+      TextEditingController(
+        text: widget.memory.maintenance.idleMaxPendingReviews.toString(),
+      );
+  late final TextEditingController _memoryMaintenanceManualActionsController =
+      TextEditingController(
+        text: widget.memory.maintenance.manualOnlyActions.join(', '),
+      );
+  late String _memoryApprovalMode =
+      MemoryApprovalMode.isKnown(widget.memory.review.approvalMode)
+      ? widget.memory.review.approvalMode
+      : MemoryApprovalMode.autoHighConfidence;
+  late String _memoryReviewAutoOpen =
+      MemoryReviewAutoOpen.isKnown(widget.memory.review.autoOpen)
+      ? widget.memory.review.autoOpen
+      : MemoryReviewAutoOpen.highConfidence;
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -98,6 +171,21 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _reviewToolNameController.dispose();
     _reviewModelController.dispose();
     _reviewTimeoutController.dispose();
+    _memoryEmbeddingModelController.dispose();
+    _memoryExtractorAgentController.dispose();
+    _memoryExtractorModelController.dispose();
+    _memoryExtractorGlobalInstructionsController.dispose();
+    _memoryExtractorWorkspaceInstructionsController.dispose();
+    _memoryExtractorRepoInstructionsController.dispose();
+    _memoryLlmBaseUrlController.dispose();
+    _memoryApiKeyEnvController.dispose();
+    _memoryProfileMaxItemsController.dispose();
+    _memoryMaintenanceHighThresholdController.dispose();
+    _memoryMaintenanceReviewThresholdController.dispose();
+    _memoryMaintenanceMaxBatchController.dispose();
+    _memoryMaintenanceIdleTurnsController.dispose();
+    _memoryMaintenanceIdlePendingController.dispose();
+    _memoryMaintenanceManualActionsController.dispose();
     super.dispose();
   }
 
@@ -152,6 +240,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   ),
                 const SizedBox(height: 10),
                 _buildClientProvidersSection(),
+                const SizedBox(height: 10),
+                _buildMemorySection(),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -242,6 +332,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           mcpServers: List.unmodifiable(_mcpServers),
           additionalDirectories: List.unmodifiable(_additionalDirectories),
           clientProviders: _clientProvidersConfig(),
+          memory: _memoryConfig(),
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
         ),
@@ -458,6 +549,248 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
   }
 
+  Widget _buildMemorySection() {
+    return _Panel(
+      icon: Icons.memory_rounded,
+      title: 'Memory',
+      accent: AppColors.primaryDark,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ConfigSwitch(
+            key: const Key('memory-enabled-switch'),
+            title: 'Enable memory',
+            value: _memoryEnabled,
+            onChanged: (value) => setState(() => _memoryEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-approval-mode-field'),
+            initialValue: _memoryApprovalMode,
+            decoration: const InputDecoration(
+              labelText: 'Memory approval mode',
+              prefixIcon: Icon(Icons.fact_check_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: MemoryApprovalMode.autoHighConfidence,
+                child: Text('Auto high confidence'),
+              ),
+              DropdownMenuItem(
+                value: MemoryApprovalMode.manual,
+                child: Text('Manual approval'),
+              ),
+              DropdownMenuItem(
+                value: MemoryApprovalMode.autoApprove,
+                child: Text('Auto approve'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _memoryApprovalMode = value);
+            },
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-review-auto-open-field'),
+            initialValue: _memoryReviewAutoOpen,
+            decoration: const InputDecoration(
+              labelText: 'Memory review prompt',
+              prefixIcon: Icon(Icons.notification_important_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: MemoryReviewAutoOpen.highConfidence,
+                child: Text('Prompt on pending'),
+              ),
+              DropdownMenuItem(
+                value: MemoryReviewAutoOpen.never,
+                child: Text('Never prompt'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryReviewAutoOpen = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-embedding-model-field'),
+            controller: _memoryEmbeddingModelController,
+            label: 'Embedding model',
+            icon: Icons.hub_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-agent-field'),
+            controller: _memoryExtractorAgentController,
+            label: 'Extractor agent',
+            icon: Icons.account_tree_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-model-field'),
+            controller: _memoryExtractorModelController,
+            label: 'Extractor model',
+            icon: Icons.psychology_alt_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-global-instructions-field'),
+            controller: _memoryExtractorGlobalInstructionsController,
+            label: 'Global memory instructions',
+            icon: Icons.public_rounded,
+            maxLines: 3,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-workspace-instructions-field'),
+            controller: _memoryExtractorWorkspaceInstructionsController,
+            label: 'Workspace memory instructions',
+            icon: Icons.workspaces_outline,
+            maxLines: 3,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-extractor-repo-instructions-field'),
+            controller: _memoryExtractorRepoInstructionsController,
+            label: 'Repo memory instructions',
+            icon: Icons.rule_folder_outlined,
+            maxLines: 3,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-llm-base-url-field'),
+            controller: _memoryLlmBaseUrlController,
+            label: 'OpenAI-compatible base URL',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-api-key-env-field'),
+            controller: _memoryApiKeyEnvController,
+            label: 'API key env',
+            icon: Icons.key_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-profile-max-items-field'),
+            controller: _memoryProfileMaxItemsController,
+            label: 'Profile memory limit',
+            icon: Icons.layers_outlined,
+          ),
+          const SizedBox(height: 10),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-enabled-switch'),
+            title: 'Enable maintenance',
+            value: _memoryMaintenanceEnabled,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-run-after-extraction-switch'),
+            title: 'Auto organize after turns',
+            value: _memoryMaintenanceRunAfterExtraction,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceRunAfterExtraction = value),
+          ),
+          const SizedBox(height: 8),
+          _ConfigSwitch(
+            key: const Key('memory-maintenance-idle-switch'),
+            title: 'Idle organize',
+            value: _memoryMaintenanceIdleEnabled,
+            onChanged: (value) =>
+                setState(() => _memoryMaintenanceIdleEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-maintenance-mode-field'),
+            initialValue: _memoryMaintenanceMode,
+            decoration: const InputDecoration(
+              labelText: 'Maintenance mode',
+              prefixIcon: Icon(Icons.auto_fix_high_rounded),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: 'high_confidence_auto',
+                child: Text('High confidence auto'),
+              ),
+              DropdownMenuItem(
+                value: 'manual_review',
+                child: Text('Manual review'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryMaintenanceMode = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            key: const Key('memory-maintenance-cost-mode-field'),
+            initialValue: _memoryMaintenanceCostMode,
+            decoration: const InputDecoration(
+              labelText: 'Maintenance cost mode',
+              prefixIcon: Icon(Icons.savings_outlined),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'low_cost', child: Text('Low cost')),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _memoryMaintenanceCostMode = value);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-high-threshold-field'),
+            controller: _memoryMaintenanceHighThresholdController,
+            label: 'Auto threshold',
+            icon: Icons.trending_up_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-review-threshold-field'),
+            controller: _memoryMaintenanceReviewThresholdController,
+            label: 'Review threshold',
+            icon: Icons.rate_review_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-max-batch-field'),
+            controller: _memoryMaintenanceMaxBatchController,
+            label: 'Max items per batch',
+            icon: Icons.filter_9_plus_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-idle-after-turns-field'),
+            controller: _memoryMaintenanceIdleTurnsController,
+            label: 'Idle after turns',
+            icon: Icons.hourglass_bottom_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-idle-max-pending-field'),
+            controller: _memoryMaintenanceIdlePendingController,
+            label: 'Idle max pending',
+            icon: Icons.pending_actions_outlined,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('memory-maintenance-manual-actions-field'),
+            controller: _memoryMaintenanceManualActionsController,
+            label: 'Manual-only actions',
+            icon: Icons.pan_tool_alt_outlined,
+          ),
+        ],
+      ),
+    );
+  }
+
   AcpClientProviderConfig _clientProvidersConfig() {
     return AcpClientProviderConfig(
       filesystem: AcpFilesystemProviderConfig(
@@ -469,6 +802,94 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       permissions: AcpPermissionProviderConfig(
         trustRules: List.unmodifiable(_trustRules),
         reviewAgent: _reviewAgentConfig(),
+      ),
+    );
+  }
+
+  MemoryConfig _memoryConfig() {
+    return MemoryConfig(
+      enabled: _memoryEnabled,
+      dataDir: widget.memory.dataDir,
+      embedding: MemoryEmbeddingConfig(
+        provider: widget.memory.embedding.provider,
+        model:
+            _trimmedOrNull(_memoryEmbeddingModelController.text) ??
+            const MemoryEmbeddingConfig().model,
+        variant: widget.memory.embedding.variant,
+        dimension: widget.memory.embedding.dimension,
+        downloadPolicy: widget.memory.embedding.downloadPolicy,
+      ),
+      extractor: MemoryExtractorConfig(
+        provider: widget.memory.extractor.provider,
+        agent:
+            _trimmedOrNull(_memoryExtractorAgentController.text) ??
+            const MemoryExtractorConfig().agent,
+        model:
+            _trimmedOrNull(_memoryExtractorModelController.text) ??
+            const MemoryExtractorConfig().model,
+        fallbackProvider: widget.memory.extractor.fallbackProvider,
+        globalInstructions: _memoryExtractorGlobalInstructionsController.text
+            .trim(),
+        workspaceInstructions: _memoryExtractorWorkspaceInstructionsController
+            .text
+            .trim(),
+        repoInstructions: _memoryExtractorRepoInstructionsController.text
+            .trim(),
+      ),
+      llm: MemoryLlmConfig(
+        provider: widget.memory.llm.provider,
+        baseUrl:
+            _trimmedOrNull(_memoryLlmBaseUrlController.text) ??
+            const MemoryLlmConfig().baseUrl,
+        model: widget.memory.llm.model,
+        apiKeyEnv:
+            _trimmedOrNull(_memoryApiKeyEnvController.text) ??
+            const MemoryLlmConfig().apiKeyEnv,
+      ),
+      review: MemoryReviewConfig(
+        approvalMode: _memoryApprovalMode,
+        autoOpen: _memoryReviewAutoOpen,
+        highConfidenceThreshold: widget.memory.review.highConfidenceThreshold,
+      ),
+      maintenance: _memoryMaintenanceConfig(),
+      profile: MemoryProfileConfig(
+        maxItems: _nonNegativeIntValue(
+          _memoryProfileMaxItemsController.text,
+          'Profile memory limit',
+        ),
+      ),
+    );
+  }
+
+  MemoryMaintenanceConfig _memoryMaintenanceConfig() {
+    return MemoryMaintenanceConfig(
+      enabled: _memoryMaintenanceEnabled,
+      mode: _memoryMaintenanceMode,
+      costMode: _memoryMaintenanceCostMode,
+      runAfterExtraction: _memoryMaintenanceRunAfterExtraction,
+      idleEnabled: _memoryMaintenanceIdleEnabled,
+      idleAfterTurns: _positiveIntValue(
+        _memoryMaintenanceIdleTurnsController.text,
+        'Idle after turns',
+      ),
+      idleMaxPendingReviews: _nonNegativeIntValue(
+        _memoryMaintenanceIdlePendingController.text,
+        'Idle max pending',
+      ),
+      highConfidenceThreshold: _probabilityValue(
+        _memoryMaintenanceHighThresholdController.text,
+        'Auto threshold',
+      ),
+      reviewThreshold: _probabilityValue(
+        _memoryMaintenanceReviewThresholdController.text,
+        'Review threshold',
+      ),
+      maxItemsPerBatch: _positiveIntValue(
+        _memoryMaintenanceMaxBatchController.text,
+        'Max items per batch',
+      ),
+      manualOnlyActions: _commaSeparatedValues(
+        _memoryMaintenanceManualActionsController.text,
       ),
     );
   }
@@ -1728,18 +2149,21 @@ class _DialogTextField extends StatelessWidget {
     required this.label,
     required this.icon,
     this.obscureText = false,
+    this.maxLines = 1,
   });
 
   final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
       obscureText: obscureText,
+      maxLines: maxLines,
       decoration: _fieldDecoration(label: label, icon: icon),
     );
   }
@@ -1952,6 +2376,46 @@ List<String> _stringValues(List<TextEditingController> controllers) {
 String? _trimmedOrNull(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String _knownOrFallback(
+  String value,
+  List<String> knownValues,
+  String fallback,
+) {
+  return knownValues.contains(value) ? value : fallback;
+}
+
+double _probabilityValue(String value, String label) {
+  final parsed = double.tryParse(value.trim());
+  if (parsed == null || parsed < 0 || parsed > 1) {
+    throw FormatException('$label must be a number from 0 to 1.');
+  }
+  return parsed;
+}
+
+int _positiveIntValue(String value, String label) {
+  final parsed = int.tryParse(value.trim());
+  if (parsed == null || parsed <= 0) {
+    throw FormatException('$label must be a positive integer.');
+  }
+  return parsed;
+}
+
+int _nonNegativeIntValue(String value, String label) {
+  final parsed = int.tryParse(value.trim());
+  if (parsed == null || parsed < 0) {
+    throw FormatException('$label must be zero or a positive integer.');
+  }
+  return parsed;
+}
+
+List<String> _commaSeparatedValues(String value) {
+  return value
+      .split(',')
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toList(growable: false);
 }
 
 Map<String, String> _nameValueMap(List<_NameValueControllers> controllers) {

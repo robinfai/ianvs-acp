@@ -4,11 +4,15 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 package_script="${root}/tool/package_macos_release.sh"
 sign_script="${root}/tool/sign_macos_bundle.sh"
+rust_build_script="${root}/macos/scripts/build_ianvs_acp_rust.sh"
+bundle_verify_script="${root}/tool/verify_macos_bundle.sh"
 workflow="${root}/.github/workflows/macos.yml"
 dependabot="${root}/.github/dependabot.yml"
 
 test -x "${package_script}"
 test -x "${sign_script}"
+test -x "${rust_build_script}"
+test -x "${bundle_verify_script}"
 test -f "${workflow}"
 test -f "${dependabot}"
 
@@ -193,6 +197,9 @@ assert_static_release_contract() {
   test "${assess_line}" -lt "${final_archive_line}"
   grep -q 'notary_archive' "${package_script}"
   grep -q '/bin/mv -f --' "${package_script}"
+  grep -q 'memory-core' "${rust_build_script}"
+  grep -q 'Contents/Resources/memory-core' "${bundle_verify_script}"
+  grep -q 'Contents/Resources' "${sign_script}"
 
   grep -q 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' \
     "${workflow}"

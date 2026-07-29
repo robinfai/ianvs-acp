@@ -2,9 +2,50 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/memory/memory_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 
 void main() {
+  testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            memory: const MemoryConfig(
+              maintenance: MemoryMaintenanceConfig(idleEnabled: true),
+            ),
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.text('Memory'));
+    await tester.pump();
+    expect(find.text('Enable memory'), findsOneWidget);
+    expect(find.text('Memory daemon URL'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('memory-enabled-switch')));
+    await tester.enterText(
+      find.byKey(const Key('memory-profile-max-items-field')),
+      '2',
+    );
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.memory.enabled, isTrue);
+    expect(savedConfig?.memory.profile.maxItems, 2);
+    expect(savedConfig?.memory.maintenance.idleEnabled, isTrue);
+  });
+
   testWidgets('AgentConfigDialog renders user config and agent servers', (
     tester,
   ) async {
@@ -101,7 +142,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Kimi Code Dev'), findsOneWidget);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
     expect(find.text('Remote HTTP Agent'), findsOneWidget);
     expect(find.text('Additional Directories'), findsOneWidget);
     expect(find.text('/Users/example/workspace-a'), findsOneWidget);

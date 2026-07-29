@@ -36,6 +36,10 @@ migrate_working_dir/
 /rust/target/
 .worktrees/
 /prototypes/inbox-autopilot/qa/
+memory-core/target/
+.superpowers/
+.serena/
+.fastembed_cache/
 
 # Symbolication related
 app.*.symbols

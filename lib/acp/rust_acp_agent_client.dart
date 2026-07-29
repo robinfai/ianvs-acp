@@ -12,6 +12,8 @@ import 'agent_session.dart';
 import 'prompt_attachment.dart';
 import 'session_title.dart';
 
+typedef AcpMcpServersProvider = Future<List<Map<String, Object?>>> Function();
+
 /// ACP client projection backed by the Rust runtime.
 ///
 /// This exposes only operations already owned by `ianvs-acp-core`. Unsupported
@@ -25,6 +27,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     this.agentCwd,
     this.sessionStorePath,
     this.mcpServers = const <Map<String, Object?>>[],
+    this.mcpServersProvider,
     this.envOverrides = const <String, String>{},
     this.additionalDirectories = const <String>[],
     IanvsRustRuntime? runtime,
@@ -54,6 +57,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final String? agentCwd;
   final String? sessionStorePath;
   final List<Map<String, Object?>> mcpServers;
+  final AcpMcpServersProvider? mcpServersProvider;
   final Map<String, String> envOverrides;
   final List<String> additionalDirectories;
   final Duration connectTimeout;
@@ -153,6 +157,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
     final completer = Completer<void>();
     _connecting = completer;
     try {
+      final providedMcpServers =
+          await mcpServersProvider?.call() ?? const <Map<String, Object?>>[];
       _runtimeInstance.startAgent(
         agentName: agentName,
         command: agentCommand,
@@ -160,7 +166,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
         environment: envOverrides,
         processCwd: agentCwd,
         sessionStorePath: sessionStorePath,
-        mcpServers: mcpServers,
+        mcpServers: <Map<String, Object?>>[
+          ...mcpServers,
+          ...providedMcpServers,
+        ],
         permissionTimeout: permissionTimeout,
         enableFilesystemReadTextFile: enableFilesystemReadTextFile,
         enableFilesystemWriteTextFile: enableFilesystemWriteTextFile,
@@ -205,6 +214,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
+    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     _ensureConnected();
@@ -223,6 +233,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         requestId: requestId,
         sessionId: sessionId,
         text: prompt,
+        memoryContext: memoryContext,
         attachments: attachments
             .map(
               (attachment) => <String, Object?>{

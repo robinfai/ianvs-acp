@@ -389,6 +389,41 @@ pub unsafe extern "C" fn ianvs_acp_prompt_with_attachments(
     })
 }
 
+/// Send a prompt with an independent reviewed-memory text block and bounded
+/// user-selected local attachment metadata.
+///
+/// # Safety
+///
+/// All pointer arguments must remain valid for this call and string pointers
+/// must reference NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ianvs_acp_prompt_with_context_and_attachments(
+    runtime: *mut IanvsRuntime,
+    request_id: *const c_char,
+    session_id: *const c_char,
+    text: *const c_char,
+    memory_context: *const c_char,
+    attachments_json: *const c_char,
+) -> bool {
+    let Some(runtime) = (unsafe { runtime.as_ref() }) else {
+        return false;
+    };
+    runtime.run(|handle| {
+        let attachments_json = unsafe { read_string(attachments_json, "attachmentsJson") }?;
+        let attachments: Vec<PromptAttachmentInput> = serde_json::from_str(&attachments_json)
+            .map_err(|error| format!("invalid prompt attachments: {error}"))?;
+        handle
+            .prompt_with_context_and_attachments(
+                unsafe { read_string(request_id, "requestId") }?,
+                unsafe { read_string(session_id, "sessionId") }?,
+                unsafe { read_string(text, "text") }?,
+                Some(unsafe { read_string(memory_context, "memoryContext") }?),
+                attachments,
+            )
+            .map_err(|error| error.to_string())
+    })
+}
+
 /// Cancel the active run for a session.
 ///
 /// # Safety

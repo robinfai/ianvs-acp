@@ -31,6 +31,7 @@ fail() {
 info_plist="${app}/Contents/Info.plist"
 executable="${app}/Contents/MacOS/ACP Client"
 daemon="${app}/Contents/MacOS/ianvs-acpd"
+memory_core="${app}/Contents/Resources/memory-core"
 rust_runtime="${app}/Contents/Frameworks/libianvs_acp_ffi.dylib"
 merman_lib="${app}/Contents/Frameworks/libmerman_ffi.dylib"
 merman_framework_binary="${app}/Contents/Frameworks/merman.framework/Versions/A/merman"
@@ -38,6 +39,7 @@ merman_framework_binary="${app}/Contents/Frameworks/merman.framework/Versions/A/
 [ -f "${info_plist}" ] || fail "missing Info.plist"
 [ -f "${executable}" ] || fail "missing app executable"
 [ -f "${daemon}" ] || fail "missing ianvs-acpd execution host"
+[ -f "${memory_core}" ] || fail "missing memory-core execution host"
 [ -f "${rust_runtime}" ] || fail "missing ianvs ACP Rust runtime"
 [ -f "${merman_lib}" ] || fail "missing merman library"
 [ -f "${merman_framework_binary}" ] || fail "missing merman framework binary"
@@ -52,7 +54,7 @@ printf '%s\n' "${url_types}" \
   || fail 'missing ianvs-acp URL scheme'
 
 for binary in \
-  "${executable}" "${daemon}" "${rust_runtime}" \
+  "${executable}" "${daemon}" "${memory_core}" "${rust_runtime}" \
   "${merman_lib}" "${merman_framework_binary}"; do
   /usr/bin/lipo "${binary}" -verify_arch arm64 x86_64 \
     || fail "binary is not universal: ${binary}"

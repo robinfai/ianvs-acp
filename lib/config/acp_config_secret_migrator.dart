@@ -60,6 +60,7 @@ final class AcpConfigSecretMigrator {
           mcpServers: List.unmodifiable(mcp),
           additionalDirectories: config.additionalDirectories,
           clientProviders: clientProviders,
+          memory: config.memory,
           configPath: config.configPath,
           defaultAgentServerName: config.defaultAgentServerName,
           runtimeSecretGeneration: ++_runtimeSecretGeneration,

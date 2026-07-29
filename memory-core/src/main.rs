@@ -1,0 +1,50 @@
+use clap::Parser;
+use memory_core::app_state::AppState;
+use memory_core::config::{Cli, DaemonConfig, EmbeddingConfig, MaintenanceLlmConfig, Mode};
+use memory_core::db::sqlite;
+use memory_core::http;
+use std::io::Write;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
+    let cli = Cli::parse();
+    match cli.mode {
+        Mode::Daemon => run_daemon(DaemonConfig::from_cli(&cli)?).await,
+        Mode::McpStdio => {
+            let token = std::env::var("MEMORY_DAEMON_TOKEN")?;
+            let daemon_url = cli
+                .daemon_url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--daemon-url is required"))?;
+            memory_core::mcp::stdio_server::run(memory_core::mcp::daemon_client::DaemonClient::new(
+                daemon_url, token,
+            ))
+            .await
+        }
+    }
+}
+
+async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
+    let pool = sqlite::open(&config.data_dir).await?;
+    let embedding = EmbeddingConfig::from_env();
+    let state = AppState {
+        db: pool,
+        embedder: memory_core::embedding::from_config(&embedding)?,
+        embedding_dimension: embedding.dimension,
+        maintenance_llm: MaintenanceLlmConfig::from_env(),
+        token: config.token,
+        version: "0.1.0",
+    };
+    let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
+    let listener = TcpListener::bind(addr).await?;
+    let port = listener.local_addr()?.port();
+    println!("{}", serde_json::json!({ "type": "ready", "port": port }));
+    std::io::stdout().flush()?;
+    axum::serve(listener, http::router(state)).await?;
+    Ok(())
+}

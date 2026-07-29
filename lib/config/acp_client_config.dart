@@ -4,6 +4,7 @@ import 'dart:io';
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
+import '../memory/memory_config.dart';
 
 class AcpClientConfig {
   const AcpClientConfig({
@@ -12,6 +13,7 @@ class AcpClientConfig {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
+    this.memory = const MemoryConfig(),
     this.configPath,
     this.defaultAgentServerName,
     this.runtimeSecretGeneration = 0,
@@ -25,6 +27,7 @@ class AcpClientConfig {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final MemoryConfig memory;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -62,6 +65,7 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
+      memory: memory,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
       runtimeSecretGeneration: runtimeSecretGeneration,
@@ -141,6 +145,12 @@ class AcpClientConfig {
         'clientProviders',
       ], fieldName: 'client_providers'),
     );
+    final memory = MemoryConfig.fromJson(
+      _aliasedValue(json, const <String>[
+        'memory',
+        'memoryConfig',
+      ], fieldName: 'memory'),
+    );
     final serversRaw = _aliasedValue(json, const <String>[
       'agent_servers',
       'agentServers',
@@ -151,6 +161,7 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
+        memory: memory,
       );
     }
     if (serversRaw is! Map<String, dynamic>) {
@@ -175,6 +186,7 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
+        memory: memory,
       );
     }
 
@@ -196,6 +208,7 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
+      memory: memory,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );

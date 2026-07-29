@@ -1,0 +1,116 @@
+use clap::{Parser, ValueEnum};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Parser)]
+#[command(name = "memory-core")]
+pub struct Cli {
+    #[arg(long, value_enum)]
+    pub mode: Mode,
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+    #[arg(long, default_value_t = 0)]
+    pub port: u16,
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub daemon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Mode {
+    Daemon,
+    McpStdio,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub host: String,
+    pub port: u16,
+    pub data_dir: PathBuf,
+    pub token: String,
+}
+
+impl DaemonConfig {
+    pub fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
+        let data_dir = cli
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--data-dir is required in daemon mode"))?;
+        let token = std::env::var("MEMORY_DAEMON_TOKEN")
+            .map_err(|_| anyhow::anyhow!("MEMORY_DAEMON_TOKEN is required"))?;
+        Ok(Self {
+            host: cli.host.clone(),
+            port: cli.port,
+            data_dir,
+            token,
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub model: String,
+    pub variant: String,
+    pub dimension: usize,
+    pub download_policy: String,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: "fastembed-local".to_string(),
+            model: "intfloat/multilingual-e5-small".to_string(),
+            variant: "onnx-qint8".to_string(),
+            dimension: 384,
+            download_policy: "lazy".to_string(),
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    pub fn from_env() -> Self {
+        let default = Self::default();
+        Self {
+            provider: std::env::var("MEMORY_EMBEDDING_PROVIDER").unwrap_or(default.provider),
+            model: std::env::var("MEMORY_EMBEDDING_MODEL").unwrap_or(default.model),
+            variant: std::env::var("MEMORY_EMBEDDING_VARIANT").unwrap_or(default.variant),
+            dimension: std::env::var("MEMORY_EMBEDDING_DIMENSION")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(default.dimension),
+            download_policy: std::env::var("MEMORY_EMBEDDING_DOWNLOAD_POLICY")
+                .unwrap_or(default.download_policy),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MaintenanceLlmConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+impl MaintenanceLlmConfig {
+    pub fn from_env() -> Option<Self> {
+        let provider = std::env::var("MEMORY_LLM_PROVIDER").ok()?;
+        if provider != "openai-compatible" && provider != "llm" {
+            return None;
+        }
+        let base_url = std::env::var("MEMORY_LLM_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434/v1".to_string());
+        let model = std::env::var("MEMORY_LLM_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string());
+        let api_key = std::env::var("MEMORY_LLM_API_KEY_ENV")
+            .ok()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
+        Some(Self {
+            provider,
+            base_url,
+            model,
+            api_key,
+        })
+    }
+}

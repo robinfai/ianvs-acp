@@ -2,6 +2,7 @@
 set -eu
 
 RUST_WORKSPACE="${SRCROOT}/../rust"
+MEMORY_WORKSPACE="${SRCROOT}/../memory-core"
 PROFILE="debug"
 CARGO_FLAGS=""
 if [ "${CONFIGURATION}" != "Debug" ]; then
@@ -14,8 +15,10 @@ FRAMEWORKS_DIRECTORY="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 DESTINATION_LIBRARY="${FRAMEWORKS_DIRECTORY}/libianvs_acp_ffi.dylib"
 MACOS_DIRECTORY="${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}"
 DESTINATION_DAEMON="${MACOS_DIRECTORY}/ianvs-acpd"
+RESOURCES_DIRECTORY="${MACOS_DIRECTORY}/../Resources"
+DESTINATION_MEMORY_CORE="${RESOURCES_DIRECTORY}/memory-core"
 
-mkdir -p "${FRAMEWORKS_DIRECTORY}" "${MACOS_DIRECTORY}"
+mkdir -p "${FRAMEWORKS_DIRECTORY}" "${MACOS_DIRECTORY}" "${RESOURCES_DIRECTORY}"
 if [ "${PROFILE}" = "release" ]; then
   ARM_TARGET="aarch64-apple-darwin"
   X86_TARGET="x86_64-apple-darwin"
@@ -31,14 +34,26 @@ if [ "${PROFILE}" = "release" ]; then
     "${RUST_WORKSPACE}/target/${ARM_TARGET}/release/ianvs-acpd" \
     "${RUST_WORKSPACE}/target/${X86_TARGET}/release/ianvs-acpd" \
     -output "${DESTINATION_DAEMON}"
+  cd "${MEMORY_WORKSPACE}"
+  cargo build --locked --release --target "${ARM_TARGET}"
+  cargo build --locked --release --target "${X86_TARGET}"
+  /usr/bin/lipo -create \
+    "${MEMORY_WORKSPACE}/target/${ARM_TARGET}/release/memory-core" \
+    "${MEMORY_WORKSPACE}/target/${X86_TARGET}/release/memory-core" \
+    -output "${DESTINATION_MEMORY_CORE}"
 else
   cargo build --locked -p ianvs-acp-ffi -p ianvs-acpd ${CARGO_FLAGS}
   cp "${RUST_WORKSPACE}/target/${PROFILE}/libianvs_acp_ffi.dylib" \
     "${DESTINATION_LIBRARY}"
   cp "${RUST_WORKSPACE}/target/${PROFILE}/ianvs-acpd" \
     "${DESTINATION_DAEMON}"
+  cd "${MEMORY_WORKSPACE}"
+  cargo build --locked
+  cp "${MEMORY_WORKSPACE}/target/${PROFILE}/memory-core" \
+    "${DESTINATION_MEMORY_CORE}"
 fi
 
 chmod 755 "${DESTINATION_LIBRARY}"
 install_name_tool -id "@rpath/libianvs_acp_ffi.dylib" "${DESTINATION_LIBRARY}"
 chmod 755 "${DESTINATION_DAEMON}"
+chmod 755 "${DESTINATION_MEMORY_CORE}"

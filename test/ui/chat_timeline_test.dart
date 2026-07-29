@@ -21,6 +21,7 @@ void main() {
     int messageListRevision = 0,
     VoidCallback? onNewSession,
     MarkdownTapLinkCallback? onTapLink,
+    MemoryFeedbackCallback? onMemoryFeedback,
     ThemeData? theme,
     AcpInputBudget inputBudget = const AcpInputBudget(),
     AcpImageDecodeBudgetLedger? imageDecodeLedger,
@@ -38,6 +39,7 @@ void main() {
           messageListRevision: messageListRevision,
           onNewSession: onNewSession,
           onTapLink: onTapLink,
+          onMemoryFeedback: onMemoryFeedback,
           inputBudget: inputBudget,
           imageDecodeLedger: imageDecodeLedger,
           boundedImageDecoder: boundedImageDecoder,
@@ -50,6 +52,59 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline shows used memory and submits feedback', (
+    tester,
+  ) async {
+    final feedback = <Map<String, String?>>[];
+    await tester.pumpWidget(
+      timeline(
+        [
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: '可以称呼你为 Rodriguez。',
+            metadata: const <String, Object?>{
+              'memoryTurnId': 'turn_1',
+              'memoryUsed': [
+                <String, Object?>{
+                  'id': 'mem_name',
+                  'kind': 'user_preference',
+                  'scope': 'global',
+                  'text': '用户称呼是 Rodriguez。',
+                  'score': 0.93,
+                },
+              ],
+            },
+          ),
+        ],
+        onMemoryFeedback:
+            ({
+              required String memoryId,
+              required String rating,
+              String? turnId,
+              String? reason,
+            }) async {
+              feedback.add(<String, String?>{
+                'memoryId': memoryId,
+                'rating': rating,
+                'turnId': turnId,
+                'reason': reason,
+              });
+            },
+      ),
+    );
+
+    expect(find.text('Memory used · 1'), findsOneWidget);
+    expect(find.textContaining('user_preference · global'), findsOneWidget);
+    expect(find.text('用户称呼是 Rodriguez。'), findsOneWidget);
+
+    await tester.tap(find.text('Not relevant'));
+    await tester.pump();
+
+    expect(feedback.single['memoryId'], 'mem_name');
+    expect(feedback.single['rating'], 'not_relevant');
+    expect(feedback.single['turnId'], 'turn_1');
   });
 
   testWidgets('ChatTimeline delegates image blocks without decoding in build', (

@@ -5,6 +5,36 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
+  test('loads memory config and preserves it when switching agents', () {
+    final config = AcpClientConfig.fromJson({
+      'memory': {
+        'extractor': {
+          'provider': 'acp-sidecar',
+          'agent': 'Codex',
+          'model': 'gpt-5-mini',
+        },
+        'llm': {
+          'base_url': 'http://127.0.0.1:11434/v1',
+          'api_key_env': 'OLLAMA_API_KEY',
+        },
+      },
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex'},
+        'Claude': {'type': 'custom', 'command': '/usr/local/bin/claude'},
+      },
+    });
+
+    expect(config.memory.extractor.agent, 'Codex');
+    expect(config.memory.extractor.model, 'gpt-5-mini');
+    expect(config.memory.llm.apiKeyEnv, 'OLLAMA_API_KEY');
+
+    final switched = config.withActiveAgentServer('Claude');
+    expect(switched.agentName, 'Claude');
+    expect(switched.memory.extractor.agent, 'Codex');
+    expect(switched.memory.extractor.model, 'gpt-5-mini');
+  });
+
   test('loads custom agent server config', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_config_test');
     addTearDown(() => temp.delete(recursive: true));

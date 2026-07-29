@@ -56,6 +56,7 @@ abstract interface class IanvsAcpNativeApi {
     required String requestId,
     required String sessionId,
     required String text,
+    String? memoryContext,
     List<Map<String, Object?>> attachments = const <Map<String, Object?>>[],
   });
 
@@ -269,6 +270,7 @@ final class IanvsRustRuntime {
     required String requestId,
     required String sessionId,
     required String text,
+    String? memoryContext,
     List<Map<String, Object?>> attachments = const <Map<String, Object?>>[],
   }) {
     _ensureOpen();
@@ -278,6 +280,7 @@ final class IanvsRustRuntime {
         requestId: requestId,
         sessionId: sessionId,
         text: text,
+        memoryContext: memoryContext,
         attachments: attachments,
       ),
       'prompt',
@@ -507,6 +510,25 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
             Pointer<Utf8>,
           )
         >('ianvs_acp_prompt_with_attachments');
+    _promptWithContextAndAttachments = _library
+        .lookupFunction<
+          Bool Function(
+            Pointer<Void>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+          ),
+          bool Function(
+            Pointer<Void>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+            Pointer<Utf8>,
+          )
+        >('ianvs_acp_prompt_with_context_and_attachments');
     _cancel = _library
         .lookupFunction<
           Bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>),
@@ -644,6 +666,15 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
     Pointer<Utf8>,
   )
   _promptWithAttachments;
+  late final bool Function(
+    Pointer<Void>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+  )
+  _promptWithContextAndAttachments;
   late final bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>) _cancel;
   late final bool Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>)
   _respondPermission;
@@ -786,8 +817,28 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
     required String requestId,
     required String sessionId,
     required String text,
+    String? memoryContext,
     List<Map<String, Object?>> attachments = const <Map<String, Object?>>[],
   }) {
+    final context = memoryContext?.trim();
+    if (context != null && context.isNotEmpty) {
+      return _withFiveUtf8(
+        requestId,
+        sessionId,
+        text,
+        context,
+        jsonEncode(attachments),
+        (request, session, promptText, memoryText, encoded) =>
+            _promptWithContextAndAttachments(
+              _pointer(runtime),
+              request,
+              session,
+              promptText,
+              memoryText,
+              encoded,
+            ),
+      );
+    }
     if (attachments.isNotEmpty) {
       return _withFourUtf8(
         requestId,
@@ -966,6 +1017,39 @@ T _withFourUtf8<T>(
         secondPointer,
         thirdPointer,
         fourthPointer,
+      );
+    });
+  });
+}
+
+T _withFiveUtf8<T>(
+  String first,
+  String second,
+  String third,
+  String fourth,
+  String fifth,
+  T Function(
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+  )
+  operation,
+) {
+  return _withFourUtf8(first, second, third, fourth, (
+    firstPointer,
+    secondPointer,
+    thirdPointer,
+    fourthPointer,
+  ) {
+    return _withUtf8(fifth, (fifthPointer) {
+      return operation(
+        firstPointer,
+        secondPointer,
+        thirdPointer,
+        fourthPointer,
+        fifthPointer,
       );
     });
   });

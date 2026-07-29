@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
+import 'package:ianvs_acp/memory/memory_runtime_status.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/status_bar.dart';
 
@@ -8,6 +9,8 @@ void main() {
   Widget statusBar({
     required ChatController controller,
     required double width,
+    MemoryRuntimeStatus memoryStatus = MemoryRuntimeStatus.disabled,
+    int memoryPendingCount = 0,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -17,6 +20,8 @@ void main() {
             width: width,
             child: StatusBar(
               controller: controller,
+              memoryStatus: memoryStatus,
+              memoryPendingCount: memoryPendingCount,
               onShowCapabilities: () {},
               onShowSessionSettings: () {},
             ),
@@ -70,5 +75,22 @@ void main() {
       tester.getTopLeft(find.text('disconnected')).dx,
       lessThan(tester.getTopLeft(find.text('/workspace')).dx),
     );
+  });
+
+  testWidgets('StatusBar displays memory runtime status', (tester) async {
+    final chatController = controller();
+    addTearDown(chatController.dispose);
+
+    await tester.pumpWidget(
+      statusBar(
+        controller: chatController,
+        width: 900,
+        memoryStatus: MemoryRuntimeStatus.running,
+        memoryPendingCount: 3,
+      ),
+    );
+
+    expect(find.text('memory on · 3 pending'), findsOneWidget);
+    expect(find.byTooltip('Memory enabled and running'), findsOneWidget);
   });
 }

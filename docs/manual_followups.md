@@ -66,6 +66,10 @@ Run before a release candidate:
   and application restart recovery;
 - verify compact-window keyboard focus, screen-reader labels, drag/drop, file
   pickers, and terminal presentation.
+- enable Memory in a signed app, confirm the bundled
+  `Contents/Resources/memory-core` starts, exercise the first lazy embedding
+  model download and offline keyword fallback, then verify shutdown removes the
+  owned child process.
 
 Automated baseline:
 

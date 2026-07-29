@@ -10,6 +10,11 @@ cargo build --locked -p ianvs-acp-ffi
 cargo build --locked -p ianvs-acpd
 cargo build --locked -p ianvs-acp-core --bin ianvs-acp-fixture-agent
 
+cd "${PROJECT_ROOT}/memory-core"
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo build --locked
+
 cd "${PROJECT_ROOT}"
 bash tool/flutter_test_isolated.sh \
   test/acp/rust_acp_agent_client_test.dart \
