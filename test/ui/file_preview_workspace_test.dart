@@ -8,6 +8,7 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
 import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
 import 'package:ianvs_acp/ui/components/markdown_code_block.dart';
+import 'package:ianvs_acp/ui/components/markdown_front_matter_card.dart';
 import 'package:ianvs_acp/ui/components/markdown_preview_image.dart';
 
 void main() {
@@ -192,6 +193,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(scroll.controller?.offset, greaterThan(0));
+  });
+
+  testWidgets('Markdown front matter renders as expandable document metadata', (
+    tester,
+  ) async {
+    final workspace = createWorkspace();
+    final markdown = File('${workspace.path}/metadata.md')
+      ..writeAsStringSync('''
+---
+title: SSH Internals
+author: Robin
+date: 2026-07-29
+tags: [ssh, security]
+status: published
+version: 2
+license: MIT
+---
+# Body heading
+
+Readable body.
+''');
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      previewApp(
+        workspacePath: workspace.path,
+        markdown: '[Open metadata](${markdown.path})',
+      ),
+    );
+    await openMarkdownLink(tester, text: 'Open metadata', href: markdown.path);
+
+    expect(find.byType(MarkdownFrontMatterCard), findsOneWidget);
+    expect(find.text('文档信息'), findsOneWidget);
+    expect(find.text('YAML'), findsOneWidget);
+    expect(find.text('SSH Internals'), findsOneWidget);
+    expect(find.text('ssh'), findsOneWidget);
+    expect(find.text('security'), findsOneWidget);
+    expect(find.textContaining('title:'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('markdown-outline-heading-0')),
+      findsOneWidget,
+    );
+    expect(find.text('MIT'), findsNothing);
+
+    await tester.tap(find.byTooltip('展开全部元数据'));
+    await tester.pump();
+
+    expect(find.text('MIT'), findsOneWidget);
+    expect(find.byTooltip('收起元数据'), findsOneWidget);
   });
 
   testWidgets('Markdown file preview uses the shared fenced code block', (

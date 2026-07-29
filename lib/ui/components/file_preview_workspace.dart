@@ -9,8 +9,10 @@ import 'package:path/path.dart' as p;
 
 import '../../platform/file_manager.dart';
 import '../file_preview/file_preview_document.dart';
+import '../file_preview/markdown_front_matter.dart';
 import '../theme/app_design_tokens.dart';
 import 'markdown_code_block.dart';
+import 'markdown_front_matter_card.dart';
 import 'markdown_preview_image.dart';
 
 typedef FilePreviewLinkHandler =
@@ -853,7 +855,10 @@ class _MarkdownFilePreview extends StatefulWidget {
 
 class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
   final ScrollController _scrollController = ScrollController();
-  late List<_MarkdownHeading> _headings = _markdownHeadings(widget.text);
+  late MarkdownFrontMatterDocument _document = parseMarkdownFrontMatter(
+    widget.text,
+  );
+  late List<_MarkdownHeading> _headings = _markdownHeadings(_document.body);
   var _outlineCollapsed = false;
   int? _activeHeadingIndex;
 
@@ -864,7 +869,8 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
         oldWidget.documentPath == widget.documentPath) {
       return;
     }
-    _headings = _markdownHeadings(widget.text);
+    _document = parseMarkdownFrontMatter(widget.text);
+    _headings = _markdownHeadings(_document.body);
     _activeHeadingIndex = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _scrollController.hasClients) {
@@ -907,69 +913,84 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                 key: const ValueKey('markdown-preview-scroll'),
                 controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(28, 24, 32, 44),
-                child: MarkdownBody(
-                  data: widget.text,
-                  selectable: true,
-                  onTapLink: widget.onTapLink,
-                  imageBuilder: (uri, title, alt) => MarkdownPreviewImage(
-                    uri: uri,
-                    alt: alt,
-                    workspacePath: widget.workspacePath,
-                    baseDirectory: p.dirname(widget.documentPath),
-                    additionalDirectories: widget.additionalDirectories,
-                  ),
-                  builders: <String, MarkdownElementBuilder>{
-                    'pre': MarkdownCodeBlockBuilder(user: false),
-                    'h1': headingBuilder,
-                    'h2': headingBuilder,
-                    'h3': headingBuilder,
-                    'h4': headingBuilder,
-                  },
-                  styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                      .copyWith(
-                        h1: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 26,
-                          height: 1.22,
-                          fontWeight: FontWeight.w900,
-                        ),
-                        h2: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 19,
-                          height: 1.3,
-                          fontWeight: FontWeight.w800,
-                        ),
-                        h3: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 15,
-                          height: 1.35,
-                          fontWeight: FontWeight.w800,
-                        ),
-                        p: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 14,
-                          height: 1.65,
-                        ),
-                        a: const TextStyle(
-                          color: AppColors.primaryDark,
-                          decoration: TextDecoration.underline,
-                          decorationColor: AppColors.primary,
-                          fontWeight: FontWeight.w700,
-                        ),
-                        code: const TextStyle(
-                          color: AppColors.primaryDark,
-                          backgroundColor: AppColors.primaryMist,
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                        ),
-                        tableBorder: TableBorder.all(color: AppColors.border),
-                        tableHead: const TextStyle(fontWeight: FontWeight.w800),
-                        tableCellsPadding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 8,
-                        ),
-                        blockSpacing: 12,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_document.entries.isNotEmpty) ...[
+                      MarkdownFrontMatterCard(entries: _document.entries),
+                      const SizedBox(height: 18),
+                    ],
+                    MarkdownBody(
+                      data: _document.body,
+                      selectable: true,
+                      onTapLink: widget.onTapLink,
+                      imageBuilder: (uri, title, alt) => MarkdownPreviewImage(
+                        uri: uri,
+                        alt: alt,
+                        workspacePath: widget.workspacePath,
+                        baseDirectory: p.dirname(widget.documentPath),
+                        additionalDirectories: widget.additionalDirectories,
                       ),
+                      builders: <String, MarkdownElementBuilder>{
+                        'pre': MarkdownCodeBlockBuilder(user: false),
+                        'h1': headingBuilder,
+                        'h2': headingBuilder,
+                        'h3': headingBuilder,
+                        'h4': headingBuilder,
+                      },
+                      styleSheet:
+                          MarkdownStyleSheet.fromTheme(
+                            Theme.of(context),
+                          ).copyWith(
+                            h1: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 26,
+                              height: 1.22,
+                              fontWeight: FontWeight.w900,
+                            ),
+                            h2: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 19,
+                              height: 1.3,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            h3: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 15,
+                              height: 1.35,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            p: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 14,
+                              height: 1.65,
+                            ),
+                            a: const TextStyle(
+                              color: AppColors.primaryDark,
+                              decoration: TextDecoration.underline,
+                              decorationColor: AppColors.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            code: const TextStyle(
+                              color: AppColors.primaryDark,
+                              backgroundColor: AppColors.primaryMist,
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                            ),
+                            tableBorder: TableBorder.all(
+                              color: AppColors.border,
+                            ),
+                            tableHead: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                            ),
+                            tableCellsPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
+                            blockSpacing: 12,
+                          ),
+                    ),
+                  ],
                 ),
               ),
             ),
