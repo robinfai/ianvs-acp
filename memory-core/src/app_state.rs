@@ -1,3 +1,4 @@
+use crate::config::MaintenanceLlmConfig;
 use crate::embedding::embedder::Embedder;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ pub struct AppState {
     pub db: SqlitePool,
     pub embedder: Arc<dyn Embedder>,
     pub embedding_dimension: usize,
+    pub maintenance_llm: Option<MaintenanceLlmConfig>,
     pub token: String,
     pub version: &'static str,
 }

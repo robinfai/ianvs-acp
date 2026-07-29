@@ -23,7 +23,14 @@ pub fn router(state: AppState) -> Router {
             "/v1/memory/extract-candidates",
             post(routes_candidates::extract),
         )
+        .route("/v1/memory/candidates", get(routes_candidates::list))
         .route("/v1/memory/search", post(routes_memory::search))
+        .route("/v1/memory/clear", post(routes_memory::clear))
+        .route(
+            "/v1/memory/destroy-database",
+            post(routes_memory::destroy_database),
+        )
+        .route("/v1/memory/audit", get(routes_memory::audit))
         .route(
             "/v1/memory/format-context",
             post(routes_memory::format_context),
@@ -37,13 +44,34 @@ pub fn router(state: AppState) -> Router {
             post(routes_candidates::approve),
         )
         .route(
+            "/v1/memory/candidates/{id}/reject",
+            post(routes_candidates::reject),
+        )
+        .route(
             "/v1/memory/change-requests",
-            get(routes_change_requests::list),
+            get(routes_change_requests::list).post(routes_change_requests::create),
+        )
+        .route(
+            "/v1/memory/change-requests/{id}",
+            patch(routes_change_requests::patch),
+        )
+        .route(
+            "/v1/memory/change-requests/{id}/approve",
+            post(routes_change_requests::approve),
+        )
+        .route(
+            "/v1/memory/change-requests/{id}/reject",
+            post(routes_change_requests::reject),
+        )
+        .route(
+            "/v1/memory/maintenance/run",
+            post(routes_change_requests::maintenance_run),
         )
         .route(
             "/v1/memory/{id}",
             patch(routes_memory::patch).delete(routes_memory::delete),
         )
+        .route("/v1/memory/{id}/feedback", post(routes_memory::feedback))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
 
     Router::new()

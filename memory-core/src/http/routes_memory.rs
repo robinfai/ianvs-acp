@@ -5,17 +5,26 @@ use serde::Deserialize;
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::memory::engine::{
-    create_manual_memory, list_memory, patch_memory, search_memory, soft_delete_memory,
-    CreateMemoryRequest, ListMemoryResponse, MemoryResponse, PatchMemoryRequest, SearchRequest,
-    SearchResponse,
+    clear_memory, create_manual_memory, list_audit, list_memory, patch_memory, search_memory,
+    soft_delete_memory, ClearMemoryRequest, ClearMemoryResponse, CreateMemoryRequest,
+    DestroyDatabaseRequest, DestroyDatabaseResponse, ListAuditResponse, ListMemoryResponse,
+    MemoryFeedbackRequest, MemoryFeedbackResponse, MemoryResponse, PatchMemoryRequest,
+    SearchRequest, SearchResponse,
 };
+use crate::memory::types::MemoryKind;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListQuery {
     pub user_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub repo_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub kind: Option<MemoryKind>,
     pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 pub async fn create(
@@ -35,8 +44,31 @@ pub async fn list(
         list_memory(
             &state.db,
             query.user_id.as_deref(),
+            query.workspace_id.as_deref(),
             query.repo_id.as_deref(),
+            query.agent_id.as_deref(),
+            query.session_id.as_deref(),
+            query.kind,
             query.status.as_deref(),
+            query.limit,
+            query.offset,
+        )
+        .await?,
+    ))
+}
+
+pub async fn audit(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<ListAuditResponse>, ApiError> {
+    Ok(Json(
+        list_audit(
+            &state.db,
+            query.user_id.as_deref(),
+            query.workspace_id.as_deref(),
+            query.repo_id.as_deref(),
+            query.agent_id.as_deref(),
+            query.session_id.as_deref(),
         )
         .await?,
     ))
@@ -61,6 +93,57 @@ pub async fn delete(
         tracing::warn!(%error, memory_id = %id, "failed to delete memory vector");
     }
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn feedback(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<MemoryFeedbackRequest>,
+) -> Result<Json<MemoryFeedbackResponse>, ApiError> {
+    if !matches!(
+        request.rating.trim().to_ascii_lowercase().as_str(),
+        "helpful" | "not_relevant" | "stale"
+    ) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported memory feedback rating: {}",
+            request.rating
+        )));
+    }
+    Ok(Json(
+        crate::memory::engine::record_memory_feedback(&state.db, &id, request).await?,
+    ))
+}
+
+pub async fn clear(
+    State(state): State<AppState>,
+    Json(request): Json<ClearMemoryRequest>,
+) -> Result<Json<ClearMemoryResponse>, ApiError> {
+    if !matches!(
+        request.level.as_str(),
+        "session" | "repo" | "workspace" | "all"
+    ) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported clear level: {}",
+            request.level
+        )));
+    }
+    let result = clear_memory(&state.db, request).await?;
+    best_effort_rebuild_vector_index(&state).await;
+    Ok(Json(result))
+}
+
+pub async fn destroy_database(
+    State(state): State<AppState>,
+    Json(request): Json<DestroyDatabaseRequest>,
+) -> Result<Json<DestroyDatabaseResponse>, ApiError> {
+    if request.confirm != "DESTROY MEMORY DATABASE" {
+        return Err(ApiError::BadRequest(
+            "destroy confirmation must be DESTROY MEMORY DATABASE".to_string(),
+        ));
+    }
+    let result = crate::memory::engine::destroy_database(&state.db).await?;
+    best_effort_rebuild_vector_index(&state).await;
+    Ok(Json(result))
 }
 
 pub async fn search(
@@ -98,6 +181,18 @@ pub async fn rebuild_vector_index(
     )
     .await?;
     Ok(Json(serde_json::json!({ "ok": true, "indexed": indexed })))
+}
+
+pub async fn best_effort_rebuild_vector_index(state: &AppState) {
+    if let Err(error) = crate::vector::sqlite_vec_store::rebuild(
+        &state.db,
+        state.embedder.as_ref(),
+        state.embedding_dimension,
+    )
+    .await
+    {
+        tracing::warn!(%error, "failed to rebuild memory vector index");
+    }
 }
 
 pub async fn best_effort_index(state: &AppState, item: &MemoryResponse) {

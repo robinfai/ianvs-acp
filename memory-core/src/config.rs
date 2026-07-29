@@ -84,3 +84,33 @@ impl EmbeddingConfig {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct MaintenanceLlmConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+impl MaintenanceLlmConfig {
+    pub fn from_env() -> Option<Self> {
+        let provider = std::env::var("MEMORY_LLM_PROVIDER").ok()?;
+        if provider != "openai-compatible" && provider != "llm" {
+            return None;
+        }
+        let base_url = std::env::var("MEMORY_LLM_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434/v1".to_string());
+        let model = std::env::var("MEMORY_LLM_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string());
+        let api_key = std::env::var("MEMORY_LLM_API_KEY_ENV")
+            .ok()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
+        Some(Self {
+            provider,
+            base_url,
+            model,
+            api_key,
+        })
+    }
+}

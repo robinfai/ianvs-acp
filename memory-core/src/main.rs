@@ -1,6 +1,6 @@
 use clap::Parser;
 use memory_core::app_state::AppState;
-use memory_core::config::{Cli, DaemonConfig, EmbeddingConfig, Mode};
+use memory_core::config::{Cli, DaemonConfig, EmbeddingConfig, MaintenanceLlmConfig, Mode};
 use memory_core::db::sqlite;
 use memory_core::http;
 use std::io::Write;
@@ -36,6 +36,7 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         db: pool,
         embedder: memory_core::embedding::from_config(&embedding)?,
         embedding_dimension: embedding.dimension,
+        maintenance_llm: MaintenanceLlmConfig::from_env(),
         token: config.token,
         version: "0.1.0",
     };
