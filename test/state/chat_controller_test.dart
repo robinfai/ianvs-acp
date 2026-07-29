@@ -200,6 +200,49 @@ void main() {
     expect(fake.lastMemoryContext, contains('[project_rule]'));
   });
 
+  test('send prompt records used memories on the user turn', () async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      memoryMiddleware: AcpMemoryMiddleware(
+        search: (_) async => null,
+        searchDetails: (_) async => const MemoryPromptResult(
+          memoryContext:
+              '<agent_memory_context>\n1. [user_preference] 用户称呼是 Rodriguez。\n</agent_memory_context>',
+          usedMemories: [
+            MemoryUsedItem(
+              id: 'mem_name',
+              kind: 'user_preference',
+              scope: 'global',
+              text: '用户称呼是 Rodriguez。',
+              score: 0.93,
+              metadata: <String, Object?>{
+                'diagnostics': <String, Object?>{'finalScore': 0.93},
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.sendPrompt('怎么称呼我？');
+    await pumpEventQueue();
+
+    expect(fake.lastMemoryContext, contains('[user_preference]'));
+    final metadata = controller.messages.first.metadata;
+    expect(metadata['memoryTurnId'], startsWith('turn_'));
+    final used = metadata['memoryUsed'] as List<Object?>;
+    expect(used, hasLength(1));
+    final item = used.single as Map<String, Object?>;
+    expect(item['id'], 'mem_name');
+    expect(item['kind'], 'user_preference');
+    expect(item['text'], '用户称呼是 Rodriguez。');
+    expect(item['score'], 0.93);
+    expect(item['metadata'], isA<Map<String, Object?>>());
+  });
+
   test('send prompt passes active session id to memory middleware', () async {
     final fake = FakeAgentClient();
     MemoryPromptContext? receivedContext;
@@ -222,6 +265,7 @@ void main() {
     expect(receivedContext?.prompt, 'Hi');
     expect(receivedContext?.sessionId, 'fake-session-1');
     expect(receivedContext?.cwd, '/workspace');
+    expect(receivedContext?.turnId, startsWith('turn_'));
   });
 
   test(
@@ -234,6 +278,17 @@ void main() {
         cwd: '/workspace',
         memoryMiddleware: AcpMemoryMiddleware(
           search: (_) async => null,
+          searchDetails: (_) async => const MemoryPromptResult(
+            usedMemories: [
+              MemoryUsedItem(
+                id: 'mem_rule',
+                kind: 'project_rule',
+                scope: 'repo',
+                text: '用 curl 检查服务。',
+                score: 0.88,
+              ),
+            ],
+          ),
           extract: (context) async {
             extractedContext = context;
           },
@@ -248,6 +303,35 @@ void main() {
       expect(extractedContext?.assistantAnswer, contains('Hello, I am Codex.'));
       expect(extractedContext?.sessionId, 'fake-session-1');
       expect(extractedContext?.cwd, '/workspace');
+      expect(extractedContext?.usedMemories.single.id, 'mem_rule');
+    },
+  );
+
+  test(
+    'send prompt notifies memory turn completion without extractor',
+    () async {
+      final fake = FakeAgentClient();
+      MemoryTurnContext? completedContext;
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        memoryMiddleware: AcpMemoryMiddleware(
+          search: (_) async => null,
+          onTurnComplete: (context) async {
+            completedContext = context;
+          },
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.sendPrompt('Remember the release rule');
+      await pumpEventQueue(times: 4);
+
+      expect(completedContext?.userPrompt, 'Remember the release rule');
+      expect(completedContext?.assistantAnswer, contains('Hello, I am Codex.'));
+      expect(completedContext?.sessionId, 'fake-session-1');
+      expect(completedContext?.cwd, '/workspace');
+      expect(completedContext?.turnId, startsWith('turn_'));
     },
   );
 

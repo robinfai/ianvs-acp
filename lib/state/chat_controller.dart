@@ -173,10 +173,13 @@ class ChatController extends ChangeNotifier {
   StringBuffer? _pendingMemoryAssistantAnswer;
   String? _pendingMemorySessionId;
   String? _pendingMemoryCwd;
+  String? _pendingMemoryTurnId;
+  List<MemoryUsedItem> _pendingMemoryUsedMemories = const <MemoryUsedItem>[];
   bool _pendingMemoryHadError = false;
   Duration? lastLatency;
   int _sessionSettingsLoadSerial = 0;
   int? _activeSessionSettingsLoadId;
+  int _memoryTurnSequence = 0;
 
   Future<void> connect() async {
     if (isSessionOperationRunning) return;
@@ -361,24 +364,37 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return;
 
+    final memoryTurnId = _nextMemoryTurnId();
     final prepared = await memoryMiddleware?.preparePrompt(
       prompt,
       sessionId: session.id,
       cwd: session.cwd,
+      turnId: memoryTurnId,
     );
     final agentPrompt = prepared?.prompt ?? prompt;
     final memoryContext = prepared?.memoryContext;
+    final usedMemories = prepared?.usedMemories ?? const <MemoryUsedItem>[];
 
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
         .toList();
+    final userMetadata = <String, Object?>{};
+    if (contentBlocks.isNotEmpty) {
+      userMetadata['contentBlocks'] = contentBlocks;
+    }
+    if (usedMemories.isNotEmpty) {
+      userMetadata['memoryTurnId'] = memoryTurnId;
+      userMetadata['memoryUsed'] = usedMemories
+          .map((memory) => memory.toJson())
+          .toList(growable: false);
+    }
     messages.add(
       ChatMessage(
         role: ChatMessageRole.user,
         text: prompt,
-        metadata: contentBlocks.isEmpty
+        metadata: userMetadata.isEmpty
             ? const <String, Object?>{}
-            : <String, Object?>{'contentBlocks': contentBlocks},
+            : userMetadata,
       ),
     );
     isStreaming = true;
@@ -389,6 +405,8 @@ class ChatController extends ChangeNotifier {
     _pendingMemoryAssistantAnswer = StringBuffer();
     _pendingMemorySessionId = session.id;
     _pendingMemoryCwd = session.cwd;
+    _pendingMemoryTurnId = memoryTurnId;
+    _pendingMemoryUsedMemories = List.unmodifiable(usedMemories);
     _pendingMemoryHadError = false;
     _notifyListeners();
 
@@ -424,6 +442,24 @@ class ChatController extends ChangeNotifier {
       );
       _pendingMemoryHadError = true;
       _finishStreaming();
+    }
+  }
+
+  Future<void> submitMemoryFeedback({
+    required String memoryId,
+    required String rating,
+    String? turnId,
+    String? reason,
+  }) async {
+    try {
+      await memoryMiddleware?.submitFeedback(
+        memoryId: memoryId,
+        rating: rating,
+        turnId: turnId,
+        reason: reason,
+      );
+    } catch (error) {
+      _setActionError(error);
     }
   }
 
@@ -1460,6 +1496,8 @@ class ChatController extends ChangeNotifier {
     final assistantAnswer = _pendingMemoryAssistantAnswer?.toString();
     final sessionId = _pendingMemorySessionId;
     final cwd = _pendingMemoryCwd;
+    final turnId = _pendingMemoryTurnId;
+    final usedMemories = _pendingMemoryUsedMemories;
     final hadError = _pendingMemoryHadError;
     _clearPendingMemoryExtraction();
     if (hadError ||
@@ -1473,6 +1511,8 @@ class ChatController extends ChangeNotifier {
       assistantAnswer: assistantAnswer,
       sessionId: sessionId,
       cwd: cwd,
+      turnId: turnId,
+      usedMemories: usedMemories,
     );
   }
 
@@ -1481,7 +1521,14 @@ class ChatController extends ChangeNotifier {
     _pendingMemoryAssistantAnswer = null;
     _pendingMemorySessionId = null;
     _pendingMemoryCwd = null;
+    _pendingMemoryTurnId = null;
+    _pendingMemoryUsedMemories = const <MemoryUsedItem>[];
     _pendingMemoryHadError = false;
+  }
+
+  String _nextMemoryTurnId() {
+    _memoryTurnSequence += 1;
+    return 'turn_${DateTime.now().microsecondsSinceEpoch}_$_memoryTurnSequence';
   }
 
   void _setError(Object error) {

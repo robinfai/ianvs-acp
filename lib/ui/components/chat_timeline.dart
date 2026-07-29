@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -16,6 +17,14 @@ const List<String> _toolCallIdMetadataKeys = [
   'call_id',
 ];
 
+typedef MemoryFeedbackCallback =
+    Future<void> Function({
+      required String memoryId,
+      required String rating,
+      String? turnId,
+      String? reason,
+    });
+
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
     super.key,
@@ -24,6 +33,7 @@ class ChatTimeline extends StatefulWidget {
     this.hasActiveSession = false,
     this.activeSessionLabel,
     this.onNewSession,
+    this.onMemoryFeedback,
   });
 
   final List<ChatMessage> messages;
@@ -31,6 +41,7 @@ class ChatTimeline extends StatefulWidget {
   final bool hasActiveSession;
   final String? activeSessionLabel;
   final VoidCallback? onNewSession;
+  final MemoryFeedbackCallback? onMemoryFeedback;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -82,7 +93,10 @@ class _ChatTimelineState extends State<ChatTimeline> {
         itemBuilder: (context, index) {
           final entry = entries[index];
           return entry.toolMessages == null
-              ? _MessageBubble(message: entry.message!)
+              ? _MessageBubble(
+                  message: entry.message!,
+                  onMemoryFeedback: widget.onMemoryFeedback,
+                )
               : _ToolGroupBubble(messages: entry.toolMessages!);
         },
       ),
@@ -461,9 +475,10 @@ class _IllustrationLine extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onMemoryFeedback});
 
   final ChatMessage message;
+  final MemoryFeedbackCallback? onMemoryFeedback;
 
   @override
   Widget build(BuildContext context) {
@@ -538,6 +553,10 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ],
               _ContentBlocksPreview(message: message),
+              _MemoryUsedPreview(
+                message: message,
+                onMemoryFeedback: onMemoryFeedback,
+              ),
             ],
           ),
         ),
@@ -994,6 +1013,194 @@ class _ToolHeader extends StatelessWidget {
         const SizedBox(width: 8),
         _StatusPill(label: parsed.status, color: _statusColor(parsed.status)),
       ],
+    );
+  }
+}
+
+class _MemoryUsedPreview extends StatelessWidget {
+  const _MemoryUsedPreview({
+    required this.message,
+    required this.onMemoryFeedback,
+  });
+
+  final ChatMessage message;
+  final MemoryFeedbackCallback? onMemoryFeedback;
+
+  @override
+  Widget build(BuildContext context) {
+    final memories = _mapList(message.metadata['memoryUsed'])
+        .where((item) => _stringMetadata(item, 'id') != null)
+        .toList(growable: false);
+    if (memories.isEmpty) return const SizedBox.shrink();
+
+    final turnId = _stringMetadata(message.metadata, 'memoryTurnId');
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: const Color(0xffddd6fe)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.memory_outlined,
+                size: 15,
+                color: AppColors.primary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Memory used · ${memories.length}',
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          for (final memory in memories) ...[
+            _MemoryUsedRow(
+              memory: memory,
+              turnId: turnId,
+              onMemoryFeedback: onMemoryFeedback,
+            ),
+            if (memory != memories.last) const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _MemoryUsedRow extends StatelessWidget {
+  const _MemoryUsedRow({
+    required this.memory,
+    required this.turnId,
+    required this.onMemoryFeedback,
+  });
+
+  final Map<String, Object?> memory;
+  final String? turnId;
+  final MemoryFeedbackCallback? onMemoryFeedback;
+
+  @override
+  Widget build(BuildContext context) {
+    final memoryId = _stringMetadata(memory, 'id') ?? '';
+    final kind = _stringMetadata(memory, 'kind') ?? 'memory';
+    final scope = _stringMetadata(memory, 'scope') ?? 'scope';
+    final text = _stringMetadata(memory, 'text') ?? memoryId;
+    final score = memory['score'];
+    final scoreLabel = score is num ? ' · ${(score * 100).round()}%' : '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$kind · $scope$scoreLabel',
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          text,
+          style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          children: [
+            _MemoryFeedbackButton(
+              label: 'Helpful',
+              memoryId: memoryId,
+              rating: 'helpful',
+              turnId: turnId,
+              onMemoryFeedback: onMemoryFeedback,
+            ),
+            _MemoryFeedbackButton(
+              label: 'Not relevant',
+              memoryId: memoryId,
+              rating: 'not_relevant',
+              turnId: turnId,
+              reason: 'Marked not relevant from chat timeline.',
+              onMemoryFeedback: onMemoryFeedback,
+            ),
+            _MemoryFeedbackButton(
+              label: 'Stale',
+              memoryId: memoryId,
+              rating: 'stale',
+              turnId: turnId,
+              reason: 'Marked stale from chat timeline.',
+              onMemoryFeedback: onMemoryFeedback,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _MemoryFeedbackButton extends StatelessWidget {
+  const _MemoryFeedbackButton({
+    required this.label,
+    required this.memoryId,
+    required this.rating,
+    required this.turnId,
+    required this.onMemoryFeedback,
+    this.reason,
+  });
+
+  final String label;
+  final String memoryId;
+  final String rating;
+  final String? turnId;
+  final String? reason;
+  final MemoryFeedbackCallback? onMemoryFeedback;
+
+  @override
+  Widget build(BuildContext context) {
+    final callback = onMemoryFeedback;
+    return OutlinedButton(
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 30),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        textStyle: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+        side: const BorderSide(color: Color(0xffc4b5fd)),
+      ),
+      onPressed: callback == null || memoryId.isEmpty
+          ? null
+          : () {
+              unawaited(
+                callback(
+                  memoryId: memoryId,
+                  rating: rating,
+                  turnId: turnId,
+                  reason: reason,
+                ),
+              );
+            },
+      child: Text(label),
     );
   }
 }

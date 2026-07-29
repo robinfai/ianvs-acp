@@ -10,6 +10,7 @@ void main() {
     bool hasActiveSession = false,
     String? activeSessionLabel,
     VoidCallback? onNewSession,
+    MemoryFeedbackCallback? onMemoryFeedback,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -19,6 +20,7 @@ void main() {
           hasActiveSession: hasActiveSession,
           activeSessionLabel: activeSessionLabel,
           onNewSession: onNewSession,
+          onMemoryFeedback: onMemoryFeedback,
         ),
       ),
     );
@@ -94,6 +96,59 @@ void main() {
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('Hello, human.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline renders used memories and feedback actions', (
+    tester,
+  ) async {
+    final feedback = <Map<String, String?>>[];
+    await tester.pumpWidget(
+      timeline(
+        [
+          ChatMessage(
+            role: ChatMessageRole.user,
+            text: '怎么称呼我？',
+            metadata: const <String, Object?>{
+              'memoryTurnId': 'turn_1',
+              'memoryUsed': [
+                <String, Object?>{
+                  'id': 'mem_name',
+                  'kind': 'user_preference',
+                  'scope': 'global',
+                  'text': '用户称呼是 Rodriguez。',
+                  'score': 0.93,
+                },
+              ],
+            },
+          ),
+        ],
+        onMemoryFeedback:
+            ({
+              required String memoryId,
+              required String rating,
+              String? turnId,
+              String? reason,
+            }) async {
+              feedback.add(<String, String?>{
+                'memoryId': memoryId,
+                'rating': rating,
+                'turnId': turnId,
+                'reason': reason,
+              });
+            },
+      ),
+    );
+
+    expect(find.text('Memory used · 1'), findsOneWidget);
+    expect(find.textContaining('user_preference · global'), findsOneWidget);
+    expect(find.text('用户称呼是 Rodriguez。'), findsOneWidget);
+
+    await tester.tap(find.text('Not relevant'));
+    await tester.pump();
+
+    expect(feedback.single['memoryId'], 'mem_name');
+    expect(feedback.single['rating'], 'not_relevant');
+    expect(feedback.single['turnId'], 'turn_1');
   });
 
   testWidgets('ChatTimeline renders streaming text as one assistant message', (
