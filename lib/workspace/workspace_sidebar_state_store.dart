@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../acp/agent_session.dart';
+import '../acp/session_title.dart';
 import '../platform/secure_atomic_file.dart';
 
 class WorkspaceSidebarWorkspaceState {
@@ -30,13 +31,14 @@ class WorkspaceSidebarWorkspaceState {
 }
 
 class WorkspaceSidebarStateStore {
-  const WorkspaceSidebarStateStore({required this.path});
+  WorkspaceSidebarStateStore({required this.path});
 
   static const String fileName = 'workspace_ui_state.json';
   static final Map<String, _WorkspaceStateCoordinator> _coordinators =
       <String, _WorkspaceStateCoordinator>{};
 
   final String? path;
+  Future<Map<String, Object?>>? _cachedState;
 
   static String? defaultPath({
     String? configPath,
@@ -90,6 +92,7 @@ class WorkspaceSidebarStateStore {
 
     await _mutate((payload) {
       payload['expanded_workspaces'] = sortedPaths;
+      payload.remove('expandedWorkspacePaths');
     });
   }
 
@@ -131,6 +134,7 @@ class WorkspaceSidebarStateStore {
       payload['workspace_index'] = sortedStates
           .map(_workspaceStateToJson)
           .toList();
+      payload.remove('workspaceIndex');
     });
   }
 
@@ -163,13 +167,18 @@ class WorkspaceSidebarStateStore {
       payload['session_index'] = sortedSessions
           .map(_sessionIndexToJson)
           .toList();
+      payload.remove('sessionIndex');
     });
   }
 
   Future<Map<String, Object?>> _readState() async {
     final file = _fileOrNull();
     if (file == null) return <String, Object?>{};
-    return _withCoordinator(file, (_) => _readStateFile(file));
+    final cached = _cachedState;
+    if (cached != null) return cached;
+    final snapshot = _withCoordinator(file, (_) => _readStateFile(file));
+    _cachedState = snapshot;
+    return snapshot;
   }
 
   Future<void> _mutate(
@@ -187,6 +196,7 @@ class WorkspaceSidebarStateStore {
         '${encoder.convert(state)}\n',
         protectExistingParent: false,
       );
+      _cachedState = Future<Map<String, Object?>>.value(state);
     });
   }
 
@@ -286,8 +296,8 @@ class WorkspaceSidebarStateStore {
     final localUnstarted = hasLocalUnstartedMarker
         ? _boolFromJson(json['local_unstarted'] ?? json['localUnstarted'])
         : updatedAt == null &&
-              _stringFromJson(json['title']) == null &&
-              _stringFromJson(
+              _sessionTitleFromJson(json['title']) == null &&
+              _sessionTitleFromJson(
                     json['title_override'] ?? json['titleOverride'],
                   ) ==
                   null;
@@ -299,8 +309,8 @@ class WorkspaceSidebarStateStore {
       additionalDirectories: _stringListFromJson(
         json['additional_directories'] ?? json['additionalDirectories'],
       ),
-      title: _stringFromJson(json['title']),
-      titleOverride: _stringFromJson(
+      title: _sessionTitleFromJson(json['title']),
+      titleOverride: _sessionTitleFromJson(
         json['title_override'] ?? json['titleOverride'],
       ),
       updatedAt: updatedAt,
@@ -313,8 +323,8 @@ class WorkspaceSidebarStateStore {
   }
 
   Map<String, Object?> _sessionIndexToJson(AgentSession session) {
-    final title = session.title?.trim();
-    final titleOverride = session.titleOverride?.trim();
+    final title = normalizeSessionTitle(session.title);
+    final titleOverride = normalizeSessionTitle(session.titleOverride);
     final agentName = session.agentName?.trim();
     return <String, Object?>{
       'id': session.id,
@@ -339,6 +349,10 @@ class WorkspaceSidebarStateStore {
     if (raw is! String) return null;
     final trimmed = raw.trim();
     return trimmed.isEmpty ? null : trimmed;
+  }
+
+  String? _sessionTitleFromJson(Object? raw) {
+    return raw is String ? normalizeSessionTitle(raw) : null;
   }
 
   List<String> _stringListFromJson(Object? raw) {

@@ -134,6 +134,40 @@ void main() {
   });
 
   test(
+    'WorkspaceSidebarStateStore normalizes and bounds persisted session titles',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final file = File('${tempDir.path}/workspace_ui_state.json');
+      final store = WorkspaceSidebarStateStore(path: file.path);
+      final longTitle = '  ${List<String>.filled(300, '会').join()}\nignored  ';
+
+      await store.saveSessionIndex([
+        AgentSession(
+          id: 'session-long-title',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 29, 8),
+          title: longTitle,
+          titleOverride: '  Slow\n\nstartup\t diagnosis  ',
+          agentName: 'Codex',
+        ),
+      ]);
+
+      final loaded = (await store.loadSessionIndex()).single;
+      expect(loaded.title?.runes, hasLength(256));
+      expect(loaded.title, endsWith('…'));
+      expect(loaded.titleOverride, 'Slow startup diagnosis');
+
+      final persisted = jsonDecode(await file.readAsString()) as Map;
+      final rawSession = (persisted['session_index'] as List).single as Map;
+      expect((rawSession['title'] as String).runes, hasLength(256));
+      expect(rawSession['title_override'], 'Slow startup diagnosis');
+    },
+  );
+
+  test(
     'WorkspaceSidebarStateStore deduplicates agents by workspace and session id',
     () async {
       final tempDir = await Directory.systemTemp.createTemp(

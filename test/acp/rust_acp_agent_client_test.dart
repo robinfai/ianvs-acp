@@ -5,6 +5,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
+import 'package:ianvs_acp/acp/session_title.dart';
 import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
 
 void main() {
@@ -149,6 +150,26 @@ void main() {
     await client.deleteSession(sessionId: 'restored-session');
     await client.authenticate(methodId: 'fixture-auth');
     await client.logout();
+  });
+
+  test('bounds oversized titles from Rust session catalogs', () async {
+    final native = _ClientFakeNative()
+      ..sessionTitle = List<String>.filled(300, '会').join();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+    await client.connect();
+
+    final title = (await client.listSessions()).single.sessions.single.title;
+
+    expect(title.runes, hasLength(maxSessionTitleCharacters));
+    expect(title, endsWith('…'));
   });
 
   test('advertises and projects Rust terminal provider lifecycle', () async {
@@ -441,6 +462,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   Map<String, Object?>? startedConfig;
   List<Map<String, Object?>>? promptAttachments;
   bool completeCreates = true;
+  String sessionTitle = 'Fixture session';
 
   void invalidatePermission({
     required String requestId,
@@ -577,7 +599,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
         <String, Object?>{
           'sessionId': 'restored-session',
           'cwd': '/tmp',
-          'title': 'Fixture session',
+          'title': sessionTitle,
           'updatedAt': '2026-07-17T10:00:00Z',
         },
       ],

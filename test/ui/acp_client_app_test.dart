@@ -2786,6 +2786,48 @@ void main() {
     );
   });
 
+  testWidgets('AcpClientApp serializes automatic session catalog refreshes', (
+    tester,
+  ) async {
+    final tracker = _CatalogConcurrencyTracker();
+    final clients = <String, _TrackingCatalogAgentClient>{};
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        'Pi': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
+      },
+    }, configPath: '/tmp/ianvs-acp-catalog-serialization.json');
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        taskInboxController: taskHarness.controller,
+        workspaceStateStore: _SessionIndexWorkspaceStateStore(
+          const <AgentSession>[],
+        ),
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (agentConfig) => clients.putIfAbsent(
+          agentConfig.agentName,
+          () => _TrackingCatalogAgentClient(tracker),
+        ),
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () =>
+          clients.values.fold<int>(
+            0,
+            (count, client) => count + client.listCalls,
+          ) >=
+          2,
+    );
+
+    expect(tracker.maxActive, 1);
+  });
+
   testWidgets(
     'AcpClientApp confirms sidebar workspace roots before switching agents',
     (tester) async {
@@ -4394,6 +4436,31 @@ class _ControllableListAgentClient extends FakeAgentClient {
   Future<List<AcpProjectSessions>> listSessions() async {
     await _listReleased.future;
     return super.listSessions();
+  }
+}
+
+class _CatalogConcurrencyTracker {
+  int active = 0;
+  int maxActive = 0;
+}
+
+class _TrackingCatalogAgentClient extends FakeAgentClient {
+  _TrackingCatalogAgentClient(this.tracker);
+
+  final _CatalogConcurrencyTracker tracker;
+  int listCalls = 0;
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    listCalls += 1;
+    tracker.active += 1;
+    if (tracker.active > tracker.maxActive) tracker.maxActive = tracker.active;
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      return await super.listSessions();
+    } finally {
+      tracker.active -= 1;
+    }
   }
 }
 

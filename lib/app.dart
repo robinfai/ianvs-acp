@@ -277,8 +277,11 @@ class _AcpClientAppState extends State<AcpClientApp>
   bool _sessionIndexPersistScheduled = false;
   int _sessionIndexHydrationSerial = 0;
   int _sessionCatalogLoadSerial = 0;
+  Future<void>? _sessionCatalogLoad;
   bool _sessionSelectionInProgress = false;
   WorkspaceSessionIndexPersistenceQueue? _sessionIndexPersistence;
+  WorkspaceSidebarStateStore? _ownedWorkspaceStateStore;
+  String? _ownedWorkspaceStateStorePath;
 
   @override
   void initState() {
@@ -476,6 +479,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _invalidateSessionCatalogLoad();
     for (final snapshot in _pendingUndoSnapshots.toList(growable: false)) {
       snapshot.discard();
     }
@@ -1234,10 +1238,14 @@ class _AcpClientAppState extends State<AcpClientApp>
         additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
         configPath: _config.configPath,
+        workspaceStateStore: _workspaceStateStore,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: _combinedStartupError,
         canSwitchAgent: widget.controller == null,
         autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
+        onLoadSessionCatalogs: widget.controller == null
+            ? _loadAllAgentSessionCatalogs
+            : null,
         sessionControllers: _sessionControllers,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onNewSessionInWorkspace: (context, workspace) =>
@@ -1576,6 +1584,7 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   Future<void> _hydrateSessionIndex() async {
     if (widget.controller != null) return;
+    _invalidateSessionCatalogLoad();
     final serial = ++_sessionIndexHydrationSerial;
     _sessionIndexHydrated = false;
     _sessionIndexPersistence = null;
@@ -1603,32 +1612,88 @@ class _AcpClientAppState extends State<AcpClientApp>
     _sessionIndexHydrated = true;
     _schedulePersistSessionIndex();
     if (mounted) setState(() {});
-    unawaited(_loadAllAgentSessionCatalogs());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || serial != _sessionIndexHydrationSerial) return;
+      unawaited(_loadAllAgentSessionCatalogs().catchError((_) {}));
+    });
   }
 
-  Future<void> _loadAllAgentSessionCatalogs() async {
-    if (widget.controller != null || !_canAutoLoadWorkspaceSessions) return;
+  Future<void> _loadAllAgentSessionCatalogs() {
+    final activeLoad = _sessionCatalogLoad;
+    if (activeLoad != null) return activeLoad;
     final serial = ++_sessionCatalogLoadSerial;
+    late final Future<void> trackedLoad;
+    trackedLoad = () async {
+      try {
+        await _performAgentSessionCatalogLoad(serial);
+      } finally {
+        if (identical(_sessionCatalogLoad, trackedLoad)) {
+          _sessionCatalogLoad = null;
+        }
+      }
+    }();
+    _sessionCatalogLoad = trackedLoad;
+    return trackedLoad;
+  }
+
+  Future<void> _performAgentSessionCatalogLoad(int serial) async {
+    if (widget.controller != null || !_canAutoLoadWorkspaceSessions) return;
     _ensureControllersForSelectableAgents(_config);
-    final controllers = _controllersByAgent.values.toList(growable: false);
-    await Future.wait(
-      controllers.map((controller) async {
-        if (serial != _sessionCatalogLoadSerial) return;
-        if (controller.isStreaming || controller.isSessionOperationRunning) {
-          return;
-        }
-        if (!controller.canListSessions) return;
-        try {
-          await controller.loadSessionCatalog();
-        } catch (_) {
-          // One agent may not support session/list or may be offline; keep
-          // loading the rest so workspace aggregation remains best-effort.
-        }
-      }),
-    );
+    final controllers = <ChatController>[
+      _controller,
+      for (final controller in _controllersByAgent.values)
+        if (!identical(controller, _controller)) controller,
+    ];
+    final seenCatalogSources = <String>{};
+    final errors = <Object>[];
+    var attemptedLoads = 0;
+
+    for (final controller in controllers) {
+      if (serial != _sessionCatalogLoadSerial) return;
+      if (controller.isStreaming || controller.isSessionOperationRunning) {
+        continue;
+      }
+      if (!controller.canListSessions) continue;
+      if (widget.createAgentClient == null &&
+          !seenCatalogSources.add(_sessionCatalogSourceKey(controller))) {
+        continue;
+      }
+
+      attemptedLoads += 1;
+      try {
+        await controller.loadSessionCatalog();
+      } catch (error) {
+        // One agent may not support session/list or may be offline; keep
+        // loading the rest so workspace aggregation remains best-effort.
+        errors.add(error);
+      }
+    }
     if (!mounted || serial != _sessionCatalogLoadSerial) return;
     _schedulePersistSessionIndex();
     setState(() {});
+    if (attemptedLoads > 0 && errors.length == attemptedLoads) {
+      throw errors.first;
+    }
+  }
+
+  void _invalidateSessionCatalogLoad() {
+    _sessionCatalogLoadSerial += 1;
+    _sessionCatalogLoad = null;
+  }
+
+  String _sessionCatalogSourceKey(ChatController controller) {
+    final config = _configForAgent(_config, controller.agentName);
+    final server = config?.activeAgentServer;
+    if (server == null) return 'controller:${identityHashCode(controller)}';
+    return jsonEncode(<String, Object?>{
+      'type': server.type,
+      'command': server.command,
+      'cwd': server.cwd,
+      'url': server.url,
+      'args': server.args,
+      'env': _runtimeSecretSignature(server.env),
+      'headers': _runtimeSecretSignature(server.headers),
+    });
   }
 
   AcpClientConfig? _configForSessionIndex(AgentSession session) {
@@ -1659,12 +1724,18 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   WorkspaceSidebarStateStore get _workspaceStateStore {
-    return widget.workspaceStateStore ??
-        WorkspaceSidebarStateStore(
-          path: WorkspaceSidebarStateStore.defaultPath(
-            configPath: _config.configPath,
-          ),
-        );
+    final injected = widget.workspaceStateStore;
+    if (injected != null) return injected;
+
+    final path = WorkspaceSidebarStateStore.defaultPath(
+      configPath: _config.configPath,
+    );
+    final cached = _ownedWorkspaceStateStore;
+    if (cached != null && _ownedWorkspaceStateStorePath == path) return cached;
+    final store = WorkspaceSidebarStateStore(path: path);
+    _ownedWorkspaceStateStorePath = path;
+    _ownedWorkspaceStateStore = store;
+    return store;
   }
 
   void _attachSessionIndexPersistence(ChatController controller) {

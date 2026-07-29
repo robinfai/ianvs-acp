@@ -53,6 +53,7 @@ const DEFAULT_RESTART_BASE_DELAY: Duration = Duration::from_millis(250);
 const SESSION_LIST_MAX_PAGES: usize = 100;
 const SESSION_LIST_MAX_ENTRIES: usize = 10_000;
 const SESSION_LIST_MAX_CURSOR_BYTES: usize = 8 * 1024;
+const SESSION_TITLE_MAX_CHARACTERS: usize = 256;
 const SESSION_CONFIG_MAX_OPTIONS: usize = 256;
 const SESSION_CONFIG_MAX_CHOICES: usize = 4_096;
 const TERMINAL_ALLOW_ONCE_OPTION_ID: &str = "ianvs_terminal_allow_once";
@@ -2746,10 +2747,7 @@ fn project_session_info(session: SessionInfo) -> Result<SessionCatalogEntryProje
                 .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let title = session.title.and_then(|title| {
-        let trimmed = title.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    });
+    let title = session.title.as_deref().and_then(normalize_session_title);
     let meta = session
         .meta
         .map(serde_json::to_value)
@@ -2763,6 +2761,67 @@ fn project_session_info(session: SessionInfo) -> Result<SessionCatalogEntryProje
         updated_at: session.updated_at,
         meta,
     })
+}
+
+fn normalize_session_title(value: &str) -> Option<String> {
+    let mut normalized = String::with_capacity(SESSION_TITLE_MAX_CHARACTERS);
+    let mut character_count = 0_usize;
+    let mut pending_space = false;
+    let mut truncated = false;
+
+    for character in value.chars() {
+        if character.is_whitespace() || character.is_control() {
+            if character_count > 0 {
+                pending_space = true;
+            }
+            continue;
+        }
+
+        let required_characters = if pending_space { 2 } else { 1 };
+        if character_count + required_characters > SESSION_TITLE_MAX_CHARACTERS {
+            truncated = true;
+            break;
+        }
+        if pending_space {
+            normalized.push(' ');
+            character_count += 1;
+        }
+        normalized.push(character);
+        character_count += 1;
+        pending_space = false;
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+    if truncated {
+        if character_count == SESSION_TITLE_MAX_CHARACTERS {
+            normalized.pop();
+        }
+        normalized.push('…');
+    }
+    Some(normalized)
+}
+
+fn bounded_session_info_payload<T: serde::Serialize>(value: T) -> Option<serde_json::Value> {
+    let mut payload = serde_json::to_value(value).ok()?;
+    let Some(fields) = payload.as_object_mut() else {
+        return Some(payload);
+    };
+    let Some(raw_title) = fields.remove("title") else {
+        return Some(payload);
+    };
+    match raw_title {
+        serde_json::Value::String(title) => {
+            if let Some(title) = normalize_session_title(&title) {
+                fields.insert("title".to_string(), serde_json::Value::String(title));
+            }
+        }
+        value => {
+            fields.insert("title".to_string(), value);
+        }
+    }
+    Some(payload)
 }
 
 fn capability_projection(
@@ -3189,7 +3248,7 @@ fn project_session_notification(
         AcpSessionUpdate::SessionInfoUpdate(value) => (
             SessionUpdateKind::SessionInfoChanged,
             None,
-            serde_json::to_value(value).ok(),
+            bounded_session_info_payload(value),
         ),
         AcpSessionUpdate::UsageUpdate(value) => (
             SessionUpdateKind::UsageChanged,
@@ -3327,5 +3386,44 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
             futures::future::Either::Left((result, _)) => result,
             futures::future::Either::Right(((), main)) => main.await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SESSION_TITLE_MAX_CHARACTERS, bounded_session_info_payload, normalize_session_title,
+    };
+
+    #[test]
+    fn session_titles_are_normalized_and_bounded() {
+        let long_title = format!(
+            "  {}\nignored  ",
+            "会".repeat(SESSION_TITLE_MAX_CHARACTERS + 44)
+        );
+
+        let normalized = normalize_session_title(&long_title).expect("title");
+
+        assert_eq!(normalized.chars().count(), SESSION_TITLE_MAX_CHARACTERS);
+        assert!(normalized.ends_with('…'));
+        assert_eq!(
+            normalize_session_title("  Slow\n\nstartup\t diagnosis  ").as_deref(),
+            Some("Slow startup diagnosis")
+        );
+        assert_eq!(normalize_session_title(" \n\t "), None);
+    }
+
+    #[test]
+    fn session_info_update_titles_are_bounded_before_projection() {
+        let payload = bounded_session_info_payload(serde_json::json!({
+            "title": "会".repeat(SESSION_TITLE_MAX_CHARACTERS + 44),
+            "updatedAt": "2026-07-29T08:00:00Z",
+        }))
+        .expect("payload");
+        let title = payload["title"].as_str().expect("title");
+
+        assert_eq!(title.chars().count(), SESSION_TITLE_MAX_CHARACTERS);
+        assert!(title.ends_with('…'));
+        assert_eq!(payload["updatedAt"], "2026-07-29T08:00:00Z");
     }
 }

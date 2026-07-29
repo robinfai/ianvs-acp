@@ -10,6 +10,7 @@ import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 import 'prompt_attachment.dart';
+import 'session_title.dart';
 
 /// ACP client projection backed by the Rust runtime.
 ///
@@ -861,7 +862,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         return AcpSessionEntry(
           id: sessionId,
           cwd: cwd,
-          title: raw['title'] as String? ?? sessionId,
+          title: normalizeSessionTitle(raw['title'] as String?) ?? sessionId,
           additionalDirectories:
               (raw['additionalDirectories'] as List? ?? const <Object?>[])
                   .whereType<String>()

@@ -58,6 +58,7 @@ class AppShell extends StatelessWidget {
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.configPath,
+    this.workspaceStateStore,
     this.defaultAgentName,
     this.startupError,
     this.canSwitchAgent = true,
@@ -74,6 +75,7 @@ class AppShell extends StatelessWidget {
     this.onOpenTaskSession,
     this.onAgentAuthenticated,
     this.onSaveConfig,
+    this.onLoadSessionCatalogs,
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
     this.inputBudget = const AcpInputBudget(),
@@ -91,6 +93,7 @@ class AppShell extends StatelessWidget {
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final String? configPath;
+  final WorkspaceSidebarStateStore? workspaceStateStore;
   final String? defaultAgentName;
   final String? startupError;
   final bool canSwitchAgent;
@@ -123,6 +126,7 @@ class AppShell extends StatelessWidget {
   onOpenTaskSession;
   final AppShellAgentAuthenticated? onAgentAuthenticated;
   final AcpConfigSaveCallback? onSaveConfig;
+  final Future<void> Function()? onLoadSessionCatalogs;
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
   final AcpInputBudget inputBudget;
@@ -177,9 +181,13 @@ class AppShell extends StatelessWidget {
             sessionControllerList.any(
               (controller) => controller.canListSessions,
             );
-        final workspaceStateStore = WorkspaceSidebarStateStore(
-          path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
-        );
+        final workspaceStateStore =
+            this.workspaceStateStore ??
+            WorkspaceSidebarStateStore(
+              path: WorkspaceSidebarStateStore.defaultPath(
+                configPath: configPath,
+              ),
+            );
         Widget promptDock() => PromptInput(
           inputBudget: inputBudget,
           agentName: agentName,
@@ -361,9 +369,15 @@ class AppShell extends StatelessWidget {
                                       onLoadWorkspaceSessions:
                                           canLoadWorkspaceSessions
                                           ? (_) async {
-                                              await _loadSessionCatalogs(
-                                                sessionControllerList,
-                                              );
+                                              final loader =
+                                                  onLoadSessionCatalogs;
+                                              if (loader != null) {
+                                                await loader();
+                                              } else {
+                                                await _loadSessionCatalogs(
+                                                  sessionControllerList,
+                                                );
+                                              }
                                             }
                                           : null,
                                       onRevealWorkspace: (workspace) =>

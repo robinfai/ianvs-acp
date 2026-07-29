@@ -15,6 +15,7 @@ import '../acp/acp_session_usage.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
+import '../acp/session_title.dart';
 import 'connection_state.dart';
 import '../tasks/permission_context.dart';
 
@@ -3164,11 +3165,11 @@ class ChatController extends ChangeNotifier {
   }
 
   void renameSession(String sessionId, String title) {
-    final trimmedTitle = title.trim();
-    if (trimmedTitle.isEmpty) return;
+    final normalizedTitle = normalizeSessionTitle(title);
+    if (normalizedTitle == null) return;
     _updateSessionMetadata(sessionId, (session) {
-      if (session.titleOverride == trimmedTitle) return session;
-      return session.copyWith(titleOverride: trimmedTitle);
+      if (session.titleOverride == normalizedTitle) return session;
+      return session.copyWith(titleOverride: normalizedTitle);
     });
   }
 
@@ -5883,9 +5884,7 @@ class ChatController extends ChangeNotifier {
       return null;
     }
     final rawTitle = metadata['title'];
-    final title = rawTitle is String && rawTitle.trim().isNotEmpty
-        ? rawTitle.trim()
-        : null;
+    final title = rawTitle is String ? normalizeSessionTitle(rawTitle) : null;
     final updatedAtRaw = metadata['updatedAt'];
     final updatedAt = updatedAtRaw is String
         ? DateTime.tryParse(updatedAtRaw)?.toLocal()
@@ -6792,7 +6791,7 @@ class ChatController extends ChangeNotifier {
           additionalDirectories:
               boundSession?.additionalDirectories ??
               entry.additionalDirectories,
-          title: entry.title,
+          title: normalizeSessionTitle(entry.title) ?? sessionId,
           titleOverride: existing?.titleOverride,
           updatedAt: entry.updatedAt ?? existing?.updatedAt,
           agentName: boundAgentName != null && boundAgentName.isNotEmpty
