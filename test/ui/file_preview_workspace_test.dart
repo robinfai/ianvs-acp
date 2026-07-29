@@ -2,10 +2,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
 import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
+import 'package:ianvs_acp/ui/components/markdown_code_block.dart';
+import 'package:ianvs_acp/ui/components/markdown_preview_image.dart';
 
 void main() {
   Future<void> openMarkdownLink(
@@ -129,6 +132,96 @@ void main() {
       expect(find.byTooltip('关闭 main.dart'), findsOneWidget);
     },
   );
+
+  testWidgets('Markdown file preview uses the shared fenced code block', (
+    tester,
+  ) async {
+    final workspace = createWorkspace();
+    final markdown = File('${workspace.path}/commands.md')
+      ..writeAsStringSync('# Commands\n\n```sh\nprintf "ready\\\\n"\n```\n');
+
+    await tester.pumpWidget(
+      previewApp(
+        workspacePath: workspace.path,
+        markdown: '[Open commands](${markdown.path})',
+      ),
+    );
+    await openMarkdownLink(tester, text: 'Open commands', href: markdown.path);
+
+    expect(find.byType(MarkdownCodeBlock), findsOneWidget);
+    expect(find.text('SHELL'), findsOneWidget);
+    expect(find.byTooltip('复制代码'), findsOneWidget);
+  });
+
+  testWidgets('Markdown preview routes supported image path forms', (
+    tester,
+  ) async {
+    final workspace = createWorkspace();
+    final docs = Directory('${workspace.path}/docs')..createSync();
+    final image = File('${docs.path}/diagram one.png')
+      ..writeAsBytesSync(<int>[0]);
+    final markdown = File('${docs.path}/preview.md')
+      ..writeAsStringSync(
+        [
+          '![relative](diagram%20one.png)',
+          '![absolute](${Uri(path: image.path)})',
+          '![file-uri](${Uri.file(image.path)})',
+          '![remote](https://images.example.com/diagram.png)',
+          '![inline](data:image/png;base64,iVBORw0KGgo=)',
+        ].join('\n\n'),
+      );
+
+    await tester.pumpWidget(
+      previewApp(
+        workspacePath: workspace.path,
+        markdown: '[Open preview](${markdown.path})',
+      ),
+    );
+    await openMarkdownLink(tester, text: 'Open preview', href: markdown.path);
+
+    final imageWidgets = tester
+        .widgetList<MarkdownPreviewImage>(find.byType(MarkdownPreviewImage))
+        .toList(growable: false);
+    expect(imageWidgets, hasLength(5));
+    expect(imageWidgets.map((widget) => widget.uri.scheme), <String>[
+      '',
+      '',
+      'file',
+      'https',
+      'data',
+    ]);
+    expect(find.textContaining('图片未自动加载'), findsNothing);
+  });
+
+  testWidgets('Markdown image frame hugs image height', (tester) async {
+    final svgUri = Uri.dataFromString(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400">'
+      '<rect width="800" height="400" fill="#6688aa"/>'
+      '</svg>',
+      mimeType: 'image/svg+xml',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: MarkdownPreviewImage(
+              uri: svgUri,
+              workspacePath: Directory.systemTemp.path,
+              baseDirectory: Directory.systemTemp.path,
+              additionalDirectories: const <String>[],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final frameSize = tester.getSize(find.byType(MarkdownPreviewImage));
+    final imageSize = tester.getSize(find.byType(SvgPicture));
+    expect(frameSize.height, lessThanOrEqualTo(imageSize.height + 16));
+  });
 
   testWidgets('shows a safe error instead of previewing traversal links', (
     tester,

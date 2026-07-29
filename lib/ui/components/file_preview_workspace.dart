@@ -9,6 +9,8 @@ import 'package:path/path.dart' as p;
 import '../../platform/file_manager.dart';
 import '../file_preview/file_preview_document.dart';
 import '../theme/app_design_tokens.dart';
+import 'markdown_code_block.dart';
+import 'markdown_preview_image.dart';
 
 typedef FilePreviewLinkHandler =
     void Function(String text, String? href, String title);
@@ -83,6 +85,7 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
           tabs: _tabs.map((tab) => tab.target).toList(growable: false),
           activeTab: _activeTab,
           document: active.document,
+          additionalDirectories: widget.additionalDirectories,
           processRunner: widget.processRunner,
           onSelectTab: (index) => setState(() => _activeTab = index),
           onCloseTab: _closeTab,
@@ -220,6 +223,7 @@ class FilePreviewPane extends StatefulWidget {
     required this.tabs,
     required this.activeTab,
     required this.document,
+    required this.additionalDirectories,
     required this.onSelectTab,
     required this.onCloseTab,
     required this.onClosePreview,
@@ -230,6 +234,7 @@ class FilePreviewPane extends StatefulWidget {
   final List<FilePreviewTarget> tabs;
   final int activeTab;
   final Future<FilePreviewDocument> document;
+  final List<String> additionalDirectories;
   final ValueChanged<int> onSelectTab;
   final ValueChanged<int> onCloseTab;
   final VoidCallback onClosePreview;
@@ -326,6 +331,7 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
                         searchQuery: _searchController.text,
                         showMarkdownSource: _showMarkdownSource,
                         wrapText: _wrapText,
+                        additionalDirectories: widget.additionalDirectories,
                         onTapLink: widget.onOpenNestedLink,
                         onOpenExternal: _openExternal,
                       ),
@@ -753,6 +759,7 @@ class _PreviewBody extends StatelessWidget {
     required this.searchQuery,
     required this.showMarkdownSource,
     required this.wrapText,
+    required this.additionalDirectories,
     required this.onTapLink,
     required this.onOpenExternal,
   });
@@ -761,6 +768,7 @@ class _PreviewBody extends StatelessWidget {
   final String searchQuery;
   final bool showMarkdownSource;
   final bool wrapText;
+  final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
   final VoidCallback onOpenExternal;
 
@@ -778,6 +786,9 @@ class _PreviewBody extends StatelessWidget {
         }
         return _MarkdownFilePreview(
           text: document.text ?? '',
+          documentPath: document.target.path,
+          workspacePath: document.target.workspacePath,
+          additionalDirectories: additionalDirectories,
           onTapLink: onTapLink,
         );
       case FilePreviewKind.text:
@@ -821,9 +832,18 @@ class _PreviewBody extends StatelessWidget {
 }
 
 class _MarkdownFilePreview extends StatelessWidget {
-  const _MarkdownFilePreview({required this.text, required this.onTapLink});
+  const _MarkdownFilePreview({
+    required this.text,
+    required this.documentPath,
+    required this.workspacePath,
+    required this.additionalDirectories,
+    required this.onTapLink,
+  });
 
   final String text;
+  final String documentPath;
+  final String workspacePath;
+  final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
 
   @override
@@ -887,8 +907,16 @@ class _MarkdownFilePreview extends StatelessWidget {
                   data: text,
                   selectable: true,
                   onTapLink: onTapLink,
-                  imageBuilder: (uri, title, alt) =>
-                      _BlockedPreviewImage(uri: uri, alt: alt),
+                  imageBuilder: (uri, title, alt) => MarkdownPreviewImage(
+                    uri: uri,
+                    alt: alt,
+                    workspacePath: workspacePath,
+                    baseDirectory: p.dirname(documentPath),
+                    additionalDirectories: additionalDirectories,
+                  ),
+                  builders: <String, MarkdownElementBuilder>{
+                    'pre': MarkdownCodeBlockBuilder(user: false),
+                  },
                   styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
                       .copyWith(
                         h1: const TextStyle(
@@ -1237,43 +1265,6 @@ class _PreviewStatus extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-        ],
-      ),
-    );
-  }
-}
-
-class _BlockedPreviewImage extends StatelessWidget {
-  const _BlockedPreviewImage({required this.uri, required this.alt});
-
-  final Uri uri;
-  final String? alt;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.image_not_supported_outlined, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              alt?.trim().isNotEmpty == true
-                  ? '图片未自动加载 · ${alt!.trim()}'
-                  : '图片未自动加载 · $uri',
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-              ),
-            ),
-          ),
         ],
       ),
     );

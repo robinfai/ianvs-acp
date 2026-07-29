@@ -138,6 +138,49 @@ Future<FilePreviewTarget> resolveFilePreviewTarget({
   );
 }
 
+Future<FilePreviewTarget> resolveMarkdownImageTarget({
+  required String source,
+  required String workspacePath,
+  required String baseDirectory,
+  List<String> additionalDirectories = const <String>[],
+}) async {
+  final value = source.trim();
+  if (value.isEmpty) {
+    throw const FormatException('图片没有文件路径。');
+  }
+
+  try {
+    return await resolveFilePreviewTarget(
+      href: value,
+      workspacePath: workspacePath,
+      additionalDirectories: additionalDirectories,
+      baseDirectory: baseDirectory,
+    );
+  } on FileSystemException {
+    final uri = Uri.tryParse(value);
+    final scheme = uri?.scheme.toLowerCase() ?? '';
+    final encodedPath = uri?.path ?? value;
+    if (scheme.isNotEmpty ||
+        !encodedPath.startsWith('/') ||
+        encodedPath.startsWith('//')) {
+      rethrow;
+    }
+
+    // Markdown authored for GitHub and other web renderers commonly uses a
+    // leading slash for a repository-root-relative asset. Prefer a real,
+    // authorized absolute path above, then fall back to the workspace root.
+    final workspaceRelative = encodedPath.substring(1);
+    if (workspaceRelative.isEmpty) rethrow;
+    final fragment = uri?.hasFragment == true ? '#${uri!.fragment}' : '';
+    return resolveFilePreviewTarget(
+      href: '$workspaceRelative$fragment',
+      workspacePath: workspacePath,
+      additionalDirectories: additionalDirectories,
+      baseDirectory: workspacePath,
+    );
+  }
+}
+
 Future<FilePreviewDocument> loadFilePreviewDocument(
   FilePreviewTarget target, {
   FilePreviewProcessRunner? processRunner,

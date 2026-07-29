@@ -8,6 +8,7 @@ import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
+import 'package:ianvs_acp/ui/components/markdown_code_block.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
@@ -192,6 +193,23 @@ void main() {
     await tester.tap(find.text('Open file'));
 
     expect(tappedHref, 'docs/readme.md#L4');
+  });
+
+  testWidgets('ChatTimeline renders fenced code with the shared code block', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: '```dart\nfinal value = 1;\n```',
+        ),
+      ]),
+    );
+
+    expect(find.byType(MarkdownCodeBlock), findsOneWidget);
+    expect(find.text('DART'), findsOneWidget);
+    expect(find.byTooltip('复制代码'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline displays one typed notice per omission kind', (

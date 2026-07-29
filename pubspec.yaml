@@ -48,6 +48,7 @@ dependencies:
   xml: ^7.0.1
   sqlite3: ^3.3.4
   ffi: ^2.2.0
+  re_highlight: ^0.0.3
 
 dev_dependencies:
   flutter_test:

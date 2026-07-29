@@ -51,6 +51,58 @@ void main() {
   });
 
   test(
+    'resolves Markdown images from relative, encoded, file, absolute, and workspace-root paths',
+    () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'ianvs-markdown-images-',
+      );
+      final additional = await Directory.systemTemp.createTemp(
+        'ianvs-markdown-images-extra-',
+      );
+      addTearDown(() async {
+        await workspace.delete(recursive: true);
+        await additional.delete(recursive: true);
+      });
+      final docs = Directory('${workspace.path}/docs');
+      final relativeImage = File('${docs.path}/images/diagram one.png');
+      final rootImage = File('${workspace.path}/assets/root.png');
+      final additionalImage = File('${additional.path}/shared.png');
+      await relativeImage.parent.create(recursive: true);
+      await rootImage.parent.create(recursive: true);
+      await relativeImage.writeAsBytes(<int>[1]);
+      await rootImage.writeAsBytes(<int>[2]);
+      await additionalImage.writeAsBytes(<int>[3]);
+
+      final relative = await resolveMarkdownImageTarget(
+        source: 'images/diagram%20one.png',
+        workspacePath: workspace.path,
+        baseDirectory: docs.path,
+      );
+      final absolute = await resolveMarkdownImageTarget(
+        source: rootImage.path,
+        workspacePath: workspace.path,
+        baseDirectory: docs.path,
+      );
+      final workspaceRoot = await resolveMarkdownImageTarget(
+        source: '/assets/root.png',
+        workspacePath: workspace.path,
+        baseDirectory: docs.path,
+      );
+      final fileUri = await resolveMarkdownImageTarget(
+        source: Uri.file(additionalImage.path).toString(),
+        workspacePath: workspace.path,
+        baseDirectory: docs.path,
+        additionalDirectories: <String>[additional.path],
+      );
+
+      expect(relative.path, await relativeImage.resolveSymbolicLinks());
+      expect(absolute.path, await rootImage.resolveSymbolicLinks());
+      expect(workspaceRoot.path, await rootImage.resolveSymbolicLinks());
+      expect(fileUri.path, await additionalImage.resolveSymbolicLinks());
+    },
+  );
+
+  test(
     'rejects traversal and symlink escapes outside authorized roots',
     () async {
       final parent = await Directory.systemTemp.createTemp(
