@@ -38,6 +38,8 @@ void main() {
     AcpConfigOption? reasoningEffortOption,
     ValueChanged<String>? onModelSelected,
     ValueChanged<String>? onReasoningEffortSelected,
+    List<AcpConfigOption> configOptions = const <AcpConfigOption>[],
+    SessionConfigSelectionCallback? onConfigOptionSelected,
     PromptAttachmentPicker? pickAttachments,
     PromptAttachmentKindPicker? pickAttachmentsForKind,
     double? width,
@@ -62,6 +64,8 @@ void main() {
       reasoningEffortOption: reasoningEffortOption,
       onModelSelected: onModelSelected,
       onReasoningEffortSelected: onReasoningEffortSelected,
+      configOptions: configOptions,
+      onConfigOptionSelected: onConfigOptionSelected,
       onSend: onSend,
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
@@ -1895,6 +1899,299 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('GPT-5 Mini'), findsOneWidget);
     expect(find.text('Low'), findsNothing);
+  });
+
+  testWidgets('PromptInput adapts to agent-defined session config options', (
+    tester,
+  ) async {
+    String? selectedId;
+    Object? selectedValue;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        configOptions: const [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5',
+            options: [
+              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+            ],
+          ),
+          AcpConfigOption(
+            id: 'reasoning_effort',
+            name: 'Reasoning Effort',
+            type: 'select',
+            currentValue: 'high',
+            options: [
+              AcpConfigOptionChoice(value: 'low', name: 'Low'),
+              AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+              AcpConfigOptionChoice(value: 'high', name: 'High'),
+            ],
+          ),
+          AcpConfigOption(
+            id: 'fast_mode',
+            name: 'Fast',
+            type: 'select',
+            currentValue: 'off',
+            options: [
+              AcpConfigOptionChoice(
+                value: 'off',
+                name: 'Off',
+                description: 'Default speed, normal usage',
+              ),
+              AcpConfigOptionChoice(
+                value: 'on',
+                name: 'On',
+                description: '1.5x speed, increased usage',
+              ),
+            ],
+          ),
+          AcpConfigOption(
+            id: 'mode',
+            name: 'Mode',
+            type: 'select',
+            currentValue: 'agent',
+            options: [
+              AcpConfigOptionChoice(value: 'read-only', name: 'Read-only'),
+              AcpConfigOptionChoice(value: 'agent', name: 'Agent'),
+            ],
+          ),
+        ],
+        onConfigOptionSelected: (configId, value) {
+          selectedId = configId;
+          selectedValue = value;
+        },
+      ),
+    );
+
+    expect(find.text('GPT-5 High'), findsOneWidget);
+    expect(find.byIcon(Icons.tune_rounded), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Reasoning'), findsOneWidget);
+    expect(find.text('Speed'), findsOneWidget);
+    expect(find.text('Advanced'), findsOneWidget);
+    expect(find.text('GPT-5 Mini'), findsNothing);
+    expect(find.text('Low'), findsNothing);
+    expect(find.text('Read-only'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-option-model')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('GPT-5 Mini'), findsOneWidget);
+    expect(find.text('Low'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-choice-model-mini')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(selectedId, 'model');
+    expect(selectedValue, 'mini');
+
+    await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-option-fast_mode')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Standard'), findsWidgets);
+    expect(find.text('Fast'), findsWidgets);
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-choice-fast_mode-on')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(selectedId, 'fast_mode');
+    expect(selectedValue, 'on');
+
+    await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+    await tester.pumpAndSettle();
+    final advancedButton = tester.widget<MenuItemButton>(
+      find.byKey(const Key('prompt-session-config-advanced')),
+    );
+    advancedButton.onPressed!();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('prompt-session-config-advanced-panel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-session-config-advanced-effort-slider')),
+      findsOneWidget,
+    );
+    expect(find.text('Mode'), findsNothing);
+    expect(find.text('Read-only'), findsNothing);
+
+    final particles = find.byKey(
+      const Key('prompt-session-config-advanced-particles'),
+    );
+    expect(tester.widget<CustomPaint>(particles).painter, isNotNull);
+    await tester.pump(const Duration(milliseconds: 160));
+
+    final slider = find.byKey(
+      const Key('prompt-session-config-advanced-effort-slider'),
+    );
+    final gesture = await tester.startGesture(tester.getCenter(slider));
+    await gesture.moveBy(const Offset(-20, 0));
+    await tester.pump();
+    var sliderSemantics = tester.getSemantics(slider);
+    expect(sliderSemantics.value, 'Medium');
+    expect(sliderSemantics.hint, 'Snapped to node 2 of 3');
+
+    await gesture.moveBy(const Offset(-220, 0));
+    await tester.pump();
+    sliderSemantics = tester.getSemantics(slider);
+    expect(sliderSemantics.value, 'Low');
+    expect(sliderSemantics.hint, 'Snapped to node 1 of 3');
+    expect(find.text('More efficient'), findsOneWidget);
+    expect(find.text('Smarter'), findsOneWidget);
+
+    await gesture.up();
+    await tester.pump();
+    expect(find.text('More efficient'), findsNothing);
+    expect(find.text('Smarter'), findsNothing);
+
+    expect(selectedId, 'reasoning_effort');
+    expect(selectedValue, 'low');
+
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-advanced-collapse')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('prompt-session-config-advanced-panel')),
+      findsNothing,
+    );
+    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Reasoning'), findsOneWidget);
+    expect(find.text('Speed'), findsOneWidget);
+    expect(find.text('Advanced'), findsOneWidget);
+  });
+
+  testWidgets(
+    'PromptInput keeps config menus and advanced overlay mutually exclusive',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          configOptions: const [
+            AcpConfigOption(
+              id: 'model',
+              name: 'Model',
+              type: 'select',
+              currentValue: 'gpt-5',
+              options: [
+                AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+                AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+              ],
+            ),
+            AcpConfigOption(
+              id: 'reasoning_effort',
+              name: 'Reasoning Effort',
+              type: 'select',
+              currentValue: 'medium',
+              options: [
+                AcpConfigOptionChoice(value: 'low', name: 'Low'),
+                AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+                AcpConfigOptionChoice(value: 'high', name: 'High'),
+              ],
+            ),
+          ],
+          onConfigOptionSelected: (_, _) {},
+        ),
+      );
+
+      Future<void> openAdvancedOverlay() async {
+        await tester.tap(
+          find.byKey(const Key('prompt-session-config-selector')),
+        );
+        await tester.pumpAndSettle();
+        final advancedButton = tester.widget<MenuItemButton>(
+          find.byKey(const Key('prompt-session-config-advanced')),
+        );
+        advancedButton.onPressed!();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+      }
+
+      await openAdvancedOverlay();
+      expect(
+        find.byKey(const Key('prompt-session-config-advanced-panel')),
+        findsOneWidget,
+      );
+      expect(find.text('Model'), findsNothing);
+
+      await tester.tapAt(const Offset(4, 4));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('prompt-session-config-advanced-panel')),
+        findsNothing,
+      );
+
+      await openAdvancedOverlay();
+      await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('prompt-session-config-advanced-panel')),
+        findsNothing,
+      );
+      expect(find.text('Model'), findsOneWidget);
+      expect(find.text('Reasoning'), findsOneWidget);
+    },
+  );
+
+  testWidgets('PromptInput supports boolean fast mode in speed submenu', (
+    tester,
+  ) async {
+    Object? selectedValue;
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        configOptions: const [
+          AcpConfigOption(
+            id: 'fast_mode',
+            name: 'Fast mode',
+            type: 'boolean',
+            currentValue: 'true',
+            options: [],
+          ),
+        ],
+        onConfigOptionSelected: (_, value) => selectedValue = value,
+      ),
+    );
+
+    expect(find.byIcon(Icons.bolt_rounded), findsOneWidget);
+    await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-option-fast_mode')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Standard'), findsOneWidget);
+    expect(find.text('Fast'), findsWidgets);
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-choice-fast_mode-off')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(selectedValue, isFalse);
   });
 
   testWidgets('PromptInput hides model selector without choices', (

@@ -16,11 +16,12 @@ class TaskInboxSqliteStore
         TaskMigrationRepository,
         AtomicTaskClaimMetadataRepository,
         RawPayloadMaintenanceRepository {
-  TaskInboxSqliteStore({required this.path});
+  TaskInboxSqliteStore({required this.path, this.maxDatabaseBytes});
 
   static const String fileName = 'task_inbox_state.sqlite3';
 
   final String? path;
+  final int? maxDatabaseBytes;
   Database? _database;
   Future<void>? _initializeFuture;
 
@@ -95,6 +96,7 @@ class TaskInboxSqliteStore
       database.execute('PRAGMA synchronous = FULL;');
       database.execute('PRAGMA foreign_keys = ON;');
       database.execute('PRAGMA secure_delete = ON;');
+      _applySizeLimit(database);
       _rejectUnsupportedSchema(database);
       database.execute(_schemaSql);
       _applySchemaMigrations(database);
@@ -125,6 +127,29 @@ class TaskInboxSqliteStore
     }
   }
 
+  void _applySizeLimit(Database database) {
+    final maxBytes = maxDatabaseBytes;
+    if (maxBytes == null) return;
+    if (maxBytes <= 0) {
+      throw ArgumentError.value(
+        maxBytes,
+        'maxDatabaseBytes',
+        'Must be positive.',
+      );
+    }
+    final pageSize =
+        database.select('PRAGMA page_size;').first.values.first as int;
+    final requestedPages = maxBytes ~/ pageSize;
+    if (requestedPages < 1) {
+      throw ArgumentError.value(
+        maxBytes,
+        'maxDatabaseBytes',
+        'Must allow at least one SQLite page.',
+      );
+    }
+    database.execute('PRAGMA max_page_count = $requestedPages;');
+  }
+
   static Future<void> _protectSqliteFiles(
     File databaseFile, {
     bool createDatabase = false,
@@ -153,6 +178,18 @@ class TaskInboxSqliteStore
     await initialize();
     final row = _database!.select('PRAGMA foreign_keys;').first;
     return row.values.first == 1;
+  }
+
+  Future<int> maxPageCount() async {
+    await initialize();
+    final row = _database!.select('PRAGMA max_page_count;').first;
+    return row.values.first as int;
+  }
+
+  Future<int> pageSize() async {
+    await initialize();
+    final row = _database!.select('PRAGMA page_size;').first;
+    return row.values.first as int;
   }
 
   Future<Set<String>> tableNames() async {

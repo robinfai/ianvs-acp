@@ -19,6 +19,8 @@ final class IanvsDaemonProcess {
     required String databasePath,
     String? socketPath,
     String? binaryPath,
+    int? maxDatabaseBytes,
+    int? retentionDays,
     Duration startupTimeout = const Duration(seconds: 5),
   }) async {
     final resolvedSocket = socketPath ?? socketPathForDatabase(databasePath);
@@ -29,6 +31,14 @@ final class IanvsDaemonProcess {
       databasePath,
       '--socket',
       resolvedSocket,
+      if (maxDatabaseBytes != null) ...[
+        '--max-database-bytes',
+        maxDatabaseBytes.toString(),
+      ],
+      if (retentionDays != null) ...[
+        '--retention-days',
+        retentionDays.toString(),
+      ],
     ], mode: ProcessStartMode.detached);
     final deadline = DateTime.now().add(startupTimeout);
     while (DateTime.now().isBefore(deadline)) {
@@ -71,7 +81,8 @@ final class IanvsDaemonProcess {
   }
 }
 
-final class IanvsDaemonWorkflow implements IanvsWorkflowAuthority {
+final class IanvsDaemonWorkflow
+    implements IanvsWorkflowAuthority, IanvsStoragePolicyAuthority {
   IanvsDaemonWorkflow({required this.socketPath});
 
   static const int protocolVersion = 1;
@@ -84,6 +95,19 @@ final class IanvsDaemonWorkflow implements IanvsWorkflowAuthority {
   Future<void> _tail = Future<void>.value();
   int _nextRequestId = 0;
   bool _disposed = false;
+
+  @override
+  Future<void> configureStorage({
+    required int maxDatabaseBytes,
+    required int retentionDays,
+  }) async {
+    final result = await _call(<String, Object?>{
+      'operation': 'configure_storage',
+      'maxDatabaseBytes': maxDatabaseBytes,
+      'retentionDays': retentionDays,
+    });
+    _expectType(result, 'ack');
+  }
 
   Future<List<String>> configureAgents(
     List<Map<String, Object?>> agents,

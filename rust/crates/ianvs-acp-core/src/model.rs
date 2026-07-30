@@ -32,6 +32,12 @@ pub struct AgentLaunchConfig {
     /// Optional dedicated `SQLite` file for durable ACP session recovery.
     #[serde(default)]
     pub session_store_path: Option<String>,
+    /// Capacity limit for the dedicated ACP session-recovery SQLite file.
+    #[serde(default)]
+    pub session_store_max_bytes: Option<u64>,
+    /// Inactive session recovery metadata retention in days.
+    #[serde(default)]
+    pub session_store_retention_days: Option<u32>,
     /// Additional workspace roots advertised when creating an ACP session.
     #[serde(default)]
     pub additional_directories: Vec<String>,
@@ -93,6 +99,12 @@ impl AgentLaunchConfig {
             .is_some_and(|path| path.trim().is_empty())
         {
             return Err("sessionStorePath must not be empty");
+        }
+        if self.session_store_max_bytes == Some(0) {
+            return Err("sessionStoreMaxBytes must be positive");
+        }
+        if self.session_store_retention_days == Some(0) {
+            return Err("sessionStoreRetentionDays must be positive");
         }
         if self.mcp_servers.len() > 64 {
             return Err("mcpServers exceeds 64 entries");

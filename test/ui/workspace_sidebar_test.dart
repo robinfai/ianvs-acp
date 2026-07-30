@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
@@ -953,7 +955,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
+    await tester.tapAt(
+      tester.getCenter(find.text('Current work')),
+      buttons: kSecondaryMouseButton,
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Pin Conversation'), findsOneWidget);
@@ -1048,7 +1053,7 @@ void main() {
   });
 
   testWidgets(
-    'WorkspaceSidebar lists workspace sessions flat with agent labels',
+    'WorkspaceSidebar lists sessions flat and exposes agent in preview',
     (tester) async {
       final currentSession = AgentSession(
         id: 'current-session',
@@ -1109,17 +1114,28 @@ void main() {
         tester.getTopLeft(fastRow).dy,
         lessThan(tester.getTopLeft(codexHistoryRow).dy),
       );
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(fastRow));
+      await tester.pump(const Duration(milliseconds: 250));
+      final preview = find.byKey(
+        const Key('workspace-session-preview:fast-session'),
+      );
       expect(
-        find.descendant(of: fastRow, matching: find.text('codex-fast')),
+        find.descendant(of: preview, matching: find.text('codex-fast')),
         findsOneWidget,
       );
+      await mouse.moveTo(Offset.zero);
+      await tester.pump(const Duration(milliseconds: 150));
     },
   );
 
   testWidgets('WorkspaceSidebar limits workspace sessions until expanded', (
     tester,
   ) async {
-    final sessions = List<AgentSession>.generate(7, (index) {
+    final sessions = List<AgentSession>.generate(14, (index) {
       final number = index + 1;
       return AgentSession(
         id: 'session-$number',
@@ -1155,23 +1171,25 @@ void main() {
     );
 
     expect(find.text('Session 1'), findsOneWidget);
-    expect(find.text('Session 5'), findsOneWidget);
-    expect(find.text('Session 6'), findsNothing);
-    expect(find.text('Session 7'), findsNothing);
+    expect(find.text('Session 12'), findsOneWidget);
+    expect(find.text('Session 13'), findsNothing);
+    expect(find.text('Session 14'), findsNothing);
     expect(find.text('展开显示'), findsOneWidget);
 
     await tester.tap(find.text('展开显示'));
     await tester.pump();
 
-    expect(find.text('Session 6'), findsOneWidget);
-    expect(find.text('Session 7'), findsOneWidget);
+    expect(find.text('Session 13'), findsOneWidget);
+    expect(find.text('Session 14'), findsOneWidget);
     expect(find.text('折叠显示'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('折叠显示'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('折叠显示'));
     await tester.pump();
 
-    expect(find.text('Session 6'), findsNothing);
-    expect(find.text('Session 7'), findsNothing);
+    expect(find.text('Session 13'), findsNothing);
+    expect(find.text('Session 14'), findsNothing);
     expect(find.text('展开显示'), findsOneWidget);
   });
 
@@ -1232,7 +1250,9 @@ void main() {
     expect(selectedSession, kimiSession);
   });
 
-  testWidgets('WorkspaceSidebar shows relative session times', (tester) async {
+  testWidgets('WorkspaceSidebar shows relative time in session preview', (
+    tester,
+  ) async {
     final now = DateTime(2026, 7, 8, 12);
     debugSessionTimeNow = () => now;
     addTearDown(() {
@@ -1277,53 +1297,64 @@ void main() {
       ),
     );
 
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+
+    await mouse.moveTo(tester.getCenter(find.text('Current work')));
+    await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('5m ago'), findsOneWidget);
+
+    await mouse.moveTo(tester.getCenter(find.text('History work')));
+    await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('2h ago'), findsOneWidget);
+
+    await mouse.moveTo(Offset.zero);
+    await tester.pump(const Duration(milliseconds: 150));
   });
 
-  testWidgets(
-    'WorkspaceSidebar marks active workspace without a filled frame',
-    (tester) async {
-      final workspace = WorkspaceRecord(
-        path: '/workspace/current',
-        name: 'current',
-        sessions: const <AgentSession>[],
-      );
+  testWidgets('WorkspaceSidebar marks active workspace with a neutral fill', (
+    tester,
+  ) async {
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const <AgentSession>[],
+    );
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: 300,
-              height: 520,
-              child: WorkspaceSidebar(
-                agentName: 'Codex',
-                workspaces: [workspace],
-                currentWorkspace: workspace,
-                currentSession: null,
-                onNewSession: () {},
-                onResumeSession: () {},
-              ),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
             ),
           ),
         ),
-      );
+      ),
+    );
 
-      final projectStrip = tester.widget<Container>(
-        find.byKey(const Key('workspace-project-strip:/workspace/current')),
-      );
-      final groupFrame = tester.widget<Container>(
-        find.byKey(const Key('workspace-group:/workspace/current')),
-      );
-      final stripDecoration = projectStrip.decoration! as BoxDecoration;
-      final groupDecoration = groupFrame.decoration! as BoxDecoration;
+    final projectStrip = tester.widget<Container>(
+      find.byKey(const Key('workspace-project-strip:/workspace/current')),
+    );
+    final groupFrame = tester.widget<Container>(
+      find.byKey(const Key('workspace-group:/workspace/current')),
+    );
+    final stripDecoration = projectStrip.decoration! as BoxDecoration;
+    final groupDecoration = groupFrame.decoration! as BoxDecoration;
 
-      expect(stripDecoration.color, Colors.transparent);
-      expect(stripDecoration.border, isNull);
-      expect(groupDecoration.color, Colors.transparent);
-      expect(groupDecoration.border, isNull);
-    },
-  );
+    expect(stripDecoration.color, AppColors.surfaceMuted);
+    expect(stripDecoration.border, isNull);
+    expect(groupDecoration.color, Colors.transparent);
+    expect(groupDecoration.border, isNull);
+  });
 
   testWidgets('WorkspaceSidebar keeps workspace row height stable on hover', (
     tester,
@@ -1478,7 +1509,8 @@ void main() {
       ),
     );
 
-    expect(find.byTooltip('Session actions'), findsOneWidget);
+    expect(find.byTooltip('Pin Conversation'), findsNothing);
+    expect(find.byTooltip('Archive Conversation'), findsNothing);
 
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: Offset.zero);
@@ -1486,12 +1518,108 @@ void main() {
     await mouse.moveTo(tester.getCenter(find.text('Other work')));
     await tester.pump();
 
-    expect(find.byTooltip('Session actions'), findsNWidgets(2));
+    expect(find.byTooltip('Pin Conversation'), findsOneWidget);
+    expect(find.byTooltip('Archive Conversation'), findsOneWidget);
 
     await mouse.moveTo(Offset.zero);
     await tester.pump();
 
-    expect(find.byTooltip('Session actions'), findsOneWidget);
+    expect(find.byTooltip('Pin Conversation'), findsNothing);
+    expect(find.byTooltip('Archive Conversation'), findsNothing);
+  });
+
+  testWidgets('WorkspaceSidebar shows Codex-style session preview on hover', (
+    tester,
+  ) async {
+    final currentSession = AgentSession(
+      id: 'current-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Current work',
+      agentName: 'Codex',
+    );
+    final historySession = AgentSession(
+      id: 'history-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 9),
+      title: 'Evaluate main branch',
+      agentName: 'Codex',
+      initialEvents: const [
+        AgentEvent(
+          type: AgentEventType.status,
+          text: '',
+          metadata: {
+            'branch': 'codex/workspace-sidebar-actions',
+            'ciStatus': 'No CI checks',
+          },
+        ),
+        AgentEvent(
+          type: AgentEventType.agentTextDone,
+          text: 'Advance Rust ACP runtime, Task Inbox, and tooling.',
+        ),
+      ],
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [currentSession, historySession],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              SizedBox(
+                width: 300,
+                height: 520,
+                child: WorkspaceSidebar(
+                  agentName: 'Codex',
+                  workspaces: [workspace],
+                  currentWorkspace: workspace,
+                  currentSession: currentSession,
+                  onNewSession: () {},
+                  onResumeSession: () {},
+                  canForkSession: (_) => true,
+                  onSessionMenuAction: (_, _) {},
+                ),
+              ),
+              const Expanded(child: SizedBox()),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final historyRow = find.byKey(
+      const Key('workspace-session-history:history-session'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(historyRow));
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final preview = find.byKey(
+      const Key('workspace-session-preview:history-session'),
+    );
+    expect(preview, findsOneWidget);
+    expect(
+      find.descendant(of: preview, matching: find.text('current')),
+      findsOneWidget,
+    );
+    expect(find.text('codex/workspace-sidebar-actions'), findsOneWidget);
+    expect(
+      find.text('Advance Rust ACP runtime, Task Inbox, and tooling.'),
+      findsOneWidget,
+    );
+    expect(find.text('No CI checks'), findsOneWidget);
+    expect(tester.getRect(preview).width, 320);
+    expect(tester.getRect(preview).height, inInclusiveRange(130, 150));
+
+    await mouse.moveTo(Offset.zero);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(preview, findsNothing);
   });
 
   testWidgets('WorkspaceSidebar keeps inactive session menu actions mounted', (
@@ -1544,7 +1672,10 @@ void main() {
     await mouse.moveTo(tester.getCenter(find.text('Other work')));
     await tester.pump();
 
-    await tester.tap(find.byTooltip('Session actions').last);
+    await tester.tapAt(
+      tester.getCenter(find.text('Other work')),
+      buttons: kSecondaryMouseButton,
+    );
     await tester.pumpAndSettle();
     await mouse.moveTo(tester.getCenter(find.text('Copy Session ID')));
     await tester.pump();
@@ -1665,7 +1796,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
+    await tester.tapAt(
+      tester.getCenter(find.text('Current work')),
+      buttons: kSecondaryMouseButton,
+    );
     await tester.pumpAndSettle();
 
     final forkLocallyItem = tester

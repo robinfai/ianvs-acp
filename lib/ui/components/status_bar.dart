@@ -24,11 +24,8 @@ class StatusBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 26,
-      decoration: const BoxDecoration(
-        color: AppColors.bg,
-        border: Border(top: BorderSide(color: AppColors.border)),
-      ),
+      height: 24,
+      decoration: const BoxDecoration(color: AppColors.surface),
       padding: const EdgeInsets.symmetric(horizontal: 9),
       child: LayoutBuilder(
         builder: (context, constraints) {

@@ -15,6 +15,25 @@ import 'package:sqlite3/sqlite3.dart';
 import '../support/memory_task_repository.dart';
 
 void main() {
+  test('applies the configured SQLite page limit', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-task-size-limit-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    const maxBytes = 2 * 1024 * 1024;
+    final store = TaskInboxSqliteStore(
+      path: '${tempDir.path}/task-inbox.sqlite3',
+      maxDatabaseBytes: maxBytes,
+    );
+    addTearDown(store.close);
+
+    final pageSize = await store.pageSize();
+    final maxPageCount = await store.maxPageCount();
+
+    expect(maxPageCount * pageSize, lessThanOrEqualTo(maxBytes));
+    expect((maxPageCount + 1) * pageSize, greaterThan(maxBytes));
+  });
+
   test(
     'controller rejects artifact ids that would corrupt strict reload',
     () async {

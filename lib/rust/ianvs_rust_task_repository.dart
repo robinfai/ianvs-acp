@@ -51,6 +51,18 @@ final class IanvsRustTaskRepository
   Future<void>? _initializeFuture;
   bool _closed = false;
 
+  Future<void> configureStorage({
+    required int maxDatabaseBytes,
+    required int retentionDays,
+  }) async {
+    final authority = _authority;
+    if (authority is! IanvsStoragePolicyAuthority) return;
+    await (authority as IanvsStoragePolicyAuthority).configureStorage(
+      maxDatabaseBytes: maxDatabaseBytes,
+      retentionDays: retentionDays,
+    );
+  }
+
   @override
   TaskRepositorySnapshot get authoritativeProjection =>
       _projection ?? (throw StateError('Rust TaskInbox is not initialized.'));

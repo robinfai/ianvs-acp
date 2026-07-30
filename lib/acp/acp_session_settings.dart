@@ -212,6 +212,47 @@ class AcpConfigOption {
     return false;
   }
 
+  bool get isFastOption {
+    final tokens = <String>[id, name, category ?? '', group ?? '']
+        .map((value) => value.trim().toLowerCase())
+        .where((value) => value.isNotEmpty);
+
+    for (final token in tokens) {
+      if (token == 'fast' ||
+          token == 'speed' ||
+          token == 'fast_mode' ||
+          token == 'fast-mode' ||
+          token == 'fast mode' ||
+          token == '速度' ||
+          token == '快速' ||
+          token.contains('fast mode') ||
+          token.contains('fast_mode') ||
+          token.contains('fast-mode') ||
+          token.contains('speed') ||
+          token.contains('速度')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool get isFastEnabled {
+    if (!isFastOption) return false;
+    if (isBooleanOption) return currentBoolValue;
+    final rawValue = currentValue.trim().toLowerCase();
+    final label = currentChoiceLabel.trim().toLowerCase();
+    return rawValue == 'on' ||
+        rawValue == 'enabled' ||
+        rawValue == 'true' ||
+        rawValue == '1' ||
+        label == 'on' ||
+        label == 'enabled' ||
+        label.contains('fast') ||
+        label.contains('quick') ||
+        label.contains('turbo') ||
+        label.contains('快速');
+  }
+
   String get currentChoiceLabel {
     if (isBooleanOption) return currentBoolValue ? 'On' : 'Off';
     for (final choice in options) {

@@ -20,7 +20,7 @@ class WorkspaceHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 620;
@@ -56,7 +56,7 @@ class WorkspaceHeader extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 workspaceSurface,
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 sessionSurface,
               ],
             );
@@ -64,9 +64,15 @@ class WorkspaceHeader extends StatelessWidget {
 
           return Row(
             children: [
-              Expanded(flex: 6, child: workspaceSurface),
-              const SizedBox(width: 7),
-              Expanded(flex: 5, child: sessionSurface),
+              Expanded(flex: 6, child: sessionSurface),
+              const SizedBox(width: 10),
+              const SizedBox(
+                width: 1,
+                height: 22,
+                child: ColoredBox(color: AppColors.border),
+              ),
+              const SizedBox(width: 10),
+              Expanded(flex: 4, child: workspaceSurface),
             ],
           );
         },
@@ -110,25 +116,11 @@ class _WorkspaceHeaderSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minHeight: 40),
-      padding: const EdgeInsets.fromLTRB(7, 5, 7, 5),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.borderSoft),
-      ),
+      constraints: const BoxConstraints(minHeight: 32),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          Container(
-            width: 4,
-            height: 28,
-            decoration: BoxDecoration(
-              color: accent,
-              borderRadius: BorderRadius.circular(AppRadius.pill),
-            ),
-          ),
-          const SizedBox(width: 7),
-          Icon(icon, size: 15, color: accent),
+          Icon(icon, size: 15, color: AppColors.textSecondary),
           const SizedBox(width: 7),
           Expanded(
             child: Column(
@@ -140,8 +132,8 @@ class _WorkspaceHeaderSurface extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                     height: 1.1,
                   ),
@@ -153,7 +145,7 @@ class _WorkspaceHeaderSurface extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: 10.5,
+                    fontSize: 10,
                     height: 1.15,
                   ),
                 ),
@@ -176,18 +168,18 @@ class _HeaderPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 22,
+      height: 20,
       constraints: const BoxConstraints(maxWidth: 124),
       padding: const EdgeInsets.symmetric(horizontal: 6),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.pill),
         border: Border.all(color: AppColors.borderSoft),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 12, color: AppColors.textSecondary),
+          Icon(icon, size: 11, color: AppColors.textSecondary),
           const SizedBox(width: 3),
           Flexible(
             child: Text(
@@ -195,8 +187,8 @@ class _HeaderPill extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textSecondary,
-                fontSize: 10.5,
-                fontWeight: FontWeight.w800,
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
                 letterSpacing: 0,
               ),
             ),

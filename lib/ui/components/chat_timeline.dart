@@ -11,7 +11,6 @@ import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
 import '../markdown_render_budget.dart';
 import 'bounded_image_preview.dart';
-import 'dot_grid_background.dart';
 import 'markdown_code_block.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -117,7 +116,8 @@ class _ChatTimelineState extends State<ChatTimeline> {
     _syncMessageSignature();
 
     if (widget.messages.isEmpty) {
-      return DotGridBackground(
+      return ColoredBox(
+        color: AppColors.surface,
         child: Center(
           child: _EmptyTimeline(
             agentName: widget.agentName,
@@ -141,11 +141,12 @@ class _ChatTimelineState extends State<ChatTimeline> {
       ledger: _imageDecodeLedger,
       decoder: widget.boundedImageDecoder,
       inputBudget: widget.inputBudget,
-      child: DotGridBackground(
+      child: ColoredBox(
+        color: AppColors.surface,
         child: ListView.separated(
           key: const ValueKey('chat-timeline-list'),
           controller: _scrollController,
-          padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 18),
           itemCount: entries.length + historyNoticeCount + loadingFooterCount,
           separatorBuilder: (context, index) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
@@ -159,7 +160,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
               return const _SessionLoadingFooter();
             }
             final entry = entries[index];
-            return entry.toolMessages == null
+            final item = entry.toolMessages == null
                 ? _MessageBubble(
                     message: entry.message!,
                     inputBudget: widget.inputBudget,
@@ -170,6 +171,12 @@ class _ChatTimelineState extends State<ChatTimeline> {
                     messages: entry.toolMessages!,
                     inputBudget: widget.inputBudget,
                   );
+            return Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: item,
+              ),
+            );
           },
         ),
       ),
@@ -542,123 +549,17 @@ class _CodeCardIllustration extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: compact ? 120 : 152,
-      height: compact ? 82 : 108,
+      width: compact ? 40 : 46,
+      height: compact ? 40 : 46,
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
-        boxShadow: AppShadows.raised,
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: AppColors.border),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          Container(
-            height: 19,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xffb29cff), AppColors.primary],
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-              ),
-            ),
-            child: Row(
-              children: List.generate(
-                3,
-                (index) => Container(
-                  width: 4,
-                  height: 4,
-                  margin: EdgeInsets.only(left: index == 0 ? 10 : 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.62),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                compact ? 10 : 13,
-                compact ? 10 : 13,
-                compact ? 10 : 13,
-                compact ? 8 : 11,
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: compact ? 26 : 32,
-                    height: compact ? 26 : 32,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xffb196ff), AppColors.primary],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(AppRadius.sm),
-                    ),
-                    child: const Icon(
-                      Icons.code_rounded,
-                      color: Colors.white,
-                      size: 18,
-                    ),
-                  ),
-                  SizedBox(width: compact ? 8 : 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _IllustrationLine(
-                          widthFactor: 0.78,
-                          height: compact ? 4 : 5,
-                        ),
-                        SizedBox(height: compact ? 6 : 8),
-                        _IllustrationLine(
-                          widthFactor: 1,
-                          height: compact ? 4 : 5,
-                        ),
-                        SizedBox(height: compact ? 7 : 12),
-                        _IllustrationLine(
-                          widthFactor: 0.72,
-                          height: compact ? 4 : 5,
-                        ),
-                        SizedBox(height: compact ? 4 : 6),
-                        _IllustrationLine(
-                          widthFactor: 0.58,
-                          height: compact ? 4 : 5,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _IllustrationLine extends StatelessWidget {
-  const _IllustrationLine({required this.widthFactor, required this.height});
-
-  final double widthFactor;
-  final double height;
-
-  @override
-  Widget build(BuildContext context) {
-    return FractionallySizedBox(
-      alignment: Alignment.centerLeft,
-      widthFactor: widthFactor,
-      child: Container(
-        height: height,
-        decoration: BoxDecoration(
-          color: AppColors.primarySoft,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-        ),
+      child: Icon(
+        Icons.terminal_rounded,
+        color: AppColors.textSecondary,
+        size: compact ? 19 : 22,
       ),
     );
   }
@@ -693,21 +594,22 @@ class _MessageBubble extends StatelessWidget {
     }
 
     final user = message.role == ChatMessageRole.user;
+    final assistant = message.role == ChatMessageRole.assistant;
     final color = switch (message.role) {
-      ChatMessageRole.user => AppColors.primary,
-      ChatMessageRole.assistant => AppColors.surface,
+      ChatMessageRole.user => AppColors.surfaceMuted,
+      ChatMessageRole.assistant => Colors.transparent,
       ChatMessageRole.tool => const Color(0xfffffbeb),
       ChatMessageRole.error => const Color(0xfffef2f2),
       ChatMessageRole.status => AppColors.surfaceRaised,
     };
     final borderColor = switch (message.role) {
-      ChatMessageRole.user => AppColors.primary,
-      ChatMessageRole.assistant => AppColors.border,
+      ChatMessageRole.user => Colors.transparent,
+      ChatMessageRole.assistant => Colors.transparent,
       ChatMessageRole.tool => const Color(0xfffde68a),
       ChatMessageRole.error => const Color(0xfffecaca),
       ChatMessageRole.status => AppColors.border,
     };
-    final textColor = user ? Colors.white : AppColors.textPrimary;
+    const textColor = AppColors.textPrimary;
     final markdownDecision = message.text.isEmpty
         ? null
         : scanMarkdownForRendering(message.text, budget: inputBudget);
@@ -722,38 +624,45 @@ class _MessageBubble extends StatelessWidget {
         constraints: BoxConstraints(maxWidth: user ? 720 : 820),
         child: Container(
           width: user ? null : double.infinity,
-          padding: const EdgeInsets.all(11),
+          padding: user
+              ? const EdgeInsets.symmetric(horizontal: 14, vertical: 10)
+              : assistant
+              ? const EdgeInsets.symmetric(vertical: 6)
+              : const EdgeInsets.all(11),
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
+            borderRadius: BorderRadius.circular(
+              user ? AppRadius.xl : AppRadius.sm,
+            ),
             border: Border.all(color: borderColor),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Icon(
-                    _iconForRole(message.role),
-                    size: 14,
-                    color: user ? Colors.white : _labelColor(message.role),
-                  ),
-                  Text(
-                    _labelForRole(message.role),
-                    style: TextStyle(
-                      color: user ? Colors.white : _labelColor(message.role),
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                      letterSpacing: 0,
+              if (!user && !assistant)
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Icon(
+                      _iconForRole(message.role),
+                      size: 14,
+                      color: _labelColor(message.role),
                     ),
-                  ),
-                ],
-              ),
+                    Text(
+                      _labelForRole(message.role),
+                      style: TextStyle(
+                        color: _labelColor(message.role),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ],
+                ),
               if (markdownDecision != null) ...[
-                const SizedBox(height: 6),
+                if (!user && !assistant) const SizedBox(height: 6),
                 if (markdownDecision.useMarkdown)
                   _SelectableMessageMarkdown(
                     data: markdownDecision.text,
@@ -792,18 +701,18 @@ class _MessageBubble extends StatelessWidget {
   ) {
     final baseTextStyle = TextStyle(color: textColor, height: 1.42);
     final codeBackground = user
-        ? Colors.white.withValues(alpha: 0.16)
+        ? AppColors.surface.withValues(alpha: 0.72)
         : AppColors.surfaceRaised;
     return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
       p: baseTextStyle,
       a: baseTextStyle.copyWith(
-        color: user ? Colors.white : AppColors.primaryDark,
+        color: AppColors.textPrimary,
         backgroundColor: user
-            ? Colors.white.withValues(alpha: 0.12)
+            ? AppColors.surface.withValues(alpha: 0.62)
             : AppColors.primaryMist,
         decoration: TextDecoration.underline,
         decorationColor: user
-            ? Colors.white70
+            ? AppColors.textSecondary
             : AppColors.primary.withValues(alpha: 0.55),
         fontWeight: FontWeight.w700,
       ),
@@ -821,9 +730,7 @@ class _MessageBubble extends StatelessWidget {
       codeblockDecoration: BoxDecoration(
         color: codeBackground,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(
-          color: user ? Colors.white.withValues(alpha: 0.18) : AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
     );
   }
@@ -1019,14 +926,14 @@ class _ToolGroupBubble extends StatelessWidget {
         child: Material(
           color: Colors.transparent,
           child: ExpansionTile(
-            tilePadding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
-            childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            tilePadding: const EdgeInsets.fromLTRB(2, 1, 2, 1),
+            childrenPadding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
             initiallyExpanded: false,
             maintainState: true,
             leading: const Icon(
               Icons.account_tree_outlined,
-              color: Color(0xff92400e),
-              size: 18,
+              color: AppColors.textSecondary,
+              size: 16,
             ),
             title: _ToolGroupHeader(
               totalCount: messages.length,
@@ -1034,7 +941,7 @@ class _ToolGroupBubble extends StatelessWidget {
               counts: counts,
             ),
             children: [
-              const Divider(height: 12, color: Color(0xfffde68a)),
+              const Divider(height: 10, color: AppColors.borderSoft),
               for (var index = 0; index < parsedTools.length; index++) ...[
                 _ToolSequenceCard(
                   index: index + 1,
@@ -1061,7 +968,7 @@ class _ToolFrame extends StatelessWidget {
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 820),
+        constraints: const BoxConstraints(maxWidth: 760),
         child: child,
       ),
     );
@@ -1131,9 +1038,9 @@ class _ToolCallCardState extends State<_ToolCallCard> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: const Color(0xfffffbeb),
+        color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: const Color(0xfffde68a)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -1155,8 +1062,8 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                   },
                   leading: const Icon(
                     Icons.build_circle_outlined,
-                    color: Color(0xff92400e),
-                    size: 18,
+                    color: AppColors.textSecondary,
+                    size: 16,
                   ),
                   title: _ToolHeader(parsed: parsed, compact: true),
                   children: _expanded
@@ -1202,14 +1109,14 @@ class _ToolSequenceCard extends StatelessWidget {
             height: 22,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: AppColors.surface,
               shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xfffde68a)),
+              border: Border.all(color: AppColors.border),
             ),
             child: Text(
               '$index',
               style: const TextStyle(
-                color: Color(0xff92400e),
+                color: AppColors.textSecondary,
                 fontSize: 10,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 0,
@@ -1354,9 +1261,9 @@ class _ToolCountChip extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 260),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.72),
+        color: AppColors.surfaceMuted,
         borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: const Color(0xfffde68a)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1377,7 +1284,7 @@ class _ToolCountChip extends StatelessWidget {
           Text(
             'x$count',
             style: const TextStyle(
-              color: Color(0xff92400e),
+              color: AppColors.textSecondary,
               fontSize: 11,
               fontWeight: FontWeight.w900,
               letterSpacing: 0,
@@ -1402,8 +1309,8 @@ class _ToolHeader extends StatelessWidget {
         if (!compact) ...[
           const Icon(
             Icons.build_circle_outlined,
-            color: Color(0xff92400e),
-            size: 20,
+            color: AppColors.textSecondary,
+            size: 18,
           ),
           const SizedBox(width: 7),
         ],
@@ -1414,9 +1321,9 @@ class _ToolHeader extends StatelessWidget {
               const Text(
                 'Tool',
                 style: TextStyle(
-                  color: Color(0xff92400e),
+                  color: AppColors.textSecondary,
                   fontSize: 12,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -1456,6 +1363,7 @@ class _StatusBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final kind = _stringMetadata(message.metadata, 'kind') ?? 'status';
+    final minimal = kind == 'thought' || kind == 'turn';
     final child = switch (kind) {
       'plan' => _PlanStatus(message: message),
       'diff' => _DiffStatus(message: message),
@@ -1485,12 +1393,16 @@ class _StatusBubble extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 820),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceRaised,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: AppColors.border),
-          ),
+          padding: minimal
+              ? const EdgeInsets.symmetric(vertical: 5)
+              : const EdgeInsets.all(10),
+          decoration: minimal
+              ? null
+              : BoxDecoration(
+                  color: AppColors.surfaceRaised,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(color: AppColors.border),
+                ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1526,9 +1438,9 @@ class _ThoughtStatus extends StatelessWidget {
           label: 'Thought',
         ),
         if (message.text.isNotEmpty) ...[
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Text(
-            message.text,
+            _thoughtText(message.text),
             style: const TextStyle(
               color: AppColors.textSecondary,
               height: 1.35,
@@ -1543,6 +1455,14 @@ class _ThoughtStatus extends StatelessWidget {
       ],
     );
   }
+}
+
+String _thoughtText(String value) {
+  return value
+      .replaceAll(RegExp(r'\*{4,}'), ' · ')
+      .replaceAll('**', '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }
 
 class _TurnStatus extends StatelessWidget {

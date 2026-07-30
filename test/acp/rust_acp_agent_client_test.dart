@@ -276,6 +276,8 @@ void main() {
       agentName: 'fixture',
       agentCommand: 'fixture-agent',
       sessionStorePath: '/tmp/acp-sessions.sqlite3',
+      sessionStoreMaxBytes: 512 * 1024 * 1024,
+      sessionStoreRetentionDays: 45,
       mcpServers: const <Map<String, Object?>>[
         <String, Object?>{
           'type': 'http',
@@ -295,6 +297,8 @@ void main() {
       native.startedConfig?['sessionStorePath'],
       '/tmp/acp-sessions.sqlite3',
     );
+    expect(native.startedConfig?['sessionStoreMaxBytes'], 512 * 1024 * 1024);
+    expect(native.startedConfig?['sessionStoreRetentionDays'], 45);
     expect((native.startedConfig?['mcpServers'] as List).length, 1);
     expect(client.capabilities?.mcp.http, isTrue);
   });

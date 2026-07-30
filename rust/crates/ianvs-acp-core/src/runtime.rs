@@ -280,9 +280,21 @@ impl SessionRecoveryRegistry {
         let mut store = config
             .session_store_path
             .as_deref()
-            .map(SqliteSessionStore::open)
-            .transpose()
-            .map_err(|error| error.to_string())?;
+            .map(|path| {
+                let defaults = crate::SqliteStoragePolicy::default();
+                let policy = crate::SqliteStoragePolicy::new(
+                    config
+                        .session_store_max_bytes
+                        .unwrap_or(defaults.max_bytes()),
+                    config
+                        .session_store_retention_days
+                        .unwrap_or(defaults.retention_days()),
+                )
+                .map_err(|error| error.to_string())?;
+                SqliteSessionStore::open_with_policy(path, policy)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
         let active = store
             .as_mut()
             .map(|store| store.load_active(&config.agent_name))

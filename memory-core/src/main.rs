@@ -30,7 +30,19 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
-    let pool = sqlite::open(&config.data_dir).await?;
+    let storage_policy = sqlite::StoragePolicy::from_env()?;
+    let pool = sqlite::open_with_policy(&config.data_dir, storage_policy).await?;
+    let maintenance_pool = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(storage_policy.cleanup_interval());
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = sqlite::maintain(&maintenance_pool, storage_policy).await {
+                tracing::warn!(%error, "memory SQLite maintenance failed");
+            }
+        }
+    });
     let embedding = EmbeddingConfig::from_env();
     let state = AppState {
         db: pool,

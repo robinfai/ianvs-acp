@@ -71,10 +71,21 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
       return Row(
         children: [
           Expanded(child: conversation),
-          if (widget.showInspector) ...[
-            const VerticalDivider(width: 1, color: AppColors.border),
-            SizedBox(width: 292, child: widget.inspector),
-          ],
+          if (widget.showInspector)
+            SizedBox(
+              width: 332,
+              height: double.infinity,
+              child: Container(
+                key: const Key('workspace-inspector-surface'),
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(
+                    left: BorderSide(color: AppColors.border),
+                  ),
+                ),
+                child: widget.inspector,
+              ),
+            ),
         ],
       );
     }

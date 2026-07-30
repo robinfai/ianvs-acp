@@ -203,6 +203,7 @@ class AcpConfigStore {
         'additional_directories': config.additionalDirectories,
       if (clientProviders.isNotEmpty) 'client_providers': clientProviders,
       'memory': config.memory.toJson(),
+      'storage': config.storage.toJson(),
     };
   }
 
@@ -534,6 +535,18 @@ Map<String, dynamic> _persistEditedConfig(
     'memory',
     'memoryConfig',
   ], mergedMemory);
+  final currentStorage = _valueForAliases(result, const <String>[
+    'storage',
+    'sqliteStorage',
+  ], fieldName: 'storage');
+  final desiredStorage = desired['storage'];
+  final mergedStorage = currentStorage is Map && desiredStorage is Map
+      ? _mergeConfigMapPreservingUnknown(currentStorage, desiredStorage)
+      : desiredStorage;
+  _writeAliasedValue(result, const <String>[
+    'storage',
+    'sqliteStorage',
+  ], mergedStorage);
   return result;
 }
 
@@ -907,6 +920,7 @@ AcpClientConfig _withConfigPath(AcpClientConfig config, String path) {
     additionalDirectories: config.additionalDirectories,
     clientProviders: config.clientProviders,
     memory: config.memory,
+    storage: config.storage,
     configPath: path,
     defaultAgentServerName: config.defaultAgentServerName,
     runtimeSecretGeneration: config.runtimeSecretGeneration,
@@ -959,6 +973,7 @@ AcpClientConfig _inheritCurrentSecretReferences(
       ),
     ),
     memory: proposal.memory,
+    storage: proposal.storage,
     configPath: proposal.configPath,
     defaultAgentServerName: proposal.defaultAgentServerName,
     runtimeSecretGeneration: proposal.runtimeSecretGeneration,

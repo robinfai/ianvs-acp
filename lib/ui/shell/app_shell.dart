@@ -11,6 +11,7 @@ import '../../config/acp_client_config.dart';
 import '../../config/acp_agent_discovery.dart';
 import '../../memory/memory_config.dart';
 import '../../memory/memory_runtime_status.dart';
+import '../../storage/sqlite_storage_config.dart';
 import '../../platform/file_manager.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
@@ -33,9 +34,7 @@ import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/session_workspace_review_dialog.dart';
-import '../components/status_bar.dart';
 import '../components/task_inbox_sidebar.dart';
-import '../components/workspace_header.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../image_decode_budget.dart';
@@ -61,6 +60,7 @@ class AppShell extends StatelessWidget {
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
+    this.storage = const SqliteStorageConfig(),
     this.configPath,
     this.workspaceStateStore,
     this.defaultAgentName,
@@ -102,6 +102,7 @@ class AppShell extends StatelessWidget {
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
+  final SqliteStorageConfig storage;
   final String? configPath;
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final String? defaultAgentName;
@@ -227,29 +228,15 @@ class AppShell extends StatelessWidget {
           hasPermissionReviewer: controller.hasPermissionReviewer,
           onToolCallExecutionPolicyChanged:
               controller.setToolCallExecutionPolicy,
-          modelOption: controller.sessionSettings.modelOption,
-          reasoningEffortOption:
-              controller.sessionSettings.reasoningEffortOption,
-          onModelSelected:
+          configOptions: controller.sessionSettings.configOptions,
+          onConfigOptionSelected:
               controller.currentSession != null && sessionActionsEnabled
-              ? (value) => unawaited(controller.setSessionModel(value))
-              : null,
-          onReasoningEffortSelected:
-              controller.currentSession != null && sessionActionsEnabled
-              ? (value) =>
-                    unawaited(controller.setSessionReasoningEffort(value))
+              ? (configId, value) =>
+                    unawaited(controller.setConfigOption(configId, value))
               : null,
           onSend: (text, attachments) =>
               controller.sendPrompt(text, attachments: attachments),
           onStop: controller.stop,
-        );
-
-        Widget statusDock() => StatusBar(
-          controller: controller,
-          memoryStatus: memoryStatus,
-          memoryPendingCount: memoryPendingCount,
-          onShowSessionSettings: () => _showSessionSettingsDialog(context),
-          onShowCapabilities: () => _showCapabilitiesDialog(context),
         );
 
         return Scaffold(
@@ -267,221 +254,230 @@ class AppShell extends StatelessWidget {
                     _showMemoryExplorerPage(context, initialTab: initialTab),
                   ),
                 ),
-                AgentToolbar(
-                  agentName: agentName,
-                  agentServers: agentServers,
-                  status: controller.status,
-                  canSwitchAgent: canSwitchAgent && sessionActionsEnabled,
-                  onSelectAgent: onSelectAgent,
-                  onShowAgentConfig: () => _showAgentConfigDialog(context),
-                  onShowProtocolCoverage: () =>
-                      _showProtocolFeatureReviewDialog(context),
-                  onShowMemoryExplorer: memory.enabled
-                      ? () => unawaited(_showMemoryExplorerPage(context))
-                      : null,
-                  onAuthenticate: controller.canAuthenticate
-                      ? () => unawaited(_showAuthenticateDialog(context))
-                      : null,
-                  onShowPermissionHistory:
-                      controller.permissionHistory.isNotEmpty
-                      ? () => _showPermissionHistoryDialog(context)
-                      : null,
-                  onLogout: controller.canLogout
-                      ? () => unawaited(_confirmLogout(context))
-                      : null,
-                  onNewSession: startNewSession,
-                  onResumeSession: canResumeSessions
-                      ? () => _showResumeDialog(context)
-                      : null,
-                  onReconnect: canReconnect ? controller.reconnect : null,
-                ),
                 if (startupError != null) ErrorBanner(message: startupError!),
                 if (controller.lastError != null)
                   ErrorBanner(message: controller.lastError!),
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                        border: Border.all(color: AppColors.border),
-                        boxShadow: AppShadows.soft,
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          final hideSidebar = constraints.maxWidth < 760;
-                          final hideInspector = constraints.maxWidth < 1120;
-                          Widget conversationColumn(
-                            BuildContext context,
-                            FilePreviewLinkHandler onTapLink,
-                          ) => Column(
-                            children: [
-                              WorkspaceHeader(
-                                workspace: currentWorkspace,
-                                agentName: agentName,
-                                currentSession: controller.currentSession,
-                              ),
-                              const Divider(height: 1, color: AppColors.border),
-                              Expanded(
-                                child: ChatTimeline(
-                                  inputBudget: inputBudget,
-                                  imageDecodeLedger: imageDecodeLedger,
-                                  boundedImageDecoder: boundedImageDecoder,
-                                  messages: controller.messages,
-                                  messageListRevision:
-                                      controller.messagesRevision,
-                                  agentName: agentName,
-                                  hasActiveSession:
-                                      controller.currentSession != null,
-                                  activeSessionLabel:
-                                      controller.currentSession?.displayTitle,
-                                  isLoadingSession:
-                                      controller.isSessionReplayLoading,
-                                  onNewSession: null,
-                                  onTapLink: onTapLink,
-                                  onMemoryFeedback:
-                                      controller.submitMemoryFeedback,
-                                ),
-                              ),
-                              promptDock(),
-                              statusDock(),
-                            ],
-                          );
-
-                          final previewWorkspace = FilePreviewWorkspace(
-                            workspacePath: currentWorkspace.path,
-                            additionalDirectories: additionalDirectories,
-                            conversationBuilder: conversationColumn,
-                            showInspector: !hideInspector,
-                            processRunner: processRunner,
-                            inspector: WorkspaceInspector(
-                              workspace: currentWorkspace,
+                  child: ColoredBox(
+                    color: AppColors.surface,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final hideSidebar = constraints.maxWidth < 760;
+                        final hideInspector = constraints.maxWidth < 1120;
+                        Widget conversationColumn(
+                          BuildContext context,
+                          FilePreviewLinkHandler onTapLink,
+                        ) => Column(
+                          children: [
+                            AgentToolbar(
+                              title:
+                                  controller.currentSession?.displayTitle ??
+                                  currentWorkspace.name,
                               agentName: agentName,
-                              currentSession: controller.currentSession,
-                              mcpServers: mcpServers,
-                              additionalDirectories: additionalDirectories,
-                              clientProviders: clientProviders,
-                              configPath: configPath,
+                              agentServers: agentServers,
+                              status: controller.status,
+                              forceFullActions: constraints.maxWidth >= 1120,
+                              canSwitchAgent:
+                                  canSwitchAgent && sessionActionsEnabled,
+                              onSelectAgent: onSelectAgent,
+                              onShowAgentConfig: () =>
+                                  _showAgentConfigDialog(context),
+                              onShowProtocolCoverage: () =>
+                                  _showProtocolFeatureReviewDialog(context),
+                              onShowMemoryExplorer: memory.enabled
+                                  ? () => unawaited(
+                                      _showMemoryExplorerPage(context),
+                                    )
+                                  : null,
+                              onAuthenticate: controller.canAuthenticate
+                                  ? () => unawaited(
+                                      _showAuthenticateDialog(context),
+                                    )
+                                  : null,
+                              onShowPermissionHistory:
+                                  controller.permissionHistory.isNotEmpty
+                                  ? () => _showPermissionHistoryDialog(context)
+                                  : null,
+                              onLogout: controller.canLogout
+                                  ? () => unawaited(_confirmLogout(context))
+                                  : null,
+                              onNewSession: startNewSession,
+                              onResumeSession: canResumeSessions
+                                  ? () => _showResumeDialog(context)
+                                  : null,
+                              onReconnect: canReconnect
+                                  ? controller.reconnect
+                                  : null,
                             ),
-                          );
+                            Expanded(
+                              child: ChatTimeline(
+                                inputBudget: inputBudget,
+                                imageDecodeLedger: imageDecodeLedger,
+                                boundedImageDecoder: boundedImageDecoder,
+                                messages: controller.messages,
+                                messageListRevision:
+                                    controller.messagesRevision,
+                                agentName: agentName,
+                                hasActiveSession:
+                                    controller.currentSession != null,
+                                activeSessionLabel:
+                                    controller.currentSession?.displayTitle,
+                                isLoadingSession:
+                                    controller.isSessionReplayLoading,
+                                onNewSession: null,
+                                onTapLink: onTapLink,
+                                onMemoryFeedback:
+                                    controller.submitMemoryFeedback,
+                              ),
+                            ),
+                            promptDock(),
+                          ],
+                        );
 
-                          if (hideSidebar) return previewWorkspace;
+                        final previewWorkspace = FilePreviewWorkspace(
+                          workspacePath: currentWorkspace.path,
+                          additionalDirectories: additionalDirectories,
+                          conversationBuilder: conversationColumn,
+                          showInspector: !hideInspector,
+                          processRunner: processRunner,
+                          inspector: WorkspaceInspector(
+                            workspace: currentWorkspace,
+                            agentName: agentName,
+                            currentSession: controller.currentSession,
+                            sessionSettings: controller.sessionSettings,
+                            sessionUsage: controller.sessionUsage,
+                            lastLatency: controller.lastLatency,
+                            memoryStatus: memoryStatus,
+                            memoryPendingCount: memoryPendingCount,
+                            onConfigOptionSelected:
+                                controller.currentSession != null &&
+                                    sessionActionsEnabled
+                                ? (configId, value) => unawaited(
+                                    controller.setConfigOption(configId, value),
+                                  )
+                                : null,
+                            onShowSessionSettings: () =>
+                                _showSessionSettingsDialog(context),
+                            onShowCapabilities: () =>
+                                _showCapabilitiesDialog(context),
+                            mcpServers: mcpServers,
+                            additionalDirectories: additionalDirectories,
+                            clientProviders: clientProviders,
+                            configPath: configPath,
+                          ),
+                        );
 
-                          return Row(
-                            children: [
-                              if (!hideSidebar) ...[
-                                SizedBox(
-                                  width: 350,
-                                  child: _ShellSidebar(
-                                    workspaceSidebar: WorkspaceSidebar(
-                                      agentName: agentName,
-                                      workspaces:
-                                          workspaceController.workspaces,
-                                      currentWorkspace: currentWorkspace,
-                                      currentSession: controller.currentSession,
-                                      onNewSession: startNewSession,
-                                      onNewSessionInWorkspace:
-                                          startNewSessionInWorkspace,
-                                      onResumeSession: canResumeSessions
-                                          ? () => _showResumeDialog(context)
-                                          : null,
-                                      onSelectSession: onSelectSession,
-                                      canForkSession: canForkSession,
-                                      onSessionMenuAction:
-                                          onSessionMenuAction == null
-                                          ? null
-                                          : (session, action) =>
-                                                onSessionMenuAction!(
-                                                  context,
-                                                  session,
-                                                  action,
-                                                ),
-                                      onLoadWorkspaceSessions:
-                                          canLoadWorkspaceSessions
-                                          ? (_) async {
-                                              final loader =
-                                                  onLoadSessionCatalogs;
-                                              if (loader != null) {
-                                                await loader();
-                                              } else {
-                                                await _loadSessionCatalogs(
-                                                  sessionControllerList,
-                                                );
-                                              }
-                                            }
-                                          : null,
-                                      onRevealWorkspace: (workspace) =>
-                                          unawaited(
-                                            _revealWorkspaceInFinder(
-                                              context,
-                                              workspace,
-                                            ),
-                                          ),
-                                      onCreateWorkspaceWorktree:
-                                          onCreateWorkspaceWorktree == null
-                                          ? null
-                                          : (workspace) =>
-                                                onCreateWorkspaceWorktree!(
-                                                  context,
-                                                  workspace,
-                                                ),
-                                      onArchiveWorkspaceSessions:
-                                          onArchiveWorkspaceSessions == null
-                                          ? null
-                                          : (workspace) =>
-                                                onArchiveWorkspaceSessions!(
-                                                  context,
-                                                  workspace,
-                                                ),
-                                      stateStore: workspaceStateStore,
-                                    ),
-                                    taskInboxController: taskInboxController,
-                                    initialMode: initialSidebarMode,
-                                    taskInboxSidebar:
-                                        taskInboxController == null
+                        if (hideSidebar) return previewWorkspace;
+
+                        return Row(
+                          children: [
+                            if (!hideSidebar) ...[
+                              SizedBox(
+                                width: 312,
+                                child: _ShellSidebar(
+                                  agentName: agentName,
+                                  workspaceSidebar: WorkspaceSidebar(
+                                    agentName: agentName,
+                                    workspaces: workspaceController.workspaces,
+                                    currentWorkspace: currentWorkspace,
+                                    currentSession: controller.currentSession,
+                                    onNewSession: startNewSession,
+                                    onNewSessionInWorkspace:
+                                        startNewSessionInWorkspace,
+                                    onResumeSession: canResumeSessions
+                                        ? () => _showResumeDialog(context)
+                                        : null,
+                                    onSelectSession: onSelectSession,
+                                    canForkSession: canForkSession,
+                                    onSessionMenuAction:
+                                        onSessionMenuAction == null
                                         ? null
-                                        : TaskInboxSidebar(
-                                            controller: taskInboxController!,
-                                            selectedTaskId: selectedTaskId,
-                                            defaultWorkspacePath:
-                                                currentWorkspace.path,
-                                            defaultAgentName: agentName,
-                                            defaultModel:
-                                                controller.currentModelValue,
-                                            agentNames: _agentNamesForTasks(),
-                                            onRunTask: onRunTask == null
-                                                ? null
-                                                : (task) =>
-                                                      onRunTask!(context, task),
-                                            onOpenLinkedSession:
-                                                onOpenTaskSession == null
-                                                ? null
-                                                : (task) {
-                                                    unawaited(
-                                                      Future<void>.sync(
-                                                        () =>
-                                                            onOpenTaskSession!(
-                                                              context,
-                                                              task,
-                                                            ),
-                                                      ),
-                                                    );
-                                                  },
-                                          ),
+                                        : (session, action) =>
+                                              onSessionMenuAction!(
+                                                context,
+                                                session,
+                                                action,
+                                              ),
+                                    onLoadWorkspaceSessions:
+                                        canLoadWorkspaceSessions
+                                        ? (_) async {
+                                            final loader =
+                                                onLoadSessionCatalogs;
+                                            if (loader != null) {
+                                              await loader();
+                                            } else {
+                                              await _loadSessionCatalogs(
+                                                sessionControllerList,
+                                              );
+                                            }
+                                          }
+                                        : null,
+                                    onRevealWorkspace: (workspace) => unawaited(
+                                      _revealWorkspaceInFinder(
+                                        context,
+                                        workspace,
+                                      ),
+                                    ),
+                                    onCreateWorkspaceWorktree:
+                                        onCreateWorkspaceWorktree == null
+                                        ? null
+                                        : (workspace) =>
+                                              onCreateWorkspaceWorktree!(
+                                                context,
+                                                workspace,
+                                              ),
+                                    onArchiveWorkspaceSessions:
+                                        onArchiveWorkspaceSessions == null
+                                        ? null
+                                        : (workspace) =>
+                                              onArchiveWorkspaceSessions!(
+                                                context,
+                                                workspace,
+                                              ),
+                                    stateStore: workspaceStateStore,
                                   ),
+                                  taskInboxController: taskInboxController,
+                                  initialMode: initialSidebarMode,
+                                  taskInboxSidebar: taskInboxController == null
+                                      ? null
+                                      : TaskInboxSidebar(
+                                          controller: taskInboxController!,
+                                          selectedTaskId: selectedTaskId,
+                                          defaultWorkspacePath:
+                                              currentWorkspace.path,
+                                          defaultAgentName: agentName,
+                                          defaultModel:
+                                              controller.currentModelValue,
+                                          agentNames: _agentNamesForTasks(),
+                                          onRunTask: onRunTask == null
+                                              ? null
+                                              : (task) =>
+                                                    onRunTask!(context, task),
+                                          onOpenLinkedSession:
+                                              onOpenTaskSession == null
+                                              ? null
+                                              : (task) {
+                                                  unawaited(
+                                                    Future<void>.sync(
+                                                      () => onOpenTaskSession!(
+                                                        context,
+                                                        task,
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                        ),
                                 ),
-                                const VerticalDivider(
-                                  width: 1,
-                                  color: AppColors.border,
-                                ),
-                              ],
-                              Expanded(child: previewWorkspace),
+                              ),
+                              const VerticalDivider(
+                                width: 1,
+                                color: AppColors.border,
+                              ),
                             ],
-                          );
-                        },
-                      ),
+                            Expanded(child: previewWorkspace),
+                          ],
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -731,6 +727,7 @@ class AppShell extends StatelessWidget {
           additionalDirectories: additionalDirectories,
           clientProviders: clientProviders,
           memory: memory,
+          storage: storage,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
@@ -1043,12 +1040,14 @@ class _MemoryReviewPromptNotifierState
 
 class _ShellSidebar extends StatefulWidget {
   const _ShellSidebar({
+    required this.agentName,
     required this.workspaceSidebar,
     required this.taskInboxController,
     required this.initialMode,
     required this.taskInboxSidebar,
   });
 
+  final String agentName;
   final Widget workspaceSidebar;
   final TaskInboxController? taskInboxController;
   final AppShellSidebarMode initialMode;
@@ -1086,28 +1085,74 @@ class _ShellSidebarState extends State<_ShellSidebar> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.taskInboxController == null || widget.taskInboxSidebar == null) {
-      return widget.workspaceSidebar;
-    }
+    final hasInbox =
+        widget.taskInboxController != null && widget.taskInboxSidebar != null;
 
     return Container(
-      color: AppColors.surfaceRaised,
+      color: AppColors.bg,
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-            child: _SidebarModeSwitch(
-              selectedMode: _mode,
-              onChanged: (mode) {
-                setState(() => _mode = mode);
-              },
+          _SidebarBrandHeader(agentName: widget.agentName),
+          if (hasInbox)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
+              child: _SidebarModeSwitch(
+                selectedMode: _mode,
+                onChanged: (mode) {
+                  setState(() => _mode = mode);
+                },
+              ),
             ),
-          ),
           Expanded(
-            child: _mode == AppShellSidebarMode.workspaces
+            child: !hasInbox || _mode == AppShellSidebarMode.workspaces
                 ? widget.workspaceSidebar
                 : widget.taskInboxSidebar!,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SidebarBrandHeader extends StatelessWidget {
+  const _SidebarBrandHeader({required this.agentName});
+
+  final String agentName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      child: Row(
+        children: [
+          const Text(
+            'ACP Client',
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+          ),
+          if (agentName != 'Codex') ...[
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                agentName,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1126,16 +1171,15 @@ class _SidebarModeSwitch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 32,
+      height: 30,
       width: double.infinity,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          border: Border.all(color: AppColors.border),
+          color: AppColors.bg,
+          borderRadius: BorderRadius.circular(AppRadius.md),
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(AppRadius.pill),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1147,7 +1191,7 @@ class _SidebarModeSwitch extends StatelessWidget {
                 label: 'Workspaces',
                 onChanged: onChanged,
               ),
-              const VerticalDivider(width: 1, color: AppColors.border),
+              const SizedBox(width: 2),
               _SidebarModeSegment(
                 flex: 5,
                 mode: AppShellSidebarMode.inbox,
@@ -1210,7 +1254,9 @@ class _SidebarModeSegment extends StatelessWidget {
                       style: TextStyle(
                         color: color,
                         fontSize: 12,
-                        fontWeight: FontWeight.w900,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
                         height: 1,
                         letterSpacing: 0,
                       ),

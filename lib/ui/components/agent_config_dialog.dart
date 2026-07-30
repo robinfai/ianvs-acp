@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../config/acp_client_config.dart';
 import '../../memory/memory_config.dart';
+import '../../storage/sqlite_storage_config.dart';
 import '../theme/app_design_tokens.dart';
 
 typedef AcpConfigSaveCallback =
@@ -18,6 +19,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
+    this.storage = const SqliteStorageConfig(),
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
@@ -29,6 +31,7 @@ class AgentConfigDialog extends StatefulWidget {
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
+  final SqliteStorageConfig storage;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -108,6 +111,14 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       TextEditingController(text: widget.memory.llm.apiKeyEnv);
   late final TextEditingController _memoryProfileMaxItemsController =
       TextEditingController(text: widget.memory.profile.maxItems.toString());
+  late final TextEditingController _storageMaxSizeController =
+      TextEditingController(text: widget.storage.maxSizeGb.toString());
+  late final TextEditingController _storageRetentionController =
+      TextEditingController(text: widget.storage.retentionDays.toString());
+  late final TextEditingController _storageCleanupIntervalController =
+      TextEditingController(
+        text: widget.storage.cleanupIntervalHours.toString(),
+      );
   late bool _memoryMaintenanceEnabled = widget.memory.maintenance.enabled;
   late bool _memoryMaintenanceRunAfterExtraction =
       widget.memory.maintenance.runAfterExtraction;
@@ -180,6 +191,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _memoryLlmBaseUrlController.dispose();
     _memoryApiKeyEnvController.dispose();
     _memoryProfileMaxItemsController.dispose();
+    _storageMaxSizeController.dispose();
+    _storageRetentionController.dispose();
+    _storageCleanupIntervalController.dispose();
     _memoryMaintenanceHighThresholdController.dispose();
     _memoryMaintenanceReviewThresholdController.dispose();
     _memoryMaintenanceMaxBatchController.dispose();
@@ -242,6 +256,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                 _buildClientProvidersSection(),
                 const SizedBox(height: 10),
                 _buildMemorySection(),
+                const SizedBox(height: 10),
+                _buildStorageSection(),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -333,6 +349,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           additionalDirectories: List.unmodifiable(_additionalDirectories),
           clientProviders: _clientProvidersConfig(),
           memory: _memoryConfig(),
+          storage: _storageConfig(),
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
         ),
@@ -803,6 +820,87 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         trustRules: List.unmodifiable(_trustRules),
         reviewAgent: _reviewAgentConfig(),
       ),
+    );
+  }
+
+  Widget _buildStorageSection() {
+    return _Panel(
+      icon: Icons.storage_rounded,
+      title: 'SQLite Storage',
+      accent: AppColors.primary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'The limit is shared by workflow, memory, legacy inbox, and '
+            'session-recovery databases. Expired operational history is '
+            'removed automatically; active tasks and memories are retained.',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              height: 1.45,
+              letterSpacing: 0,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _DialogTextField(
+            key: const Key('storage-max-size-gb-field'),
+            controller: _storageMaxSizeController,
+            label: 'Total limit (GB)',
+            icon: Icons.data_usage_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('storage-retention-days-field'),
+            controller: _storageRetentionController,
+            label: 'Operational history retention (days)',
+            icon: Icons.history_rounded,
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('storage-cleanup-interval-hours-field'),
+            controller: _storageCleanupIntervalController,
+            label: 'Cleanup interval (hours)',
+            icon: Icons.cleaning_services_outlined,
+          ),
+        ],
+      ),
+    );
+  }
+
+  SqliteStorageConfig _storageConfig() {
+    final maxSize = _positiveIntValue(
+      _storageMaxSizeController.text,
+      'SQLite total limit',
+    );
+    final retention = _positiveIntValue(
+      _storageRetentionController.text,
+      'Storage retention',
+    );
+    final cleanupInterval = _positiveIntValue(
+      _storageCleanupIntervalController.text,
+      'Storage cleanup interval',
+    );
+    if (maxSize > 8192) {
+      throw const FormatException(
+        'SQLite total limit must be at most 8192 GB.',
+      );
+    }
+    if (retention > 3650) {
+      throw const FormatException(
+        'Storage retention must be at most 3650 days.',
+      );
+    }
+    if (cleanupInterval > 24 * 30) {
+      throw const FormatException(
+        'Storage cleanup interval must be at most 720 hours.',
+      );
+    }
+    return SqliteStorageConfig(
+      maxSizeGb: maxSize,
+      retentionDays: retention,
+      cleanupIntervalHours: cleanupInterval,
     );
   }
 

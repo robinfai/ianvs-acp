@@ -404,9 +404,20 @@ Saved shape example for automation and debugging:
       "max_items_per_batch": 12,
       "manual_only_actions": ["delete"]
     }
+  },
+  "storage": {
+    "max_size_gb": 50,
+    "retention_days": 30,
+    "cleanup_interval_hours": 24
   }
 }
 ```
+
+`storage.max_size_gb` is the shared upper budget for all application SQLite
+files, not a per-file allowance. The workflow, memory, legacy migration, and
+ACP session stores receive fixed shares of that total and automatically remove
+expired operational history. See [SQLite storage policy](docs/sqlite_storage.md)
+for the data inventory, allocation, and compaction behavior.
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; enter secret header values through Agent Configuration so they are

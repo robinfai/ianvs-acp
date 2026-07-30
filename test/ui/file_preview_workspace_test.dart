@@ -102,6 +102,26 @@ void main() {
     },
   );
 
+  testWidgets('inspector is a fixed full-height right rail', (tester) async {
+    final workspace = createWorkspace();
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      previewApp(workspacePath: workspace.path, markdown: 'Ready.'),
+    );
+
+    final surfaceRect = tester.getRect(
+      find.byKey(const Key('workspace-inspector-surface')),
+    );
+    expect(surfaceRect.top, 0);
+    expect(surfaceRect.right, 1200);
+    expect(surfaceRect.width, 332);
+    expect(surfaceRect.height, 800);
+  });
+
   testWidgets(
     'reuses one tab for the same file and updates the selected line',
     (tester) async {

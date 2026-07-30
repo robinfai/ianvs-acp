@@ -26,6 +26,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
     this.agentArgs = const <String>[],
     this.agentCwd,
     this.sessionStorePath,
+    this.sessionStoreMaxBytes,
+    this.sessionStoreRetentionDays,
     this.mcpServers = const <Map<String, Object?>>[],
     this.mcpServersProvider,
     this.envOverrides = const <String, String>{},
@@ -56,6 +58,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final List<String> agentArgs;
   final String? agentCwd;
   final String? sessionStorePath;
+  final int? sessionStoreMaxBytes;
+  final int? sessionStoreRetentionDays;
   final List<Map<String, Object?>> mcpServers;
   final AcpMcpServersProvider? mcpServersProvider;
   final Map<String, String> envOverrides;
@@ -166,6 +170,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
         environment: envOverrides,
         processCwd: agentCwd,
         sessionStorePath: sessionStorePath,
+        sessionStoreMaxBytes: sessionStoreMaxBytes,
+        sessionStoreRetentionDays: sessionStoreRetentionDays,
         mcpServers: <Map<String, Object?>>[
           ...mcpServers,
           ...providedMcpServers,

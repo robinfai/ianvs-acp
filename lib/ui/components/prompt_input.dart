@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -19,6 +20,8 @@ typedef PromptSendCallback =
 typedef PromptAttachmentPicker = Future<List<PromptAttachment>> Function();
 typedef PromptAttachmentKindPicker =
     Future<List<PromptAttachment>> Function(PromptAttachmentKind kind);
+typedef SessionConfigSelectionCallback =
+    void Function(String configId, Object value);
 
 enum PromptAttachmentKind { file, image, audio }
 
@@ -53,6 +56,8 @@ class PromptInput extends StatefulWidget {
     this.reasoningEffortOption,
     this.onModelSelected,
     this.onReasoningEffortSelected,
+    this.configOptions = const <AcpConfigOption>[],
+    this.onConfigOptionSelected,
     this.pickAttachments,
     this.pickAttachmentsForKind,
     this.inputBudget = const AcpInputBudget(),
@@ -79,6 +84,8 @@ class PromptInput extends StatefulWidget {
   final AcpConfigOption? reasoningEffortOption;
   final ValueChanged<String>? onModelSelected;
   final ValueChanged<String>? onReasoningEffortSelected;
+  final List<AcpConfigOption> configOptions;
+  final SessionConfigSelectionCallback? onConfigOptionSelected;
   final PromptAttachmentPicker? pickAttachments;
   final PromptAttachmentKindPicker? pickAttachmentsForKind;
   final AcpInputBudget inputBudget;
@@ -239,143 +246,161 @@ class _PromptInputState extends State<PromptInput> {
     final commandParameterPreviews = _parameterPreviewsFor(commandSuggestions);
     final pendingPermissionRequest = widget.pendingPermissionRequest;
     return Container(
-      color: AppColors.bg,
-      padding: const EdgeInsets.fromLTRB(12, 3, 12, 8),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Focus(
-            onKeyEvent: (node, event) {
-              if (event is! KeyDownEvent) return KeyEventResult.ignored;
-              if (event.logicalKey != LogicalKeyboardKey.enter) {
-                return KeyEventResult.ignored;
-              }
-              if (HardwareKeyboard.instance.isShiftPressed) {
-                return KeyEventResult.ignored;
-              }
-              _submit();
-              return KeyEventResult.handled;
-            },
-            child: DropTarget(
-              key: const Key('prompt-input-drop-target'),
-              enable: widget.enabled && !widget.isSending,
-              onDragEntered: _handleAttachmentDragEntered,
-              onDragExited: _handleAttachmentDragExited,
-              onDragDone: _handleAttachmentDrop,
-              child: AnimatedContainer(
-                key: const Key('prompt-input-surface'),
-                duration: const Duration(milliseconds: 120),
-                constraints: const BoxConstraints(minHeight: 78),
-                decoration: BoxDecoration(
-                  color: _isDraggingAttachments
-                      ? AppColors.primarySoft
-                      : AppColors.surface,
-                  borderRadius: BorderRadius.circular(AppRadius.md),
-                  border: Border.all(
-                    color: _isDraggingAttachments
-                        ? AppColors.primary
-                        : AppColors.border,
-                    width: _isDraggingAttachments ? 2 : 1,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
+      color: AppColors.surface,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 740),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Focus(
+                onKeyEvent: (node, event) {
+                  if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                  if (event.logicalKey != LogicalKeyboardKey.enter) {
+                    return KeyEventResult.ignored;
+                  }
+                  if (HardwareKeyboard.instance.isShiftPressed) {
+                    return KeyEventResult.ignored;
+                  }
+                  _submit();
+                  return KeyEventResult.handled;
+                },
+                child: DropTarget(
+                  key: const Key('prompt-input-drop-target'),
+                  enable: widget.enabled && !widget.isSending,
+                  onDragEntered: _handleAttachmentDragEntered,
+                  onDragExited: _handleAttachmentDragExited,
+                  onDragDone: _handleAttachmentDrop,
+                  child: AnimatedContainer(
+                    key: const Key('prompt-input-surface'),
+                    duration: const Duration(milliseconds: 120),
+                    constraints: const BoxConstraints(minHeight: 108),
+                    decoration: BoxDecoration(
                       color: _isDraggingAttachments
-                          ? AppColors.primary.withValues(alpha: 0.16)
-                          : AppColors.textPrimary.withValues(alpha: 0.05),
-                      blurRadius: _isDraggingAttachments ? 22 : 16,
-                      offset: const Offset(0, 5),
+                          ? AppColors.primarySoft
+                          : AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.xl),
+                      border: Border.all(
+                        color: _isDraggingAttachments
+                            ? AppColors.textSecondary
+                            : AppColors.border,
+                        width: _isDraggingAttachments ? 2 : 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.textPrimary.withValues(
+                            alpha: _isDraggingAttachments ? 0.12 : 0.06,
+                          ),
+                          blurRadius: _isDraggingAttachments ? 28 : 24,
+                          offset: const Offset(0, 8),
+                        ),
+                        BoxShadow(
+                          color: AppColors.textPrimary.withValues(alpha: 0.035),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_isDraggingAttachments)
-                      _AttachmentDropIndicator(
-                        kinds: _availableAttachmentKinds(
-                          widget.promptCapabilities,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_isDraggingAttachments)
+                          _AttachmentDropIndicator(
+                            kinds: _availableAttachmentKinds(
+                              widget.promptCapabilities,
+                            ),
+                          ),
+                        if (pendingPermissionRequest != null)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                            child: _PromptPermissionCard(
+                              request: pendingPermissionRequest,
+                              onAllow: widget.onAllowPermission,
+                              onDeny: widget.onDenyPermission,
+                              onCancel: widget.onCancelPermission,
+                              onSelectOption: widget.onSelectPermissionOption,
+                            ),
+                          ),
+                        if (commandSuggestions.isNotEmpty)
+                          _CommandSuggestionPanel(
+                            entries: commandSuggestions,
+                            parameterPreviews: commandParameterPreviews,
+                            onSelect: _insertCommand,
+                          ),
+                        TextField(
+                          controller: _controller,
+                          minLines: 1,
+                          maxLines: 4,
+                          keyboardType: TextInputType.multiline,
+                          enabled: widget.enabled && !widget.isSending,
+                          onChanged: _handlePromptChanged,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13,
+                            height: 1.35,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'Send a prompt to ${widget.agentName}...',
+                            hintStyle: const TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w400,
+                            ),
+                            filled: false,
+                            isCollapsed: true,
+                            contentPadding: const EdgeInsets.fromLTRB(
+                              13,
+                              14,
+                              13,
+                              27,
+                            ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                          ),
                         ),
-                      ),
-                    if (pendingPermissionRequest != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-                        child: _PromptPermissionCard(
-                          request: pendingPermissionRequest,
-                          onAllow: widget.onAllowPermission,
-                          onDeny: widget.onDenyPermission,
-                          onCancel: widget.onCancelPermission,
-                          onSelectOption: widget.onSelectPermissionOption,
+                        if (_attachments.isNotEmpty)
+                          _AttachmentTray(
+                            attachments: _attachments,
+                            promptCapabilities: widget.promptCapabilities,
+                            onRemove: _removeAttachment,
+                          ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
+                          child: _ComposerControlBar(
+                            enabled: widget.enabled,
+                            isSending: widget.isSending,
+                            canSend: _canSend,
+                            onPickAttachments: _pickAttachments,
+                            promptCapabilities: widget.promptCapabilities,
+                            pendingPermissionRequest: pendingPermissionRequest,
+                            toolCallExecutionPolicy:
+                                widget.toolCallExecutionPolicy,
+                            hasPermissionReviewer: widget.hasPermissionReviewer,
+                            onToolCallExecutionPolicyChanged:
+                                widget.onToolCallExecutionPolicyChanged,
+                            modelOption: widget.modelOption,
+                            reasoningEffortOption: widget.reasoningEffortOption,
+                            onModelSelected: widget.onModelSelected,
+                            onReasoningEffortSelected:
+                                widget.onReasoningEffortSelected,
+                            configOptions: widget.configOptions,
+                            onConfigOptionSelected:
+                                widget.onConfigOptionSelected,
+                            onSend: _submit,
+                            onStop: widget.onStop,
+                          ),
                         ),
-                      ),
-                    if (commandSuggestions.isNotEmpty)
-                      _CommandSuggestionPanel(
-                        entries: commandSuggestions,
-                        parameterPreviews: commandParameterPreviews,
-                        onSelect: _insertCommand,
-                      ),
-                    TextField(
-                      controller: _controller,
-                      minLines: 1,
-                      maxLines: 4,
-                      keyboardType: TextInputType.multiline,
-                      enabled: widget.enabled && !widget.isSending,
-                      onChanged: _handlePromptChanged,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                        height: 1.35,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: 'Send a prompt to ${widget.agentName}...',
-                        hintStyle: const TextStyle(
-                          color: AppColors.textTertiary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        isCollapsed: true,
-                        contentPadding: const EdgeInsets.fromLTRB(
-                          13,
-                          12,
-                          13,
-                          8,
-                        ),
-                        border: InputBorder.none,
-                      ),
+                      ],
                     ),
-                    if (_attachments.isNotEmpty)
-                      _AttachmentTray(
-                        attachments: _attachments,
-                        promptCapabilities: widget.promptCapabilities,
-                        onRemove: _removeAttachment,
-                      ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
-                      child: _ComposerControlBar(
-                        enabled: widget.enabled,
-                        isSending: widget.isSending,
-                        canSend: _canSend,
-                        onPickAttachments: _pickAttachments,
-                        promptCapabilities: widget.promptCapabilities,
-                        pendingPermissionRequest: pendingPermissionRequest,
-                        toolCallExecutionPolicy: widget.toolCallExecutionPolicy,
-                        hasPermissionReviewer: widget.hasPermissionReviewer,
-                        onToolCallExecutionPolicyChanged:
-                            widget.onToolCallExecutionPolicyChanged,
-                        modelOption: widget.modelOption,
-                        reasoningEffortOption: widget.reasoningEffortOption,
-                        onModelSelected: widget.onModelSelected,
-                        onReasoningEffortSelected:
-                            widget.onReasoningEffortSelected,
-                        onSend: _submit,
-                        onStop: widget.onStop,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -892,20 +917,6 @@ String _permissionContextEntryKey(String label) {
   };
 }
 
-class _ComposerDivider extends StatelessWidget {
-  const _ComposerDivider();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 1,
-      height: 24,
-      margin: const EdgeInsets.symmetric(horizontal: 6),
-      color: AppColors.border,
-    );
-  }
-}
-
 class _AttachmentDropIndicator extends StatelessWidget {
   const _AttachmentDropIndicator({required this.kinds});
 
@@ -965,45 +976,58 @@ class _AttachmentPickerControl extends StatelessWidget {
     final kinds = _availableAttachmentKinds(promptCapabilities);
     final tooltip = _attachmentPickerTooltip(kinds);
     if (kinds.length == 1) {
-      return Semantics(
-        button: true,
-        label: tooltip,
-        child: IconButton(
-          tooltip: tooltip,
-          onPressed: enabled
-              ? () => onSelected(PromptAttachmentKind.file)
-              : null,
-          icon: const Icon(
-            Icons.add_rounded,
-            key: Key('prompt-attachment-picker'),
+      return SizedBox(
+        width: 34,
+        height: 34,
+        child: Semantics(
+          button: true,
+          label: tooltip,
+          child: IconButton(
+            tooltip: tooltip,
+            onPressed: enabled
+                ? () => onSelected(PromptAttachmentKind.file)
+                : null,
+            icon: const Icon(
+              Icons.add_rounded,
+              key: Key('prompt-attachment-picker'),
+            ),
+            color: AppColors.textSecondary,
+            disabledColor: AppColors.textTertiary,
+            iconSize: 19,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+            splashRadius: 17,
           ),
-          color: AppColors.textSecondary,
-          disabledColor: AppColors.textTertiary,
-          iconSize: 20,
-          visualDensity: VisualDensity.compact,
-          splashRadius: 18,
         ),
       );
     }
 
-    return PopupMenuButton<PromptAttachmentKind>(
-      tooltip: tooltip,
-      enabled: enabled,
-      onSelected: onSelected,
-      itemBuilder: (context) => <PopupMenuEntry<PromptAttachmentKind>>[
-        for (final kind in kinds)
-          PopupMenuItem<PromptAttachmentKind>(
-            value: kind,
-            child: _AttachmentPickerMenuItem(
-              kind: kind,
-              embedsFiles: promptCapabilities?.embeddedContext == true,
+    return SizedBox(
+      width: 34,
+      height: 34,
+      child: PopupMenuButton<PromptAttachmentKind>(
+        tooltip: tooltip,
+        enabled: enabled,
+        onSelected: onSelected,
+        itemBuilder: (context) => <PopupMenuEntry<PromptAttachmentKind>>[
+          for (final kind in kinds)
+            PopupMenuItem<PromptAttachmentKind>(
+              value: kind,
+              child: _AttachmentPickerMenuItem(
+                kind: kind,
+                embedsFiles: promptCapabilities?.embeddedContext == true,
+              ),
             ),
-          ),
-      ],
-      icon: const Icon(Icons.add_rounded, key: Key('prompt-attachment-picker')),
-      color: AppColors.surface,
-      iconColor: AppColors.textSecondary,
-      iconSize: 20,
+        ],
+        icon: const Icon(
+          Icons.add_rounded,
+          key: Key('prompt-attachment-picker'),
+        ),
+        padding: EdgeInsets.zero,
+        color: AppColors.surface,
+        iconColor: AppColors.textSecondary,
+        iconSize: 19,
+      ),
     );
   }
 }
@@ -1126,6 +1150,8 @@ class _ComposerControlBar extends StatelessWidget {
     required this.reasoningEffortOption,
     required this.onModelSelected,
     required this.onReasoningEffortSelected,
+    required this.configOptions,
+    required this.onConfigOptionSelected,
     required this.onSend,
     required this.onStop,
   });
@@ -1144,6 +1170,8 @@ class _ComposerControlBar extends StatelessWidget {
   final AcpConfigOption? reasoningEffortOption;
   final ValueChanged<String>? onModelSelected;
   final ValueChanged<String>? onReasoningEffortSelected;
+  final List<AcpConfigOption> configOptions;
+  final SessionConfigSelectionCallback? onConfigOptionSelected;
   final VoidCallback onSend;
   final VoidCallback onStop;
 
@@ -1160,10 +1188,18 @@ class _ComposerControlBar extends StatelessWidget {
       enabled: enabled && onToolCallExecutionPolicyChanged != null,
       onChanged: onToolCallExecutionPolicyChanged,
     );
-    final sessionConfig =
-        (modelOption != null && modelOption!.options.isNotEmpty) ||
-            (reasoningEffortOption != null &&
-                reasoningEffortOption!.options.isNotEmpty)
+    final adaptiveOptions = configOptions
+        .where((option) => option.isBooleanOption || option.options.length > 1)
+        .toList(growable: false);
+    final sessionConfig = adaptiveOptions.isNotEmpty
+        ? _AdaptiveSessionConfigSelector(
+            options: adaptiveOptions,
+            enabled: enabled && !isSending && onConfigOptionSelected != null,
+            onSelected: onConfigOptionSelected,
+          )
+        : (modelOption != null && modelOption!.options.isNotEmpty) ||
+              (reasoningEffortOption != null &&
+                  reasoningEffortOption!.options.isNotEmpty)
         ? _SessionConfigSelectors(
             modelOption: modelOption,
             reasoningEffortOption: reasoningEffortOption,
@@ -1195,7 +1231,7 @@ class _ComposerControlBar extends StatelessWidget {
               Row(
                 children: [
                   attach,
-                  const _ComposerDivider(),
+                  const SizedBox(width: 2),
                   Flexible(
                     child: Align(
                       alignment: Alignment.centerLeft,
@@ -1217,7 +1253,7 @@ class _ComposerControlBar extends StatelessWidget {
         return Row(
           children: [
             attach,
-            const _ComposerDivider(),
+            const SizedBox(width: 2),
             if (permissionChip != null) ...[
               Flexible(
                 child: Align(
@@ -1362,6 +1398,1033 @@ class _ToolCallPolicySelector extends StatelessWidget {
   }
 }
 
+class _AdaptiveSessionConfigSelector extends StatefulWidget {
+  const _AdaptiveSessionConfigSelector({
+    required this.options,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final List<AcpConfigOption> options;
+  final bool enabled;
+  final SessionConfigSelectionCallback? onSelected;
+
+  @override
+  State<_AdaptiveSessionConfigSelector> createState() =>
+      _AdaptiveSessionConfigSelectorState();
+}
+
+class _AdaptiveSessionConfigSelectorState
+    extends State<_AdaptiveSessionConfigSelector> {
+  final MenuController _menuController = MenuController();
+  final OverlayPortalController _advancedOverlayController =
+      OverlayPortalController();
+  final LayerLink _advancedOverlayLink = LayerLink();
+  bool _advancedExpanded = false;
+  double? _effortPreviewIndex;
+
+  @override
+  Widget build(BuildContext context) {
+    final model = _firstOption((option) => option.isModelOption);
+    final effort = _firstOption((option) => option.isReasoningEffortOption);
+    final fast = _firstOption((option) => option.isFastOption);
+    final primaryOptions = <AcpConfigOption?>[
+      model,
+      effort,
+      fast,
+    ].whereType<AcpConfigOption>().toList(growable: false);
+    final labels = <String>[
+      if (model != null) model.currentChoiceLabel,
+      if (effort != null) effort.currentChoiceLabel,
+      if (model == null && effort == null && widget.options.isNotEmpty)
+        widget.options.first.currentChoiceLabel,
+    ];
+    final hasAdvancedControls =
+        (effort != null && effort.options.length > 1) || fast != null;
+
+    return CompositedTransformTarget(
+      link: _advancedOverlayLink,
+      child: OverlayPortal(
+        controller: _advancedOverlayController,
+        overlayChildBuilder: (context) {
+          return Stack(
+            children: [
+              CompositedTransformFollower(
+                link: _advancedOverlayLink,
+                showWhenUnlinked: false,
+                targetAnchor: Alignment.topRight,
+                followerAnchor: Alignment.bottomRight,
+                offset: const Offset(0, -8),
+                child: TapRegion(
+                  key: const Key(
+                    'prompt-session-config-advanced-overlay-region',
+                  ),
+                  onTapOutside: (_) => _closeAdvancedOverlay(),
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: _SessionConfigAdvancedPanel(
+                      effort: effort,
+                      fast: fast,
+                      enabled: widget.enabled,
+                      effortPreviewIndex: _effortPreviewIndex,
+                      onBack: _showPrimaryMenuFromAdvanced,
+                      onEffortPreviewChanged: (value) {
+                        setState(() => _effortPreviewIndex = value);
+                      },
+                      onEffortChanged: (value) {
+                        if (effort == null || effort.options.isEmpty) return;
+                        final index = value
+                            .round()
+                            .clamp(0, effort.options.length - 1)
+                            .toInt();
+                        widget.onSelected?.call(
+                          effort.id,
+                          effort.options[index].value,
+                        );
+                      },
+                      onFastToggle: fast == null
+                          ? null
+                          : () => _toggleFast(fast),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+        child: MenuAnchor(
+          controller: _menuController,
+          style: _sessionConfigMenuStyle(width: 246),
+          alignmentOffset: const Offset(0, -6),
+          onOpen: _closeAdvancedOverlay,
+          menuChildren: [
+            for (final option in primaryOptions) _configSubmenu(option),
+            if (primaryOptions.isNotEmpty && hasAdvancedControls)
+              const Divider(height: 9, indent: 10, endIndent: 10),
+            if (hasAdvancedControls)
+              MenuItemButton(
+                key: const Key('prompt-session-config-advanced'),
+                style: _sessionConfigButtonStyle(width: 246),
+                trailingIcon: const Icon(
+                  Icons.keyboard_arrow_up_rounded,
+                  size: 19,
+                  color: AppColors.textTertiary,
+                ),
+                onPressed: widget.enabled
+                    ? () {
+                        _menuController.close();
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted) return;
+                          setState(() {
+                            _advancedExpanded = true;
+                            _effortPreviewIndex = null;
+                          });
+                          _advancedOverlayController.show();
+                        });
+                      }
+                    : null,
+                child: const _SessionConfigMenuRow(
+                  label: 'Advanced',
+                  value: '',
+                ),
+              ),
+          ],
+          builder: (context, controller, child) {
+            return Tooltip(
+              message: 'Agent session configuration',
+              child: InkWell(
+                key: const Key('prompt-session-config-selector'),
+                borderRadius: BorderRadius.circular(AppRadius.pill),
+                onTap: widget.enabled
+                    ? () {
+                        _closeAdvancedOverlay();
+                        if (controller.isOpen) {
+                          controller.close();
+                        } else {
+                          controller.open();
+                        }
+                      }
+                    : null,
+                child: _SessionConfigSummaryButton(
+                  label: labels.join(' '),
+                  enabled: widget.enabled,
+                  fastEnabled: fast?.isFastEnabled == true,
+                  expanded: controller.isOpen,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _closeAdvancedOverlay() {
+    _advancedOverlayController.hide();
+    if (!_advancedExpanded || !mounted) return;
+    setState(() {
+      _advancedExpanded = false;
+      _effortPreviewIndex = null;
+    });
+  }
+
+  void _showPrimaryMenuFromAdvanced() {
+    _closeAdvancedOverlay();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _menuController.open();
+    });
+  }
+
+  void _toggleFast(AcpConfigOption option) {
+    if (option.isBooleanOption) {
+      widget.onSelected?.call(option.id, !option.isFastEnabled);
+      return;
+    }
+    final targetLabel = option.isFastEnabled ? 'Standard' : 'Fast';
+    for (final choice in option.options) {
+      if (_fastChoiceLabel(choice.value, choice.label) == targetLabel) {
+        widget.onSelected?.call(option.id, choice.value);
+        return;
+      }
+    }
+  }
+
+  Widget _configSubmenu(AcpConfigOption option, {double buttonWidth = 246}) {
+    return SubmenuButton(
+      key: Key('prompt-session-config-option-${option.id}'),
+      style: _sessionConfigButtonStyle(width: buttonWidth),
+      menuStyle: _sessionConfigMenuStyle(
+        width: option.isModelOption ? 286 : 306,
+      ),
+      hoverOpenDelay: const Duration(milliseconds: 90),
+      menuChildren: _choiceMenuEntries(option),
+      child: _SessionConfigMenuRow(
+        label: _optionLabel(option),
+        value: _currentOptionLabel(option),
+        width: buttonWidth - 60,
+      ),
+    );
+  }
+
+  AcpConfigOption? _firstOption(bool Function(AcpConfigOption) test) {
+    for (final option in widget.options) {
+      if (test(option)) return option;
+    }
+    return null;
+  }
+
+  List<Widget> _choiceMenuEntries(AcpConfigOption option) {
+    final entries = <Widget>[
+      if (!option.isModelOption)
+        _SessionConfigSubmenuHeader(label: _optionLabel(option)),
+    ];
+    if (option.isBooleanOption) {
+      for (final value in const [false, true]) {
+        entries.add(
+          MenuItemButton(
+            key: Key(
+              'prompt-session-config-choice-${option.id}-${value ? 'on' : 'off'}',
+            ),
+            style: _sessionConfigChoiceButtonStyle(
+              width: option.isFastOption ? 306 : 286,
+            ),
+            trailingIcon: option.currentBoolValue == value
+                ? const Icon(
+                    Icons.check_rounded,
+                    size: 19,
+                    color: AppColors.textSecondary,
+                  )
+                : null,
+            onPressed: widget.enabled
+                ? () => widget.onSelected?.call(option.id, value)
+                : null,
+            child: _SessionConfigChoiceLabel(
+              label: option.isFastOption
+                  ? (value ? 'Fast' : 'Standard')
+                  : (value ? 'On' : 'Off'),
+              description: option.isFastOption
+                  ? (value
+                        ? 'Faster responses, uses more quota'
+                        : 'Default speed')
+                  : (value ? (option.description ?? '') : ''),
+            ),
+          ),
+        );
+      }
+      return entries;
+    }
+
+    for (final choice in option.options) {
+      entries.add(
+        MenuItemButton(
+          key: Key('prompt-session-config-choice-${option.id}-${choice.value}'),
+          style: _sessionConfigChoiceButtonStyle(
+            width: option.isModelOption ? 286 : 306,
+          ),
+          trailingIcon: choice.value == option.currentValue
+              ? const Icon(
+                  Icons.check_rounded,
+                  size: 19,
+                  color: AppColors.textSecondary,
+                )
+              : null,
+          onPressed: widget.enabled
+              ? () => widget.onSelected?.call(option.id, choice.value)
+              : null,
+          child: _SessionConfigChoiceLabel(
+            label: option.isFastOption
+                ? _fastChoiceLabel(choice.value, choice.label)
+                : choice.label,
+            description:
+                choice.description ??
+                (choice.groupName == null ? '' : choice.groupName!),
+          ),
+        ),
+      );
+    }
+    return entries;
+  }
+
+  String _optionLabel(AcpConfigOption option) {
+    if (option.isModelOption) return 'Model';
+    if (option.isReasoningEffortOption) return 'Reasoning';
+    if (option.isFastOption) return 'Speed';
+    final name = option.name.trim();
+    return name.isEmpty ? option.id : name;
+  }
+
+  String _currentOptionLabel(AcpConfigOption option) {
+    if (option.isFastOption) {
+      return option.isFastEnabled ? 'Fast' : 'Standard';
+    }
+    return option.currentChoiceLabel;
+  }
+
+  String _fastChoiceLabel(String value, String label) {
+    final normalized = '$value $label'.trim().toLowerCase();
+    if (normalized.contains('fast') ||
+        normalized.contains('quick') ||
+        normalized.contains('turbo') ||
+        normalized.contains('on') ||
+        normalized.contains('enabled') ||
+        normalized.contains('true')) {
+      return 'Fast';
+    }
+    if (normalized.contains('standard') ||
+        normalized.contains('normal') ||
+        normalized.contains('off') ||
+        normalized.contains('disabled') ||
+        normalized.contains('false')) {
+      return 'Standard';
+    }
+    return label;
+  }
+}
+
+class _SessionConfigAdvancedPanel extends StatefulWidget {
+  const _SessionConfigAdvancedPanel({
+    required this.effort,
+    required this.fast,
+    required this.enabled,
+    required this.effortPreviewIndex,
+    required this.onBack,
+    required this.onEffortPreviewChanged,
+    required this.onEffortChanged,
+    required this.onFastToggle,
+  });
+
+  final AcpConfigOption? effort;
+  final AcpConfigOption? fast;
+  final bool enabled;
+  final double? effortPreviewIndex;
+  final VoidCallback onBack;
+  final ValueChanged<double> onEffortPreviewChanged;
+  final ValueChanged<double> onEffortChanged;
+  final VoidCallback? onFastToggle;
+
+  @override
+  State<_SessionConfigAdvancedPanel> createState() =>
+      _SessionConfigAdvancedPanelState();
+}
+
+class _SessionConfigAdvancedPanelState
+    extends State<_SessionConfigAdvancedPanel> {
+  bool _dragging = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final effortChoices =
+        widget.effort?.options ?? const <AcpConfigOptionChoice>[];
+    final selectedEffortIndex = _selectedEffortIndex(widget.effort);
+    final sliderValue =
+        (widget.effortPreviewIndex ?? selectedEffortIndex.toDouble())
+            .clamp(0, (effortChoices.length - 1).toDouble())
+            .toDouble();
+
+    return Container(
+      key: const Key('prompt-session-config-advanced-panel'),
+      width: 228,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14000000),
+            blurRadius: 18,
+            offset: Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              if (_dragging) ...[
+                const Expanded(
+                  child: Text(
+                    'More efficient',
+                    style: TextStyle(
+                      color: AppColors.textTertiary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const Text(
+                  'Smarter',
+                  style: TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ] else ...[
+                Expanded(
+                  child: InkWell(
+                    key: const Key('prompt-session-config-advanced-collapse'),
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: widget.enabled ? widget.onBack : null,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+                      child: Row(
+                        children: [
+                          Text(
+                            'Advanced',
+                            style: TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          SizedBox(width: 2),
+                          Icon(
+                            Icons.keyboard_arrow_right_rounded,
+                            size: 18,
+                            color: AppColors.textTertiary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              if (!_dragging && widget.fast != null)
+                Tooltip(
+                  message: widget.fast!.isFastEnabled
+                      ? 'Use standard speed'
+                      : 'Use fast speed',
+                  child: IconButton(
+                    key: const Key(
+                      'prompt-session-config-advanced-fast-toggle',
+                    ),
+                    onPressed: widget.enabled ? widget.onFastToggle : null,
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 32,
+                      height: 32,
+                    ),
+                    padding: EdgeInsets.zero,
+                    icon: Icon(
+                      Icons.bolt_rounded,
+                      size: 20,
+                      color: const Color(0xFF3194F6),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          if (effortChoices.length > 1) ...[
+            const SizedBox(height: 2),
+            _ReasoningBalanceSlider(
+              key: const Key('prompt-session-config-advanced-effort-slider'),
+              value: sliderValue,
+              choiceLabels: effortChoices
+                  .map((choice) => choice.label)
+                  .toList(growable: false),
+              enabled: widget.enabled,
+              onChanged: widget.onEffortPreviewChanged,
+              onChangeEnd: widget.onEffortChanged,
+              onInteractionChanged: (dragging) {
+                if (_dragging == dragging) return;
+                setState(() => _dragging = dragging);
+              },
+            ),
+          ] else if (widget.fast != null) ...[
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                const Text(
+                  'Speed',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  widget.fast!.isFastEnabled ? 'Fast' : 'Standard',
+                  style: const TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  int _selectedEffortIndex(AcpConfigOption? option) {
+    if (option == null) return 0;
+    final index = option.options.indexWhere(
+      (choice) => choice.value == option.currentValue,
+    );
+    return index < 0 ? 0 : index;
+  }
+}
+
+class _ReasoningBalanceSlider extends StatefulWidget {
+  const _ReasoningBalanceSlider({
+    super.key,
+    required this.value,
+    required this.choiceLabels,
+    required this.enabled,
+    required this.onChanged,
+    required this.onChangeEnd,
+    required this.onInteractionChanged,
+  });
+
+  final double value;
+  final List<String> choiceLabels;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
+  final ValueChanged<bool> onInteractionChanged;
+
+  @override
+  State<_ReasoningBalanceSlider> createState() =>
+      _ReasoningBalanceSliderState();
+}
+
+class _ReasoningBalanceSliderState extends State<_ReasoningBalanceSlider>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _particleController;
+  double? _interactionValue;
+
+  double get _max => (widget.choiceLabels.length - 1).toDouble();
+
+  @override
+  void initState() {
+    super.initState();
+    _particleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _particleController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = widget.value.clamp(0, _max).toDouble();
+    final label = widget.choiceLabels[value.round()];
+    return Semantics(
+      label: 'Reasoning effort',
+      value: label,
+      hint:
+          'Snapped to node ${value.round() + 1} of ${widget.choiceLabels.length}',
+      slider: true,
+      increasedValue: value < _max
+          ? widget.choiceLabels[(value.round() + 1)
+                .clamp(0, _max.toInt())
+                .toInt()]
+          : null,
+      decreasedValue: value > 0
+          ? widget.choiceLabels[(value.round() - 1)
+                .clamp(0, _max.toInt())
+                .toInt()]
+          : null,
+      onIncrease: widget.enabled && value < _max
+          ? () => _commit((value + 1).clamp(0, _max).toDouble())
+          : null,
+      onDecrease: widget.enabled && value > 0
+          ? () => _commit((value - 1).clamp(0, _max).toDouble())
+          : null,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: widget.enabled
+                ? (details) {
+                    final next = _valueForDx(
+                      details.localPosition.dx,
+                      constraints.maxWidth,
+                    );
+                    _updateInteraction(next);
+                    widget.onChangeEnd(next);
+                    _interactionValue = null;
+                  }
+                : null,
+            onHorizontalDragStart: widget.enabled
+                ? (details) {
+                    widget.onInteractionChanged(true);
+                    final next = _valueForDx(
+                      details.localPosition.dx,
+                      constraints.maxWidth,
+                    );
+                    _updateInteraction(next);
+                  }
+                : null,
+            onHorizontalDragUpdate: widget.enabled
+                ? (details) {
+                    final next = _valueForDx(
+                      details.localPosition.dx,
+                      constraints.maxWidth,
+                    );
+                    _updateInteraction(next);
+                  }
+                : null,
+            onHorizontalDragEnd: widget.enabled
+                ? (details) {
+                    widget.onInteractionChanged(false);
+                    widget.onChangeEnd(
+                      (_interactionValue ?? widget.value).roundToDouble(),
+                    );
+                    _interactionValue = null;
+                  }
+                : null,
+            onHorizontalDragCancel: widget.enabled
+                ? () {
+                    _interactionValue = null;
+                    widget.onInteractionChanged(false);
+                  }
+                : null,
+            child: SizedBox(
+              height: 46,
+              width: double.infinity,
+              child: CustomPaint(
+                key: const Key('prompt-session-config-advanced-particles'),
+                painter: _ReasoningBalanceSliderPainter(
+                  fraction: _max == 0 ? 0 : value / _max,
+                  divisions: widget.choiceLabels.length - 1,
+                  particleAnimation: _particleController,
+                  enabled: widget.enabled,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  double _valueForDx(double dx, double width) {
+    const thumbRadius = 13.0;
+    final usableWidth = math.max(width - thumbRadius * 2, 1);
+    final fraction = ((dx - thumbRadius) / usableWidth).clamp(0.0, 1.0);
+    return (fraction * _max).round().clamp(0, _max.toInt()).toDouble();
+  }
+
+  void _updateInteraction(double value) {
+    final previousNode = (_interactionValue ?? widget.value).round();
+    final nextNode = value.round();
+    _interactionValue = value;
+    if (previousNode != nextNode) {
+      HapticFeedback.selectionClick();
+    }
+    widget.onChanged(value);
+  }
+
+  void _commit(double value) {
+    widget.onChanged(value);
+    widget.onChangeEnd(value);
+  }
+}
+
+class _ReasoningBalanceSliderPainter extends CustomPainter {
+  _ReasoningBalanceSliderPainter({
+    required this.fraction,
+    required this.divisions,
+    required this.particleAnimation,
+    required this.enabled,
+  }) : super(repaint: particleAnimation);
+
+  final double fraction;
+  final int divisions;
+  final Animation<double> particleAnimation;
+  final bool enabled;
+
+  static const _trackColor = Color(0xFFE3E4E6);
+  static const _activeColor = Color(0xFF3194F6);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const trackHeight = 24.0;
+    const thumbRadius = 13.0;
+    final trackRect = Rect.fromLTWH(
+      0,
+      (size.height - trackHeight) / 2,
+      size.width,
+      trackHeight,
+    );
+    final trackRRect = RRect.fromRectAndRadius(
+      trackRect,
+      const Radius.circular(trackHeight / 2),
+    );
+    canvas.drawRRect(
+      trackRRect,
+      Paint()..color = enabled ? _trackColor : AppColors.primaryMist,
+    );
+
+    final thumbCenterX =
+        thumbRadius + (size.width - thumbRadius * 2) * fraction;
+    canvas.save();
+    canvas.clipRRect(trackRRect);
+    canvas.drawRect(
+      Rect.fromLTRB(
+        trackRect.left,
+        trackRect.top,
+        thumbCenterX,
+        trackRect.bottom,
+      ),
+      Paint()..color = enabled ? _activeColor : AppColors.border,
+    );
+    if (enabled && thumbCenterX > 34) {
+      _paintParticles(canvas, trackRect, thumbCenterX);
+    }
+    canvas.restore();
+
+    if (divisions > 1) {
+      final tickPaint = Paint()..color = const Color(0xFFAAAEB3);
+      for (var index = 1; index < divisions; index++) {
+        final x =
+            thumbRadius + (size.width - thumbRadius * 2) * (index / divisions);
+        if (x > thumbCenterX + thumbRadius) {
+          canvas.drawCircle(Offset(x, size.height / 2), 2.1, tickPaint);
+        }
+      }
+    }
+
+    final thumbCenter = Offset(thumbCenterX, size.height / 2);
+    final thumbPath = Path()
+      ..addOval(Rect.fromCircle(center: thumbCenter, radius: thumbRadius));
+    canvas.drawShadow(thumbPath, const Color(0x33000000), 2, false);
+    canvas.drawCircle(
+      thumbCenter,
+      thumbRadius,
+      Paint()..color = enabled ? Colors.white : AppColors.surface,
+    );
+    canvas.drawCircle(
+      thumbCenter,
+      thumbRadius,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = const Color(0x1F000000),
+    );
+  }
+
+  void _paintParticles(Canvas canvas, Rect trackRect, double activeEnd) {
+    final particlePaint = Paint();
+    final usableWidth = math.max(activeEnd - 24, 1);
+    for (var index = 0; index < 12; index++) {
+      final speed = 0.52 + (index % 4) * 0.13;
+      final progress = (particleAnimation.value * speed + index * 0.173) % 1.0;
+      final x = 8 + progress * usableWidth;
+      final wave = math.sin(
+        particleAnimation.value * math.pi * 2 + index * 1.71,
+      );
+      final y = trackRect.center.dy + wave * 6.2;
+      final opacity = (0.35 + 0.55 * math.sin((progress + 0.18) * math.pi))
+          .clamp(0.25, 0.9);
+      particlePaint.color = Colors.white.withValues(alpha: opacity);
+      canvas.drawCircle(
+        Offset(x, y),
+        index % 3 == 0 ? 1.6 : 1.1,
+        particlePaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ReasoningBalanceSliderPainter oldDelegate) {
+    return oldDelegate.fraction != fraction ||
+        oldDelegate.divisions != divisions ||
+        oldDelegate.particleAnimation != particleAnimation ||
+        oldDelegate.enabled != enabled;
+  }
+}
+
+class _SessionConfigMenuRow extends StatelessWidget {
+  const _SessionConfigMenuRow({
+    required this.label,
+    required this.value,
+    this.width = 186,
+  });
+
+  final String label;
+  final String value;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          if (value.isNotEmpty) ...[
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                value,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SessionConfigSubmenuHeader extends StatelessWidget {
+  const _SessionConfigSubmenuHeader({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.textTertiary,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionConfigChoiceLabel extends StatelessWidget {
+  const _SessionConfigChoiceLabel({
+    required this.label,
+    required this.description,
+  });
+
+  final String label;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 238,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+          ),
+          if (description.trim().isNotEmpty)
+            Text(
+              description.trim(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w500,
+                height: 1.3,
+                letterSpacing: 0,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SessionConfigSummaryButton extends StatelessWidget {
+  const _SessionConfigSummaryButton({
+    required this.label,
+    required this.enabled,
+    required this.fastEnabled,
+    required this.expanded,
+  });
+
+  final String label;
+  final bool enabled;
+  final bool fastEnabled;
+  final bool expanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? AppColors.textPrimary : AppColors.textTertiary;
+    return Container(
+      height: 32,
+      constraints: const BoxConstraints(minWidth: 150, maxWidth: 228),
+      padding: const EdgeInsets.symmetric(horizontal: 11),
+      decoration: BoxDecoration(
+        color: AppColors.primaryMist,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            fastEnabled ? Icons.bolt_rounded : Icons.tune_rounded,
+            color: color,
+            size: 17,
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0,
+              ),
+            ),
+          ),
+          const SizedBox(width: 5),
+          Icon(
+            expanded
+                ? Icons.keyboard_arrow_up_rounded
+                : Icons.keyboard_arrow_down_rounded,
+            color: AppColors.textSecondary,
+            size: 18,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+MenuStyle _sessionConfigMenuStyle({required double width}) {
+  return MenuStyle(
+    backgroundColor: const WidgetStatePropertyAll(AppColors.surface),
+    surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+    shadowColor: const WidgetStatePropertyAll(Color(0x18000000)),
+    elevation: const WidgetStatePropertyAll(10),
+    padding: const WidgetStatePropertyAll(
+      EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+    ),
+    minimumSize: WidgetStatePropertyAll(Size(width, 0)),
+    maximumSize: WidgetStatePropertyAll(Size(width, 560)),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.border),
+      ),
+    ),
+  );
+}
+
+ButtonStyle _sessionConfigButtonStyle({required double width}) {
+  return ButtonStyle(
+    minimumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
+    maximumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
+    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+    ),
+    foregroundColor: const WidgetStatePropertyAll(AppColors.textPrimary),
+    overlayColor: WidgetStateProperty.resolveWith((states) {
+      if (states.contains(WidgetState.hovered) ||
+          states.contains(WidgetState.focused)) {
+        return AppColors.primaryMist;
+      }
+      return Colors.transparent;
+    }),
+  );
+}
+
+ButtonStyle _sessionConfigChoiceButtonStyle({required double width}) {
+  return ButtonStyle(
+    minimumSize: WidgetStatePropertyAll(Size(width - 12, 48)),
+    maximumSize: WidgetStatePropertyAll(Size(width - 12, 56)),
+    padding: const WidgetStatePropertyAll(
+      EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+    ),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+    ),
+    foregroundColor: const WidgetStatePropertyAll(AppColors.textPrimary),
+    overlayColor: WidgetStateProperty.resolveWith((states) {
+      if (states.contains(WidgetState.hovered) ||
+          states.contains(WidgetState.focused)) {
+        return AppColors.primaryMist;
+      }
+      return Colors.transparent;
+    }),
+  );
+}
+
 class _SessionConfigSelectors extends StatelessWidget {
   const _SessionConfigSelectors({
     required this.modelOption,
@@ -1485,14 +2548,14 @@ class _ComposerControlButton extends StatelessWidget {
         : AppColors.primaryDark;
     final background = emphasized
         ? const Color(0xfffef2f2)
-        : AppColors.primarySoft;
+        : Colors.transparent;
     final borderColor = emphasized
         ? const Color(0xfffecaca)
-        : AppColors.primary.withValues(alpha: 0.14);
+        : Colors.transparent;
     return Container(
-      height: 30,
+      height: 28,
       constraints: const BoxConstraints(maxWidth: 190),
-      padding: const EdgeInsets.symmetric(horizontal: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -1501,22 +2564,22 @@ class _ComposerControlButton extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
+          Icon(icon, color: color, size: 15),
+          const SizedBox(width: 5),
           Flexible(
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: color,
-                fontSize: 13,
-                fontWeight: FontWeight.w900,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w500,
                 letterSpacing: 0,
               ),
             ),
           ),
           const SizedBox(width: 3),
-          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 17),
+          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 16),
         ],
       ),
     );
@@ -1598,8 +2661,8 @@ class _PromptActionButton extends StatelessWidget {
     final tooltip = isSending ? 'Stop' : 'Send';
     final onPressed = isSending ? onStop : (canSend ? onSend : null);
     return SizedBox(
-      width: 38,
-      height: 38,
+      width: 34,
+      height: 34,
       child: Tooltip(
         message: tooltip,
         child: FilledButton(
@@ -1612,11 +2675,11 @@ class _PromptActionButton extends StatelessWidget {
                 ? AppColors.danger
                 : AppColors.textPrimary,
             disabledBackgroundColor: AppColors.surfaceRaised,
-            elevation: onPressed == null ? 0 : 2,
+            elevation: 0,
             padding: EdgeInsets.zero,
             shape: const CircleBorder(),
           ),
-          child: Icon(icon, size: 20),
+          child: Icon(icon, size: 19),
         ),
       ),
     );

@@ -25,6 +25,7 @@ mod retry;
 mod runtime;
 mod scheduler;
 mod session_persistence;
+mod sqlite_storage;
 mod state;
 mod structured_result;
 mod task_inbox;
@@ -84,6 +85,9 @@ pub use scheduler::{
     SchedulerRuntimeAvailability, SchedulerRuntimeStatus,
 };
 pub use session_persistence::{PersistedSession, SessionStoreError, SqliteSessionStore};
+pub use sqlite_storage::{
+    DEFAULT_SQLITE_MAX_BYTES, DEFAULT_SQLITE_RETENTION_DAYS, SqliteStoragePolicy,
+};
 pub use state::{RuntimeStateError, RuntimeStateMachine};
 pub use structured_result::{
     MAX_AGENT_RESULT_BYTES, MAX_RESULT_CORRECTION_ATTEMPTS, MAX_RESULT_SCHEMA_DEPTH,

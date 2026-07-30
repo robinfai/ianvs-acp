@@ -9,7 +9,6 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
-import 'package:ianvs_acp/ui/components/status_bar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
@@ -95,8 +94,7 @@ void main() {
   ) async {
     await pumpToolbar(tester, app_state.ConnectionStatus.disconnected);
 
-    expect(find.text('ACP Client'), findsOneWidget);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
     expect(find.text('disconnected'), findsOneWidget);
     expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Resume'), findsOneWidget);
@@ -138,10 +136,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Kimi Code Dev'), findsWidgets);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsWidgets);
     expect(find.text('Agent Configuration'), findsOneWidget);
 
-    await tester.tap(find.text('Codex'));
+    await tester.tap(find.text('Codex').last);
     await tester.pumpAndSettle();
 
     expect(selectedAgent, 'Codex');
@@ -181,11 +179,11 @@ void main() {
     expect(find.text('wss://agent.example.com/acp'), findsOneWidget);
   });
 
-  testWidgets('AgentToolbar renders connected and error states', (
+  testWidgets('AgentToolbar hides healthy status and shows errors', (
     tester,
   ) async {
     await pumpToolbar(tester, app_state.ConnectionStatus.connected);
-    expect(find.text('connected'), findsOneWidget);
+    expect(find.text('connected'), findsNothing);
 
     await pumpToolbar(tester, app_state.ConnectionStatus.error);
     expect(find.text('error'), findsOneWidget);
@@ -333,12 +331,11 @@ void main() {
       size: const Size(800, 720),
     );
 
-    expect(find.text('ACP Client'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
     expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
     expect(find.byIcon(Icons.manage_accounts_outlined), findsOneWidget);
     expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
     expect(find.byIcon(Icons.add_rounded), findsOneWidget);
-    expect(find.text('Codex'), findsNothing);
     expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
   });
@@ -412,18 +409,15 @@ void main() {
     final promptRect = tester.getRect(
       find.byKey(const Key('prompt-input-surface')),
     );
-    final statusRect = tester.getRect(find.byType(StatusBar));
     final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
 
-    expect(sidebarRect.width, moreOrLessEquals(350));
+    expect(sidebarRect.width, moreOrLessEquals(312));
     expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
     expect(promptRect.right, lessThan(inspectorRect.left));
-    expect(statusRect.left, greaterThanOrEqualTo(sidebarRect.right));
-    expect(statusRect.right, lessThan(inspectorRect.left));
   });
 
-  testWidgets('AppShell renders memory status in the conversation bar', (
+  testWidgets('AppShell renders memory status in inspector diagnostics', (
     tester,
   ) async {
     final controller = ChatController(
@@ -445,7 +439,12 @@ void main() {
       ),
     );
 
-    expect(find.text('memory on'), findsOneWidget);
+    await tester.tap(find.text('Context'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Diagnostics'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('On'), findsOneWidget);
   });
 
   testWidgets('AppShell keeps one visible New Session entry on desktop', (
@@ -473,6 +472,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pump(const Duration(milliseconds: 100));
 
+    expect(find.text('ACP Client'), findsOneWidget);
     expect(find.text('New Session'), findsOneWidget);
   });
 
@@ -570,7 +570,7 @@ void main() {
       (currentTop, rect) => rect.top < currentTop.top ? rect : currentTop,
     );
 
-    expect(modeFillRect.height, 32);
+    expect(modeFillRect.height, 30);
   });
 
   testWidgets('AppShell resumes sessions from another agent', (tester) async {

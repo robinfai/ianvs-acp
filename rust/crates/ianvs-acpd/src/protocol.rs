@@ -67,6 +67,12 @@ pub enum DaemonCommand {
         after_sequence: u64,
         limit: usize,
     },
+    ConfigureStorage {
+        #[serde(rename = "maxDatabaseBytes")]
+        max_database_bytes: u64,
+        #[serde(rename = "retentionDays")]
+        retention_days: u32,
+    },
     ConfigureAgents {
         agents: Vec<AgentLaunchConfig>,
     },

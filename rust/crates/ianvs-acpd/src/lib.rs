@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use ianvs_acp_core::{AgentLaunchConfig, DurableWorkflow};
+use ianvs_acp_core::{AgentLaunchConfig, DurableWorkflow, SqliteStoragePolicy};
 use protocol::{
     DAEMON_PROTOCOL_VERSION, DaemonCommand, DaemonRequest, DaemonResponse, DaemonResult,
 };
@@ -80,11 +80,25 @@ impl DaemonHost {
         socket_path: impl AsRef<Path>,
         allow_shutdown: bool,
     ) -> Result<Self, DaemonError> {
+        Self::bind_with_storage_policy(
+            database_path,
+            socket_path,
+            allow_shutdown,
+            SqliteStoragePolicy::default(),
+        )
+    }
+
+    pub fn bind_with_storage_policy(
+        database_path: impl AsRef<Path>,
+        socket_path: impl AsRef<Path>,
+        allow_shutdown: bool,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<Self, DaemonError> {
         let database_path = database_path.as_ref().to_path_buf();
         let socket_path = socket_path.as_ref().to_path_buf();
         prepare_socket_path(&socket_path)?;
         let database_lock = lock_database(&database_path)?;
-        let workflow = DurableWorkflow::open(&database_path)
+        let workflow = DurableWorkflow::open_with_storage_policy(&database_path, storage_policy)
             .map_err(|error| DaemonError::Workflow(error.to_string()))?;
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
@@ -390,6 +404,18 @@ fn execute_command(
                 .runtime_events(&run_id, after_sequence, limit)
                 .map_err(|error| error.to_string())?,
         }),
+        DaemonCommand::ConfigureStorage {
+            max_database_bytes,
+            retention_days,
+        } => {
+            let policy = SqliteStoragePolicy::new(max_database_bytes, retention_days)
+                .map_err(str::to_string)?;
+            state
+                .workflow
+                .configure_storage_policy(policy)
+                .map_err(|error| error.to_string())?;
+            Ok(DaemonResult::Ack)
+        }
         DaemonCommand::ConfigureAgents { agents } => {
             if agents.len() > MAX_AGENTS {
                 return Err(format!("agent configuration exceeds {MAX_AGENTS} entries"));

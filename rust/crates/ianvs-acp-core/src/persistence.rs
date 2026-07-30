@@ -19,9 +19,10 @@ use crate::{
     MAX_RUNTIME_EVENT_APPEND_BATCH, MAX_RUNTIME_EVENT_QUERY_LIMIT, MAX_RUNTIME_EVENT_REPLAY,
     MAX_RUNTIME_EVENTS_PER_RUN, PromptSubmissionState, RUNTIME_EVENT_CHECKPOINT_INTERVAL,
     RecoveryState, RunRecoveryRecord, RunState, RunStatus, RuntimeEventAppendReceipt,
-    RuntimeEventPage, StoredRuntimeEvent, SuggestedRecoveryAction, TaskInboxError,
-    TaskInboxSnapshot, TaskState, TaskStatus, WORKFLOW_SNAPSHOT_RETENTION, WorkflowDefinition,
-    WorkflowIrError, WorkflowRun, WorkflowSnapshot, WorkspaceMutationPossibility,
+    RuntimeEventPage, SqliteStoragePolicy, StoredRuntimeEvent, SuggestedRecoveryAction,
+    TaskInboxError, TaskInboxSnapshot, TaskState, TaskStatus, WORKFLOW_SNAPSHOT_RETENTION,
+    WorkflowDefinition, WorkflowIrError, WorkflowRun, WorkflowSnapshot,
+    WorkspaceMutationPossibility,
 };
 
 const SCHEMA_VERSION: i64 = 9;
@@ -108,6 +109,7 @@ pub struct WorkflowMigrationMetadata {
 pub struct SqliteWorkflowStore {
     connection: Connection,
     path: Option<PathBuf>,
+    storage_policy: SqliteStoragePolicy,
 }
 
 impl std::fmt::Debug for SqliteWorkflowStore {
@@ -121,6 +123,13 @@ impl std::fmt::Debug for SqliteWorkflowStore {
 
 impl SqliteWorkflowStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WorkflowStoreError> {
+        Self::open_with_policy(path, SqliteStoragePolicy::default())
+    }
+
+    pub fn open_with_policy(
+        path: impl AsRef<Path>,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<Self, WorkflowStoreError> {
         let path = safe_database_path(path.as_ref())?;
         let connection = Connection::open_with_flags(
             &path,
@@ -133,6 +142,7 @@ impl SqliteWorkflowStore {
         let mut store = Self {
             connection,
             path: Some(path),
+            storage_policy,
         };
         store.initialize()?;
         Ok(store)
@@ -143,6 +153,7 @@ impl SqliteWorkflowStore {
         let mut store = Self {
             connection,
             path: None,
+            storage_policy: SqliteStoragePolicy::default(),
         };
         store.initialize()?;
         Ok(store)
@@ -151,6 +162,16 @@ impl SqliteWorkflowStore {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn configure_storage_policy(
+        &mut self,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<(), WorkflowStoreError> {
+        storage_policy.apply_page_limit(&self.connection)?;
+        maintain_workflow_storage(&mut self.connection, storage_policy)?;
+        self.storage_policy = storage_policy;
+        Ok(())
     }
 
     pub fn save_snapshot(&mut self, snapshot: &WorkflowSnapshot) -> Result<(), WorkflowStoreError> {
@@ -612,7 +633,13 @@ impl SqliteWorkflowStore {
             "UPDATE workflow_meta SET revision = ?1 WHERE singleton = 1",
             [checked_revision_for_sql(next_revision)?],
         )?;
-        insert_idempotency_record(&transaction, idempotency_key, next_revision, result_json)?;
+        insert_idempotency_record(
+            &transaction,
+            self.storage_policy,
+            idempotency_key,
+            next_revision,
+            result_json,
+        )?;
         sync_runtime_events(
             &transaction,
             current,
@@ -673,7 +700,13 @@ impl SqliteWorkflowStore {
             "UPDATE workflow_meta SET revision = ?1 WHERE singleton = 1",
             [checked_revision_for_sql(next_revision)?],
         )?;
-        insert_idempotency_record(&transaction, idempotency_key, next_revision, result_json)?;
+        insert_idempotency_record(
+            &transaction,
+            self.storage_policy,
+            idempotency_key,
+            next_revision,
+            result_json,
+        )?;
         sync_runtime_events(
             &transaction,
             current,
@@ -731,6 +764,7 @@ impl SqliteWorkflowStore {
         let result_json = encode_idempotency_result(&receipt)?;
         insert_idempotency_record(
             &transaction,
+            self.storage_policy,
             idempotency_key,
             receipt.revision,
             &result_json,
@@ -816,7 +850,13 @@ impl SqliteWorkflowStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if load_idempotency_record(&transaction, key)?.is_none() {
-            insert_idempotency_record(&transaction, key, result_revision, result_json)?;
+            insert_idempotency_record(
+                &transaction,
+                self.storage_policy,
+                key,
+                result_revision,
+                result_json,
+            )?;
         }
         transaction.commit()?;
         Ok(())
@@ -932,6 +972,7 @@ impl SqliteWorkflowStore {
         let result_json = encode_idempotency_result(&lease)?;
         insert_idempotency_record(
             &transaction,
+            self.storage_policy,
             &key,
             query_revision(&transaction)?,
             &result_json,
@@ -989,6 +1030,7 @@ impl SqliteWorkflowStore {
         let result_json = encode_idempotency_result(&lease)?;
         insert_idempotency_record(
             &transaction,
+            self.storage_policy,
             &key,
             query_revision(&transaction)?,
             &result_json,
@@ -1231,6 +1273,8 @@ impl SqliteWorkflowStore {
         if version < 9 {
             migrate_v8_to_v9(&mut self.connection)?;
         }
+        self.storage_policy.apply_page_limit(&self.connection)?;
+        maintain_workflow_storage(&mut self.connection, self.storage_policy)?;
         Ok(())
     }
 }
@@ -1942,6 +1986,7 @@ const fn inbox_event_kind_name(kind: crate::InboxEventKind) -> &'static str {
 
 fn insert_idempotency_record(
     transaction: &Transaction<'_>,
+    storage_policy: SqliteStoragePolicy,
     key: &IdempotencyKey,
     result_revision: u64,
     result_json: &str,
@@ -1956,6 +2001,7 @@ fn insert_idempotency_record(
         }
         return Err(ExecutionError::IdempotencyConflict.into());
     }
+    prune_idempotency_records(transaction, storage_policy, 128)?;
     transaction.execute(
         "INSERT INTO idempotency_records (
             command_id, command_type, payload_hash, result_revision, result_json, created_at
@@ -1970,6 +2016,87 @@ fn insert_idempotency_record(
         ],
     )?;
     Ok(())
+}
+
+fn maintain_workflow_storage(
+    connection: &mut Connection,
+    storage_policy: SqliteStoragePolicy,
+) -> Result<(), WorkflowStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    prune_idempotency_records(&transaction, storage_policy, 256)?;
+    let cutoff = storage_policy.retention_modifier();
+    transaction.execute(
+        "DELETE FROM recovery_records
+         WHERE recovery_id IN (
+            SELECT recovery_id FROM recovery_records
+            WHERE resolved_at IS NOT NULL
+              AND unixepoch(resolved_at) < unixepoch('now', ?1)
+            ORDER BY resolved_at, recovery_id
+            LIMIT 256
+         )",
+        [&cutoff],
+    )?;
+    transaction.execute(
+        "DELETE FROM executor_leases
+         WHERE lease_id IN (
+            SELECT lease_id FROM executor_leases
+            WHERE state IN ('expired', 'released', 'superseded')
+              AND unixepoch(COALESCE(released_at, last_heartbeat_at))
+                  < unixepoch('now', ?1)
+            ORDER BY COALESCE(released_at, last_heartbeat_at), lease_id
+            LIMIT 256
+         )",
+        [&cutoff],
+    )?;
+    transaction.commit()?;
+    connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(())
+}
+
+fn prune_idempotency_records(
+    transaction: &Transaction<'_>,
+    storage_policy: SqliteStoragePolicy,
+    max_deletes: i64,
+) -> Result<(), WorkflowStoreError> {
+    let cutoff = storage_policy.retention_modifier();
+    let expired = transaction.execute(
+        "DELETE FROM idempotency_records
+         WHERE command_id IN (
+            SELECT command_id FROM idempotency_records
+            WHERE unixepoch(created_at) < unixepoch('now', ?1)
+            ORDER BY created_at, command_id
+            LIMIT ?2
+         )",
+        params![cutoff, max_deletes],
+    )?;
+    let remaining_deletes = max_deletes.saturating_sub(i64::try_from(expired).unwrap_or(i64::MAX));
+    if remaining_deletes == 0 {
+        return Ok(());
+    }
+    let count = transaction.query_row("SELECT COUNT(*) FROM idempotency_records", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    let limit = idempotency_record_limit(storage_policy);
+    let excess = count.saturating_sub(limit.saturating_sub(1));
+    if excess == 0 {
+        return Ok(());
+    }
+    transaction.execute(
+        "DELETE FROM idempotency_records
+         WHERE command_id IN (
+            SELECT command_id FROM idempotency_records
+            ORDER BY created_at, command_id
+            LIMIT ?1
+         )",
+        [excess.min(remaining_deletes)],
+    )?;
+    Ok(())
+}
+
+fn idempotency_record_limit(storage_policy: SqliteStoragePolicy) -> i64 {
+    let result_budget = storage_policy.max_bytes() / 4;
+    let worst_case_records = result_budget / u64::try_from(MAX_IDEMPOTENCY_RESULT_BYTES).unwrap();
+    i64::try_from(worst_case_records.clamp(16, 2_048)).unwrap()
 }
 
 fn encode_idempotency_result<T: Serialize>(value: &T) -> Result<String, WorkflowStoreError> {
@@ -2613,5 +2740,55 @@ fn parse_run_status(value: &str) -> Result<RunStatus, WorkflowStoreError> {
         other => Err(WorkflowStoreError::InvalidValue(format!(
             "unknown run status: {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn idempotency_records_expire_and_remain_count_bounded() {
+        let mut store = SqliteWorkflowStore::open_in_memory().unwrap();
+        for index in 0..40 {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO idempotency_records (
+                        command_id, command_type, payload_hash, result_revision,
+                        result_json, created_at
+                     ) VALUES (?1, 'test', 'hash', 0, '{}', ?2)",
+                    params![
+                        format!("command-{index:02}"),
+                        if index < 4 {
+                            "2020-01-01T00:00:00Z"
+                        } else {
+                            "2999-01-01T00:00:00Z"
+                        }
+                    ],
+                )
+                .unwrap();
+        }
+
+        let policy = SqliteStoragePolicy::new(1024 * 1024, 30).unwrap();
+        maintain_workflow_storage(&mut store.connection, policy).unwrap();
+
+        let count = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM idempotency_records", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        let expired = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM idempotency_records
+                 WHERE created_at < '2021-01-01T00:00:00Z'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(expired, 0);
+        assert_eq!(count, idempotency_record_limit(policy) - 1);
     }
 }

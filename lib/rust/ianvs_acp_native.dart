@@ -147,6 +147,8 @@ final class IanvsRustRuntime {
     Map<String, String> environment = const <String, String>{},
     String? processCwd,
     String? sessionStorePath,
+    int? sessionStoreMaxBytes,
+    int? sessionStoreRetentionDays,
     List<Map<String, Object?>> mcpServers = const <Map<String, Object?>>[],
     Duration? permissionTimeout,
     bool enableFilesystemReadTextFile = false,
@@ -168,6 +170,8 @@ final class IanvsRustRuntime {
           'processCwd': processCwd!.trim(),
         if (sessionStorePath?.trim().isNotEmpty == true)
           'sessionStorePath': sessionStorePath!.trim(),
+        'sessionStoreMaxBytes': ?sessionStoreMaxBytes,
+        'sessionStoreRetentionDays': ?sessionStoreRetentionDays,
         'mcpServers': mcpServers
             .map(Map<String, Object?>.unmodifiable)
             .toList(growable: false),

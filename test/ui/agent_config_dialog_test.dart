@@ -3,9 +3,59 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/memory/memory_config.dart';
+import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 
 void main() {
+  testWidgets('AgentConfigDialog edits the shared SQLite storage policy', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            storage: const SqliteStorageConfig(
+              maxSizeGb: 50,
+              retentionDays: 30,
+              cleanupIntervalHours: 24,
+            ),
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const Key('storage-max-size-gb-field')),
+    );
+    await tester.enterText(
+      find.byKey(const Key('storage-max-size-gb-field')),
+      '80',
+    );
+    await tester.enterText(
+      find.byKey(const Key('storage-retention-days-field')),
+      '60',
+    );
+    await tester.enterText(
+      find.byKey(const Key('storage-cleanup-interval-hours-field')),
+      '12',
+    );
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.storage.maxSizeGb, 80);
+    expect(savedConfig?.storage.retentionDays, 60);
+    expect(savedConfig?.storage.cleanupIntervalHours, 12);
+  });
+
   testWidgets('AgentConfigDialog saves memory configuration', (tester) async {
     AcpClientConfig? savedConfig;
     await tester.pumpWidget(

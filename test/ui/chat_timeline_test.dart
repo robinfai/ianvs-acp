@@ -453,8 +453,8 @@ void main() {
       ]),
     );
 
-    expect(find.text('User'), findsOneWidget);
-    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('User'), findsNothing);
+    expect(find.text('Agent'), findsNothing);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('Hello, human.'), findsOneWidget);
   });
@@ -512,7 +512,7 @@ void main() {
       ]),
     );
 
-    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('Agent'), findsNothing);
     expect(find.text('Hello, I am Codex.'), findsOneWidget);
   });
 
@@ -1233,6 +1233,23 @@ void main() {
     );
     expect(find.text('Turn ended normally.'), findsOneWidget);
     expect(find.text('End turn'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline separates streamed thought summaries', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: '**Inspecting layout****Refining spacing**',
+          metadata: const {'kind': 'thought'},
+        ),
+      ]),
+    );
+
+    expect(find.text('Inspecting layout · Refining spacing'), findsOneWidget);
+    expect(find.textContaining('****'), findsNothing);
   });
 
   testWidgets('ChatTimeline renders non-text content blocks', (tester) async {

@@ -49,6 +49,8 @@ void main() {
       environment: const <String, String>{'TOKEN': 'secret'},
       processCwd: '/tmp',
       sessionStorePath: '/tmp/acp-sessions.sqlite3',
+      sessionStoreMaxBytes: 512 * 1024 * 1024,
+      sessionStoreRetentionDays: 45,
       mcpServers: const <Map<String, Object?>>[
         <String, Object?>{
           'type': 'stdio',
@@ -83,6 +85,8 @@ void main() {
       native.startedConfig?['sessionStorePath'],
       '/tmp/acp-sessions.sqlite3',
     );
+    expect(native.startedConfig?['sessionStoreMaxBytes'], 512 * 1024 * 1024);
+    expect(native.startedConfig?['sessionStoreRetentionDays'], 45);
     expect((native.startedConfig?['mcpServers'] as List).length, 1);
     expect(native.startedConfig?['enableFilesystemReadTextFile'], isTrue);
     expect(native.startedConfig?['enableFilesystemWriteTextFile'], isTrue);

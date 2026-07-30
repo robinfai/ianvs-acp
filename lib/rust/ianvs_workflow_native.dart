@@ -130,6 +130,13 @@ abstract interface class IanvsWorkflowAuthority {
   FutureOr<void> dispose();
 }
 
+abstract interface class IanvsStoragePolicyAuthority {
+  FutureOr<void> configureStorage({
+    required int maxDatabaseBytes,
+    required int retentionDays,
+  });
+}
+
 final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
   IanvsRustWorkflow({IanvsWorkflowNativeApi? native})
     : _native = native ?? FfiIanvsWorkflowNativeApi.open() {

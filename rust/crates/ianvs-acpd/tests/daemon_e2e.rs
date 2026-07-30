@@ -65,6 +65,13 @@ fn daemon_remains_the_single_execution_host_across_flutter_disconnect() {
     .unwrap();
     let mut client = Client::connect(&socket);
     assert!(matches!(
+        client.call(DaemonCommand::ConfigureStorage {
+            max_database_bytes: 8 * 1024 * 1024,
+            retention_days: 7,
+        }),
+        DaemonResult::Ack
+    ));
+    assert!(matches!(
         client.call(DaemonCommand::StageTaskInbox {
             source,
             source_checksum: "sha256:daemon-e2e".to_string(),
@@ -238,6 +245,8 @@ fn fixture_agent(command: &str, skip_permission: bool) -> AgentLaunchConfig {
         max_restart_attempts: None,
         restart_base_delay_ms: None,
         session_store_path: None,
+        session_store_max_bytes: None,
+        session_store_retention_days: None,
         additional_directories: Vec::new(),
         mcp_servers: Vec::new(),
         enable_terminal_provider: false,

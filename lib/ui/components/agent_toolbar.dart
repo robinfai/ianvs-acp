@@ -7,6 +7,7 @@ import '../theme/app_design_tokens.dart';
 class AgentToolbar extends StatelessWidget {
   const AgentToolbar({
     super.key,
+    this.title = 'Codex',
     this.agentName = 'Codex',
     required this.status,
     required this.onNewSession,
@@ -14,6 +15,7 @@ class AgentToolbar extends StatelessWidget {
     required this.onReconnect,
     this.agentServers = const <AgentServerConfig>[],
     this.canSwitchAgent = true,
+    this.forceFullActions = false,
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onShowProtocolCoverage,
@@ -23,6 +25,7 @@ class AgentToolbar extends StatelessWidget {
     this.onLogout,
   });
 
+  final String title;
   final String agentName;
   final app_state.ConnectionStatus status;
   final VoidCallback? onNewSession;
@@ -30,6 +33,7 @@ class AgentToolbar extends StatelessWidget {
   final VoidCallback? onReconnect;
   final List<AgentServerConfig> agentServers;
   final bool canSwitchAgent;
+  final bool forceFullActions;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowProtocolCoverage;
@@ -41,37 +45,38 @@ class AgentToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 60,
-      decoration: const BoxDecoration(color: AppColors.bg),
+      height: 40,
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final availableWidth = constraints.maxWidth.isFinite
               ? constraints.maxWidth
               : MediaQuery.sizeOf(context).width;
-          final compact = availableWidth < 1240;
+          final compact = !forceFullActions && availableWidth < 1240;
           final veryCompact = availableWidth < 620;
           final horizontalPadding = veryCompact
-              ? 14.0
-              : (compact ? 18.0 : 24.0);
+              ? 12.0
+              : (compact ? 14.0 : 18.0);
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
               horizontalPadding,
-              8,
+              4,
               horizontalPadding,
-              8,
+              4,
             ),
             child: Row(
               children: [
                 Expanded(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: _BrandMark(
-                      agentName: agentName,
-                      status: status,
-                      compact: compact,
-                      veryCompact: veryCompact,
-                    ),
+                  child: _BrandMark(
+                    title: title,
+                    agentName: agentName,
+                    status: status,
+                    compact: compact,
+                    veryCompact: veryCompact,
                   ),
                 ),
                 SizedBox(width: compact ? 8 : 14),
@@ -509,8 +514,8 @@ class _ToolbarButtonShell extends StatelessWidget {
                 label!,
                 style: TextStyle(
                   color: color,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -524,12 +529,14 @@ class _ToolbarButtonShell extends StatelessWidget {
 
 class _BrandMark extends StatelessWidget {
   const _BrandMark({
+    required this.title,
     required this.agentName,
     required this.status,
     required this.compact,
     required this.veryCompact,
   });
 
+  final String title;
   final String agentName;
   final app_state.ConnectionStatus status;
   final bool compact;
@@ -537,47 +544,53 @@ class _BrandMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = veryCompact ? 'ACP' : 'ACP Client';
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            color: AppColors.primarySoft,
-            borderRadius: BorderRadius.circular(AppRadius.md),
-          ),
-          child: const Icon(
-            Icons.hub_outlined,
-            color: AppColors.primary,
-            size: 19,
-          ),
-        ),
-        SizedBox(width: veryCompact ? 7 : 10),
-        Flexible(
-          child: Text(
-            title,
-            overflow: TextOverflow.ellipsis,
-            softWrap: false,
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: veryCompact ? 16 : 19,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final showAgentChip =
+            !compact && agentName != 'Codex' && constraints.maxWidth >= 360;
+        final showStatus =
+            !veryCompact &&
+            constraints.maxWidth >= 150 &&
+            status != app_state.ConnectionStatus.connected &&
+            status != app_state.ConnectionStatus.sessionReady;
+        return Row(
+          children: [
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: veryCompact ? 14 : 15,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: AppColors.textSecondary,
+                    size: 15,
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
-        if (!compact) ...[
-          SizedBox(width: compact ? 10 : 14),
-          _AgentChip(agentName: agentName),
-        ],
-        if (!compact) ...[
-          const SizedBox(width: 8),
-          _ConnectionBadge(status: status),
-        ],
-      ],
+            if (showAgentChip) ...[
+              const SizedBox(width: 9),
+              _AgentChip(agentName: agentName),
+            ],
+            if (showStatus) ...[
+              const SizedBox(width: 6),
+              _ConnectionBadge(status: status),
+            ],
+          ],
+        );
+      },
     );
   }
 }
@@ -590,13 +603,13 @@ class _AgentChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      height: 24,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: AppColors.primarySoft,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        border: Border.all(color: AppColors.border),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 190),
@@ -604,9 +617,9 @@ class _AgentChip extends StatelessWidget {
           agentName,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            color: AppColors.primaryDark,
-            fontWeight: FontWeight.w800,
-            fontSize: 12,
+            color: AppColors.textSecondary,
+            fontWeight: FontWeight.w600,
+            fontSize: 11.5,
           ),
         ),
       ),
@@ -635,8 +648,8 @@ class _ToolbarAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: onPressed,
         child: Container(
-          width: label == null ? 32 : null,
-          height: 32,
+          width: label == null ? 28 : null,
+          height: 28,
           padding: label == null
               ? EdgeInsets.zero
               : const EdgeInsets.symmetric(horizontal: 8),
@@ -644,15 +657,15 @@ class _ToolbarAction extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: _color, size: 18),
+              Icon(icon, color: _color, size: 16),
               if (label != null) ...[
                 const SizedBox(width: 5),
                 Text(
                   label!,
                   style: TextStyle(
                     color: _color,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -672,7 +685,7 @@ class _ToolbarAction extends StatelessWidget {
   }
 
   Color get _color =>
-      onPressed == null ? AppColors.textTertiary : AppColors.primaryDark;
+      onPressed == null ? AppColors.textTertiary : AppColors.textSecondary;
 }
 
 class _PrimaryToolbarAction extends StatelessWidget {
@@ -684,20 +697,20 @@ class _PrimaryToolbarAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = FilledButton.styleFrom(
-      foregroundColor: Colors.white,
+      foregroundColor: AppColors.textPrimary,
       disabledForegroundColor: AppColors.textTertiary,
-      backgroundColor: AppColors.primaryDark,
+      backgroundColor: AppColors.surfaceMuted,
       disabledBackgroundColor: AppColors.surfaceRaised,
-      elevation: 4,
-      shadowColor: AppColors.primary.withValues(alpha: 0.32),
-      minimumSize: Size(compact ? 38 : 142, 38),
+      elevation: 0,
+      minimumSize: Size(compact ? 30 : 106, 30),
       padding: compact
           ? EdgeInsets.zero
-          : const EdgeInsets.symmetric(horizontal: 14),
+          : const EdgeInsets.symmetric(horizontal: 12),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        side: const BorderSide(color: AppColors.border),
       ),
     );
 
@@ -705,17 +718,17 @@ class _PrimaryToolbarAction extends StatelessWidget {
         ? FilledButton(
             onPressed: onPressed,
             style: style,
-            child: const Icon(Icons.add_rounded, size: 20),
+            child: const Icon(Icons.add_rounded, size: 18),
           )
         : FilledButton.icon(
             onPressed: onPressed,
             style: style,
-            icon: const Icon(Icons.add_rounded, size: 20),
+            icon: const Icon(Icons.add_rounded, size: 18),
             label: const Text(
               'New Session',
               style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -755,12 +768,11 @@ class _ConnectionBadge extends StatelessWidget {
     };
 
     return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      height: 24,
+      padding: const EdgeInsets.symmetric(horizontal: 5),
       decoration: BoxDecoration(
-        color: background,
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -774,9 +786,9 @@ class _ConnectionBadge extends StatelessWidget {
           Text(
             status.label,
             style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11,
             ),
           ),
         ],

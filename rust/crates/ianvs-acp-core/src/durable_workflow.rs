@@ -7,9 +7,10 @@ use crate::{
     ExecutorCommandContext, ExecutorLease, ExecutorLeaseCommand, ExecutorTakeoverRequest,
     IdempotencyKey, RecoveryReport, RuntimeEventAppendReceipt, RuntimeEventPage,
     SchedulerAdmission, SchedulerClaim, SchedulerClaimRequest, SchedulerConfig, SchedulerCore,
-    SchedulerError, SchedulerRuntimeStatus, SqliteWorkflowStore, TaskInboxCommand, TaskInboxError,
-    TaskInboxMutationError, TaskInboxSnapshot, WorkflowMigrationMetadata, WorkflowSnapshot,
-    WorkflowStateError, WorkflowStateMachine, WorkflowStoreError,
+    SchedulerError, SchedulerRuntimeStatus, SqliteStoragePolicy, SqliteWorkflowStore,
+    TaskInboxCommand, TaskInboxError, TaskInboxMutationError, TaskInboxSnapshot,
+    WorkflowMigrationMetadata, WorkflowSnapshot, WorkflowStateError, WorkflowStateMachine,
+    WorkflowStoreError,
 };
 
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
@@ -210,8 +211,23 @@ impl DurableWorkflow {
         Self::from_store(SqliteWorkflowStore::open(path)?)
     }
 
+    pub fn open_with_storage_policy(
+        path: impl AsRef<Path>,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<Self, DurableWorkflowError> {
+        Self::from_store(SqliteWorkflowStore::open_with_policy(path, storage_policy)?)
+    }
+
     pub fn open_in_memory() -> Result<Self, DurableWorkflowError> {
         Self::from_store(SqliteWorkflowStore::open_in_memory()?)
+    }
+
+    pub fn configure_storage_policy(
+        &mut self,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<(), DurableWorkflowError> {
+        self.store.configure_storage_policy(storage_policy)?;
+        Ok(())
     }
 
     pub fn register_workflow_definition(

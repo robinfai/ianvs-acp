@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::WorkspaceScope;
+use crate::{SqliteStoragePolicy, WorkspaceScope};
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_ACTIVE_SESSIONS_PER_AGENT: usize = 512;
@@ -86,6 +86,7 @@ impl PersistedSession {
 pub struct SqliteSessionStore {
     connection: Connection,
     path: Option<PathBuf>,
+    storage_policy: SqliteStoragePolicy,
 }
 
 impl std::fmt::Debug for SqliteSessionStore {
@@ -99,6 +100,13 @@ impl std::fmt::Debug for SqliteSessionStore {
 
 impl SqliteSessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SessionStoreError> {
+        Self::open_with_policy(path, SqliteStoragePolicy::default())
+    }
+
+    pub fn open_with_policy(
+        path: impl AsRef<Path>,
+        storage_policy: SqliteStoragePolicy,
+    ) -> Result<Self, SessionStoreError> {
         let path = safe_database_path(path.as_ref())?;
         let connection = Connection::open_with_flags(
             &path,
@@ -111,6 +119,7 @@ impl SqliteSessionStore {
         let mut store = Self {
             connection,
             path: Some(path),
+            storage_policy,
         };
         store.initialize()?;
         Ok(store)
@@ -121,6 +130,7 @@ impl SqliteSessionStore {
         let mut store = Self {
             connection,
             path: None,
+            storage_policy: SqliteStoragePolicy::default(),
         };
         store.initialize()?;
         Ok(store)
@@ -145,6 +155,7 @@ impl SqliteSessionStore {
                 ))
             })?;
         let transaction = self.connection.transaction()?;
+        delete_expired_sessions(&transaction, self.storage_policy)?;
         let active_count = transaction.query_row(
             "SELECT COUNT(*) FROM active_sessions WHERE agent_name = ?1",
             [&normalized.agent_name],
@@ -278,8 +289,26 @@ impl SqliteSessionStore {
                  COMMIT;",
             )?;
         }
+        self.storage_policy.apply_page_limit(&self.connection)?;
+        let transaction = self.connection.transaction()?;
+        delete_expired_sessions(&transaction, self.storage_policy)?;
+        transaction.commit()?;
+        self.connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
+}
+
+fn delete_expired_sessions(
+    transaction: &rusqlite::Transaction<'_>,
+    storage_policy: SqliteStoragePolicy,
+) -> Result<(), SessionStoreError> {
+    transaction.execute(
+        "DELETE FROM active_sessions
+         WHERE updated_at < unixepoch('now', ?1)",
+        [storage_policy.retention_modifier()],
+    )?;
+    Ok(())
 }
 
 fn validate_text(value: &str, label: &str, max_bytes: usize) -> Result<(), SessionStoreError> {
@@ -316,4 +345,44 @@ fn safe_database_path(path: &Path) -> Result<PathBuf, SessionStoreError> {
     fs::create_dir_all(parent)?;
     let parent = parent.canonicalize()?;
     Ok(parent.join(path.file_name().ok_or(SessionStoreError::InvalidPath)?))
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn expired_session_recovery_rows_are_removed() {
+        let mut store = SqliteSessionStore::open_in_memory().unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO active_sessions (
+                    agent_name, session_id, cwd, additional_directories_json, updated_at
+                 ) VALUES ('agent', 'expired', '/tmp', '[]', 1)",
+                [],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO active_sessions (
+                    agent_name, session_id, cwd, additional_directories_json, updated_at
+                 ) VALUES ('agent', 'active', '/tmp', '[]', unixepoch())",
+                [],
+            )
+            .unwrap();
+
+        let transaction = store.connection.transaction().unwrap();
+        delete_expired_sessions(
+            &transaction,
+            SqliteStoragePolicy::new(1024 * 1024, 30).unwrap(),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let sessions = store.load_active("agent").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "active");
+    }
 }

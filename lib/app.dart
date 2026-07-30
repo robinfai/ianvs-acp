@@ -36,6 +36,7 @@ import 'memory/openai_compatible_memory_extractor.dart';
 import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
+import 'storage/sqlite_storage_config.dart';
 import 'state/chat_controller.dart';
 import 'state/workspace_controller.dart';
 import 'tasks/task_agent_pool.dart';
@@ -140,6 +141,10 @@ List<Map<String, Object?>> _daemonAgentConfigurations(AcpClientConfig config) {
           'environment': server.env,
           'processCwd': server.cwd,
           'sessionStorePath': sessionStorePath,
+          'sessionStoreMaxBytes': config.storage.budgetBytesFor(
+            SqliteStoreKind.acpSessions,
+          ),
+          'sessionStoreRetentionDays': config.storage.retentionDays,
           'additionalDirectories': config.additionalDirectories,
           'mcpServers': mcpServers,
           'enableTerminalProvider': config.clientProviders.terminal.enabled,
@@ -151,9 +156,14 @@ List<Map<String, Object?>> _daemonAgentConfigurations(AcpClientConfig config) {
   ];
 }
 
-Future<IanvsWorkflowAuthority> _startTaskDaemon(String databasePath) async {
+Future<IanvsWorkflowAuthority> _startTaskDaemon(
+  String databasePath, {
+  required SqliteStorageConfig storage,
+}) async {
   final socketPath = await IanvsDaemonProcess.ensureRunning(
     databasePath: databasePath,
+    maxDatabaseBytes: storage.budgetBytesFor(SqliteStoreKind.workflow),
+    retentionDays: storage.retentionDays,
   );
   return IanvsDaemonWorkflow(socketPath: socketPath);
 }
@@ -328,7 +338,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       _controller = widget.controller!;
     }
     _memoryStatus = _initialMemoryStatus(_config.memory);
-    _ensureMemoryDaemonIfEnabled(_config.memory);
+    _ensureMemoryDaemonIfEnabled(_config.memory, _config.storage);
     _configureTaskInboxController();
     final initialStartupOptions = _initialStartupOptions;
     if (initialStartupOptions.hasResumeSession) {
@@ -391,8 +401,11 @@ class _AcpClientAppState extends State<AcpClientApp>
     final taskInboxControllerChanged =
         oldWidget.taskInboxController != widget.taskInboxController;
     if (configChanged || controllerChanged) {
-      _reconcileMemoryDaemon(nextWidgetConfig.memory);
-      _ensureMemoryDaemonIfEnabled(nextWidgetConfig.memory);
+      _reconcileMemoryDaemon(nextWidgetConfig.memory, nextWidgetConfig.storage);
+      _ensureMemoryDaemonIfEnabled(
+        nextWidgetConfig.memory,
+        nextWidgetConfig.storage,
+      );
     }
 
     if (controllerChanged) {
@@ -595,6 +608,21 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (_taskInboxStorePath == authorityPath &&
         ((_ownsTaskInboxController && _taskInboxController != null) ||
             _taskInboxInitializationPending)) {
+      final repository = _taskInboxController?.repository;
+      if (repository is IanvsRustTaskRepository) {
+        unawaited(
+          repository
+              .configureStorage(
+                maxDatabaseBytes: _config.storage.budgetBytesFor(
+                  SqliteStoreKind.workflow,
+                ),
+                retentionDays: _config.storage.retentionDays,
+              )
+              .onError((error, _) {
+                _showSnackBar('Could not update SQLite storage policy: $error');
+              }),
+        );
+      }
       return;
     }
 
@@ -627,6 +655,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     TaskRepository? repository;
     TaskInboxController? controller;
     TaskScheduler? scheduler;
+    Object? storagePolicyCompatibilityError;
     try {
       await prepareTaskPersistenceTarget(
         registry: _taskPersistenceQuarantine,
@@ -637,7 +666,12 @@ class _AcpClientAppState extends State<AcpClientApp>
         await _taskPersistenceQuarantine.ensurePathAvailable(repositoryPath);
       }
       if (!mounted || serial != _taskInboxInitializationSerial) return;
-      final migrationRepository = TaskInboxSqliteStore(path: repositoryPath);
+      final migrationRepository = TaskInboxSqliteStore(
+        path: repositoryPath,
+        maxDatabaseBytes: _config.storage.budgetBytesFor(
+          SqliteStoreKind.taskInboxLegacy,
+        ),
+      );
       repository = migrationRepository;
       final pendingMigration =
           TaskPersistencePendingOperation<TaskMigrationResult>(
@@ -677,7 +711,10 @@ class _AcpClientAppState extends State<AcpClientApp>
       }
       pendingMigration.transfer();
       _taskPersistenceQuarantine.release(pendingMigration);
-      await migrationRepository.purgeRawPayloads(now: DateTime.now());
+      await migrationRepository.purgeRawPayloads(
+        now: DateTime.now(),
+        retention: _config.storage.retention,
+      );
       final rustPath = authorityPath?.trim();
       if (rustPath == null || rustPath.isEmpty) {
         throw StateError('Rust TaskInbox requires a persistent database path.');
@@ -689,10 +726,24 @@ class _AcpClientAppState extends State<AcpClientApp>
               .convert(utf8.encode(canonicalJson(bootstrap.toJson())))
               .toString();
       await migrationRepository.close();
-      final authority =
-          await (widget.createTaskDaemonAuthority ?? _startTaskDaemon)(
-            rustPath,
+      final authority = widget.createTaskDaemonAuthority == null
+          ? await _startTaskDaemon(rustPath, storage: _config.storage)
+          : await widget.createTaskDaemonAuthority!(rustPath);
+      if (authority is IanvsDaemonWorkflow) {
+        try {
+          await authority.configureStorage(
+            maxDatabaseBytes: _config.storage.budgetBytesFor(
+              SqliteStoreKind.workflow,
+            ),
+            retentionDays: _config.storage.retentionDays,
           );
+        } on Object catch (error) {
+          // A detached daemon from an older app version can remain alive
+          // across upgrades. Keep TaskInbox available; the policy is applied
+          // as soon as the updated daemon is started.
+          storagePolicyCompatibilityError = error;
+        }
+      }
       repository = IanvsRustTaskRepository(
         databasePath: rustPath,
         bootstrapSnapshot: bootstrap,
@@ -730,6 +781,12 @@ class _AcpClientAppState extends State<AcpClientApp>
       _startTaskInboxRefresh(controller);
       _startTaskInboxMaintenance(controller);
       setState(() {});
+      if (storagePolicyCompatibilityError != null) {
+        _showSnackBar(
+          'SQLite storage policy will apply after the workflow daemon '
+          'restarts: $storagePolicyCompatibilityError',
+        );
+      }
     } on Object catch (error) {
       var reportedError = error;
       final cleanup = _startTaskPersistenceCleanup(
@@ -886,7 +943,10 @@ class _AcpClientAppState extends State<AcpClientApp>
       final refresh = _taskInboxRefresh;
       if (refresh != null) await refresh;
       if (!mounted || _taskInboxController != controller) return;
-      await controller.purgeRawPayloads(force: false);
+      await controller.purgeRawPayloads(
+        retention: _config.storage.retention,
+        force: false,
+      );
     } on TaskPersistenceStalledException catch (error) {
       _taskInboxMaintenanceTimer?.cancel();
       _taskInboxMaintenanceTimer = null;
@@ -1199,17 +1259,59 @@ class _AcpClientAppState extends State<AcpClientApp>
       navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: AppColors.primary,
-          brightness: Brightness.light,
+        colorScheme: const ColorScheme.light(
+          primary: AppColors.textPrimary,
+          onPrimary: Colors.white,
+          secondary: AppColors.textSecondary,
+          onSecondary: Colors.white,
+          surface: AppColors.surface,
+          onSurface: AppColors.textPrimary,
+          error: AppColors.danger,
+          onError: Colors.white,
+          outline: AppColors.border,
+          outlineVariant: AppColors.borderSoft,
         ),
         scaffoldBackgroundColor: AppColors.bg,
         useMaterial3: true,
         visualDensity: VisualDensity.compact,
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        fontFamily: 'SF Pro Display',
+        fontFamily: '.AppleSystemUIFont',
+        dividerTheme: const DividerThemeData(
+          color: AppColors.border,
+          thickness: 1,
+          space: 1,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: AppColors.surface,
+          hoverColor: AppColors.surfaceMuted,
+          isDense: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderSide: const BorderSide(color: AppColors.border),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderSide: const BorderSide(color: AppColors.border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderSide: const BorderSide(color: AppColors.textSecondary),
+          ),
+        ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: AppColors.surface,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            side: const BorderSide(color: AppColors.border),
+          ),
+        ),
         iconButtonTheme: IconButtonThemeData(
           style: IconButton.styleFrom(
+            foregroundColor: AppColors.textSecondary,
+            hoverColor: AppColors.surfaceMuted,
+            highlightColor: AppColors.surfaceMuted,
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
@@ -1234,8 +1336,10 @@ class _AcpClientAppState extends State<AcpClientApp>
         ),
         dialogTheme: DialogThemeData(
           backgroundColor: AppColors.surface,
+          elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.lg),
+            borderRadius: BorderRadius.circular(AppRadius.xl),
+            side: const BorderSide(color: AppColors.border),
           ),
           titleTextStyle: const TextStyle(
             color: AppColors.textPrimary,
@@ -1265,6 +1369,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
         memory: _config.memory,
+        storage: _config.storage,
         memoryStatus: _memoryStatus,
         memoryPendingCount: _memoryPendingCount,
         memoryPendingChangeRequestCount: _memoryPendingChangeRequestCount,
@@ -1390,7 +1495,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     final memory = config.memory;
     if (!memory.enabled) return null;
 
-    final daemonManager = _memoryDaemonManagerFor(memory);
+    final daemonManager = _memoryDaemonManagerFor(memory, config.storage);
     MemoryApiClient? client;
     MemoryDaemonEndpoint? endpoint;
     Future<MemoryApiClient> memoryClient() async {
@@ -1537,23 +1642,31 @@ class _AcpClientAppState extends State<AcpClientApp>
     );
   }
 
-  MemoryDaemonManager _memoryDaemonManagerFor(MemoryConfig memory) {
-    final signature = _memoryDaemonSignatureFor(memory);
+  MemoryDaemonManager _memoryDaemonManagerFor(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
+    final signature = _memoryDaemonSignatureFor(memory, storage);
     final existing = _memoryDaemonManager;
     if (existing != null && _memoryDaemonSignature == signature) {
       return existing;
     }
     _disposeMemoryDaemon();
-    final manager = MemoryDaemonManager(launch: _memoryDaemonLaunch(memory));
+    final manager = MemoryDaemonManager(
+      launch: _memoryDaemonLaunch(memory, storage),
+    );
     _memoryDaemonManager = manager;
     _memoryDaemonSignature = signature;
     return manager;
   }
 
-  void _reconcileMemoryDaemon(MemoryConfig memory) {
+  void _reconcileMemoryDaemon(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
     if (widget.controller != null ||
         !memory.enabled ||
-        _memoryDaemonSignature != _memoryDaemonSignatureFor(memory)) {
+        _memoryDaemonSignature != _memoryDaemonSignatureFor(memory, storage)) {
       _disposeMemoryDaemon();
       if (widget.controller != null || !memory.enabled) {
         _setMemoryStatus(MemoryRuntimeStatus.disabled);
@@ -1564,7 +1677,10 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
   }
 
-  void _ensureMemoryDaemonIfEnabled(MemoryConfig memory) {
+  void _ensureMemoryDaemonIfEnabled(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
     if (widget.controller != null || !memory.enabled) {
       _setMemoryStatus(MemoryRuntimeStatus.disabled);
       _setMemoryPendingCount(0);
@@ -1572,7 +1688,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       _clearMemoryAutomationNotice();
       return;
     }
-    final manager = _memoryDaemonManagerFor(memory);
+    final manager = _memoryDaemonManagerFor(memory, storage);
     unawaited(
       _ensureMemoryEndpoint(
         manager,
@@ -1963,7 +2079,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (!_config.memory.enabled) {
       throw StateError('Memory is disabled.');
     }
-    final manager = _memoryDaemonManagerFor(_config.memory);
+    final manager = _memoryDaemonManagerFor(_config.memory, _config.storage);
     final endpoint = await _ensureMemoryEndpoint(manager);
     final client = MemoryApiClient(
       baseUrl: endpoint.baseUrl,
@@ -2037,7 +2153,10 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (manager != null) unawaited(manager.dispose());
   }
 
-  MemoryDaemonLaunch _memoryDaemonLaunch(MemoryConfig memory) {
+  MemoryDaemonLaunch _memoryDaemonLaunch(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
     final dataDir = memory.dataDir?.trim();
     return MemoryDaemonLaunch(
       executable: MemoryDaemonLaunch.resolveExecutable(currentDirectory: _cwd),
@@ -2045,23 +2164,30 @@ class _AcpClientAppState extends State<AcpClientApp>
           ? MemoryDaemonLaunch.defaultDataDir()
           : dataDir,
       token: MemoryDaemonLaunch.generateToken(),
-      extraEnv: _memoryDaemonEnvironment(memory),
+      extraEnv: _memoryDaemonEnvironment(memory, storage),
     );
   }
 
-  String _memoryDaemonSignatureFor(MemoryConfig memory) {
+  String _memoryDaemonSignatureFor(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
     return jsonEncode(<String, Object?>{
       'dataDir': memory.dataDir?.trim(),
       'embedding': memory.embedding.toJson(),
       'llm': memory.llm.toJson(),
       'maintenance': memory.maintenance.toJson(),
+      'storage': storage.toJson(),
       'executable': MemoryDaemonLaunch.resolveExecutable(
         currentDirectory: _cwd,
       ),
     });
   }
 
-  Map<String, String> _memoryDaemonEnvironment(MemoryConfig memory) {
+  Map<String, String> _memoryDaemonEnvironment(
+    MemoryConfig memory,
+    SqliteStorageConfig storage,
+  ) {
     final embedding = memory.embedding;
     final llm = memory.llm;
     final maintenance = memory.maintenance;
@@ -2087,6 +2213,12 @@ class _AcpClientAppState extends State<AcpClientApp>
           .toString(),
       'MEMORY_MAINTENANCE_MANUAL_ONLY_ACTIONS': maintenance.manualOnlyActions
           .join(','),
+      'MEMORY_SQLITE_MAX_BYTES': storage
+          .budgetBytesFor(SqliteStoreKind.memory)
+          .toString(),
+      'MEMORY_SQLITE_RETENTION_DAYS': storage.retentionDays.toString(),
+      'MEMORY_SQLITE_CLEANUP_INTERVAL_HOURS': storage.cleanupIntervalHours
+          .toString(),
     };
   }
 
@@ -2165,9 +2297,10 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   Future<List<Map<String, Object?>>> _memoryMcpServers(
     MemoryConfig memory,
+    SqliteStorageConfig storage,
   ) async {
     try {
-      final manager = _memoryDaemonManagerFor(memory);
+      final manager = _memoryDaemonManagerFor(memory, storage);
       final endpoint = await _ensureMemoryEndpoint(manager);
       final config = buildMemoryMcpServerConfig(
         command: MemoryDaemonLaunch.resolveExecutable(currentDirectory: _cwd),
@@ -2373,7 +2506,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     AcpClientConfig nextConfig, {
     bool rebuild = true,
   }) {
-    _reconcileMemoryDaemon(nextConfig.memory);
+    _reconcileMemoryDaemon(nextConfig.memory, nextConfig.storage);
     final taskCleanup = _stopTaskInboxTransition();
     final staleControllers = _takeCachedControllers();
     _config = nextConfig;
@@ -2388,7 +2521,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       );
     }
     _configureTaskInboxController(previousCleanup: taskCleanup);
-    _ensureMemoryDaemonIfEnabled(nextConfig.memory);
+    _ensureMemoryDaemonIfEnabled(nextConfig.memory, nextConfig.storage);
     if (rebuild && mounted) setState(() {});
   }
 
@@ -3314,14 +3447,14 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
-    _reconcileMemoryDaemon(nextConfig.memory);
+    _reconcileMemoryDaemon(nextConfig.memory, nextConfig.storage);
     final controller = _cachedControllerFor(nextConfig);
     _ensureControllersForSelectableAgents(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
     });
-    _ensureMemoryDaemonIfEnabled(nextConfig.memory);
+    _ensureMemoryDaemonIfEnabled(nextConfig.memory, nextConfig.storage);
     return controller;
   }
 
@@ -3407,11 +3540,15 @@ class _AcpClientAppState extends State<AcpClientApp>
       agentArgs: server.args,
       agentCwd: server.cwd,
       sessionStorePath: _rustAcpSessionDatabasePath(config.configPath),
+      sessionStoreMaxBytes: config.storage.budgetBytesFor(
+        SqliteStoreKind.acpSessions,
+      ),
+      sessionStoreRetentionDays: config.storage.retentionDays,
       mcpServers: config.mcpServers
           .map(_rustMcpServerProjection)
           .toList(growable: false),
       mcpServersProvider: includeMemoryMcp && config.memory.enabled
-          ? () => _memoryMcpServers(config.memory)
+          ? () => _memoryMcpServers(config.memory, config.storage)
           : null,
       envOverrides: server.env,
       additionalDirectories: config.additionalDirectories,
@@ -3532,6 +3669,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'memory': config.memory.toJson(),
+      'storage': config.storage.toJson(),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
       'runtimeSecretGeneration': config.runtimeSecretGeneration,

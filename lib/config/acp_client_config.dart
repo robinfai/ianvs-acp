@@ -5,6 +5,7 @@ import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
 import '../memory/memory_config.dart';
+import '../storage/sqlite_storage_config.dart';
 
 class AcpClientConfig {
   const AcpClientConfig({
@@ -14,6 +15,7 @@ class AcpClientConfig {
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
+    this.storage = const SqliteStorageConfig(),
     this.configPath,
     this.defaultAgentServerName,
     this.runtimeSecretGeneration = 0,
@@ -28,6 +30,7 @@ class AcpClientConfig {
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
+  final SqliteStorageConfig storage;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -66,6 +69,7 @@ class AcpClientConfig {
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
       memory: memory,
+      storage: storage,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
       runtimeSecretGeneration: runtimeSecretGeneration,
@@ -151,6 +155,12 @@ class AcpClientConfig {
         'memoryConfig',
       ], fieldName: 'memory'),
     );
+    final storage = SqliteStorageConfig.fromJson(
+      _aliasedValue(json, const <String>[
+        'storage',
+        'sqliteStorage',
+      ], fieldName: 'storage'),
+    );
     final serversRaw = _aliasedValue(json, const <String>[
       'agent_servers',
       'agentServers',
@@ -162,6 +172,7 @@ class AcpClientConfig {
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
         memory: memory,
+        storage: storage,
       );
     }
     if (serversRaw is! Map<String, dynamic>) {
@@ -187,6 +198,7 @@ class AcpClientConfig {
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
         memory: memory,
+        storage: storage,
       );
     }
 
@@ -209,6 +221,7 @@ class AcpClientConfig {
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
       memory: memory,
+      storage: storage,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );

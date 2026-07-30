@@ -3,26 +3,26 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  static const Color bg = Color(0xfffafbfe);
+  static const Color bg = Color(0xfff7f7f7);
   static const Color surface = Color(0xffffffff);
-  static const Color surfaceMuted = Color(0xfff5f2ff);
-  static const Color surfaceRaised = Color(0xfffcfdff);
-  static const Color border = Color(0xffe2e5f0);
-  static const Color borderSoft = Color(0xffedf0f6);
+  static const Color surfaceMuted = Color(0xffeeeeee);
+  static const Color surfaceRaised = Color(0xfffafafa);
+  static const Color border = Color(0xffe3e3e3);
+  static const Color borderSoft = Color(0xffeeeeee);
 
-  static const Color textPrimary = Color(0xff111827);
-  static const Color textSecondary = Color(0xff667085);
-  static const Color textTertiary = Color(0xff98a2b3);
+  static const Color textPrimary = Color(0xff202020);
+  static const Color textSecondary = Color(0xff686868);
+  static const Color textTertiary = Color(0xff9a9a9a);
 
-  static const Color primary = Color(0xff6d3fef);
-  static const Color primaryDark = Color(0xff4f2bc7);
-  static const Color primarySoft = Color(0xffede7ff);
-  static const Color primaryMist = Color(0xfff7f3ff);
+  static const Color primary = Color(0xff4f46e5);
+  static const Color primaryDark = Color(0xff202020);
+  static const Color primarySoft = Color(0xffececec);
+  static const Color primaryMist = Color(0xfff3f3f3);
 
-  static const Color disabled = Color(0xffe5e7eb);
+  static const Color disabled = Color(0xffdedede);
   static const Color success = Color(0xff16a34a);
-  static const Color warning = Color(0xffd97706);
-  static const Color danger = Color(0xffb42318);
+  static const Color warning = Color(0xffca8a04);
+  static const Color danger = Color(0xffdc2626);
 }
 
 class AppSpacing {
@@ -39,10 +39,10 @@ class AppSpacing {
 class AppRadius {
   const AppRadius._();
 
-  static const double sm = 6;
-  static const double md = 8;
-  static const double lg = 12;
-  static const double xl = 16;
+  static const double sm = 8;
+  static const double md = 10;
+  static const double lg = 14;
+  static const double xl = 18;
   static const double pill = 999;
 }
 
@@ -50,10 +50,15 @@ class AppShadows {
   const AppShadows._();
 
   static const List<BoxShadow> soft = [
-    BoxShadow(color: Color(0x074f2bc7), blurRadius: 12, offset: Offset(0, 4)),
+    BoxShadow(color: Color(0x0a000000), blurRadius: 14, offset: Offset(0, 5)),
   ];
 
   static const List<BoxShadow> raised = [
-    BoxShadow(color: Color(0x0c525f7f), blurRadius: 18, offset: Offset(0, 8)),
+    BoxShadow(color: Color(0x12000000), blurRadius: 24, offset: Offset(0, 8)),
+  ];
+
+  static const List<BoxShadow> floatingPanel = [
+    BoxShadow(color: Color(0x10000000), blurRadius: 30, offset: Offset(0, 10)),
+    BoxShadow(color: Color(0x08000000), blurRadius: 4, offset: Offset(0, 1)),
   ];
 }
